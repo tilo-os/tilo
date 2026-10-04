@@ -33,7 +33,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -41,8 +41,8 @@ use winit::event::WindowEvent;
 use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
-    value_row,
+    El, StatusTone, caption, card, card_with_action, field_row, item_row, rows,
+    semantic_status_pill, setting_row, value_row,
 };
 
 mod cloud_signin;
@@ -138,7 +138,7 @@ fn account_status(
     } else {
         match health {
             Some(accounts::AccountSyncHealth::Syncing) => {
-                (t("accounts-status-syncing"), StatusTone::Accent)
+                (t("accounts-status-syncing"), StatusTone::Neutral)
             }
             Some(accounts::AccountSyncHealth::Healthy) => {
                 (t("accounts-status-healthy"), StatusTone::Success)
@@ -601,6 +601,9 @@ impl AccountsPane {
     pub(crate) fn with_open_form_for_shot(mut self, kind: AccountKind) -> Self {
         if kind.signs_in() {
             self.open_sign_in(kind, None);
+            if let Some(flow) = &self.sign_in {
+                flow.prefill("Home Nextcloud", "https://cloud.example.com");
+            }
         } else {
             self.form_kind = Some(kind);
             self.form_account_id = None;
@@ -743,7 +746,6 @@ impl AccountsPane {
         let mut panel: Vec<El> = Vec::new();
 
         let mut intro: Vec<El> = Vec::new();
-        intro.push(Box::new(Text::new(&t("accounts-intro")).with_size(12.0)));
         if self.vault.custody() == accounts::SecretCustody::LocalFile {
             intro.push(caption(&t("accounts-vault-local")));
         }
@@ -755,14 +757,9 @@ impl AccountsPane {
             // The live empty state: honest, no fabricated rows.
             intro.push(caption(&t("accounts-empty")));
         }
-        let mut introduction = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(8.0);
-        for line in intro {
-            introduction = introduction.push(line);
+        if !intro.is_empty() {
+            panel.push(rows(intro));
         }
-        panel.push(Box::new(introduction));
 
         if let Some(flow) = &self.sign_in {
             panel.push(flow.card());
@@ -790,100 +787,95 @@ impl AccountsPane {
                     )),
                     Box::new(
                         Row::new()
-                            .push(Box::new(
-                                Button::new(
-                                    "settings.accounts.remove.confirm",
-                                    &remove,
-                                    Some(REMOVE_CONFIRM_KEY),
-                                )
-                                .content_sized(),
-                            ))
-                            .push(Box::new(
-                                Button::new(
-                                    "settings.accounts.remove.cancel",
-                                    &cancel,
-                                    Some(REMOVE_CANCEL_KEY),
-                                )
-                                .content_sized(),
-                            ))
+                            .push(Box::new(Button::new(
+                                "settings.accounts.remove.confirm",
+                                &remove,
+                                Some(REMOVE_CONFIRM_KEY),
+                            )))
+                            .push(Box::new(Button::new(
+                                "settings.accounts.remove.cancel",
+                                &cancel,
+                                Some(REMOVE_CANCEL_KEY),
+                            )))
                             .push(Box::new(Spacer::new())),
                     ),
                 ]),
             ));
         }
 
-        panel.push(self.mail_card(theme));
-        panel.push(self.kind_card(AccountKind::CalDav, theme));
-        panel.push(self.kind_card(AccountKind::WebDav, theme));
-        panel.push(self.kind_card(AccountKind::Nextcloud, theme));
+        // A kind with accounts is a section of its own; the kinds without any
+        // are offered together, one row each, instead of eight empty sections.
+        let mut absent: Vec<El> = Vec::new();
         for kind in [
+            AccountKind::Mail,
+            AccountKind::CalDav,
+            AccountKind::WebDav,
+            AccountKind::Nextcloud,
             AccountKind::GoogleDrive,
             AccountKind::OneDrive,
             AccountKind::Dropbox,
             AccountKind::ICloudDrive,
         ] {
-            panel.push(self.kind_card(kind, theme));
+            if self.dir.views_of(kind).is_empty() {
+                absent.push(self.kind_add_row(kind));
+            } else {
+                panel.push(self.kind_card(kind, theme));
+            }
+        }
+        if !absent.is_empty() {
+            panel.push(card(&t("accounts-add-title"), rows(absent)));
         }
 
         crate::widgets::cards(panel)
     }
 
-    fn mail_card(&self, theme: &Theme) -> El {
-        let title = kind_shown(AccountKind::Mail);
-        let add = t("accounts-add");
-        let add_btn: El = Box::new(
-            account_action_button(
-                "settings.accounts.add.mail",
-                &add,
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                pane_label(),
-                "add-mail",
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::Add {
-                    kind: "mail".into(),
-                },
-                false,
-            )
-            .content_sized(),
-        );
-        let views = self.dir.views_of(AccountKind::Mail);
-        let body = self.kind_body(AccountKind::Mail, &views, theme);
-        card_with_action(&title, add_btn, body)
+    /// The button that starts adding an account of `kind`.
+    fn add_button(kind: AccountKind) -> El {
+        Box::new(account_action_button(
+            &format!("settings.accounts.add.{}", kind.slug()),
+            &t("accounts-add"),
+            crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+            pane_label(),
+            &format!("add-{}", kind.slug()),
+            tilo_actions::OperationKind::View,
+            crate::actions::AccountOperation::Add {
+                kind: kind.slug().into(),
+            },
+            false,
+        ))
     }
 
+    /// A kind with no accounts yet: its name and the button to add one, with
+    /// the reason it cannot be added when that is so.
+    fn kind_add_row(&self, kind: AccountKind) -> El {
+        let row = setting_row(&kind_shown(kind), Self::add_button(kind));
+        let note = if kind.is_cloud_storage()
+            && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
+        {
+            Some(reason)
+        } else if kind.best_effort() {
+            Some(t("accounts-best-effort-icloud"))
+        } else {
+            None
+        };
+        match note {
+            Some(note) => rows(vec![row, caption(&note)]),
+            None => row,
+        }
+    }
+
+    /// A kind with accounts: its name and add button over its accounts.
     fn kind_card(&self, kind: AccountKind, theme: &Theme) -> El {
         let views = self.dir.views_of(kind);
-        let add = t("accounts-add");
         card_with_action(
             &kind_shown(kind),
-            Box::new(
-                account_action_button(
-                    &format!("settings.accounts.add.{}", kind.slug()),
-                    &add,
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    pane_label(),
-                    &format!("add-{}", kind.slug()),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::Add {
-                        kind: kind.slug().into(),
-                    },
-                    false,
-                )
-                .content_sized(),
-            ),
+            Self::add_button(kind),
             self.kind_body(kind, &views, theme),
         )
     }
 
     fn kind_body(&self, kind: AccountKind, views: &[AccountView], theme: &Theme) -> El {
-        let mut body: Vec<El> = if views.is_empty() {
-            vec![caption(&t_args(
-                "accounts-kind-empty",
-                &[("kind", kind_shown(kind).into())],
-            ))]
-        } else {
-            views.iter().map(|v| self.account_row(v, theme)).collect()
-        };
+        let mut body: Vec<El> = views.iter().map(|v| self.account_row(v, theme)).collect();
         if kind.is_cloud_storage()
             && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
         {
@@ -912,42 +904,33 @@ impl AccountsPane {
             runtime.map(|status| status.health),
         );
 
-        // Keep identity and health together; maintenance actions get their own
-        // row so narrow layouts remain legible and touch targets never crush
-        // the connection summary.
-        let mut top = Row::new()
-            .push(Box::new(Text::new(&view.label).with_size(13.0)))
-            .push(Box::new(Spacer::new()));
+        // Identity and health sit together over the connection summary;
+        // maintenance actions get their own line under the text so narrow
+        // layouts stay legible and touch targets never crush the summary.
+        let mut marks: Vec<El> = Vec::new();
         if view.kind.best_effort() {
-            top = top.push(semantic_status_pill(
+            marks.push(semantic_status_pill(
                 &t("accounts-best-effort"),
                 StatusTone::Neutral,
             ));
         }
-        let top = top.push(semantic_status_pill(&status, status_tone));
+        marks.push(semantic_status_pill(&status, status_tone));
 
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(top))
-            .push(Box::new(Text::new(&view.summary).with_size(11.0).dimmed()));
+        let mut details = vec![view.summary.clone()];
+        let mut buttons: Vec<Button> = Vec::new();
         if !self.is_sample {
-            let sync_line = runtime.map_or_else(
-                || t("accounts-sync-none"),
-                |status| {
-                    let when = status
-                        .last_success_unix
-                        .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
-                    match status.message.as_deref() {
-                        Some(message) => t_args(
-                            "accounts-sync-when-msg",
-                            &[("when", when.as_str().into()), ("message", message.into())],
-                        ),
-                        None => t_args("accounts-sync-when", &[("when", when.into())]),
-                    }
-                },
-            );
-            column = column.push(Box::new(Text::new(&sync_line).with_size(11.0).dimmed()));
+            if let Some(status) = runtime {
+                let when = status
+                    .last_success_unix
+                    .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
+                details.push(match status.message.as_deref() {
+                    Some(message) => t_args(
+                        "accounts-sync-when-msg",
+                        &[("when", when.as_str().into()), ("message", message.into())],
+                    ),
+                    None => t_args("accounts-sync-when", &[("when", when.into())]),
+                });
+            }
             let account_resource = format!("settings.account:{}", view.id);
             let needs_sign_in = runtime.is_some_and(|status| {
                 status.health == accounts::AccountSyncHealth::NeedsAuthentication
@@ -964,79 +947,65 @@ impl AccountsPane {
                 t("accounts-verify")
             };
             let remove = t("accounts-remove");
-            let mut primary_actions = Row::new();
+            let button = |id: &str, label: &str, action: &str, kind, op, destructive| {
+                account_action_button(
+                    &format!("settings.accounts.{id}.{}", view.id),
+                    label,
+                    account_resource.clone(),
+                    view.label.clone(),
+                    action,
+                    kind,
+                    op,
+                    destructive,
+                )
+            };
             if !view.kind.is_cloud_storage() {
-                primary_actions = primary_actions.push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.edit.{}", view.id),
-                        &edit,
-                        account_resource.clone(),
-                        view.label.clone(),
-                        "edit",
-                        tilo_actions::OperationKind::View,
-                        crate::actions::AccountOperation::Edit {
-                            id: view.id.clone(),
-                        },
-                        false,
-                    )
-                    .content_sized(),
+                buttons.push(button(
+                    "edit",
+                    &edit,
+                    "edit",
+                    tilo_actions::OperationKind::View,
+                    crate::actions::AccountOperation::Edit {
+                        id: view.id.clone(),
+                    },
+                    false,
                 ));
             }
-            let primary_actions = primary_actions
-                .push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.reauth.{}", view.id),
-                        &reauth_label,
-                        account_resource.clone(),
-                        view.label.clone(),
-                        "reauthenticate",
-                        tilo_actions::OperationKind::View,
-                        crate::actions::AccountOperation::Reauthenticate {
-                            id: view.id.clone(),
-                        },
-                        false,
-                    )
-                    .content_sized(),
-                ))
-                .push(Box::new(Spacer::new()));
-            let secondary_actions = Row::new()
-                .push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.test.{}", view.id),
-                        &check,
-                        account_resource.clone(),
-                        view.label.clone(),
-                        "test",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::Test {
-                            id: view.id.clone(),
-                        },
-                        false,
-                    )
-                    .content_sized(),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.remove.{}", view.id),
-                        &remove,
-                        account_resource,
-                        view.label.clone(),
-                        "remove",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::Remove {
-                            id: view.id.clone(),
-                        },
-                        true,
-                    )
-                    .danger()
-                    .content_sized(),
-                ));
-            column = column
-                .push(Box::new(primary_actions))
-                .push(Box::new(secondary_actions));
+            buttons.push(button(
+                "reauth",
+                &reauth_label,
+                "reauthenticate",
+                tilo_actions::OperationKind::View,
+                crate::actions::AccountOperation::Reauthenticate {
+                    id: view.id.clone(),
+                },
+                false,
+            ));
+            buttons.push(button(
+                "test",
+                &check,
+                "test",
+                tilo_actions::OperationKind::Effect,
+                crate::actions::AccountOperation::Test {
+                    id: view.id.clone(),
+                },
+                false,
+            ));
+            buttons.push(
+                button(
+                    "remove",
+                    &remove,
+                    "remove",
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::AccountOperation::Remove {
+                        id: view.id.clone(),
+                    },
+                    true,
+                )
+                .role(ui::widget::ButtonRole::Destructive),
+            );
         }
-        Box::new(column)
+        item_row(&view.label, marks, &details, buttons)
     }
 
     /// The inline add-email form: fields bound to CRDT keys plus Save/Cancel.
@@ -1080,8 +1049,7 @@ impl AccountsPane {
             .with_kind(TextInputKind::Name)
             .with_id("accounts.form.name")
             .with_accessible_name(&display_name)
-            .with_placeholder(&display_name)
-            .with_font_size(13.0);
+            .with_placeholder(&display_name);
         let identity = TextInput::from_state(if kind == AccountKind::Mail {
             &self.form_email
         } else {
@@ -1094,54 +1062,44 @@ impl AccountsPane {
         })
         .with_id("accounts.form.identity")
         .with_accessible_name(&identity_name)
-        .with_placeholder(&identity_placeholder)
-        .with_font_size(13.0);
+        .with_placeholder(&identity_placeholder);
         let user = TextInput::from_state(&self.form_user)
             .with_kind(TextInputKind::Username)
             .with_id("accounts.form.username")
             .with_accessible_name(&login_name)
-            .with_placeholder(&login_placeholder)
-            .with_font_size(13.0);
+            .with_placeholder(&login_placeholder);
         let password = TextInput::from_state(&self.form_password)
             .with_kind(TextInputKind::Password)
             .with_id("accounts.form.password")
             .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder(&password_short)
-            .with_font_size(13.0);
+            .with_placeholder(&password_short);
         let server = TextInput::from_state(&self.form_server)
             .with_kind(TextInputKind::Url)
             .with_id("accounts.form.server")
             .with_accessible_name(&server_url)
-            .with_placeholder(&server_placeholder)
-            .with_font_size(13.0);
+            .with_placeholder(&server_placeholder);
         let buttons = Row::new()
-            .push(Box::new(
-                account_action_button(
-                    "settings.accounts.form.save",
-                    &save,
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    pane_label(),
-                    "save-form",
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AccountOperation::SubmitForm,
-                    false,
-                )
-                .content_sized(),
-            ))
-            .push(Box::new(
-                account_action_button(
-                    "settings.accounts.form.cancel",
-                    &cancel,
-                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                    pane_label(),
-                    "cancel-form",
-                    tilo_actions::OperationKind::View,
-                    crate::actions::AccountOperation::CancelForm,
-                    false,
-                )
-                .content_sized(),
-            ))
+            .push(Box::new(account_action_button(
+                "settings.accounts.form.save",
+                &save,
+                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                pane_label(),
+                "save-form",
+                tilo_actions::OperationKind::Effect,
+                crate::actions::AccountOperation::SubmitForm,
+                false,
+            )))
+            .push(Box::new(account_action_button(
+                "settings.accounts.form.cancel",
+                &cancel,
+                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                pane_label(),
+                "cancel-form",
+                tilo_actions::OperationKind::View,
+                crate::actions::AccountOperation::CancelForm,
+                false,
+            )))
             .push(Box::new(Spacer::new()));
         let title = t_args(
             if self.form_account_id.is_some() {
@@ -1155,16 +1113,16 @@ impl AccountsPane {
             &title,
             rows({
                 let mut fields = vec![
-                    setting_row(&display_name, Box::new(name)),
-                    setting_row(&identity_name, Box::new(identity)),
+                    field_row(&display_name, Box::new(name)),
+                    field_row(&identity_name, Box::new(identity)),
                 ];
                 if kind == AccountKind::Mail {
-                    fields.push(setting_row(&login_name, Box::new(user)));
+                    fields.push(field_row(&login_name, Box::new(user)));
                 } else {
-                    fields.push(setting_row(&server_label, Box::new(server)));
+                    fields.push(field_row(&server_label, Box::new(server)));
                 }
                 if kind != AccountKind::Nextcloud {
-                    fields.push(setting_row(&password_label, Box::new(password)));
+                    fields.push(field_row(&password_label, Box::new(password)));
                 }
                 if let Some(error) = &self.form_error {
                     fields.push(caption(&t_args(
@@ -1172,7 +1130,6 @@ impl AccountsPane {
                         &[("error", error.as_str().into())],
                     )));
                 }
-                fields.push(caption(&t("accounts-form-caption")));
                 fields.push(Box::new(buttons));
                 fields
             }),
@@ -1188,12 +1145,10 @@ impl AccountsPane {
             .with_id("accounts.reauth.password")
             .with_accessible_name(&password_label)
             .with_secret(true)
-            .with_placeholder(&password_label)
-            .with_font_size(13.0);
+            .with_placeholder(&password_label);
         let mut fields = vec![
             value_row(&t("accounts-reauth-account"), id),
-            setting_row(&t("accounts-reauth-credential"), Box::new(password)),
-            caption(&t("accounts-reauth-caption")),
+            field_row(&t("accounts-reauth-credential"), Box::new(password)),
         ];
         if let Some(error) = &self.reauth_error {
             fields.push(caption(&t_args(
@@ -1203,36 +1158,26 @@ impl AccountsPane {
         }
         fields.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    account_action_button(
-                        "settings.accounts.reauth.save",
-                        &save,
-                        crate::actions::pane_resource_id(
-                            crate::categories::Category::ExternalAccounts,
-                        ),
-                        pane_label(),
-                        "save-reauthentication",
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::AccountOperation::SubmitReauthentication,
-                        false,
-                    )
-                    .content_sized(),
-                ))
-                .push(Box::new(
-                    account_action_button(
-                        "settings.accounts.reauth.cancel",
-                        &cancel,
-                        crate::actions::pane_resource_id(
-                            crate::categories::Category::ExternalAccounts,
-                        ),
-                        pane_label(),
-                        "cancel-reauthentication",
-                        tilo_actions::OperationKind::View,
-                        crate::actions::AccountOperation::CancelReauthentication,
-                        false,
-                    )
-                    .content_sized(),
-                ))
+                .push(Box::new(account_action_button(
+                    "settings.accounts.reauth.save",
+                    &save,
+                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                    pane_label(),
+                    "save-reauthentication",
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::AccountOperation::SubmitReauthentication,
+                    false,
+                )))
+                .push(Box::new(account_action_button(
+                    "settings.accounts.reauth.cancel",
+                    &cancel,
+                    crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
+                    pane_label(),
+                    "cancel-reauthentication",
+                    tilo_actions::OperationKind::View,
+                    crate::actions::AccountOperation::CancelReauthentication,
+                    false,
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         card(&t("accounts-reauth-title"), rows(fields))

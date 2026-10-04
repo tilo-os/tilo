@@ -35,9 +35,10 @@ use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::doc::{read_bool, read_str_or_text};
 use ui::i18n::ArgValue;
+use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
+use ui::widget::{Button, ButtonRole, Dropdown, Slider, Spacer, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -46,7 +47,8 @@ use crate::i18n::{t, t_args};
 use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
 use crate::widgets::{
-    El, caption, card, choice_row, choice_row_described, rows, setting_row, setting_row_described,
+    El, caption, card, choice_row, choice_row_described, rows, setting_row_described, slider_row,
+    slider_row_described,
 };
 
 fn bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
@@ -619,7 +621,7 @@ pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonC
     }
 }
 
-/// "Ring 1", or "Ring 1 · Mode 2" when its group has several modes.
+/// "Ring 1", or "Ring 1, mode 2" when its group has several modes.
 fn dial_label(dial: PadDial, mode: u32, modes: u32) -> String {
     let (key, index) = match dial {
         PadDial::Ring(index) => ("input-pad-ring", index),
@@ -851,6 +853,48 @@ impl MouseKeyboardPane {
         pane
     }
 
+    /// The `--shots` pane: a laptop with the stock layout and the usual
+    /// layouts to add, on whatever input hardware a laptop has.
+    #[cfg(not(feature = "thin"))]
+    pub(crate) fn for_shot() -> Self {
+        let catalog = [
+            ("us", "English (US)"),
+            ("gb", "English (UK)"),
+            ("de", "German"),
+            ("fr", "French"),
+            ("es", "Spanish"),
+        ]
+        .into_iter()
+        .map(|(id, label)| CatalogEntry {
+            id: id.into(),
+            label: label.into(),
+        })
+        .collect();
+        let mut prefs = InputPrefs::default();
+        prefs.normalise_keyboard_sources();
+        Self {
+            initial: prefs.clone(),
+            last: prefs,
+            initial_check_spelling: true,
+            check_spelling: true,
+            initial_auto_correct: true,
+            auto_correct: true,
+            catalog,
+            pending_add_id: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
+            sections: InputSections::for_devices(None),
+            tablets: Vec::new(),
+            pads: Vec::new(),
+            poll_devices: false,
+            next_device_poll: None,
+            needs_seed: true,
+            structure_dirty: false,
+            commit_context_pending: false,
+            composed: None,
+            rect: Rect::ZERO,
+        }
+    }
+
     /// Test constructor with a deterministic installed-source catalogue.
     #[cfg(test)]
     fn with_catalog(mut initial: InputPrefs, catalog: Vec<CatalogEntry>) -> Self {
@@ -989,7 +1033,7 @@ impl MouseKeyboardPane {
                     "input.touchpad_disabled_on_external_mouse",
                     last.touchpad_disabled_on_external_mouse,
                 ),
-                setting_row(
+                slider_row(
                     &t("input-touchpad-speed"),
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(
@@ -1083,7 +1127,7 @@ impl MouseKeyboardPane {
         card(
             &t("input-mouse-title"),
             rows(vec![
-                setting_row(
+                slider_row(
                     &t("input-mouse-speed"),
                     Box::new(
                         Slider::from_state(&ui::LocalState::new(
@@ -1138,7 +1182,7 @@ impl MouseKeyboardPane {
                         .with_placeholder(&accel_shown(&self.initial.accel_profile)),
                     ),
                 ),
-                setting_row_described(
+                slider_row_described(
                     &t("input-scroll-speed"),
                     &t("input-scroll-speed-description"),
                     Box::new(
@@ -1184,7 +1228,7 @@ impl MouseKeyboardPane {
                         .with_placeholder(&self.source_label(&self.last.keyboard_layout)),
                     ),
                 ),
-                setting_row_described(
+                slider_row_described(
                     &t("input-key-repeat"),
                     &repeat_description,
                     Box::new(
@@ -1193,7 +1237,6 @@ impl MouseKeyboardPane {
                             .with_id("input.key_repeat"),
                     ),
                 ),
-                caption(&t("input-keyboard-caption")),
                 choice_row(
                     &t("input-compose-key"),
                     Box::new(
@@ -1274,7 +1317,6 @@ impl MouseKeyboardPane {
                             .with_id("text.auto_correct"),
                     ),
                 ),
-                caption(&t("input-spell-caption")),
             ]),
         )
     }
@@ -1288,40 +1330,39 @@ impl MouseKeyboardPane {
         let choose = t("input-sources-choose");
         let mut source_rows = Vec::new();
         for (index, id) in self.last.keyboard_layouts.iter().enumerate() {
-            let mut row = Row::new()
-                .push(Box::new(Text::new(&self.source_label(id)).with_size(13.0)))
-                .push(Box::new(Spacer::new()));
-            if id == &self.last.keyboard_layout {
-                row = row.push(Box::new(Text::new(&active_label).with_size(12.0)));
-            }
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
             let remove = format!("input.source.{index}.remove");
-            let mut up_button = Button::new(&up, "↑", Some(&up))
-                .with_size(36.0, 34.0)
-                .with_accessible_name(&move_up)
-                .with_enabled(index > 0);
+            let mut up_button =
+                Button::icon_only(&up, Icon::ArrowUp, &move_up).with_enabled(index > 0);
             if index > 0 {
                 up_button = up_button.on_action(source_action_binding(id, "move-up"));
             }
-            let mut down_button = Button::new(&down, "↓", Some(&down))
-                .with_size(36.0, 34.0)
-                .with_accessible_name(&move_down)
+            let mut down_button = Button::icon_only(&down, Icon::ArrowDown, &move_down)
                 .with_enabled(index + 1 < self.last.keyboard_layouts.len());
             if index + 1 < self.last.keyboard_layouts.len() {
                 down_button = down_button.on_action(source_action_binding(id, "move-down"));
             }
             let mut remove_button = Button::new(&remove, &remove_label, Some(&remove))
-                .content_sized()
+                .role(ButtonRole::Destructive)
                 .with_enabled(self.last.keyboard_layouts.len() > 1);
             if self.last.keyboard_layouts.len() > 1 {
                 remove_button = remove_button.on_action(source_action_binding(id, "remove"));
             }
-            row = row
-                .push(Box::new(up_button))
-                .push(Box::new(down_button))
-                .push(Box::new(remove_button));
-            source_rows.push(Box::new(row) as Box<dyn Widget>);
+            let marks = if id == &self.last.keyboard_layout {
+                vec![crate::widgets::semantic_status_pill(
+                    &active_label,
+                    crate::widgets::StatusTone::Success,
+                )]
+            } else {
+                Vec::new()
+            };
+            source_rows.push(crate::widgets::item_row(
+                &self.source_label(id),
+                marks,
+                &[],
+                vec![up_button, down_button, remove_button],
+            ));
         }
         let available: Vec<String> = self
             .catalog
@@ -1336,13 +1377,10 @@ impl MouseKeyboardPane {
             source_rows.push(choice_row(
                 &add_label,
                 Box::new(
-                    Dropdown::from_state(
-                        available.clone(),
-                        &ui::LocalState::new(available.first().cloned().unwrap_or_default()),
-                    )
-                    .on_action(text_action("add-source"))
-                    .with_id("input.source.add_picker")
-                    .with_placeholder(&choose),
+                    Dropdown::from_state(available, &ui::LocalState::new(String::new()))
+                        .on_action(text_action("add-source"))
+                        .with_id("input.source.add_picker")
+                        .with_placeholder(&choose),
                 ),
             ));
         }
@@ -2083,7 +2121,7 @@ mod tests {
             assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
             assert_eq!(
                 exact.key_repeat_description(),
-                "37 keys per second · starts after 275 ms"
+                "37 keys per second, starts after 275 ms"
             );
 
             let partial = MouseKeyboardPane::with_catalog(
@@ -2256,7 +2294,7 @@ mod tests {
             ],
             "a row per ring mode and per strip"
         );
-        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1 · Mode 2");
+        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1, mode 2");
         assert_eq!(dial_label(PadDial::Strip(1), 0, 1), "Strip 2");
         pane.observe_devices(Some(&snapshot));
         assert!(

@@ -24,7 +24,7 @@ use zeroize::Zeroize;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, hgap, rows, semantic_status_pill, value_row,
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, value_row,
 };
 
 fn location_shown(location: EndpointLocation) -> String {
@@ -51,7 +51,7 @@ fn phase_tone(phase: &LocalModelPhase) -> StatusTone {
         LocalModelPhase::Ready { running: true, .. } => StatusTone::Success,
         LocalModelPhase::Ready { running: false, .. } => StatusTone::Neutral,
         LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => {
-            StatusTone::Accent
+            StatusTone::Neutral
         }
         LocalModelPhase::Error { .. } => StatusTone::Warning,
     }
@@ -440,7 +440,7 @@ fn provider_action_button(
     profile_id: Option<&str>,
     action_id: &str,
 ) -> Button {
-    let button = Button::new(id, label, None).content_sized();
+    let button = Button::new(id, label, None);
     match crate::actions::agent_provider_binding(resources, profile_id, action_id) {
         Some(binding) => button.on_action(binding),
         None => button.with_enabled(false),
@@ -684,17 +684,13 @@ impl AgentModelsPane {
         let mut body = vec![value_row(&match_label, &setup.boot_pack_id)];
         let (status, tone) = match &setup.status {
             AcceleratorSetupState::Available => {
-                body.push(caption(&t("agent-accel-available")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Button::new(
-                                "agent-models-accelerator-setup",
-                                &t("agent-accel-setup"),
-                                Some(ACCELERATOR_SETUP_KEY),
-                            )
-                            .content_sized(),
-                        ))
+                        .push(Box::new(Button::new(
+                            "agent-models-accelerator-setup",
+                            &t("agent-accel-setup"),
+                            Some(ACCELERATOR_SETUP_KEY),
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 (t("agent-accel-ready"), StatusTone::Neutral)
@@ -703,37 +699,28 @@ impl AgentModelsPane {
                 body.push(Box::new(
                     ProgressBar::indeterminate().with_label(t("agent-accel-preparing")),
                 ));
-                body.push(caption(&t("agent-accel-queued-caption")));
                 (t("agent-accel-queued"), StatusTone::Neutral)
             }
             AcceleratorSetupState::Staging => {
                 body.push(Box::new(
                     ProgressBar::indeterminate().with_label(t("agent-accel-staging-label")),
                 ));
-                body.push(caption(&t("agent-accel-staging-caption")));
                 (t("agent-accel-staging"), StatusTone::Warning)
             }
             AcceleratorSetupState::RestartRequired => {
                 body.push(caption(&t("agent-accel-restart-caption")));
                 (t("agent-accel-restart"), StatusTone::Warning)
             }
-            AcceleratorSetupState::Active => {
-                body.push(caption(&t("agent-accel-active-caption")));
-                (t("agent-accel-active"), StatusTone::Success)
-            }
+            AcceleratorSetupState::Active => (t("agent-accel-active"), StatusTone::Success),
             AcceleratorSetupState::Error { message } => {
                 body.push(caption(message));
-                body.push(caption(&t("agent-accel-error-retry")));
                 body.push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Button::new(
-                                "agent-models-accelerator-retry",
-                                &t("agent-accel-retry"),
-                                Some(ACCELERATOR_SETUP_KEY),
-                            )
-                            .content_sized(),
-                        ))
+                        .push(Box::new(Button::new(
+                            "agent-models-accelerator-retry",
+                            &t("agent-accel-retry"),
+                            Some(ACCELERATOR_SETUP_KEY),
+                        )))
                         .push(Box::new(Spacer::new())),
                 ));
                 (t("agent-status-attention"), StatusTone::Warning)
@@ -769,18 +756,16 @@ impl AgentModelsPane {
             caption(&accept),
             Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            "agent-models-confirm-install",
-                            &accept_btn,
-                            Some(CONFIRM_KEY),
-                        )
-                        .content_sized(),
-                    ))
-                    .push(Box::new(
-                        Button::new("agent-models-cancel-install", &cancel, Some(CANCEL_KEY))
-                            .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        "agent-models-confirm-install",
+                        &accept_btn,
+                        Some(CONFIRM_KEY),
+                    )))
+                    .push(Box::new(Button::new(
+                        "agent-models-cancel-install",
+                        &cancel,
+                        Some(CANCEL_KEY),
+                    )))
                     .push(Box::new(Spacer::new())),
             ),
         ]);
@@ -790,11 +775,9 @@ impl AgentModelsPane {
         let hardware = &self.snapshot.hardware;
         let fit_label = hardware.fit.label();
         let mem = gib(i64::from(hardware.memory_gib));
-        let hw_fit = t("agent-hw-fit");
         let hw_mem = t("agent-hw-memory");
         let hw_accel = t("agent-hw-accel");
         let mut body = vec![
-            value_row(&hw_fit, &fit_label),
             value_row(&hw_mem, &mem),
             value_row(&hw_accel, &hardware.accelerator),
         ];
@@ -813,13 +796,11 @@ impl AgentModelsPane {
             let rec_model = t("agent-rec-model");
             let waiting = t("agent-rec-waiting");
             body.push(value_row(&rec_model, &waiting));
-            body.push(caption(&t("agent-rec-waiting-caption")));
             let unavailable = t("agent-setup-unavailable");
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
                         Button::new("agent-models-setup-unavailable", &unavailable, None)
-                            .content_sized()
                             .with_enabled(false),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -843,7 +824,6 @@ impl AgentModelsPane {
                 Row::new()
                     .push(Box::new(
                         Button::new("agent-models-setup-local", &setup, Some(SETUP_KEY))
-                            .content_sized()
                             .with_enabled(
                                 self.manager_available
                                     && hardware.fit != HardwareFit::Unsupported
@@ -909,14 +889,8 @@ impl AgentModelsPane {
             }
             LocalModelPhase::Error { message } => {
                 body.push(caption(message));
-                body.push(caption(&t("agent-error-retry-caption")));
             }
-            LocalModelPhase::Ready { running: true, .. } => {
-                body.push(caption(&t("agent-ready-running-caption")));
-            }
-            LocalModelPhase::Ready { running: false, .. } => {
-                body.push(caption(&t("agent-ready-stopped-caption")));
-            }
+            LocalModelPhase::Ready { .. } => {}
         }
         let actions = available_actions(&model.phase);
         if !actions.is_empty() {
@@ -929,18 +903,15 @@ impl AgentModelsPane {
                 } else {
                     action_label(action)
                 };
-                row = row.push(Box::new(
-                    Button::new(
-                        &format!(
-                            "agent-models-{}-{}",
-                            action_slug(action),
-                            model_key(&model.package.id, action)
-                        ),
-                        &label,
-                        Some(&model_key(&model.package.id, action)),
-                    )
-                    .content_sized(),
-                ));
+                row = row.push(Box::new(Button::new(
+                    &format!(
+                        "agent-models-{}-{}",
+                        action_slug(action),
+                        model_key(&model.package.id, action)
+                    ),
+                    &label,
+                    Some(&model_key(&model.package.id, action)),
+                )));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
@@ -986,7 +957,7 @@ impl AgentModelsPane {
     fn hosted_profiles(&self) -> El {
         let config = ProviderConfig::load();
         let action_resources = crate::actions::agent_provider_action_resources();
-        let mut body: Vec<El> = vec![caption(&t("agent-hosted-intro"))];
+        let mut body: Vec<El> = Vec::new();
         body.push(Box::new(
             Row::new()
                 .push(Box::new(provider_action_button(
@@ -996,7 +967,6 @@ impl AgentModelsPane {
                     None,
                     "add-anthropic",
                 )))
-                .push(hgap(8.0))
                 .push(Box::new(provider_action_button(
                     &action_resources,
                     "agent-models-add-openai",
@@ -1070,7 +1040,6 @@ impl AgentModelsPane {
                             &t("agent-save-details"),
                             None,
                         )
-                        .content_sized()
                         .on_effect(move || {
                             let label = save_fields
                                 .label
@@ -1114,7 +1083,6 @@ impl AgentModelsPane {
                             }));
                         }),
                     ))
-                    .push(hgap(8.0))
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-protocol-{profile_id}"),
@@ -1122,7 +1090,6 @@ impl AgentModelsPane {
                         Some(&profile_id),
                         "set-protocol",
                     )))
-                    .push(hgap(8.0))
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-enabled-{profile_id}"),
@@ -1134,7 +1101,6 @@ impl AgentModelsPane {
                         Some(&profile_id),
                         if profile.enabled { "disable" } else { "enable" },
                     )))
-                    .push(hgap(8.0))
                     .push(Box::new(provider_action_button(
                         &action_resources,
                         &format!("agent-models-remove-provider-{profile_id}"),
@@ -1174,7 +1140,6 @@ impl AgentModelsPane {
                             },
                             None,
                         )
-                        .content_sized()
                         .on_effect(move || {
                             let mut key = set_buffer
                                 .lock()
@@ -1198,7 +1163,6 @@ impl AgentModelsPane {
                             &t("agent-remove-key"),
                             None,
                         )
-                        .content_sized()
                         .on_effect(move || {
                             let result = tilo_model_gateway::remove_api_key(&remove_id);
                             remove_notice.set(Some(match result {
@@ -1249,7 +1213,6 @@ impl AgentModelsPane {
         let mut cards = vec![card(
             &private_title,
             rows(vec![
-                caption(&t("agent-private-caption")),
                 value_row(&local_inf, &local_gw),
                 value_row(&downloads, &downloads_v),
             ]),
@@ -1629,6 +1592,97 @@ fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
     pressed
 }
 
+/// The `--shots` pane: a roomy laptop whose model service is up, with one
+/// model running and another recommended.
+#[cfg(not(feature = "thin"))]
+mod capture {
+    use super::{
+        AgentModelsPane, Arc, HardwareFit, HardwareRecommendation, InstalledLocalModel,
+        LocalModelControl, LocalModelPackage, LocalModelPhase, LocalModelSnapshot, t,
+    };
+
+    struct Service;
+
+    fn package(
+        id: &str,
+        name: &str,
+        description: &str,
+        license: &str,
+        bytes: u64,
+    ) -> LocalModelPackage {
+        LocalModelPackage {
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            source: format!("huggingface.co/{id}"),
+            revision: "5206a32e0bd3".into(),
+            license: license.into(),
+            license_url: "https://ai.google.dev/gemma/terms".into(),
+            download_bytes: bytes,
+            installed_bytes: bytes,
+            vision: false,
+            face_recognition: false,
+        }
+    }
+
+    impl LocalModelControl for Service {
+        fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
+            Ok(LocalModelSnapshot {
+                hardware: HardwareRecommendation {
+                    fit: HardwareFit::Excellent,
+                    memory_gib: 32,
+                    accelerator: "AMD Radeon 780M".into(),
+                    accelerator_memory_gib: Some(16),
+                    free_storage_gib: Some(412),
+                    reason: t("agent-reason-excellent"),
+                },
+                recommendation: Some(package(
+                    "meta-llama/Llama-3.1-8B-Instruct",
+                    "Llama 3.1 8B Instruct",
+                    "A capable everyday assistant for summaries, drafting and tool use.",
+                    "Llama 3.1 Community License",
+                    4_920_000_000,
+                )),
+                models: vec![InstalledLocalModel {
+                    package: package(
+                        "google/gemma-2-9b-it",
+                        "Gemma 2 9B",
+                        "A balanced model for everyday questions.",
+                        "Gemma Terms of Use",
+                        5_760_000_000,
+                    ),
+                    phase: LocalModelPhase::Ready {
+                        running: true,
+                        endpoint: None,
+                    },
+                }],
+                accelerator_setup: None,
+            })
+        }
+        fn install(&self, _model: &LocalModelPackage) -> Result<(), String> {
+            Ok(())
+        }
+        fn start(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn remove(&self, _id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn stage_accelerator(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl AgentModelsPane {
+        pub(crate) fn for_shot() -> Self {
+            Self::with_control(Arc::new(Service))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -1657,7 +1711,7 @@ mod tests {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 24,
-                accelerator: "GPU · 12 GiB".into(),
+                accelerator: "GPU, 12 GiB".into(),
                 accelerator_memory_gib: Some(12),
                 free_storage_gib: Some(80),
                 reason: "Balanced for this device".into(),
