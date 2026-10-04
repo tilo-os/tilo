@@ -39,7 +39,6 @@
 "apps/video-player/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
-"apps/calendar/src/main.rs" = 1
 "apps/chat/src/main.rs" = 1
 "apps/code-editor/src/main.rs" = 1
 "apps/ebook/src/main.rs" = 1
