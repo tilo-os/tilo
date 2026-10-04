@@ -9,8 +9,13 @@
 use std::sync::Arc;
 
 use crate::{
-    ClipboardBackend, ClipboardTarget, MAX_CLIPBOARD_IMAGE_BYTES, MAX_CLIPBOARD_IMAGE_INPUT_BYTES,
+    ClipboardBackend, ClipboardImage, ClipboardTarget, MAX_CLIPBOARD_IMAGE_BYTES,
+    MAX_CLIPBOARD_IMAGE_INPUT_BYTES,
 };
+
+/// The image another app put on the clipboard, read when the selection
+/// changed so a paste never waits on the copying app.
+type PastedImage = Arc<std::sync::Mutex<Option<ClipboardImage>>>;
 
 const CLIPBOARD_READ_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(40);
 const CLIPBOARD_SHUTDOWN_BUDGET: tilo_clock::Duration = tilo_clock::Duration::from_millis(250);
@@ -60,6 +65,7 @@ pub struct WaylandClipboard {
     primary_refresh_inflight: Arc<std::sync::atomic::AtomicBool>,
     clipboard_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
     primary_refresh_generation: Arc<std::sync::atomic::AtomicU64>,
+    pasted: PastedImage,
     wake: tilo_rt::wake::WakeHandle,
 }
 
@@ -94,10 +100,12 @@ impl WaylandClipboard {
         let (sender, receiver) = smithay_client_toolkit::reexports::calloop::channel::channel();
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
+        let pasted = PastedImage::default();
+        let worker_pasted = Arc::clone(&pasted);
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard".into())
             .spawn(move || {
-                publication_worker(connection, receiver);
+                publication_worker(connection, receiver, worker_pasted);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -125,6 +133,7 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pasted,
             wake: tilo_rt::wake::WakeHandle::new(),
         }
     }
@@ -139,10 +148,12 @@ impl WaylandClipboard {
         let (sender, receiver) = smithay_client_toolkit::reexports::calloop::channel::channel();
         let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_alive = std::sync::Arc::clone(&alive);
+        let pasted = PastedImage::default();
+        let worker_pasted = Arc::clone(&pasted);
         let thread = std::thread::Builder::new()
             .name("tilo-wayland-clipboard-test".into())
             .spawn(move || {
-                publication_worker(connection, receiver);
+                publication_worker(connection, receiver, worker_pasted);
                 worker_alive.store(false, std::sync::atomic::Ordering::Release);
             })
             .ok();
@@ -164,12 +175,13 @@ impl WaylandClipboard {
             primary_refresh_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clipboard_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             primary_refresh_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pasted,
             wake: tilo_rt::wake::WakeHandle::new(),
         }
     }
 }
 
-fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || rgba.len() > MAX_CLIPBOARD_IMAGE_INPUT_BYTES {
         return None;
     }
@@ -222,7 +234,7 @@ mod image_worker_impl {
     };
     use smithay_client_toolkit as sctk;
 
-    use super::ClipboardCommand;
+    use super::{ClipboardCommand, PastedImage};
 
     #[derive(Debug, Default)]
     struct SeatData {
@@ -248,6 +260,10 @@ mod image_worker_impl {
         pending_image: Option<Arc<[u8]>>,
         inflight_transfers: usize,
         inflight_bytes: usize,
+        /// The image on the current selection, once read.
+        pasted: PastedImage,
+        /// Counts selections, so a slow read of an older one never lands.
+        selection_generation: u64,
         exit: bool,
     }
 
@@ -268,7 +284,11 @@ mod image_worker_impl {
         }
     }
 
-    pub fn run(connection: Connection, commands: calloop::channel::Channel<ClipboardCommand>) {
+    pub fn run(
+        connection: Connection,
+        commands: calloop::channel::Channel<ClipboardCommand>,
+        pasted: PastedImage,
+    ) {
         let Ok((globals, queue)) = registry_queue_init(&connection) else {
             return;
         };
@@ -303,6 +323,8 @@ mod image_worker_impl {
             pending_image: None,
             inflight_transfers: 0,
             inflight_bytes: 0,
+            pasted,
+            selection_generation: 0,
             exit: false,
         };
         let _ = loop_handle.insert_source(commands, |event, (), state| {
@@ -456,6 +478,79 @@ mod image_worker_impl {
         }
     }
 
+    impl State {
+        /// Read the image the new selection offers, if it offers one, into
+        /// [`PastedImage`] without blocking the worker: the copying app writes
+        /// it at its own pace, and the read is dropped when the selection
+        /// changes again or the image is larger than a paste may be.
+        fn read_selection_image(&mut self, conn: &Connection, device: &WlDataDevice) {
+            self.selection_generation = self.selection_generation.wrapping_add(1);
+            let generation = self.selection_generation;
+            if let Ok(mut pasted) = self.pasted.lock() {
+                *pasted = None;
+            }
+            let Some(offer) = device
+                .data::<sctk::data_device_manager::data_device::DataDeviceData>()
+                .and_then(sctk::data_device_manager::data_device::DataDeviceData::selection_offer)
+            else {
+                return;
+            };
+            let Some(mime) = offer.with_mime_types(|types| {
+                crate::preferred_image_type(types.iter().map(String::as_str))
+            }) else {
+                return;
+            };
+            let Ok(pipe) = offer.receive(mime.to_owned()) else {
+                return;
+            };
+            let _ = conn.flush();
+            let Ok(flags) = get_fd_flags(pipe.as_raw_fd()) else {
+                return;
+            };
+            if !set_fd_flags(pipe.as_raw_fd(), flags | libc::O_NONBLOCK) {
+                return;
+            }
+            let mut bytes = Vec::new();
+            let mut chunk = vec![0u8; 64 * 1024];
+            let _ = self
+                .loop_handle
+                .insert_source(pipe, move |(), pipe, state| {
+                    use std::io::Read as _;
+                    if state.selection_generation != generation {
+                        return PostAction::Remove;
+                    }
+                    loop {
+                        // SAFETY: the source owns the pipe for this callback; the
+                        // borrow ends before it returns.
+                        match unsafe { pipe.get_mut() }.read(&mut chunk) {
+                            Ok(0) => {
+                                if !bytes.is_empty()
+                                    && let Ok(mut pasted) = state.pasted.lock()
+                                {
+                                    *pasted = Some(crate::ClipboardImage {
+                                        mime,
+                                        bytes: std::mem::take(&mut bytes),
+                                    });
+                                }
+                                return PostAction::Remove;
+                            }
+                            Ok(read) => {
+                                bytes.extend_from_slice(chunk.get(..read).unwrap_or_default());
+                                if bytes.len() > crate::MAX_PASTED_IMAGE_BYTES {
+                                    return PostAction::Remove;
+                                }
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                return PostAction::Continue;
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(_) => return PostAction::Remove,
+                        }
+                    }
+                });
+        }
+    }
+
     fn get_fd_flags(fd: i32) -> std::io::Result<i32> {
         // SAFETY: fcntl only reads flags for this live descriptor.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -528,7 +623,9 @@ mod image_worker_impl {
             _: f64,
         ) {
         }
-        fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+        fn selection(&mut self, conn: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
+            self.read_selection_image(conn, device);
+        }
         fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
     }
 
@@ -778,8 +875,9 @@ mod image_worker_impl {
 fn publication_worker(
     connection: smithay_client_toolkit::reexports::client::Connection,
     commands: smithay_client_toolkit::reexports::calloop::channel::Channel<ClipboardCommand>,
+    pasted: PastedImage,
 ) {
-    image_worker_impl::run(connection, commands);
+    image_worker_impl::run(connection, commands, pasted);
 }
 
 impl ClipboardBackend for WaylandClipboard {
@@ -824,6 +922,10 @@ impl ClipboardBackend for WaylandClipboard {
         let (reply, result) = std::sync::mpsc::channel();
         self.send_publication(ClipboardCommand::SetImage(png, reply))
             && recv_bounded(&result, CLIPBOARD_READ_BUDGET).unwrap_or(false)
+    }
+
+    fn image(&self) -> Option<ClipboardImage> {
+        self.pasted.lock().ok()?.clone()
     }
 
     fn name(&self) -> &'static str {

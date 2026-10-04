@@ -136,7 +136,6 @@ Declared dependencies on Tilo system services. Each value parses as
 [sandbox.services]
 collab     = "optional@1"
 tilo-fs     = "optional@1"
-spellcheck = "optional@1"
 ```
 
 At launch, the launcher opens a connected Unix socket to every declared

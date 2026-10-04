@@ -594,6 +594,88 @@ pub fn delete_last_grapheme(text: &mut String) -> bool {
     !edit.is_noop() && edit.apply(text)
 }
 
+/// How long the word under the caret must stay the same before a field
+/// offers a spelling suggestion for it: a short pause at the end of a word,
+/// or the caret coming to rest in a word typed earlier.
+pub const SUGGESTION_SETTLE: Duration = Duration::from_millis(300);
+
+/// The word the caret is in or just after, as a byte range: letters plus
+/// in-word apostrophes, so `don't` is one word. `None` between words.
+pub fn word_at_caret(text: &str, caret: usize) -> Option<Range<usize>> {
+    let caret = caret.min(text.len());
+    let is_word_char =
+        |character: char| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}');
+    let after = text
+        .get(caret..)
+        .and_then(|tail| tail.chars().next())
+        .filter(|character| is_word_char(*character))
+        .map(|_| caret);
+    let before = text
+        .get(..caret)
+        .and_then(|head| head.char_indices().next_back())
+        .filter(|(_, character)| is_word_char(*character))
+        .map(|(byte, _)| byte);
+    let (start, end) = word_boundaries(text, after.or(before)?);
+    (start < end && start <= caret && caret <= end).then_some(start..end)
+}
+
+/// Debounces the word under the caret: it is *settled* once the same word
+/// (same text at the same place) has been under a collapsed caret for
+/// [`SUGGESTION_SETTLE`]. Typing into the word or moving to another one
+/// restarts the wait; moving the caret within the word does not.
+///
+/// Time comes in as an argument so a host drives it from its clock and tests
+/// from synthetic instants.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CaretWord {
+    word: Option<(Range<usize>, String)>,
+    since: Option<Instant>,
+}
+
+impl CaretWord {
+    /// Record what is under the caret at `now`. Returns whether the word
+    /// changed (and its wait restarted).
+    pub fn observe(&mut self, text: &str, selection: Selection, now: Instant) -> bool {
+        let word = selection
+            .is_collapsed()
+            .then(|| word_at_caret(text, selection.cursor))
+            .flatten()
+            .and_then(|range| Some((range.clone(), text.get(range)?.to_owned())));
+        if word == self.word {
+            return false;
+        }
+        self.since = word.is_some().then_some(now);
+        self.word = word;
+        true
+    }
+
+    /// Forget the current word, e.g. when the field loses focus.
+    pub fn clear(&mut self) {
+        self.word = None;
+        self.since = None;
+    }
+
+    /// The word under the caret and its range, whether settled or not.
+    pub fn current(&self) -> Option<(Range<usize>, &str)> {
+        self.word
+            .as_ref()
+            .map(|(range, word)| (range.clone(), word.as_str()))
+    }
+
+    /// The word under the caret once it has settled at `now`.
+    pub fn settled(&self, now: Instant) -> Option<(Range<usize>, &str)> {
+        let since = self.since?;
+        (now.saturating_duration_since(since) >= SUGGESTION_SETTLE)
+            .then(|| self.current())
+            .flatten()
+    }
+
+    /// When the current word settles; `None` without a word.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.since?.checked_add(SUGGESTION_SETTLE)
+    }
+}
+
 /// How long typing must pause before the burst closes into one undo entry.
 pub const TYPING_RUN_IDLE: Duration = Duration::from_secs(1);
 
@@ -1124,6 +1206,48 @@ mod tests {
         assert!(!bad.apply(&mut text));
         assert!(bad.splice_automerge(&mut doc, &obj, &text).is_none());
         assert_eq!(doc.text(&obj).unwrap(), "añbéc");
+    }
+
+    #[test]
+    fn the_caret_word_settles_and_restarts_on_change() {
+        let text = "don't wrold  x";
+        assert_eq!(word_at_caret(text, 0), Some(0..5), "apostrophes stay in");
+        assert_eq!(word_at_caret(text, 5), Some(0..5), "the word's end");
+        assert_eq!(word_at_caret(text, 8), Some(6..11));
+        assert_eq!(word_at_caret(text, 12), None, "between words");
+
+        let start = crate::time::now();
+        let mut word = CaretWord::default();
+        assert!(word.observe(text, Selection::collapsed(8), start));
+        assert_eq!(word.deadline(), Some(start + SUGGESTION_SETTLE));
+        assert!(word.settled(start).is_none());
+        let settled = start + SUGGESTION_SETTLE;
+        assert_eq!(word.settled(settled), Some((6..11, "wrold")));
+
+        // Moving inside the same word keeps it settled.
+        assert!(!word.observe(text, Selection::collapsed(11), settled));
+        assert!(word.settled(settled).is_some());
+
+        // Editing the word restarts the wait.
+        let edited = "don't wrolds  x";
+        assert!(word.observe(edited, Selection::collapsed(12), settled));
+        assert!(word.settled(settled).is_none());
+        assert!(word.settled(settled + SUGGESTION_SETTLE).is_some());
+
+        // A selection or a gap between words has no word.
+        assert!(word.observe(
+            edited,
+            Selection {
+                anchor: 6,
+                cursor: 8
+            },
+            settled
+        ));
+        assert_eq!(word.current(), None);
+        assert_eq!(word.deadline(), None);
+        word.observe(edited, Selection::collapsed(8), settled);
+        word.clear();
+        assert_eq!(word.current(), None);
     }
 
     #[test]

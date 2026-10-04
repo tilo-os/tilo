@@ -98,6 +98,23 @@ class SafetyTests(unittest.TestCase):
         self.assertIn('secure timestamps', result.stderr)
 
 class StageTests(unittest.TestCase):
+    def test_build_tools_unstripped_without_changing_app_release_profile(self):
+        import platform
+        from types import SimpleNamespace
+        from collection_stages import build_environment
+        with tempfile.TemporaryDirectory(prefix='build environment ') as temp:
+            work = Path(temp)
+            guard, cli = work / 'rustc-budget.py', work / 'tilo-app'
+            guard.touch()
+            cli.touch()
+            args = SimpleNamespace(compiler_guard=guard, tilo_app=cli, arch=platform.machine())
+            inherited = {'CARGO_PROFILE_RELEASE_STRIP': 'symbols',
+                         'CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP': 'debuginfo'}
+            with patch.dict('os.environ', inherited, clear=True), patch('collection_stages.shutil.which', return_value='/tools/cargo'):
+                env = build_environment(args, work)
+            self.assertEqual(env['CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP'], 'none')
+            self.assertEqual(env['CARGO_PROFILE_RELEASE_STRIP'], 'symbols')
+
     def test_sign_inside_out_and_no_deep_sign(self):
         from collection_native import sign_bundle
         with tempfile.TemporaryDirectory() as temp:
