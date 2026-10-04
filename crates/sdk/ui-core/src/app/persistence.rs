@@ -31,14 +31,6 @@ impl App {
         self
     }
 
-    #[cfg(feature = "native")]
-    pub(crate) fn with_legacy_persistence(
-        mut self,
-        policy: crate::launch::LegacyPersistencePolicy,
-    ) -> Self {
-        self.legacy_persistence = policy;
-        self
-    }
     #[must_use]
     pub fn with_records(
         mut self,
@@ -338,17 +330,6 @@ impl App {
     /// keystroke still finds it on disk.
     #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
-        if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            self.close_components();
-            if let Err(error) = flush_widget_owned_persistence(
-                self.root_widget.as_mut(),
-                &mut self.component_close_reports,
-            ) {
-                tracing::error!(%error, "widget-owned persistence failed during shutdown");
-                eprintln!("tilo: notebook save failed during shutdown: {error}");
-            }
-            return;
-        }
         if let Some(set) = self.persistence.records.as_mut() {
             set.flush(&mut self.state.doc);
             if let (Some(saver), Some(room)) = (

@@ -2490,31 +2490,6 @@ impl crate::component_lifecycle::ComponentLifecycle for TileHost {
         }
         reports
     }
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        if let Some(error) = &self.record_error {
-            return Some(Err(error.clone()));
-        }
-        if self.pending_binding.is_some() {
-            return Some(Err("Document binding has not completed".into()));
-        }
-        if let Some(binding) = &self.binding {
-            // This tile owns the admitted live record, not neighboring records
-            // that happen to share its store. Await its actual writer result.
-            let result = binding.store.try_flush_record(&binding.live);
-            return Some(result.and_then(|()| {
-                self.close_reports
-                    .iter()
-                    .find_map(|report| report.record_error.clone())
-                    .map_or(Ok(()), Err)
-            }));
-        }
-        match &mut self.content {
-            TileContent::App(widget) => {
-                crate::component_lifecycle::try_flush_owned_persistence(widget.as_mut())
-            }
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
-        }
-    }
 }
 
 impl crate::view::capability::ViewState for TileHost {
