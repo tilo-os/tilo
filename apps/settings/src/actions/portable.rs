@@ -12,7 +12,7 @@ use ui::doc::{read_bool, read_str_or_text};
 
 use crate::categories::Category;
 use crate::panes;
-use crate::prefs::{AccessibilityPrefs, AppearancePrefs, SystemPrefs};
+use crate::prefs::{AccessibilityPrefs, SystemPrefs};
 
 use super::{bool_flip_spec, bool_set_spec, choice_prompt_spec};
 
@@ -103,6 +103,14 @@ const FOCUS_TIME_OPTIONS: &[&str] = &[
 const FOCUS_DAYS_OPTIONS: &[&str] = &["Every day", "Weekdays", "Weekends"];
 const TEXT_SIZE_OPTIONS: &[&str] = &["Small", "Default", "Large", "Larger"];
 const UI_SCALE_OPTIONS: &[&str] = &["90%", "100%", "110%", "125%", "150%"];
+const APPEARANCE_MODE: &[&str] = &panes::appearance::MODE_LABELS;
+const APPEARANCE_DARK_THEMES: &[&str] = &panes::appearance::DARK_THEME_NAMES;
+const APPEARANCE_LIGHT_THEMES: &[&str] = &panes::appearance::LIGHT_THEME_NAMES;
+const APPEARANCE_DENSITY: &[&str] = &panes::appearance::DENSITY_LABELS;
+const APPEARANCE_COLOUR: &[&str] = &[
+    "Red", "Orange", "Amber", "Olive", "Green", "Teal", "Cyan", "Sky", "Blue", "Violet", "Magenta",
+    "Pink",
+];
 const APPEARANCE_SCHEDULE: &[&str] = &panes::appearance::SCHEDULE_LABELS;
 const APPEARANCE_TIMES: &[&str] = &panes::appearance::TIMES;
 const APPEARANCE_WALLPAPER_SCOPE: &[&str] = &panes::appearance::WALLPAPER_SCOPE_LABELS;
@@ -144,8 +152,22 @@ fn focus_end_default(_: &SystemPrefs) -> String {
 fn focus_days_default(_: &SystemPrefs) -> String {
     "Every day".into()
 }
-fn theme_default(d: &SystemPrefs) -> String {
-    d.appearance.theme.clone()
+fn mode_default(d: &SystemPrefs) -> String {
+    panes::appearance::mode_label(&d.appearance.mode)
+}
+fn dark_theme_default(d: &SystemPrefs) -> String {
+    d.appearance.theme_name(&d.appearance.dark_theme)
+}
+fn light_theme_default(d: &SystemPrefs) -> String {
+    d.appearance.theme_name(&d.appearance.light_theme)
+}
+fn density_default(d: &SystemPrefs) -> String {
+    panes::appearance::density_label(d.appearance.density)
+}
+fn colour_default(d: &SystemPrefs) -> String {
+    d.identity_colour()
+        .map_or("", |hue| hue.label())
+        .to_string()
 }
 fn text_size_default(d: &SystemPrefs) -> String {
     panes::appearance::text_size_label(d.appearance.text_scale)
@@ -252,6 +274,9 @@ fn focus_enabled_default(d: &SystemPrefs) -> bool {
 fn high_contrast_default(d: &SystemPrefs) -> bool {
     d.appearance.high_contrast
 }
+fn reduce_transparency_default(d: &SystemPrefs) -> bool {
+    d.appearance.reduce_transparency
+}
 fn reduce_motion_default(d: &SystemPrefs) -> bool {
     d.appearance.reduce_motion
 }
@@ -271,7 +296,7 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
         action_id: Some("dnd"),
         key: panes::notifications::DND_KEY,
         presentation: PortablePresentation::BoolFlip {
-            noun: "Do Not Disturb",
+            noun: "Do not disturb",
             default: dnd_default,
         },
         available: None,
@@ -375,13 +400,71 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
     // --- Appearance ----------------------------------------------------------
     PortablePreference {
         section: Category::Appearance,
-        action_id: Some("theme"),
-        key: panes::appearance::THEME_KEY,
+        action_id: Some("mode"),
+        key: panes::appearance::MODE_KEY,
         presentation: PortablePresentation::Choice {
-            label: "Set theme",
-            placeholder: "Dark, Light, Dracula, Nord, Gruvbox, Solarized",
-            options: AppearancePrefs::THEMES,
-            default: theme_default,
+            label: "Set appearance",
+            placeholder: "Light, Dark, Automatic",
+            options: APPEARANCE_MODE,
+            default: mode_default,
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Appearance,
+        action_id: Some("dark_theme"),
+        key: panes::appearance::DARK_THEME_KEY,
+        presentation: PortablePresentation::Choice {
+            label: "Set dark theme",
+            placeholder: "Dark, Dark cool, Dark graphite, Dark soft",
+            options: APPEARANCE_DARK_THEMES,
+            default: dark_theme_default,
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Appearance,
+        action_id: Some("light_theme"),
+        key: panes::appearance::LIGHT_THEME_KEY,
+        presentation: PortablePresentation::Choice {
+            label: "Set light theme",
+            placeholder: "Light",
+            options: APPEARANCE_LIGHT_THEMES,
+            default: light_theme_default,
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Appearance,
+        action_id: Some("density"),
+        key: panes::appearance::DENSITY_KEY,
+        presentation: PortablePresentation::Choice {
+            label: "Set density",
+            placeholder: "Compact, Regular, Roomy",
+            options: APPEARANCE_DENSITY,
+            default: density_default,
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Appearance,
+        action_id: Some("colour"),
+        key: panes::appearance::COLOUR_KEY,
+        presentation: PortablePresentation::Choice {
+            label: "Set your colour",
+            placeholder: "One of the twelve presence colours",
+            options: APPEARANCE_COLOUR,
+            default: colour_default,
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Appearance,
+        action_id: Some("reduce_transparency"),
+        key: panes::appearance::REDUCE_TRANSPARENCY_KEY,
+        presentation: PortablePresentation::BoolFlip {
+            noun: "reduced transparency",
+            default: reduce_transparency_default,
         },
         available: None,
     },
