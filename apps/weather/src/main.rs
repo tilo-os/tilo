@@ -1,13 +1,10 @@
 //! Weather — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit (headless screenshot; identical passes to the live app).
-//!
-//! Optional flags for `--shots` (used to capture interaction states that the
-//! single-frame headless renderer can't reach through live input):
-//!   * `--scenario NAME` — seed a staged state (`detail`, `drag`, `scrolled`); see [`weather::app_root_for_shot`].
-//!   * `--viewport WxH` — render at a custom size (e.g. `--viewport 560x720` for the narrow full-screen city list, or pair with `--scenario detail` for the pushed forecast).
+//!   * default — the framework app ([`weather::WeatherShell`]), including its
+//!     `--shots --scenario NAME` captures.
+//!   * `--probe` — exercise the live networking stack and print what came
+//!     back.
 
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -38,71 +35,20 @@
     )
 )]
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::widget::Widget;
-
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 /// # Errors
 ///
 /// Returns an error if `--probe` can't complete its live fetch within its
-/// deadline, `--shots` fails to lay out or render the offscreen frame, or
-/// `--viewport` parsing bubbles up an I/O error while writing the PNG.
+/// deadline.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--probe") {
+    if std::env::args().any(|a| a == "--probe") {
         let _ = tracing_subscriber::fmt::try_init();
         return run_probe();
     }
-    if standalone_capture(&args) {
-        ui::launch::run(&shot_launch_spec())?;
-        return Ok(());
-    }
     ui::framework::run::<weather::WeatherShell>();
     Ok(())
-}
-
-fn standalone_capture(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        arg == "--shots"
-            || arg.starts_with("--shots=")
-            || arg == "--responsive-matrix"
-            || arg.starts_with("--responsive-matrix=")
-    })
-}
-
-fn shot_launch_spec() -> LaunchSpec {
-    LaunchSpec::new("so.tilo.weather", weather::app_root)
-        .history(&weather::framework_history::HISTORY)
-        .shot_root(shot_root)
-        .configure_app(|app| weather::actions::register(app.action_registry_mut()))
-        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
-        .scenarios(&[
-            "onboarding",
-            "detail",
-            "drag",
-            "scrolled",
-            "detail_scrolled",
-            "collapsed",
-            "search",
-            "search_loading",
-            "search_empty",
-            "offline",
-            "error",
-        ])
-}
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "signature is fixed by ui::launch::ShotFactory"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(weather::app_root_for_shot(
-        args.scenario.as_deref().unwrap_or_default(),
-    ))
 }
 
 /// Exercise the live networking stack the app uses (`net` + `api`) against the

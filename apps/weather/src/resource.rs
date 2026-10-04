@@ -1,15 +1,13 @@
-//! Weather as a [`tilo_resource::Resource`]: one action vocabulary, one publish
-//! path for saved locations.
+//! Weather as a [`tilo_resource::Resource`]: the saved places, their order
+//! and the default place, with one action vocabulary and one publication.
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
-use ui::widget::Element;
+use std::rc::Rc;
 
-use crate::actions::{
-    WEATHER_ACTION_TYPE, WeatherAction, document_children, register, root_local_operations,
-};
+use ui::prelude::*;
+use ui::tilo_actions::{ActionParam, ParamType};
+use ui::tilo_resource::{Doc, ModelError, SearchEntry};
+
+use crate::actions::{WEATHER_ACTION_TYPE, WeatherAction, WeatherEffect, document_children};
 use crate::app::WeatherApp;
 use crate::doc::WeatherDoc;
 use crate::model::{SavedLocation, WeatherModel};
@@ -24,10 +22,6 @@ impl Resource for Weather {
 
     type State = WeatherModel;
     type Action = WeatherAction;
-
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
-    }
 
     fn read(doc: &Doc) -> Result<WeatherModel, ModelError> {
         Ok(WeatherDoc::read_model(doc))
@@ -89,13 +83,6 @@ impl Resource for Weather {
         document_children(state)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Network refresh is an Effect with no document delta. Standalone hosts
-        // overlay offline / empty-library availability; the live widget refuses
-        // when fetches are disabled.
-        root_local_operations()
-    }
-
     fn search(state: &WeatherModel) -> Vec<SearchEntry> {
         state
             .locations
@@ -103,12 +90,20 @@ impl Resource for Weather {
             .map(|location| SearchEntry {
                 anchor: Some(crate::actions::location_resource_id(location.id)),
                 title: location.name.clone(),
-                text: location.region.clone(),
+                text: [location.region.as_str(), location.country.as_str()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 action: None,
             })
             .collect()
     }
 }
+
+/// What a capture shows in place of the network: the bundled forecasts of
+/// the sample places, and the units they are shown in.
+pub struct SampleForecasts(pub Rc<WeatherModel>);
 
 /// Framework app: the weather widget is the surface over [`Weather`].
 pub struct WeatherShell;
@@ -118,78 +113,87 @@ impl ResourceApp for WeatherShell {
     const ID: &'static str = "so.tilo.weather";
     const TITLE: &'static str = "Weather";
     const ICON: Option<&'static str> = Some("weather");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
 
     fn view(cx: &mut ViewCx<Weather>) -> Element {
-        cx.surface(WeatherApp::live())
+        cx.surface(WeatherApp::new())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "onboarding",
+            "detail",
+            "drag",
+            "scrolled",
+            "detail_scrolled",
+            "collapsed",
+            "search",
+            "search_loading",
+            "search_empty",
+            "offline",
+            "error",
+        ]
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("detail" | "detail_scrolled") => (560, 720),
+            _ => (1280, 800),
+        }
+    }
+
+    fn fixture(fixture: &mut Fixture<Weather>) {
+        fixture.provide(SampleForecasts(Rc::new(crate::sample::sample_model())));
+    }
+
+    /// Every scenario but the first-run onboarding shows the sample places,
+    /// the first of them the default.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Weather>> {
+        if name == Some("onboarding") {
+            return Vec::new();
+        }
+        let sample = crate::sample::sample_model();
+        sample
+            .locations
+            .iter()
+            .map(|location| WeatherAction::AddLocation {
+                location: location.clone(),
+            })
+            .chain(
+                sample
+                    .selected_location()
+                    .map(|location| crate::actions::select_location_action(location.id)),
+            )
+            .filter_map(|action| Invoke::apply(&action).ok())
+            .collect()
     }
 }
 
-impl ResourceSurface<Weather> for WeatherApp {
-    fn present(&mut self, state: &std::rc::Rc<WeatherModel>) {
+impl ResourceSurface<Weather, WeatherEffect> for WeatherApp {
+    fn present(&mut self, state: &Rc<WeatherModel>) {
         self.adopt_resource_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Weather>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Weather>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Weather>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+        self.attach_framework(&cx);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or_default());
     }
 
-    pub(crate) fn dispatch_with_context(
+    fn effect(
         &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &WeatherAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
+        effect: WeatherEffect,
+        cx: &mut EffectCx<Weather, Self>,
+    ) -> Result<Effected, String> {
+        self.answer_effect(effect, cx)
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.location_rows()
     }
 }
