@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::{
     FILESYSTEMS, InstallMethod, InstallerApp, RECOVERY_KEY_PREFIX, STEP_LABELS, Step,
-    friendly_install_status, secret_copy, step_index,
+    friendly_install_status, local_text, secret_copy, step_index,
 };
 use crate::operation::PROVIDER;
 
@@ -183,15 +183,15 @@ impl InstallerApp {
                 "preflight": preflight,
             },
             "account": {
-                "username": self.username.trim(),
-                "full_name": self.full_name.trim(),
+                "username": local_text(&self.username).trim(),
+                "full_name": local_text(&self.full_name).trim(),
                 "passphrase_set": !secret_copy(&self.password).is_empty(),
                 "secret_policy": if self.tpm_pin_policy() { "tpm-pin" } else { "passphrase" },
             },
             "options": {
                 "filesystem": FILESYSTEMS.get(self.selected_fs).copied().unwrap_or("btrfs"),
                 "security_key": self.fido2,
-                "hostname": self.hostname.trim(),
+                "hostname": local_text(&self.hostname).trim(),
                 "locale": self.locale.trim(),
                 "timezone": self.timezone.trim(),
                 "encryption": self.encryption_summary(),
