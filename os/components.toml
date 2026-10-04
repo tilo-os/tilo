@@ -343,6 +343,7 @@ files = [
   { from = "/usr/lib/tilo-runtime/", to = "/usr/lib/tilo-runtime/", tree = true },
   { from = "runtime-bundle-publisher.hex", to = "/usr/share/tilo/runtime-bundle-publisher.hex", mode = "0644" },
   { from = "browser-runtime-publisher.hex", to = "/usr/share/tilo/browser-runtime-publisher.hex", mode = "0644" },
+  { from = "registry-runtime-publisher.hex", to = "/usr/share/tilo/registry-runtime-publisher.hex", mode = "0644" },
   { from = "/usr/share/tilo-apps/", to = "/usr/share/tilo-apps/", tree = true },
   { from = "app-publisher.hex", to = "/usr/share/tilo/app-publisher.hex", mode = "0644" },
 ]
