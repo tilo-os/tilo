@@ -35,6 +35,8 @@ use crate::portal::desktop_services::{
 use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
 use crate::shell::i18n::{t, t_args};
 
+pub mod accessibility;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
     pub handle: String,

@@ -435,6 +435,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } Anhänge werden über das Dokumentportal verfügbar sein.
 }
 portal-remember-device = Auf diesem Gerät merken
+portal-a11y-name = Name
+portal-a11y-answer = Antwort
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
 portal-network-heading = Netzwerk
@@ -515,6 +517,7 @@ host-session-action-blocked = Sitzungsaktion blockiert
 host-action-started = „{ $title }“ gestartet
 host-action-admitted = Aktionsauftrag { $job } wurde angenommen
 host-action-cannot-run = „{ $title }“ kann nicht ausgeführt werden
+launchpad-action-unanswered = Die App hat nicht geantwortet
 host-search-placeholder = Suchen …
 host-search-in = In { $scope } suchen …
 host-search-in-resource-fallback = Ressource
@@ -1698,6 +1701,7 @@ onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automa
 onboarding-nearby-invalid-identity = Dein anderes Gerät hat eine ungültige Identität geliefert. Wähle „Erneut versuchen“.
 onboarding-nearby-failed = Die Kopplung wurde nicht abgeschlossen: Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
 onboarding-nearby-failed-detail = Die Kopplung wurde nicht abgeschlossen: { $detail }. Wähle „Erneut versuchen“.
+onboarding-nearby-timed-out = Die Kopplung wurde nicht abgeschlossen: Kein vertrauenswürdiges Gerät hat sie rechtzeitig freigegeben. Wähle „Erneut versuchen“.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
