@@ -360,6 +360,9 @@ pub struct TabBar {
     /// Cached because `apply_layout`, where the reveal is interpolated, has no
     /// `Theme` of its own.
     reduce_motion: bool,
+    /// The host's reduced-motion setting ([`Widget::set_motion_reduced`]),
+    /// which holds whatever the theme says.
+    host_reduced_motion: bool,
     /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
     /// the same reason: the pointer target of a maximize/search chip is
     /// derived from its glyph rect at hit-test time (see
@@ -448,6 +451,7 @@ impl TabBar {
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
+            host_reduced_motion: false,
             drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
@@ -488,6 +492,7 @@ impl TabBar {
 
     /// Where tab `id`'s mark is painted, for hit-testing and tests.
     pub fn mark_rect(&self, id: u64) -> Option<Rect> {
+        self.marks.get(&id)?;
         let i = self.tabs.iter().position(|t| t.id == id)?;
         self.mark_rects.get(i).copied().filter(|r| r.area() > 0.0)
     }
@@ -2449,7 +2454,7 @@ impl Widget for TabBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.reduce_motion = theme.reduce_motion;
+        self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
@@ -2562,12 +2567,10 @@ impl Widget for TabBar {
             if let Some(slot) = self.tab_rects.get_mut(i) {
                 *slot = r;
             }
+            // Every unpinned tab keeps the slot, so a mark set between
+            // layouts lands (and hit-tests) where it will be painted.
             if let Some(slot) = self.mark_rects.get_mut(i)
                 && !is_pinned
-                && self
-                    .tabs
-                    .get(i)
-                    .is_some_and(|t| self.marks.contains_key(&t.id))
             {
                 *slot = leading_glyph_rect(r);
             }
@@ -2876,6 +2879,15 @@ impl Widget for TabBar {
     fn accepts_drop(&self, payload: &DragPayload) -> bool {
         matches!(payload, DragPayload::Tab { .. })
     }
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        // The busy mark stands still and a drag lifts at once.
+        self.host_reduced_motion = reduced;
+        self.reduce_motion = reduced;
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep pumping redraws while any curve is in flight: drop-zone expand,
         // layout spring, insert fade, close fade, drop-line fade-in, or reveal.

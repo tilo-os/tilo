@@ -938,7 +938,7 @@ fn a_hosted_dialog_focuses_its_fields_by_pointer_and_its_footer_by_tab() {
 }
 
 #[test]
-fn a_tall_body_scrolls_inside_the_sheet_below_the_header_row() {
+fn a_tall_body_scrolls_inside_a_sheet_that_takes_the_window() {
     let theme = Theme::dark();
     let mut d = ModalDialog::new(
         "Shortcuts",
@@ -952,10 +952,12 @@ fn a_tall_body_scrolls_inside_the_sheet_below_the_header_row() {
     present(&mut d, WINDOW, &theme);
     let layout = d.layout.clone().expect("laid out");
     assert!(layout.body_overflows);
-    let header = f64::from(theme.tokens.metrics.header_height);
+    // Too tall to stand below the header row, the sheet takes the whole
+    // window inside the gutter, footer and all.
+    let pad = f64::from(theme.tokens.spacing.s6);
     assert!(
-        layout.card.y0 >= WINDOW.y0 + header - 0.5,
-        "a tall sheet stands below the header row: {:?}",
+        layout.card.y0 >= WINDOW.y0 + pad - 0.5 && layout.card.y1 <= WINDOW.y1 - pad + 0.5,
+        "a tall sheet stays inside the window's gutter: {:?}",
         layout.card
     );
     dispatch(&mut d, &cursor_at(layout.body.center()));
@@ -1001,6 +1003,10 @@ fn a_three_way_question_stands_in_the_platform_order() {
     );
     assert!(d.secondary_rect().x0 < d.primary_rect().x0);
     assert!(d.tertiary_rect().x1 < d.secondary_rect().x0);
+    // Focus opens on Cancel and reaches Don't save last, wherever it stands.
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    let order: Vec<Slot> = d.keys.iter().map(|k| k.slot).collect();
+    assert_eq!(order, [Slot::Secondary, Slot::Primary, Slot::Tertiary]);
     d.set_platform_conventions(PlatformConventions::new(Platform::Windows));
     assert!(d.primary_rect().x0 < d.tertiary_rect().x0);
     assert!(d.tertiary_rect().x0 < d.secondary_rect().x0);
