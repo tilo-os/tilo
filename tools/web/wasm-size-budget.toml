@@ -15,6 +15,6 @@ headroom = 0.01
 bytes = 83427328
 
 [bundles.desktop.rebaseline]
-run = 61576
-measured = 82555983
-reason = "calculator on the framework app model: its definition, scenarios and declared row actions (#2413)"
+run = 61359
+measured = 82551833
+reason = "feature growth: snippets runs on the framework, with its body as a text child (#2417)"
