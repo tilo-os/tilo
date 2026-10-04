@@ -487,6 +487,18 @@ files = [
 ]
 
 [[component]]
+name = "sibling-unlock"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-nearby-pairing.sh"
+packages = ["tilo-sibling-unlock"]
+bins = ["tilo-sibling-unlock"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-sibling-unlock", to = "/usr/bin/tilo-sibling-unlock", mode = "0755" },
+]
+
+[[component]]
 name = "windows"
 kind = "userspace"
 scope = "vm"
@@ -540,9 +552,10 @@ files = [
 # (`dev_swap = "reboot"`): tilo-vm builds it with `dev_build`, installs it
 # VM-wide as the next boot entry and reboots. The others stay scenario-only, and
 # a swap of them is redirected to the scenario that cold-boots them.
-# `installer` and `rollback` above are boot components too: the installer runs
-# from installer media, and tilo-rollback is copied into the initramfs by
-# os/usr/lib/dracut/modules.d/91tilo-rollback.
+# `installer`, `rollback` and `sibling-unlock` above are boot components too:
+# the installer runs from installer media, tilo-rollback is copied into the
+# initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback, and
+# tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
 
 [[component]]
 name = "kernel"

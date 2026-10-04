@@ -56,6 +56,7 @@ pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
+pub mod key_latency;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
