@@ -632,9 +632,11 @@ pub struct SlidesApp {
     demo_open_inspector: bool,
 }
 
-/// One row of a context menu: what it says and the action it performs.
+/// One row of a context menu: its icon, what it says and the action it
+/// performs.
 struct MenuRow {
     label: String,
+    icon: Option<Icon>,
     hit: Hit,
     destructive: bool,
 }
@@ -643,9 +645,15 @@ impl MenuRow {
     fn new(label: String, hit: Hit) -> Self {
         Self {
             label,
+            icon: None,
             hit,
             destructive: false,
         }
+    }
+
+    fn icon(mut self, icon: Option<Icon>) -> Self {
+        self.icon = icon;
+        self
     }
 
     fn destructive(mut self) -> Self {
@@ -2656,7 +2664,11 @@ impl SlidesApp {
         if chrome.rail.width() <= 1.0 {
             return;
         }
+        // Over the drop-to-delete zone the zone shows the drop; the lifted
+        // slide would only peek out from behind it.
+        let over_zone = self.over_delete_zone();
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(SLIDE_H / SLIDE_W));
+        sb.set_ghost_hidden(over_zone);
         let deck = &self.deck;
         let images = &self.images;
         let radius = f64::from(theme.tokens.radii.control);
@@ -3607,7 +3619,7 @@ impl Widget for SlidesApp {
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         self.ctx_menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
     }
@@ -4942,7 +4954,10 @@ impl SlidesApp {
                 } else {
                     MenuItem::action(row.label.clone(), || {})
                 };
-                menu.push(item);
+                menu.push(match row.icon {
+                    Some(icon) => item.with_icon(icon),
+                    None => item,
+                });
                 hits.push(Some(row.hit.clone()));
             } else {
                 menu.push(MenuItem::separator());
@@ -4972,11 +4987,24 @@ impl SlidesApp {
         self.open_menu_at(
             p,
             &[
-                Some(MenuRow::new(tr("slides-a11y-bring-front"), Hit::BringFront)),
-                Some(MenuRow::new(tr("slides-a11y-send-back"), Hit::SendBack)),
+                Some(
+                    MenuRow::new(tr("slides-a11y-bring-front"), Hit::BringFront)
+                        .icon(Some(Icon::BringToFront)),
+                ),
+                Some(
+                    MenuRow::new(tr("slides-a11y-send-back"), Hit::SendBack)
+                        .icon(Some(Icon::SendToBack)),
+                ),
                 None,
-                Some(MenuRow::new(tr("slides-duplicate"), Hit::DuplicateElement)),
-                Some(MenuRow::new(tr("slides-delete"), Hit::DeleteElement).destructive()),
+                Some(
+                    MenuRow::new(tr("slides-duplicate"), Hit::DuplicateElement)
+                        .icon(Some(Icon::Copy)),
+                ),
+                Some(
+                    MenuRow::new(tr("slides-delete"), Hit::DeleteElement)
+                        .icon(Some(Icon::Trash2))
+                        .destructive(),
+                ),
             ],
         );
     }
@@ -4997,8 +5025,8 @@ impl SlidesApp {
             .overflow
             .iter()
             .filter_map(|b| match &b.kind {
-                ButtonKind::Tool { label, .. } => {
-                    Some(Some(MenuRow::new(label.clone(), b.hit.clone())))
+                ButtonKind::Tool { label, icon } => {
+                    Some(Some(MenuRow::new(label.clone(), b.hit.clone()).icon(*icon)))
                 }
                 _ => None,
             })
@@ -6838,7 +6866,10 @@ mod tests {
                 .label_style(&theme)
                 .strong();
             for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
-                if let ButtonKind::Segment { label, .. } = &b.kind {
+                if let ButtonKind::Segment {
+                    label, icon: None, ..
+                } = &b.kind
+                {
                     let (w, _) = tr.measure_style(label, None, &style);
                     assert!(
                         b.rect.width() >= f64::from(w) + 2.0 * m.s3 - 0.5,
