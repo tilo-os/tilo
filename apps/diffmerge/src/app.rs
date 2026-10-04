@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -34,7 +33,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup, Widget};
 
-use crate::actions::{DiffmergeAction, DiffmergeEffect, DiffmergeOperation};
+use crate::actions::{DiffmergeAction, DiffmergeEffect};
 use crate::diff_view::DiffView;
 use crate::doc::{Comparison, MergeInputs, MergeState};
 use crate::merge_view::MergeView;
@@ -287,6 +286,14 @@ impl DiffMergeApp {
         cx: &mut EffectCx<Diffmerge, Self>,
     ) -> EffectAnswer {
         match effect {
+            DiffmergeEffect::ShowDiff
+            | DiffmergeEffect::ShowMerge
+            | DiffmergeEffect::PreviousChange
+            | DiffmergeEffect::NextChange
+            | DiffmergeEffect::Show { .. } => {
+                self.answer_view(effect)?;
+                Ok(Effected::done())
+            }
             DiffmergeEffect::LoadSample => {
                 let dispatcher = cx.dispatcher();
                 dispatcher.group(|| {
@@ -1011,32 +1018,6 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::DIFFMERGE_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        self.answer_view_operation(request.kind, request.type_id, request.payload)
-            .map(|answered| {
-                answered.then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        ui::tilo_actions::ActionOutput::default(),
-                    )
-                })
-            })
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
@@ -1431,24 +1412,14 @@ impl Widget for DiffMergeApp {
 
 impl DiffMergeApp {
     /// Answer a view operation: move around what is open.
-    fn answer_view_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.act(match operation {
-            DiffmergeOperation::ShowDiff => Action::ModeDiff,
-            DiffmergeOperation::ShowMerge => Action::ModeMerge,
-            DiffmergeOperation::PreviousChange => Action::PrevChange,
-            DiffmergeOperation::NextChange => Action::NextChange,
-            DiffmergeOperation::ShowDiffBlock { block, fingerprint } => {
+    /// Move around what is open, as a view effect asks.
+    pub(crate) fn answer_view(&mut self, effect: DiffmergeEffect) -> Result<(), String> {
+        self.act(match effect {
+            DiffmergeEffect::ShowDiff => Action::ModeDiff,
+            DiffmergeEffect::ShowMerge => Action::ModeMerge,
+            DiffmergeEffect::PreviousChange => Action::PrevChange,
+            DiffmergeEffect::NextChange => Action::NextChange,
+            DiffmergeEffect::Show { block, fingerprint } => {
                 let Ok(block) = usize::try_from(block) else {
                     return Err("this change target is no longer available".into());
                 };
@@ -1459,10 +1430,13 @@ impl DiffMergeApp {
                     );
                 }
                 self.dirty = true;
-                return Ok(true);
+                return Ok(());
+            }
+            DiffmergeEffect::OpenFiles { .. } | DiffmergeEffect::LoadSample => {
+                return Err("not a view of what is open".into());
             }
         });
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -2304,25 +2278,12 @@ mod tests {
             "after.txt",
             "same\nreplacement value\n",
         );
-        let mut state = ui::State::new();
-        let payload = serde_json::to_vec(&DiffmergeOperation::ShowDiffBlock {
-            block: 0,
-            fingerprint: stale_fingerprint,
-        })
-        .expect("operation serializes");
-
-        let error = Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                crate::actions::DIFFMERGE_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut state.doc,
-            &state.root,
-        )
-        .expect_err("stale local operation must explain why its target is unsafe");
+        let error = app
+            .answer_view(DiffmergeEffect::Show {
+                block: 0,
+                fingerprint: stale_fingerprint,
+            })
+            .expect_err("stale local operation must explain why its target is unsafe");
         assert!(error.contains("comparison changed"));
     }
 
