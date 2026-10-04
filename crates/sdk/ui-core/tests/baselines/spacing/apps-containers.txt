@@ -1,7 +1,0 @@
-# The spacing ratchet for apps-containers: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/containers/src/app.rs pixel_const 7
-apps/containers/src/draw.rs pixel_const 2
-apps/containers/src/panels.rs pixel_const 3
-apps/containers/src/presentation.rs pixel_const 1
