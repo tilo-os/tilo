@@ -1260,11 +1260,10 @@ impl SetupApp {
             let sentence = if self.internal_install.gate() {
                 self.internal_readiness_text()
             } else {
-                experience_unavailable_reason(self.capabilities.platform, Experience::FullOs)
+                "Not available on this computer yet.".to_string()
             };
             #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
-            let sentence =
-                experience_unavailable_reason(self.capabilities.platform, Experience::FullOs);
+            let sentence = "Not available on this computer yet.".to_string();
             body = body.push(Box::new(
                 Section::new(vec![Box::new(
                     Text::new(&sentence)
@@ -1363,15 +1362,10 @@ impl SetupApp {
                     .push(SetupCommand::SetFolderMode(index, *mode));
             }
         });
-        // The folder and how it comes over share one line while it fits.
+        // How the folder comes over sits under it, on the page's edge with
+        // the other controls, so a long path is never cut short.
         let mut controls = Row::new()
             .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_child(Box::new(row)),
-            ))
             .push(Box::new(choice));
         if folder.mode_overridden {
             controls = controls.push(Box::new(
@@ -1384,7 +1378,7 @@ impl SetupApp {
                 .control_size(ControlSize::Small),
             ));
         }
-        let mut block = page::related().push(Box::new(controls));
+        let mut block = page::related().push(Box::new(row)).push(Box::new(controls));
         if let Some(warning) = scan_warning(&folder.scan) {
             block = block.push(Box::new(
                 Text::new(&warning)
@@ -3592,7 +3586,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.internal.readiness")
-                        .name_contains("not available"),
+                        .name_contains("Not available"),
                 )
                 .unwrap();
             harness

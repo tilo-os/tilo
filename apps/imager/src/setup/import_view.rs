@@ -18,9 +18,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, ControlSize, ListRow, ProgressBar, Property,
-    PropertyList, Row, Section, SectionHeader, Spacer, Text, ToggleGroup, Widget,
-    toggle_group::Segment,
+    Button, ButtonRole, Column, ControlSize, ListRow, ProgressBar, Property, PropertyList, Row,
+    Section, SectionHeader, Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -2404,36 +2403,28 @@ impl ImportApp {
                 });
             let sink = Rc::clone(&self.commands);
             let modes = [ChoiceMode::Copy, ChoiceMode::Later];
-            let choice = Row::new()
-                .with_align_items(taffy::AlignItems::Center)
-                .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(
-                            ListRow::new(format!("import.continued.{index}.paths"), source)
-                                .icon(Icon::Folder)
-                                .secondary(secondary),
-                        )),
-                ))
-                .push(Box::new(
-                    ToggleGroup::new(
-                        vec![Segment::new("Copy"), Segment::new("Later")],
-                        usize::from(f.mode != ChoiceMode::Copy),
-                    )
-                    .with_id(format!("import.continued.{index}.mode"))
-                    .control_size(ControlSize::Small)
-                    .on_change(move |chosen| {
-                        if idle && let Some(mode) = modes.get(chosen) {
-                            sink.borrow_mut()
-                                .push(ImportCommand::ContinuedMode(index, *mode));
-                        }
-                    }),
-                ));
-            let mut block = page::related().push(Box::new(choice));
+            // How the folder comes over and where it goes sit under it, on
+            // the page's edge, so a long path is never cut short.
+            let mut controls =
+                Row::new()
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(Box::new(
+                        ToggleGroup::new(
+                            vec![Segment::new("Copy"), Segment::new("Later")],
+                            usize::from(f.mode != ChoiceMode::Copy),
+                        )
+                        .with_id(format!("import.continued.{index}.mode"))
+                        .control_size(ControlSize::Small)
+                        .on_change(move |chosen| {
+                            if idle && let Some(mode) = modes.get(chosen) {
+                                sink.borrow_mut()
+                                    .push(ImportCommand::ContinuedMode(index, *mode));
+                            }
+                        }),
+                    ));
             if can_review && f.mode == ChoiceMode::Copy {
                 let enabled = self.identity_ready && idle;
-                let controls = Row::new()
+                controls = controls
                     .push(Box::new(
                         self.button(
                             &format!("import.continued.{index}.review"),
@@ -2454,9 +2445,16 @@ impl ImportApp {
                         .control_size(ControlSize::Small)
                         .with_enabled(enabled),
                     ));
-                block = block.push(Box::new(controls));
             }
-            items.push(Box::new(block));
+            items.push(Box::new(
+                page::related()
+                    .push(Box::new(
+                        ListRow::new(format!("import.continued.{index}.paths"), source)
+                            .icon(Icon::Folder)
+                            .secondary(secondary),
+                    ))
+                    .push(Box::new(controls)),
+            ));
         }
         Section::new(items).with_header(SectionHeader::heading("From your Desktop setup"))
     }
