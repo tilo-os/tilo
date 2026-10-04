@@ -61,7 +61,11 @@ impl Resource for Feeds {
         })
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
+    /// Adding a subscription or a folder from the palette puts it after the
+    /// last one, as the in-app dialogs do.
+    fn bound_declarations(state: &FeedsState) -> Vec<ActionDecl<Self>> {
+        let feed_order = state.store.next_feed_order(None);
+        let folder_order = state.store.next_folder_order();
         vec![
             ActionDecl::new(
                 "add-subscription",
@@ -71,9 +75,14 @@ impl Resource for Feeds {
                     ParamType::Text,
                     "Feed URL",
                 )],
-                |args, _| {
+                move |args, _| {
                     let url = args.text(PROMPTED_PARAM).unwrap_or_default();
-                    Ok(add_subscription_action(Uuid::new_v4(), url, None, 0))
+                    Ok(add_subscription_action(
+                        Uuid::new_v4(),
+                        url,
+                        None,
+                        feed_order,
+                    ))
                 },
             )
             .describe("Subscribe to a feed URL."),
@@ -85,9 +94,9 @@ impl Resource for Feeds {
                     ParamType::Text,
                     "Name",
                 )],
-                |args, _| {
+                move |args, _| {
                     let name = args.text(PROMPTED_PARAM).unwrap_or_default();
-                    Ok(add_folder_action(Uuid::new_v4(), name, 0))
+                    Ok(add_folder_action(Uuid::new_v4(), name, folder_order))
                 },
             )
             .describe("Create a subscription folder."),
@@ -426,6 +435,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.state().store.feeds.len(), before + 1);
+        let orders = |app: &TestApp<FeedsShell>| {
+            let mut orders: Vec<u32> = app
+                .state()
+                .store
+                .feeds
+                .iter()
+                .filter(|feed| feed.folder.is_none())
+                .map(|feed| feed.order)
+                .collect();
+            orders.sort_unstable();
+            orders
+        };
+        let before = orders(&app);
+        app.call(
+            "add-subscription",
+            serde_json::json!({ PROMPTED_PARAM: "https://example.test/later.xml" }),
+        )
+        .unwrap();
+        let added = app
+            .state()
+            .store
+            .feeds
+            .iter()
+            .find(|feed| feed.url == "https://example.test/later.xml")
+            .map(|feed| feed.order);
+        assert_eq!(
+            added,
+            before.last().map(|last| last + 1),
+            "a palette subscription goes after the last one: {before:?}"
+        );
+        let folders = app.state().store.folders.len();
+        app.call("new-folder", serde_json::json!({ PROMPTED_PARAM: "Later" }))
+            .unwrap();
+        let state = app.state();
+        let last = state.store.folders.iter().map(|folder| folder.order).max();
+        let made = state
+            .store
+            .folders
+            .iter()
+            .find(|folder| folder.name == "Later")
+            .map(|folder| folder.order);
+        assert_eq!(state.store.folders.len(), folders + 1);
+        assert_eq!(made, last, "a palette folder goes after the last one");
+        assert_eq!(
+            state
+                .store
+                .folders
+                .iter()
+                .filter(|folder| Some(folder.order) == last)
+                .count(),
+            1
+        );
 
         // A reading preference written by another window shows here.
         app.invoke(apply(&set_read_settings_action(ReadSettings {
