@@ -5923,7 +5923,6 @@ fn install_window_hosting(
         tree_handle.write().window_hosting = Some(crate::shell::state::WindowHosting {
             device: device.as_str().to_owned(),
             device_label,
-            is_legacy: Arc::new(|app: &str| !crate::shell::launcher::is_installed_package(app)),
         });
     }
     let records = crate::shell::document_import::NativeHostedRooms(Arc::clone(net));
