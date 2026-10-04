@@ -8,25 +8,31 @@ files-time-unknown = unknown time
 files-shortcuts-title = Keyboard shortcuts
 files-shortcuts-summary = Files controls that work with the current desktop keyboard convention
 files-shortcuts-primary = Primary modifier: Ctrl on most desktops, Command on macOS
-files-shortcuts-navigate = Move selection: ↑ / ↓ · select a range: Shift + ↑ / ↓
+files-shortcuts-navigate = Move selection: ↑ and ↓
+files-shortcuts-range = Select a range: Shift + ↑ and ↓
 files-shortcuts-grid = Grid navigation: ← / → move across; ↑ / ↓ move by visual row
-files-shortcuts-open = Open selected: Enter · rename: F2 · move to Trash: Delete
-files-shortcuts-location = Edit location: Primary + L · refresh: F5
+files-shortcuts-open = Open selected: Enter
+files-shortcuts-rename = Rename: F2
+files-shortcuts-trash = Move to Trash: Delete
+files-shortcuts-location = Edit location: Primary + L
+files-shortcuts-refresh = Refresh: F5
 files-shortcuts-new-folder = New folder: Primary + Shift + N
 files-shortcuts-edit = Copy, cut, paste, undo Trash, select all: Primary + C / X / V / Z / A
 files-shortcuts-hidden = Show or hide hidden files: Primary + H
-files-shortcuts-size = Change item size: Primary + + / − · reset size: Primary + 0
+files-shortcuts-size = Change item size: Primary + + / −
+files-shortcuts-size-reset = Reset item size: Primary + 0
 files-shortcuts-context = Context menu: Menu key or right-click
-files-shortcuts-close = Show this reference: ? or F1 · close sheets and menus: Escape
+files-shortcuts-close = Show this reference: ? or F1
+files-shortcuts-dismiss = Close sheets and menus: Escape
 
 ## Availability actions and status
 files-opening-document = Opening document…
 files-document-opening-cancelled = Document opening was cancelled
-files-keep-offline = Keep Offline
-files-use-automatic-storage = Use Automatic Storage
-files-pinned-by-parent = Pinned by Parent Folder
-files-retry-download = Retry Download
-files-free-local-space = Free Local Space
+files-keep-offline = Keep offline
+files-use-automatic-storage = Use automatic storage
+files-pinned-by-parent = Pinned by parent folder
+files-retry-download = Retry download
+files-free-local-space = Free local space
 files-no-pin-needed = No selected item needs an offline pin
 files-no-direct-pin = No direct offline pin can be changed here
 files-keeping-offline = Keeping { $count } { $count ->
@@ -59,7 +65,7 @@ files-destructive-eviction-summary = Safety checks could not prove that { $count
 files-destructive-eviction-no-replica = No acceptable current replica could be verified.
 files-destructive-eviction-loss = If no source remains, the current file contents may become permanently unavailable.
 files-destructive-eviction-protected = Retained history and blobs shared by protected files will not be removed.
-files-destructive-eviction-confirm = Remove Local Copy Anyway
+files-destructive-eviction-confirm = Remove local copy anyway
 files-destructive-eviction-started = Destructive local removal started for { $count } { $count ->
     [one] item
    *[other] items
@@ -73,7 +79,7 @@ files-permanent-delete-summary = The selected { $count } { $count ->
    *[other] items will
 } be removed from Trash.
 files-permanent-delete-loss = This cannot be undone.
-files-permanent-delete-confirm = Delete Permanently
+files-permanent-delete-confirm = Delete permanently
 files-empty-trash-title = Permanently empty Trash?
 files-empty-trash-summary = { $count ->
     [one] 1 item will be removed from Trash.
@@ -122,10 +128,10 @@ files-transfer-verifying = verifying
 
 ## Sharing
 files-search-collaborative-records = Collaborative files
-files-search-record-provenance = { $path } · record { $record }
-files-copy-one-time-link = Copy One-Time Share Link
-files-share-composer-named = Share with { $person } · { $permission } · { $expiry }
-files-share-composer-link = Copy link · { $permission } · { $expiry } · { $uses }
+files-search-record-provenance = { $path }
+files-copy-one-time-link = Copy one-time share link
+files-share-composer-named = Share with { $person } ({ $permission }, { $expiry })
+files-share-composer-link = Copy link ({ $permission }, { $expiry }, { $uses })
 files-share-choice-view = View
 files-share-choice-edit = Edit
 files-share-choice-day = expires in 24 hours
@@ -139,7 +145,7 @@ files-share-invalid-options = Those sharing options cannot be combined
 files-share-link-needs-expiry = Share links require an expiry
 files-share-invalid-uses = Share links require a use limit from 1 to 1,000
 files-share-recipient-unreachable = This person has no certified delivery device
-files-sharing-access = Sharing & Access…
+files-sharing-access = Sharing and access…
 files-share-with = Share with { $person }
 files-revoke-subject = Revoke { $subject }
 files-shared-link = shared link
@@ -161,10 +167,10 @@ files-grant-revoked = revoked
 files-grant-exhausted = exhausted
 files-no-expiry = no expiry
 files-expires = expires { $time }
-files-share-grant-line = { $subject } · { $permission } · { $status } · { $expiry }
+files-share-grant-line = { $subject }: { $permission }, { $status }, { $expiry }
 files-sharing-title = Sharing — { $name }
-files-certified-devices = { $person } · certified devices: { $devices }
-files-certified-device-detail = { $device } · key { $fingerprint } · { $capabilities } · issued { $issued } · { $expiry }
+files-certified-devices = { $person }, certified devices: { $devices }
+files-certified-device-detail = { $device }, key { $fingerprint }, { $capabilities }, issued { $issued }, { $expiry }
 files-device-cap-own = manages workspaces
 files-device-cap-admit = admits devices
 files-device-cap-host = trusted host
@@ -182,26 +188,26 @@ files-access-revoked = Access revoked; previously downloaded bytes cannot be rec
 files-share-inactive = That share was already inactive
 
 ## History and conflict resolution
-files-version-history = Version History…
-files-restore-previous = Restore Previous Version
-files-resolve-keep-current = Resolve { $conflict } — Keep Current
-files-resolve-use-other = Resolve { $conflict } — Use Other (device { $device })
-files-history-version-line = { $action } · { $time } · by { $person } · device { $device }
+files-version-history = Version history…
+files-restore-previous = Restore previous version
+files-resolve-keep-current = Resolve { $conflict }: keep current
+files-resolve-use-other = Resolve { $conflict }: use other (device { $device })
+files-history-version-line = { $action } { $time } by { $person } on device { $device }
 files-history-older = Older versions are available from the history service
 files-conflict-needs-review = Needs review
 files-conflict-resolved-strategy = Resolved: { $strategy }
 files-conflict-resolved = Resolved
-files-strategy-keep-current = Keep Current
-files-strategy-use-other = Use Other
-files-strategy-keep-both = Keep Both
+files-strategy-keep-current = Keep current
+files-strategy-use-other = Use other
+files-strategy-keep-both = Keep both
 files-strategy-merge = Merge
-files-conflict-line = Conflict { $conflict } · { $count } { $count ->
+files-conflict-line = Conflict { $conflict }: { $count } { $count ->
     [one] version
    *[other] versions
-} · { $state }
-files-conflict-resolve-hint = Resolve from the context menu: Keep Current or Use Other
-files-conflict-unsupported-hint = Keep Both and Merge are unavailable until their signed workflows are supported
-files-history-title = Version History — { $name }
+}, { $state }
+files-conflict-resolve-hint = Resolve from the context menu: keep current or use other
+files-conflict-unsupported-hint = Keep both and merge are unavailable until their signed workflows are supported
+files-history-title = Version history — { $name }
 files-history-summary = { $versions } { $versions ->
     [one] version
    *[other] versions
@@ -224,14 +230,14 @@ files-merge-review-checking-detail = Tilo is comparing both changes with their s
 files-merge-review-safe = Safe to merge
 files-merge-review-needs-review = Needs review — no merge will be applied
 files-merge-review-unavailable = The merge preflight is unavailable. Refresh the file and compare the versions manually.
-files-merge-review-no-apply = Keep Both or choose a version after reviewing the immutable diff.
+files-merge-review-no-apply = Keep both or choose a version after reviewing the immutable diff.
 files-merge-review-incoming = Incoming revision from device { $device }
-files-merge-review-diff = Version History lets you compare the two immutable revisions before applying this merge.
+files-merge-review-diff = Version history lets you compare the two immutable revisions before applying this merge.
 files-merge-review-guard = Tilo rechecks the exact base and both revisions immediately before saving. If the edits overlap or changed meanwhile, nothing is merged.
 files-merge-review-undo = Applying creates one signed history entry, so you can restore either earlier version without undoing later work.
 files-merge-apply-safe = Apply safe merge
 files-merge-apply-safe-detail = This only proceeds when the deterministic preflight still proves both revisions can be preserved.
-files-conflict-workflow-required = Keep Both and Merge require a dedicated safe workflow
+files-conflict-workflow-required = Keep both and merge require a dedicated safe workflow
 files-conflict-resolved-signed = Conflict resolved with a signed history entry
 files-history-change-saved = History change saved
 files-history-action-created = Created
@@ -242,8 +248,8 @@ files-history-action-deleted = Deleted
 files-history-action-conflict-resolved = Resolved conflict
 files-history-action-restored = Restored
 files-history-action-changed = Changed
-files-history-current-version = { $action } · Current version
-files-history-timeline-detail = { $person } · { $time }
+files-history-current-version = { $action } (current version)
+files-history-timeline-detail = { $person }, { $time }
 files-history-preview-title = Selected version
 files-history-compare-title = Compare with current version
 files-history-selected-action = Action: { $action }
@@ -257,11 +263,11 @@ files-history-compare-content = Content: { $state }
 files-history-compare-metadata = Metadata: { $state }
 files-history-same = unchanged
 files-history-different = changed
-files-history-show-activity = Show in Workspace Activity
-files-history-compare = Compare with Current
-files-history-hide-compare = Show Version Details
-files-history-restore-selected = Restore This Version
-files-history-current-version-label = Current Version
+files-history-show-activity = Show in workspace activity
+files-history-compare = Compare with current
+files-history-hide-compare = Show version details
+files-history-restore-selected = Restore this version
+files-history-current-version-label = Current version
 files-history-timeline-a11y = Version timeline
 files-history-timeline-a11y-item = { $action } by { $person }, { $time }
 
@@ -336,9 +342,8 @@ files-sort-by = Sort by
 files-view-options = View options
 files-path-placeholder = Type a path, e.g. ~/Documents
 files-place-home = Home
-files-place-favourites = Favourites
 files-place-favorites = Favorites
-files-place-system = System
+files-place-system = Locations
 files-place-root = Root
 files-place-trash = Trash
 files-place-workspace = Workspace
@@ -352,21 +357,21 @@ files-place-videos = Videos
 files-column-name = Name
 files-column-size = Size
 files-column-modified = Modified
-files-try-again = Try Again
+files-try-again = Try again
 files-loading = Loading…
 files-loading-folder = Loading { $path }
 files-loading-title = Opening folder
 files-loading-detail = Loading { $path }
 files-directory-read-failed = Could not open this folder: { $error }
 files-load-error-title = Couldn’t open this folder
-files-load-error-detail = { $error } · { $path }
-files-a11y-load-error = Could not load folder: { $error }. Try Again is available
+files-load-error-detail = { $path }: { $error }
+files-a11y-load-error = Could not load folder: { $error }. Try again is available
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Press Escape to close
 files-a11y-dialog-close = { $summary }. Press Escape to close
 files-a11y-activity = Files activity
 files-a11y-current-folder = Current folder: { $path }
 files-a11y-places = Places
-files-a11y-favourite = Favourite
+files-a11y-favourite = Favorite
 files-a11y-system-location = System location
 files-a11y-place-description = { $section }, { $path }
 files-a11y-breadcrumbs = Breadcrumbs
@@ -378,7 +383,7 @@ files-item-count = { $count } { $count ->
     [one] item
    *[other] items
 }
-files-selected-count = { $base }  ·  { $count } selected
+files-selected-count = { $base }, { $count } selected
 files-a11y-list = Files
 files-a11y-folder = Folder
 files-a11y-file = File, { $size }
@@ -399,7 +404,7 @@ files-properties-title = Properties — { $name }
 files-properties-summary = Filesystem metadata
 
 ## Ordinary operation results
-files-new-folder-default-name = New Folder
+files-new-folder-default-name = New folder
 files-created-folder = Created folder
 files-new-folder-failed = New folder failed: { $error }
 files-permanently-deleted = Permanently deleted { $count } { $count ->
@@ -415,7 +420,7 @@ files-restored = Restored { $count } { $count ->
     [one] item
    *[other] items
 }
-files-undo-move-trash = Undo Move to Trash
+files-undo-move-trash = Undo move to Trash
 files-undo-trash-restored = Restored { $count } { $count ->
     [one] 1 item
    *[other] { $count } items
@@ -436,8 +441,8 @@ files-cut = Cut { $count } { $count ->
 }
 files-created-file = Created file
 files-new-file-failed = New file failed: { $error }
-files-added-favourite = Added to Favourites
-files-removed-favourite = Removed from Favourites
+files-added-favourite = Added to Favorites
+files-removed-favourite = Removed from Favorites
 files-moved-with-failures = Moved { $moved } to “{ $destination }” ({ $failed } failed)
 files-moved-to-folder = Moved { $count } { $count ->
     [one] item
@@ -456,7 +461,7 @@ files-rename-failed = Rename failed: { $error }
 files-menu-open = Open
 files-action-reveal = Reveal in Files
 files-menu-restore = Restore
-files-menu-delete-permanently = Delete Permanently
+files-menu-delete-permanently = Delete permanently
 files-menu-empty-trash = Empty Trash
 files-menu-rename = Rename
 files-action-rename-prompt = New name
@@ -464,18 +469,18 @@ files-menu-cut = Cut
 files-menu-copy = Copy
 files-menu-properties = Properties…
 files-menu-paste = Paste
-files-menu-new-folder = New Folder
-files-menu-new-file = New File  ›
+files-menu-new-folder = New folder
+files-menu-new-file = New file…
 files-menu-move-trash = Move to Trash
-files-menu-add-favourite = Add to Favourites
-files-menu-remove-favourite = Remove from Favourites
-files-menu-hide-hidden = Hide Hidden Files
-files-menu-show-hidden = Show Hidden Files
-files-menu-sort-name = Sort by Name
-files-menu-sort-size = Sort by Size
-files-menu-sort-type = Sort by Type
-files-menu-sort-date = Sort by Date
-files-menu-open-terminal = Open Terminal Here
+files-menu-add-favourite = Add to Favorites
+files-menu-remove-favourite = Remove from Favorites
+files-menu-hide-hidden = Hide hidden files
+files-menu-show-hidden = Show hidden files
+files-menu-sort-name = Sort by name
+files-menu-sort-size = Sort by size
+files-menu-sort-type = Sort by type
+files-menu-sort-date = Sort by date
+files-menu-open-terminal = Open terminal here
 files-sort-name = Name
 files-sort-size = Size
 files-sort-type = Type
@@ -513,8 +518,8 @@ files-name-exists = “{ $name }” already exists
 files-destination-inspect-failed = Cannot check “{ $path }”: { $error }
 files-destination-names-exhausted = Too many files named “{ $name }” in “{ $path }”. Choose another name or folder.
 files-source-no-name = Source has no file name
-files-menu-send-nearby = Send to Nearby Device…
-files-menu-run-shortcut = Run Shortcut
+files-menu-send-nearby = Send to nearby device…
+files-menu-run-shortcut = Run shortcut
 files-shortcut-running = Running “{ $shortcut }”…
 files-shortcut-started = “{ $shortcut }” is running
 files-shortcut-failed = “{ $shortcut }” didn't run: { $reason }
@@ -549,8 +554,8 @@ files-share-not-available = Share service is not available on this host
 files-name-invalid = Enter a valid file or folder name
 
 ## Open With and Recent
-files-menu-open-with = Open With
-files-open-with-other = Other Application…
+files-menu-open-with = Open with
+files-open-with-other = Other application…
 files-open-with-none = No application opens this file
 files-open-with-default = { $app } (default)
 files-open-with-default-badge = Default
@@ -566,6 +571,15 @@ files-open-with-unavailable = Choosing an application is unavailable here ({ $na
 files-open-with-not-a-candidate = { $app } does not open this file
 files-place-recent = Recent
 files-empty-recent = Files you open or create appear here
-files-recent-reveal = Open Containing Folder
+files-recent-reveal = Open containing folder
 files-recent-forget = Remove from Recent
 files-recent-not-a-folder = Recent is not a folder; open one to add files
+
+## Cloud accounts
+files-account-sign-in-title = Sign in to { $account }
+files-account-sign-in-needed = { $service } at { $host } needs you to sign in again before this folder can sync.
+files-account-sign-in-where = You can do that in Settings, under External accounts.
+files-account-service-at-host = { $service } at { $host }
+files-account-folder = Folder: { $path }
+files-account-check-again = Check again
+files-account-check-again-detail = Reads the account's state again and opens its folder once it is available.
