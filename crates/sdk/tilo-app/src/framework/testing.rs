@@ -725,7 +725,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn surface<S: 'static, O>(&mut self, visit: impl FnOnce(&mut S) -> O) -> Option<O> {
         self.harness()
             .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
-                root.content_mut()
+                root.content
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<S>())
                     .map(visit)
