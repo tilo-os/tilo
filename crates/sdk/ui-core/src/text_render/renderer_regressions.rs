@@ -1031,3 +1031,111 @@ fn the_generic_sans_follows_the_theme_ui_face() {
     let unchanged = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
     assert!((unchanged - hyperlegible).abs() < f32::EPSILON);
 }
+
+/// A face with the distinct I and l and slashed zero, so the setting and
+/// security surfaces show in the glyphs.
+fn features_renderer() -> TextRenderer {
+    let mut renderer = renderer();
+    renderer.font_system.db_mut().load_font_data(
+        include_bytes!("../../tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf").to_vec(),
+    );
+    renderer
+}
+
+fn shaped_ids(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<u16> {
+    let style = renderer.scaled_style(style);
+    let prepared = renderer.shape_buffer(text, None, &style);
+    prepared
+        .buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+        .collect()
+}
+
+fn rich_ids(renderer: &mut TextRenderer, text: &str, style: &TextStyle) -> Vec<u16> {
+    // Widgets ask for the layout epoch before shaping on their own.
+    let _ = renderer.layout_epoch();
+    RichTextLayout::shape_plain(&mut renderer.font_system, text, style, None)
+        .buffer
+        .layout_runs()
+        .flat_map(|run| run.glyphs.iter().map(|glyph| glyph.glyph_id))
+        .collect()
+}
+
+#[test]
+fn the_distinct_letters_setting_reaches_every_shaping_path() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let plain = shaped_ids(&mut renderer, "Il0", &style);
+    let distinct = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    assert_ne!(plain, distinct);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+
+    let epoch = Arc::clone(renderer.layout_epoch());
+    renderer.set_distinct_letters(true);
+    assert!(renderer.distinguishes_letters());
+    assert!(
+        !Arc::ptr_eq(&epoch, renderer.layout_epoch()),
+        "widget layouts reshape when the setting changes"
+    );
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), distinct);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), distinct);
+
+    renderer.set_distinct_letters(false);
+    assert!(!renderer.distinguishes_letters());
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+
+    // Another renderer on the thread keeps its own setting.
+    let mut other = features_renderer();
+    other.set_distinct_letters(true);
+    assert_eq!(rich_ids(&mut renderer, "Il0", &style), plain);
+    assert_eq!(rich_ids(&mut other, "Il0", &style), distinct);
+}
+
+#[test]
+fn security_surfaces_distinguish_whatever_the_setting() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let plain = shaped_ids(&mut renderer, "Il0", &style);
+    let distinct = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    let inside = renderer.security_surface(|renderer| {
+        assert!(renderer.distinguishes_letters());
+        (
+            shaped_ids(renderer, "Il0", &style),
+            rich_ids(renderer, "Il0", &style),
+        )
+    });
+    assert_eq!(inside, (distinct.clone(), distinct.clone()));
+    assert!(!renderer.distinguishes_letters());
+    assert_eq!(shaped_ids(&mut renderer, "Il0", &style), plain);
+    // A custom-painted security surface marks its style instead.
+    assert_eq!(
+        shaped_ids(&mut renderer, "Il0", &style.clone().on_security_surface()),
+        distinct
+    );
+}
+
+#[test]
+fn identifiers_in_a_label_are_set_apart_with_no_kind_declared() {
+    let mut renderer = features_renderer();
+    let style = named_style("Tilo Sans Features Fixture");
+    let prose = shaped_ids(&mut renderer, "Il0 ", &style);
+    let line = shaped_ids(&mut renderer, "Il0 https://Il0.example", &style);
+    let url = shaped_ids(
+        &mut renderer,
+        "Il0",
+        &style.clone().with_kind(TextKind::Url),
+    );
+    assert_eq!(line[..4], prose[..]);
+    // "https://" is eight glyphs; the host that follows starts with Il0.
+    assert_eq!(line[12..15], url[..]);
+    assert_ne!(line[12..15], prose[..3]);
+}
