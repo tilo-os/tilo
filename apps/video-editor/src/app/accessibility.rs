@@ -1213,6 +1213,7 @@ impl VideoEditorApp {
                     ..Default::default()
                 }),
         );
+        kids.extend(self.history.accessibility(r.history_btn));
         AccessNode::new(Role::Toolbar)
             .with_name("Editor commands")
             .with_hashed_key(TOPBAR_A11Y_KEY)

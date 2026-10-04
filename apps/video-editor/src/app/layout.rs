@@ -14,8 +14,12 @@ pub(super) struct Regions {
     pub(super) topbar: Rect,
     /// The media bin's show/hide toggle, at the topbar's leading corner.
     pub(super) menu_btn: Rect,
-    /// The inspector's show/hide toggle, at the topbar's trailing corner.
+    /// The inspector's show/hide toggle, at the topbar's trailing end
+    /// (before the window's History control when the row holds it).
     pub(super) inspector_btn: Rect,
+    /// The window's History control, in the header row's trailing corner;
+    /// zero-sized while the host offers none.
+    pub(super) history_btn: Rect,
     /// The project button: what is open, whether it is saved, and the menu
     /// that opens / saves one. Zero-sized when the topbar's leading area has
     /// no room for it — a control that overlaps Import is worse than one that
@@ -70,7 +74,17 @@ impl VideoEditorApp {
         // toggle at the trailing one, in every layout: one way to show or
         // hide either panel, wherever the window's width puts them.
         let menu_btn = slot(r.x0 + edge, target);
-        let inspector_btn = slot(r.x1 - edge - target, target);
+        // The window's History control holds the trailing corner, where a
+        // shell's header row keeps it; the inspector toggle stands before it.
+        let history_btn = ui::chrome::HeaderRowFace::new(topbar, &self.chrome_theme)
+            .with_history_if(self.history.is_shown())
+            .history_rect();
+        let trailing_x1 = if history_btn.width() > 0.0 {
+            history_btn.x0 - gap
+        } else {
+            r.x1 - edge
+        };
+        let inspector_btn = slot(trailing_x1 - target, target);
         // The trailing group, right to left from the inspector toggle: the
         // commands, each as wide as its label.
         let export_w = if compact { target } else { widths.export };
@@ -215,6 +229,7 @@ impl VideoEditorApp {
             topbar,
             menu_btn,
             inspector_btn,
+            history_btn,
             project_btn,
             export_btn,
             export_chip,

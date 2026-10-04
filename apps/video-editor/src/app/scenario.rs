@@ -619,13 +619,31 @@ impl VideoEditorApp {
                 };
                 let tid = title.id;
                 self.project.media.push(title);
-                if let Some(v2) = self
+                // The title on a track of its own above the inset, spanning
+                // the playhead, so the frame shows all three layers.
+                let top = self
                     .project
                     .tracks
                     .iter()
-                    .find(|t| t.kind == TrackKind::Video && t.index == 2)
-                    .map(|t| t.id)
-                    && let Some(cid) = self.project.add_clip(v2, tid, 34.0)
+                    .filter(|t| t.kind == TrackKind::Video)
+                    .map(|t| t.index)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let titles = crate::model::Track {
+                    id: Uuid::new_v4(),
+                    name: format!("V{top}"),
+                    kind: TrackKind::Video,
+                    index: top,
+                    muted: false,
+                    locked: false,
+                    solo: false,
+                    gain_db: 0.0,
+                    pan: 0.0,
+                };
+                let titles_id = titles.id;
+                self.project.tracks.push(titles);
+                if let Some(cid) = self.project.add_clip(titles_id, tid, 19.0)
                     && let Some(c) = self.project.clip_mut(cid)
                 {
                     c.transform = crate::model::Transform {
