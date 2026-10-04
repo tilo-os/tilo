@@ -6,7 +6,9 @@ use std::rc::Rc;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use ui::application::ComponentBehaviour;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -14,6 +16,8 @@ use ui::widget::Element;
 use crate::actions::{
     SETTINGS_ACTION_TYPE, SettingValue, SettingsAction, document_children, register,
 };
+use crate::effects::SettingsEffect;
+use crate::host::PaneCx;
 use crate::settings_app::SettingsApp;
 
 /// Projection of portable preference keys stored at the document root.
@@ -100,9 +104,6 @@ impl ResourceApp for SettingsShell {
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Settings";
     const ICON: Option<&'static str> = Some("settings");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
     // Sidebar filtering rebuilds the widget tree, and the Appearance pane's
     // scale, theme, contrast and motion apply live.
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
@@ -114,15 +115,39 @@ impl ResourceApp for SettingsShell {
     fn view(cx: &mut ViewCx<Settings>) -> Element {
         cx.surface(SettingsApp::new())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenarios::names()
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        crate::scenarios::viewport(scenario)
+    }
+
+    fn fixture(fixture: &mut Fixture<Settings>) {
+        crate::scenarios::prepare(fixture);
+    }
 }
 
-impl ResourceSurface<Settings> for SettingsApp {
+impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn present(&mut self, state: &Rc<SettingsState>) {
         self.adopt_resource_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_host(PaneCx::attached(&cx));
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scene(crate::scenarios::staged(scenario));
+    }
+
+    fn effect(
+        &mut self,
+        effect: SettingsEffect,
+        cx: &mut EffectCx<Settings, Self>,
+    ) -> EffectAnswer {
+        crate::effects::answer(self, effect, cx)
     }
 
     // Preference and device rows publish their document edits as hand-built

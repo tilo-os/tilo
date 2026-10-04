@@ -6,8 +6,8 @@
 //! `SettingsApp` (in [`settings_app`]) is the root widget: a categorized
 //! sidebar plus a content pane per category, responsive between a two-pane
 //! desktop layout and a single-pane narrow layout. The binary in `main.rs`
-//! is a thin shim that hands the widget to `ui::App` for the live event
-//! loop, or renders one offscreen frame for `--shots`.
+//! runs [`SettingsShell`] on the app framework: the live window, or one of
+//! the screenshot [`scenarios`].
 //! Release builds keep this composition app-local while service engines live
 //! in the shared runtime, preserving independently updatable settings UI.
 //!
@@ -62,10 +62,13 @@ pub mod accounts;
 pub mod actions;
 pub mod categories;
 pub mod resource;
+pub mod scenarios;
 pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
 pub mod dispatcher;
+pub mod effects;
+pub mod host;
 pub mod i18n;
 pub(crate) mod input_sources;
 pub mod panes;
@@ -73,15 +76,11 @@ pub mod prefs;
 pub mod region;
 pub mod search_provider;
 pub mod settings_app;
-#[cfg(not(feature = "thin"))]
-pub mod shots;
 pub mod sidebar;
 pub mod speaker_setup;
 pub mod widgets;
 
 pub use settings_app::SettingsApp;
-#[cfg(not(feature = "thin"))]
-pub use shots::render_to_path;
 
 /// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.
 ///
@@ -148,3 +147,8 @@ pub(crate) fn clear_text_object(
     }
 }
 pub use resource::{Settings, SettingsShell};
+
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<SettingsShell>()
+}

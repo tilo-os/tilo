@@ -74,17 +74,13 @@ pub struct SettingsApp {
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
     structure_dirty: bool,
-    /// Framework dispatcher, cloned onto a preference pane when that pane is built.
-    framework: Option<ui::framework::Dispatcher<crate::resource::Settings>>,
-    /// Set when hosted as a [`ui::framework::ResourceSurface`]; tests may flip
-    /// it without constructing a real dispatcher.
-    hosted: bool,
-    /// Which narrow screen a `--shots` / headless capture pins the shell to —
-    /// the live `ui::App` event loop that would otherwise drive the navigation
-    /// is absent. `None` (the runtime default) collapses to the CONTENT screen,
-    /// matching the shared shell's behaviour; a capture can force the list or
-    /// content screen explicitly. Applied when the shell is created.
-    narrow_shot_screen: Option<NarrowScreen>,
+    /// What the panes reach of the host: the settings document, the door
+    /// their controls go through, and what they are built for.
+    cx: crate::host::PaneCx,
+    /// Which narrow screen the shell starts on: the selected category's
+    /// content unless a test asks for the list. Applied when the shell is
+    /// created.
+    narrow_screen: NarrowScreen,
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
@@ -118,13 +114,6 @@ pub struct SettingsApp {
     local_operation: Option<tilo_actions::InvocationId>,
     local_operation_token: Option<String>,
     local_pane_command: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    /// Deterministic, secret-free inventory used only by visual acceptance
-    /// captures. Live construction always leaves this `None`.
-    account_directory_override: Option<crate::accounts::AccountDirectory>,
-    account_form_override: Option<crate::accounts::AccountKind>,
-    /// Use stable, host-independent hardware fixtures in visual captures.
-    /// Live construction always leaves this false.
-    deterministic_hardware_for_shot: bool,
     account_probe: Option<(
         tilo_actions::InvocationId,
         std::sync::mpsc::Receiver<Result<String, String>>,
@@ -165,9 +154,10 @@ impl SettingsApp {
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
-            framework: None,
-            hosted: false,
-            narrow_shot_screen: None,
+            cx: crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
+                <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
+            )),
+            narrow_screen: NarrowScreen::Content,
             width_hint: None,
             search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
@@ -183,9 +173,6 @@ impl SettingsApp {
             local_operation: None,
             local_operation_token: None,
             local_pane_command: ui::LocalState::new(None),
-            account_directory_override: None,
-            account_form_override: None,
-            deterministic_hardware_for_shot: false,
             account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
@@ -206,56 +193,20 @@ impl SettingsApp {
         self
     }
 
-    /// Seed the responsive layout with a known width before the first frame —
-    /// the offscreen `--shots` renderer calls this so the cold screenshot
-    /// resolves the correct wide/narrow layout immediately.
+    /// Seed the responsive layout with a known width before the first frame,
+    /// so a first layout resolves the wide or narrow layout at once.
     #[must_use]
     pub fn with_width_hint(mut self, width: f32) -> Self {
         self.width_hint = Some(width);
         self
     }
 
+    /// Start a narrow layout on the full-screen category list — the
+    /// back-tap-away screen a collapse does not default to. Has no visible
+    /// effect when the layout is wide.
     #[must_use]
-    #[cfg(not(feature = "thin"))]
-    pub(crate) fn with_account_directory_for_shot(
-        mut self,
-        directory: crate::accounts::AccountDirectory,
-    ) -> Self {
-        self.account_directory_override = Some(directory);
-        self
-    }
-
-    #[must_use]
-    #[cfg(not(feature = "thin"))]
-    pub(crate) fn with_account_form_for_shot(mut self, kind: crate::accounts::AccountKind) -> Self {
-        self.account_form_override = Some(kind);
-        self
-    }
-
-    #[must_use]
-    #[doc(hidden)]
-    pub fn with_deterministic_hardware_for_shot(mut self) -> Self {
-        self.deterministic_hardware_for_shot = true;
-        self
-    }
-
-    /// Pin a narrow `--shots` capture to the content screen (with the back
-    /// arrow). The narrow layout already collapses to the content by default,
-    /// so this only matters for a capture that overrides an earlier seed. Has
-    /// no visible effect when the layout resolves to wide.
-    #[must_use]
-    pub fn with_narrow_content_shot(mut self) -> Self {
-        self.narrow_shot_screen = Some(NarrowScreen::Content);
-        self
-    }
-
-    /// Pin a narrow `--shots` capture to the full-screen category list — the
-    /// back-tap-away screen a collapse no longer defaults to. Without the live
-    /// event loop nothing drives the navigation, so this seeds the list screen
-    /// for its own snapshot. Has no visible effect when the layout is wide.
-    #[must_use]
-    pub fn with_narrow_list_shot(mut self) -> Self {
-        self.narrow_shot_screen = Some(NarrowScreen::List);
+    pub fn with_category_list(mut self) -> Self {
+        self.narrow_screen = NarrowScreen::List;
         self
     }
 
@@ -357,13 +308,10 @@ impl SettingsApp {
             .map_or(vello::kurbo::Rect::ZERO, ui::AppShell::back_rect)
     }
 
-    /// Pre-seed a search query so the deterministic `--shots` render shows the
-    /// filtered sidebar (there is no live event loop to type into the field).
-    #[must_use]
-    pub fn with_search_shot(mut self, query: &str) -> Self {
-        self.search_query = query.to_string();
+    /// Filter the sidebar by `query`, as typing it into the search field
+    /// does.
+    pub fn search(&mut self, query: &str) {
         self.search_state.set(query.to_string());
-        self
     }
 
     /// Build the local search field placed at the top of the shell's sidebar.
@@ -445,17 +393,40 @@ impl SettingsApp {
         }
     }
 
-    /// Remember the dispatcher so preference panes built later submit through it.
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
-    ) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+    /// Hand the panes their host: panes built from now on bind their
+    /// controls to its door.
+    pub(crate) fn attach_host(&mut self, cx: crate::host::PaneCx) {
+        // A screenshot never opens the person's accounts.
+        if let Some(root) = cx.scene().and_then(|scene| scene.account_root.clone()) {
+            self.account_root = crate::accounts::AccountRoot::at(root);
+            self.refresh_account_resources();
+        }
+        self.cx = cx;
+        self.structure_dirty = true;
+        self.refresh_shell_children();
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    /// What the panes reach of the host.
+    pub(crate) fn host(&self) -> &crate::host::PaneCx {
+        &self.cx
+    }
+
+    /// Lay out what a screenshot scenario shows.
+    pub(crate) fn stage_scene(&mut self, staged: crate::scenarios::Staged) {
+        use crate::scenarios::Staged;
+        match staged {
+            Staged::Pane(category) => self.select(category),
+            Staged::List(category) => {
+                self.select(category);
+                if let Some(shell) = &mut self.shell {
+                    shell.back();
+                }
+            }
+            Staged::Search(category) => {
+                self.select(category);
+                self.search(crate::scenarios::SEARCH_QUERY);
+            }
+        }
     }
 
     /// Preference panes read the document in their own sync. An empty
@@ -469,12 +440,6 @@ impl SettingsApp {
         let _ = state;
     }
 
-    /// Test-only: mark the surface hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-
     /// Dispatch to the per-category pane body.
     #[expect(
         clippy::too_many_lines,
@@ -482,10 +447,10 @@ impl SettingsApp {
     )]
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
-            // A capture never waits for NetworkManager; it renders the
-            // loaded pane without host networks.
-            Category::Network if self.deterministic_hardware_for_shot => Box::new(
-                panes::network::NetworkPane::new_demo(Vec::new())
+            // A capture never waits for NetworkManager or PipeWire; it shows
+            // sample networks and a sample audio graph.
+            Category::Network if !self.cx.is_live() => Box::new(
+                crate::scenarios::network_pane()
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
@@ -504,6 +469,11 @@ impl SettingsApp {
                     .with_command_state(&self.device_mesh_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
+            Category::Sound if !self.cx.is_live() => Box::new(
+                crate::scenarios::audio_pane()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Sound => Box::new(
                 panes::audio::AudioPane::new()
                     .with_command_state(&self.local_pane_command)
@@ -514,7 +484,7 @@ impl SettingsApp {
                     .with_command_state(&self.speaker_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::Displays if self.deterministic_hardware_for_shot => {
+            Category::Displays if !self.cx.is_live() => {
                 Box::new(panes::display::DisplayPane::with_dispatcher(
                     crate::dispatcher::dispatcher_or_real(None),
                     0.62,
@@ -531,8 +501,8 @@ impl SettingsApp {
             ),
             Category::KeyboardShortcuts => {
                 let mut pane = panes::keyboard_shortcuts::ShortcutPane::default();
-                if let Some(dispatcher) = &self.framework {
-                    pane.bind_dispatcher(dispatcher.clone());
+                if let Some(dispatcher) = self.cx.dispatcher() {
+                    pane.bind_dispatcher(dispatcher);
                 }
                 Box::new(pane)
             }
@@ -554,26 +524,26 @@ impl SettingsApp {
             ),
             Category::Appearance => {
                 let mut pane = panes::appearance::AppearancePane::new();
-                if let Some(dispatcher) = &self.framework {
-                    pane.bind_dispatcher(dispatcher.clone());
+                if let Some(dispatcher) = self.cx.dispatcher() {
+                    pane.bind_dispatcher(dispatcher);
                 }
                 Box::new(pane)
             }
             Category::Accessibility => panes::accessibility::build(),
-            Category::Notifications if self.deterministic_hardware_for_shot => {
+            Category::Notifications if !self.cx.is_live() => {
                 Box::new(panes::notifications::NotificationsPane::for_shot())
             }
             Category::Notifications => {
                 let mut pane = panes::notifications::NotificationsPane::new();
-                if let Some(dispatcher) = &self.framework {
-                    pane.bind_dispatcher(dispatcher.clone());
+                if let Some(dispatcher) = self.cx.dispatcher() {
+                    pane.bind_dispatcher(dispatcher);
                 }
                 Box::new(pane)
             }
             Category::DefaultApps => {
                 let mut pane = panes::personal_apps::PersonalAppsPane::new();
-                if let Some(dispatcher) = &self.framework {
-                    pane.bind_dispatcher(dispatcher.clone());
+                if let Some(dispatcher) = self.cx.dispatcher() {
+                    pane.bind_dispatcher(dispatcher);
                 }
                 Box::new(pane)
             }
@@ -583,17 +553,16 @@ impl SettingsApp {
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::ExternalAccounts => {
-                let mut pane = self.account_directory_override.as_ref().map_or_else(
-                    || panes::accounts::AccountsPane::in_root(self.account_root.clone()),
-                    |directory| {
-                        panes::accounts::AccountsPane::from_dir_in(
-                            self.account_root.clone(),
-                            directory.clone(),
-                            false,
-                        )
-                    },
-                );
-                if let Some(kind) = self.account_form_override {
+                let mut pane = match self.cx.scene() {
+                    // A screenshot shows the bundled sample accounts.
+                    Some(_) => panes::accounts::AccountsPane::from_dir_in(
+                        self.account_root.clone(),
+                        crate::accounts::sample_directory(),
+                        false,
+                    ),
+                    None => panes::accounts::AccountsPane::in_root(self.account_root.clone()),
+                };
+                if let Some(kind) = self.cx.scene().and_then(|scene| scene.account_form) {
                     pane = pane.with_open_form_for_shot(kind);
                 }
                 Box::new(
@@ -608,8 +577,8 @@ impl SettingsApp {
             ),
             Category::RegionFormats => {
                 let mut pane = panes::region::RegionPane::new();
-                if let Some(dispatcher) = &self.framework {
-                    pane.bind_dispatcher(dispatcher.clone());
+                if let Some(dispatcher) = self.cx.dispatcher() {
+                    pane.bind_dispatcher(dispatcher);
                 }
                 Box::new(match self.content_width_hint() {
                     Some(width) => pane.with_width_hint(width),
@@ -659,7 +628,7 @@ impl SettingsApp {
         // screen — the category list is one back-tap away, never the default a
         // collapse lands on. A `--shots` capture can pin a specific narrow
         // screen; otherwise the shell collapses to the content.
-        let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
+        let narrow_screen = self.narrow_screen;
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
             // AppShell resolves text-authored extents against the live theme.
@@ -3507,7 +3476,6 @@ mod tests {
                     c.app()
                         .with_category(Category::RegionFormats)
                         .with_width_hint(440.0)
-                        .with_narrow_content_shot()
                 },
                 (440.0, 820.0),
                 Some(true),
@@ -3524,7 +3492,7 @@ mod tests {
         assert_responsive_layouts(vec![
             (
                 "narrow list shot shows the standalone list",
-                |c| c.app().with_width_hint(440.0).with_narrow_list_shot(),
+                |c| c.app().with_width_hint(440.0).with_category_list(),
                 (440.0, 820.0),
                 Some(true),
                 Some(true),
@@ -3544,7 +3512,6 @@ mod tests {
                     c.app()
                         .with_category(Category::ExternalAccounts)
                         .with_width_hint(440.0)
-                        .with_narrow_content_shot()
                 },
                 (440.0, 820.0),
                 None,
@@ -3576,11 +3543,7 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let app = config
-                .app()
-                .with_category(selected)
-                .with_width_hint(440.0)
-                .with_narrow_content_shot();
+            let app = config.app().with_category(selected).with_width_hint(440.0);
             let app = layout_at(app, 440.0, 820.0);
 
             let mut heading = None;
@@ -3608,11 +3571,7 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let app = config
-                .app()
-                .with_category(selected)
-                .with_width_hint(390.0)
-                .with_narrow_content_shot();
+            let app = config.app().with_category(selected).with_width_hint(390.0);
             let app =
                 layout_at_with_theme(app, 390.0, 844.0, &ui::Theme::dark().with_text_scale(1.5));
 
@@ -3629,10 +3588,7 @@ mod tests {
         // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config
-                .app()
-                .with_width_hint(1440.0)
-                .with_narrow_content_shot();
+            let app = config.app().with_width_hint(1440.0);
             let app =
                 layout_at_with_theme(app, 1440.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
@@ -3665,7 +3621,7 @@ mod tests {
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             // Start on the list screen — the reachable back-tap state.
-            let app = config.app().with_width_hint(440.0).with_narrow_list_shot();
+            let app = config.app().with_width_hint(440.0).with_category_list();
             let mut app = layout_at(app, 440.0, 820.0);
             assert!(app.sidebar_open(), "starts on the list screen");
             // Picking a category drills into its content screen.
@@ -3685,7 +3641,7 @@ mod tests {
         }
     }
 
-    /// Search queries stay local and seed the field for shots.
+    /// Search queries stay local and reach the field.
     #[test]
     fn search_query_is_local_and_reaches_the_field() {
         // Case `search_query_is_local_and_flags_rebuild`.
@@ -3715,21 +3671,18 @@ mod tests {
             );
         }
 
-        // Case `seeded_search_shot_query_reaches_the_local_field`.
+        // Case `a_search_reaches_the_local_field`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config
-                .app()
-                .with_category(Category::Displays)
-                .with_search_shot("light");
-            assert_eq!(app.search_query(), "light");
+            let mut app = config.app().with_category(Category::Displays);
+            app.search("light");
             let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
             assert_eq!(
                 app.search_query(),
                 "light",
-                "the local field must retain the requested capture filter"
+                "the local field must retain the requested filter"
             );
             assert_eq!(app.search_state.with(Clone::clone), "light");
             assert!(doc.get_heads().is_empty());
