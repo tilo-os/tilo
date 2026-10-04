@@ -24,10 +24,6 @@ impl Notice {
         Self::new(BannerKind::Neutral, title)
     }
 
-    pub fn info(title: impl Into<String>) -> Self {
-        Self::new(BannerKind::Info, title)
-    }
-
     pub fn warning(title: impl Into<String>) -> Self {
         Self::new(BannerKind::Warning, title)
     }

@@ -432,7 +432,6 @@ impl SettingsPane {
             .map(|notice| notice.widget(false))
             .collect();
         parts.push(Box::new(header));
-        parts.push(Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)));
         parts.push(Box::new(form));
         page(parts)
     }
