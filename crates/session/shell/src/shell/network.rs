@@ -2936,7 +2936,11 @@ impl ShellNetwork {
         peer: iroh::EndpointId,
         frame: &[u8],
     ) {
-        let Some(identity) = self.peer_identities.get(origin) else {
+        let Some(identity) = self
+            .peer_identities
+            .get(origin)
+            .or_else(|| self.governed_identity(workspace_topic, peer))
+        else {
             tracing::warn!(peer = %peer, "dropping remote action from an unauthenticated device");
             return;
         };

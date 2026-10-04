@@ -16,7 +16,6 @@ path = "src/lib.rs"
 default = ["service"]
 service = [
     "dep:tilo-files",
-    "dep:bounded-command",
     "dep:futures-util",
     "dep:serde",
     "dep:serde_json",
@@ -36,7 +35,6 @@ service = [
 [dependencies]
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
-bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-command", optional = true }
 tracing = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }

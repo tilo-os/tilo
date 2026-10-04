@@ -30,7 +30,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ush::broker::{Request, Response};
-use ush::images::{DirImages, Images, NoImages, StoreImages};
+use ush::images::{DirImages, Images, NoImages, SharedBuilds, StoreImages};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -160,7 +160,9 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
 
     init_tracing(opts.verbose);
     let store = Store::discover();
-    let mut session = Session::new(store, opts, images(), builder());
+    let images = images();
+    let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
+    let mut session = Session::new(store, opts, images, builder);
     if let Some(script) = script {
         let resolved = session.resolve()?;
         let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
@@ -181,8 +183,10 @@ fn images() -> Arc<dyn Images> {
     if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
         return Arc::new(DirImages::at(PathBuf::from(root)));
     }
-    match StoreImages::from_env() {
-        Ok(images) => Arc::new(images),
+    match package_store::Store::from_env() {
+        Ok(store) => Arc::new(StoreImages::new(env_tools::store::trusting_device_tools(
+            store,
+        ))),
         Err(reason) => Arc::new(NoImages(format!(
             "the package store cannot be opened: {reason}"
         ))),
@@ -191,7 +195,7 @@ fn images() -> Arc<dyn Images> {
 
 /// How `pkg install` builds tool images on this device.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
-    Arc::new(tilo_environment::NoToolBuilder)
+    env_tools::store::device_tool_builder()
 }
 
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
