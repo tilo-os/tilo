@@ -1743,32 +1743,6 @@ impl ui::search::capability::SearchSource for MusicApp {
             Box::new(self.live_search.provider()),
         ]
     }
-
-    /// Activate a live-catalogue hit: a song plays, anything else opens its
-    /// page. Library hits carry canonical action addresses and never land
-    /// here.
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        let Some(hit) = crate::live_search::LiveHit::parse(action_id) else {
-            return;
-        };
-        let (state, _) = ui::doc::document(doc, path);
-        self.inject_live_hits();
-        let action = match hit {
-            crate::live_search::LiveHit::Track(id) => {
-                if self.playback_track(&id).is_none() {
-                    return;
-                }
-                Action::Play {
-                    queue: vec![id].into(),
-                    index: 0,
-                }
-            }
-            crate::live_search::LiveHit::Album(id) => Action::Nav(View::Album(id)),
-            crate::live_search::LiveHit::Artist(id) => Action::Nav(View::Artist(id)),
-            crate::live_search::LiveHit::Playlist(id) => Action::Nav(View::Playlist(id)),
-        };
-        self.dispatch(action, state);
-    }
 }
 
 impl ui::widget::controls::ActionControls for MusicApp {
@@ -1932,7 +1906,11 @@ impl MusicApp {
                 tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenAlbum { id },
             ) => {
-                if !self.lib.albums.contains_key(&id) {
+                if !self.lib.albums.contains_key(&id)
+                    && !self
+                        .live_search
+                        .found(&crate::actions::album_resource_id(&id))
+                {
                     return Err("album is no longer in the library".into());
                 }
                 self.on_nav(View::Album(id));
@@ -1941,7 +1919,11 @@ impl MusicApp {
                 tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenArtist { id },
             ) => {
-                if !self.lib.artists.contains_key(&id) {
+                if !self.lib.artists.contains_key(&id)
+                    && !self
+                        .live_search
+                        .found(&crate::actions::artist_resource_id(&id))
+                {
                     return Err("artist is no longer in the library".into());
                 }
                 self.on_nav(View::Artist(id));
@@ -1950,7 +1932,11 @@ impl MusicApp {
                 tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenPlaylist { id },
             ) => {
-                if self.lib.playlist(&id).is_none() {
+                if self.lib.playlist(&id).is_none()
+                    && !self
+                        .live_search
+                        .found(&crate::actions::playlist_resource_id(&id))
+                {
                     return Err("playlist is no longer in the library".into());
                 }
                 self.on_nav(View::Playlist(id));

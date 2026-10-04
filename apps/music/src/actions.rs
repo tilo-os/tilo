@@ -1739,6 +1739,45 @@ fn catalog_album_resource(album: &CatalogAlbumResource) -> Resource {
     ))
 }
 
+/// An album, artist or playlist the live catalogue found and the library
+/// does not hold, labelled `label`: opening its page at `address` is all it
+/// offers. `None` for any other address.
+pub fn live_catalogue_resource(address: &ActionAddress, label: &str) -> Option<Resource> {
+    if address.action != "open" {
+        return None;
+    }
+    let resource = address.resource.as_str();
+    let (kind, action_label, operation) = if let Some(id) = resource.strip_prefix("music.album:") {
+        (
+            "music.album",
+            "Open album",
+            MusicOperation::OpenAlbum { id: id.to_owned() },
+        )
+    } else if let Some(id) = resource.strip_prefix("music.artist:") {
+        (
+            "music.artist",
+            "Open artist",
+            MusicOperation::OpenArtist { id: id.to_owned() },
+        )
+    } else if let Some(id) = resource.strip_prefix("music.playlist:") {
+        (
+            "music.playlist",
+            "Open playlist",
+            MusicOperation::OpenPlaylist { id: id.to_owned() },
+        )
+    } else {
+        return None;
+    };
+    Some(
+        Resource::new(address.resource.clone(), kind, label).with_action(operation_spec(
+            "open",
+            action_label,
+            OperationKind::View,
+            &operation,
+        )),
+    )
+}
+
 fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
     Resource::new(
         artist_resource_id(&artist.id),

@@ -1654,19 +1654,9 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
             .expect("an album row");
 
         // Activating a hit plays the song, or opens the album's page.
-        ui::search::capability::SearchSource::activate_search_result(
-            &mut app,
-            &song.action_id,
-            &mut doc,
-            &automerge::ROOT,
-        );
+        invoke_hit(&mut app, song, &mut doc);
         assert_eq!(app.pb.current.as_deref(), Some("yt:vid_one"));
-        ui::search::capability::SearchSource::activate_search_result(
-            &mut app,
-            &album.action_id,
-            &mut doc,
-            &automerge::ROOT,
-        );
+        invoke_hit(&mut app, album, &mut doc);
         assert_eq!(app.view, View::Album("MPREdiscovery".into()));
     }
 }
@@ -4236,6 +4226,38 @@ fn app_with_live_results() -> (MusicApp, AutoCommit) {
     (app, doc)
 }
 
+/// Invoke the published action search `hit` names, as the palette does: on
+/// the row a search provider resolves, else on the app's published tree.
+fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, doc: &mut AutoCommit) {
+    let address = hit
+        .action_address()
+        .expect("a hit invokes a published action");
+    let resource = ui::search::capability::search_providers(app)
+        .iter()
+        .find_map(|provider| provider.resolve_action_resource(&address))
+        .or_else(|| ui::resources::PublishesResources::resource(app, doc, &address.resource))
+        .expect("the hit's row resolves");
+    let kind = resource
+        .actions
+        .iter()
+        .find(|action| action.id == address.action)
+        .expect("the hit's action is published")
+        .kind;
+    let encoded = tilo_actions::door::encode(std::slice::from_ref(&resource), &address, None)
+        .expect("the hit's action encodes");
+    app.start_operation(
+        &ui::widget::ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            kind,
+            &encoded.type_id,
+            &encoded.payload,
+        ),
+        doc,
+        &automerge::ROOT,
+    )
+    .expect("the hit's action runs");
+}
+
 fn has_play_of(app: &MusicApp, id: &str) -> bool {
     app.hits
         .iter()
@@ -4256,12 +4278,15 @@ fn artist_and_album_pages_navigate_and_play() {
     {
         let (mut app, mut doc) = app_with_live_results();
         // Activating the artist's search hit opens the artist page.
-        ui::search::capability::SearchSource::activate_search_result(
-            &mut app,
-            "music-live:artist:UCdaftpunk",
-            &mut doc,
-            &automerge::ROOT,
-        );
+        let rows = crate::live_search::rows_of(&sample_bundle());
+        app.live_search.answer("daft punk", &rows);
+        let artist = rows
+            .iter()
+            .find(|row| {
+                row.action_address() == Some(crate::actions::open_artist_address("UCdaftpunk"))
+            })
+            .expect("the artist's hit");
+        invoke_hit(&mut app, artist, &mut doc);
         assert_eq!(app.view, View::Artist("UCdaftpunk".into()));
         // Supply the real artist page (as the worker would) and render it.
         let page = ArtistPage {
