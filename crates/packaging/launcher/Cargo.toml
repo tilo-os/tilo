@@ -97,6 +97,9 @@ package-store = { path = "../package-store", features = ["store"] }
 hex.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
+# A threshold identity record in the store a launch must only read.
+threshold-identity = { path = "../../collab/threshold-identity" }
+getrandom.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
 tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
 
