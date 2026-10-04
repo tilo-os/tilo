@@ -35,9 +35,11 @@ impl Route {
     pub const fn security_summary(self) -> &'static str {
         match self {
             Self::Wine | Self::Proton => {
-                "A private capsule that sees only the files and devices you allow"
+                "It runs in a private capsule that sees only the files and devices you allow."
             }
-            Self::Vm => "Shared with the other Windows apps; files arrive only when you open them",
+            Self::Vm => {
+                "It shares Windows with your other Windows apps. Files reach it only when you open them with it."
+            }
         }
     }
 }
@@ -53,9 +55,9 @@ impl Confidence {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Verified => "Verified",
-            Self::Community => "Community recipe",
+            Self::Community => "Community tested",
             Self::Heuristic => "Best match",
-            Self::Fallback => "Fallback",
+            Self::Fallback => "Untested",
         }
     }
 }
@@ -78,7 +80,7 @@ impl AppStatus {
             Self::NeedsAttention => "Needs attention",
             Self::Installing => "Installing",
             Self::Uninstalling => "Uninstalling",
-            Self::Failed => "Setup failed",
+            Self::Failed => "Setup didn't finish",
             Self::Uninstalled => "Uninstalled, data kept",
         }
     }
@@ -104,7 +106,6 @@ pub struct WindowsApp {
     pub recommended_route: Route,
     pub runner: String,
     pub capsule: String,
-    pub prefix: String,
     pub catalogue_source: String,
     pub confidence: Confidence,
     pub reason: String,
