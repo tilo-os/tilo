@@ -130,9 +130,9 @@ fn catalogue_toolbar_and_sections_share_one_column() {
     }
 }
 
-/// The catalogue has no title of its own, no permanent status pill, and its toolbar fits a narrow window.
+/// The catalogue is titled like every page, has no permanent status pill, and its actions fit a narrow window.
 #[test]
-fn catalogue_has_no_title_no_status_pill_and_a_toolbar_that_fits() {
+fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
     let app = lay_out(store::fixture::seeded_app(), (520.0, 820.0));
     let mut names = Vec::new();
     walk(&*app, &mut |w| {
@@ -141,8 +141,8 @@ fn catalogue_has_no_title_no_status_pill_and_a_toolbar_that_fits() {
         }
     });
     assert!(
-        !names.iter().any(|name| name == "Apps"),
-        "no page title of its own: {names:?}"
+        names.iter().any(|name| name == "Apps"),
+        "the header row names the page: {names:?}"
     );
     assert_eq!(
         names.iter().filter(|name| *name == "App Store").count(),
