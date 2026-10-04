@@ -72,7 +72,7 @@ const GROUPS: &[Group] = &[
             ("Open block menu", "/"),
             ("Link another note", "[["),
             ("Toggle checklist item", "click"),
-            ("Move focused block", "Alt-↑ / Alt-↓"),
+            ("notes-help-block-move", "Alt-↑ / Alt-↓"),
             ("notes-help-code-exit", "Ctrl-Enter"),
             ("notes-help-code-before", "Ctrl-Shift-Enter"),
             ("notes-help-code-copy", "Ctrl-Shift-C"),
