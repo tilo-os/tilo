@@ -1338,7 +1338,7 @@ impl WindowsApp {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
                 .secondary(strings::t("windows-pending-secondary"))
                 .selected(self.page == Page::PendingInstall)
-                .on_activate(queue(&self.intents, Intent::SelectPending));
+                .on_view(queue(&self.intents, Intent::SelectPending));
             if pushed {
                 row = row.disclosure();
             }
@@ -1359,7 +1359,7 @@ impl WindowsApp {
                         .secondary(app.status.label())
                         .meta(app.route.label())
                         .selected(self.page == Page::App && index == self.selected)
-                        .on_activate(queue(&self.intents, Intent::SelectApp(index)));
+                        .on_view(queue(&self.intents, Intent::SelectApp(index)));
                     // Every app row carries a status dot, so the route
                     // beside it keeps one trailing edge down the list.
                     row = match app.status {
@@ -1383,7 +1383,7 @@ impl WindowsApp {
         let mut appliance = ListRow::new("windows-appliance", strings::t("windows-appliance-row"))
             .secondary(appliance_summary(status, self.appliance_owner.has_status()))
             .selected(self.page == Page::Appliance)
-            .on_activate(queue(&self.intents, Intent::SelectAppliance));
+            .on_view(queue(&self.intents, Intent::SelectAppliance));
         appliance = if status.power_state == AppliancePowerState::Running {
             appliance.active()
         } else {
@@ -1744,7 +1744,7 @@ impl WindowsApp {
                 .icon(icon)
                 .secondary(strings::t(detail))
                 .disclosure()
-                .on_activate(queue(intents, intent))
+                .on_effect(queue(intents, intent))
         };
         let mut capsule = destination(
             "windows-confirm-capsule-install",
