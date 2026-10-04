@@ -39,6 +39,8 @@ struct LayerRow {
 struct MaskRow {
     id: String,
     invert: bool,
+    /// Stays put when the layer's marks move.
+    unlinked: bool,
     /// Switched on: the layer shows through it.
     visible: bool,
 }
@@ -72,6 +74,7 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
             mask: art.mask_of(&layer.id).map(|mask| MaskRow {
                 id: mask.id.clone(),
                 invert: mask.invert,
+                unlinked: mask.unlinked,
                 visible: mask.visible,
             }),
             clip: layer.clip,
@@ -413,6 +416,17 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
     if mask.invert {
         invert = invert.primary();
     }
+    let (chain, link) = if mask.unlinked {
+        (Icon::Unlink, "link")
+    } else {
+        (Icon::Link, "unlink")
+    };
+    let link = icon_button(
+        cx,
+        chain,
+        &lookup(&format!("canvas-layer-mask-{link}")),
+        ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), link.into())),
+    );
     Box::new(
         Row::new()
             .with_gap(2.0)
@@ -427,6 +441,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
                 ArtworkResource::SET_LAYER_VISIBLE.with((mask.id.clone(), !mask.visible)),
             )))
             .push(Box::new(invert))
+            .push(Box::new(link))
             .push(Box::new(icon_button(
                 cx,
                 Icon::X,

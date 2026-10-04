@@ -70,6 +70,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
             base: 0.0,
             invert: false,
             clip: false,
+            unlinked: false,
             adjust: None,
         }],
         marks: vec![Mark {

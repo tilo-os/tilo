@@ -111,6 +111,37 @@ fn history(app: &mut TestApp<BoardApp>) -> Value {
 }
 
 #[test]
+fn undo_to_takes_back_every_step_after_a_version() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.call("add", json!({"text": "milk"})).unwrap();
+    app.call("checkpoint", json!({"name": "shopping"})).unwrap();
+    app.call("add", json!({"text": "eggs"})).unwrap();
+    app.call("add", json!({"text": "bread"})).unwrap();
+    app.call("rename", json!({"title": "Plan"})).unwrap();
+
+    let undone = app
+        .call("undo", json!({"to": "shopping"}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(cards(&app), ["milk"]);
+    assert_eq!(undone["undone"].as_array().unwrap().len(), 3, "{undone}");
+
+    // A change id from history works the same, and naming both is refused.
+    app.call("add", json!({"text": "tea"})).unwrap();
+    let listed = history(&mut app);
+    let versions = listed["versions"].as_array().unwrap();
+    let tea = versions.last().unwrap()["change"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    app.call("add", json!({"text": "jam"})).unwrap();
+    app.call("undo", json!({"to": tea})).unwrap();
+    assert_eq!(cards(&app), ["milk", "tea"]);
+    let both = refusal(app.call("undo", json!({"to": "shopping", "steps": 1})));
+    assert!(both.contains("steps or to"), "{both}");
+}
+
+#[test]
 fn undo_and_redo_take_back_the_callers_own_steps() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
     app.call("rename", json!({"title": "Plan"})).unwrap();
