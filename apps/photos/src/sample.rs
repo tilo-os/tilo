@@ -160,7 +160,7 @@ struct Sample {
 /// What a scenario cannot stage with actions: the bytes of every photograph
 /// it shows, put in the capture's content store.
 pub fn put_content(store: &tilo_content::ContentStore) {
-    for sample in harbour().iter().chain(gallery()) {
+    for sample in harbour().into_iter().chain(gallery()) {
         if let Err(error) = store.put(&sample.bytes) {
             tracing::warn!(%error, "photos: could not stage a sample photograph");
         }
@@ -174,18 +174,20 @@ pub fn put_content(store: &tilo_content::ContentStore) {
 const UNREADABLE: &[u8] = b"this is not an image";
 
 /// The photograph every scenario but the empty, loading and error ones opens.
-fn harbour() -> &'static Option<Sample> {
+fn harbour() -> Option<&'static Sample> {
     static HARBOUR: OnceLock<Option<Sample>> = OnceLock::new();
-    HARBOUR.get_or_init(|| {
-        let mut sample = sample("harbour.png", &shots_pattern_variant(1200, 800, 4))?;
-        // An honest capture day joins the newest timeline group instead of
-        // an orphaned "Undated" tile ahead of the collection.
-        sample.photo.captured_at = Some("2026-07-12 18:16".into());
-        sample.photo.folder = Some("Travel 2026".into());
-        sample.photo.people = vec!["Élodie".into(), "Sam".into()];
-        sample.photo.tags = vec!["golden hour".into()];
-        Some(sample)
-    })
+    HARBOUR
+        .get_or_init(|| {
+            let mut sample = sample("harbour.png", &shots_pattern_variant(1200, 800, 4))?;
+            // An honest capture day joins the newest timeline group instead of
+            // an orphaned "Undated" tile ahead of the collection.
+            sample.photo.captured_at = Some("2026-07-12T18:16".into());
+            sample.photo.folder = Some("Travel 2026".into());
+            sample.photo.people = vec!["Élodie".into(), "Sam".into()];
+            sample.photo.tags = vec!["golden hour".into()];
+            Some(sample)
+        })
+        .as_ref()
 }
 
 /// A library worth browsing: the landscape, portrait, square and panoramic
@@ -195,18 +197,18 @@ fn gallery() -> &'static [Sample] {
     static GALLERY: OnceLock<Vec<Sample>> = OnceLock::new();
     GALLERY.get_or_init(|| {
         [
-            ("Harbour dusk", "2026-07-12 20:24"),
-            ("Summer trail", "2026-06-15 09:18"),
-            ("Museum light", "2026-06-15 14:42"),
-            ("Rainy market", "2026-06-16 10:06"),
-            ("Dog at the lake", "2026-07-12 17:30"),
-            ("Window cat", "2026-07-12 08:11"),
-            ("Sunset ferry", "2026-07-12 21:02"),
-            ("Garden supper", "2026-07-12 19:14"),
-            ("Paper lanterns", "2026-07-12 22:09"),
-            ("Mountain lookout", "2026-07-12 11:28"),
-            ("Studio morning", "2026-07-12 07:51"),
-            ("First swim", "2026-07-12 15:45"),
+            ("Harbour dusk", "2026-07-12T20:24"),
+            ("Summer trail", "2026-06-15T09:18"),
+            ("Museum light", "2026-06-15T14:42"),
+            ("Rainy market", "2026-06-16T10:06"),
+            ("Dog at the lake", "2026-07-12T17:30"),
+            ("Window cat", "2026-07-12T08:11"),
+            ("Sunset ferry", "2026-07-12T21:02"),
+            ("Garden supper", "2026-07-12T19:14"),
+            ("Paper lanterns", "2026-07-12T22:09"),
+            ("Mountain lookout", "2026-07-12T11:28"),
+            ("Studio morning", "2026-07-12T07:51"),
+            ("First swim", "2026-07-12T15:45"),
         ]
         .into_iter()
         .enumerate()
