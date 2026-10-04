@@ -39,9 +39,7 @@ ACTION_REGISTRY_DEFINITION = re.compile(
     r"\bfn\s+register\s*\([^)]*\bActionRegistry\b", re.DOTALL
 )
 LIVE_ACTION_REGISTRY_WIRING = re.compile(r"\bactions\s*::\s*register\s*\(")
-TOOLKIT_ACTION_HOST = re.compile(
-    r"\bresource_actions\s*::\s*(?:immediate|background)\s*\("
-)
+TOOLKIT_ACTION_HOST = re.compile(r"\bresource_actions\s*::\s*immediate\s*\(")
 TOOLKIT_RESOURCE_VALUE = re.compile(
     r"\bresource_actions\s*::\s*(?:resource|typed_resource)\s*\("
 )
