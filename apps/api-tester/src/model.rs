@@ -135,14 +135,14 @@ impl Auth {
     /// Stable label for the Auth-mode selector.
     pub fn label(&self) -> &'static str {
         match self {
-            Auth::None => "No Auth",
-            Auth::Bearer { .. } => "Bearer Token",
-            Auth::Basic { .. } => "Basic Auth",
-            Auth::ApiKey { .. } => "API Key",
+            Auth::None => "No auth",
+            Auth::Bearer { .. } => "Bearer token",
+            Auth::Basic { .. } => "Basic auth",
+            Auth::ApiKey { .. } => "API key",
         }
     }
 
-    pub const LABELS: [&'static str; 4] = ["No Auth", "Bearer Token", "Basic Auth", "API Key"];
+    pub const LABELS: [&'static str; 4] = ["No auth", "Bearer token", "Basic auth", "API key"];
 }
 
 /// How the request body is encoded. The Body tab switches between these.
@@ -204,7 +204,7 @@ impl RequestTab {
 pub enum ResponseView {
     Pretty,
     Raw,
-    Preview,
+    Headers,
 }
 
 impl ResponseView {
@@ -212,14 +212,14 @@ impl ResponseView {
         match self {
             ResponseView::Pretty => "Pretty",
             ResponseView::Raw => "Raw",
-            ResponseView::Preview => "Preview",
+            ResponseView::Headers => "Headers",
         }
     }
 
     pub const ALL: [ResponseView; 3] = [
         ResponseView::Pretty,
         ResponseView::Raw,
-        ResponseView::Preview,
+        ResponseView::Headers,
     ];
 }
 
