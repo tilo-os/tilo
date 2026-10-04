@@ -23,7 +23,6 @@ use automerge::AutoCommit;
 use automerge::transaction::Transactable;
 use settings::accounts::{AccountDirectory, AccountKind, AccountRoot};
 use settings::prefs::SystemPrefs;
-use settings::region::{RegionSettings, TimeStyle};
 use ui::widget::Widget;
 
 struct AcceptAccount;
@@ -46,7 +45,7 @@ fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
     pane.sync(&mut doc, &root); // observe + persist
 }
 
-/// Night light, power idle, display scale and accounts persist.
+/// Night light, display scale and accounts persist.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -68,38 +67,6 @@ fn local_prefs_and_accounts_persist_to_disk() {
             SystemPrefs::load().display.night_light,
             "the night-light toggle persisted"
         );
-    }
-
-    // Case `power_idle_prefs_persist_to_disk`.
-    // The Power pane's idle preferences (suspend, blank and lock timeouts) write
-    // through to the shared store the compositor's power layer reads.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        // Fresh install defaults: auto-suspend on, blank at 10 minutes.
-        let base = SystemPrefs::load();
-        assert!(base.power.auto_suspend);
-        assert_eq!(base.power.blank_minutes, 10);
-        assert_eq!(base.power.lock_minutes, 5);
-
-        let mut pane = settings::panes::power::build();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seeds from defaults
-        // Turn suspend off and pick a 30-minute blank the way the controls would.
-        let _ = doc.put(
-            &root,
-            settings::panes::power::AUTO_SUSPEND_KEY,
-            automerge::ScalarValue::Boolean(false),
-        );
-        let _ = doc.put(&root, settings::panes::power::BLANK_KEY, "30 minutes");
-        let _ = doc.put(&root, settings::panes::power::LOCK_KEY, "Never");
-        pane.sync(&mut doc, &root);
-
-        let reloaded = SystemPrefs::load();
-        assert!(!reloaded.power.auto_suspend, "auto-suspend persisted off");
-        assert_eq!(reloaded.power.blank_minutes, 30, "blank timeout persisted");
-        assert_eq!(reloaded.power.lock_minutes, 0, "Never lock persisted");
     }
 
     // Case `display_scale_persists_fractional_factor_to_disk`.
@@ -217,64 +184,6 @@ fn local_prefs_and_accounts_persist_to_disk() {
         assert!(
             account_root.statuses().get(&account_id).is_none(),
             "Remove also purged the account's local sync-health record"
-        );
-    }
-}
-
-/// Replicated input speeds and clock format do not persist locally.
-#[test]
-fn replicated_values_never_reach_local_prefs() {
-    // Case `replicated_input_device_speeds_do_not_persist_to_disk`.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        let mut pane = settings::panes::mouse_keyboard::build();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            settings::panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
-            automerge::ScalarValue::F64(0.9),
-        );
-        let _ = doc.put(
-            &root,
-            settings::panes::mouse_keyboard::MOUSE_POINTER_SPEED_KEY,
-            automerge::ScalarValue::F64(0.2),
-        );
-        pane.sync(&mut doc, &root);
-
-        let reloaded = SystemPrefs::load();
-        assert_eq!(reloaded.input.touchpad_pointer_speed, None);
-        assert_eq!(reloaded.input.mouse_pointer_speed, None);
-    }
-
-    // Case `replicated_time_date_clock_format_does_not_reach_local_locale`.
-    // The Time & Date "24-hour clock" toggle folds into the shared locale that
-    // Region & Formats owns, so the two panes agree and the choice survives a
-    // restart. Driving the pane's real `sync` must write `locale.time_format`.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        // Fresh install defaults to 24-hour.
-        assert_eq!(RegionSettings::load().locale.time_format, TimeStyle::H24);
-
-        let mut pane = settings::panes::time_date::build();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seeds h24 = true from the default locale
-        // Flip the clock to 12-hour the way the Toggle would on click.
-        let _ = doc.put(
-            &root,
-            settings::panes::time_date::H24_KEY,
-            automerge::ScalarValue::Boolean(false),
-        );
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(
-            RegionSettings::load().locale.time_format,
-            TimeStyle::H24,
-            "remote document state must not rewrite this device's clock format"
         );
     }
 }

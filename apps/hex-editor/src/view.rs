@@ -384,7 +384,7 @@ impl HexView {
             {
                 if let Some(live) = &self.live {
                     let state = live.get();
-                    self.model.show_bytes(state.bytes.clone(), &self.saved);
+                    self.model.show_bytes(&state.bytes, &self.saved);
                 }
                 return;
             }
@@ -2172,7 +2172,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             self.matches_truncated = false;
             self.match_idx = None;
         } else {
-            self.model.show_bytes(state.bytes.clone(), &self.saved);
+            self.model.show_bytes(&state.bytes, &self.saved);
             if self.search_needle.is_some() {
                 self.recompute_matches();
             }

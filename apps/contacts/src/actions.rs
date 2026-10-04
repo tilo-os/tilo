@@ -34,12 +34,12 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use ui::tilo_resource::{self, Effect};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
-    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ParamType, Resource,
 };
 
 use crate::doc::ContactsDoc;
@@ -49,7 +49,6 @@ use crate::model::{
 
 /// Registry `type_id` for every contacts action.
 pub const CONTACTS_ACTION_TYPE: &str = "contacts.action";
-pub const CONTACTS_OPERATION_TYPE: &str = "contacts.operation";
 
 /// Stable resource id for one contact. Search, the palette, accessibility and
 /// remote callers all address this same resource rather than translating a
@@ -91,7 +90,7 @@ pub fn group_resource_id(name: &str) -> String {
 
 /// Canonical view action that filters the book to one durable group.
 pub fn open_group_address(name: &str) -> ActionAddress {
-    ActionAddress::new(group_resource_id(name), "open")
+    ActionAddress::new(group_resource_id(name), "open-group")
 }
 
 /// Stable virtual resource for the collaboratively stored favourite flag.
@@ -100,216 +99,69 @@ pub fn open_group_address(name: &str) -> ActionAddress {
 pub const FAVORITES_RESOURCE_ID: &str = "contacts.favorites";
 
 pub fn open_favorites_address() -> ActionAddress {
-    ActionAddress::new(FAVORITES_RESOURCE_ID, "open")
+    ActionAddress::new(FAVORITES_RESOURCE_ID, "open-favorites")
 }
 
 /// The one typed external operation for exporting exactly one contact.  Both
 /// the resource catalogue and the contextual UI encode this value before it
 /// reaches the shared operation handler.
-pub fn export_contact_operation(id: ContactId) -> ContactsOperation {
-    ContactsOperation::ExportContactVcard {
-        id: id.to_string(),
-        path: None,
-    }
+pub fn export_contact_operation(id: ContactId) -> ContactsEffect {
+    ContactsEffect::ExportContact { contact: id }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ContactsOperation {
+/// What Contacts does that is no edit of the address book: showing a
+/// contact, a group or the favorites, reviewing a likely duplicate, and
+/// moving cards in and out through the system file chooser.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "contacts.effect")]
+pub enum ContactsEffect {
+    /// Open contact.
+    #[effect(view, row, idempotent)]
     Open {
-        id: String,
+        #[param("The contact's id")]
+        contact: ContactId,
     },
+    /// Open group.
+    #[effect(view, row, idempotent)]
     OpenGroup {
+        #[param("The group's name")]
         name: String,
     },
+    /// Open favorites.
+    #[effect(view, row, idempotent)]
     OpenFavorites,
-    OpenDuplicateReview {
-        survivor_id: String,
-        source_id: String,
+    /// Review possible duplicate.
+    #[effect(view, row, idempotent)]
+    OpenReview {
+        #[param("The contact that stays")]
+        survivor: ContactId,
+        #[param("The contact merged into it")]
+        source: ContactId,
     },
-    ImportVcard {
-        path: Option<String>,
+    /// Import vCard.
+    #[effect(job)]
+    ImportVcard,
+    /// Export all contacts.
+    #[effect(job, sensitive)]
+    ExportAllVcard,
+    /// Export contact.
+    #[effect(row, sensitive)]
+    ExportContact {
+        #[param("The contact's id")]
+        contact: ContactId,
     },
-    ExportAllVcard {
-        path: Option<String>,
-    },
-    /// Open the export workflow with exactly one current contact selected.
-    /// The optional legacy path is deliberately rejected by the app: file
-    /// access always goes through the system portal.
-    ExportContactVcard {
-        id: String,
-        path: Option<String>,
-    },
-    KeepImportConflict {
+    /// Keep existing contact.
+    #[effect(row, idempotent)]
+    KeepExisting {
+        #[param("The pending import review")]
         token: String,
     },
-    ImportConflictAsNew {
+    /// Import as new contact.
+    #[effect(row, destructive)]
+    ImportAsNew {
+        #[param("The pending import review")]
         token: String,
     },
-}
-
-#[cfg(test)]
-mod file_action_tests {
-    use super::*;
-    /// Contact file operations go through the portal with no host path, are sensitive confirmed background jobs, and only start the export flow.
-    #[test]
-    fn exports_are_portal_mediated_sensitive_background_jobs() {
-        // --- phase: file_operation_is_portal_mediated_and_has_no_host_path_argument ---
-        {
-            let spec = file_operation("import-vcard", "Import vCard", false);
-            assert!(spec.params().is_empty());
-            let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
-            let decoded: ContactsOperation = serde_json::from_slice(&encoded.payload).unwrap();
-            assert_eq!(decoded, ContactsOperation::ImportVcard { path: None });
-            assert!(matches!(
-                spec.contract.execution,
-                ExecutionMode::Background { .. }
-            ));
-            assert_eq!(spec.contract.result, ResultSpec::Job);
-        }
-
-        // --- phase: exports_are_sensitive_confirmed_background_jobs_not_deletes ---
-        {
-            let spec = file_operation("export-all-vcard", "Export all contacts", true);
-            assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
-            assert_eq!(
-                spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            assert_eq!(
-                spec.contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            );
-            assert_eq!(spec.contract.result, ResultSpec::Job);
-            assert!(spec.contract.validate_declaration().is_empty());
-        }
-
-        // --- phase: contact_export_only_starts_the_sensitive_export_flow ---
-        {
-            let operation = ContactsOperation::ExportContactVcard {
-                id: uuid::Uuid::nil().to_string(),
-                path: None,
-            };
-            let spec = contact_operation(
-                "export-contact",
-                "Export contact",
-                OperationKind::Effect,
-                &operation,
-            )
-            .expect("contact export has a typed operation");
-            assert_eq!(spec.contract.risk, tilo_actions::RiskLevel::Sensitive);
-            assert_eq!(
-                spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            assert_eq!(spec.contract.execution, ExecutionMode::Immediate);
-            assert_eq!(spec.contract.result, ResultSpec::None);
-            assert!(spec.contract.validate_declaration().is_empty());
-        }
-    }
-}
-
-fn contact_operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    operation: &ContactsOperation,
-) -> Option<ActionSpec> {
-    let spec = ActionSpec::operation(id, label, kind, CONTACTS_OPERATION_TYPE, operation).ok()?;
-    match operation {
-        ContactsOperation::Open { .. }
-        | ContactsOperation::OpenGroup { .. }
-        | ContactsOperation::OpenFavorites
-        | ContactsOperation::OpenDuplicateReview { .. }
-        | ContactsOperation::KeepImportConflict { .. } => {
-            Some(spec.retry_policy(RetryPolicy::Idempotent))
-        }
-        // These invocations synchronously enqueue a host-portal request and
-        // return. The app has no durable job handle or cancellation channel,
-        // so advertising a cancellable background lifecycle would be false.
-        ContactsOperation::ImportVcard { .. } => Some(spec),
-        ContactsOperation::ExportAllVcard { .. } => Some(spec.with_contract(export_contract())),
-        ContactsOperation::ExportContactVcard { .. } => {
-            Some(spec.with_contract(export_flow_contract()))
-        }
-        ContactsOperation::ImportConflictAsNew { .. } => Some(spec.destructive()),
-    }
-}
-
-/// Writing a vCard is privacy-sensitive, not destructive: it leaves the
-/// Contacts document unchanged while disclosing a copy through a
-/// user-mediated portal.
-fn export_contract() -> ActionContract {
-    ActionContract {
-        risk: tilo_actions::RiskLevel::Sensitive,
-        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-        // The system picker cannot be cancelled by the app after it is open;
-        // cancellation settles through the invocation lifecycle instead.
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    }
-}
-
-/// A single-contact resource first opens a version-and-destination workflow.
-/// That is a completed, confirmation-gated UI transition, not yet a portal
-/// job. Once the person confirms a version, the mediated file write follows
-/// the same sensitive background job contract as book export.
-fn export_flow_contract() -> ActionContract {
-    ActionContract {
-        risk: tilo_actions::RiskLevel::Sensitive,
-        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-        execution: ExecutionMode::Immediate,
-        result: ResultSpec::None,
-        ..ActionContract::default()
-    }
-}
-
-/// Book-level import / export Effects (no document delta). Published via
-/// [`crate::resource::Contacts::local_operations`].
-pub(crate) fn book_effect_specs() -> Vec<ActionSpec> {
-    vec![
-        file_operation("import-vcard", "Import vCard", false),
-        file_operation("export-all-vcard", "Export all contacts", true),
-    ]
-}
-
-pub(crate) fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "system file picker",
-        OperationKind::Effect,
-        CONTACTS_OPERATION_TYPE,
-        vec![],
-        move |_: &ActionArgs| {
-            let operation = if export {
-                ContactsOperation::ExportAllVcard { path: None }
-            } else {
-                ContactsOperation::ImportVcard { path: None }
-            };
-            EncodedAction::encode_operation(CONTACTS_OPERATION_TYPE, &operation).unwrap_or_else(
-                |error| EncodedAction {
-                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                    payload: format!("contacts file operation could not be serialized: {error}")
-                        .into_bytes(),
-                },
-            )
-        },
-    )
-    .with_contract(if export {
-        export_contract()
-    } else {
-        ActionContract {
-            risk: tilo_actions::RiskLevel::Low,
-            confirmation: tilo_actions::ConfirmationPolicy::None,
-            // The host picker has no cancellation API. The app can stop waiting
-            // for an outcome, but cannot close the native dialog or interrupt an
-            // already-started read/write; advertising cancellation would be false.
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        }
-    })
 }
 
 /// A serializable snapshot of a contact's fields, in exactly the representation
@@ -1050,10 +902,10 @@ pub fn open_duplicate_review_address(
 /// the destructive merge still requires the field-by-field confirmation in
 /// the review surface.
 #[must_use]
-pub fn open_duplicate_review_operation(candidate: &DuplicateCandidate) -> ContactsOperation {
-    ContactsOperation::OpenDuplicateReview {
-        survivor_id: candidate.survivor_id.to_string(),
-        source_id: candidate.source_id.to_string(),
+pub fn open_duplicate_review_operation(candidate: &DuplicateCandidate) -> ContactsEffect {
+    ContactsEffect::OpenReview {
+        survivor: candidate.survivor_id,
+        source: candidate.source_id,
     }
 }
 
@@ -1423,14 +1275,12 @@ pub fn contact_resource(contact: &Contact) -> Resource {
         "contacts.contact",
         contact.display_name(),
     );
-    if let Some(open) = contact_operation(
-        "open",
-        "Open contact",
-        OperationKind::View,
-        &ContactsOperation::Open { id: id.clone() },
-    ) {
-        child = child.with_action(open);
-    }
+    child = child.with_action(
+        ContactsEffect::Open {
+            contact: contact.id,
+        }
+        .bound(),
+    );
 
     child = child.with_action(patch_spec(contact));
 
@@ -1487,14 +1337,7 @@ pub fn contact_resource(contact: &Contact) -> Resource {
     // contact resource rather than only to the book-level export-all action.
     // The app opens the same version/portal workflow as the row context menu;
     // no unmediated filesystem path is ever accepted.
-    if let Some(spec) = contact_operation(
-        "export-contact",
-        "Export contact",
-        OperationKind::Effect,
-        &export_contact_operation(contact.id),
-    ) {
-        child = child.with_action(spec);
-    }
+    child = child.with_action(export_contact_operation(contact.id).bound());
 
     // Delete.
     child = child.with_action(
@@ -1508,16 +1351,8 @@ pub fn contact_resource(contact: &Contact) -> Resource {
 /// canonical view action. Rich edit actions are published from the
 /// resource's state, not copied into the search index.
 pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
-    let mut resource = Resource::new(contact_resource_id(id), "contacts.contact", label);
-    if let Some(open) = contact_operation(
-        "open",
-        "Open contact",
-        OperationKind::View,
-        &ContactsOperation::Open { id: id.to_string() },
-    ) {
-        resource = resource.with_action(open);
-    }
-    resource
+    Resource::new(contact_resource_id(id), "contacts.contact", label)
+        .with_action(ContactsEffect::Open { contact: id }.bound())
 }
 
 /// Resource and canonical view action for a durable membership group. Groups
@@ -1526,28 +1361,22 @@ pub fn contact_open_resource(id: ContactId, label: &str) -> Resource {
 /// new collaborative state.
 pub fn group_resource(name: &str) -> Resource {
     let name = name.trim();
-    let operation = ContactsOperation::OpenGroup {
-        name: name.to_string(),
-    };
-    let mut group = Resource::new(
+    Resource::new(
         group_resource_id(name),
         "contacts.group",
         format!("Group: {name}"),
-    );
-    if let Some(open) = contact_operation("open", "Open group", OperationKind::View, &operation) {
-        group = group.with_action(open);
-    }
-    group
+    )
+    .with_action(
+        ContactsEffect::OpenGroup {
+            name: name.to_string(),
+        }
+        .bound(),
+    )
 }
 
 pub fn favorites_resource() -> Resource {
-    let operation = ContactsOperation::OpenFavorites;
-    let mut resource = Resource::new(FAVORITES_RESOURCE_ID, "contacts.favorites", "Favorites");
-    if let Some(open) = contact_operation("open", "Open favorites", OperationKind::View, &operation)
-    {
-        resource = resource.with_action(open);
-    }
-    resource
+    Resource::new(FAVORITES_RESOURCE_ID, "contacts.favorites", "Favorites")
+        .with_action(ContactsEffect::OpenFavorites.bound())
 }
 
 /// The reviewed merge of `source` into `survivor`, offered on their
@@ -1600,14 +1429,7 @@ pub fn duplicate_resource(
             source.display_name()
         ),
     );
-    if let Some(open) = contact_operation(
-        "open-review",
-        "Review possible duplicate",
-        OperationKind::View,
-        &open_duplicate_review_operation(candidate),
-    ) {
-        resource = resource.with_action(open);
-    }
+    resource = resource.with_action(open_duplicate_review_operation(candidate).bound());
     resource.with_action(ui::tilo_resource::declaration_spec(&merge_declaration(
         survivor, source,
     )))
@@ -1687,34 +1509,17 @@ pub fn import_conflict_resource_id(token: &str) -> String {
 /// not document state: an untrusted card never enters the shared book before
 /// the person chooses to keep the existing contact or import it as new.
 pub(crate) fn import_conflict_row(token: &str, incoming_name: &str) -> ui::framework::LiveRow {
-    let mut row = ui::framework::LiveRow::new(
+    ui::framework::LiveRow::new(
         import_conflict_resource_id(token),
         "contacts.import-conflict",
         format!("Import review: {incoming_name}"),
-    );
-    let keep = ContactsOperation::KeepImportConflict {
+    )
+    .effect(&ContactsEffect::KeepExisting {
         token: token.to_owned(),
-    };
-    let import_as_new = ContactsOperation::ImportConflictAsNew {
+    })
+    .effect(&ContactsEffect::ImportAsNew {
         token: token.to_owned(),
-    };
-    if let Some(spec) = contact_operation(
-        "keep-existing",
-        "Keep existing contact",
-        OperationKind::Effect,
-        &keep,
-    ) {
-        row = row.operation(spec);
-    }
-    if let Some(spec) = contact_operation(
-        "import-as-new",
-        "Import as new contact",
-        OperationKind::Effect,
-        &import_as_new,
-    ) {
-        row = row.operation(spec);
-    }
-    row
+    })
 }
 
 #[cfg(test)]
@@ -1723,6 +1528,7 @@ mod tests {
     use crate::resource::{Contacts, sample_book};
     use automerge::AutoCommit;
     use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ExecutionMode, ResultSpec};
     use tilo_automerge::ApplyIncoming;
     use ui::tilo_resource::Resource as _;
 
@@ -1854,7 +1660,7 @@ mod tests {
                 .find(|resource| resource.kind == "contacts.group")
                 .expect("a durable group resource");
             assert!(
-                group.actions.iter().any(|action| action.id == "open"),
+                group.actions.iter().any(|action| action.id == "open-group"),
                 "groups export their canonical open action"
             );
 
@@ -1976,15 +1782,14 @@ mod tests {
             ));
             assert_eq!(export_spec.contract.execution, ExecutionMode::Immediate);
             assert_eq!(export_spec.contract.result, ResultSpec::None);
-            let export: ContactsOperation = serde_json::from_slice(
+            let export = ContactsEffect::from_payload(
                 &ui::testing::action_contract::spec_encoding(export_spec, None).payload,
             )
-            .expect("export operation payload is typed");
+            .expect("export payload is typed");
             assert_eq!(
                 export,
-                ContactsOperation::ExportContactVcard {
-                    id: id.to_string(),
-                    path: None,
+                ContactsEffect::ExportContact {
+                    contact: id.parse().unwrap(),
                 }
             );
         }

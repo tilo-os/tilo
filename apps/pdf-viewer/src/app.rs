@@ -1249,14 +1249,14 @@ impl PdfApp {
         state: &mut AutoCommit,
         action: &crate::actions::PdfViewerAction,
     ) {
-        if self.read_only {
+        let Some(dispatcher) = self.dispatcher.as_ref() else {
+            return;
+        };
+        if !dispatcher.may_apply(action) {
             self.status_note = Some("You can view this document but not change it".to_string());
             self.dirty = true;
             return;
         }
-        let Some(dispatcher) = self.dispatcher.as_ref() else {
-            return;
-        };
         if let Err(error) = dispatcher.apply_now_with(
             state,
             action,

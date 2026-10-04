@@ -567,6 +567,15 @@ impl Store {
         removed
     }
 
+    /// The order a new folder takes: after the last one.
+    pub fn next_folder_order(&self) -> u32 {
+        self.folders
+            .iter()
+            .map(|f| f.order)
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+
     pub fn next_feed_order(&self, folder: Option<Id>) -> u32 {
         self.feeds
             .iter()

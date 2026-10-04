@@ -147,6 +147,7 @@ pub use resource::{
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
 pub use text::{PlainText, TextEdit};
+pub use tilo_actions::PermissionRequirement;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.

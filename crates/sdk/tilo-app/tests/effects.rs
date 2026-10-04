@@ -746,3 +746,55 @@ pub enum LocalFolders {
     /// Forget a folder.
     Forget { path: String },
 }
+
+/// The mailbox, opened on a folder: `mailbox sent` shows the sent folder.
+struct FolderApp;
+
+impl ResourceApp for FolderApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-folder";
+    const TITLE: &'static str = "Folder";
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        MailApp::view(cx)
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Mailbox>> {
+        match input.argument() {
+            Some("sent") => vec![Invoke::effect(&MailEffect::ShowSent)],
+            Some("fetch") => vec![Invoke::effect(&MailEffect::Fetch {
+                from: "a launch".into(),
+            })],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A launch that shows something invokes a view effect through the same
+/// door as a control: a viewer, who may not edit, still gets the folder it
+/// opened, while an effect that needs write access is refused to them.
+#[test]
+fn a_launch_invokes_a_view_effect_even_for_a_viewer() {
+    let shown = |app: &mut TestApp<FolderApp>| app.harness().inspection_json().unwrap();
+
+    let mut viewer = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+        .unwrap()
+        .relaunch(&["sent"])
+        .unwrap();
+    viewer.settle();
+    let seen = shown(&mut viewer);
+    assert!(seen.contains("Showing sent"), "{seen}");
+    assert!(!seen.contains("Refused"), "{seen}");
+
+    let mut fetcher = TestApp::<FolderApp>::with_role(tilo_app::Role::Viewer)
+        .unwrap()
+        .relaunch(&["fetch"])
+        .unwrap();
+    fetcher.settle();
+    assert_eq!(
+        fetcher.state().fetched,
+        "",
+        "a viewer's launch fetches nothing"
+    );
+}

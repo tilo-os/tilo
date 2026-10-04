@@ -410,6 +410,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create: owned_declared_directory_factory,
     };
     let permissions = Rc::new(RefCell::new(

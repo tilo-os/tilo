@@ -4302,14 +4302,8 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         // the test doesn't depend on the host's `LANG` (nextest runs each test
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
-        // Persist added words to a throwaway file rather than the real
-        // `~/.config/tilo/userdict.txt`.
-        let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
-        let userdict = tmp.join("userdict.txt");
-
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
-        wp.proofing.user_dictionary = Some(userdict.clone());
         wp.sync(&mut state.doc, &state.root);
         // "qwordz" is not a real word → flagged. Followed by a valid word.
         wp.model_mut().insert_str(&mut state.doc, "qwordz quick");
@@ -4360,19 +4354,10 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
             "the word is recorded in the (owned) dictionary"
         );
         assert_eq!(
-            std::fs::read_to_string(&userdict).ok().as_deref(),
-            Some("qwordz"),
-            "the added word persists to the person's word list"
+            wp.proofing.personal_words.dictionary_words,
+            ["qwordz"],
+            "the word joins the person's own words"
         );
-
-        // A widget opened later starts with the persisted word already known.
-        let mut reopened = WordProcessorWidget::detached();
-        reopened.proofing.user_dictionary = Some(userdict);
-        assert!(
-            reopened.block_spell_spans("b", "qwordz quick").is_empty(),
-            "a persisted word is not flagged in a new session"
-        );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // Phase: right_click_suggestion_replaces_the_word.

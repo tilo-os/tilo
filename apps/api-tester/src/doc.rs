@@ -121,8 +121,10 @@ impl ApiDoc {
         if Self::is_tombstoned(doc, root, COLLECTION_TOMBSTONES_KEY, id) {
             return;
         }
+        let position = Self::next_position(doc, root, COLLECTION_FIELDS_KEY);
         if let Some(map) = Self::native_record_map(doc, root, COLLECTION_FIELDS_KEY, id) {
             Self::put_string_if_changed(doc, &map, "name", name);
+            Self::place(doc, &map, position);
         }
     }
 
@@ -138,8 +140,10 @@ impl ApiDoc {
         if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, id) {
             return;
         }
+        let position = Self::next_position(doc, root, ENVIRONMENT_FIELDS_KEY);
         if let Some(map) = Self::native_record_map(doc, root, ENVIRONMENT_FIELDS_KEY, id) {
             Self::put_string_if_changed(doc, &map, "name", name);
+            Self::place(doc, &map, position);
         }
     }
 
@@ -355,7 +359,7 @@ impl ApiDoc {
     /// Read collections from every concurrently-created root. Any live
     /// tombstone wins over an old record from another root.
     pub fn collections(doc: &AutoCommit, root: &ObjId) -> Vec<Collection> {
-        let mut records: Vec<Collection> = Vec::new();
+        let mut records: Vec<(u64, Collection)> = Vec::new();
         for fields in Self::record_roots(doc, root, COLLECTION_FIELDS_KEY) {
             for id in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, COLLECTION_TOMBSTONES_KEY, &id) {
@@ -367,17 +371,21 @@ impl ApiDoc {
                     continue;
                 };
                 let name = Self::read_text(doc, &map, "name");
-                if let Some(record) = records.iter_mut().find(|record| record.id == uuid) {
+                if let Some((_, record)) = records.iter_mut().find(|(_, record)| record.id == uuid)
+                {
                     if !name.is_empty() {
                         record.name = name;
                     }
                 } else {
-                    records.push(Collection {
-                        id: uuid,
-                        name,
-                        requests: Vec::new(),
-                        expanded: true,
-                    });
+                    records.push((
+                        Self::position(doc, &map),
+                        Collection {
+                            id: uuid,
+                            name,
+                            requests: Vec::new(),
+                            expanded: true,
+                        },
+                    ));
                 }
             }
         }
@@ -408,12 +416,16 @@ impl ApiDoc {
                 }
             }
         }
-        for collection in &mut records {
-            collection.requests = by_collection
-                .remove(&collection.id.to_string())
-                .unwrap_or_default();
-        }
+        records.sort_by_key(|(position, collection)| (*position, collection.id));
         records
+            .into_iter()
+            .map(|(_, mut collection)| {
+                collection.requests = by_collection
+                    .remove(&collection.id.to_string())
+                    .unwrap_or_default();
+                collection
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -458,7 +470,7 @@ impl ApiDoc {
     }
 
     pub fn environments(doc: &AutoCommit, root: &ObjId) -> Vec<Environment> {
-        let mut records: Vec<Environment> = Vec::new();
+        let mut records: Vec<(u64, Environment)> = Vec::new();
         for fields in Self::record_roots(doc, root, ENVIRONMENT_FIELDS_KEY) {
             for id in doc.keys(&fields) {
                 if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, &id) {
@@ -470,16 +482,20 @@ impl ApiDoc {
                     continue;
                 };
                 let name = Self::read_text(doc, &map, "name");
-                if let Some(record) = records.iter_mut().find(|record| record.id == uuid) {
+                if let Some((_, record)) = records.iter_mut().find(|(_, record)| record.id == uuid)
+                {
                     if !name.is_empty() {
                         record.name = name;
                     }
                 } else {
-                    records.push(Environment {
-                        id: uuid,
-                        name,
-                        variables: Vec::new(),
-                    });
+                    records.push((
+                        Self::position(doc, &map),
+                        Environment {
+                            id: uuid,
+                            name,
+                            variables: Vec::new(),
+                        },
+                    ));
                 }
             }
         }
@@ -534,12 +550,16 @@ impl ApiDoc {
                 .or_default()
                 .push(record.variable);
         }
-        for environment in &mut records {
-            environment.variables = by_environment
-                .remove(&environment.id.to_string())
-                .unwrap_or_default();
-        }
+        records.sort_by_key(|(position, environment)| (*position, environment.id));
         records
+            .into_iter()
+            .map(|(_, mut environment)| {
+                environment.variables = by_environment
+                    .remove(&environment.id.to_string())
+                    .unwrap_or_default();
+                environment
+            })
+            .collect()
     }
 
     pub fn set_active_env(doc: &mut AutoCommit, root: &ObjId, id: Option<&str>) {
@@ -657,6 +677,44 @@ impl ApiDoc {
         // has replicated. Keep it visible until the list catches up.
         ordered.extend(by_id.into_values());
         ordered
+    }
+
+    /// The position a record created now in `store` takes: after every
+    /// record it already holds, so lists keep the order they were made in.
+    fn next_position(doc: &AutoCommit, root: &ObjId, store: &str) -> u64 {
+        Self::record_roots(doc, root, store)
+            .iter()
+            .flat_map(|fields| {
+                doc.keys(fields)
+                    .filter_map(|id| match doc.get(fields, &id).ok().flatten() {
+                        Some((Value::Object(ObjType::Map), map)) => {
+                            Some(Self::position(doc, &map).saturating_add(1))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Give a record its position once; renaming it later keeps its place.
+    fn place(doc: &mut AutoCommit, map: &ObjId, position: u64) {
+        if doc.get(map, "position").ok().flatten().is_none() {
+            let _ = doc.put(map, "position", position);
+        }
+    }
+
+    /// Where a record sits in its list.
+    fn position(doc: &AutoCommit, map: &ObjId) -> u64 {
+        match doc.get(map, "position").ok().flatten() {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Uint(position) => *position,
+                ScalarValue::Int(position) => u64::try_from(*position).unwrap_or(0),
+                _ => 0,
+            },
+            _ => 0,
+        }
     }
 
     fn record_roots(doc: &AutoCommit, root: &ObjId, key: &str) -> Vec<ObjId> {
@@ -1146,6 +1204,38 @@ mod tests {
         request_snapshot_round_trips();
         url_text_is_live_and_editable();
         history_keeps_the_newest_first_order_while_records_stay_keyed();
+        collections_and_environments_keep_the_order_they_were_made_in();
+    }
+
+    /// Case of `records_round_trip_through_the_document`.
+    fn collections_and_environments_keep_the_order_they_were_made_in() {
+        let mut d = AutoCommit::new();
+        let root = automerge::ROOT;
+        // Ids that sort the other way round from the order they are made in.
+        let ids = [
+            "ffffffff-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "88888888-0000-4000-8000-000000000003",
+        ];
+        for (index, id) in ids.iter().enumerate() {
+            ApiDoc::create_collection(&mut d, &root, id, &format!("Collection {index}"));
+            ApiDoc::create_environment(&mut d, &root, id, &format!("Environment {index}"));
+        }
+        // Renaming keeps a record's place.
+        ApiDoc::rename_collection(&mut d, &root, ids[0], "First");
+        let collections: Vec<String> = ApiDoc::collections(&d, &root)
+            .into_iter()
+            .map(|collection| collection.name)
+            .collect();
+        assert_eq!(collections, ["First", "Collection 1", "Collection 2"]);
+        let environments: Vec<String> = ApiDoc::environments(&d, &root)
+            .into_iter()
+            .map(|environment| environment.name)
+            .collect();
+        assert_eq!(
+            environments,
+            ["Environment 0", "Environment 1", "Environment 2"]
+        );
     }
 
     /// Case of `records_round_trip_through_the_document`.

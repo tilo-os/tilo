@@ -147,18 +147,6 @@ impl ui::widget::Decorator for VersionPreview {
         "VersionPreview"
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        let node = self.canvas.build_layout(taffy, theme, node_map);
-        // The host reaches the canvas through this view of it.
-        ui::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let wanted = self.preview.with(Clone::clone);
         if wanted.as_deref() != self.shown.as_ref().map(|(version, _)| version.as_str()) {

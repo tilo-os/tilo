@@ -162,20 +162,6 @@ impl Decorator for OskSurface {
         &mut self.keyboard
     }
 
-    /// The keyboard's node is the surface's: the window finds the surface
-    /// where the keyboard is laid out, so a control operated there (an
-    /// assistive technology's key press) reaches the keyboard through it.
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        let node = self.keyboard.build_layout(taffy, theme, node_map);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Some(focus) = &mut self.focus {
             for transition in focus.take() {

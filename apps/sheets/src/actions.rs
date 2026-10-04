@@ -385,7 +385,8 @@ pub enum SheetsAction {
         sheet_id: String,
         chart_id: String,
     },
-    /// One threaded annotation lives at a stable cell/range anchor.
+    /// One threaded annotation lives at a stable cell/range anchor. Its
+    /// author is whoever invokes the action.
     PutComment {
         sheet: usize,
         sheet_id: String,
@@ -394,15 +395,14 @@ pub enum SheetsAction {
         r0: u32,
         c1: u32,
         r1: u32,
-        author: String,
         body: String,
     },
+    /// A reply to a comment thread, by whoever invokes the action.
     ReplyComment {
         sheet: usize,
         sheet_id: String,
         comment_id: String,
         reply_id: String,
-        author: String,
         body: String,
     },
     EditComment {
@@ -868,10 +868,10 @@ impl Action for SheetsAction {
                 r0,
                 c1,
                 r1,
-                author,
                 body,
                 ..
             } => {
+                let author = invoking_author(doc);
                 SheetsDoc::put_comment(
                     doc,
                     resolve_sheet(doc, sheet_id)?,
@@ -879,7 +879,7 @@ impl Action for SheetsAction {
                         id: comment_id.clone(),
                         start: (*c0, *r0),
                         end: (*c1, *r1),
-                        author: author.clone(),
+                        author,
                         body: body.clone(),
                         resolved: false,
                         replies: Vec::new(),
@@ -890,10 +890,10 @@ impl Action for SheetsAction {
                 sheet_id,
                 comment_id,
                 reply_id,
-                author,
                 body,
                 ..
             } => {
+                let author = invoking_author(doc);
                 let sheet = resolve_sheet(doc, sheet_id)?;
                 if SheetsDoc::comments(doc, sheet)
                     .iter()
@@ -905,7 +905,7 @@ impl Action for SheetsAction {
                         comment_id,
                         &CommentReply {
                             id: reply_id.clone(),
-                            author: author.clone(),
+                            author,
                             body: body.clone(),
                         },
                     );
@@ -988,6 +988,16 @@ fn apply_set_formats(doc: &mut Doc, sheet: usize, cells: &[FormatWrite]) {
     for w in cells {
         SheetsDoc::set_cell_format(doc, sheet, (w.col, w.row), CellFormat::from_str(&w.fmt));
     }
+}
+
+/// Who invoked the action applying now: the author a comment is signed
+/// with, pinned with the action so every replica signs it alike. Empty for
+/// an edit written with no invoker.
+fn invoking_author(doc: &Doc) -> String {
+    ui::tilo_resource::ActionCx::for_write(doc, &[])
+        .author()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn refuse(message: impl Into<String>) -> Result<(), ActionError> {
@@ -1425,13 +1435,11 @@ fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> 
             r0,
             c1,
             r1,
-            author,
             body,
         } => {
             validate_sheet(doc, *sheet, sheet_id)?;
             if Uuid::parse_str(comment_id).is_err()
                 || !valid_range(*c0, *r0, *c1, *r1)
-                || !valid_annotation(author)
                 || !valid_annotation(body)
             {
                 return refuse("comment payload is invalid");
@@ -1443,13 +1451,11 @@ fn validate_action(doc: &Doc, action: &SheetsAction) -> Result<(), ActionError> 
             sheet_id,
             comment_id,
             reply_id,
-            author,
             body,
         } => {
             validate_sheet(doc, *sheet, sheet_id)?;
             if Uuid::parse_str(comment_id).is_err()
                 || Uuid::parse_str(reply_id).is_err()
-                || !valid_annotation(author)
                 || !valid_annotation(body)
             {
                 return refuse("comment reply payload is invalid");
@@ -1738,7 +1744,6 @@ pub fn put_comment_action(
     sheet_id: impl Into<String>,
     start: Addr,
     end: Addr,
-    author: &str,
     body: &str,
 ) -> SheetsAction {
     SheetsAction::PutComment {
@@ -1749,7 +1754,6 @@ pub fn put_comment_action(
         r0: start.1,
         c1: end.0,
         r1: end.1,
-        author: author.to_string(),
         body: body.to_string(),
     }
 }
@@ -1758,7 +1762,6 @@ pub fn reply_comment_action(
     sheet: usize,
     sheet_id: impl Into<String>,
     comment_id: impl Into<String>,
-    author: &str,
     body: &str,
 ) -> SheetsAction {
     SheetsAction::ReplyComment {
@@ -1766,7 +1769,6 @@ pub fn reply_comment_action(
         sheet_id: sheet_id.into(),
         comment_id: comment_id.into(),
         reply_id: Uuid::new_v4().to_string(),
-        author: author.to_string(),
         body: body.to_string(),
     }
 }
@@ -2195,46 +2197,54 @@ fn sheet_document_resource(
                 row: thread.start.1,
             },
         ))
-        .with_action(ActionSpec::prompted(
-            "edit",
-            "Edit comment",
-            "Comment",
-            "comment…",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                let comment_id = comment_id.clone();
-                move |body: &str| {
-                    encode(&edit_comment_action(
-                        idx,
-                        stable.clone(),
-                        comment_id.clone(),
-                        body.trim(),
-                    ))
-                }
-            },
-        ))
-        .with_action(ActionSpec::prompted(
-            "reply",
-            "Reply to comment",
-            "Reply",
-            "reply…",
-            ExecutionLocus::ClientLocal,
-            {
-                let stable = stable.clone();
-                let comment_id = comment_id.clone();
-                move |body: &str| {
-                    encode(&reply_comment_action(
-                        idx,
-                        stable.clone(),
-                        comment_id.clone(),
-                        "You",
-                        body.trim(),
-                    ))
-                }
-            },
-        ))
-        .with_action(immediate_spec("toggle-resolved", label, &action))
+        .with_action(
+            ActionSpec::prompted(
+                "edit",
+                "Edit comment",
+                "Comment",
+                "comment…",
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let comment_id = comment_id.clone();
+                    move |body: &str| {
+                        encode(&edit_comment_action(
+                            idx,
+                            stable.clone(),
+                            comment_id.clone(),
+                            body.trim(),
+                        ))
+                    }
+                },
+            )
+            .requiring(tilo_actions::PermissionRequirement::Comment),
+        )
+        .with_action(
+            ActionSpec::prompted(
+                "reply",
+                "Reply to comment",
+                "Reply",
+                "reply…",
+                ExecutionLocus::ClientLocal,
+                {
+                    let stable = stable.clone();
+                    let comment_id = comment_id.clone();
+                    move |body: &str| {
+                        encode(&reply_comment_action(
+                            idx,
+                            stable.clone(),
+                            comment_id.clone(),
+                            body.trim(),
+                        ))
+                    }
+                },
+            )
+            .requiring(tilo_actions::PermissionRequirement::Comment),
+        )
+        .with_action(
+            immediate_spec("toggle-resolved", label, &action)
+                .requiring(tilo_actions::PermissionRequirement::Comment),
+        )
         .with_action(immediate_spec(
             "delete",
             "Delete comment",
