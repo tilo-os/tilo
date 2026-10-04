@@ -65,6 +65,10 @@ collect() {
     > "$out/session-journal.txt" 2>&1 || true
   "$vm" ssh 'systemctl --failed --no-pager; systemctl --user --failed --no-pager' \
     > "$out/failed-units.txt" 2>&1 || true
+  # The compositor logs to the session's state directory, not the journal; it
+  # alone says why a session ended right after login.
+  "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
+    > "$out/compositor-session.log" 2>&1 || true
   "$vm" ssh "ls -la $identity_dir /var/lib/tilo /var/lib/tilo/device /var/lib/tilo/device/certs \
     /var/lib/tilo/device-private /var/lib/tilo/user-identity; id" \
     > "$out/identity-layout.txt" 2>&1 || true
