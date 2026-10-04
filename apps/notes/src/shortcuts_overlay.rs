@@ -30,7 +30,7 @@ const GROUPS: &[Group] = &[
     Group {
         label: "Navigation",
         rows: &[
-            ("Jump to note", "Cmd-K / Ctrl-K"),
+            ("Jump to note", "{cmd:K}"),
             ("Back / forward note", "Alt-← / Alt-→"),
             ("Move selection up / down", "↑ / ↓"),
             ("Collapse / expand note", "← / →"),
@@ -41,28 +41,28 @@ const GROUPS: &[Group] = &[
     Group {
         label: "Editing",
         rows: &[
-            ("Find in note", "Cmd-F / Ctrl-F"),
+            ("Find in note", "{cmd:F}"),
             ("New paragraph", "Enter"),
             ("notes-help-outline-indent", "Tab / Shift-Tab"),
-            ("notes-help-block-indent", "Ctrl-] / Ctrl-["),
+            ("notes-help-block-indent", "{cmd:]} / {cmd:[}"),
             ("Open block menu", "/"),
             ("Link another note", "[["),
             ("Toggle checklist item", "click"),
             ("Move focused block", "Alt-↑ / Alt-↓"),
-            ("notes-help-code-exit", "Ctrl-Enter"),
-            ("notes-help-code-before", "Ctrl-Shift-Enter"),
-            ("notes-help-code-copy", "Ctrl-Shift-C"),
+            ("notes-help-code-exit", "{cmd:Enter}"),
+            ("notes-help-code-before", "{cmd+shift:Enter}"),
+            ("notes-help-code-copy", "{cmd+shift:C}"),
             ("notes-help-code-indent", "Tab / Shift-Tab"),
             ("notes-help-code-blank", "Shift-Enter"),
-            ("notes-help-code-select", "Ctrl-A"),
+            ("notes-help-code-select", "{cmd:A}"),
         ],
     },
     Group {
         label: "Formatting",
         rows: &[
-            ("Bold", "**text** or Ctrl-B"),
-            ("Italic", "*text* or Ctrl-I"),
-            ("Inline code", "`text` or Ctrl-E"),
+            ("Bold", "**text** or {cmd:B}"),
+            ("Italic", "*text* or {cmd:I}"),
+            ("Inline code", "`text` or {cmd:E}"),
             ("Heading 1 / 2 / 3", "# / ## / ###"),
             ("Quote", "> "),
             ("notes-help-code", "```python ↵"),
@@ -75,7 +75,7 @@ const GROUPS: &[Group] = &[
         label: "Notes",
         rows: &[
             ("New note", "+ button"),
-            ("New child of selected", "Cmd-N / Ctrl-N"),
+            ("New child of selected", "{cmd:N}"),
             ("Indent / outdent note", "Tab / Shift-Tab"),
             ("Reorder note up / down", "Alt-↑ / Alt-↓"),
             ("Rename note", "double-click / F2"),
@@ -87,13 +87,39 @@ const GROUPS: &[Group] = &[
     },
 ];
 
+/// A row's keys as this platform spells them. `{cmd:K}` is the command key
+/// with K (Ctrl+K, or the Command key on a Mac) and `{cmd+shift:Enter}` adds
+/// Shift; everything else is shown as written.
+fn spell(template: &str) -> String {
+    let conventions = ui::PlatformConventions::default();
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some((before, after)) = rest.split_once('{') {
+        out.push_str(before);
+        let Some((spec, tail)) = after.split_once('}') else {
+            out.push('{');
+            rest = after;
+            break;
+        };
+        let (modifiers, key) = spec.split_once(':').unwrap_or(("cmd", spec));
+        let mut shortcut = ui::Shortcut::command(key);
+        if modifiers.contains("shift") {
+            shortcut = shortcut.shift();
+        }
+        out.push_str(&shortcut.label(conventions));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// One group of the reference: its title over its shortcut rows.
 fn group(group: &Group) -> Element {
     let rows = group
         .rows
         .iter()
         .map(|(label, keys)| {
-            Property::new(ui::i18n::I18nManager::lookup(label, None), *keys)
+            Property::new(ui::i18n::I18nManager::lookup(label, None), spell(keys))
                 .with_kind(TextKind::Identifier)
         })
         .collect();
@@ -239,6 +265,36 @@ impl ui::widget::Decorator for ShortcutsOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "the templates are not format strings"
+    )]
+    #[test]
+    fn keys_are_spelled_in_this_platforms_conventions() {
+        let command = ui::Shortcut::command("K").label(ui::PlatformConventions::default());
+        assert_eq!(spell("{cmd:K}"), command);
+        assert_eq!(
+            spell("**text** or {cmd:B}"),
+            format!(
+                "**text** or {}",
+                ui::Shortcut::command("B").label(ui::PlatformConventions::default())
+            )
+        );
+        assert!(spell("{cmd+shift:C}").contains('C'));
+        assert_eq!(spell("Alt-Up"), "Alt-Up");
+        assert_eq!(spell("[["), "[[");
+        for entry in GROUPS {
+            for (_, keys) in entry.rows {
+                let spelled = spell(keys);
+                assert!(!spelled.contains("{cmd"), "unspelled keys: {spelled}");
+                assert!(
+                    !spelled.contains("Cmd-") && !spelled.contains("Ctrl-"),
+                    "a platform's keys are never both listed: {spelled}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn the_sheet_opens_and_closes_and_reports_it() {

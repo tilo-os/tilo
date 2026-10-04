@@ -2,6 +2,15 @@ use crate::component_support::*;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use notes::{actions, doc::NotesDoc};
 
+/// Open History from the window's own bar: a headless component host serves
+/// that button, not a click on the glyph the notebook's header row carries.
+fn open_history(driver: &mut ui::headless::Driver) {
+    notes::app::present_history_in_shell_for_test(false);
+    driver.relayout();
+    driver.click_named("history-open").unwrap();
+    driver.relayout();
+}
+
 fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
     let id = ui::history_source::entry_id_from_hash(&hash.to_string());
     let target = format!("timeline-entry:{}", ui::widget::history_group::hex16(&id));
@@ -11,7 +20,17 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
             Some(&target),
             &ui::a11y::Action::Activate,
         )
-        .unwrap();
+        .unwrap_or_else(|error| {
+            let mut targets: Vec<String> = driver.targets().into_keys().collect();
+            targets.sort();
+            let history: Vec<String> = driver
+                .a11y_nodes()
+                .into_iter()
+                .filter(|(_, node)| node.label() == Some("History"))
+                .map(|(_, node)| format!("{node:?}"))
+                .collect();
+            panic!("{error}: {history:?} {targets:?}")
+        });
 }
 
 #[allow(
@@ -20,7 +39,6 @@ fn select(driver: &mut ui::headless::Driver, hash: automerge::ChangeHash) {
 )]
 #[test]
 fn notebook_history_previews_restores_and_refuses_a_second_writer() {
-    notes::app::present_history_button_for_test(false);
     eprintln!("phase notebook_shared_history_previews_restores_and_undoes_saved_content");
     {
         let f = LegacyFixture::rich();
@@ -82,10 +100,10 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
             .read(&checkout.id, Transactable::base_heads)
             .unwrap();
         assert!(
-            d.targets().contains_key("history-open"),
+            d.targets().contains_key("nav-shell-history"),
             "actual canonical Notes needs shared History"
         );
-        d.click_named("history-open").unwrap();
+        open_history(&mut d);
         select(&mut d, selected);
         d.click_named("history-next-page").unwrap();
         let preview = format!("{:?}", d.a11y_nodes());
@@ -211,7 +229,6 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
 )]
 #[test]
 fn production_preparation_imports_once_and_reopens_the_same_graph() {
-    notes::app::present_history_button_for_test(false);
     eprintln!(
         "phase production_preparation_imports_once_preserves_sources_and_reopens_real_history"
     );
@@ -244,7 +261,7 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
             renderer(),
             f.author.clone(),
         );
-        assert!(d.targets().contains_key("history-open"));
+        assert!(d.targets().contains_key("nav-shell-history"));
         records
             .with_owned_action(
                 &checkout.id,
@@ -270,7 +287,7 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
         let selected = records
             .read(&checkout.id, |doc| doc.base_heads()[0])
             .unwrap();
-        d.click_named("history-open").unwrap();
+        open_history(&mut d);
         select(&mut d, selected);
         let pinned = format!("{:?}", d.a11y_nodes());
         assert!(pinned.contains("Saved production change"));
@@ -412,7 +429,6 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
 
 #[test]
 fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
-    notes::app::present_history_button_for_test(false);
     for revoke in [false, true] {
         let f = LegacyFixture::rich();
         let checkout = imported(&f);
@@ -435,7 +451,7 @@ fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
             "rename",
             Some("Live"),
         );
-        d.click_named("history-open").unwrap();
+        open_history(&mut d);
         select(&mut d, selected);
         d.click_named("history-restore").unwrap();
         if revoke {
@@ -500,8 +516,8 @@ fn actual_binary_normal_launch_prepares_default_canonical_notebook_and_history()
         String::from_utf8_lossy(&output.stderr)
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
-    // The note header presents the window's History button, in place of the window's own bar.
-    assert!(inspection.contains("history-button"), "{inspection}");
+    // The notebook's header row carries the window's History control.
+    assert!(inspection.contains("nav-shell-history"), "{inspection}");
     // A launch into a workspace opens the room's shared default record.
     let checkout = notes::hosting::launch_notebook(true);
     let directory = app_state::DocStore::room_record_dir_at(

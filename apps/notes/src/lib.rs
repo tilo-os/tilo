@@ -56,6 +56,7 @@ pub mod main_panel;
 pub mod markdown;
 pub mod metadata;
 pub mod model;
+pub mod note_header;
 pub mod notebook;
 pub use ui::num;
 pub mod search_provider;

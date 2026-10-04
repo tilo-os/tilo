@@ -46,19 +46,22 @@ use crate::status_bar::{StatusBarState, StatusModel, count_words};
 use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
 thread_local! {
-    /// Whether the note header presents the window's History button, which
-    /// then replaces the window's own History bar. Always so in the app.
-    static HISTORY_BUTTON: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Whether the notebook's shell presents the window's History control.
+    /// Always so in the app.
+    static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// Test seam: show the window's own History bar instead of the History
-/// button in the note header, for the tests that drive History through a
-/// headless component host. That host opens History from the bar's button
-/// only; it does not serve the app's `history_button`.
+/// Test seam: keep the shell out of the tree the window offers its History
+/// control to, so the window draws its own History bar instead. A headless
+/// component host opens History from that bar; it does not serve a click on
+/// the shell's glyph.
 #[doc(hidden)]
-pub fn present_history_button_for_test(present: bool) {
-    HISTORY_BUTTON.set(present);
+pub fn present_history_in_shell_for_test(present: bool) {
+    SHELL_PRESENTS_HISTORY.set(present);
 }
+
+/// The resource the window's History control acts on.
+const HISTORY_RESOURCE: &str = "tilo.host:history";
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -572,8 +575,6 @@ pub struct NotesApp {
     /// hovers the bottom-right corner. Replaces the old bottom status bar so
     /// the editor spans to the window bottom.
     status_bubble: ui::StatusBubble,
-    /// The bubble is pinned open because a save failed, until it is resolved.
-    failure_pinned: bool,
     transfer_toasts: ui::widget::toast::ToastStack,
     last_toast_tick: ui::time::Instant,
     /// Shot-only override for the real save progress/failure presentation.
@@ -895,9 +896,9 @@ impl NotesApp {
     }
 
     /// The window shell around the page tree and the note: "Notes" with its
-    /// new-note button over the page tree, and the note's actions, search and
-    /// History in the content's header. The columns themselves are the slots
-    /// the app lays its page tree and note panel into.
+    /// new-note button over the page tree, and the note's actions and search
+    /// in the content header (the framework adds History). The columns
+    /// themselves are the slots the app lays its page tree and note panel into.
     fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
         let new_note = {
             let header = Rc::clone(header);
@@ -917,15 +918,12 @@ impl NotesApp {
             )
             .on_click(move || header.note_menu.set(true))
         };
-        let mut actions: Vec<ui::widget::Element> = vec![
+        let actions: Vec<ui::widget::Element> = vec![
             Box::new(note_menu),
             Box::new(ui::search::search_button(
                 ui::search::SearchRequest::this_app(),
             )),
         ];
-        if HISTORY_BUTTON.get() {
-            actions.push(Box::new(ui::widget::history_button()));
-        }
         NavShell::new()
             .with_id("notes-shell")
             .sidebar(Box::new(columns.sidebar.slot()))
@@ -961,7 +959,6 @@ impl NotesApp {
             main,
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
-            failure_pinned: false,
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             last_toast_tick: ui::time::now(),
             shots_save_status: None,
@@ -1067,7 +1064,11 @@ impl NotesApp {
                 }
             }
         });
-        let announce = self.status.state().save_status != save_status
+        // A failure is not a passing remark: it stays under the title until
+        // the note saves, and the bubble does not announce it a second time.
+        self.main.set_save_failed(save_status == SaveStatus::Failed);
+        let announce = save_status != SaveStatus::Failed
+            && self.status.state().save_status != save_status
             || self.status.state().page_path != path
             || self.status.state().page_count != self.workspace.pages().len();
         self.status.set_state(StatusBarState {
@@ -1131,16 +1132,25 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        if self.status.state().save_status == SaveStatus::Failed {
+            return;
+        }
         let now = ui::time::now();
         let label = self.status_label();
         self.status_bubble.show(&label, now);
-        let failed = self.status.state().save_status == SaveStatus::Failed;
-        if failed || self.failure_pinned {
-            self.status_bubble.set_hover(failed, now);
-            self.failure_pinned = failed;
-        }
         self.status_bubble
-            .paint(scene, transform, tr, theme, self.rect, now);
+            .paint(scene, transform, tr, theme, self.status_area(theme), now);
+    }
+
+    /// The window less the note's scroll bar: where the status bubble sits, so
+    /// it never lands on the bar.
+    fn status_area(&self, theme: &Theme) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            (self.rect.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter)).max(self.rect.x0),
+            self.rect.y1,
+        )
     }
 
     /// Resolve a page's breadcrumb path by walking parent pointers.
@@ -4641,7 +4651,9 @@ impl Widget for NotesApp {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(6);
-        children.push(&self.shell);
+        if SHELL_PRESENTS_HISTORY.get() {
+            children.push(&self.shell);
+        }
         if self.sidebar_shown() {
             children.push(self.sidebar.tree());
         }
@@ -4657,7 +4669,9 @@ impl Widget for NotesApp {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         let show_sidebar = self.sidebar_shown();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(6);
-        children.push(&mut self.shell);
+        if SHELL_PRESENTS_HISTORY.get() {
+            children.push(&mut self.shell);
+        }
         if show_sidebar {
             children.push(self.sidebar.tree_mut());
         }
@@ -4830,18 +4844,23 @@ impl ui::widget::controls::ActionControls for NotesApp {
     }
     /// The window hosts History, as it hosts search: its command is not one
     /// of the notebook's own actions, so the availability the host hands the
-    /// notebook's controls does not list it, and the History button in the
-    /// note header would stay disabled. Offer the button its own command.
+    /// notebook's controls does not list it, and the History control the
+    /// shell draws would stay disabled. Offer the shell its own History
+    /// command.
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         let mut allowed = allowed.clone();
         allowed.extend(
-            ui::widget::controls::control_action_bindings(&ui::widget::history_button())
+            ui::widget::controls::control_action_bindings(&self.shell)
                 .into_iter()
                 .filter_map(|binding| match binding.kind {
-                    ui::widget::ControlBindingKind::Action(address) => Some(address),
+                    ui::widget::ControlBindingKind::Action(address)
+                        if address.resource == HISTORY_RESOURCE =>
+                    {
+                        Some(address)
+                    }
                     _ => None,
                 }),
         );
@@ -5433,7 +5452,7 @@ impl NotesApp {
             );
             self.last_mouse = logical;
             // Resting on the bubble's corner pins it open.
-            let (area, theme) = (self.rect, &self.theme);
+            let (area, theme) = (self.status_area(&self.theme), &self.theme);
             ui::text_render::with_layout_renderer(theme.text_scale, |text| {
                 self.status_bubble
                     .pointer_moved(area, logical, text, theme, ui::time::now())
@@ -6292,13 +6311,24 @@ mod tests {
                 &Theme::default(),
             );
             assert!(
-                app.status_bubble
+                app.main.save_failure_shown_for_test(),
+                "an unresolved save failure stays in view under the title"
+            );
+            assert!(
+                !app.status_bubble
                     .is_visible(ui::time::now() + std::time::Duration::from_secs(60)),
-                "an unresolved save failure must not fade out"
+                "the bubble does not announce a failure the banner already shows"
             );
             assert!(
                 !app.status_bubble.needs_frame(ui::time::now()),
                 "persistent status must not cause an idle redraw loop"
+            );
+
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            assert!(
+                !app.main.save_failure_shown_for_test(),
+                "the failure goes away once the note saves"
             );
         }
 
