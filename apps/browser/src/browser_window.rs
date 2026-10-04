@@ -790,6 +790,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
+    use ui::widget::HostDelivery as _;
 
     /// A page engine that records commands and replays queued events and new
     /// tab intents.
@@ -926,13 +927,10 @@ mod tests {
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
             window
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap()
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
                     doc,
                     &automerge::ROOT
                 )

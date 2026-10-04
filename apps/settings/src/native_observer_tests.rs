@@ -31,7 +31,7 @@ use super::SettingsApp;
 use automerge::AutoCommit;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
-use ui::widget::{ResourceOperation, Widget};
+use ui::widget::{HostDelivery as _, Widget};
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
@@ -248,13 +248,10 @@ impl Harness {
                 let payload = serde_json::to_vec(control).unwrap();
                 let started = self
                     .app
-                    .start_operation(
-                        &ResourceOperation::local(
-                            tilo_actions::InvocationId::new(),
-                            tilo_actions::OperationKind::View,
-                            "tilo.ui.control.invoke",
-                            &payload,
-                        ),
+                    .start_encoded(
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.control.invoke",
+                        &payload,
                         &mut self.doc,
                         &root(),
                     )

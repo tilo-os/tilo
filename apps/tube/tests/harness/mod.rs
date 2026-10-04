@@ -23,6 +23,7 @@
 )]
 
 use std::collections::HashMap;
+use ui::widget::HostDelivery as _;
 
 use taffy::prelude::*;
 use ui::permissions::PermissionContext;
@@ -246,13 +247,10 @@ impl<W: Widget> Harness<W> {
                 tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("bound control arguments must satisfy their contract");
             self.app
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        spec.kind,
-                        &encoded.type_id,
-                        &encoded.payload,
-                    ),
+                .start_encoded(
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
                     &mut self.state.doc,
                     &self.state.root,
                 )

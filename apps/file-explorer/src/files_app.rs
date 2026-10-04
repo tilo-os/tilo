@@ -9146,7 +9146,7 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &ui::widget::controls::ControlResult,
     ) {
         for child in self.children_mut() {
             ui::widget::controls::on_control_invocation_result(child, address, result);
@@ -9194,7 +9194,7 @@ pub(crate) mod published {
     use crate::resource::{FileExplorer, FilesState};
     use ui::tilo_actions::Resource;
     use ui::tilo_resource::{Effect as _, Resource as _};
-    use ui::widget::Widget as _;
+    use ui::widget::HostDelivery as _;
 
     /// The published tree: one root, as the framework publishes it, with the
     /// places the window shows.
@@ -9224,7 +9224,7 @@ pub(crate) mod published {
         resource: &str,
         action: &str,
         args: &serde_json::Value,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<Started>, String> {
         let address = ui::tilo_actions::ActionAddress::new(resource, action);
         let tree = tree(files, doc);
         let spec = ui::tilo_actions::door::resolve(&tree, &address)
@@ -9239,44 +9239,44 @@ pub(crate) mod published {
         .map_err(|error| error.to_string())?;
         start(
             files,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
+            kind,
+            &encoded.type_id,
+            &encoded.payload,
             doc,
             &automerge::ROOT,
         )
     }
 
-    /// Start `op` on the window as the surface host does: the effect
-    /// vocabulary to the surface's handler, anything else to its operations.
+    /// How an operation started: done at once with its output, or accepted
+    /// to finish later.
+    pub(crate) type Started = ui::widget::ResourceOperationStart;
+
+    /// Start the encoded operation on the window as the surface host does:
+    /// the effect vocabulary to the surface's handler, anything else to the
+    /// toolkit's widgets inside it.
     ///
     /// # Errors
     /// Why the operation failed or was refused.
     pub(crate) fn start(
         files: &mut FileExplorerWidget,
-        op: &ui::widget::ResourceOperation<'_>,
+        kind: ui::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
         doc: &mut automerge::AutoCommit,
         path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(request) = op.unscoped()
-            && request.type_id == FilesEffect::OPERATION
-        {
+    ) -> Result<Option<Started>, String> {
+        if type_id == FilesEffect::OPERATION {
             return Ok(Some(
-                match files.run_effect(FilesEffect::from_payload(request.payload)?)? {
-                    super::Ran::Done(value) => ui::widget::ResourceOperationStart::Completed(
-                        ui::tilo_actions::ActionOutput {
-                            value,
-                            ..ui::tilo_actions::ActionOutput::default()
-                        },
-                    ),
-                    super::Ran::Pending => ui::widget::ResourceOperationStart::Accepted,
+                match files.run_effect(FilesEffect::from_payload(payload)?)? {
+                    super::Ran::Done(value) => Started::Completed(ui::tilo_actions::ActionOutput {
+                        value,
+                        ..ui::tilo_actions::ActionOutput::default()
+                    }),
+                    super::Ran::Pending => Started::Accepted,
                 },
             ));
         }
-        files.start_operation(op, doc, path)
+        files.start_encoded(kind, type_id, payload, doc, path)
     }
 }
 

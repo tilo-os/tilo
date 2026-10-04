@@ -1778,6 +1778,7 @@ mod tests {
     use ui::headless::Framed;
     use ui::prelude::TestApp;
     use ui::tilo_resource::Invoke;
+    use ui::widget::HostDelivery as _;
 
     /// The surface showing `catalog`, with the first preset applied.
     fn presented(catalog: Vec<ThemeSpec>) -> ThemesApp {
@@ -1884,15 +1885,12 @@ mod tests {
         .unwrap();
         assert!(
             app.narrow_tabs
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        "tilo.ui.segmented.select",
-                        &payload,
-                    ),
+                .start_encoded(
+                    tilo_actions::OperationKind::View,
+                    "tilo.ui.segmented.select",
+                    &payload,
                     &mut state.doc,
-                    &state.root,
+                    &state.root
                 )
                 .unwrap()
                 .is_some()
