@@ -143,6 +143,54 @@ fn undo_and_redo_take_back_the_callers_own_steps() {
     assert_eq!(undos[0]["args"], json!("{steps:2}"), "{listed}");
 }
 
+/// The newest listed version, with what it carries over filled in.
+fn newest(app: &mut TestApp<BoardApp>) -> Value {
+    let listed = history(app);
+    carried(listed.get("versions").and_then(Value::as_array).unwrap())
+        .pop()
+        .expect("a version")
+}
+
+#[test]
+fn a_keyboard_undo_and_redo_are_named_after_the_step_and_stay_its_authors() {
+    let mut app = TestApp::<BoardApp>::new().unwrap();
+    app.invoke(Board::RENAME.with("Plan".into())).unwrap();
+    let renamed = newest(&mut app);
+    let label = renamed["action"].as_str().unwrap().to_owned();
+    assert!(!label.is_empty(), "{renamed}");
+    let by = renamed["by"].clone();
+    assert!(by.is_string(), "{renamed}");
+
+    // Ctrl+Z: the undo is the person's own step, named after what it took
+    // back, never an unnamed change by a bare actor.
+    assert!(app.undo());
+    assert_eq!(app.state().title, "");
+    let undo = newest(&mut app);
+    assert_eq!(undo["action"], json!(format!("Undo {label}")), "{undo}");
+    assert_eq!(undo["by"], by, "{undo}");
+    let context = app
+        .versions()
+        .pop()
+        .unwrap()
+        .context
+        .expect("an undo says what it did");
+    assert_eq!(context.action_label, format!("Undo {label}"));
+    assert!(context.invoker.is_some(), "{context:?}");
+
+    // Ctrl+Shift+Z names the same step, not the undo it reverts.
+    assert!(app.redo());
+    assert_eq!(app.state().title, "Plan");
+    let redo = newest(&mut app);
+    assert_eq!(redo["action"], json!(format!("Redo {label}")), "{redo}");
+    assert_eq!(redo["by"], by, "{redo}");
+
+    // And undoing that redo is again an undo of the step.
+    assert!(app.undo());
+    let again = newest(&mut app);
+    assert_eq!(again["action"], json!(format!("Undo {label}")), "{again}");
+    assert_eq!(again["by"], by, "{again}");
+}
+
 #[test]
 fn an_agent_run_undoes_its_own_steps_and_leaves_the_persons() {
     let mut app = TestApp::<BoardApp>::new().unwrap();
