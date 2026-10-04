@@ -56,7 +56,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
-"apps/snippets/src/resource.rs" = 2
 "apps/speed-test/src/resource.rs" = 1
 "apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
@@ -116,8 +115,6 @@
 "apps/sheets/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
-"apps/snippets/src/lib.rs" = 2
-"apps/snippets/src/main.rs" = 2
 "apps/speed-test/src/lib.rs" = 2
 "apps/speed-test/src/main.rs" = 2
 "apps/themes/src/lib.rs" = 2
@@ -179,7 +176,6 @@
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/framework_history.rs" = 2
-"apps/snippets/src/framework_history.rs" = 1
 "apps/themes/src/framework_history.rs" = 1
 "apps/tube/src/app.rs" = 3
 "apps/typst-editor/src/framework_history.rs" = 1
@@ -199,7 +195,6 @@
 "apps/settings/src/resource.rs" = 1
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
-"apps/snippets/src/resource.rs" = 1
 "apps/tube/src/resource.rs" = 1
 "apps/video-editor/src/app.rs" = 1
 "apps/word-processor/src/framework.rs" = 1
