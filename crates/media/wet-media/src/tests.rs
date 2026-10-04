@@ -205,6 +205,7 @@ fn with(mut mark: Mark, values: &[(&str, f32)]) -> Mark {
     let params = match &mut mark {
         Mark::Stroke(stroke) => &mut stroke.params,
         Mark::Fill(fill) => &mut fill.params,
+        Mark::Erase(_) => return mark,
     };
     params.extend(values.iter().map(|(id, value)| ((*id).to_owned(), *value)));
     mark
@@ -599,4 +600,107 @@ fn thin_fresh_oil_is_as_workable_as_loaded_oil() {
     };
     let (thin, loaded) = (softened(0.08), softened(1.0));
     assert!(thin > loaded * 0.5, "thin {thin} vs loaded {loaded}");
+}
+
+fn eraser(points: &[(f32, f32)], size: f32, strength: f32) -> Erase {
+    Erase {
+        points: points
+            .iter()
+            .map(|(x, y)| StrokePoint::new(*x, *y, 1.0))
+            .collect(),
+        size,
+        strength,
+        hardness: 1.0,
+        clip: Vec::new(),
+    }
+}
+
+/// An eraser across the middle of a stroke clears it there and leaves its
+/// ends; half strength takes off about half; paint laid after the eraser
+/// shows where it cleared.
+#[test]
+fn an_eraser_lifts_the_paint_beneath_it_and_not_what_comes_after() {
+    let line = stroke(&[(10.0, 60.0), (150.0, 60.0)], 20.0, "#7a4a8c", false);
+    let across = eraser(&[(80.0, 20.0), (80.0, 100.0)], 24.0, 1.0);
+    for engine in ["oil", "watercolour"] {
+        let painted = painter(engine, Texture::Linen)
+            .paint(&[Painted::new("line", line.clone())])
+            .to_vec();
+        let full = f32::from(alpha(&painted, 80, 60));
+        assert!(full > 100.0, "{engine}: painted {full}");
+
+        let erased = painter(engine, Texture::Linen)
+            .paint(&[
+                Painted::new("line", line.clone()),
+                Painted::new("rub", Mark::Erase(across.clone())),
+            ])
+            .to_vec();
+        assert!(alpha(&erased, 80, 60) <= 2, "{engine}: middle left");
+        for x in [30, 130] {
+            assert_eq!(
+                alpha(&erased, x, 60),
+                alpha(&painted, x, 60),
+                "{engine}: end at {x}"
+            );
+        }
+
+        let half = painter(engine, Texture::Linen)
+            .paint(&[
+                Painted::new("line", line.clone()),
+                Painted::new(
+                    "rub",
+                    Mark::Erase(eraser(&[(80.0, 20.0), (80.0, 100.0)], 24.0, 0.5)),
+                ),
+            ])
+            .to_vec();
+        let ratio = f32::from(alpha(&half, 80, 60)) / full;
+        assert!(
+            (0.3..=0.75).contains(&ratio),
+            "{engine}: half strength left {ratio}"
+        );
+
+        let over = painter(engine, Texture::Linen)
+            .paint(&[
+                Painted::new("line", line.clone()),
+                Painted::new("rub", Mark::Erase(across.clone())),
+                Painted::new(
+                    "mend",
+                    stroke(&[(80.0, 30.0), (80.0, 90.0)], 10.0, "#2a6a3a", false),
+                ),
+            ])
+            .to_vec();
+        assert!(alpha(&over, 80, 60) > 100, "{engine}: later paint hidden");
+    }
+}
+
+/// An eraser cut to an outline lifts paint only inside it.
+#[test]
+fn a_clipped_eraser_leaves_paint_outside_its_outline() {
+    let line = stroke(&[(10.0, 60.0), (150.0, 60.0)], 20.0, "#7a4a8c", false);
+    let mut along = eraser(&[(0.0, 60.0), (160.0, 60.0)], 40.0, 1.0);
+    along.clip = vec![vec![(0.0, 0.0), (80.0, 0.0), (80.0, 120.0), (0.0, 120.0)]];
+    for engine in ["oil", "watercolour"] {
+        let painted = painter(engine, Texture::Linen)
+            .paint(&[Painted::new("line", line.clone())])
+            .to_vec();
+        let erased = painter(engine, Texture::Linen)
+            .paint(&[
+                Painted::new("line", line.clone()),
+                Painted::new("rub", Mark::Erase(along.clone())),
+            ])
+            .to_vec();
+        assert!(
+            alpha(&erased, 40, 60) <= 2,
+            "{engine}: inside the clip left"
+        );
+        assert!(
+            alpha(&erased, 120, 60) > 100,
+            "{engine}: outside the clip lifted"
+        );
+        assert_eq!(
+            alpha(&erased, 120, 60),
+            alpha(&painted, 120, 60),
+            "{engine}"
+        );
+    }
 }

@@ -1211,6 +1211,14 @@ impl FrameBuilder {
         self.pump_room_contents();
         let rooms_done = std::time::Instant::now();
         self.host.sync(doc, root);
+        // First-login setup gives the session its identity mid-session; that
+        // principal is "me" too, or the owner sees presence over their windows.
+        {
+            let chrome = self.chrome.borrow();
+            if !self.presence.is_own_identity(&chrome.local_user_id) {
+                self.presence.add_own_identity(&chrome.local_user_id);
+            }
+        }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
         let update_done = std::time::Instant::now();

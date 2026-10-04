@@ -1168,11 +1168,14 @@ COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boo
 # and Cisco's packages, from their own servers), verifies them and builds local
 # system extensions. Which extensions exist, which hosts their bytes may come
 # from and which key signs their manifests is decided by the image itself
-# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/cosign.pub). The
+# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/extensions.pub). The
 # image carries no extension payload. See
 # /usr/share/tilo/system-extensions/README.md.
 FROM scratch AS extension-files
 COPY --chmod=0755 os/usr/libexec/tilo-extension /usr/libexec/tilo-extension
+# The only key a manifest may be signed with (KMS alias/tilo-extension-manifests);
+# separate from cosign.pub, so the OS update key cannot authorize one.
+COPY keys/extensions.pub /usr/share/tilo/extensions.pub
 # Starts the deferred install the moment NetworkManager reports internet
 # connectivity, for an owner who opted in while offline.
 COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension \
@@ -2967,6 +2970,7 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 # layer. Its current RUN may still mount DNS under /run; the next one will not.
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
+    --mount=type=bind,source=os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf,target=/usr/local/libexec/tilo-ldconfig-image-cache.conf,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
     --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
@@ -3009,10 +3013,17 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
          if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
        done \
     && HOME=/root fc-cache -s -f \
-    # The linker cache is current as built. Recording /etc as updated for this
-    # /usr keeps first boot from running ldconfig.service (3.5 s on the login
-    # critical chain of a release VM) to regenerate it.
+    # The linker cache is current as built; ldconfig.service rebuilds it only
+    # if it goes missing (its drop-in). The hardware database lives in /usr
+    # with none in /etc, so systemd-hwdb-update.service has nothing to do on
+    # the first boot of a deployment either.
+    && install -D -m 0644 /usr/local/libexec/tilo-ldconfig-image-cache.conf \
+         /usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf \
     && ldconfig \
+    && systemd-hwdb update --usr \
+    && rm -f /etc/udev/hwdb.bin \
+    && test -s /usr/lib/udev/hwdb.bin \
+    && { [ ! -d /etc/udev/hwdb.d ] || [ -z "$(ls -A /etc/udev/hwdb.d)" ]; } \
     && /usr/lib/systemd/systemd-update-done --root=/ \
     && test -s /etc/.updated \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \

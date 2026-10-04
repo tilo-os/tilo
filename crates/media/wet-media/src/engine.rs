@@ -162,12 +162,51 @@ pub struct Fill {
     pub field: Option<ColourField>,
 }
 
+/// Paint taken off the layer along a path, in cell coordinates: an eraser.
+/// It is ordered like any mark: it lifts what earlier marks left under it,
+/// and later marks paint over the place it cleared.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Erase {
+    /// The path; pressure scales the width, as for a stroke.
+    pub points: Vec<StrokePoint>,
+    pub size: f32,
+    /// `0..=1`: how much of the paint under the eraser it takes off (1
+    /// clears it).
+    pub strength: f32,
+    /// `0..=1`: a hard eraser's edge is crisp; a soft one fades out over its
+    /// outer half.
+    pub hardness: f32,
+    /// Closed outlines the eraser stays inside; anywhere when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clip: Vec<Vec<(f32, f32)>>,
+}
+
 /// One mark as a medium receives it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Mark {
     Stroke(Stroke),
     Fill(Fill),
+    Erase(Erase),
+}
+
+fn scaled_contours(contours: &[Vec<(f32, f32)>], scale: f32) -> Vec<Vec<(f32, f32)>> {
+    contours
+        .iter()
+        .map(|contour| {
+            contour
+                .iter()
+                .map(|(x, y)| (x * scale, y * scale))
+                .collect()
+        })
+        .collect()
+}
+
+fn scaled_points(points: &[StrokePoint], scale: f32) -> Vec<StrokePoint> {
+    points
+        .iter()
+        .map(|point| StrokePoint::new(point.x * scale, point.y * scale, point.pressure))
+        .collect()
 }
 
 impl Mark {
@@ -176,54 +215,44 @@ impl Mark {
     pub fn scaled(&self, scale: f32) -> Self {
         match self {
             Self::Stroke(stroke) => Self::Stroke(Stroke {
-                points: stroke
-                    .points
-                    .iter()
-                    .map(|point| StrokePoint::new(point.x * scale, point.y * scale, point.pressure))
-                    .collect(),
+                points: scaled_points(&stroke.points, scale),
                 size: stroke.size * scale,
                 form: stroke.form.map(|form| form.scaled(scale)),
-                clip: stroke
-                    .clip
-                    .iter()
-                    .map(|contour| {
-                        contour
-                            .iter()
-                            .map(|(x, y)| (x * scale, y * scale))
-                            .collect()
-                    })
-                    .collect(),
+                clip: scaled_contours(&stroke.clip, scale),
                 ..stroke.clone()
             }),
             Self::Fill(fill) => Self::Fill(Fill {
-                contours: fill
-                    .contours
-                    .iter()
-                    .map(|contour| {
-                        contour
-                            .iter()
-                            .map(|(x, y)| (x * scale, y * scale))
-                            .collect()
-                    })
-                    .collect(),
+                contours: scaled_contours(&fill.contours, scale),
                 brush: fill.brush * scale,
                 field: fill.field.as_ref().map(|field| field.scaled(scale)),
                 ..fill.clone()
             }),
+            Self::Erase(erase) => Self::Erase(Erase {
+                points: scaled_points(&erase.points, scale),
+                size: erase.size * scale,
+                clip: scaled_contours(&erase.clip, scale),
+                ..erase.clone()
+            }),
         }
     }
 
+    /// Per-mark parameter overrides; an eraser has none.
     pub fn params(&self) -> &BTreeMap<String, f32> {
+        static NONE: BTreeMap<String, f32> = BTreeMap::new();
         match self {
             Self::Stroke(stroke) => &stroke.params,
             Self::Fill(fill) => &fill.params,
+            Self::Erase(_) => &NONE,
         }
     }
 
+    /// Whether the mark works into the wet layer. An eraser is not a wet
+    /// mark, but the engines lift paint without drying the layer first.
     pub fn wet(&self) -> bool {
         match self {
             Self::Stroke(stroke) => stroke.wet,
             Self::Fill(fill) => fill.wet,
+            Self::Erase(_) => false,
         }
     }
 }

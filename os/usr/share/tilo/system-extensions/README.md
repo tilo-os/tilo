@@ -114,12 +114,13 @@ image, because the image decides which bytes are acceptable:
    repositories, checks every package's upstream signature, and publishes a
    manifest that pins every artifact by URL, exact byte length and SHA-256, and
    the exact base it was resolved for. CI signs the manifest bytes with the
-   OS release key (the non-exportable KMS key whose public half is
-   `keys/cosign.pub`), the same key that authorizes image updates; a manifest
-   can only be published where an image signature could be.
+   extension-manifest key: a non-exportable KMS key
+   (`alias/tilo-extension-manifests`) that only `extension-manifests.yml` on
+   main can use, separate from the OS release key. Its public half is
+   `keys/extensions.pub`.
 3. The device fetches the manifest and its detached signature, verifies the
-   signature against `/usr/share/tilo/cosign.pub` (the key this image trusts
-   for its own updates) before parsing anything, and then requires: the
+   signature against `/usr/share/tilo/extensions.pub`, and only that key,
+   before parsing anything, and then requires: the
    expected `type`, `schema` and `id`; exactly this base (OS, release,
    architecture and the base package fingerprint below); part names and
    artifact hosts allowed by the catalogue entry; and a revision no lower than
@@ -132,8 +133,8 @@ image, because the image decides which bytes are acceptable:
    (`docs/security/boot-chain.md`). Activation does it on purpose: it verifies
    each kept manifest's signature again, each kept artifact against the
    manifest, rebuilds every part from those bytes alone, refuses to merge at all
-   if anything else is in the sysext search path, and then runs
-   `systemd-sysext refresh`. A file changed in `/var` does not survive the next
+   if anything else is in the sysext search path (it then unmerges
+   everything instead), and then runs `systemd-sysext refresh`. A file changed in `/var` does not survive the next
    activation; a changed artifact or manifest is not merged.
 
 `/usr/libexec/tilo-extension` is the only consumer. It takes exactly one
@@ -265,8 +266,8 @@ Status JSON: `schema`, `id`, `state` (`not-installed`, `waiting-for-network`,
 Units: `tilo-extension@<verb>:<id>.service` (polkit lets a local, active
 administrator start only `install`, `remove` and `refresh` instances; it
 downloads into the state above and then starts the activation),
-`tilo-extension-activate.service` (every boot, offline, before the graphical
-target, and after every change; it has no mount namespace of its own, so the
+`tilo-extension-activate.service` (every boot, offline, before the greeter,
+and after every change; it has no mount namespace of its own, so the
 merge is the host's), `tilo-extension-refresh.timer` (after boot, daily, and
 on every update check), and NetworkManager's `90-tilo-extension` (an opt-in
 made offline installs once the device is online).

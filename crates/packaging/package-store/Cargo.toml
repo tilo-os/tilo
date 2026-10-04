@@ -28,6 +28,7 @@ store = [
     "dep:tempfile",
     "dep:tilo-clock",
     "dep:tokio",
+    "dep:tilo-user-identity",
 ]
 
 [dependencies]
@@ -50,6 +51,8 @@ iroh-blobs = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
+# Whose devices may publish images for the user: their identity's fleet.
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity", optional = true }
 
 [dev-dependencies]
 libc.workspace = true

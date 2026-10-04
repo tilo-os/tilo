@@ -240,10 +240,15 @@ pub struct Style {
     /// `0..=1`; absent is opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f64>,
-    /// On a painted layer: the width of the brush that lays a filled shape
+    /// A brush stroke's preset on a plain layer (`pen`, `pencil`, `marker`,
+    /// `airbrush`, `charcoal`, `calligraphy`), or `eraser` on any layer;
+    /// a round ink brush when absent. See [`crate::brushes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<String>,
+    /// On a painted layer: the size of the brush that lays a filled shape
     /// in, in units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brush: Option<f64>,
+    pub brush_size: Option<f64>,
     /// On a painted layer: the direction of the brushwork, in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle: Option<f64>,
@@ -252,7 +257,8 @@ pub struct Style {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wet: bool,
     /// On a painted layer: overrides of the medium's parameters for this
-    /// mark (`{"load": 0.3}`).
+    /// mark (`{"load": 0.3}`). On a plain layer's stroke: the brush's
+    /// `flow`, `hardness`, `spacing`, `smoothing` and `taper`, each `0..=1`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f64>,
     /// Outline dash pattern, `[on, off, …]` in units.
@@ -1206,6 +1212,13 @@ impl Mark {
         style.fill.is_some() || style.stroke.is_some() || style.gradient.is_some()
     }
 
+    /// Whether the mark is an eraser: it takes paint off its layer and has
+    /// none of its own to pick.
+    pub fn erases(&self) -> bool {
+        matches!(self.shape, Shape::Stroke { .. })
+            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+    }
+
     pub fn affine(&self) -> Affine {
         self.transform.map_or(Affine::IDENTITY, Affine::new)
     }
@@ -1277,7 +1290,7 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if !self.bounds().contains(point) {
+        if self.erases() || !self.bounds().contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;

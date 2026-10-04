@@ -95,6 +95,24 @@ impl ArtworkResource {
     /// `edit-marks` replacing a mark's geometry (a text's style).
     pub const SET_SHAPE: ActionRef<Self, (Vec<String>, crate::model::Shape)> =
         ActionRef::new("edit-marks", &["ids", "shape"]);
+    /// `edit-marks` setting strokes' brush preset.
+    pub const SET_BRUSH: ActionRef<Self, (Vec<String>, String)> =
+        ActionRef::new("edit-marks", &["ids", "brush"]);
+    /// `edit-marks` setting strokes' width.
+    pub const SET_SIZE: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "size"]);
+    /// `edit-marks` setting strokes' brush dynamics or a medium's parameters.
+    pub const SET_PARAMS: ActionRef<Self, (Vec<String>, std::collections::BTreeMap<String, f64>)> =
+        ActionRef::new("edit-marks", &["ids", "params"]);
+    /// `edit-marks` smoothing strokes' paths.
+    pub const SMOOTH: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "smooth"]);
+    /// `edit-marks` simplifying strokes' paths.
+    pub const SIMPLIFY: ActionRef<Self, (Vec<String>, f64)> =
+        ActionRef::new("edit-marks", &["ids", "simplify"]);
+    /// `edit-marks` joining strokes into the first.
+    pub const MERGE: ActionRef<Self, (Vec<String>, bool)> =
+        ActionRef::new("edit-marks", &["ids", "merge"]);
     /// `set-artwork` with a title.
     pub const SET_TITLE: ActionRef<Self, String> = ActionRef::new("set-artwork", &["title"]);
     /// `set-artwork` with a width.
@@ -551,7 +569,7 @@ impl Resource for ArtworkResource {
             decl::<Paint>(
                 "paint",
                 "Paint strokes",
-                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first, blended while wet on the same layer; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
                 CanvasAction::Paint,
             ),
             ActionDecl::new("draw", "Draw shapes", params_of::<Draw>(), |args, _now| {
@@ -565,15 +583,15 @@ impl Resource for ArtworkResource {
             ActionDecl::new("edit-marks", "Edit marks", params_of::<EditMarks>(), |args, _now| {
                 let mut edit: EditMarks = read_args(args)?;
                 if let Some(shape) = &mut edit.shape {
-                    kept_image(shape)?;
+                    kept_image(&mut shape.0)?;
                 }
                 Ok(CanvasAction::edit(edit))
             })
-            .describe("Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Pictures: crop, straighten (level a horizon) and adjust (exposure, contrast, white balance, …; look to judge)."),
+            .describe("Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge. Pictures: crop, straighten, adjust (exposure, white balance, …; look to judge)."),
             decl::<RemoveMarks>(
                 "remove-marks",
                 "Remove marks",
-                "Remove marks by id, or every mark of a layer.",
+                "Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
                 CanvasAction::RemoveMarks,
             ),
             decl::<Arrange>(

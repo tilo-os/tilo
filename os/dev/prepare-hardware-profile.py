@@ -23,6 +23,9 @@ FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PARSER_PATH = Path("usr/lib/tilo/hardware_profile.py")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
+# Sorts after the image's own kargs.d drop-ins, so a board console named here
+# is the last console= and becomes /dev/console.
+KARGS_PATH = Path("usr/lib/bootc/kargs.d/10-hardware-profile.toml")
 # Broadcom's sample station address. Vendor NVRAM files (the Orange Pi's
 # AP6256 among them) ship it, and brcmfmac programs whatever the NVRAM names,
 # so every board would share one MAC. The pinned bytes are checked as
@@ -192,6 +195,12 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     if modular_boot:
         dracut_lines.append(f'add_drivers+=" {" ".join(modular_boot)} "')
     outputs[DRACUT_PATH] = ("\n".join(dracut_lines) + "\n").encode("utf-8")
+    # bootc container ukify (os/dev/uki.sh) seals kargs.d into the UKI command
+    # line, so the board's arguments are measured with the rest of the image's.
+    kernel_args = definition.get("kernel_args", [])
+    if kernel_args:
+        outputs[KARGS_PATH] = ("# Kernel arguments of the hardware profile.\nkargs = "
+                               + json.dumps(kernel_args) + "\n").encode("utf-8")
     # Check every destination before creating directories or installing bytes.
     # This includes existing output files, including dangling symlinks.
     destinations = {
