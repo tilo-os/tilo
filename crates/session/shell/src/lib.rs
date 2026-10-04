@@ -32,6 +32,7 @@ pub mod network;
 pub mod network_secrets;
 pub mod notifications;
 pub mod onboarding;
+mod onboarding_nearby;
 pub mod onboarding_view;
 pub mod polkit_agent;
 pub mod portal;

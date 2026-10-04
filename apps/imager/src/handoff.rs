@@ -398,12 +398,13 @@ pub fn local_identity_from_env() -> Result<LocalIdentity<'static>, String> {
         )
     });
     let home_peers = HOME_PEERS.get_or_init(|| {
-        system
-            .user_pubkey
-            .parent()
-            .and_then(Path::parent)
-            .unwrap_or_else(|| Path::new("/var/lib/tilo"))
-            .join("home-peers.json")
+        tilo_relay_protocol::home_peer_registry_path(
+            system
+                .user_pubkey
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("/var/lib/tilo")),
+        )
     });
     Ok(LocalIdentity {
         identity_dir,
@@ -490,12 +491,19 @@ mod tests {
         assert!(cert.capabilities.can_own_workspaces);
         assert!(cert.capabilities.can_read_all_workspaces);
         let copied: Vec<tilo_relay_protocol::HomePeerRegistration> = serde_json::from_slice(
-            &fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap(),
+            &fs::read(tilo_relay_protocol::home_peer_registry_path(
+                &dir.path().join("var/lib/tilo"),
+            ))
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(copied, vec![peer]);
         let direct: Vec<String> = serde_json::from_slice(
-            &fs::read(dir.path().join("var/lib/tilo/personal-device-peers.json")).unwrap(),
+            &fs::read(
+                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                    .with_file_name("personal-device-peers.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(direct, vec![hex::encode(local_cert.device_public_key)]);

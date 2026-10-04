@@ -6,9 +6,11 @@ set -euo pipefail
 
 mode=${1:-}
 case "$mode" in
-  oobe|oobe-actions|desktop|established|lock) ;;
-  *) echo "usage: $0 {oobe|oobe-actions|desktop|established|lock}" >&2; exit 2 ;;
+  oobe|oobe-actions|oobe-nearby|oobe-nearby-done|post-identity|desktop|established|lock) ;;
+  oobe-text) (($# > 1)) || { echo "usage: $0 oobe-text TEXT..." >&2; exit 2; } ;;
+  *) echo "usage: $0 {oobe|oobe-actions|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|desktop|established|lock}" >&2; exit 2 ;;
 esac
+shift
 
 command -v busctl >/dev/null
 command -v gdbus >/dev/null
@@ -141,6 +143,36 @@ wait_for_names() {
     sleep 0.05
   done
   echo "AT-SPI $mode tree never exposed:$missing" >&2
+  printf '%s\n' "$names" >&2
+  return 1
+}
+
+# Status lines interpolate runtime values (a pairing code, an error detail),
+# so these match a fragment of a node's spoken name rather than all of it.
+node_containing() {
+  local fragment=$1 path
+  for path in "${!node_names[@]}"; do
+    [[ ${node_names[$path]} == *"$fragment"* ]] && {
+      printf '%s\n' "$path"
+      return 0
+    }
+  done
+  return 1
+}
+
+wait_for_fragments() {
+  local missing fragment
+  for _ in $(seq 1 400); do
+    if collect_tree; then
+      missing=""
+      for fragment in "$@"; do
+        node_containing "$fragment" >/dev/null || missing+=" '$fragment'"
+      done
+      [[ -z "$missing" ]] && return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree never exposed a name containing:$missing" >&2
   printf '%s\n' "$names" >&2
   return 1
 }
@@ -345,6 +377,66 @@ case "$mode" in
       done
       wait_for_names "Your identity is ready"
     fi
+    ;;
+  oobe-nearby)
+    # Use existing -> Connect a nearby device, as a person does. A retry after
+    # a failed attempt is already on the Connect screen and skips the first
+    # step.
+    for _ in $(seq 1 400); do
+      collect_tree || { sleep 0.05; continue; }
+      node_named "Connect a nearby device" >/dev/null && break
+      if node_named "Use existing" >/dev/null; then
+        click_named "Use existing"
+      fi
+      sleep 0.05
+    done
+    wait_for_names "Connect a nearby device"
+    click_named "Connect a nearby device"
+    ;;
+  oobe-nearby-done)
+    # Joining an identity ends first use on its ready screen. The media codecs
+    # step appears first only where the codec pack is offered.
+    for _ in $(seq 1 1200); do
+      collect_tree || { sleep 0.05; continue; }
+      node_containing "identity is ready" >/dev/null && break
+      if node_named "Not now" >/dev/null; then
+        click_named "Not now"
+      fi
+      sleep 0.05
+    done
+    wait_for_fragments "identity is ready"
+    if node_named "Connect a nearby device" >/dev/null; then
+      echo "AT-SPI $mode tree still offers Connect a nearby device" >&2
+      exit 1
+    fi
+    ;;
+  oobe-text)
+    wait_for_fragments "$@"
+    ;;
+  post-identity)
+    # A session started after the identity exists shows the desktop, or the
+    # first-use steps that follow the identity. It never asks for an identity
+    # again and never lands on identity recovery.
+    for _ in $(seq 1 1200); do
+      collect_tree || { sleep 0.05; continue; }
+      node_named "Tilo workspace" >/dev/null && break
+      node_containing "identity is ready" >/dev/null && break
+      node_containing "needs recovery" >/dev/null && break
+      node_named "Use existing" >/dev/null && break
+      sleep 0.05
+    done
+    for refused in "Use existing" "Create identity" "Create your local" "needs recovery"; do
+      if node_containing "$refused" >/dev/null; then
+        echo "AT-SPI $mode tree shows '$refused' after the identity was established" >&2
+        printf '%s\n' "$names" >&2
+        exit 1
+      fi
+    done
+    node_named "Tilo workspace" >/dev/null || node_containing "identity is ready" >/dev/null || {
+      echo "AT-SPI $mode tree shows neither the desktop nor the post-identity first-use step" >&2
+      printf '%s\n' "$names" >&2
+      exit 1
+    }
     ;;
   desktop)
     wait_for_names "Tilo workspace"
