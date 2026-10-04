@@ -61,7 +61,10 @@ pub trait ResourceApp: 'static {
     /// Media types (`type/subtype`, lowercase) of the files the app opens
     /// when a host hands it one (a file association, a file dropped on its
     /// icon, a path of that type on its command line); [`Self::launch`]
-    /// receives the file.
+    /// receives the file. `"*/*"`
+    /// ([`ANY_MEDIA_TYPE`](ui_core::application::ANY_MEDIA_TYPE)) opens every
+    /// file, a file whose name says nothing of its type as
+    /// `application/octet-stream`.
     const OPENS: &'static [&'static str] = &[];
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
@@ -381,10 +384,13 @@ fn create<A: ResourceApp>(
             )
             .map_err(LaunchError::Record)?;
     }
+    let file = context.take_open_file();
+    let arguments = context.take_launch_arguments();
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()),
-    };
+    }
+    .launched_on(&arguments);
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -400,8 +406,6 @@ fn create<A: ResourceApp>(
         },
         context.storage(),
     );
-    let file = context.take_open_file();
-    let arguments = context.take_launch_arguments();
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
@@ -560,7 +564,9 @@ fn launched_file(
     definition: &ApplicationDefinition,
     path: &std::path::Path,
 ) -> Result<Option<ui_core::application::OpenFile>, LaunchError> {
+    // A regular file whose name says nothing of its type is plain bytes.
     let Some(media_type) = ui_core::dnd::mime_for_path(path)
+        .or_else(|| path.is_file().then_some("application/octet-stream"))
         .filter(|media_type| definition.opens_media_type(media_type))
     else {
         return Ok(None);

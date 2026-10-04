@@ -685,6 +685,7 @@ mod tests {
             hdr_static_metadata: None,
             bit_depth: 0,
             app_id: "org.chromium.Chromium".into(),
+            tab: 0,
         }
     }
     fn frame(surface: u64, bytes: &[u8]) -> NeighbourMsg {

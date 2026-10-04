@@ -290,4 +290,14 @@ else
   bad 'native architecture assertion does not fail closed'
 fi
 
+# A freshly written disk is flushed before a VM boots it, or the guest's first
+# flush waits on the host's writeback of the whole image and the boot budget
+# measures the host's disk.
+if grep -Fq "inenv \"sync -- '\$QCOW'\"" "$repo/os/dev/disk-image.sh" \
+   && grep -Fq "inenv \"sync -- '\$RAW'\"" "$repo/os/dev/disk-image.sh"; then
+  ok 'disk-image.sh writes its image out before anything boots it'
+else
+  bad 'a booted disk can still be dirty in the host page cache'
+fi
+
 exit "$fail"

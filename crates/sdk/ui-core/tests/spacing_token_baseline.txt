@@ -38,6 +38,7 @@ apps/canvas/src/panels/layers.rs pixel_const 1
 apps/canvas/src/panels/mod.rs pixel_const 1
 apps/canvas/src/render.rs pixel_const 1
 apps/canvas/src/surface.rs pixel_const 2
+apps/canvas/src/view_ops.rs pixel_const 1
 apps/chat/src/app.rs pixel_const 8
 apps/chat/src/render_call.rs pixel_const 5
 apps/chat/src/render_chat.rs pixel_const 35

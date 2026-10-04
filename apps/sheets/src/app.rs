@@ -14,8 +14,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use tilo_automerge::ApplyIncoming;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -155,7 +154,6 @@ const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 
 type ImportedCellWrite = (Addr, String, Option<CellFormat>);
 type ImportedWorkbook = Vec<(String, Vec<ImportedCellWrite>)>;
-type LoadedWorkbook = Box<(AutoCommit, Vec<ChangeHash>)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interchange {
@@ -256,34 +254,6 @@ impl Drop for InterchangeReply {
     }
 }
 
-/// A bounded persistence job.  It deliberately carries an Automerge fork, not
-/// bytes: serialising a large CRDT is the expensive part and belongs on the
-/// worker, while merging a completed load remains a short UI-thread CRDT
-/// receipt.
-enum PersistenceResult {
-    Load {
-        generation: u64,
-        /// The heads actually represented by the on-disk image. The UI must
-        /// not acknowledge unrelated collaboration that arrived while loading.
-        result: Result<Option<LoadedWorkbook>, String>,
-    },
-    Save {
-        generation: u64,
-        heads: Vec<ChangeHash>,
-        result: Result<(), String>,
-    },
-}
-
-#[derive(Clone)]
-enum PersistenceJob {
-    Load,
-    Save { heads: Vec<ChangeHash> },
-}
-
-/// Failed saves are visible and remain dirty, but a permanently unavailable
-/// data directory must not start a thread every frame.
-const PERSIST_RETRY_DELAY: Duration = Duration::from_secs(1);
-
 fn spreadsheet_import_request(format: Interchange) -> PickRequest {
     PickRequest::open("Import spreadsheet", "Import")
         .thread_name("sheets-portal-import")
@@ -339,20 +309,6 @@ enum SettingsPanel {
     Document,
 }
 
-/// How this instance of the app is running.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RunMode {
-    /// A real launch: opens blank and persists the workbook between sessions.
-    Live,
-    /// The headless `--shots`/test path: seeds the sample budget so a captured
-    /// frame shows real formulas, and never reads or writes the user's data.
-    Shots,
-    /// Mounted by a host on a record: the record is the workbook, so the
-    /// app-wide file is never read or written. Only the record's creator
-    /// adds the first sheet; a participant that joined waits for it.
-    Record(ui::launch::RecordLaunch),
-}
-
 /// The app's only decorative animation is the transient status bubble. Keep
 /// the preference as a semantic state rather than another independent bool so
 /// it cannot accidentally conflict with the run mode.
@@ -362,32 +318,21 @@ enum MotionPreference {
     Reduced,
 }
 
-impl RunMode {
-    /// Whether the workbook is read from and written to disk.
-    fn persists(self) -> bool {
-        self == Self::Live
-    }
-
-    /// Whether an empty workbook is filled with the sample budget.
-    fn seeds_sample_data(self) -> bool {
-        self == Self::Shots
-    }
-
-    /// Whether an empty workbook gets its first blank sheet.
-    fn seeds_blank_sheet(self) -> bool {
-        self != Self::Record(ui::launch::RecordLaunch::Joined)
-    }
-}
-
 /// One-shot duties the app still owes the frame loop.
 #[derive(Clone, Copy, Default)]
 struct Pending {
-    /// Startup (`initialize`) has already run.
-    seeded: bool,
     /// The scene is stale and needs repainting.
     redraw: bool,
     /// The document carries a change the host should bracket as an undo point.
     commit: bool,
+}
+
+/// The part of a screenshot scenario staged against the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Staged {
+    CommandPalette,
+    FillSeries,
+    PasteFormula,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -825,10 +770,6 @@ fn tab_action_label(act: TabAction) -> &'static str {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the loading shot flag joins existing independent retained interaction, worker, and presentation flags; these are not mutually exclusive states"
-)]
 pub struct SheetsApp {
     grid: Grid,
     /// The custom chrome has no toolkit layout primitives to inherit type
@@ -912,13 +853,12 @@ pub struct SheetsApp {
     /// actually changes (never every frame, and never on the idle nothing
     /// state).
     last_status_label: String,
-    /// `--shots` forces the bubble fully visible so a still frame captures it.
-    shots_status: bool,
-    /// Snapshot-only counterpart to the real startup loading state. This lets
-    /// headless visual regression cover the loading affordance after the shot
-    /// harness has seeded its deterministic sample workbook.
-    shots_loading: bool,
-    /// One-shot frame duties: startup seeding, repaint, undo checkpoint.
+    /// A screenshot pins the bubble fully visible so a still frame shows it.
+    staged_status: bool,
+    /// The part of a screenshot scenario staged against the document, done
+    /// by the `sync` that follows the staging.
+    staged: Option<Staged>,
+    /// One-shot frame duties: repaint, undo checkpoint.
     pending: Pending,
     last_press: Option<(Instant, Addr)>,
     last_mouse: Point,
@@ -926,22 +866,10 @@ pub struct SheetsApp {
     open_menu: OpenMenu,
     settings_panel: SettingsPanel,
     global: GlobalSettings,
+    /// The shared global defaults are read once, by the first `sync`.
+    global_unread: bool,
     doc_settings: DocSettings,
-    /// Whether this instance is a real session or the headless capture path.
-    run: RunMode,
     motion: MotionPreference,
-    /// Document heads last written to disk — persistence is skipped while the
-    /// document is unchanged, so idle frames never re-serialize.
-    saved_heads: Vec<ChangeHash>,
-    /// A single capacity-one worker covers both startup loading and coalesced
-    /// saves. A later edit while a save is running stays dirty and schedules
-    /// one follow-up write after the exact saved heads are acknowledged.
-    persistence_rx: Option<Receiver<PersistenceResult>>,
-    persistence_generation: u64,
-    active_persistence: Option<(u64, PersistenceJob)>,
-    persistence_started: bool,
-    load_start_heads: Option<Vec<ChangeHash>>,
-    last_persist_failure: Option<Instant>,
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
@@ -1059,10 +987,9 @@ impl SheetsApp {
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
             last_status_label: String::new(),
-            shots_status: false,
-            shots_loading: false,
+            staged_status: false,
+            staged: None,
             pending: Pending {
-                seeded: false,
                 redraw: true,
                 commit: false,
             },
@@ -1072,16 +999,9 @@ impl SheetsApp {
             open_menu: OpenMenu::None,
             settings_panel: SettingsPanel::None,
             global: GlobalSettings::default(),
+            global_unread: true,
             doc_settings: DocSettings::default(),
-            run: ui::launch::record_launch().map_or(RunMode::Live, RunMode::Record),
             motion: MotionPreference::Full,
-            saved_heads: Vec::new(),
-            persistence_rx: None,
-            persistence_generation: 0,
-            active_persistence: None,
-            persistence_started: false,
-            load_start_heads: None,
-            last_persist_failure: None,
             cache: None,
             io: None,
             interchange_rx: None,
@@ -1414,252 +1334,133 @@ impl SheetsApp {
         self.actions.last_dispatched()
     }
 
-    /// Configure the app for the headless `--shots`/test path: seed the sample
-    /// workbook so a captured frame shows real formulas, and disable on-disk
-    /// persistence so screenshots never read or write the user's workbook.
-    pub fn shots_mode(&mut self) {
-        self.run = RunMode::Shots;
-    }
-
     /// The index of the active sheet. Lets a test observe where a Ctrl+K
     /// activation navigated.
     pub fn active_sheet_index(&self) -> usize {
         self.active_sheet
     }
 
-    /// `--shots`: force the floating status bubble fully visible so a single
-    /// headless frame captures the floating Sum / Avg / Count pill (otherwise
-    /// it would have faded, or never surfaced, by the time the frame renders).
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
+    /// Pin the floating status bubble fully visible, so a still frame shows
+    /// the Sum / Avg / Count pill or the message it carries rather than a
+    /// bubble that has faded or never surfaced.
+    fn pin_status_bubble(&mut self) {
+        self.staged_status = true;
         self.status_bubble.poke(ui::time::now());
     }
 
-    /// Shots hook: open the File menu so its actions appear in the frame.
-    pub fn shots_open_file_menu(&mut self) {
-        self.open_menu = OpenMenu::File;
-    }
-
-    /// Shots hook: exercise the same loading veil real persistent launches
-    /// display while their bounded workbook load is still in flight.
-    pub fn shots_show_loading(&mut self) {
-        self.shots_loading = true;
-    }
-
-    /// Shots hook: stage a failed import acknowledgement in the normal status
-    /// surface. The production path supplies the same text from its worker.
-    pub fn shots_show_error(&mut self) {
-        self.status = "Excel import failed: the workbook is password protected".into();
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: stage the collaboration acknowledgement used when an
-    /// incoming revision supersedes the value currently being edited.
-    pub fn shots_show_conflict(&mut self) {
-        self.status = "Budget was updated by a collaborator; showing the latest value".into();
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: prove that acknowledgement remains visible with animations
-    /// suppressed for the reduced-motion preference.
-    pub fn shots_show_reduced_motion(&mut self) {
-        self.set_motion_reduced(true);
-        self.status = "Changes saved".into();
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: open the Format menu.
-    pub fn shots_open_format_menu(&mut self) {
-        self.open_menu = OpenMenu::Format;
-    }
-
-    /// Shots hook: expose the compact-toolbar overflow menu so responsive
-    /// visual regression covers controls that are intentionally moved off the
-    /// narrow, enlarged-text command row.
-    pub fn shots_open_more_menu(&mut self) {
-        self.open_menu = OpenMenu::More;
-    }
-
-    /// Shots hook: open the per-document settings panel.
-    pub fn shots_open_doc_settings(&mut self) {
-        self.settings_panel = SettingsPanel::Document;
-    }
-
-    /// Shots hook: begin editing the active cell so the in-cell editor and the
-    /// active formula bar are captured.
-    pub fn shots_begin_edit(&mut self) {
-        self.grid.begin_edit_in_place();
-    }
-
-    /// Shots hook: build a formula purely by clicking cells (point mode),
-    /// so the captured frame shows the coloured references it inserted and
-    /// the matching outlines on the referenced cells (B2 and C2).
-    pub fn shots_build_formula(&mut self) {
-        self.grid.select_only((2, 9)); // C10, an empty cell
-        self.grid.begin_edit(Some("=".into()));
-        self.grid.point_click_addr((1, 1)); // click B2 → =B2
-        self.grid.insert_text_public("+"); // type + → =B2+
-        self.grid.point_click_addr((2, 1)); // click C2 → =B2+C2
-    }
-
-    /// Shots hook: select a multi-cell numeric range so the live status-bar
-    /// summary (Sum / Avg / Count) is captured.
-    pub fn shots_select_summary_range(&mut self) {
-        // Budget!B2:B6 — the January column body.
-        self.grid.select_range_public((1, 1), (1, 5));
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: build a discontiguous multi-range selection (the Jan column
-    /// body plus the Q1 Total column) so the frame shows two separate
-    /// highlighted rectangles with lit row/column headers.
-    pub fn shots_multi_select(&mut self) {
-        self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
-        self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: open the right-click context menu on the first sheet tab so
-    /// the captured frame shows the rename/duplicate/move/colour actions.
-    pub fn shots_open_tab_menu(&mut self) {
-        self.open_tab_menu(0);
-    }
-
-    /// Shots hook: edit the active formula cell and select the range reference
-    /// inside it, so the captured frame shows the formula bar's text selection
-    /// and caret (the editable formula bar).
-    pub fn shots_formula_bar_select(&mut self) {
-        self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
-        self.grid.begin_edit_in_place();
-        self.grid.set_edit_caret(5, false); // just before "B2:D2"
-        self.grid.set_edit_caret(10, true); // select "B2:D2"
-    }
-
-    /// Shots hook: open the Ctrl+K command palette so the captured frame shows
-    /// the action list with labels + descriptions.
-    pub fn shots_open_command_palette(&mut self, doc: &AutoCommit) {
-        self.open_command_palette(doc);
-    }
-
-    /// Shots hook: offset both axes so the scrollbar thumbs visibly prove the
-    /// two-dimensional grid viewport rather than merely drawing idle rails.
-    pub fn shots_scroll_both_axes(&mut self) {
-        self.grid.on_scroll(540.0, 260.0);
-    }
-
-    /// Shots hook: seed three fill patterns in an empty region and extend each
-    /// through the *real* fill-handle path, so the captured frame shows genuine
-    /// filled series — a linear number run (1, 2 → …6), a weekday sequence
-    /// (Mon → …Sat), and a text+number run (Task 1 → …Task 6) — plus the fill
-    /// handle on the resulting selection.
-    pub fn shots_fill_series(&mut self, doc: &mut AutoCommit) {
-        // Labels + seed patterns in columns B..D under an empty region.
-        let seeds: &[(Addr, &str)] = &[
-            ((0, 14), "Fill demo"),
-            ((1, 14), "Count"),
-            ((2, 14), "Weekday"),
-            ((3, 14), "Task"),
-            ((1, 15), "1"),
-            ((1, 16), "2"),
-            ((2, 15), "Mon"),
-            ((3, 15), "Task 1"),
-        ];
-        let cmds: Vec<GridCmd> = seeds
-            .iter()
-            .map(|(a, v)| GridCmd::SetCell {
-                addr: *a,
-                raw: v.to_string(),
-            })
-            .collect();
-        self.apply_cmds(doc, cmds);
-
-        // Numeric pair B16:B17 → extend down to B21 (3,4,5,6).
-        self.grid.select_range_public((1, 15), (1, 16));
-        self.grid.start_fill_to((1, 20));
-        self.run_pending_fill(doc);
-        // Single weekday C16 → extend down to C21 (Tue…Sat).
-        self.grid.select_only((2, 15));
-        self.grid.start_fill_to((2, 20));
-        self.run_pending_fill(doc);
-        // Single text+number D16 → extend down to D21 (Task 2…Task 6).
-        self.grid.select_only((3, 15));
-        self.grid.start_fill_to((3, 20));
-        self.run_pending_fill(doc);
-
-        // Land the selection on the filled numeric column so its fill handle
-        // shows at the bottom-right corner.
-        self.grid.select_range_public((1, 15), (1, 20));
-        self.reload(doc);
-    }
-
-    /// Shots hook: copy the `=SUM(B2:D2)` cell and paste it one column to the
-    /// right, then select the pasted cell — the frame shows the *adjusted*
-    /// formula `=SUM(C2:E2)` in the formula bar and its recomputed result in
-    /// the cell, demonstrating relative-reference adjustment on paste.
-    pub fn shots_paste_formula(&mut self, doc: &mut AutoCommit) {
-        self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
-        self.copy_selection(false);
-        self.grid.select_only((5, 1)); // F2 (seeded AVERAGE; overwritten)
-        self.paste(doc);
-        self.grid.select_only((5, 1));
-        self.reload(doc);
-    }
-
-    /// Shots hook: add the two durable chart types and a range-anchored thread
-    /// through the same replayable action path used by Ctrl+K and agents.
-    pub fn shots_seed_charts_and_comments(&mut self, doc: &mut AutoCommit) {
-        let sheet_id = self.sheet_identity(self.active_sheet);
-        let charts = [
-            actions::put_chart_action(
-                self.active_sheet,
-                sheet_id.clone(),
-                "Quarterly spend",
-                ChartKind::Column,
-                (1, 1),
-                (4, 6),
-            ),
-            actions::put_chart_action(
-                self.active_sheet,
-                sheet_id.clone(),
-                "Monthly trend",
-                ChartKind::Line,
-                (1, 1),
-                (3, 6),
-            ),
-        ];
-        for chart in &charts {
-            self.perform_action(doc, chart);
+    /// Stage a screenshot scenario's view state over the sample workbook its
+    /// actions wrote: the active cell, an open menu, an edit in progress, a
+    /// message. What needs the document (a fill, a paste, the palette's
+    /// actions) is done by the `sync` that follows.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        // A smart-typed currency cell, so the formula bar and the type
+        // indicator are populated.
+        if let Some(addr) = a1_to_addr("E2") {
+            self.grid.select_only(addr);
         }
-        let comment = actions::put_comment_action(
-            self.active_sheet,
-            sheet_id.clone(),
-            (1, 1),
-            (4, 1),
-            "Alex",
-            "Check the rent increase before sending this budget.",
-        );
-        let SheetsAction::PutComment { comment_id, .. } = &comment else {
+        match scenario {
+            Some("file") => self.open_menu = OpenMenu::File,
+            Some("format") => self.open_menu = OpenMenu::Format,
+            // The compact-toolbar overflow menu, which holds the controls a
+            // narrow, enlarged-text command row moves off it.
+            Some("more") => self.open_menu = OpenMenu::More,
+            Some("docsettings") => self.settings_panel = SettingsPanel::Document,
+            Some("editing") => self.grid.begin_edit_in_place(),
+            // A formula built purely by clicking cells (point mode): the
+            // coloured references it inserted and the matching outlines on
+            // the referenced cells (B2 and C2).
+            Some("pointmode") => {
+                self.grid.select_only((2, 9)); // C10, an empty cell
+                self.grid.begin_edit(Some("=".into()));
+                self.grid.point_click_addr((1, 1)); // click B2 → =B2
+                self.grid.insert_text_public("+"); // type + → =B2+
+                self.grid.point_click_addr((2, 1)); // click C2 → =B2+C2
+            }
+            // Budget!B2:B6 — the January column body — and its summary.
+            Some("summary") => {
+                self.grid.select_range_public((1, 1), (1, 5));
+                self.pin_status_bubble();
+            }
+            // Two separate highlighted rectangles with lit headers: the
+            // January column body and the Q1 Total column.
+            Some("multiselect") => {
+                self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
+                self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
+                self.pin_status_bubble();
+            }
+            Some("tabmenu") => self.open_tab_menu(0),
+            // The range reference inside E2's `=SUM(B2:D2)` selected in the
+            // editable formula bar.
+            Some("fbarselect") => {
+                self.grid.select_only((4, 1));
+                self.grid.begin_edit_in_place();
+                self.grid.set_edit_caret(5, false); // just before "B2:D2"
+                self.grid.set_edit_caret(10, true); // select "B2:D2"
+            }
+            Some("commandpalette") => self.staged = Some(Staged::CommandPalette),
+            // Both scrollbar thumbs offset, proving the two-dimensional
+            // viewport rather than idle rails.
+            Some("scrollbars") => self.grid.on_scroll(540.0, 260.0),
+            Some("fillseries") => self.staged = Some(Staged::FillSeries),
+            Some("pasteformula") => self.staged = Some(Staged::PasteFormula),
+            Some("error") => {
+                self.status = "Excel import failed: the workbook is password protected".into();
+                self.pin_status_bubble();
+            }
+            // An incoming revision superseding the value being edited.
+            Some("conflict") => {
+                self.status =
+                    "Budget was updated by a collaborator; showing the latest value".into();
+                self.pin_status_bubble();
+            }
+            // The acknowledgement stays visible with animations suppressed.
+            Some("reducedmotion") => {
+                self.set_motion_reduced(true);
+                self.status = "Changes saved".into();
+                self.pin_status_bubble();
+            }
+            Some("charts" | "comments") => {
+                self.status = "2 charts and 1 resolved comment thread added".into();
+                self.pin_status_bubble();
+            }
+            _ => {}
+        }
+    }
+
+    /// Finish the staged part of a scenario that works on the document.
+    fn finish_staging(&mut self, doc: &mut AutoCommit) {
+        let Some(staged) = self.staged.take() else {
             return;
         };
-        let comment_id = comment_id.clone();
-        self.perform_action(doc, &comment);
-        self.perform_action(
-            doc,
-            &actions::reply_comment_action(
-                self.active_sheet,
-                sheet_id.clone(),
-                comment_id.clone(),
-                "Sam",
-                "I will verify the change.",
-            ),
-        );
-        self.perform_action(
-            doc,
-            &actions::set_comment_resolved_action(self.active_sheet, sheet_id, comment_id, true),
-        );
+        match staged {
+            Staged::CommandPalette => self.open_command_palette(doc),
+            // The seeded patterns extended through the real fill-handle path:
+            // a number run (1, 2 → …6), weekdays (Mon → …Sat) and a
+            // text+number run (Task 1 → …Task 6), with the fill handle on the
+            // filled numeric column.
+            Staged::FillSeries => {
+                self.grid.select_range_public((1, 15), (1, 16));
+                self.grid.start_fill_to((1, 20));
+                self.run_pending_fill(doc);
+                self.grid.select_only((2, 15));
+                self.grid.start_fill_to((2, 20));
+                self.run_pending_fill(doc);
+                self.grid.select_only((3, 15));
+                self.grid.start_fill_to((3, 20));
+                self.run_pending_fill(doc);
+                self.grid.select_range_public((1, 15), (1, 20));
+            }
+            // E2's `=SUM(B2:D2)` copied one column to the right: the formula
+            // bar shows the adjusted `=SUM(C2:E2)` and the cell its result.
+            Staged::PasteFormula => {
+                self.grid.select_only((4, 1));
+                self.copy_selection(false);
+                self.grid.select_only((5, 1)); // F2 (the sample's AVERAGE)
+                self.paste(doc);
+                self.grid.select_only((5, 1));
+            }
+        }
         self.reload(doc);
-        self.status = "2 charts and 1 resolved comment thread added".into();
-        self.arm_status_bubble_for_shots();
     }
 
     /// The document's effective locale (per-doc overrides over global).
@@ -1700,261 +1501,6 @@ impl SheetsApp {
     }
 
     // --- document plumbing --------------------------------------------------
-
-    /// Finish startup after the persistence worker has either supplied the
-    /// prior workbook or established that there is none.  A real launch never
-    /// fabricates sample data; only the headless shots/test path seeds it.
-    fn finish_initialize(&mut self, doc: &mut AutoCommit, durable_heads: Option<Vec<ChangeHash>>) {
-        if SheetsDoc::is_empty(doc) {
-            if self.run.seeds_sample_data() {
-                seed_workbook(doc);
-                self.active_sheet = 0;
-                // Preselect a smart-typed currency cell so the formula bar and
-                // the type indicator are populated in the captured frame.
-                if let Some(addr) = a1_to_addr("E2") {
-                    self.grid.select_only(addr);
-                }
-            } else if self.run.seeds_blank_sheet() {
-                SheetsDoc::add_sheet(doc, "Sheet1");
-                self.active_sheet = 0;
-                self.grid.select_only((0, 0));
-            }
-        } else {
-            // Restored workbook: land on the first sheet at A1. The active tab
-            // is local presentation, not collaborative workbook content.
-            self.active_sheet = 0;
-            self.grid.select_only((0, 0));
-        }
-        let current_heads = doc.get_heads();
-        let load_start_heads = self.load_start_heads.take().unwrap_or_default();
-        // A disk image can only acknowledge the exact document it contained.
-        // If local/collaborative changes existed before or arrived during the
-        // asynchronous load, leave the merged document dirty so one coalesced
-        // save captures every head rather than silently losing the newer one.
-        self.saved_heads = match durable_heads {
-            Some(durable) if load_start_heads.is_empty() && current_heads == durable => {
-                current_heads
-            }
-            None if load_start_heads.is_empty() => current_heads,
-            Some(_) | None => Vec::new(),
-        };
-        self.pending.seeded = true;
-    }
-
-    /// Start a capacity-one background load. The worker does both file I/O and
-    /// Automerge decoding; the UI only merges the accepted completed document.
-    fn start_persistence_load(&mut self, load_start_heads: Vec<ChangeHash>) -> Result<(), String> {
-        let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
-            "workbook persistence generation is exhausted; restart Sheets".to_string()
-        })?;
-        let (location, name) = workbook_store();
-        let (tx, rx) = mpsc::sync_channel(1);
-        run_worker("sheets-persistence-load", move || {
-            let read = tilo_files::Dir::open(location)
-                .and_then(|dir| tilo_files::blocking::read(&dir, &name));
-            let result = match read {
-                Ok(bytes) => AutoCommit::load(&bytes)
-                    .map(|mut saved| {
-                        let heads = saved.get_heads();
-                        Some(Box::new((saved, heads)))
-                    })
-                    .map_err(|error| format!("could not decode saved workbook: {error}")),
-                Err(tilo_files::FsError::NotFound) => Ok(None),
-                Err(error) => Err(format!("could not read saved workbook: {error}")),
-            };
-            let _ = tx.send(PersistenceResult::Load { generation, result });
-        })
-        .map_err(|error| format!("could not start workbook load worker: {error}"))?;
-        self.persistence_generation = generation;
-        self.persistence_rx = Some(rx);
-        self.active_persistence = Some((generation, PersistenceJob::Load));
-        self.load_start_heads = Some(load_start_heads);
-        self.status = "Loading workbook…".into();
-        Ok(())
-    }
-
-    /// Serialize and write a stable document fork away from the event loop.
-    /// `heads` identifies exactly what reached durable storage; concurrent edits
-    /// remain dirty and are coalesced into one later write.
-    fn start_persistence_save(
-        &mut self,
-        doc: &mut AutoCommit,
-        heads: Vec<ChangeHash>,
-    ) -> Result<(), String> {
-        let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
-            "workbook persistence generation is exhausted; restart Sheets".to_string()
-        })?;
-        let (location, name) = workbook_store();
-        let mut saved_doc = doc.fork();
-        let result_heads = heads.clone();
-        let (tx, rx) = mpsc::sync_channel(1);
-        run_worker("sheets-persistence-save", move || {
-            let result = tilo_files::Dir::open(location)
-                .and_then(|dir| tilo_files::blocking::write_atomic(&dir, &name, &saved_doc.save()))
-                .map_err(|error| error.to_string());
-            let _ = tx.send(PersistenceResult::Save {
-                generation,
-                heads: result_heads,
-                result,
-            });
-        })
-        .map_err(|error| format!("could not start workbook save worker: {error}"))?;
-        self.persistence_generation = generation;
-        self.persistence_rx = Some(rx);
-        self.active_persistence = Some((generation, PersistenceJob::Save { heads }));
-        Ok(())
-    }
-
-    /// Receive exactly one current persistence result. Disconnected workers and
-    /// failed writes leave the document dirty, visibly report the problem, and
-    /// retry with backoff rather than silently advancing `saved_heads`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one worker receipt owns generation validation, startup handoff, and save settlement"
-    )]
-    fn drain_persistence_worker(&mut self, doc: &mut AutoCommit) {
-        let Some(rx) = self.persistence_rx.as_ref() else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                self.persistence_rx = None;
-                let active = self.active_persistence.take();
-                self.last_persist_failure = Some(ui::time::now());
-                self.status = match active {
-                    Some((_, PersistenceJob::Load)) => {
-                        "Workbook load worker disconnected; opening a new workbook".into()
-                    }
-                    Some((_, PersistenceJob::Save { .. })) => {
-                        "Workbook save worker disconnected; changes will be retried".into()
-                    }
-                    None => "Workbook persistence worker disconnected".into(),
-                };
-                if !self.pending.seeded {
-                    self.finish_initialize(doc, None);
-                }
-                return;
-            }
-        };
-        self.persistence_rx = None;
-        let Some((generation, active)) = self.active_persistence.clone() else {
-            return;
-        };
-        let result_generation = match &result {
-            PersistenceResult::Load { generation, .. }
-            | PersistenceResult::Save { generation, .. } => *generation,
-        };
-        if generation != result_generation {
-            // A generation mismatch cannot be safely associated with the
-            // retained job. Settle it as failed rather than letting a later
-            // dirty check overwrite that ownership.
-            self.active_persistence = None;
-            self.last_persist_failure = Some(ui::time::now());
-            self.status =
-                "Discarded a stale workbook persistence result; changes will be retried".into();
-            if !self.pending.seeded {
-                self.finish_initialize(doc, None);
-            }
-            return;
-        }
-        self.active_persistence = None;
-        match (active, result) {
-            (PersistenceJob::Load, PersistenceResult::Load { result, .. }) => {
-                let durable_heads = match result {
-                    Ok(Some(saved)) => {
-                        let (mut saved, durable_heads) = *saved;
-                        // If any collaboration/local state appeared while the
-                        // disk worker was running, an Automerge root-map merge
-                        // can conflict at `wb`. Bring the saved sheets in via
-                        // the same atomic canonical import action instead, so
-                        // neither workbook silently wins or disappears.
-                        if doc.get_heads().is_empty() {
-                            if let Err(error) = doc.merge_incoming(&mut saved) {
-                                self.status =
-                                    format!("Saved workbook could not be merged: {error}");
-                                self.last_persist_failure = Some(ui::time::now());
-                                None
-                            } else {
-                                Some(durable_heads)
-                            }
-                        } else {
-                            let tables = (0..SheetsDoc::sheet_count(&mut saved))
-                                .map(|sheet| {
-                                    let snapshot = SheetsDoc::snapshot_sheet(
-                                        &mut saved,
-                                        sheet,
-                                        self.default_currency(),
-                                    );
-                                    Self::table_from_snapshot(&snapshot)
-                                })
-                                .collect();
-                            if let Err(error) = self.import_tables_with(doc, tables, false, None) {
-                                self.status = format!("Could not import saved workbook: {error}");
-                                self.last_persist_failure = Some(ui::time::now());
-                            }
-                            self.load_start_heads = Some(doc.get_heads());
-                            None
-                        }
-                    }
-                    Ok(None) => None,
-                    Err(error) => {
-                        self.status = format!("Could not load saved workbook: {error}");
-                        self.last_persist_failure = Some(ui::time::now());
-                        None
-                    }
-                };
-                self.finish_initialize(doc, durable_heads);
-            }
-            (
-                PersistenceJob::Save { heads: expected },
-                PersistenceResult::Save { heads, result, .. },
-            ) if expected == heads => match result {
-                Ok(()) => {
-                    let had_failure = self.last_persist_failure.take().is_some();
-                    self.saved_heads = heads;
-                    if had_failure {
-                        self.status = "Workbook saved".into();
-                    }
-                }
-                Err(error) => {
-                    self.status =
-                        format!("Could not save workbook: {error}; changes will be retried");
-                    self.last_persist_failure = Some(ui::time::now());
-                }
-            },
-            _ => {
-                self.status = "Discarded a stale workbook persistence result".into();
-            }
-        }
-    }
-
-    /// Queue a coalesced persistence write when the current CRDT heads are not
-    /// yet durable. The fork/serialization/write itself is entirely off-thread.
-    fn persist_if_dirty(&mut self, doc: &mut AutoCommit) {
-        if !self.run.persists()
-            || !self.pending.seeded
-            || self.persistence_rx.is_some()
-            || self.active_persistence.is_some()
-        {
-            return;
-        }
-        let heads = doc.get_heads();
-        if heads == self.saved_heads {
-            return;
-        }
-        if self
-            .last_persist_failure
-            .is_some_and(|failed_at| failed_at.elapsed() < PERSIST_RETRY_DELAY)
-        {
-            return;
-        }
-        if let Err(error) = self.start_persistence_save(doc, heads) {
-            self.status = format!("Could not save workbook: {error}; changes will be retried");
-            self.last_persist_failure = Some(ui::time::now());
-        }
-    }
 
     /// Read the active sheet, recalculate, propagate formats onto computed
     /// cells, and push the data into the grid.
@@ -4679,7 +4225,7 @@ impl SheetsApp {
             self.rect.x1,
             self.tabs_rect.y0,
         );
-        let over = self.shots_status || zone.contains(self.last_mouse);
+        let over = self.staged_status || zone.contains(self.last_mouse);
         self.status_bubble.set_hover(over, now);
         let alpha = if self.motion == MotionPreference::Reduced {
             // Reduced motion keeps the useful acknowledgement, but never
@@ -4705,48 +4251,6 @@ impl SheetsApp {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
-    }
-
-    /// A non-blocking veil while a persistent workbook is decoded on the
-    /// capacity-one worker. The normal chrome remains visible so the launch
-    /// feels intentional, but the grid cannot be edited until its CRDT receipt
-    /// has been merged. This is deliberately drawn from state rather than a
-    /// timer, so reduced motion and a slow disk behave identically.
-    fn draw_loading_veil(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let loading = (self.run.persists() && self.persistence_started && !self.pending.seeded)
-            || self.shots_loading;
-        if !loading {
-            return;
-        }
-        let veil = self.grid_rect;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base.with_alpha_factor(0.88),
-            None,
-            &veil,
-        );
-        let label = "Opening workbook…";
-        let size = self.metrics.base;
-        let (width, height) = tr.measure(label, size, None);
-        let origin = Point::new(
-            veil.center().x - f64::from(width) / 2.0,
-            veil.center().y - f64::from(height) / 2.0,
-        );
-        tr.draw_text(
-            scene,
-            label,
-            size,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((origin.x, origin.y)),
-            None,
-        );
     }
 
     /// Render the active sheet's small, data-derived chart collection. Charts
@@ -5627,37 +5131,6 @@ fn tsv_cell(display: &str) -> String {
     display.replace(['\t', '\n', '\r'], " ")
 }
 
-/// Where the workbook is persisted between sessions:
-/// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
-/// `~/.local/share`).
-fn workbook_store() -> (tilo_files::Location, tilo_files::VPath) {
-    let location = tilo_paths::env_dir("XDG_DATA_HOME").map_or_else(
-        || tilo_paths::AppPaths::for_app("tilo").data(),
-        |base| tilo_files::Location::Native(base.join("tilo")),
-    );
-    let name = tilo_files::VPath::new("sheets/workbook.automerge").unwrap_or_default();
-    (location, name)
-}
-
-#[cfg(test)]
-fn workbook_path() -> Option<PathBuf> {
-    let (location, name) = workbook_store();
-    Some(location.native_path().ok()?.join(name.as_str()))
-}
-
-/// Run `job` on a worker thread, or at once where there are no threads (a
-/// browser page, where the app's files answer from memory).
-fn run_worker(name: &str, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    if matches!(
-        ui::rt::availability(ui::rt::Feature::Threads),
-        ui::rt::Availability::Unsupported(_)
-    ) {
-        job();
-        return Ok(());
-    }
-    ui::rt::spawn_thread(name, job).map(drop)
-}
-
 /// A new sheet name derived from an imported file's stem.
 fn sheet_name_from_path(path: &std::path::Path) -> String {
     path.file_stem()
@@ -5804,35 +5277,15 @@ impl Widget for SheetsApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
-        if self.run == RunMode::Record(ui::launch::RecordLaunch::Joined)
-            && SheetsDoc::sheet_count_readonly(state) == 0
-        {
-            // The creator's workbook has not arrived. Reading through the
-            // get-or-create accessors now would write a second `wb` that
-            // competes with the creator's in the merge.
+        if SheetsDoc::sheet_count_readonly(state) == 0 {
+            // The workbook's first sheet has not arrived from its creator.
+            // Reading through the get-or-create accessors now would write a
+            // second `wb` that competes with the creator's in the merge.
             return;
         }
-        if !self.pending.seeded {
-            if !self.persistence_started {
-                // Pull the shared global defaults once at startup.
-                self.global = GlobalSettings::load();
-                self.persistence_started = true;
-                if self.run.persists() {
-                    if let Err(error) = self.start_persistence_load(state.get_heads()) {
-                        self.status = format!("Could not start workbook load: {error}");
-                        self.last_persist_failure = Some(ui::time::now());
-                        self.finish_initialize(state, None);
-                    }
-                } else {
-                    self.finish_initialize(state, None);
-                }
-            }
-            self.drain_persistence_worker(state);
-            // Keep startup responsive: layout can render its normal loading
-            // state while the bounded worker reads and decodes a large CRDT.
-            if !self.pending.seeded {
-                return;
-            }
+        if self.global_unread {
+            self.global = GlobalSettings::load();
+            self.global_unread = false;
         }
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let path = match &operation {
@@ -5884,8 +5337,8 @@ impl Widget for SheetsApp {
         self.drain_orphaned_interchange();
         self.drain_interchange_worker(state);
         self.settle_prepared_resource_io(state);
-        self.drain_persistence_worker(state);
         self.reload(state);
+        self.finish_staging(state);
         self.current_active_format = self.format_of_active();
         // Surface the floating status bubble only when the composed label
         // actually changes — a selection move/extend, or a fresh action
@@ -5899,7 +5352,6 @@ impl Widget for SheetsApp {
             }
             self.last_status_label = label;
         }
-        self.persist_if_dirty(state);
     }
 
     fn build_layout(
@@ -5958,7 +5410,6 @@ impl Widget for SheetsApp {
         self.grid.draw(scene, transform, text_renderer, theme);
         self.draw_charts(scene, transform, text_renderer, theme);
         self.draw_comment_threads(scene, transform, text_renderer, theme);
-        self.draw_loading_veil(scene, transform, text_renderer, theme);
         // The transient floating status bubble sits above the grid + tab strip
         // (the reclaimed home of the old bottom status text), below the modal
         // overlays that follow.
@@ -6297,12 +5748,7 @@ impl Widget for SheetsApp {
             ))
             .with_value(format!("Active cell {active_name}"))
             .with_bounds(window.bounds)
-            .with_state(
-                AccessState::new().focusable(true).busy(
-                    (self.run.persists() && self.persistence_started && !self.pending.seeded)
-                        || self.shots_loading,
-                ),
-            )
+            .with_state(AccessState::new().focusable(true))
             .with_children(rows);
         let annotations = AccessNode::new(Role::List)
             .with_name("Comments and charts")
@@ -7897,167 +7343,30 @@ impl SheetsApp {
     }
 }
 
-/// Seed a realistic two-sheet workbook: a monthly budget with SUM /
-/// AVERAGE / IF formulas, and a quarterly sales sheet with growth %. The
-/// money columns are typed via smart entry so they pick up currency
-/// automatically; one row shows a date and a percent for the screenshot.
-fn seed_workbook(doc: &mut AutoCommit) {
-    seed_budget_sheet(doc);
-    seed_sales_sheet(doc);
-}
-
-fn seed_budget_sheet(doc: &mut AutoCommit) {
-    let budget = SheetsDoc::add_sheet(doc, "Budget");
-    let set = |doc: &mut AutoCommit, a: &str, v: &str| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_raw(doc, budget, addr, v);
-        }
-    };
-    let setf = |doc: &mut AutoCommit, a: &str, f: CellFormat| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_format(doc, budget, addr, f);
-        }
-    };
-    set(doc, "A1", "Category");
-    set(doc, "B1", "Jan");
-    set(doc, "C1", "Feb");
-    set(doc, "D1", "Mar");
-    set(doc, "E1", "Q1 Total");
-    set(doc, "F1", "Average");
-    set(doc, "G1", "Updated");
-
-    let rows: &[(&str, f64, f64, f64)] = &[
-        ("Rent", 1200.0, 1200.0, 1200.0),
-        ("Groceries", 420.0, 460.0, 510.0),
-        ("Utilities", 180.0, 165.0, 200.0),
-        ("Transport", 90.0, 110.0, 95.0),
-        ("Entertainment", 150.0, 200.0, 175.0),
-    ];
-    for (i, (name, jan, feb, mar)) in rows.iter().enumerate() {
-        let r = i + 2;
-        set(doc, &format!("A{r}"), name);
-        set(doc, &format!("B{r}"), &jan.to_string());
-        set(doc, &format!("C{r}"), &feb.to_string());
-        set(doc, &format!("D{r}"), &mar.to_string());
-        // E inherits currency via propagation from the SUM over a currency
-        // range; we still mark it explicitly to be safe.
-        set(doc, &format!("E{r}"), &format!("=SUM(B{r}:D{r})"));
-        set(doc, &format!("F{r}"), &format!("=AVERAGE(B{r}:D{r})"));
-    }
-    set(doc, "A7", "Total");
-    set(doc, "B7", "=SUM(B2:B6)");
-    set(doc, "C7", "=SUM(C2:C6)");
-    set(doc, "D7", "=SUM(D2:D6)");
-    set(doc, "E7", "=SUM(E2:E6)");
-    set(doc, "F7", "=AVERAGE(B7:D7)");
-    set(doc, "A9", "Monthly budget");
-    set(doc, "B9", "2600");
-    set(doc, "A10", "Over budget?");
-    set(doc, "B10", "=IF(B7>B9,\"OVER\",\"OK\")");
-    set(doc, "A11", "Headroom");
-    // =B9-B7 with both currency operands → currency propagates.
-    set(doc, "B11", "=B9-B7");
-    set(doc, "A12", "Tax set-aside");
-    // A percent literal — smart inference would normally store 0.18; here we
-    // store it pre-normalized and mark the format so the seed is explicit.
-    set(doc, "B12", "0.18");
-    setf(doc, "B12", CellFormat::Percent);
-
-    // Currency on the money columns/rows (explicit so the seed is stable).
-    for r in 2..=7 {
-        for col in ["B", "C", "D", "E"] {
-            setf(
-                doc,
-                &format!("{col}{r}"),
-                CellFormat::Currency(Currency::USD),
-            );
-        }
-        setf(doc, &format!("F{r}"), CellFormat::Number);
-    }
-    setf(doc, "B9", CellFormat::Currency(Currency::USD));
-    setf(doc, "B11", CellFormat::Currency(Currency::USD));
-    // A date in the "Updated" column, smart-typed style.
-    set(doc, "G2", "2024-01-15");
-    setf(doc, "G2", CellFormat::Date(DateStyle::Iso));
-}
-
-/// Sheet 2: Sales (EUR document feel via explicit currency).
-fn seed_sales_sheet(doc: &mut AutoCommit) {
-    let sales = SheetsDoc::add_sheet(doc, "Sales");
-    let sset = |doc: &mut AutoCommit, a: &str, v: &str| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_raw(doc, sales, addr, v);
-        }
-    };
-    let ssetf = |doc: &mut AutoCommit, a: &str, f: CellFormat| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_format(doc, sales, addr, f);
-        }
-    };
-    sset(doc, "A1", "Region");
-    sset(doc, "B1", "Q1");
-    sset(doc, "C1", "Q2");
-    sset(doc, "D1", "Q3");
-    sset(doc, "E1", "Q4");
-    sset(doc, "F1", "Year");
-    sset(doc, "G1", "Growth");
-    let sales_rows: &[(&str, f64, f64, f64, f64)] = &[
-        ("North", 12000.0, 13500.0, 14200.0, 15800.0),
-        ("South", 9800.0, 10200.0, 9900.0, 11500.0),
-        ("East", 15200.0, 16100.0, 17400.0, 18900.0),
-        ("West", 8400.0, 9100.0, 9700.0, 10800.0),
-    ];
-    for (i, (name, q1, q2, q3, q4)) in sales_rows.iter().enumerate() {
-        let r = i + 2;
-        sset(doc, &format!("A{r}"), name);
-        sset(doc, &format!("B{r}"), &q1.to_string());
-        sset(doc, &format!("C{r}"), &q2.to_string());
-        sset(doc, &format!("D{r}"), &q3.to_string());
-        sset(doc, &format!("E{r}"), &q4.to_string());
-        sset(doc, &format!("F{r}"), &format!("=SUM(B{r}:E{r})"));
-        sset(doc, &format!("G{r}"), &format!("=(E{r}-B{r})/B{r}"));
-    }
-    sset(doc, "A6", "Total");
-    sset(doc, "B6", "=SUM(B2:B5)");
-    sset(doc, "C6", "=SUM(C2:C5)");
-    sset(doc, "D6", "=SUM(D2:D5)");
-    sset(doc, "E6", "=SUM(E2:E5)");
-    sset(doc, "F6", "=SUM(F2:F5)");
-    for r in 2..=6 {
-        for col in ["B", "C", "D", "E", "F"] {
-            ssetf(
-                doc,
-                &format!("{col}{r}"),
-                CellFormat::Currency(Currency::EUR),
-            );
-        }
-        ssetf(doc, &format!("G{r}"), CellFormat::Percent);
-    }
-}
-
 #[cfg(test)]
 #[path = "app/r2_annotation_cards.rs"]
 mod r2_annotation_cards;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::grid::GridCmd;
+    use ui::time::Duration;
 
     /// Serializes tests that round-trip through the process-global system
     /// clipboard, so a parallel test's copy can't land between another's
     /// copy and paste (the app itself is single-instance, so this only
     /// matters under the parallel test harness).
-    static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Build an app in the seeded (sample) mode and run the first `sync`, which
-    /// is exactly what the live/offscreen paths do before drawing.
+    /// An app over the sample workbook a screenshot shows, staged as a plain
+    /// capture is and synced once, as every frame is before it draws.
     pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
-        let mut app = SheetsApp::new();
-        app.shots_mode(); // seed sample data, no disk persistence
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        crate::sample::write(&mut doc);
+        let mut app = SheetsApp::new();
+        app.stage_scenario(None);
+        app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }
 
@@ -8259,7 +7568,7 @@ mod tests {
         {
             for scale in [1.0_f32, 2.0] {
                 let (mut app, mut tr) = measured_app(1200.0, 800.0, scale);
-                app.shots_open_doc_settings();
+                app.settings_panel = SettingsPanel::Document;
                 app.relayout();
                 let m = app.metrics.clone();
                 let firsts = [
@@ -8319,7 +7628,7 @@ mod tests {
         // swatch strip both fit inside the panel at 2×.
         {
             let (mut app, mut tr) = measured_app(1200.0, 800.0, 2.0);
-            app.shots_open_tab_menu();
+            app.open_tab_menu(0);
             app.relayout();
             let m = app.metrics.clone();
             let panel = app.tab_menu_rect;
@@ -8382,7 +7691,7 @@ mod tests {
         }
     }
 
-    /// Background persistence deliberately never blocks a frame. Tests that
+    /// Spreadsheet interchange deliberately never blocks a frame. Tests that
     /// need its result drive the same frame pump a running app uses and,
     /// between frames, block on the outstanding worker's reply: a loaded
     /// runner can take many seconds to schedule a worker that writes and syncs
@@ -8397,9 +7706,7 @@ mod tests {
             }
             let within = deadline.saturating_duration_since(ui::time::now());
             let pending = app.status.clone();
-            if let Some(rx) = app.persistence_rx.take() {
-                app.persistence_rx = Some(await_reply(rx, within, "persistence", &pending));
-            } else if let Some(rx) = app.interchange_rx.take() {
+            if let Some(rx) = app.interchange_rx.take() {
                 app.interchange_rx = Some(await_reply(rx, within, "interchange", &pending));
             } else {
                 // No reply outstanding: a retry delay or a frame-driven step.
@@ -9956,38 +9263,9 @@ mod tests {
         }
     }
 
-    /// Blank launch, cache reuse/invalidation and persist/reload.
+    /// Cache reuse and invalidation.
     #[test]
-    fn workbook_launch_reload_and_persistence_round_trip() {
-        // Case `blank_launch_opens_a_single_empty_sheet`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            // A real launch (persist on, but pointed at an empty temp data dir)
-            // must NOT fabricate the sample workbook.
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-blank-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-
-            let mut app = SheetsApp::new(); // RunMode::Live: blank, persisted
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            sync_until(&mut app, &mut doc, |app| app.pending.seeded);
-
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), 1);
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Sheet1"]);
-            // No fabricated cells.
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
-            assert!(
-                snap.raw.is_empty(),
-                "blank launch seeded {} cells",
-                snap.raw.len()
-            );
-
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
+    fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
         // Case `reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit`.
         {
             let (mut app, mut doc) = seeded_app();
@@ -10021,213 +9299,6 @@ mod tests {
             assert_eq!(refreshed_heads, &doc.get_heads());
             assert_eq!(value_at(&app, (0, 0)), Some(CellValue::Number(1234.0)));
             assert!(app.pending.redraw, "rebuilt grid must request a redraw");
-        }
-
-        // Case `workbook_persists_and_reloads`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-persist-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-
-            // Session one: blank launch, edit a cell, persist.
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            sync_until(&mut app, &mut doc, |app| app.pending.seeded);
-            app.apply_cmds(
-                &mut doc,
-                vec![
-                    GridCmd::SetCell {
-                        addr: (0, 0),
-                        raw: "hello".into(),
-                    },
-                    GridCmd::Commit,
-                ],
-            );
-            app.persist_if_dirty(&mut doc);
-            let expected_heads = doc.get_heads();
-            sync_until(&mut app, &mut doc, |app| {
-                app.persistence_rx.is_none() && app.saved_heads == expected_heads
-            });
-            assert!(
-                workbook_path().unwrap().exists(),
-                "workbook was not written"
-            );
-
-            // Session two: a fresh app + fresh document reopens the saved workbook.
-            let mut app2 = SheetsApp::new();
-            let mut doc2 = AutoCommit::new();
-            app2.sync(&mut doc2, &root);
-            sync_until(&mut app2, &mut doc2, |app| app.pending.seeded);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (0, 0)), "hello");
-
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-    }
-
-    /// Failed, coalesced, merged, disconnected and stale persistence keep heads honest.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn persistence_failures_never_lose_or_misacknowledge_edits() {
-        // Case `failed_persistence_never_acknowledges_unsaved_heads`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            SheetsDoc::add_sheet(&mut doc, "Unsaved");
-            let heads = doc.get_heads();
-            let (tx, rx) = mpsc::sync_channel(1);
-            tx.send(PersistenceResult::Save {
-                generation: 7,
-                heads: heads.clone(),
-                result: Err("disk full".into()),
-            })
-            .unwrap();
-            app.persistence_rx = Some(rx);
-            app.active_persistence = Some((
-                7,
-                PersistenceJob::Save {
-                    heads: heads.clone(),
-                },
-            ));
-            app.drain_persistence_worker(&mut doc);
-
-            assert_ne!(app.saved_heads, heads);
-            assert!(app.last_persist_failure.is_some());
-            assert!(app.status.contains("Could not save workbook"));
-        }
-
-        // Case `persistence_coalesces_edits_that_arrive_during_a_save`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let tmp = std::env::temp_dir().join(format!(
-                "tilo-sheets-persist-coalesce-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            sync_until(&mut app, &mut doc, |app| app.pending.seeded);
-
-            app.apply_cmds(
-                &mut doc,
-                vec![GridCmd::SetCell {
-                    addr: (0, 0),
-                    raw: "first".into(),
-                }],
-            );
-            let first_heads = doc.get_heads();
-            app.start_persistence_save(&mut doc, first_heads.clone())
-                .unwrap();
-            // This mutation happens before the first worker result is received.
-            app.apply_cmds(
-                &mut doc,
-                vec![GridCmd::SetCell {
-                    addr: (1, 0),
-                    raw: "second".into(),
-                }],
-            );
-            let latest_heads = doc.get_heads();
-            assert_ne!(first_heads, latest_heads);
-            sync_until(&mut app, &mut doc, |app| {
-                app.persistence_rx.is_none() && app.saved_heads == latest_heads
-            });
-
-            let bytes = std::fs::read(workbook_path().unwrap()).unwrap();
-            let mut saved = AutoCommit::load(&bytes).unwrap();
-            assert_eq!(SheetsDoc::cell_raw(&mut saved, 0, (1, 0)), "second");
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
-        // Case `incoming_change_during_load_is_saved_after_the_disk_workbook_merges`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-load-race-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-            let mut on_disk = AutoCommit::new();
-            SheetsDoc::add_sheet(&mut on_disk, "Disk");
-            SheetsDoc::set_cell_raw(&mut on_disk, 0, (0, 0), "saved");
-            let path = workbook_path().unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, on_disk.save()).unwrap();
-
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT); // starts load, never blocks for it
-            SheetsDoc::add_sheet(&mut doc, "Arrived while loading");
-            sync_until(&mut app, &mut doc, |app| {
-                app.pending.seeded
-                    && app.persistence_rx.is_none()
-                    && app.active_persistence.is_none()
-            });
-            assert_eq!(app.saved_heads, doc.get_heads());
-
-            let bytes = std::fs::read(path).unwrap();
-            let mut saved = AutoCommit::load(&bytes).unwrap();
-            let names = SheetsDoc::sheet_names(&mut saved);
-            assert!(names.iter().any(|name| name == "Disk"));
-            assert!(names.iter().any(|name| name == "Arrived while loading"));
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
-        // Case `disconnected_persistence_worker_leaves_document_dirty_and_retriable`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            SheetsDoc::add_sheet(&mut doc, "Retry me");
-            let heads = doc.get_heads();
-            let (tx, rx) = mpsc::sync_channel(1);
-            drop(tx);
-            app.persistence_rx = Some(rx);
-            app.active_persistence = Some((
-                9,
-                PersistenceJob::Save {
-                    heads: heads.clone(),
-                },
-            ));
-            app.drain_persistence_worker(&mut doc);
-
-            assert!(app.persistence_rx.is_none());
-            assert!(app.active_persistence.is_none());
-            assert_ne!(app.saved_heads, heads);
-            assert!(app.last_persist_failure.is_some());
-            assert!(app.status.contains("changes will be retried"));
-        }
-
-        // Case `stale_persistence_completion_cannot_advance_durable_heads`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            SheetsDoc::add_sheet(&mut doc, "Current");
-            let current_heads = doc.get_heads();
-            let (tx, rx) = mpsc::sync_channel(1);
-            tx.send(PersistenceResult::Save {
-                generation: 3,
-                heads: current_heads.clone(),
-                result: Ok(()),
-            })
-            .unwrap();
-            app.persistence_rx = Some(rx);
-            // Generation 4 is the only accepted job. A late A completion must not
-            // overwrite its durable-head checkpoint; the inconsistent slot is
-            // settled as retryable rather than leaving an orphaned B owner.
-            app.active_persistence = Some((
-                4,
-                PersistenceJob::Save {
-                    heads: current_heads.clone(),
-                },
-            ));
-            app.drain_persistence_worker(&mut doc);
-
-            assert_ne!(app.saved_heads, current_heads);
-            assert!(app.active_persistence.is_none());
-            assert!(app.last_persist_failure.is_some());
         }
     }
 
@@ -10687,18 +9758,6 @@ mod tests {
                 .expect("active cell in complete visible table semantics");
             assert!(cell.state.selected && cell.state.focused);
             assert!(cell.bounds.is_some());
-        }
-
-        // Case `loading_state_is_announced_as_busy_without_expanding_the_grid`.
-        {
-            use ui::widget::Widget as _;
-
-            let (mut app, _doc) = seeded_app();
-            app.shots_show_loading();
-            let tree = app.accessibility().expect("spreadsheet semantics");
-            let table = &tree.children[2];
-            assert!(table.state.busy);
-            assert!(table.children.len() < 30, "a11y remains viewport-bounded");
         }
 
         // Case `semantic_toolbar_and_tabs_use_the_same_live_controls`.
