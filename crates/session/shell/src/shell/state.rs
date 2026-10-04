@@ -3778,28 +3778,74 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if room.is_nil()
-            || self
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == room)
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room == room)
         {
             return false;
         }
+        self.adopt_personal_room(room, "From another device", &local_user_id())
+    }
+
+    /// Hold `room` as one of `person`'s own workspaces, named `name`: the
+    /// person's workspace list says it is theirs. A room this tree lacks is
+    /// joined without focus or layout, its governance pinned to whichever of
+    /// the person's devices first answers for it; a room only offered by
+    /// another device's continuation becomes a workspace of its own; one
+    /// already held takes the listed name. Returns whether the tree changed.
+    pub fn adopt_personal_room(&mut self, room: RoomId, name: &str, person: &UserId) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        if let Some(index) = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)
+        {
+            let offered = self.continuation_rooms.remove(&room);
+            let Some(workspace) = self.desktop.workspaces.get_mut(index) else {
+                return false;
+            };
+            let id = workspace.id;
+            let renamed = workspace.name != name;
+            if renamed {
+                workspace.name = name.to_string();
+            }
+            let owned = workspace.owner.is_none();
+            if owned {
+                workspace.set_owner(person.clone());
+            }
+            if !(offered || renamed || owned) {
+                return false;
+            }
+            self.seed_doc_from_cache();
+            if owned {
+                self.doc_set_owner(id, person);
+            }
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.queue_save();
+            return true;
+        }
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::new(id, "From another device");
+        let mut workspace = Workspace::new(id, name);
         workspace.room = room;
         // The same person sits at this machine. Without their membership the
         // room exists but every launch from either of their devices is denied.
-        let user = local_user_id();
-        workspace.set_owner(user.clone());
+        workspace.set_owner(person.clone());
+        let first = self.desktop.workspaces.is_empty();
         self.desktop.workspaces.push(workspace);
+        if first {
+            self.desktop.active = id;
+        }
         self.room_authority.insert(room, RoomAuthority::Unpinned);
         self.room_share_floor
             .insert(room, NEXT_ID.load(AtomicOrdering::Relaxed));
         self.seed_doc_from_cache();
-        self.doc_set_owner(id, &user);
+        self.doc_set_owner(id, person);
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         self.queue_save();
         true
     }
