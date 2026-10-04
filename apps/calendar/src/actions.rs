@@ -154,9 +154,6 @@ pub enum CalendarOperation {
     /// captures parsed records into one [`CalendarAction`] before it reports
     /// success; its retry contract is therefore at-most-once.
     ImportIcs,
-    /// Complete an explicitly queued local launch import after host admission.
-    /// No path or source contents are carried in the operation envelope.
-    FinalizeLaunchImport,
     /// Produce the exact typed invocation accepted by Mail's invitation-draft
     /// action. This prepares a reviewable draft; it never claims SMTP delivery.
     PrepareInvitationInMail {
@@ -198,9 +195,9 @@ fn calendar_operation(
             .retry_policy(RetryPolicy::Idempotent)
             .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Job),
-        CalendarOperation::ExportIcs
-        | CalendarOperation::ImportIcs
-        | CalendarOperation::FinalizeLaunchImport => spec.retry_policy(RetryPolicy::AtMostOnce),
+        CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
+            spec.retry_policy(RetryPolicy::AtMostOnce)
+        }
         CalendarOperation::PrepareInvitationInMail { .. } => spec
             .retry_policy(RetryPolicy::Idempotent)
             .requiring(PermissionRequirement::Invite)
@@ -1549,11 +1546,31 @@ fn apply_import_ics(
             Ok(task)
         })
         .collect::<Result<Vec<_>, ActionError>>()?;
+    // What the calendar already holds is not imported twice, so importing a
+    // file again adds nothing. An event is the same title at the same start.
+    let current = CalDoc::read_model(doc);
     for event in events {
+        if current
+            .events
+            .iter()
+            .any(|held| held.title == event.title && held.start == event.start)
+        {
+            continue;
+        }
         CalDoc::update_event(doc, &event);
         CalDoc::seed_notes_if_empty(doc, true, event.id, &["Imported from .ics"]);
     }
+    // A task under its own id replaces itself; one whose file names no
+    // identity of ours is not added beside an equal one (same title and due
+    // date) already held.
     for task in tasks {
+        if current
+            .tasks
+            .iter()
+            .any(|held| held.id != task.id && held.title == task.title && held.due == task.due)
+        {
+            continue;
+        }
         CalDoc::update_task(doc, &task);
     }
     Ok(())
@@ -1687,6 +1704,22 @@ impl Action for CalendarAction {
         self.inverse_before(doc)
             .and_then(|inverse| EncodedAction::encode(CALENDAR_ACTION_TYPE, &inverse).ok())
     }
+}
+
+/// The import of the calendar file `source`: its events, each under an id of
+/// its own, and its tasks under the ids their UIDs name, so a task imported
+/// again replaces itself. `None` when the file holds no supported item.
+pub fn import_action(source: &str) -> Option<CalendarAction> {
+    let (events, tasks) = crate::ics::parse(source);
+    let events: Vec<_> = events
+        .into_iter()
+        .map(|mut event| {
+            event.id = Uuid::new_v4();
+            EventData::from_event(&event)
+        })
+        .collect();
+    let tasks: Vec<_> = tasks.iter().map(TaskData::from_task).collect();
+    (!events.is_empty() || !tasks.is_empty()).then_some(CalendarAction::ImportIcs { events, tasks })
 }
 
 /// Register the calendar's action decoder for palette execution + remote replay.
@@ -3437,7 +3470,7 @@ mod tests {
     /// A demo calendar synced into a fresh document, plus the app that owns it.
     fn seeded() -> (CalendarApp, AutoCommit) {
         let mut app = CalendarApp::new_demo();
-        let mut doc = AutoCommit::new();
+        let mut doc = crate::app::demo_document(&app);
         app.sync(&mut doc, &ROOT);
         (app, doc)
     }

@@ -72,7 +72,6 @@
 "apps/api-tester/src/main.rs" = 2
 "apps/backups/src/main.rs" = 2
 "apps/calculator/src/main.rs" = 1
-"apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
 "apps/chat/src/main.rs" = 1

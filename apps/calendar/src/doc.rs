@@ -121,10 +121,11 @@ impl CalDoc {
         )
     }
 
-    /// Mirror the whole in-memory model into the CRDT. Idempotent —
-    /// safe to call repeatedly (it overwrites scalar fields in place and
-    /// only starts `notes` when there are none yet, so live edits to notes
-    /// survive a re-mirror).
+    /// Mirror the whole in-memory model into the CRDT, for a test that
+    /// builds a document. Idempotent — safe to call repeatedly (it overwrites
+    /// scalar fields in place and only starts `notes` when there are none
+    /// yet, so live edits to notes survive a re-mirror).
+    #[cfg(test)]
     pub fn seed(doc: &mut AutoCommit, model: &Model) {
         let projects = Self::map_at(doc, "projects");
         for p in &model.projects {

@@ -55,7 +55,6 @@ impl TimelineGeom {
 pub(super) struct TimelineViewport {
     scroll: Scrollable,
     seeded: bool,
-    pinned_hour: Option<f64>,
     /// The theme's text scale and spacing, cached from the app's layout pass
     /// so header / strip / block heights follow the type they hold and the
     /// same token pads the painter leaves.
@@ -68,7 +67,6 @@ impl TimelineViewport {
         Self {
             scroll: Scrollable::new_vertical().always_visible(),
             seeded: false,
-            pinned_hour: None,
             text_scale: 1.0,
             spacing: Spacing::default(),
         }
@@ -198,9 +196,7 @@ impl TimelineViewport {
         self.scroll.set_viewport_rect(geom.body(area.x0, area.x1));
         self.scroll
             .set_content_size(area.width() as f32, geom.content_h as f32);
-        if let Some(hour) = self.pinned_hour {
-            self.set_offset_y((hour * geom.hour_h) as f32);
-        } else if !self.seeded && self.vertical_overflows() {
+        if !self.seeded && self.vertical_overflows() {
             // Seed on a whole hour: the hour label is painted just below its
             // rule, so a fractional seed ("now − 1 h" at 08:14 is 7.23) puts
             // the first rule above the body and clips that label under the
@@ -215,10 +211,6 @@ impl TimelineViewport {
             self.set_offset_y((hour * geom.hour_h) as f32);
             self.seeded = true;
         }
-    }
-
-    pub fn pin_hour(&mut self, hour: f64) {
-        self.pinned_hour = Some(hour);
     }
 
     pub fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
