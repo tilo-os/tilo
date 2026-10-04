@@ -85,7 +85,7 @@ fn fixture_body(scenario: Option<&str>) -> Option<String> {
             }
             Some(source)
         }
-        Some("image" | "image_edit") => Some("# Roadmap sketch\n\nThe board from Tuesday's planning session, kept here so we remember why the order changed.\n\n![Roadmap board](image.png)\n".into()),
+        Some("image" | "image_edit") => Some("# Planning board\n\nThe board from Tuesday's planning session, kept here so we remember why the order changed.\n\n![Planning board](image.png)\n".into()),
         Some("find") => Some("# Migration plan\n\nThe workspace migration keeps every linked decision close to the work.\n\n- [x] Inventory the current workspace\n- [ ] Review the migration guide\n\n> A careful migration should feel boring, reversible, and easy to verify.\n".into()),
         _ => None,
     }
@@ -103,6 +103,7 @@ pub fn supports(scenario: Option<&str>) -> bool {
                 | "menu"
                 | "sidebar_hover"
                 | "note_menu"
+                | "title_context_menu"
                 | "rename"
                 | "rename_commit"
                 | "rich_outline"
@@ -234,10 +235,10 @@ fn prepare_fixture_owned(
                     .ok_or("image fixture selection missing")?;
                 let (block_id, text) = crate::doc::NotesDoc::page_block_snapshots(doc, page)
                     .into_iter()
-                    .find(|(_, text)| text == "![Roadmap board](image.png)")
+                    .find(|(_, text)| text == "![Planning board](image.png)")
                     .ok_or("image fixture block missing")?;
                 let digest = blake3::hash(&bytes).to_hex().to_string();
-                let replacement = format!("![Roadmap board](asset:{digest})");
+                let replacement = format!("![Planning board](asset:{digest})");
                 let action = crate::actions::add_image_asset_action(
                     page,
                     bytes,
@@ -500,6 +501,12 @@ fn editor_line_style(
 
 /// The shell's sidebar toggle, while the sidebar is hidden: the control a
 /// person presses to bring the page tree back.
+/// Whether the note says it cannot be saved.
+fn save_failure_shown(driver: &FrameHarness) -> bool {
+    let title = ui::i18n::I18nManager::lookup("notes-save-failed", None);
+    semantic_observed(driver, |node| node.name.as_deref() == Some(title.as_str()))
+}
+
 fn sidebar_toggle_rect(driver: &FrameHarness) -> Option<vello::kurbo::Rect> {
     semantic_observed(driver, |node| node.name.as_deref() == Some("Show sidebar"))
         .then(|| driver.targets().get("nav-shell-sidebar").copied())
@@ -603,7 +610,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         Some("drag") => {
             let from = semantic_name_rect(driver, "Launch checklist")
                 .ok_or_else(|| LaunchError::Operation("sidebar drag source missing".into()))?;
-            let to = semantic_name_rect(driver, "Projects")
+            let to = semantic_name_rect(driver, "Formula notebook")
                 .ok_or_else(|| LaunchError::Operation("sidebar drag destination missing".into()))?;
             pointer_event(
                 driver,
@@ -613,7 +620,9 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             );
             move_pointer(
                 driver,
-                vello::kurbo::Point::new(from.center().x, to.y0 + 2.0),
+                // Past the last row: the note moves to the end of the list, and
+                // the ghost it drags stands clear of the rows it passes.
+                vello::kurbo::Point::new(from.center().x, to.y1 + from.height()),
             );
         }
         Some("block_drag") => {
@@ -667,6 +676,15 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             move_pointer(driver, rect.center());
         }
         Some("note_menu") => {
+            let rect = driver
+                .targets()
+                .get(crate::app::NOTE_MENU_BUTTON_ID)
+                .copied()
+                .or_else(|| semantic_name_rect(driver, "More note actions"))
+                .ok_or_else(|| LaunchError::Operation("note actions button missing".into()))?;
+            driver.click_at(rect.center().x, rect.center().y);
+        }
+        Some("title_context_menu") => {
             let rect = semantic_target_rect(driver, |target| target == "notes.page-title")
                 .ok_or_else(|| LaunchError::Operation("note title target missing".into()))?;
             pointer_event(
@@ -703,8 +721,18 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 .ok_or_else(|| LaunchError::Operation("sidebar focus target missing".into()))?;
             driver.click_at(rect.center().x, rect.center().y);
             driver.key("?");
+            // The pointer rests over the sheet, not on the row it was opened
+            // from, and the bottom view scrolls the sheet to its last row.
+            let sheet = driver
+                .targets()
+                .get("notes-shortcuts")
+                .copied()
+                .or_else(|| semantic_name_rect(driver, "Keyboard shortcuts"))
+                .or_else(|| semantic_target_rect(driver, |target| target == "notes.page-title"))
+                .ok_or_else(|| LaunchError::Operation("shortcuts sheet missing".into()))?;
+            move_pointer(driver, sheet.center());
             if scenario == Some("shortcuts_bottom") {
-                driver.key("End");
+                driver.scroll(0.0, -4000.0);
             }
         }
         Some("find") => {
@@ -774,7 +802,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("heading") => {
             new_note(driver)?;
-            driver.type_text("# Roadmap");
+            driver.type_text("# Launch plan");
             driver.key("Enter");
             driver.type_text("Ship by Q3");
         }
@@ -958,7 +986,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 .next()
                 .ok_or_else(|| LaunchError::Operation("status edit target missing".into()))?;
             driver.click_at(first.x0 + first.width() * 0.8, first.center().y);
-            driver.type_text("!");
+            driver.type_text(" Ask Mina to review.");
             if scenario == Some("save_error") {
                 let flush = driver.flush_component_records();
                 SAVE_FAULT_RELEASE.with_borrow_mut(|slot| {
@@ -976,8 +1004,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
                 let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(50));
                 for _ in 0..100 {
                     driver.relayout();
-                    if semantic_observed(driver, |node| node.name.as_deref() == Some("Save failed"))
-                    {
+                    if save_failure_shown(driver) {
                         break;
                     }
                     let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
@@ -1125,6 +1152,7 @@ fn validate_capture(
                     | "menu"
                     | "sidebar_hover"
                     | "note_menu"
+                    | "title_context_menu"
                     | "rename"
                     | "shortcuts"
                     | "shortcuts_bottom"
@@ -1275,7 +1303,7 @@ fn validate_capture(
             driver
                 .expect(&SemanticExpectation::named("note_title").value("Writing"))
                 .is_ok()
-                && matches!(blocks, [heading, body] if matches!(heading.kind, BlockKind::Heading(1)) && heading.text() == "Roadmap" && matches!(body.kind, BlockKind::Paragraph) && body.text() == "Ship by Q3")
+                && matches!(blocks, [heading, body] if matches!(heading.kind, BlockKind::Heading(1)) && heading.text() == "Launch plan" && matches!(body.kind, BlockKind::Paragraph) && body.text() == "Ship by Q3")
         }
         Some("quote") => {
             matches!(blocks, [heading, quote, body] if matches!(heading.kind, BlockKind::Heading(2)) && matches!(quote.kind, BlockKind::Quote) && body.text().starts_with("I come back to this line"))
@@ -1317,13 +1345,13 @@ fn validate_capture(
         Some("image" | "image_edit") => blocks.iter().any(|block| {
             block
                 .text()
-                .starts_with("![Roadmap board](asset:")
+                .starts_with("![Planning board](asset:")
         }),
         Some("scrolled") => blocks.len() > 20,
         Some("drawer") => {
             semantic_observed(driver, |node| node.name.as_deref() == Some("Hide sidebar"))
         }
-        Some("menu" | "note_menu") => semantic_observed(driver, |node| {
+        Some("menu" | "note_menu" | "title_context_menu") => semantic_observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),
         Some("sidebar_hover") => semantic_observed(driver, |node| {
@@ -1362,7 +1390,7 @@ fn validate_capture(
             semantic_observed(driver, |node| node.name.as_deref() == Some("Saving…"))
         }
         Some("save_error") => {
-            semantic_observed(driver, |node| node.name.as_deref() == Some("Save failed"))
+            save_failure_shown(driver)
         }
         Some("import_success") => {
             !blocks.iter().any(|block| {
