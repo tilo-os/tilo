@@ -79,7 +79,16 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert_eq!(m.sidebar_width, 280.0);
         assert_eq!(m.drawer_width, 320.0);
         assert_eq!(m.overview_width, 340.0);
-        assert_eq!(m.compact_breakpoint, 720.0);
+        assert_eq!(m.compact_breakpoint, 840.0);
+        assert_eq!(
+            m.content_min_width, m.panel_width_sheet,
+            "content beside a sidebar keeps a readable column"
+        );
+        assert_eq!(
+            m.compact_breakpoint,
+            m.sidebar_width + m.content_min_width,
+            "the sidebar docks while the content keeps the room it needs"
+        );
         assert_eq!(
             m.drawer_width, m.panel_width_utility,
             "a slid-in drawer and a docked utility panel are one width"
@@ -106,7 +115,7 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert!((m.bar_height - 60.0).abs() < 1e-4);
         assert!((m.min_pointer_target - 48.0).abs() < 1e-4);
         assert!((m.panel_width_utility - 480.0).abs() < 1e-4);
-        assert!((m.compact_breakpoint - 1080.0).abs() < 1e-4);
+        assert!((m.compact_breakpoint - 1260.0).abs() < 1e-4);
         assert!(
             (m.bar_height / scaled.tokens.spacing.s4 - 40.0 / 16.0).abs() < 1e-4,
             "bar height keeps its ratio to the spacing scale"
