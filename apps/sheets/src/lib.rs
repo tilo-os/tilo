@@ -70,7 +70,6 @@ pub mod model;
 pub mod ods;
 pub mod resource;
 pub mod sample;
-pub mod search_provider;
 pub mod settings;
 pub mod xlsx;
 

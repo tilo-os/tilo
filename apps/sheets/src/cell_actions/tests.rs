@@ -5,8 +5,6 @@ use serde_json::json;
 use tilo_actions::{ActionRegistry, Resource};
 
 use super::*;
-use crate::actions::{SearchableSheet, SheetsResourceCtx, provide_resources};
-use crate::model::format_value;
 
 fn workbook(rows: &[&[&str]]) -> AutoCommit {
     let mut doc = AutoCommit::new();
@@ -20,36 +18,13 @@ fn workbook(rows: &[&[&str]]) -> AutoCommit {
     doc
 }
 
-/// The resource tree as the app publishes it, with the searchable cells the
-/// live app keeps (sort reads them).
+/// The first sheet as the workbook publishes it.
 fn sheet_resource(doc: &AutoCommit) -> Resource {
-    let snap = SheetsDoc::snapshot_sheet(doc, 0, Currency::USD);
-    let values = crate::formula::recalculate(&snap.raw);
-    let cells = snap
-        .raw
-        .iter()
-        .map(|(&(col, row), raw)| SearchableCell {
-            col,
-            row,
-            raw: raw.clone(),
-            display: values.get(&(col, row)).map_or_else(String::new, |value| {
-                format_value(value, CellFormat::General)
-            }),
-        })
-        .collect();
-    let ctx = SheetsResourceCtx {
-        sheet_names: SheetsDoc::sheet_names(doc),
-        searchable_sheets: vec![SearchableSheet {
-            id: SheetsDoc::sheet_resource_id(doc, 0).unwrap(),
-            name: snap.name,
-            cells,
-        }],
-        palette_actions: Vec::new(),
-        selection: None,
-    };
-    provide_resources(&ctx, doc)
+    use ui::tilo_resource::Resource as _;
+    let state = crate::resource::SheetsWorkbook::read(doc).unwrap();
+    crate::actions::published(&state)
+        .children
         .into_iter()
-        .flat_map(|workbook| workbook.children)
         .find(|child| child.kind == "sheets.sheet")
         .unwrap()
 }

@@ -37,13 +37,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
+    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, OperationKind, Resource,
 };
 
 use crate::doc::SheetsDoc;
@@ -1966,42 +1965,7 @@ pub fn set_doc_settings_action(settings: &DocSettings) -> SheetsAction {
 // Resource tree
 // ===========================================================================
 
-/// The presentation context Sheets hands [`provide_resources`]: the sheet names
-/// it currently has open, in order. Derived from state the document already
-/// holds (the workbook mirrors the shared `sheets` list); nothing is fabricated.
-#[derive(Clone)]
-pub struct SheetsResourceCtx {
-    pub sheet_names: Vec<String>,
-    pub searchable_sheets: Vec<SearchableSheet>,
-    /// Selection-dependent actions authored by the live grid. Keeping these
-    /// as real `ActionSpec`s means Ctrl+K, agents and scripts consume the same
-    /// encoded operation instead of a parallel command-id switch.
-    pub palette_actions: Vec<ActionSpec>,
-    /// The current live selection, published beneath its owning sheet. Its
-    /// actions are byte-identical clones of `palette_actions`, so a range can
-    /// be addressed directly by agents/Ctrl+K without creating a second
-    /// mutation route.
-    pub selection: Option<RangeResourceCtx>,
-}
-
-/// Presentation-derived identity for the range the user has selected. A range
-/// is intentionally ephemeral (selection is not collaborative document state)
-/// but its action envelopes remain durable/replayable document mutations.
-#[derive(Clone)]
-pub struct RangeResourceCtx {
-    pub sheet_id: String,
-    pub label: String,
-    pub actions: Vec<ActionSpec>,
-}
-
-/// Immutable search/resource projection rebuilt when workbook heads change.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SearchableSheet {
-    pub id: String,
-    pub name: String,
-    pub cells: Vec<SearchableCell>,
-}
-
+/// A populated cell with what it shows, for search and sorting.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchableCell {
     pub col: u32,
@@ -2031,106 +1995,7 @@ fn immediate_spec(id: &str, label: &str, action: &SheetsAction) -> ActionSpec {
     }
 }
 
-/// Stable workbook root for directory paging: the published door without nested
-/// sheets/cells (those stay on the retained search provider).
-#[allow(
-    clippy::expect_used,
-    clippy::missing_panics_doc,
-    reason = "SheetsOperation encode is infallible for known variants"
-)]
-pub fn workbook_root(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Resource {
-    let state = sheets_state_for_publish(ctx, doc);
-    let mut root = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
-        "sheets.workbook",
-        "Workbook",
-        &state,
-    );
-    for (id, label, kind, variant) in [
-        ("import-csv", "Import CSV", OperationKind::Effect, 0_u8),
-        (
-            "import-xlsx",
-            "Import Excel workbook",
-            OperationKind::Effect,
-            1,
-        ),
-        (
-            "import-ods",
-            "Import OpenDocument spreadsheet",
-            OperationKind::Effect,
-            2,
-        ),
-        ("export-csv", "Export CSV", OperationKind::Effect, 3),
-        (
-            "export-xlsx",
-            "Export Excel workbook",
-            OperationKind::Effect,
-            4,
-        ),
-        (
-            "export-ods",
-            "Export OpenDocument spreadsheet",
-            OperationKind::Effect,
-            5,
-        ),
-        ("commands", "Open command palette", OperationKind::View, 6),
-    ] {
-        if variant == 6 {
-            replace_workbook_action(
-                &mut root,
-                operation(id, label, kind, SheetsOperation::OpenCommandPalette),
-            );
-            continue;
-        }
-        replace_workbook_action(
-            &mut root,
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system file picker)",
-                kind,
-                SHEETS_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct spreadsheet path",
-                )],
-                move |args: &ActionArgs| {
-                    let path = args
-                        .text("path")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(str::to_string);
-                    let value = match variant {
-                        0 => SheetsOperation::ImportCsv { path },
-                        1 => SheetsOperation::ImportXlsx { path },
-                        2 => SheetsOperation::ImportOds { path },
-                        3 => SheetsOperation::ExportCsv { path },
-                        4 => SheetsOperation::ExportXlsx { path },
-                        _ => SheetsOperation::ExportOds { path },
-                    };
-                    EncodedAction::encode_operation(SHEETS_OPERATION_TYPE, &value)
-                        .expect("sheet operation serializes")
-                },
-            )
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job),
-        );
-    }
-    root.children.clear();
-    root
-}
-
-/// The directory page lists import and export once. Publish already declared
-/// them; a second copy with the same id is the same action.
-fn replace_workbook_action(root: &mut Resource, spec: ActionSpec) {
-    if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
-        *existing = spec;
-    } else {
-        root.actions.push(spec);
-    }
-}
-
-/// Sheet / chart / comment children for [`tilo_resource::publish`]. Selection
-/// and selection-bound palette rows stay on the widget when hosted.
+/// Sheet / chart / comment children for [`tilo_resource::publish`].
 #[allow(
     clippy::too_many_lines,
     clippy::missing_panics_doc,
@@ -2151,26 +2016,14 @@ pub(crate) fn document_children(state: &crate::resource::SheetsState) -> Vec<Res
         .collect()
 }
 
-/// Live selection range. Published beside the framework root when hosted —
-/// never a second copy of the workbook document door.
-pub(crate) fn live_presentation_resources(ctx: &SheetsResourceCtx) -> Vec<Resource> {
-    let Some(range_ctx) = &ctx.selection else {
-        return Vec::new();
-    };
-    let mut range = Resource::new(
-        format!("sheets.range:{}:{}", range_ctx.sheet_id, range_ctx.label),
-        "sheets.range",
-        range_ctx.label.clone(),
-    );
-    range.actions.extend(range_ctx.actions.clone());
-    vec![range]
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "sheet document surface still lists every cell/view action inline"
 )]
-fn sheet_document_resource(idx: usize, sheet: &crate::resource::SheetInfo) -> Resource {
+fn sheet_document_resource(
+    idx: usize,
+    sheet: &std::sync::Arc<crate::resource::SheetInfo>,
+) -> Resource {
     let name = &sheet.name;
     let label = if name.trim().is_empty() {
         format!("Sheet{}", idx + 1)
@@ -2248,7 +2101,7 @@ fn sheet_document_resource(idx: usize, sheet: &crate::resource::SheetInfo) -> Re
         },
     ));
 
-    for spec in crate::cell_actions::sheet_actions(idx, &stable, &sheet.cells) {
+    for spec in crate::cell_actions::sheet_actions(idx, &stable, std::sync::Arc::clone(sheet)) {
         resource = resource.with_action(spec);
     }
 
@@ -2393,78 +2246,35 @@ fn sheet_document_resource(idx: usize, sheet: &crate::resource::SheetInfo) -> Re
     resource
 }
 
-fn sheets_state_for_publish(
-    ctx: &SheetsResourceCtx,
-    doc: &AutoCommit,
-) -> crate::resource::SheetsState {
-    match <crate::resource::SheetsWorkbook as ui::tilo_resource::Resource>::read(doc) {
-        Ok(state) if !state.sheets.is_empty() => state.with_ctx_cells(ctx),
-        _ if !ctx.searchable_sheets.is_empty() => crate::resource::SheetsState::from_ctx(ctx),
-        Ok(state) => state,
-        Err(_) => crate::resource::SheetsState::from_ctx(ctx),
-    }
+/// The workbook as the framework publishes it for `state`.
+pub fn published(state: &crate::resource::SheetsState) -> Resource {
+    ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
+        <crate::resource::SheetsWorkbook as ui::tilo_resource::Resource>::KIND,
+        <crate::resource::SheetsWorkbook as ui::tilo_resource::Resource>::LABEL,
+        state,
+    )
 }
 
-fn attach_live_selection(workbook: &mut Resource, ctx: &SheetsResourceCtx) {
-    let Some(range_ctx) = &ctx.selection else {
-        return;
-    };
-    let wanted = sheet_resource_id(&range_ctx.sheet_id);
-    let Some(sheet) = workbook
-        .children
-        .iter_mut()
-        .find(|sheet| sheet.id.0 == wanted)
+/// The sheet id, column and row a cell's resource id names, when it names
+/// one inside the grid.
+pub fn parse_cell_resource_id(id: &str) -> Option<(&str, u32, u32)> {
+    let mut parts = id.strip_prefix("sheets.cell:")?.split(':');
+    let (Some(sheet_id), Some(col), Some(row), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return;
+        return None;
     };
-    let mut range = Resource::new(
-        format!("sheets.range:{}:{}", range_ctx.sheet_id, range_ctx.label),
-        "sheets.range",
-        range_ctx.label.clone(),
-    );
-    range.actions.extend(range_ctx.actions.clone());
-    sheet.children.insert(0, range);
+    let (Ok(col), Ok(row)) = (col.parse::<u32>(), row.parse::<u32>()) else {
+        return None;
+    };
+    (col <= MAX_COLUMN && row <= MAX_ROW).then_some((sheet_id, col, row))
 }
 
-/// Standalone / `--shots` / unit-test tree: [`tilo_resource::publish`] owns the
-/// workbook door; selection-bound palette rows are attached for the local host.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one canonical resource tree keeps every agent and Ctrl+K operation addressable from the same projection"
-)]
-pub fn provide_resources(ctx: &SheetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let state = sheets_state_for_publish(ctx, doc);
-    let mut workbook = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
-        "sheets.workbook",
-        "Workbook",
-        &state,
-    );
-    // Selection-bound commands replace a published action with the same id so
-    // the palette does not list it twice. New ids stay at the end. Views
-    // already on `local_operations` are not duplicated here.
-    for action in ctx
-        .palette_actions
-        .iter()
-        .filter(|action| action.id != "go-to-cell" && action.id != "toggle-formula-view")
-    {
-        if let Some(existing) = workbook
-            .actions
-            .iter_mut()
-            .find(|existing| existing.id == action.id)
-        {
-            *existing = action.clone();
-        } else {
-            workbook.actions.push(action.clone());
-        }
-    }
-    attach_live_selection(&mut workbook, ctx);
-    vec![workbook]
-}
-
-pub(crate) fn searchable_cell_resource(sheet_id: &str, cell: &SearchableCell) -> Resource {
-    let reference = column_label(cell.col) + &(cell.row + 1).to_string();
+/// One cell, which a search hit or an agent opens.
+pub(crate) fn open_cell_resource(sheet_id: &str, col: u32, row: u32) -> Resource {
+    let reference = column_label(col) + &(row + 1).to_string();
     Resource::new(
-        cell_resource_id(sheet_id, cell.col, cell.row),
+        cell_resource_id(sheet_id, col, row),
         "sheets.cell",
         reference,
     )
@@ -2474,79 +2284,10 @@ pub(crate) fn searchable_cell_resource(sheet_id: &str, cell: &SearchableCell) ->
         OperationKind::View,
         SheetsOperation::RevealCell {
             sheet_id: sheet_id.to_string(),
-            col: cell.col,
-            row: cell.row,
+            col,
+            row,
         },
     ))
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::SheetsApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.sheets_resource_ctx(), doc)
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let ctx = self.sheets_resource_ctx();
-        let eager = provide_resources(&ctx, doc);
-        let workbook = eager.first()?;
-        if id == workbook.id.0 {
-            return Some(workbook.clone());
-        }
-        if let Some(sheet) = workbook.children.iter().find(|sheet| sheet.id.0 == id) {
-            let stable = id.strip_prefix("sheets.sheet:")?;
-            return SheetsDoc::sheet_index_by_resource_id(doc, stable).map(|_| sheet.clone());
-        }
-        if let Some(range) = workbook
-            .children
-            .iter()
-            .flat_map(|sheet| sheet.children.iter())
-            .find(|range| range.id.0 == id)
-        {
-            let tail = id.strip_prefix("sheets.range:")?;
-            let (sheet_id, _) = tail.split_once(':')?;
-            return SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).map(|_| range.clone());
-        }
-        if let Some(annotation) = workbook
-            .children
-            .iter()
-            .flat_map(|sheet| sheet.children.iter())
-            .find(|child| child.id.0 == id)
-        {
-            return Some(annotation.clone());
-        }
-
-        // Cells are intentionally not children of a sheet: a 100k-row file
-        // must not turn opening Ctrl+K into a resource-tree materialisation.
-        // Exact cell addresses remain first-class, however. Resolve one on
-        // demand against the current document so a deleted/moved sheet or an
-        // invalid coordinate is refused instead of acquiring stale authority.
-        let tail = id.strip_prefix("sheets.cell:")?;
-        let mut parts = tail.split(':');
-        let (Some(sheet_id), Some(col), Some(row), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return None;
-        };
-        let (Ok(col), Ok(row)) = (col.parse::<u32>(), row.parse::<u32>()) else {
-            return None;
-        };
-        if col > MAX_COLUMN
-            || row > MAX_ROW
-            || SheetsDoc::sheet_index_by_resource_id(doc, sheet_id).is_none()
-        {
-            return None;
-        }
-        Some(searchable_cell_resource(
-            sheet_id,
-            &SearchableCell {
-                col,
-                row,
-                raw: String::new(),
-                display: String::new(),
-            },
-        ))
-    }
 }
 
 /// The 1-based column letters for `col`, used in action labels/status lines.
@@ -2558,7 +2299,9 @@ pub fn column_label(col: u32) -> String {
 mod tests {
     use super::*;
     use crate::model::{CellFormat, CellValue};
-    use tilo_actions::LocalTransport;
+    use automerge::AutoCommit;
+    use tilo_actions::{ExecutionMode, LocalTransport, ResultSpec};
+    use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2595,29 +2338,8 @@ mod tests {
         SheetsDoc::sheet_resource_id(doc, idx).expect("seeded sheet identity")
     }
 
-    fn ctx_from(doc: &AutoCommit) -> SheetsResourceCtx {
-        SheetsResourceCtx {
-            sheet_names: SheetsDoc::sheet_names(doc),
-            searchable_sheets: (0..SheetsDoc::sheet_count(doc))
-                .filter_map(|idx| {
-                    Some(SearchableSheet {
-                        id: SheetsDoc::sheet_resource_id(doc, idx)?,
-                        name: SheetsDoc::sheet_names(doc).get(idx)?.clone(),
-                        cells: Vec::new(),
-                    })
-                })
-                .collect(),
-            palette_actions: Vec::new(),
-            selection: None,
-        }
-    }
-
-    /// Ctrl+K tree, bounded open snapshots, lazy/stale cell addresses, range resources and identity across moves.
+    /// Ctrl+K tree, bounded open snapshots, lazy/stale cell addresses and identity across moves.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn workbook_tree_and_snapshots_stay_bounded_and_canonical() {
         // Case `ctrl_k_publishes_the_workbook_and_sheet_tree`.
         // Ctrl+K on Sheets yields the workbook root exporting "New sheet" and a
@@ -2625,8 +2347,7 @@ mod tests {
         // insert-row / insert-column. Drives the real resource-builder path.
         {
             let doc = seeded();
-            let ctx = ctx_from(&doc);
-            let resources = provide_resources(&ctx, &doc);
+            let resources = resources_for(&doc);
             assert_eq!(resources.len(), 1, "one workbook root");
             let wb = &resources[0];
             assert_eq!(wb.kind, "sheets.workbook");
@@ -2646,96 +2367,50 @@ mod tests {
 
         // Case `ten_thousand_cells_stay_out_of_the_open_snapshot`.
         {
-            let ctx = SheetsResourceCtx {
-                sheet_names: vec!["Scale".into()],
-                searchable_sheets: vec![SearchableSheet {
-                    id: "scale-id".into(),
-                    name: "Scale".into(),
-                    cells: (0..10_000)
-                        .map(|row| SearchableCell {
-                            col: 0,
-                            row,
-                            raw: row.to_string(),
-                            display: row.to_string(),
-                        })
-                        .collect(),
-                }],
-                palette_actions: Vec::new(),
-                selection: None,
-            };
-            let resources = provide_resources(&ctx, &AutoCommit::new());
+            let mut doc = AutoCommit::new();
+            let sheet = SheetsDoc::add_sheet_with_id(
+                &mut doc,
+                "Scale",
+                "10000000-0000-4000-8000-00000000000a",
+            );
+            for row in 0..10_000 {
+                SheetsDoc::set_cell_raw(&mut doc, sheet, (0, row), &row.to_string());
+            }
+            let resources = resources_for(&doc);
             assert!(resources[0].children[0].children.is_empty());
             assert_eq!(
-                searchable_cell_resource("scale-id", &ctx.searchable_sheets[0].cells[9_999])
+                open_cell_resource("10000000-0000-4000-8000-00000000000a", 0, 9_999)
                     .id
                     .0,
-                "sheets.cell:scale-id:0:9999"
+                "sheets.cell:10000000-0000-4000-8000-00000000000a:0:9999"
             );
         }
 
         // Case `omitted_cells_resolve_lazily_but_stale_or_out_of_range_addresses_refuse`.
         {
-            use automerge::ROOT;
-            use ui::widget::Widget;
+            use crate::resource::SheetsWorkbook;
 
-            let mut app = crate::app::SheetsApp::new();
             let mut doc = AutoCommit::new();
             crate::sample::write(&mut doc);
-            app.sync(&mut doc, &ROOT);
+            let state = SheetsWorkbook::read(&doc).unwrap();
             let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("seeded sheet identity");
             let id = cell_resource_id(&sheet_id, 10, 100_000);
-            let lazy =
-                ui::resources::resource(&app, &doc, &id).expect("valid omitted cell resolves");
+            let lazy = SheetsWorkbook::child(&state, &id).expect("valid omitted cell resolves");
             assert_eq!(lazy.id.0, id);
             assert!(
                 tilo_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
                     .is_some()
             );
             assert!(
-                ui::resources::resource(
-                    &app,
-                    &doc,
-                    &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0)
-                )
-                .is_none()
+                SheetsWorkbook::child(&state, &cell_resource_id(&sheet_id, MAX_COLUMN + 1, 0))
+                    .is_none()
             );
 
             dispatch(&mut doc, &delete_sheet_action(0, sheet_id));
-            app.sync(&mut doc, &ROOT);
+            let state = SheetsWorkbook::read(&doc).unwrap();
             assert!(
-                ui::resources::resource(&app, &doc, &id).is_none(),
+                SheetsWorkbook::child(&state, &id).is_none(),
                 "a stale sheet id has no authority"
-            );
-        }
-
-        // Case `active_selection_is_a_range_resource_with_canonical_actions`.
-        {
-            let doc = seeded();
-            let mut ctx = ctx_from(&doc);
-            let action = immediate_spec(
-                "format-percent",
-                "Format as percent",
-                &set_formats_action(0, stable(&doc, 0), [((0, 0), CellFormat::Percent)]),
-            );
-            ctx.selection = Some(RangeResourceCtx {
-                sheet_id: String::new(),
-                label: "A1:B2".into(),
-                actions: vec![action.clone()],
-            });
-            ctx.selection.as_mut().expect("selection").sheet_id =
-                SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
-
-            let resources = provide_resources(&ctx, &doc);
-            let range = &resources[0].children[0].children[0];
-            assert_eq!(range.kind, "sheets.range");
-            assert_eq!(
-                range.id.0,
-                format!("sheets.range:{}:A1:B2", ctx.selection.unwrap().sheet_id)
-            );
-            ui::testing::action_contract::assert_spec_encodes_as(
-                &range.actions[0],
-                None,
-                &ui::testing::action_contract::spec_encoding(&action, None),
             );
         }
 
@@ -2757,8 +2432,7 @@ mod tests {
             );
 
             SheetsDoc::move_sheet(&mut doc, 0, 1);
-            let ctx = ctx_from(&doc);
-            let resources = provide_resources(&ctx, &doc);
+            let resources = resources_for(&doc);
             let moved = resources[0]
                 .children
                 .iter()
@@ -2768,28 +2442,13 @@ mod tests {
         }
     }
 
-    /// Hosted surfaces keep only the live selection; sheet tabs come from publish.
+    /// The workbook publishes its sheets and operations; the selection is
+    /// not document state, so the edits bound to it are the surface's
+    /// declarations, building the same action the on-screen control does.
     #[test]
-    fn hosted_resources_are_selection_extras_beside_publish() {
-        let doc = seeded();
-        let mut ctx = ctx_from(&doc);
-        let action = immediate_spec(
-            "format-percent",
-            "Format as percent",
-            &set_formats_action(0, stable(&doc, 0), [((0, 0), CellFormat::Percent)]),
-        );
-        let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("stable sheet identity");
-        ctx.selection = Some(RangeResourceCtx {
-            sheet_id: sheet_id.clone(),
-            label: "A1".into(),
-            actions: vec![action],
-        });
-
-        let published = ui::tilo_resource::publish::<crate::resource::SheetsWorkbook>(
-            "sheets.workbook",
-            "Workbook",
-            &sheets_state_for_publish(&ctx, &doc),
-        );
+    fn selection_edits_are_declarations_beside_the_published_workbook() {
+        let mut doc = seeded();
+        let published = &resources_for(&doc)[0];
         assert_eq!(published.kind, "sheets.workbook");
         assert!(published.actions.iter().any(|a| a.id == "new-sheet"));
         assert!(published.actions.iter().any(|a| a.id == "import-csv"));
@@ -2797,18 +2456,32 @@ mod tests {
         assert_eq!(published.children.len(), 2);
         assert!(published.children.iter().all(|c| c.kind == "sheets.sheet"));
         assert!(
-            published
-                .children
-                .iter()
-                .flat_map(|c| c.children.iter())
-                .all(|c| c.kind != "sheets.range"),
-            "selection is not document state"
+            published.actions.iter().all(|a| a.id != "format-percent"),
+            "selection edits are not the resource's own"
         );
 
-        let extras = live_presentation_resources(&ctx);
-        assert_eq!(extras.len(), 1);
-        assert_eq!(extras[0].kind, "sheets.range");
-        assert_eq!(extras[0].id.0, format!("sheets.range:{sheet_id}:A1"));
+        let mut app = crate::app::tests::attached_app();
+        ui::widget::Widget::sync(&mut app, &mut doc, &automerge::ROOT);
+        app.select_range_for_test((0, 0), (1, 1));
+        let decls = app.selection_declarations();
+        let percent = decls
+            .iter()
+            .find(|decl| decl.id == "format-percent")
+            .expect("format the selection");
+        let built = (percent.build)(&tilo_actions::ActionArgs::default(), 0).unwrap();
+        assert_eq!(
+            built,
+            set_formats_action(
+                0,
+                stable(&doc, 0),
+                [
+                    ((0, 0), CellFormat::Percent),
+                    ((1, 0), CellFormat::Percent),
+                    ((0, 1), CellFormat::Percent),
+                    ((1, 1), CellFormat::Percent),
+                ]
+            )
+        );
     }
 
     /// Deleting a formula range's first or last row/column shrinks it;
@@ -3176,8 +2849,7 @@ mod tests {
         // Case `interchange_operations_are_typed_background_jobs`.
         {
             let doc = seeded();
-            let ctx = ctx_from(&doc);
-            let resources = provide_resources(&ctx, &doc);
+            let resources = resources_for(&doc);
             for id in [
                 "import-csv",
                 "import-xlsx",
@@ -3205,7 +2877,9 @@ mod tests {
 
     /// Resources exactly as the app publishes them for `doc`.
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&ctx_from(doc), doc)
+        vec![published(
+            &crate::resource::SheetsWorkbook::read(doc).expect("the workbook reads"),
+        )]
     }
 
     /// `seeded` plus a second row of cells, so a restructure moves several.
