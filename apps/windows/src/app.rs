@@ -27,9 +27,9 @@ use ui::theme::Theme;
 use ui::tokens::SpacingStep;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AppModel, Badge, Banner, Button, ButtonRole, ChipStyle, Column, Density, Element, Form,
-    FormSection, ListRow, ModalDialog, ModelPath, NavPane, NavShell, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, Text, ToggleGroup, Tone, Widget,
+    AppModel, Banner, Button, ButtonRole, Column, Density, Element, Form, FormSection, ListRow,
+    ModalDialog, ModelPath, NavPane, NavShell, Property, PropertyList, Row, Scrollable, Section,
+    SectionHeader, Spacer, Text, ToggleGroup, Widget,
 };
 use ui::{TextKind, TextRole};
 use vello::Scene;
@@ -219,21 +219,11 @@ fn row(children: Vec<Element>) -> Row {
     children.into_iter().fold(Row::new(), Row::push)
 }
 
-const fn status_tone(status: AppStatus) -> Tone {
-    match status {
-        AppStatus::Ready => Tone::Success,
-        AppStatus::Running | AppStatus::Installing | AppStatus::Uninstalling => Tone::Info,
-        AppStatus::NeedsAttention => Tone::Warning,
-        AppStatus::Failed => Tone::Danger,
-        AppStatus::Uninstalled => Tone::Neutral,
-    }
-}
-
 fn appliance_summary(status: &ApplianceStatus, checked: bool) -> String {
     if !checked {
         strings::t("windows-appliance-checking-short")
     } else if status.is_provisioned() {
-        status.phase_label().to_owned()
+        status.summary_label().to_owned()
     } else {
         strings::t("windows-appliance-not-set-up")
     }
@@ -272,6 +262,8 @@ pub struct WindowsApp {
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_control_invocation: Option<tilo_actions::ControlInvocation>,
     projected_route_policy: HashMap<String, Option<Route>>,
+    /// The apps as platform search finds them.
+    search_index: crate::search::AppsSearch,
 }
 
 impl WindowsApp {
@@ -345,6 +337,7 @@ impl WindowsApp {
             ApplianceStatus::sample_ready()
         });
         self.catalogue = self.provider.catalogue();
+        self.search_index.sync(&self.catalogue);
         self.projected_route_policy = self
             .catalogue
             .apps
@@ -390,6 +383,7 @@ impl WindowsApp {
         appliance_owner: ApplianceOwnerClient,
     ) -> Self {
         let catalogue = provider.catalogue();
+        let search_index = crate::search::AppsSearch::new(&catalogue);
         let intents: Intents = Rc::default();
         let projected_route_policy = catalogue
             .apps
@@ -405,10 +399,7 @@ impl WindowsApp {
         let shell = NavShell::new()
             .with_id("windows-shell")
             .overview_header(strings::t("windows-apps-title"), vec![Box::new(install)])
-            .content_header(
-                strings::t("windows-app-title"),
-                vec![Box::new(ui::widget::history_button())],
-            );
+            .content_header(strings::t("windows-app-title"), Vec::new());
         let mut app = Self {
             provider,
             catalogue,
@@ -440,6 +431,7 @@ impl WindowsApp {
             resource_result: None,
             pending_control_invocation: None,
             projected_route_policy,
+            search_index,
         };
         app.rebuild();
         app
@@ -817,7 +809,11 @@ impl WindowsApp {
             self.finish_resource_operation(result.map(|_| ()));
         }
         let had_pending = self.catalogue.vm_install_confirmation.is_some();
-        self.catalogue = self.provider.catalogue();
+        let catalogue = self.provider.catalogue();
+        if catalogue.apps != self.catalogue.apps {
+            self.search_index.sync(&catalogue);
+        }
+        self.catalogue = catalogue;
         if let Some(notice) = self.provider.take_notice() {
             self.notice = Some(Notice::info(notice));
         }
@@ -1340,7 +1336,6 @@ impl WindowsApp {
         let mut list = Column::new().with_intrinsic_height();
         if let Some(pending) = &self.catalogue.vm_install_confirmation {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
-                .icon(Icon::Download)
                 .secondary(strings::t("windows-pending-secondary"))
                 .selected(self.page == Page::PendingInstall)
                 .on_activate(queue(&self.intents, Intent::SelectPending));
@@ -1365,11 +1360,16 @@ impl WindowsApp {
                         .meta(app.route.label())
                         .selected(self.page == Page::App && index == self.selected)
                         .on_activate(queue(&self.intents, Intent::SelectApp(index)));
+                    // Every app row carries a status dot, so the route
+                    // beside it keeps one trailing edge down the list.
                     row = match app.status {
                         AppStatus::Running => row.active(),
                         AppStatus::NeedsAttention => row.warning(),
                         AppStatus::Failed => row.error(),
-                        _ => row,
+                        AppStatus::Ready
+                        | AppStatus::Installing
+                        | AppStatus::Uninstalling
+                        | AppStatus::Uninstalled => row.idle(),
                     };
                     if pushed {
                         row = row.disclosure();
@@ -1381,13 +1381,14 @@ impl WindowsApp {
         }
         let status = self.appliance_owner.status();
         let mut appliance = ListRow::new("windows-appliance", strings::t("windows-appliance-row"))
-            .icon(Icon::Monitor)
             .secondary(appliance_summary(status, self.appliance_owner.has_status()))
             .selected(self.page == Page::Appliance)
             .on_activate(queue(&self.intents, Intent::SelectAppliance));
-        if status.power_state == AppliancePowerState::Running {
-            appliance = appliance.active();
-        }
+        appliance = if status.power_state == AppliancePowerState::Running {
+            appliance.active()
+        } else {
+            appliance.idle()
+        };
         if pushed {
             appliance = appliance.disclosure();
         }
@@ -1479,51 +1480,12 @@ impl WindowsApp {
     fn app_page(&self, app: &crate::model::WindowsApp, page: &mut PageParts) {
         let intents = &self.intents;
         let vm = app.route == Route::Vm;
+        // A failed setup leads with what went wrong and the ways out of it;
+        // retrying is then the page's main action.
+        let recovering = app.status == AppStatus::Failed;
+        let retry_leads = recovering && app.can_retry_install;
 
-        // Status and the ways to open the app.
-        let mut actions: Vec<Element> = vec![
-            Box::new(
-                Badge::text(app.status.label()).style(ChipStyle::Tinted(status_tone(app.status))),
-            ),
-            Box::new(
-                action_button(
-                    "windows-launch",
-                    "windows-launch",
-                    ButtonRole::Primary,
-                    intents,
-                    Intent::Launch,
-                )
-                .with_enabled(app.launch_available),
-            ),
-        ];
-        if vm {
-            let mut open_file = action_button(
-                "windows-open-file-in-vm",
-                "windows-open-file-in-vm",
-                ButtonRole::Secondary,
-                intents,
-                Intent::OpenFile,
-            )
-            .with_enabled(app.portal_file_open_available && self.document_portal_rx.is_none());
-            if let Some(reason) = app
-                .portal_file_open_unavailable_reason
-                .as_ref()
-                .filter(|_| !app.portal_file_open_available)
-            {
-                open_file = open_file.tooltip(reason.clone());
-            }
-            actions.push(Box::new(open_file));
-        } else if app.vm_fallback_available {
-            actions.push(Box::new(action_button(
-                "windows-open-in-vm",
-                "windows-open-in-vm",
-                ButtonRole::Secondary,
-                intents,
-                Intent::VmFallback,
-            )));
-        }
-        page.head.push(Box::new(row(actions)));
-        if app.status == AppStatus::Failed {
+        if recovering {
             let mut banner = Banner::error(strings::t("windows-setup-failed-title"));
             if let Some(detail) = app
                 .installation_detail
@@ -1533,12 +1495,80 @@ impl WindowsApp {
                 banner = banner.with_message(detail);
             }
             page.head.push(Box::new(banner));
-        } else if let Some(reason) = app
-            .launch_unavailable_reason
-            .as_ref()
-            .filter(|_| !app.launch_available)
-        {
-            page.head.push(Box::new(caption(reason)));
+            let mut recovery: Vec<Element> = Vec::new();
+            if app.can_retry_install {
+                recovery.push(Box::new(action_button(
+                    "windows-retry-install",
+                    "windows-retry-install",
+                    ButtonRole::Primary,
+                    intents,
+                    Intent::Retry,
+                )));
+            }
+            if app.can_escalate_install_to_vm {
+                recovery.push(Box::new(action_button(
+                    "windows-escalate-install-to-vm",
+                    "windows-escalate-install-to-vm",
+                    ButtonRole::Secondary,
+                    intents,
+                    Intent::Escalate,
+                )));
+            }
+            if !recovery.is_empty() {
+                page.head.push(Box::new(row(recovery)));
+            }
+        }
+
+        // The ways to open the app. A setup that failed has nothing to open.
+        if !recovering || app.launch_available {
+            let mut actions: Vec<Element> = vec![Box::new(
+                action_button(
+                    "windows-launch",
+                    "windows-launch",
+                    if retry_leads {
+                        ButtonRole::Secondary
+                    } else {
+                        ButtonRole::Primary
+                    },
+                    intents,
+                    Intent::Launch,
+                )
+                .with_enabled(app.launch_available),
+            )];
+            if vm {
+                let mut open_file = action_button(
+                    "windows-open-file-in-vm",
+                    "windows-open-file-in-vm",
+                    ButtonRole::Secondary,
+                    intents,
+                    Intent::OpenFile,
+                )
+                .with_enabled(app.portal_file_open_available && self.document_portal_rx.is_none());
+                if let Some(reason) = app
+                    .portal_file_open_unavailable_reason
+                    .as_ref()
+                    .filter(|_| !app.portal_file_open_available)
+                {
+                    open_file = open_file.tooltip(reason.clone());
+                }
+                actions.push(Box::new(open_file));
+            } else if app.vm_fallback_available {
+                actions.push(Box::new(action_button(
+                    "windows-open-in-vm",
+                    "windows-open-in-vm",
+                    ButtonRole::Secondary,
+                    intents,
+                    Intent::VmFallback,
+                )));
+            }
+            page.head.push(Box::new(row(actions)));
+            if let Some(reason) = app
+                .launch_unavailable_reason
+                .as_ref()
+                .filter(|_| !app.launch_available && !recovering)
+            {
+                page.head.push(Box::new(caption(reason)));
+            }
         }
 
         // How it opens, and why.
@@ -1591,73 +1621,63 @@ impl WindowsApp {
                 "windows-shared-session-trust",
             ))));
         }
-        let mut properties = vec![
-            Property::new(strings::t("windows-publisher"), &app.publisher),
-            Property::new(strings::t("windows-source"), &app.catalogue_source),
-            Property::new(strings::t("windows-compatibility"), app.confidence.label()),
-            Property::new(strings::t("windows-runner"), &app.runner),
-        ];
-        if !vm {
-            properties.push(Property::new(strings::t("windows-capsule"), &app.capsule));
-        }
-        properties.extend([
-            Property::new(
-                strings::t(if vm {
-                    "windows-guest-storage"
-                } else {
-                    "windows-private-data"
-                }),
-                &app.prefix,
-            ),
-            Property::new(
-                strings::t("windows-isolation"),
-                app.route.security_summary(),
-            ),
-        ]);
+        let mut reach: Vec<Property> = app
+            .grants
+            .iter()
+            .map(|grant| Property::new(&grant.label, &grant.detail))
+            .collect();
         if vm {
             let shared = &self.catalogue.vm;
             if shared.shared_session_active {
-                properties.push(Property::new(
+                reach.push(Property::new(
                     strings::t("windows-shared-access"),
                     shared.shared_session_grants.join(", "),
                 ));
-                properties.push(Property::new(
+                reach.push(Property::new(
                     strings::t("windows-shared-with"),
                     shared.shared_session_contributors.join(", "),
                 ));
             } else {
-                properties.push(Property::new(
+                reach.push(Property::new(
                     strings::t("windows-shared-access"),
                     strings::t("windows-no-redirects"),
                 ));
             }
         }
-        properties.extend(
-            app.grants
-                .iter()
-                .map(|grant| Property::new(&grant.label, &grant.detail)),
-        );
-        if let Some(detail) = app
-            .installation_detail
-            .as_ref()
-            .filter(|_| app.status != AppStatus::Failed)
-        {
-            properties.push(Property::new(strings::t("windows-installation"), detail));
+        if !reach.is_empty() {
+            access.push(Box::new(PropertyList::new(reach)));
         }
-        access.push(Box::new(PropertyList::new(properties)));
-        if !app.fallback_detail.trim().is_empty() {
-            access.push(Box::new(caption(&app.fallback_detail)));
+        let boundary = if app.fallback_detail.trim().is_empty() {
+            app.route.security_summary()
+        } else {
+            app.fallback_detail.as_str()
+        };
+        access.push(Box::new(caption(boundary)));
+        page.sections.push(section("windows-access", access));
+
+        // Where it comes from.
+        let mut about = Vec::new();
+        if !recovering {
+            about.push(Property::new(
+                strings::t("windows-status"),
+                app.status.label(),
+            ));
+        }
+        about.extend([
+            Property::new(strings::t("windows-publisher"), &app.publisher),
+            Property::new(strings::t("windows-source"), &app.catalogue_source),
+            Property::new(strings::t("windows-compatibility"), app.confidence.label()),
+            Property::new(strings::t("windows-runner"), &app.runner),
+        ]);
+        if let Some(detail) = app.installation_detail.as_ref().filter(|_| !recovering) {
+            about.push(Property::new(strings::t("windows-installation"), detail));
         }
         page.sections.push(section(
-            if vm {
-                "windows-shared-windows-session-access"
-            } else {
-                "windows-capsule-access"
-            },
-            access,
+            "windows-about",
+            vec![Box::new(PropertyList::new(about))],
         ));
 
-        // Maintenance.
+        // Maintenance. Recovering a failed setup leads the page instead.
         let mut manage: Vec<Element> = Vec::new();
         for (available, key, role, intent) in [
             (
@@ -1667,13 +1687,13 @@ impl WindowsApp {
                 Intent::Publish,
             ),
             (
-                app.can_retry_install,
+                app.can_retry_install && !recovering,
                 "windows-retry-install",
                 ButtonRole::Secondary,
                 Intent::Retry,
             ),
             (
-                app.can_escalate_install_to_vm,
+                app.can_escalate_install_to_vm && !recovering,
                 "windows-escalate-install-to-vm",
                 ButtonRole::Secondary,
                 Intent::Escalate,
@@ -1717,47 +1737,41 @@ impl WindowsApp {
         if !pending.detail.trim().is_empty() {
             page.head.push(Box::new(body(&pending.detail)));
         }
-        page.head.push(Box::new(secondary(&strings::t(
-            "windows-choose-install-destination",
-        ))));
+        // The two destinations, the recommended one first and labelled.
         let vm_recommended = pending.recommended_route == Route::Vm;
-        let capsule = action_button(
+        let destination = |id: &str, title: &str, detail: &str, icon: Icon, intent: Intent| {
+            ListRow::new(id, strings::t(title))
+                .icon(icon)
+                .secondary(strings::t(detail))
+                .disclosure()
+                .on_activate(queue(intents, intent))
+        };
+        let mut capsule = destination(
             "windows-confirm-capsule-install",
             "windows-install-private-capsule",
-            if vm_recommended {
-                ButtonRole::Secondary
-            } else {
-                ButtonRole::Primary
-            },
-            intents,
+            "windows-install-private-capsule-detail",
+            Icon::Shield,
             Intent::ConfirmCapsule,
         );
-        let appliance = action_button(
+        let mut appliance = destination(
             "windows-confirm-vm-install",
             "windows-install-windows-appliance",
-            if vm_recommended {
-                ButtonRole::Primary
-            } else {
-                ButtonRole::Secondary
-            },
-            intents,
+            "windows-install-windows-appliance-detail",
+            Icon::Monitor,
             Intent::ConfirmVm,
         );
-        let recommended = Badge::text(strings::t("windows-recommended"));
-        let choices: Vec<Element> = if vm_recommended {
-            vec![
-                Box::new(appliance),
-                Box::new(recommended),
-                Box::new(capsule),
-            ]
+        let recommended = strings::t("windows-recommended");
+        let rows: Vec<Element> = if vm_recommended {
+            appliance = appliance.meta(recommended);
+            vec![Box::new(appliance), Box::new(capsule)]
         } else {
-            vec![
-                Box::new(capsule),
-                Box::new(recommended),
-                Box::new(appliance),
-            ]
+            capsule = capsule.meta(recommended);
+            vec![Box::new(capsule), Box::new(appliance)]
         };
-        page.head.push(Box::new(row(choices)));
+        page.sections.push(section(
+            "windows-install-in",
+            vec![Box::new(Section::new(rows))],
+        ));
     }
 
     #[allow(
@@ -1818,20 +1832,8 @@ impl WindowsApp {
             return;
         }
 
-        let phase_tone = match status.phase {
-            AppliancePhase::Ready => Tone::Success,
-            AppliancePhase::RepairRequired => Tone::Danger,
-            _ => Tone::Info,
-        };
-        page.head.push(Box::new(
-            Badge::text(status.phase_label()).style(ChipStyle::Tinted(phase_tone)),
-        ));
-        page.head.push(Box::new(body(status.next_step_label())));
+        page.head.push(Box::new(body(status.status_statement())));
         page.head.push(Box::new(PropertyList::new(vec![
-            Property::new(
-                strings::t("windows-power-state"),
-                status.power_state.label(),
-            ),
             Property::new(
                 strings::t("windows-activation-status"),
                 status.license_label(),
@@ -2040,7 +2042,8 @@ impl ui::widget::Decorator for WindowsApp {
 
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources;
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource;
         inner = shell
     );
 
@@ -2268,6 +2271,23 @@ impl ui::resources::PublishesResources for WindowsApp {
                     .find(|resource| resource.id.as_str() == id)
             })?
         })
+    }
+}
+
+impl ui::search::capability::SearchSource for WindowsApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+
+    /// A picked hit shows its app, as choosing it in the list does.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
+        let Some(id) = crate::search::app_from_anchor(action_id) else {
+            return;
+        };
+        if let Some(index) = self.catalogue.apps.iter().position(|app| app.id == id) {
+            self.select(Page::App, index);
+            self.rebuild();
+        }
     }
 }
 
@@ -2752,6 +2772,28 @@ mod tests {
             let ids = ids(&app);
             assert!(ids.contains(&"windows-confirm-capsule-install".to_owned()));
             assert!(ids.contains(&"windows-confirm-vm-install".to_owned()));
+        }
+        // Case `platform_search_finds_apps_by_name_and_opens_them`.
+        {
+            let mut app = WindowsApp::new_offline();
+            let providers = ui::search::capability::search_providers(&app);
+            let hits: Vec<_> = providers
+                .iter()
+                .flat_map(|provider| provider.search("cyberpunk"))
+                .collect();
+            let hit = hits
+                .iter()
+                .find(|hit| hit.title == "Cyberpunk 2077")
+                .expect("search finds an app by its name");
+            Widget::sync(&mut app, &mut AutoCommit::new(), &automerge::ROOT);
+            ui::search::capability::activate_search_result(
+                &mut app,
+                &hit.action_id,
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            );
+            assert_eq!((app.page, app.selected), (Page::App, 1));
+            assert_eq!(app.content_title(), "Cyberpunk 2077");
         }
     }
 
