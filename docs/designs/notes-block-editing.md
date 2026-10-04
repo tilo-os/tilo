@@ -251,3 +251,24 @@ an incomplete selection without falling back to destructive text replacement.
 Still missing: batch conversion, rich clipboard modes, callouts/toggles,
 color/highlight controls, replace, pointer batch dragging and the broader
 qualifications in the matrix. No schema migration or Notion parity is claimed.
+
+- PR [#2639](https://code.tilo.so/tilo/tilo/pulls/2639) is held while a newly
+  qualified shared-history defect is resolved: style blocks, delete one, undo
+  deletion, then undo the earlier style edit. The resurrected block keeps its
+  style because deletion undo recreates its Automerge map with a new object ID;
+  the earlier inverse targets the detached map. A reduced Notes test using only
+  existing `SetParagraphStyle` and `RemoveBlocks` actions reproduces on unchanged
+  pre-selection source `9dad26be4846`. History ownership is separate; no workaround
+  or History implementation change is included here.
+- CI exposed stale IME preedit after a commit replaces a document selection. The
+  composition guard then correctly refuses Enter, but Chat cannot submit its
+  already committed text. The shared selection-commit path now clears the old
+  display-only preedit. A red/green embedded-field regression covers Enter before
+  and after commit; all 35 rich-text tests and the exact Chat
+  `own_messages_are_edited_in_place_and_commit_only_on_save` caller pass locally.
+  Independent review is clean. The original CI run also failed the Notes `rename_commit` capture with
+  `capture note missing`; this passed in the local full suite and remains tracked.
+
+- IME follow-up validation: strict all-target Clippy and shell test compilation
+  pass. The actual Notes WASM app passes seven synthetic Chrome checks, including
+  committing over selected text and immediately using Enter; no browser errors.

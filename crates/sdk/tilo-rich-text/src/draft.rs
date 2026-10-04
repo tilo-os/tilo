@@ -213,6 +213,43 @@ mod tests {
     }
 
     #[test]
+    fn ime_replacing_a_document_selection_finishes_composition_before_submit() {
+        let mut field = Field::new(SubmitKey::Enter);
+        field.type_text("replace me");
+        field.key(
+            &press(Key::Character("a".into()), None),
+            ModifiersState::CONTROL,
+        );
+        field.key(
+            &WindowEvent::Ime(ui::winit::event::Ime::Preedit("東".into(), Some((0, 3)))),
+            ModifiersState::empty(),
+        );
+        field.key(
+            &press(Key::Named(NamedKey::Enter), None),
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            field.host.widget_mut().take_outcome(),
+            None,
+            "IME owns Enter before commit"
+        );
+        field.key(
+            &WindowEvent::Ime(ui::winit::event::Ime::Commit("東京".into())),
+            ModifiersState::empty(),
+        );
+        assert_eq!(field.host.widget().source().plain_text(), "東京");
+        assert!(!field.host.widget().editor().is_composing());
+        field.key(
+            &press(Key::Named(NamedKey::Enter), None),
+            ModifiersState::empty(),
+        );
+        assert_eq!(
+            field.host.widget_mut().take_outcome(),
+            Some(FieldOutcome::Submit)
+        );
+    }
+
+    #[test]
     fn each_arrow_press_moves_a_caret_placed_at_the_end() {
         let mut field = Field::new(SubmitKey::ModEnter);
         let surface = field.host.widget_mut();

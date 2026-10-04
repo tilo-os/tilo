@@ -1148,6 +1148,13 @@ impl TextInput {
         !self.preedit.is_empty()
     }
 
+    /// Finish display-only composition when a containing editor consumes the
+    /// IME commit itself (for example, replacing a cross-block selection).
+    pub fn clear_ime_preedit(&mut self) {
+        self.preedit.clear();
+        self.preedit_cursor = None;
+    }
+
     /// Register an app-local callback for committed user edits.
     ///
     /// Keyboard input, paste, accessibility edits, and committed IME text
@@ -4480,8 +4487,7 @@ impl Widget for TextInput {
             self.spell_active = true;
         }
         if !focused {
-            self.preedit.clear();
-            self.preedit_cursor = None;
+            self.clear_ime_preedit();
         }
     }
     fn is_focused(&self) -> bool {
@@ -5882,8 +5888,7 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        self.preedit.clear();
-        self.preedit_cursor = None;
+        self.clear_ime_preedit();
         let previous_text = self.text.clone();
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
         if !t.chars().all(char::is_control) {

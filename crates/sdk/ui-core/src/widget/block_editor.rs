@@ -5931,6 +5931,9 @@ impl BlockEditor {
                 }
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) {
+                    block.line.inner_mut().clear_ime_preedit();
+                }
                 if text.chars().all(char::is_control) {
                     false
                 } else {
