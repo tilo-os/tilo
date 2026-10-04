@@ -38,7 +38,7 @@ use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Button, ButtonRole, ControlSize, Element, InspectorPlacement, ModelPath, NavShell,
-    Popover, TaffyTreeExt, ToggleGroup, Widget, history_button,
+    Popover, TaffyTreeExt, ToggleGroup, Widget,
 };
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
@@ -652,13 +652,15 @@ pub struct MonitorApp {
     shell: NavShell,
     shared: Shared,
     shown_tab: Rc<std::cell::Cell<Tab>>,
-    /// The tab, cadence and width class the header was built for.
-    header_shown: Option<(Tab, Cadence, bool)>,
+    /// The machine, tab, cadence and width class the header was built for.
+    header_shown: Option<(String, Tab, Cadence, bool)>,
     /// The window is narrower than the compact breakpoint: the header's
     /// cadence control shows its icon alone.
     header_compact: bool,
     /// The compact breakpoint of the last layout's theme.
     compact_below: f64,
+    /// The inspector's row inset in the last layout's theme.
+    detail_inset: f32,
     /// The sampling cadence menu under the header's button.
     cadence_menu: Popover,
     /// Model or view state changed since the panes were last told.
@@ -753,6 +755,7 @@ impl MonitorApp {
             header_shown: None,
             header_compact: false,
             compact_below: 0.0,
+            detail_inset: 0.0,
             cadence_menu: Popover::new().with_label("Update frequency"),
             stale: true,
             metrics_revision: 0,
@@ -860,8 +863,8 @@ impl MonitorApp {
             PROC_SPARK_CAP,
             (0..PROC_SPARK_CAP).map(|i| {
                 let t = i as f32;
-                (base + 9.0 * (t * 0.31).sin() + 4.0 * (t * 0.73).cos())
-                    .clamp(0.0, base.max(4.0) * 1.6)
+                // Wander around the current reading in proportion to it.
+                (base * (1.0 + 0.35 * (t * 0.31).sin() + 0.15 * (t * 0.73).cos())).max(0.0)
             }),
         );
         self.proc_cpu_hist.insert((pid, p.started_at), ring);
@@ -1336,8 +1339,8 @@ impl MonitorApp {
 
     // ---- the row menu -----------------------------------------------------
 
-    /// Open the row menu for `pid` at `at`.
-    fn open_context_menu(&mut self, pid: u32, at: Point) {
+    /// Open the row menu for `pid` at `at`, marking its row.
+    fn open_context_menu(&mut self, pid: u32, at: Point, row: Rect) {
         let mut menu = ContextMenu::new();
         let mut choices = Vec::new();
         let mut push = |item: MenuItem, choice: Option<MenuChoice>| {
@@ -1367,6 +1370,7 @@ impl MonitorApp {
             Some(MenuChoice::Kill),
         );
         menu.open_anchored(Rect::from_origin_size(at, (0.0, 0.0)), self.rect);
+        menu.anchor_row(row);
         self.context = menu;
         self.context_choices = choices;
         self.context_pid = Some(pid);
@@ -1479,11 +1483,13 @@ impl MonitorApp {
         self.layout_dirty = true;
     }
 
-    /// The content header: the tabs, the sampling cadence, Refresh and
-    /// History. Rebuilt when the tab changes so the segments follow it.
+    /// The content header: the machine's name, then the tabs, the sampling
+    /// cadence and Refresh. Rebuilt when the tab changes so the segments
+    /// follow it.
     fn show_header(&mut self) {
-        let shown = (self.tab, self.cadence(), self.header_compact);
-        if self.header_shown == Some(shown) {
+        let host = self.model.metrics.host.clone();
+        let shown = (host.clone(), self.tab, self.cadence(), self.header_compact);
+        if self.header_shown.as_ref() == Some(&shown) {
             return;
         }
         self.header_shown = Some(shown);
@@ -1526,14 +1532,18 @@ impl MonitorApp {
         if let Ok(binding) = ActionBinding::unit_for(&door, "refresh") {
             refresh = refresh.on_action(binding);
         }
-        let actions: Vec<Element> = vec![
-            Box::new(tabs),
-            Box::new(cadence),
-            Box::new(refresh),
-            Box::new(history_button()),
-        ];
+        let actions: Vec<Element> = vec![Box::new(tabs), Box::new(cadence), Box::new(refresh)];
+        // The content is this machine's activity, so the column is titled
+        // with the machine's name; the window's History control follows the
+        // actions at the trailing edge. A compact window gives the row to
+        // the controls.
+        let title = if self.header_compact {
+            String::new()
+        } else {
+            host
+        };
         let shell = std::mem::take(&mut self.shell);
-        self.shell = shell.content_header("", actions);
+        self.shell = shell.content_header(title, actions);
     }
 
     /// The inspector follows the selection on the Processes tab; it is gone
@@ -1571,10 +1581,26 @@ impl MonitorApp {
                 .find(|p| p.pid == ppid)
                 .map(|p| p.name.clone())
         });
+        // A summed row reads more than the process alone; the inspector names
+        // both, so the row and the detail never seem to disagree.
+        let with_children = if self.tree_mode && self.sum_mode == SumMode::SumSubtree {
+            self.shared
+                .borrow()
+                .rows
+                .iter()
+                .find(|row| row.pid == process.pid && row.has_children)
+                .map(|row| (row.cpu, row.mem_bytes))
+        } else {
+            None
+        };
         let fingerprint = {
             let mut hasher = DefaultHasher::new();
             format!("{process:?}").hash(&mut hasher);
             parent.hash(&mut hasher);
+            with_children
+                .map(|(cpu, memory)| (cpu.to_bits(), memory))
+                .hash(&mut hasher);
+            self.detail_inset.to_bits().hash(&mut hasher);
             for sample in &history {
                 sample.to_bits().hash(&mut hasher);
             }
@@ -1588,6 +1614,8 @@ impl MonitorApp {
             process: &process,
             parent,
             cpu_history: history,
+            with_children,
+            inset: self.detail_inset,
             resource: monitor_process_resource(&process),
         };
         self.shell
@@ -1650,9 +1678,9 @@ impl MonitorApp {
                     self.shared.borrow_mut().reveal = Some(stat);
                     self.stale = true;
                 }
-                Request::ContextMenu { pid, at } => {
+                Request::ContextMenu { pid, at, row } => {
                     self.commit_selected(doc, Some(pid));
-                    self.open_context_menu(pid, at);
+                    self.open_context_menu(pid, at, row);
                 }
                 Request::Retry => self.request_monitor_control("refresh"),
             }
@@ -1857,6 +1885,13 @@ impl Widget for MonitorApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The inspector's tiles and buttons line up with its property list,
+        // whose rows the theme insets.
+        let inset = theme.tokens.spacing.s2;
+        if (inset - self.detail_inset).abs() > f32::EPSILON {
+            self.detail_inset = inset;
+            self.stale = true;
+        }
         self.publish();
         self.layout_dirty = false;
         self.compact_below = f64::from(theme.tokens.metrics.compact_breakpoint);
@@ -2439,7 +2474,11 @@ mod tests {
         let mut a = app();
         let mut doc = AutoCommit::new();
         let shell = pid_named(&a, "shell");
-        a.open_context_menu(shell, Point::new(100.0, 100.0));
+        a.open_context_menu(
+            shell,
+            Point::new(100.0, 100.0),
+            Rect::new(0.0, 84.0, 600.0, 116.0),
+        );
         assert!(a.context.is_open());
         let labels: Vec<&str> = a
             .context
