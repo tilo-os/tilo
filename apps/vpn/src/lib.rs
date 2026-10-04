@@ -1,14 +1,14 @@
 //! VPN — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A `WireGuard` / `OpenVPN` client. The whole saved fleet lives in the
-//! shared Automerge document ([`doc`]); the UI is a single custom-drawn
-//! [`app::VpnApp`] widget that lays out a connections list, a live detail
-//! pane (status / config / logs) with an animated throughput chart, and
-//! add/import + confirm modals.
+//! shared Automerge document ([`doc`]); the window ([`app::VpnApp`]) is a
+//! navigation shell with the connections as its overview and the selected
+//! connection's status, configuration and activity as its content
+//! ([`view`]), plus the import and confirmation sheets.
 //!
 //! `app_root()` is the live integration point (starts empty — only the
 //! user's real, persisted tunnels); `app_root_demo()` is the sample-seeded
-//! build used by the `--shots` renderer so the screenshot is populated.
+//! build captures use so the screenshot is populated.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -46,6 +46,7 @@ pub mod local;
 pub mod model;
 pub mod net;
 pub mod resource;
+pub mod view;
 
 pub use app::VpnApp;
 pub use model::{ConnKind, ConnStatus, Connection, Vault};
@@ -67,26 +68,4 @@ pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(VpnApp::new_demo())
 }
 
-/// Sample-seeded app with the action confirm dialog open, for a deterministic
-/// `--shots` frame.
-pub fn app_root_demo_confirm() -> Box<dyn Widget> {
-    let mut app = VpnApp::new_demo();
-    app.seed_shot_confirm();
-    Box::new(app)
-}
-
-/// Sample-seeded app with the Add form open, for deterministic shared-field
-/// visual coverage.
-pub fn app_root_demo_add() -> Box<dyn Widget> {
-    let mut app = VpnApp::new_demo();
-    app.seed_shot_add();
-    Box::new(app)
-}
-
-/// Sample-seeded app configured for a named visual-review state.
-pub fn app_root_demo_state(state: &str) -> Box<dyn Widget> {
-    let mut app = VpnApp::new_demo();
-    app.seed_shot_state(state);
-    Box::new(app)
-}
 pub use resource::{Vpn, VpnShell, launch_spec};
