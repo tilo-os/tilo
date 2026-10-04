@@ -4,7 +4,7 @@
 //! in [`view`] from the toolkit's content widgets:
 //!
 //! ```text
-//! header row                         [search] [remotes] [trust] [refresh] [History]
+//! header row      Apps               [search] [remotes] [trust] [refresh] [History]
 //! catalogue         6 apps from 2 sources
 //!                   Updates (1)        ┌ card ┐
 //!                   On this device (2) ┌ card ┐ ┌ card ┐
@@ -625,7 +625,7 @@ impl StoreApp {
         } else if self.focused_detail.is_some() {
             "App details"
         } else {
-            ""
+            "Apps"
         }
     }
 
