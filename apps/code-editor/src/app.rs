@@ -45,7 +45,7 @@ mod lsp_workflow;
 mod surface;
 #[cfg(test)]
 mod tests;
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{AutoCommit, ChangeHash};
 use taffy::style_helpers::length;
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
@@ -1138,18 +1138,6 @@ impl CodeApp {
                 ),
             );
         }
-    }
-
-    /// The embedded terminal's document map. Missing panels are created by
-    /// [`CodeEditorAction::EnsureTerminalPanel`](actions::CodeEditorAction::EnsureTerminalPanel).
-    fn terminal_document_root(&self, doc: &mut AutoCommit) -> ObjId {
-        if EditorDoc::terminal_panel(doc).is_none()
-            && let Err(error) =
-                self.submit_now(doc, &actions::CodeEditorAction::EnsureTerminalPanel)
-        {
-            tracing::warn!(%error, "terminal panel not created");
-        }
-        EditorDoc::terminal_panel(doc).unwrap_or(automerge::ROOT)
     }
 
     /// Apply `action` to `doc` now, through the framework's door: within the
@@ -2641,7 +2629,22 @@ impl CodeApp {
             return;
         }
         match terminal::TerminalWidget::spawn_default() {
-            Ok(w) => {
+            Ok(mut w) => {
+                // The session is the project's terminal child: what it shows
+                // is recorded through the project's own dispatcher.
+                if let Some(dispatch) = &self.dispatch {
+                    w.bind(dispatch.child(
+                        crate::resource::TERMINAL_RESOURCE_ID,
+                        actions::CodeEditorAction::Terminal,
+                    ));
+                }
+                if let Some(session) = self
+                    .live_state
+                    .as_ref()
+                    .and_then(|live| live.with(|state| state.terminal.clone()))
+                {
+                    ui::framework::ResourceSurface::present(&mut w, &std::rc::Rc::new(session));
+                }
                 self.terminal = Some(w);
                 self.panel.set_has_live_terminal(true);
                 self.panel.set_terminal_note(None);
@@ -2651,6 +2654,15 @@ impl CodeApp {
                 self.panel
                     .set_terminal_note(Some(format!("Terminal unavailable: {e}")));
             }
+        }
+    }
+
+    /// Show the embedded terminal's session as the project records it: a
+    /// collaborator's, a past version's, or this one's own before its shell
+    /// draws.
+    pub(crate) fn present_terminal(&mut self, session: Option<&terminal::resource::SessionState>) {
+        if let (Some(terminal), Some(session)) = (self.terminal.as_mut(), session) {
+            ui::framework::ResourceSurface::present(terminal, &std::rc::Rc::new(session.clone()));
         }
     }
 
@@ -3257,7 +3269,6 @@ impl CodeApp {
         if !(term_active && self.terminal_focused) {
             return false;
         }
-        let tr = self.terminal_document_root(state);
         if let Some(t) = self.terminal.as_mut() {
             let mut th = false;
             let mut tf = None;
@@ -3267,7 +3278,7 @@ impl CodeApp {
                     scale_factor,
                     modifiers: &modifiers,
                     state,
-                    path: &tr,
+                    path: &automerge::ROOT,
                     handled: &mut th,
                     focus_target: &mut tf,
                     node_id: NodeId::new(0),
@@ -3506,11 +3517,8 @@ impl Widget for CodeApp {
         // Pump the embedded terminal: its `sync` drains the PTY reader and
         // reflects it into the grid (the plain `ui::App` loop never calls
         // `update`, so pumping happens here — see `TerminalWidget::sync`).
-        if self.terminal.is_some() {
-            let tr = self.terminal_document_root(state);
-            if let Some(t) = self.terminal.as_mut() {
-                t.sync(state, &tr);
-            }
+        if let Some(t) = self.terminal.as_mut() {
+            t.sync(state, path);
         }
 
         // Language server: start on demand (opt-in), stream edits out as

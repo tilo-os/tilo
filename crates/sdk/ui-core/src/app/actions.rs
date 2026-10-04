@@ -2378,6 +2378,19 @@ impl App {
         if let Some(scope) = scope {
             scope.check_dispatch_spec(resolved)?;
         }
+        // The local participant's tree offers an action under the least it
+        // needs; this invocation needs what its value asks.
+        if actor == self.collaboration.local_author.0
+            && !crate::bound_dispatch::permits_local_value(
+                &self.permission_ctx,
+                &crate::collaboration::local_app_id(),
+                resolved,
+                typed_arguments.as_ref(),
+                argument,
+            )
+        {
+            return Err(crate::bound_dispatch::denied(resolved));
+        }
         let kind = resolved.kind;
         if resolved
             .contract

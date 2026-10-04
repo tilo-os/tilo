@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use crate::target::{EnvironmentSummary, SessionTarget};
+use crate::target::{EnvironmentSummary, RelaySummary, SessionTarget};
 
 /// Every scenario `--shots --scenario` knows.
 pub(crate) const SCENARIOS: &[&str] = &[
@@ -30,6 +30,17 @@ pub(crate) fn target(name: &str) -> Option<(SessionTarget, Vec<EnvironmentSummar
         "host" => Some((SessionTarget::Host, environments())),
         "targets" | "environments" => Some((SessionTarget::environment("work"), environments())),
         _ => None,
+    }
+}
+
+/// The person's relays the target scenarios' picker offers to run on.
+pub(crate) fn relays(name: &str) -> Vec<RelaySummary> {
+    match name {
+        "targets" | "environments" => vec![RelaySummary {
+            relay: "ab".repeat(32),
+            label: "Home relay".into(),
+        }],
+        _ => Vec::new(),
     }
 }
 

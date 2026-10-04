@@ -207,6 +207,16 @@ impl LaunchArgs {
         self.extras.iter().any(|arg| arg == flag)
     }
 
+    /// These arguments naming the app's switch `flag` too (`--private`), as
+    /// a command line does: what a host or a test launches with.
+    #[must_use]
+    pub fn with_flag(mut self, flag: &str) -> Self {
+        if !self.has(flag) {
+            self.extras.push(flag.to_owned());
+        }
+        self
+    }
+
     /// Value supplied for an app-specific option allow-listed by the launch
     /// specification.
     pub fn value(&self, option: &str) -> Option<&str> {
@@ -523,6 +533,27 @@ impl LaunchSpec {
     pub fn capture_scenario(mut self, scenario: ComponentCaptureScenario) -> Self {
         self.component_capture_scenario = Some(scenario);
         self
+    }
+
+    /// What a launch with `args` opens, prepared by the specification's
+    /// component host but not instantiated: the record, the profile it
+    /// lives in and what the host hands the component.
+    ///
+    /// # Errors
+    /// Returns argument, profile or record failures, or
+    /// [`LaunchError::MissingComponentHost`].
+    pub fn prepare_hosted(
+        &self,
+        args: &LaunchArgs,
+    ) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
+        validate_spec_args(args, self)?;
+        let definition = self
+            .definition
+            .ok_or(LaunchError::IncompatibleComponentSetup)?;
+        let prepare = self
+            .component_host
+            .ok_or(LaunchError::MissingComponentHost)?;
+        prepare(definition, args)
     }
 
     /// Prepare this definition using already authenticated host inputs.

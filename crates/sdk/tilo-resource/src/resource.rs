@@ -149,6 +149,15 @@ pub trait Resource: Sized + 'static {
         PermissionRequirement::Write
     }
 
+    /// The least any of the resource's actions needs
+    /// ([`permission`](Self::permission)): what the generic [`APPLY`] and
+    /// group actions are offered under, each invocation then checked
+    /// against what its value needs. Writing by default; `Comment` for a
+    /// resource someone who may only comment can still reply in.
+    fn least_permission() -> PermissionRequirement {
+        PermissionRequirement::Write
+    }
+
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -282,7 +291,9 @@ impl tilo_actions::Action for NoAction {
 /// (the resource's label unless `group` names another, such as "Timeline
 /// markers"), a dimmer `subtitle` line, a named `icon` (a lucide kebab name,
 /// `"star"`), and a `boost` that floats pinned or recent items over an equal
-/// match.
+/// match. Long prose an entry is found by — a book's chapter, a long note —
+/// is its `body`, which the index reads in place rather than the entry
+/// copying it, and whose segments may each be a hit of their own.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchEntry {
     pub anchor: Option<String>,
@@ -293,6 +304,84 @@ pub struct SearchEntry {
     pub subtitle: Option<String>,
     pub icon: Option<String>,
     pub boost: i32,
+    pub body: Option<SearchBody>,
+}
+
+/// One run of a [`SearchText`] segment: styled text, say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchPiece<'a> {
+    pub text: &'a str,
+    /// Whether a word break separates this piece from the text before it.
+    pub space_before: bool,
+}
+
+/// Long text a search entry is found by, owned by the app: the index reads
+/// it while indexing and never copies it. It is a sequence of segments (the
+/// unit a hit can point at: a paragraph, a block), each a sequence of
+/// pieces. It must not change once handed to an entry; changed prose is a
+/// new body.
+pub trait SearchText: Send + Sync {
+    fn segment_count(&self) -> usize;
+
+    fn piece_count(&self, segment: usize) -> usize;
+
+    fn piece(&self, segment: usize, piece: usize) -> Option<SearchPiece<'_>>;
+
+    /// Whether a match in `segment` is a hit of its own ([`Self::location`])
+    /// rather than the entry's.
+    fn locates(&self, segment: usize) -> bool {
+        let _ = segment;
+        false
+    }
+
+    /// The hit a match in `segment` is — a reading location, invoking the
+    /// action that opens the text there — when [`Self::locates`] says so.
+    fn location(&self, segment: usize) -> Option<SearchEntry> {
+        let _ = segment;
+        None
+    }
+}
+
+/// A [`SearchText`] an entry carries. Cloning one is cheap, and two bodies
+/// are the same body only when they share one text, so an app that rebuilds
+/// its entries over mostly unchanged prose keeps its bodies and hands the
+/// same ones back.
+#[derive(Clone)]
+pub struct SearchBody(Arc<dyn SearchText>);
+
+impl SearchBody {
+    #[must_use]
+    pub fn new(text: Arc<dyn SearchText>) -> Self {
+        Self(text)
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &dyn SearchText {
+        self.0.as_ref()
+    }
+
+    /// The shared text, for an index that reads it later.
+    #[must_use]
+    pub fn shared(&self) -> Arc<dyn SearchText> {
+        Arc::clone(&self.0)
+    }
+}
+
+impl PartialEq for SearchBody {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SearchBody {}
+
+impl std::fmt::Debug for SearchBody {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchBody")
+            .field("segments", &self.0.segment_count())
+            .finish()
+    }
 }
 
 impl SearchEntry {
@@ -345,6 +434,13 @@ impl SearchEntry {
     #[must_use]
     pub fn boosted(mut self, boost: i32) -> Self {
         self.boost = boost;
+        self
+    }
+
+    /// Find the entry by `body` too, read in place.
+    #[must_use]
+    pub fn with_body(mut self, body: SearchBody) -> Self {
+        self.body = Some(body);
         self
     }
 }
@@ -702,6 +798,16 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
+    // Offered to whoever may take the least of its edits; each value needs
+    // what that edit needs.
+    .requiring(R::least_permission())
+    .with_permission_of(|args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
+            return PermissionRequirement::Write;
+        };
+        read_apply::<R>(serde_json::Value::Object(value.clone()))
+            .map_or(PermissionRequirement::Write, |action| R::permission(&action))
+    })
     // History names each value after what it did, not after `apply`.
     .with_history_label(apply_label::<R>)
     // Each value is classified: deleting is destructive, trimming is not, so
@@ -715,6 +821,18 @@ fn apply_spec<R: Resource>() -> ActionSpec {
                 tilo_actions::Action::risk(&action)
             })
     })
+}
+
+/// How much a requirement asks, least first.
+fn permission_rank(requirement: PermissionRequirement) -> u8 {
+    match requirement {
+        PermissionRequirement::None => 0,
+        PermissionRequirement::Read => 1,
+        PermissionRequirement::Comment => 2,
+        PermissionRequirement::Write => 3,
+        PermissionRequirement::Invite => 4,
+        PermissionRequirement::Admin => 5,
+    }
 }
 
 fn group_spec<R: Resource>() -> ActionSpec {
@@ -740,6 +858,21 @@ fn group_spec<R: Resource>() -> ActionSpec {
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
     .programmatic()
+    // Needs what its most demanding member needs.
+    .requiring(R::least_permission())
+    .with_permission_of(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
+            PermissionRequirement::Write,
+            |group| {
+                group
+                    .actions
+                    .iter()
+                    .map(R::permission)
+                    .max_by_key(|requirement| permission_rank(*requirement))
+                    .unwrap_or(PermissionRequirement::Write)
+            },
+        )
+    })
     // As consequential as its most consequential member.
     .with_risk(|args| {
         crate::group::build_group::<R>(&args.to_json(), 0)

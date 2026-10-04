@@ -174,7 +174,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         let saved = ui::LocalState::new(RecordSaveStatus::Saved);
         app.follow_save_status(saved.clone());
         for (status, label) in [
-            (RecordSaveStatus::MemoryOnly, "Session only"),
+            (RecordSaveStatus::MemoryOnly, "Not saved"),
             (RecordSaveStatus::Saving, "Saving…"),
             (
                 RecordSaveStatus::Failed("disk failure".into()),

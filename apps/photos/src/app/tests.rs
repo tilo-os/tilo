@@ -463,6 +463,12 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
         assert_eq!(timeline_date_label("Undated"), "Undated");
         assert_eq!(timeline_date_label("2026-13-01"), "2026-13-01");
         assert_eq!(capture_day("2026-09-18 08:14"), "2026-09-18");
+        assert_eq!(
+            capture_day("2026-09-18T08:14"),
+            "2026-09-18",
+            "the stored ISO form groups by its date"
+        );
+        assert_eq!(timeline_date_label("2026-07-12T18:16"), "Jul 12, 2026");
         assert_eq!(capture_day("Jun 2026"), "Jun");
     }
 

@@ -9,10 +9,10 @@ use ui::{
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -23,7 +23,6 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -131,7 +130,6 @@ const MAX_FIND_MATCHES: usize = 2_048;
 /// A find string is local presentation state, but cap it before repeatedly
 /// scanning history on each keystroke or pasting an accidental large blob.
 const MAX_FIND_QUERY_CHARS: usize = 256;
-const MAX_GESTURE_EFFECTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FindMatch {
@@ -560,6 +558,8 @@ pub struct TerminalWidget {
     pending_actions: Vec<crate::resource::TerminalAction>,
     /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
+    /// The relay session the record says this session re-attaches to.
+    recorded_relay_session: Option<String>,
 
     current_attr: Attr,
     pending_wrap: bool,
@@ -638,12 +638,8 @@ pub struct TerminalWidget {
     context_menu: ContextMenu,
     find_menu_index: Option<usize>,
     menu_paste_index: Option<usize>,
-    menu_effects: HashMap<usize, ui::widget::ActionEmitter<()>>,
-    allowed_menu_actions: Option<HashSet<ui::tilo_actions::ActionAddress>>,
-    /// Keyboard and pointer gestures enqueue the same typed invocations as
-    /// menu rows. The app host drains and admits these against the live role
-    /// and confirmation policy before any PTY or clipboard effect runs.
-    gesture_effects: VecDeque<ui::tilo_actions::ControlInvocation>,
+    /// What each effect row of the open menu asks for.
+    menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -717,9 +713,6 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
-    /// Set by [`ResourceSurface::attach`]. The framework root already publishes
-    /// the session door; this widget then returns only the live transcript.
-    framework_hosted: bool,
     /// The session record's dispatcher: the framework's when it hosts this
     /// widget, a parent's when the terminal is nested in its resource. Without
     /// one the terminal is its process's alone, and nothing is recorded.
@@ -799,6 +792,7 @@ impl TerminalWidget {
             synced: None,
             pending_actions: Vec::new(),
             recorded_target: None,
+            recorded_relay_session: None,
             current_attr: Attr::default(),
             pending_wrap: false,
             alt_active: false,
@@ -831,8 +825,6 @@ impl TerminalWidget {
             find_menu_index: None,
             menu_paste_index: None,
             menu_effects: HashMap::new(),
-            allowed_menu_actions: None,
-            gesture_effects: VecDeque::new(),
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
@@ -854,7 +846,6 @@ impl TerminalWidget {
             content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
-            framework_hosted: false,
             dispatch: None,
             waker: Arc::new(Mutex::new(ui::WakeHandle::new())),
             mouse_buttons: 0,
@@ -950,13 +941,6 @@ impl TerminalWidget {
         &self.title
     }
 
-    /// Stable resource identity for this shared pane. Every replica reads the
-    /// same pane id from the session record, so this address survives a collaborator
-    /// joining or a retained-widget rebuild without conflating two terminals.
-    fn terminal_resource_id(&self) -> String {
-        format!("terminal:{}", self.pane_id)
-    }
-
     fn terminal_transcript_target(&self) -> String {
         format!("terminal.transcript:{}", self.pane_id)
     }
@@ -1001,113 +985,68 @@ impl TerminalWidget {
         ids
     }
 
-    fn link_resource(&self, link_id: u16, url: &str) -> Resource {
-        let mut resource = Resource::new(
-            self.terminal_link_resource_id(link_id),
-            "terminal.link",
-            link_resource_label(url),
-        );
-        if let Ok(spec) = ActionSpec::operation(
-            "open",
-            "Open link",
-            OperationKind::Effect,
-            "terminal.open-link",
-            &url,
-        ) {
-            resource
-                .actions
-                .push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
-        }
-        resource
+    /// The visible public links, as live rows of the session: each opens
+    /// its link.
+    pub(crate) fn link_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.visible_link_ids()
+            .into_iter()
+            .filter_map(|id| self.link_row_for(id))
+            .collect()
     }
 
-    fn transcript_resource(&self) -> Resource {
-        let mut transcript = Resource::new(
-            self.terminal_transcript_target(),
-            "terminal.transcript",
-            "Terminal output history",
-        );
-        for (id, label, available, reason) in [
-            (
-                "history-top",
-                "Show oldest output",
-                self.grid.len() > self.current_visible_rows(),
+    /// The link row `id`, visible or not.
+    pub(crate) fn link_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        let prefix = format!("terminal.link:{}:", self.pane_id);
+        self.link_row_for(id.strip_prefix(&prefix)?.parse::<u16>().ok()?)
+    }
+
+    fn link_row_for(&self, link_id: u16) -> Option<ui::framework::LiveRow> {
+        let url = self
+            .links
+            .get(&link_id)
+            .filter(|url| is_public_web_link(url))?;
+        Some(
+            ui::framework::LiveRow::new(
+                self.terminal_link_resource_id(link_id),
+                "terminal.link",
+                link_resource_label(url),
+            )
+            .effect(&crate::resource::TerminalEffect::OpenLink { url: url.clone() }),
+        )
+    }
+
+    /// The effects that differ from their declaration now: the process's
+    /// input once it ended, and scrolling past either end of the output.
+    pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use crate::resource::TerminalEffect as E;
+        use ui::framework::EffectStatus;
+        let mut statuses = Vec::new();
+        if self.is_disconnected() {
+            let reason = "The terminal process has ended or its PTY failed; input cannot be sent.";
+            statuses.extend([
+                EffectStatus::unavailable(E::SEND, "session_disconnected", reason),
+                EffectStatus::unavailable(E::RUN, "session_disconnected", reason),
+                EffectStatus::unavailable(E::INTERRUPT, "session_disconnected", reason),
+                EffectStatus::unavailable(E::CLEAR, "session_disconnected", reason),
+                EffectStatus::unavailable(E::PASTE, "session_disconnected", reason),
+                EffectStatus::unavailable(E::PASTE_PRIMARY, "session_disconnected", reason),
+            ]);
+        }
+        if self.grid.len() <= self.current_visible_rows() {
+            statuses.push(EffectStatus::unavailable(
+                E::HISTORY_TOP,
+                "history_boundary",
                 "No older output is retained",
-            ),
-            (
-                "history-live",
-                "Return to live output",
-                self.scroll_offset > 0,
+            ));
+        }
+        if self.scroll_offset == 0 {
+            statuses.push(EffectStatus::unavailable(
+                E::HISTORY_LIVE,
+                "history_boundary",
                 "Already showing live output",
-            ),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::View, "terminal.control", &id)
-            {
-                transcript.actions.push(if available {
-                    spec
-                } else {
-                    spec.unavailable("history_boundary", reason)
-                });
-            }
+            ));
         }
-        for (id, label) in [
-            ("copy-visible", "Copy visible output"),
-            ("copy-selection", "Copy selected output"),
-            ("select-all", "Select all output"),
-        ] {
-            if let Ok(spec) =
-                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
-            {
-                transcript
-                    .actions
-                    .push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
-            }
-        }
-        transcript.children.extend(
-            self.visible_link_ids()
-                .into_iter()
-                .filter_map(|id| self.links.get(&id).map(|url| self.link_resource(id, url))),
-        );
-        transcript
-    }
-
-    fn session_resource(&self) -> Resource {
-        let (title, pane_id) = (self.title.clone(), self.pane_id.clone());
-        let disconnected = self.is_disconnected();
-        let unavailable_reason =
-            "The terminal process has ended or its PTY failed; input cannot be sent.";
-        let label = if title == "Terminal" {
-            "Terminal session".to_string()
-        } else {
-            format!("Terminal — {title}")
-        };
-        let resource_id = if pane_id.is_empty() {
-            self.terminal_resource_id()
-        } else {
-            format!("terminal:{pane_id}")
-        };
-        let state = crate::resource::SessionState {
-            title,
-            pane_id,
-            target: self.sessions.target.clone(),
-            ..crate::resource::SessionState::default()
-        };
-        let mut terminal =
-            ui::tilo_resource::publish::<crate::resource::Terminal>(&resource_id, &label, &state);
-        if disconnected {
-            for action in &mut terminal.actions {
-                if matches!(
-                    action.id.as_str(),
-                    "send" | "run" | "interrupt" | "clear" | "paste" | "paste-primary"
-                ) {
-                    let current = action.clone();
-                    *action = current.unavailable("session_disconnected", unavailable_reason);
-                }
-            }
-        }
-        terminal.children.push(self.transcript_resource());
-        terminal
+        statuses
     }
 
     fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
@@ -1437,6 +1376,37 @@ impl TerminalWidget {
         Widget::get_rect(&self.context_menu)
     }
     #[cfg(test)]
+    /// The open menu's row labels (empty for separators). Test accessor.
+    #[cfg(test)]
+    pub(crate) fn context_menu_labels(&self) -> Vec<String> {
+        self.context_menu
+            .items()
+            .iter()
+            .map(|item| item.label().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    /// Whether menu row `index` can be chosen. Test accessor.
+    #[cfg(test)]
+    pub(crate) fn context_menu_item_enabled(&self, index: usize) -> bool {
+        self.context_menu
+            .items()
+            .get(index)
+            .is_some_and(MenuItem::is_enabled)
+    }
+
+    /// Choose menu row `index`, as a click on it does. Test accessor.
+    #[cfg(test)]
+    pub(crate) fn activate_menu_row_for_test(&mut self, index: usize) {
+        self.activate_context_menu_item(index);
+    }
+
+    /// End the process's input, as a failed write does. Test accessor.
+    #[cfg(test)]
+    pub(crate) fn mark_disconnected_for_test(&self) {
+        self.mark_disconnected("Session ended — input unavailable");
+    }
+
     pub fn context_menu_is_open(&self) -> bool {
         self.context_menu.is_open()
     }
@@ -2023,107 +1993,113 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
-    fn answer_resource_operation(
+    /// Do `effect`, invoked by the palette, an agent or a script through the
+    /// host, or by the person's own gesture.
+    ///
+    /// # Errors
+    /// Returns why the effect was refused or failed.
+    pub(crate) fn perform(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let value: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match type_id {
-            "terminal.send" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                if value.is_empty() {
+        effect: crate::resource::TerminalEffect,
+    ) -> Result<(), String> {
+        use crate::resource::TerminalEffect as E;
+        match effect {
+            E::Send { text } => {
+                if text.is_empty() {
                     return Err("text to send cannot be empty".to_string());
                 }
-                if value.len() > MAX_RESOURCE_SEND_BYTES {
+                if text.len() > MAX_RESOURCE_SEND_BYTES {
                     return Err(format!(
                         "text to send exceeds the {} KiB reviewed-command limit",
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
                 }
-                if !is_reviewable_terminal_text(&value) {
+                if !is_reviewable_terminal_text(&text) {
                     return Err(
                         "text to send may not contain terminal control characters".to_string()
                     );
                 }
-                self.try_write_input(value.as_bytes())?;
+                self.try_write_input(text.as_bytes())?;
             }
-            "terminal.run" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                if value.trim().is_empty() {
+            E::Run { command } => {
+                if command.trim().is_empty() {
                     return Err("command to run cannot be empty".to_string());
                 }
-                if value.len() > MAX_RESOURCE_SEND_BYTES {
+                if command.len() > MAX_RESOURCE_SEND_BYTES {
                     return Err(format!(
                         "command exceeds the {} KiB reviewed-command limit",
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
                 }
-                if !is_reviewable_terminal_text(&value) {
+                if !is_reviewable_terminal_text(&command) {
                     return Err(
                         "command must be one line and may not contain terminal control characters"
                             .to_string(),
                     );
                 }
-                let mut command = value.into_bytes();
+                let mut command = command.into_bytes();
                 command.push(b'\r');
                 self.try_write_input(&command)?;
             }
-            "terminal.paste" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
+            E::Paste { text } | E::PastePrimary { text } => self.try_paste(&text)?,
+            E::Interrupt => self.try_write_input(&[0x03])?,
+            E::Clear => self.try_write_input(&[0x0c])?,
+            E::CopySelection => {
+                let text = self
+                    .selected_text()
+                    .filter(|text| !text.is_empty())
+                    .ok_or("there is no selected terminal output to copy")?;
+                if !ui::text_selection::try_clipboard_copy(&text) {
+                    return Err(
+                        "the system clipboard did not accept selected terminal output".into(),
+                    );
                 }
-                self.try_paste(&value)?;
             }
-            "terminal.control" => match (kind, value.as_str()) {
-                (OperationKind::Effect, "interrupt") => self.try_write_input(&[0x03])?,
-                (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
-                (OperationKind::Effect, "copy-selection") => {
-                    let text = self
-                        .selected_text()
-                        .filter(|text| !text.is_empty())
-                        .ok_or("there is no selected terminal output to copy")?;
-                    if !ui::text_selection::try_clipboard_copy(&text) {
-                        return Err(
-                            "the system clipboard did not accept selected terminal output".into(),
-                        );
-                    }
+            E::SelectAll => self.select_all_output(),
+            E::CopyVisible => {
+                let visible = self.current_visible_text();
+                if visible.trim().is_empty() {
+                    return Err("there is no visible terminal output to copy".to_string());
                 }
-                (OperationKind::Effect, "select-all") => self.select_all_output(),
-                (OperationKind::Effect, "copy-visible") => {
-                    let visible = self.current_visible_text();
-                    if visible.trim().is_empty() {
-                        return Err("there is no visible terminal output to copy".to_string());
-                    }
-                    if !ui::text_selection::try_clipboard_copy(&visible) {
-                        return Err("the system clipboard did not accept terminal output".into());
-                    }
+                if !ui::text_selection::try_clipboard_copy(&visible) {
+                    return Err("the system clipboard did not accept terminal output".into());
                 }
-                (OperationKind::View, "history-top") => self.scroll_to_top(),
-                (OperationKind::View, "history-live") => self.scroll_to_bottom(),
-                _ => return Ok(false),
-            },
-            "terminal.open-link" => {
-                if kind != OperationKind::Effect {
-                    return Ok(false);
-                }
-                if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
-                    || !is_public_web_link(&value)
+            }
+            E::HistoryTop => self.scroll_to_top(),
+            E::HistoryLive => self.scroll_to_bottom(),
+            E::OpenLink { url } => {
+                if safe_osc_text(url.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
+                    || !is_public_web_link(&url)
                 {
                     return Err("link target is not a safe public web URL".to_string());
                 }
-                open_url(&value);
+                open_url(&url);
             }
-            _ => return Ok(false),
+            E::OpenIn { target } => self.open_in(&target)?,
+            E::CreateEnvironment { name } => {
+                self.sessions.create_environment(&name)?;
+            }
+            E::GrantFolder { record, path } => self.sessions.grant_folder(&record, &path, true)?,
+            E::RenameEnvironment { record, name } => {
+                self.sessions.rename_environment(&record, &name)?;
+            }
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Ask for `effect` as the person's own gesture: through the session's
+    /// host, which checks their role and asks for confirmation as it would
+    /// for any caller, or — for a terminal that has no session record —
+    /// directly.
+    fn submit_effect(&mut self, effect: crate::resource::TerminalEffect) {
+        match &self.dispatch {
+            Some(dispatch) => dispatch.effect(&effect),
+            None => {
+                if let Err(error) = self.perform(effect) {
+                    tracing::warn!(%error, "terminal gesture failed");
+                }
+            }
+        }
     }
 }
 
@@ -2186,6 +2162,7 @@ impl TerminalWidget {
     /// a session running elsewhere, a screenshot before its output.
     pub(crate) fn present_session(&mut self, state: &crate::resource::SessionState) {
         self.recorded_target.clone_from(&state.target);
+        self.recorded_relay_session.clone_from(&state.relay_session);
         if !state.pane_id.is_empty() {
             self.pane_id.clone_from(&state.pane_id);
         }
@@ -2270,6 +2247,7 @@ impl TerminalWidget {
     pub(crate) fn stage_scenario(&mut self, name: &str) {
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
+            self.set_relays(crate::scenarios::relays(name));
         }
         self.feed(&crate::scenarios::output(name));
         if name == "ended" {
@@ -2307,59 +2285,10 @@ impl TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::presence::capability::PublishesPresence
-    );
+    ui::provides!(dyn ui::presence::capability::PublishesPresence);
 
     fn test_id(&self) -> Option<&str> {
         Some("terminal")
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "terminal.send",
-            "terminal.run",
-            "terminal.paste",
-            "terminal.control",
-            "terminal.open-link",
-            "terminal.target",
-            "terminal.environment",
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        if request.kind == OperationKind::Effect
-            && matches!(request.type_id, "terminal.target" | "terminal.environment")
-        {
-            if request.type_id == "terminal.target" {
-                self.answer_target_operation(request.payload)?;
-            } else {
-                self.answer_environment_operation(request.payload)?;
-            }
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                ui::tilo_actions::ActionOutput::default(),
-            )));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
     }
 
     fn measure(
@@ -3060,26 +2989,6 @@ impl ui::presence::capability::PublishesPresence for TerminalWidget {
 }
 
 impl TerminalWidget {
-    pub(crate) fn mark_framework_hosted(&mut self) {
-        self.framework_hosted = true;
-    }
-
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.framework_hosted
-    }
-
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.framework_hosted = true;
-    }
-
     /// Record this terminal's session through `dispatcher`: the session
     /// record's own when the framework hosts the terminal, or a parent's
     /// child dispatcher when the terminal is nested in another resource (an
@@ -3095,128 +3004,6 @@ impl TerminalWidget {
     pub fn bind(&mut self, dispatcher: ui::framework::Dispatcher<crate::resource::Terminal>) {
         self.dispatch = Some(dispatcher);
         self.synced = None;
-        self.mark_framework_hosted();
-    }
-}
-
-impl ui::resources::PublishesResources for TerminalWidget {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        if self.framework_hosted {
-            return vec![self.transcript_resource()];
-        }
-        vec![self.session_resource()]
-    }
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| {
-                if self.framework_hosted {
-                    self.transcript_resource()
-                } else {
-                    self.session_resource()
-                }
-            })
-            .into_iter()
-            .collect();
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        use std::hash::{Hash, Hasher};
-
-        let mut revision = std::collections::hash_map::DefaultHasher::new();
-        self.pane_id.hash(&mut revision);
-        self.title.hash(&mut revision);
-        self.grid.len().hash(&mut revision);
-        self.current_visible_rows().hash(&mut revision);
-        self.scroll_offset.hash(&mut revision);
-        self.is_disconnected().hash(&mut revision);
-        for link_id in self.visible_link_ids() {
-            link_id.hash(&mut revision);
-            self.links.get(&link_id).hash(&mut revision);
-        }
-        Some(format!("{:016x}", revision.finish()))
-    }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        fn find(resource: &Resource, id: &str) -> Option<Resource> {
-            if resource.id.as_str() == id {
-                return Some(resource.clone());
-            }
-            for child in &resource.children {
-                if let Some(found) = find(child, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if self.framework_hosted {
-            if id == self.terminal_resource_id() {
-                return None;
-            }
-            let transcript = self.transcript_resource();
-            if let Some(found) = find(&transcript, id) {
-                return Some(found);
-            }
-            return self.linked_resource(id);
-        }
-        let session = self.session_resource();
-        if id == self.terminal_resource_id() || id == session.id.as_str() {
-            return Some(session);
-        }
-        if let Some(found) = session.children.iter().find_map(|child| find(child, id)) {
-            return Some(found);
-        }
-        self.linked_resource(id)
-    }
-}
-
-impl TerminalWidget {
-    fn linked_resource(&self, id: &str) -> Option<ui::tilo_actions::Resource> {
-        let prefix = format!("terminal.link:{}:", self.pane_id);
-        let link_id = id.strip_prefix(&prefix)?.parse::<u16>().ok()?;
-        self.links
-            .get(&link_id)
-            .map(|url| self.link_resource(link_id, url))
-    }
-}
-
-impl ui::widget::controls::ActionControls for TerminalWidget {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.gesture_effects.pop_front().or_else(|| {
-            self.menu_effects
-                .values_mut()
-                .find_map(ui::widget::ActionEmitter::take)
-        })
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        for (index, emitter) in &self.menu_effects {
-            let id = format!("terminal.menu:{}:{index}", self.pane_id);
-            bindings.retain(|binding| binding.control_id != id);
-            bindings.push(emitter.metadata(id));
-        }
-        bindings
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
-    ) {
-        self.allowed_menu_actions = Some(allowed.clone());
-        let mut availability = Vec::with_capacity(self.menu_effects.len());
-        for (index, emitter) in &mut self.menu_effects {
-            emitter.refresh_availability(allowed);
-            availability.push((*index, emitter.is_available()));
-        }
-        for (index, available) in availability {
-            self.context_menu.set_item_enabled(index, available);
-        }
     }
 }
 
@@ -3548,12 +3335,7 @@ impl TerminalWidget {
         // terminal. Snaps the viewport back to the live bottom.
         if self.grid_rect.contains(self.last_cursor_pos) {
             if let Some(text) = clipboard_paste_primary() {
-                let session = self.session_resource();
-                self.queue_gesture_effect(
-                    &session,
-                    "paste-primary",
-                    Self::paste_action_arguments(text),
-                );
+                self.submit_effect(crate::resource::TerminalEffect::PastePrimary { text });
             }
             *handled = true;
         }
@@ -3618,27 +3400,15 @@ impl TerminalWidget {
             && let Key::Character(c) = logical_key
         {
             if c.as_str().eq_ignore_ascii_case("c") {
-                if let Some(text) = self.selected_text()
-                    && !text.is_empty()
-                {
-                    let transcript = self.transcript_resource();
-                    self.queue_gesture_effect(
-                        &transcript,
-                        "copy-selection",
-                        serde_json::Map::new(),
-                    );
+                if self.selected_text().is_some_and(|text| !text.is_empty()) {
+                    self.submit_effect(crate::resource::TerminalEffect::CopySelection);
                 }
                 *handled = true;
                 return;
             }
             if c.as_str().eq_ignore_ascii_case("v") {
                 if let Some(text) = clipboard_paste() {
-                    let session = self.session_resource();
-                    self.queue_gesture_effect(
-                        &session,
-                        "paste",
-                        Self::paste_action_arguments(text),
-                    );
+                    self.submit_effect(crate::resource::TerminalEffect::Paste { text });
                 }
                 *handled = true;
                 return;
@@ -3649,8 +3419,7 @@ impl TerminalWidget {
         // intercepted). It uses the same bracketed-paste-safe path.
         if mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::Insert)) {
             if let Some(text) = clipboard_paste() {
-                let session = self.session_resource();
-                self.queue_gesture_effect(&session, "paste", Self::paste_action_arguments(text));
+                self.submit_effect(crate::resource::TerminalEffect::Paste { text });
             }
             *handled = true;
             return;
@@ -4683,7 +4452,6 @@ impl TerminalWidget {
             self.selection = None;
         } else if let Some(text) = self.selected_text()
             && !text.is_empty()
-            && self.may_publish_selection()
         {
             clipboard_copy_primary(&text);
             if self.select_to_copy {
@@ -4773,18 +4541,32 @@ impl TerminalWidget {
         menu.set_platform_conventions(self.conventions);
         self.menu_effects.clear();
         self.menu_paste_index = None;
-        let session = self.session_resource();
-        let transcript = self.transcript_resource();
+        let live = !self.is_disconnected();
         if has_selection {
-            self.push_menu_effect(&mut menu, "Copy", &transcript, "copy-selection");
+            self.push_menu_effect(
+                &mut menu,
+                "Copy",
+                crate::resource::TerminalEffect::CopySelection,
+                true,
+            );
         }
         self.menu_paste_index = Some(menu.items().len());
-        self.push_menu_effect(&mut menu, "Paste", &session, "paste");
+        menu.push(MenuItem::action("Paste", || {}).with_enabled(live));
         menu.push(MenuItem::separator());
         if !self.grid_is_blank() {
-            self.push_menu_effect(&mut menu, "Select all output", &transcript, "select-all");
+            self.push_menu_effect(
+                &mut menu,
+                "Select all output",
+                crate::resource::TerminalEffect::SelectAll,
+                true,
+            );
         }
-        self.push_menu_effect(&mut menu, "Clear screen", &session, "clear");
+        self.push_menu_effect(
+            &mut menu,
+            "Clear screen",
+            crate::resource::TerminalEffect::Clear,
+            live,
+        );
         self.find_menu_index = Some(menu.items().len());
         menu.push(MenuItem::action(
             ui::i18n::I18nManager::lookup("terminal-find-scrollback", None),
@@ -4821,83 +4603,16 @@ impl TerminalWidget {
         self.context_menu = menu;
     }
 
-    /// Bind effectful rows to their exported contract. Selection only queues
-    /// an intent; the host supplies current permissions and confirmation.
+    /// A menu row that asks for `effect` as the person's gesture.
     fn push_menu_effect(
         &mut self,
         menu: &mut ContextMenu,
         label: &str,
-        resource: &Resource,
-        action_id: &str,
+        effect: crate::resource::TerminalEffect,
+        enabled: bool,
     ) {
-        let Some(spec) = resource.actions.iter().find(|spec| spec.id == action_id) else {
-            tracing::error!(
-                action_id,
-                "terminal menu action is missing its resource contract"
-            );
-            return;
-        };
-        match ui::tilo_actions::ActionBinding::new(resource, spec, |()| serde_json::Map::new()) {
-            Ok(binding) => {
-                let mut emitter = ui::widget::ActionEmitter::new(binding);
-                if let Some(allowed) = &self.allowed_menu_actions {
-                    emitter.refresh_availability(allowed);
-                }
-                let index = menu.items().len();
-                let available = emitter.is_available();
-                self.menu_effects.insert(index, emitter);
-                menu.push(MenuItem::action(label, || {}).with_enabled(available));
-            }
-            Err(error) => tracing::error!(%error, action_id, "terminal menu binding failed"),
-        }
-    }
-
-    /// Queue a pointer or keyboard gesture through the exported action
-    /// contract. The invocation is still re-authorized by the host when it is
-    /// drained, so a role change between input and confirmation cannot race a
-    /// PTY or clipboard effect.
-    fn queue_gesture_effect(
-        &mut self,
-        resource: &Resource,
-        action_id: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> bool {
-        let Some(spec) = resource.actions.iter().find(|spec| spec.id == action_id) else {
-            tracing::error!(
-                action_id,
-                "terminal gesture action is missing its resource contract"
-            );
-            return false;
-        };
-        let Ok(binding) =
-            ui::tilo_actions::ActionBinding::new(resource, spec, move |()| arguments.clone())
-        else {
-            tracing::error!(action_id, "terminal gesture binding failed");
-            return false;
-        };
-        let mut emitter = ui::widget::ActionEmitter::new(binding);
-        if let Some(allowed) = &self.allowed_menu_actions {
-            emitter.refresh_availability(allowed);
-        }
-        if !emitter.is_available() || emitter.emit(()).is_err() {
-            return false;
-        }
-        let Some(invocation) = emitter.take() else {
-            return false;
-        };
-        if self.gesture_effects.len() >= MAX_GESTURE_EFFECTS {
-            tracing::warn!(
-                limit = MAX_GESTURE_EFFECTS,
-                "terminal gesture action backlog full; rejecting newest intent"
-            );
-            return false;
-        }
-        self.gesture_effects.push_back(invocation);
-        true
-    }
-
-    fn paste_action_arguments(text: String) -> serde_json::Map<String, serde_json::Value> {
-        serde_json::Map::from_iter([("text".to_string(), serde_json::Value::String(text))])
+        self.menu_effects.insert(menu.items().len(), effect);
+        menu.push(MenuItem::action(label, || {}).with_enabled(enabled));
     }
 
     /// Open the terminal's shared context menu at a host-owned logical
@@ -4912,15 +4627,12 @@ impl TerminalWidget {
     fn activate_context_menu_item(&mut self, index: usize) {
         if self.menu_paste_index == Some(index) {
             if let Some(text) = clipboard_paste() {
-                let session = self.session_resource();
-                self.queue_gesture_effect(&session, "paste", Self::paste_action_arguments(text));
+                self.submit_effect(crate::resource::TerminalEffect::Paste { text });
             }
             return;
         }
-        if let Some(emitter) = self.menu_effects.get_mut(&index) {
-            if let Err(error) = emitter.emit(()) {
-                tracing::warn!(%error, "terminal menu action could not be queued");
-            }
+        if let Some(effect) = self.menu_effects.get(&index).cloned() {
+            self.submit_effect(effect);
             return;
         }
         if self.find_menu_index == Some(index) {
@@ -4936,15 +4648,6 @@ impl TerminalWidget {
         if let Some("Copy on select: On" | "Copy on select: Off") = label.as_deref() {
             self.select_to_copy = !self.select_to_copy;
         }
-    }
-
-    fn may_publish_selection(&self) -> bool {
-        self.allowed_menu_actions.as_ref().is_none_or(|allowed| {
-            allowed.contains(&ui::tilo_actions::ActionAddress::new(
-                self.terminal_transcript_target(),
-                "copy-selection",
-            ))
-        })
     }
 
     fn select_all_output(&mut self) {
@@ -4965,7 +4668,6 @@ impl TerminalWidget {
         });
         if let Some(text) = self.selected_text()
             && !text.is_empty()
-            && self.may_publish_selection()
         {
             clipboard_copy_primary(&text);
         }

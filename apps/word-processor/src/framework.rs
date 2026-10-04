@@ -69,6 +69,10 @@ impl Resource for Document {
         <RichText as Resource>::coalesces(previous, next)
     }
 
+    fn least_permission() -> ui::tilo_resource::PermissionRequirement {
+        <RichText as Resource>::least_permission()
+    }
+
     fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
         <RichText as Resource>::permission(action)
     }

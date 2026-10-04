@@ -1,0 +1,229 @@
+//! Framework apps the shell mounts in its own process.
+//!
+//! A tab of an app the shell hosts itself (the terminal) is the app's own
+//! component: its definition, on a record of its own in the workspace's
+//! room, with the dispatcher, history and published actions the app has
+//! anywhere else. So the palette and agents reach the tab through the same
+//! door as the app's own window, and what the tab keeps (the terminal's
+//! last target) is in its record. What only the shell can give the app (a
+//! connection to the session's process supervisor) it lends
+//! ([`HostContext::lend`]).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use ui::application::{
+    AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
+use ui::application_view::InstanceViewStore;
+use ui::launch::LaunchError;
+use ui::permissions::{Actor, PermissionContext, Role, UserId};
+use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
+
+/// The apps the shell mounts in-process, with the store their records and
+/// views live in, as one person on one device.
+pub struct InProcessApps {
+    store: Rc<dyn durable_store::DurableStore>,
+    owners: RecordOwners,
+    views: HashMap<String, Rc<InstanceViewStore>>,
+    device_id: String,
+    author: UserId,
+}
+
+impl InProcessApps {
+    /// Apps keeping their records in `store`, mounted for `author` on
+    /// `device_id`.
+    pub fn new(store: Rc<dyn durable_store::DurableStore>, device_id: &str, author: &str) -> Self {
+        Self {
+            owners: RecordOwners::with_store(Rc::clone(&store)),
+            store,
+            views: HashMap::new(),
+            device_id: device_id.to_owned(),
+            author: UserId(author.to_owned()),
+        }
+    }
+
+    /// The apps of a session whose state lives in `profile_root`: their
+    /// records and views there, as this device.
+    ///
+    /// # Errors
+    /// A relative root or corrupt device identity.
+    pub fn at(profile_root: &std::path::Path, author: &str) -> Result<Self, LaunchError> {
+        std::fs::create_dir_all(profile_root)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        let profile = ui::application::NativeProfile::open(profile_root, None)?;
+        Ok(Self::new(
+            Rc::new(app_state::FsStore::new(profile_root.to_path_buf())),
+            profile.device_id(),
+            author,
+        ))
+    }
+
+    /// The session's apps: kept under the shell's own state, beside the
+    /// records of its scratch tabs.
+    ///
+    /// # Errors
+    /// As [`Self::at`].
+    pub fn native(author: &str) -> Result<Self, LaunchError> {
+        Self::at(
+            &cli::data_home()
+                .join(crate::shell::SHELL_RECORDS_PACKAGE)
+                .join("apps"),
+            author,
+        )
+    }
+
+    /// Mount `definition` for tab `tab` of `room`: on the tab's own record,
+    /// created by the app's genesis the first time, reopened every time
+    /// after. `lend` hands the context what the shell lends the app.
+    ///
+    /// # Errors
+    /// The record cannot be opened or created, or the app refuses the
+    /// context.
+    pub fn mount(
+        &mut self,
+        definition: &'static ApplicationDefinition,
+        room: &str,
+        tab: u64,
+        lend: impl FnOnce(&mut HostContext),
+    ) -> Result<AppComponent, LaunchError> {
+        let records = self
+            .owners
+            .open(definition.app_id, room)
+            .map_err(LaunchError::Record)?;
+        let views = if let Some(views) = self.views.get(room) {
+            Rc::clone(views)
+        } else {
+            let views = Rc::new(
+                InstanceViewStore::with_store(Rc::clone(&self.store), &self.device_id, room)
+                    .map_err(LaunchError::Restore)?,
+            );
+            self.views.insert(room.to_owned(), Rc::clone(&views));
+            views
+        };
+        let inputs = || HostContextInputs {
+            records: records.clone(),
+            views: Rc::clone(&views),
+            device_id: self.device_id.clone(),
+            instance_id: tab,
+            permissions: Rc::new(RefCell::new(PermissionContext::from_capabilities(
+                Actor::person(Some(Role::Owner), &self.author.0),
+                vec![],
+            ))),
+            author: self.author.clone(),
+            action_context: tilo_actions::ActionContext::default(),
+        };
+        let checkout = RecordCheckout::new(RecordId::for_tab(tab), definition.record_kind.clone());
+        let (mut context, target) = match records.try_open_record(&checkout) {
+            Ok(_) => {
+                let target = LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                };
+                (HostContext::prepare(definition, inputs(), &target)?, target)
+            }
+            Err(RecordOpenError::MissingRecord) => (
+                HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
+                LaunchTarget::New,
+            ),
+            Err(error) => return Err(LaunchError::Record(error)),
+        };
+        if let Ok(person) = ui::record::person::PersonRecords::open(
+            &mut self.owners,
+            definition.app_id,
+            self.author.clone(),
+        ) {
+            context.provide_person_records(person);
+        }
+        lend(&mut context);
+        definition.instantiate(context, target, RestoreInput::None)
+    }
+}
+
+/// The in-process apps a host shares between the tiles it resolves.
+pub type SharedInProcessApps = Rc<RefCell<InProcessApps>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_resource::Resource as _;
+
+    const ROOM: &str = "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc";
+    const TAB: u64 = 41;
+
+    fn mount_terminal(apps: &mut InProcessApps) -> ui::headless::FrameHarness {
+        let component = apps
+            .mount(terminal::definition(), ROOM, TAB, |context| {
+                context.lend(terminal::HostedProcessServices::unavailable());
+            })
+            .unwrap();
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (900, 600),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
+    /// A terminal tab the shell hosts is the terminal's own component: it
+    /// offers the terminal's actions through the shell's door, and what it
+    /// keeps is in the tab's record, there again when the tab is mounted
+    /// again.
+    #[test]
+    fn a_hosted_terminal_tab_publishes_its_actions_and_keeps_its_record() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mut harness = mount_terminal(&mut apps);
+        let session = harness
+            .resources()
+            .into_iter()
+            .find(|resource| resource.kind == terminal::Terminal::KIND)
+            .expect("the tab publishes the terminal's session");
+        for action in ["run", "send", "interrupt", "open-in"] {
+            assert!(
+                session.actions.iter().any(|spec| spec.id == action),
+                "{action} reaches the shell's palette and agents"
+            );
+        }
+        let target = terminal::target::SessionTarget::Legacy { vm: "build".into() };
+        let retarget = serde_json::json!({
+            tilo_resource::APPLY_PARAM: serde_json::to_value(
+                terminal::resource::TerminalAction::SetTarget { target: target.encode() }
+            )
+            .unwrap()
+        });
+        harness
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: TAB,
+                    address: tilo_actions::ActionAddress::new(
+                        terminal::Terminal::KIND,
+                        tilo_resource::APPLY,
+                    ),
+                },
+                retarget.as_object().unwrap(),
+            )
+            .unwrap();
+        harness.relayout();
+        // The tab closes as the shell closes it: its record stored first.
+        harness.flush_component_records().unwrap();
+        harness.close_components();
+        drop(harness);
+
+        let _again = mount_terminal(&mut apps);
+        let records = apps
+            .owners
+            .open(terminal::definition().app_id, ROOM)
+            .unwrap();
+        let kept = records
+            .with(&RecordId::for_tab(TAB), |doc| {
+                terminal::Terminal::read(doc).map(|state| state.target)
+            })
+            .expect("the tab's record is open")
+            .unwrap();
+        assert_eq!(kept, Some(target), "the tab's record keeps its last target");
+    }
+}

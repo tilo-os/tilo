@@ -1706,11 +1706,13 @@ that sharing it is not an operation that exists.
   (`admit_verified_join_at`); a join naming anyone else's person room fails
   like a join to a room the session does not host.
 - *Network.* A document of the local person's room is never published on a
-  room topic, to a workspace host or to a collaborator. It travels over the
-  personal fabric only, to the person's other devices on their authenticated
-  same-root routes (`PersonalFabricPayload::Document`), and an incoming one is
-  accepted only from such a route, signed by that device. A person-room
-  document arriving any other way is dropped, presence on it is never sent,
+  room topic, to a shared room's workspace host or to a collaborator. It
+  travels over the personal fabric to the person's other devices on their
+  authenticated same-root routes (`PersonalFabricPayload::Document`), and to
+  the person's own hosts on their continuity topic (host sessions only, never
+  gossip). An incoming one is accepted only from such a route, or kept by such
+  a host, signed by a device of the same root. A person-room document
+  arriving any other way is dropped, presence on it is never sent,
   and the room can never become a workspace: an invite, an enrollment or a
   continuation naming it is refused (`is_local_person_room`).
 - *History.* An artifact's scrollback is bound to the room its ops were
@@ -1747,15 +1749,20 @@ when it first opens it. A device that receives a whole record and is still
 ahead of it answers with its own, so two devices that meet converge in one
 round trip. When one of the person's devices reappears on an authenticated
 route, its peers ask their local windows holding person records to publish
-them whole, so what it missed while away reaches it.
+them whole, so what it missed while away reaches it. The person's always-on hosts
+(their home server or hosted relay) keep every person-record change too: a
+device hands it to its host sessions on the person's continuity topic — a
+workspace whose only member on the host is the person — and never to gossip;
+a device that comes online when none of the others is gets what the host
+kept, and takes it in only from a device the same root certified.
 
 **Known limits.**
 
 - A device of the same root admitted with a foreign-device certificate is
   admitted to the person room as owner, without the foreign-device role cap.
-- Durable workspace hosts do not hold person records: catch-up needs two of
-  the person's devices online at once. A person record is not yet one of the
-  records a person's always-on device or hosted server keeps for them.
+- Only the person's own hosts keep person records: a workspace host of a
+  shared room never sees them, so a person without an always-on host of their
+  own still needs two of their devices online at once to catch up.
 - Person records travel as whole personal-fabric frames (at most 4 MiB, with
   short send timeouts): a record near that size should become a collection.
 - A process hosting several identities routes only its own root's person

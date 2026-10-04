@@ -730,13 +730,13 @@ pub struct FileExplorerWidget {
     places_search_revision: u64,
     collaborative_search_revision: Cell<u64>,
     remote_accounts_search_revision: u64,
-    places_search: crate::search_provider::PlacesSearchProvider,
-    collaborative_search: crate::search_provider::CollaborativeRecordSearchProvider,
+    places_search: crate::search_provider::PlacesSearch,
+    collaborative_search: crate::search_provider::CollaborativeRecordSearch,
     /// One bounded mount page is admitted at a time. `RefCell` lets opening
     /// global search advance a continuation without making its query path
     /// rescan or materialise the whole workspace.
     collaborative_record_pager: RefCell<crate::model::WorkspaceRecordIndexPager>,
-    remote_accounts_search: crate::search_provider::RemoteAccountSearchProvider,
+    remote_accounts_search: crate::search_provider::RemoteAccountSearch,
     /// The row a drag started on. `Some(path)` while a drag is live; a floating
     /// ghost tracks the cursor. On release the app resolves the drop: onto a
     /// folder row (or the Up target) moves [`Self::drag_paths`] there; over the
@@ -1116,16 +1116,16 @@ impl FileExplorerWidget {
         let workspace_roots = inputs.workspace_roots;
         // Construct each durable namespace once. Subsequent refreshes are
         // revision-gated by `refresh_external_search_catalogs`, never by palette input.
-        let places_search = crate::search_provider::PlacesSearchProvider::new(&favorites);
+        let places_search = crate::search_provider::PlacesSearch::new(&favorites);
         let mut collaborative_record_pager =
             crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
         let initial_collaborative_page = collaborative_record_pager.next_page();
-        let collaborative_search = crate::search_provider::CollaborativeRecordSearchProvider::new(
+        let collaborative_search = crate::search_provider::CollaborativeRecordSearch::new(
             &initial_collaborative_page.records,
         );
         let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
-            crate::search_provider::RemoteAccountSearchProvider::new(&remote_accounts);
+            crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
         let mut entries = if injected {
             crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
         } else {
@@ -8073,8 +8073,7 @@ impl Widget for FileExplorerWidget {
         dyn ui::widget::Collaborative,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::resources::PublishesResources
     );
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
@@ -8834,17 +8833,15 @@ impl Widget for FileExplorerWidget {
     }
 }
 
-impl ui::search::capability::SearchSource for FileExplorerWidget {
-    /// Keep ordinary Places search and add a separately bounded snapshot of
-    /// collaborative records from the live mount projection. Collaborative
-    /// actions carry stable record UUIDs; their current paths are provenance,
-    /// never identity.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![
-            Box::new(self.places_search.clone()),
-            Box::new(self.collaborative_search.clone()),
-            Box::new(self.remote_accounts_search.clone()),
-        ]
+impl FileExplorerWidget {
+    /// The places, collaborative records and remote accounts as search
+    /// entries. Collaborative entries carry stable record UUIDs; their
+    /// current paths are provenance, never identity.
+    pub(crate) fn search_entries_shown(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        let mut entries = self.places_search.entries();
+        entries.extend(self.collaborative_search.entries());
+        entries.extend(self.remote_accounts_search.entries());
+        entries
     }
 }
 

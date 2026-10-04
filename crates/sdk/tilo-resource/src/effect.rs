@@ -62,7 +62,8 @@
 //! credential, such as copying a one-time
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
-//! uncertain outcome), `device_only` (only the person at this device) and
+//! uncertain outcome), `device_only` (only the person at this device),
+//! `programmatic` (for programs and agents, never offered in the palette) and
 //! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
@@ -196,6 +197,10 @@ struct Payload {
 
 /// The declaration of one effect: what callers see of it.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent property a declaration states, as the derive's options do"
+)]
 pub struct EffectDecl {
     pub id: &'static str,
     pub label: &'static str,
@@ -223,6 +228,9 @@ pub struct EffectDecl {
     /// classifier finds destructive asks for the confirmation a declared
     /// destructive effect does.
     pub risk_of: Option<fn(&tilo_actions::ActionArgs) -> RiskLevel>,
+    /// Invoked by programs and agents, never offered to a person picking
+    /// from the palette or a menu (an agent reading a page's structure).
+    pub programmatic: bool,
 }
 
 /// How an effect answers its caller.
@@ -312,10 +320,16 @@ impl EffectDecl {
             } else {
                 base.retry
             },
-            tags: if self.device_only {
-                ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
-            } else {
-                base.tags.clone()
+            tags: {
+                let mut tags = if self.device_only {
+                    ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
+                } else {
+                    base.tags.clone()
+                };
+                if self.programmatic {
+                    tags.push(tilo_actions::PROGRAMMATIC_TAG.to_owned());
+                }
+                tags
             },
             ..base
         };

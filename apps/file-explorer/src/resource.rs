@@ -316,6 +316,12 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
             })
         })]
     }
+
+    /// The places, the mount's collaborative records and the remote file
+    /// accounts: what the explorer holds, not the document.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_entries_shown()
+    }
 }
 
 #[cfg(test)]

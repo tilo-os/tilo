@@ -415,6 +415,23 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
                 .is_err(),
             "a commenter may not add a note to the page"
         );
+        // A typed edit needs what its value needs: a reply commenting, a
+        // highlight writing.
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::add_reply_action(
+                thread, "", "Typed",
+            ))
+            .unwrap(),
+        )
+        .expect("a commenter's typed reply");
+        assert!(
+            app.invoke(
+                ui::tilo_resource::Invoke::apply(&highlight("typed", "source-1", 60.0)).unwrap()
+            )
+            .is_err(),
+            "a commenter's typed highlight is refused"
+        );
+        assert!(app.state().annotations.iter().all(|a| a.id != "typed"));
     }
 }
 

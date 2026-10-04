@@ -6031,6 +6031,12 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
+                if !self
+                    .permissions
+                    .permits_invocation(&app_id, spec, arguments.as_ref(), argument)
+                {
+                    return Err(crate::bound_dispatch::denied(spec));
+                }
                 let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
                     address,
@@ -6129,10 +6135,12 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
-                if !crate::bound_dispatch::permits_local_action(
+                if !crate::bound_dispatch::permits_local_value(
                     &self.permissions,
                     &crate::collaboration::local_app_id(),
                     spec,
+                    arguments.as_ref(),
+                    None,
                 ) {
                     return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
                 }
@@ -6229,12 +6237,14 @@ impl FrameHarness {
             Some(supplied),
             confirmed,
         )?;
-        if !crate::bound_dispatch::permits_local_action(
+        if !crate::bound_dispatch::permits_local_value(
             &self.permissions,
             &crate::collaboration::local_app_id(),
             spec,
+            arguments.as_ref(),
+            None,
         ) {
-            return Err(tilo_actions::DoorError::Unknown(address.clone()));
+            return Err(crate::bound_dispatch::denied(spec));
         }
         let encoded = crate::bound_dispatch::encode_resource_action(
             &resources,

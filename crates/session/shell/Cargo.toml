@@ -126,6 +126,8 @@ tilo-automation = { path = "../../collab/automation" }
 # listing which records that room holds, in the same store shape (atomic
 # writes, single-writer lock, debounced writer) an app's own state uses.
 tilo-app-state = { path = "../../system/app-state" }
+# The store the apps the shell mounts in-process keep their records in.
+durable-store = { path = "../../system/durable-store" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
