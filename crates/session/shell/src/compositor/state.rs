@@ -3404,6 +3404,21 @@ impl State {
         if let Some(blocker) = blocker {
             wl_compositor::add_blocker(surface, blocker);
         }
+        if matches!(
+            association,
+            ForeignCommitCapture::Shm | ForeignCommitCapture::Dmabuf(_)
+        ) {
+            // A typed key's answer: the window it went to drew again. Outside
+            // `with_states`, whose surface mutex `foreign_root` takes too.
+            let root = foreign_root(surface).map_or(surface_id, |root| {
+                crate::compositor::state::surface_id(&root)
+            });
+            let unanswered = crate::compositor::key_latency::tracker()
+                .surface_committed(root, std::time::Instant::now());
+            for app in unanswered {
+                eprintln!("KEY-LATENCY app={app} unanswered=1");
+            }
+        }
         wl_compositor::with_states(surface, |states| {
             states
                 .data_map

@@ -8230,6 +8230,10 @@ pub fn run() {
             .and_then(present::PresentPipe::latest_retirement)
         {
             metrics.note_retirement(serial, retired_at);
+            let keys = crate::compositor::key_latency::tracker().frames_retired(serial, retired_at);
+            for sample in keys {
+                eprintln!("{sample}");
+            }
             if serial > frame_clock_retired_serial {
                 // A virtual present can retire several intervals after the
                 // frame was admitted. The grid point after that late time
@@ -11015,6 +11019,20 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
+            if let Some(serial) = submitted_serial {
+                let presented = {
+                    let mut keys = crate::compositor::key_latency::tracker();
+                    keys.frame_submitted(serial, submit_done);
+                    if async_present {
+                        Vec::new()
+                    } else {
+                        keys.frames_retired(serial, submit_done)
+                    }
+                };
+                for sample in presented {
+                    eprintln!("{sample}");
+                }
+            }
             // An asynchronous presenter advances the cadence only when its
             // physical retirement is observed at the top of a later loop
             // iteration. Advancing here at scene handoff used to run the

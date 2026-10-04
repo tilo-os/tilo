@@ -138,6 +138,27 @@ def main() -> int:
         )
         assert gate(software).returncode == 0
         assert gate(software, "--require-direct").returncode == 1
+
+        # Phase `typed_keys_aggregate_per_app`.
+        (root / "latest.log").write_text(
+            "KEY-LATENCY app=so.tilo.notes key_to_commit_us=9000 key_to_submit_us=10000 key_to_present_us=18000\n"
+            "KEY-LATENCY app=so.tilo.notes key_to_commit_us=30000 key_to_submit_us=31000 key_to_present_us=50000\n"
+            "KEY-LATENCY app=so.tilo.notes unanswered=1\n"
+        )
+        keys = subprocess.run(
+            [sys.executable, str(REPORTER), "--root", str(root)],
+            capture_output=True, text=True, check=True,
+        )
+        notes = json.loads(keys.stdout)["flight"]["key_latency_us"]["so.tilo.notes"]
+        assert notes["unanswered"] == 1
+        assert notes["key_to_present_us"] == {
+            "count": 2, "p50": 18000, "p95": 50000, "p99": 50000, "max": 50000,
+        }
+        table = subprocess.run(
+            [sys.executable, str(REPORTER), "--root", str(root), "--key-latency"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        assert "so.tilo.notes: unanswered=1" in table and "p50=18.0ms" in table, table
     print("session report: PASS")
     return 0
 
