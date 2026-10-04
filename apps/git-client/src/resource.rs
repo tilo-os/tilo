@@ -9,6 +9,7 @@ use ui::framework::{
     Command, EffectAnswer, EffectCx, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
+use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
 use ui::tilo_resource::{Doc, Invoke, ModelError, Resource};
@@ -144,6 +145,18 @@ impl ResourceApp for GitClientShell {
             let (model, diffs) = crate::sample::model();
             fixture.provide(SampleRepository { model, diffs });
         }
+    }
+
+    /// `discard` presses "Discard file" on a changed file: the host asks to
+    /// confirm the destructive effect before it runs.
+    fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
+        if name == Some("discard") {
+            let discard = input
+                .a11y_node_named("Discard file changes")
+                .ok_or("no \"Discard file\" button on the changed file")?;
+            input.perform_a11y_action(discard, &ui::a11y::Action::Activate)?;
+        }
+        Ok(())
     }
 
     fn scenario(name: Option<&str>) -> Vec<Invoke<GitClient>> {
@@ -321,6 +334,30 @@ mod tests {
                 .inspection_json()
                 .unwrap()
                 .contains("Repository path")
+        );
+    }
+
+    /// The `discard` screenshot is the host asking to confirm a changed
+    /// file's destructive `discard-file`, which its "Discard file" pressed.
+    #[test]
+    fn discarding_a_file_asks_the_host_to_confirm() {
+        let mut discard = TestApp::<GitClientShell>::capture(Some("discard")).unwrap();
+        let harness = discard.harness();
+        let names: Vec<String> = harness
+            .a11y_nodes()
+            .iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        let targets: Vec<String> = harness.targets().into_keys().collect();
+        assert!(
+            targets
+                .iter()
+                .any(|name| name.starts_with("ordinary-confirmation:"))
+                || harness
+                    .inspection_json()
+                    .unwrap()
+                    .contains("ordinary-confirmation:"),
+            "the host shows its confirmation: {targets:?} {names:?}"
         );
     }
 
