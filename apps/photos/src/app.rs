@@ -1144,8 +1144,10 @@ fn viewer_copy(value: &str, max_chars: usize) -> String {
     reason = "library mode and the three independent transient album-editor flags have distinct event and reconciliation lifecycles"
 )]
 pub struct PhotosApp {
-    /// Canonical dispatcher shared by toolbar edits and exported document actions.
-    actions: crate::resource::ActionSink,
+    /// The library's door: every edit this surface makes is one of the
+    /// library's actions, applied through it. `None` until the framework
+    /// attaches the surface; nothing is edited before then.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::Photos>>,
     /// Where imported originals are kept and photographs are read from. The
     /// document names content by hash; this handle resolves it.
     content: ContentStore,
@@ -1739,10 +1741,6 @@ impl PhotosApp {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "each analysis outcome variant is reconciled against the current document and library-analysis progress in one exhaustive match"
-    )]
     fn drain_library_analysis_result(&mut self, completed: AnalysisResult, doc: &mut AutoCommit) {
         let photo_name = self
             .library_analysis
@@ -1762,18 +1760,7 @@ impl PhotosApp {
                     photo_id: completed.photo_id.clone(),
                     analysis,
                 };
-                self.actions
-                    .try_dispatch_with_context(
-                        doc,
-                        crate::actions::PHOTOS_ACTION_TYPE,
-                        &action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.photos",
-                            "Photos",
-                            &action,
-                        ),
-                    )
-                    .map_err(|error| error.to_string())
+                self.apply(doc, &action).map_err(|error| error.to_string())
             }
             AnalysisOutcome::Image {
                 component: ImageAnalysisComponent::Ocr,
@@ -1898,16 +1885,7 @@ impl PhotosApp {
                             photo_id: completed.photo_id,
                             analysis,
                         };
-                        match self.actions.try_dispatch_with_context(
-                            doc,
-                            crate::actions::PHOTOS_ACTION_TYPE,
-                            &action,
-                            tilo_actions::ActionContext::for_action(
-                                "so.tilo.photos",
-                                "Photos",
-                                &action,
-                            ),
-                        ) {
+                        match self.apply(doc, &action) {
                             Ok(()) => {
                                 self.notice = Some(
                                     "Local image analysis was shared with this photo library"
@@ -2047,7 +2025,7 @@ impl PhotosApp {
         }
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
             content,
             #[cfg(test)]
             last_library_action: None,
@@ -3753,12 +3731,9 @@ impl PhotosApp {
             return;
         };
         let action = crate::actions::PhotosAction::set(&photo_id, &next);
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::PHOTOS_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
-        );
+        if let Err(error) = self.apply(doc, &action) {
+            tracing::warn!(%error, "photos: the edit was refused");
+        }
         self.notice = None;
     }
 
@@ -3789,17 +3764,55 @@ impl PhotosApp {
         });
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Attach the library's dispatcher, as the framework does when it hosts
+    /// the surface.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Photos>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatch = Some(dispatcher);
+    }
+
+    /// This surface editing through `dispatcher`: what a test of the
+    /// surface's own methods attaches
+    /// ([`testing::dispatcher`](ui::framework::testing::dispatcher)).
+    #[must_use]
+    pub fn with_dispatcher(
+        mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Photos>,
+    ) -> Self {
+        self.dispatch = Some(dispatcher);
+        self
+    }
+
+    /// Apply `action` to the library now, through its door.
+    fn apply(
+        &self,
+        doc: &mut AutoCommit,
+        action: &crate::actions::PhotosAction,
+    ) -> Result<(), tilo_actions::ActionError> {
+        let Some(dispatch) = &self.dispatch else {
+            return Err(tilo_actions::ActionError::Refused(
+                "this window edits no library".into(),
+            ));
+        };
+        dispatch.apply_now_with(
+            doc,
+            action,
+            tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", action),
+        )
     }
 
     /// Every card interaction routes through the same typed, replayable
     /// action registry as resources and search results.  The canvas never
     /// writes document fields directly.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "a test records the action it applied"
+        )
+    )]
     fn commit_library_action(
         &mut self,
         doc: &mut AutoCommit,
@@ -3811,12 +3824,9 @@ impl PhotosApp {
                 tilo_actions::EncodedAction::encode(crate::actions::PHOTOS_ACTION_TYPE, action)
                     .ok();
         }
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::PHOTOS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
-        );
+        if let Err(error) = self.apply(doc, action) {
+            tracing::warn!(%error, "photos: the library edit was refused");
+        }
     }
 
     fn begin_new_album(&mut self, _doc: &AutoCommit) {
@@ -7328,12 +7338,7 @@ impl PhotosApp {
                 }
                 continue;
             }
-            match self.actions.try_dispatch_with_context(
-                doc,
-                crate::actions::PHOTOS_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
-            ) {
+            match self.apply(doc, &action) {
                 Ok(()) => {
                     if let Some(job) = self.directory_import.as_mut() {
                         if existing.is_some() {
@@ -14496,7 +14501,6 @@ impl PhotosApp {
 
 impl Widget for PhotosApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
@@ -16263,11 +16267,7 @@ impl ui::resources::PublishesResources for PhotosApp {
         // The framework root publishes the library, including the open
         // photograph as a child. Live button and search-status extras stay
         // on the widget.
-        let mut resources = if self.actions.is_hosted() {
-            Vec::new()
-        } else {
-            crate::actions::PhotosResources.publish_resources(doc)
-        };
+        let mut resources = Vec::new();
         resources.extend(
             self.retained_buttons()
                 .into_iter()
@@ -16285,7 +16285,7 @@ impl ui::resources::PublishesResources for PhotosApp {
                 .as_deref()
                 .map(crate::actions::search_status_resource);
         }
-        if self.actions.is_hosted() && id == "photos.library" {
+        if id == "photos.library" {
             return None;
         }
         self.search_provider
@@ -16323,12 +16323,6 @@ impl ui::widget::controls::ActionControls for PhotosApp {
         for button in self.retained_buttons_mut() {
             button.refresh_control_action_availability(allowed);
         }
-    }
-}
-
-impl ui::undo::CommittedActions for PhotosApp {
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
@@ -16604,18 +16598,12 @@ impl PhotosApp {
 
         // This is deliberately a compound admission boundary: verify the
         // portable Camera identity and bytes before committing the one
-        // idempotent Photos library/selection update.  A missing local blob
+        // idempotent Photos library import.  A missing local blob
         // remains a refusal instead of becoming a path-only phantom entry.
         let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
         let id = photo.id.clone();
         let action = crate::actions::PhotosAction::ImportPhoto { photo };
-        self.actions
-            .try_dispatch_with_context(
-                doc,
-                crate::actions::PHOTOS_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.photos", "Photos", &action),
-            )
+        self.apply(doc, &action)
             .map_err(|error| error.to_string())?;
         self.notice = Some("Imported Camera photo".to_owned());
         Ok(Some(ui::widget::ResourceOperationStart::Completed(
@@ -16895,6 +16883,13 @@ mod tests;
 mod history_reconcile_tests {
     use super::*;
     use automerge::ROOT;
+    fn test_app() -> PhotosApp {
+        test_app_on(ContentStore::memory())
+    }
+    fn test_app_on(content: ContentStore) -> PhotosApp {
+        PhotosApp::with_content(content)
+            .with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
+    }
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
         ui::history_source::steps::restore(doc, selected, &[]).unwrap();
     }
@@ -16908,7 +16903,7 @@ mod history_reconcile_tests {
         let mut doc = AutoCommit::new();
         let image = OpenImage::from_path("historical-missing.png", 4, 3);
         let id = PhotosDoc::put_image(&mut doc, &image);
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.show_photo(&id);
         app.sync(&mut doc, &ROOT);
         (app, doc, id)
@@ -16932,7 +16927,7 @@ mod history_reconcile_tests {
             }
             let target = library.photos[2].clone();
             PhotosDoc::set_library(&mut doc, &library);
-            let mut app = PhotosApp::new();
+            let mut app = test_app();
             app.show_library();
             app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
             app.sync(&mut doc, &ROOT);
@@ -17194,7 +17189,7 @@ mod history_reconcile_tests {
             let open =
                 OpenImage::from_path("existing.png", 6, 4).with_content(store.put(&bytes).unwrap());
             let id = PhotosDoc::put_image(&mut doc, &open);
-            let mut app = PhotosApp::with_content(store);
+            let mut app = test_app_on(store);
             app.show_photo(&id);
             app.sync(&mut doc, &ROOT);
             assert!(app.open_image_path().is_some());
@@ -17234,7 +17229,7 @@ mod history_reconcile_tests {
             PhotosDoc::set_photo_edits(&mut doc, &id, Edits::default().rotated_right());
             let selected = doc.get_heads();
             PhotosDoc::set_photo_edits(&mut doc, &id, Edits::default());
-            let mut app = PhotosApp::with_content(store);
+            let mut app = test_app_on(store);
             app.show_photo(&id);
             app.sync(&mut doc, &ROOT);
             let mut taffy = TaffyTree::new();
@@ -17338,7 +17333,7 @@ mod history_reconcile_tests {
                 albums: Vec::new(),
             },
         );
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.library_mode = true;
         app.sync(&mut doc, &ROOT);
         (app, doc, ids)

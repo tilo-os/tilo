@@ -45,7 +45,7 @@ struct Harness {
 impl Harness {
     fn new(w: f32, h: f32) -> Self {
         Self {
-            unmounted: Some((PhotosApp::new(), ui::State::new())),
+            unmounted: Some((editing(PhotosApp::new()), ui::State::new())),
             mounted: None,
             theme: Theme::dark(),
             size: (w, h),
@@ -132,7 +132,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
         let mut state = ui::State::new();
-        let mut app = PhotosApp::new();
+        let mut app = editing(PhotosApp::new());
         app.open_path(&mut state.doc, &path);
         app.show_library();
         let theme = Theme::high_contrast()
@@ -1274,4 +1274,9 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
             }
         }
     }
+}
+
+/// `app`, editing through a test's dispatcher of the library.
+fn editing(app: PhotosApp) -> PhotosApp {
+    app.with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
 }
