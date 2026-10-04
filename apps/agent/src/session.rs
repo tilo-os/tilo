@@ -4111,7 +4111,7 @@ mod tests {
             caret: &str,
             content: &ContentStore,
         ) -> Vec<tilo_actions::Resource> {
-            wp::provide_resources(
+            wp::published_for(
                 &wp::WpResourceCtx {
                     caret_block: caret.into(),
                     caret_offset: 0,

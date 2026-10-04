@@ -357,7 +357,7 @@ impl Session {
         // Wait only when an explicit carried subject names an absent owning
         // app. Waiting is not pause, and nothing has been dispatched.
         if let Some(resource) = summons.subject.resource() {
-            let namespace = surface::app_of(resource);
+            let namespace = surface::namespace_of(summons.subject.kind(), resource);
             if !self
                 .held()
                 .iter()

@@ -60,6 +60,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Writer's publication without a window, for the test peers that serve it.
+word-processor = { path = "../word-processor", features = ["test-support"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 hex.workspace = true
