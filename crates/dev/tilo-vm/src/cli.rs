@@ -132,8 +132,10 @@ pub enum Command {
         /// `sha:<commit>` or `ci:<tag>` (extract it from the published CI image).
         #[arg(long, default_value = "worktree")]
         from: String,
-        /// Where `--from worktree` builds: `vm` (default; syncs the worktree
-        /// into the VM) or `host` (Linux hosts only).
+        /// Where `--from worktree` builds: `vm` (syncs the worktree into the
+        /// VM), `host` (Linux hosts only) or `remote` (a builder of the
+        /// machine's architecture; the default for a device whose
+        /// architecture has one in vms.toml's `[remote_builders]`).
         #[arg(long, value_enum)]
         builder: Option<Builder>,
         /// Cargo profile for `--from worktree` builds (default: the manifest's,
@@ -228,6 +230,23 @@ pub enum Command {
     /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
     #[command(subcommand)]
     Scenario(ScenarioCommand),
+    /// Build one component in this worktree and write its layer to stdout
+    /// as framed lines (what `swap --builder remote` runs on the builder).
+    #[command(
+        hide = true,
+        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through its cargo drop-in's run"
+    )]
+    LayerPack {
+        /// A component from os/components.toml.
+        #[arg(long)]
+        component: String,
+        /// The cargo profile to build it with.
+        #[arg(long)]
+        profile: String,
+        /// Extra cargo features, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+    },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
         after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use\n  tilo-vm gc --min-age 0        # also your own orphaned layers from the last hour\n\nUnreferenced layers younger than an hour stay by default: another agent's\nimport may still be waiting for its swap. gc names them and when they go."
@@ -358,6 +377,7 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
         command,
         None | Some(
             Command::Status { .. }
+                | Command::LayerPack { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
@@ -433,6 +453,10 @@ pub enum Builder {
     Vm,
     /// Build on this host with its cargo (Linux only).
     Host,
+    /// Build on a remote builder of the machine's architecture
+    /// (`[remote_builders]` in vms.toml); the layer streams through this
+    /// host, never onto its disk.
+    Remote,
 }
 
 #[derive(Debug, Subcommand)]

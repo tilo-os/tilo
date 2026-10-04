@@ -43,6 +43,7 @@ use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
+mod builder;
 mod device;
 mod kernel;
 mod reach;
@@ -865,6 +866,14 @@ impl App {
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
+            Some(Command::LayerPack {
+                component,
+                profile,
+                features,
+            }) => {
+                crate::builderlayer::pack(&component, &profile, &features)?;
+                Ok(Outcome::new("", json!({})))
+            }
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
@@ -4028,6 +4037,21 @@ impl App {
         component: &Component,
         builder: Option<Builder>,
     ) -> Result<String, CliError> {
+        let arch = remote.hello.arch.clone();
+        let remote_builder = self.registry()?.remote_builders.get(&arch).cloned();
+        let builder = match builder {
+            None if vm.entry.hypervisor == hypervisor::DEVICE && remote_builder.is_some() => {
+                Some(Builder::Remote)
+            }
+            other => other,
+        };
+        if builder == Some(Builder::Remote) {
+            let command = remote_builder
+                .filter(|command| !command.is_empty())
+                .ok_or_else(|| self.no_remote_builder(&arch))?;
+            self.receipt.set("builder", "remote");
+            return self.build_layer_remote(remote, vm, component, &command);
+        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -4041,6 +4065,7 @@ impl App {
         match chosen {
             Builder::Vm => self.build_layer_vm(vm, component),
             Builder::Host => self.build_layer(remote, vm, component),
+            Builder::Remote => Err(self.no_remote_builder(&arch)),
         }
     }
 
@@ -4333,6 +4358,12 @@ impl App {
                 }
             }
             Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Remote => {
+                return Err(CliError::Unsupported {
+                    what: "installing an app with --builder remote".into(),
+                    alternative: "--builder vm, or --builder host on Linux".into(),
+                });
+            }
         };
         let what = match (&result.id, &result.version) {
             (Some(id), Some(version)) => format!("{id} {version}"),
@@ -5283,6 +5314,7 @@ pub fn choose_builder(
             Err(CliError::HostBuildUnsupported { os: os.to_owned() })
         }
         Some(Builder::Host) => Ok((Builder::Host, None)),
+        Some(Builder::Remote) => Ok((Builder::Remote, None)),
         Some(Builder::Vm) | None if tools.can_build() => Ok((Builder::Vm, None)),
         None if linux_host => Ok((
             Builder::Host,
