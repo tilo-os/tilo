@@ -67,6 +67,9 @@ const ACCOUNTS_READABLE_WIDTH: f32 = 1040.0;
 /// label. See [`SettingsApp::readable_content_measure`].
 const FORM_READABLE_WIDTH: f32 = 720.0;
 
+/// One scroller's offset, shared with every scroller rebuilt in its place.
+type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
+
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -101,9 +104,7 @@ pub struct SettingsApp {
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
     /// offset lives here, per category, rather than in the rebuilt widget.
-    pane_scroll: std::cell::RefCell<
-        std::collections::HashMap<Category, std::rc::Rc<std::cell::Cell<(f32, f32)>>>,
-    >,
+    pane_scroll: std::cell::RefCell<std::collections::HashMap<Category, ScrollOffset>>,
     /// Process-local backing state for the sidebar search field. Search is a
     /// transient filter, never a durable setting or CRDT text object.
     search_state: ui::LocalState<String>,
