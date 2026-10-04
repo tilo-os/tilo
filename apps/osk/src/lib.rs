@@ -96,6 +96,7 @@ mod i18n;
 pub mod imclient;
 pub mod inject;
 pub mod layout;
+pub mod learned;
 pub mod output;
 pub mod predict;
 pub mod resource;
