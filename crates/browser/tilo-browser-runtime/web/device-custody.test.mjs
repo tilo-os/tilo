@@ -43,8 +43,8 @@ test('a second tab cannot take custody while the first holds it', async () => {
     openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2')}),
     error => error instanceof CustodyError && error.code === 'custody-busy',
   );
-  first.close();
-  await new Promise(resolve => setImmediate(resolve));
+  // Closing resolves once the key is free: the next holder takes it at once.
+  await first.close();
   const second = await openDeviceCustody({profile: 'p', storage, locks: locks.manager('tab-2')});
   assert.deepEqual(second.publicKey, first.publicKey);
   second.close();

@@ -11,7 +11,7 @@ use crate::{
     theme::Theme,
     widget::{ActivityTimeline, Button, Column, Row, TaffyTreeExt, Text, TextInput, Widget},
 };
-use automerge::{AutoCommit, transaction::Transactable};
+use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
@@ -995,12 +995,12 @@ impl HistoryHost {
         ) {
             return false;
         }
-        let Ok(document) = self.source().document(doc) else {
+        let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
         };
-        self.controller.as_ref().is_some_and(|controller| {
-            super::sorted_heads(document.base_heads()) != controller.observed_live_heads
-        })
+        self.controller
+            .as_ref()
+            .is_some_and(|controller| super::sorted_heads(heads) != controller.observed_live_heads)
     }
     pub(crate) fn review_is_open(&self) -> bool {
         self.review.is_some()
@@ -1555,3 +1555,7 @@ mod review;
 mod media;
 
 mod files;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "refresh_heads_tests.rs"]
+mod refresh_heads_tests;

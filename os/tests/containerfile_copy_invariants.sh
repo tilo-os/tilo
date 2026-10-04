@@ -76,6 +76,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -86,7 +88,12 @@ containerfile="$repo/os/Containerfile"
 # The extension overlay replaces the codec-specific resolver: no repository
 # definitions or upstream keys ship, only the generic helper and its units.
 # The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
-expected_contract=907cb38e6dbd04fd1b07d37cfc1d3c54900c3a2549d52ddbe8c1b47b7b18188a
+# The extension-manifest public key ships beside the helper.
+# The release gate's greetd session-context check ships beside the other
+# booted-guest checks in /usr/libexec/tilo.
+# The release gate's input hotplug check ships beside them.
+# The boot units gate ships with the rollback units whose confirmation it gates.
+expected_contract=f77ada33febfb2fa0be5fd41366ecb4f455d40a10d9b6c97d54745e90b6904b9
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -128,8 +135,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
 # Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
 # kernel image identity into that layer's cache key adds one ARG (153).
-[ "$instructions" -le 153 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 153)" >&2
+# Redeclaring RPMS_REF before the first snapshot install, for the same reason,
+# adds one more (154).
+[ "$instructions" -le 154 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
   exit 1
 }
 

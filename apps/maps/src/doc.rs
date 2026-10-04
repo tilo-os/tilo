@@ -16,8 +16,8 @@
 )]
 
 use crate::model::{
-    Category, DownloadedRegion, LatLon, MapModel, Place, Route, TransitJourney, TransitTime,
-    TransitTimeMode, TravelMode,
+    Category, LatLon, MapModel, Place, Route, TransitJourney, TransitTime, TransitTimeMode,
+    TravelMode,
 };
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -58,9 +58,11 @@ impl MapsDoc {
         Self::load_v2(doc)
     }
 
-    /// Explicit durable schema writer. Ranked results, drafts, status, camera,
-    /// selection, panel and transit-row choice are presentation/derived data
-    /// and are not mirrored here.
+    /// A test's whole-model writer: every edit of a live map is one of its
+    /// actions. Ranked results, drafts, status, camera, selection, panel and
+    /// transit-row choice are presentation/derived data and are not mirrored
+    /// here.
+    #[cfg(test)]
     pub fn save(doc: &mut AutoCommit, m: &MapModel) {
         let r = Self::root(doc);
         Self::places(doc, &r, &m.places);
@@ -77,7 +79,6 @@ impl MapsDoc {
             "transit_time_offset",
             i64::from(m.transit_time.offset_min),
         );
-        Self::regions(doc, &r, &m.regions);
         let route_plan = m
             .route
             .as_ref()
@@ -104,24 +105,6 @@ impl MapsDoc {
         Self::active_plan_put(doc, &r, "transit_plan", &transit_plan);
     }
 
-    /// Pull shared durable state only; derived result/POI caches stay local.
-    pub fn apply_durable(doc: &AutoCommit, target: &mut MapModel) -> bool {
-        let Some(s) = Self::load(doc) else {
-            return false;
-        };
-        target.places = s.places;
-        target.recents = s.recents;
-        target.route = s.route;
-        target.transit = s.transit;
-        target.mode = s.mode;
-        target.origin = s.origin;
-        target.origin_name = s.origin_name;
-        target.dest = s.dest;
-        target.dest_name = s.dest_name;
-        target.transit_time = s.transit_time;
-        target.regions = s.regions;
-        true
-    }
     pub fn set_place_saved(doc: &mut AutoCommit, id: &str, saved: bool) {
         if let Some(row) = Self::row(doc, "places", id)
             && !Self::dead(doc, &row)
@@ -223,22 +206,6 @@ impl MapsDoc {
             let _ = doc.put(&r, "transit_time", json);
         }
     }
-    pub fn add_region(doc: &mut AutoCommit, x: &DownloadedRegion) {
-        let r = Self::root(doc);
-        let rows = Self::map_make(doc, &r, "regions");
-        let row = Self::map_make(doc, &rows, &x.id);
-        Self::region_put(doc, &row, x);
-        Self::b(doc, &row, "deleted", false)
-    }
-    pub fn delete_region(doc: &mut AutoCommit, id: &str) {
-        if let Some(row) = Self::row(doc, "regions", id) {
-            Self::b(doc, &row, "deleted", true)
-        }
-    }
-    pub fn clear_regions(doc: &mut AutoCommit) {
-        let r = Self::root(doc);
-        Self::all_dead(doc, &r, "regions")
-    }
 
     fn load_v2(doc: &AutoCommit) -> Option<MapModel> {
         let r = Self::existing(doc)?;
@@ -266,7 +233,6 @@ impl MapsDoc {
         {
             m.transit_time = value;
         }
-        m.regions = Self::regions_get(doc, &r);
         let mut route_context = None;
         if let Some(active) = Self::active_plan_get(doc, &r, "route_plan") {
             match active {
@@ -378,6 +344,7 @@ impl MapsDoc {
         }
     }
 
+    #[cfg(test)]
     fn places(doc: &mut AutoCommit, r: &ObjId, v: &[Place]) {
         let rows = Self::map_make(doc, r, "places");
         let keep: std::collections::BTreeSet<_> = v.iter().map(|x| x.id.as_str()).collect();
@@ -469,63 +436,12 @@ impl MapsDoc {
         v.into_iter().map(|(_, _, q)| q).collect()
     }
 
-    fn regions(doc: &mut AutoCommit, r: &ObjId, v: &[DownloadedRegion]) {
-        let rows = Self::map_make(doc, r, "regions");
-        let keep: std::collections::BTreeSet<_> = v.iter().map(|x| x.id.as_str()).collect();
-        for x in v {
-            let row = Self::map_make(doc, &rows, &x.id);
-            Self::region_put(doc, &row, x);
-            Self::b(doc, &row, "deleted", false)
-        }
-        for id in doc.keys(&rows).collect::<Vec<_>>() {
-            if !keep.contains(id.as_str()) {
-                if let Some(row) = Self::map(doc, &rows, &id) {
-                    Self::b(doc, &row, "deleted", true)
-                }
-            }
-        }
-    }
-    fn region_put(doc: &mut AutoCommit, r: &ObjId, x: &DownloadedRegion) {
-        Self::text_put(doc, r, "id", &x.id);
-        Self::text_put(doc, r, "name", &x.name);
-        Self::point(doc, r, "min", x.min);
-        Self::point(doc, r, "max", x.max);
-        Self::u(doc, r, "z0", u64::from(x.z0));
-        Self::u(doc, r, "z1", u64::from(x.z1));
-        Self::u(doc, r, "tiles", u64::from(x.tiles))
-    }
-    fn regions_get(doc: &AutoCommit, r: &ObjId) -> Vec<DownloadedRegion> {
-        let Some(rows) = Self::map(doc, r, "regions") else {
-            return vec![];
-        };
-        let mut v = doc
-            .keys(&rows)
-            .filter_map(|id| {
-                let x = Self::map(doc, &rows, &id)?;
-                (!Self::dead(doc, &x))
-                    .then(|| {
-                        Some(DownloadedRegion {
-                            id: read_str_or_text(doc, &x, "id")?,
-                            name: read_str_or_text(doc, &x, "name")?,
-                            min: Self::point_get(doc, &x, "min")?,
-                            max: Self::point_get(doc, &x, "max")?,
-                            z0: read_u64(doc, &x, "z0")? as u8,
-                            z1: read_u64(doc, &x, "z1")? as u8,
-                            tiles: read_u64(doc, &x, "tiles")? as u32,
-                        })
-                    })
-                    .flatten()
-            })
-            .collect::<Vec<_>>();
-        v.sort_by(|a, b| a.id.cmp(&b.id));
-        v
-    }
-
     fn point(doc: &mut AutoCommit, p: &ObjId, k: &str, x: LatLon) {
         let r = Self::map_make(doc, p, k);
         Self::f(doc, &r, "lat", x.lat);
         Self::f(doc, &r, "lon", x.lon)
     }
+    #[cfg(test)]
     fn opt_point(doc: &mut AutoCommit, p: &ObjId, k: &str, x: Option<LatLon>) {
         if let Some(x) = x {
             Self::point(doc, p, k, x)
@@ -562,6 +478,7 @@ impl MapsDoc {
             let _ = doc.put(p, k, v);
         }
     }
+    #[cfg(test)]
     fn i(doc: &mut AutoCommit, p: &ObjId, k: &str, v: i64) {
         if Self::i_get(doc, p, k) != Some(v) {
             let _ = doc.put(p, k, v);
@@ -587,7 +504,20 @@ fn recent_id(q: &str) -> String {
 macro_rules! names{($a:ident,$b:ident,$t:ty,{$($v:ident=>$s:literal),+})=>{fn $a(x:$t)->&'static str{match x{$(<$t>::$v=>$s),+}}fn $b(x:&str)->Option<$t>{match x{$($s=>Some(<$t>::$v)),+,_=>None}}};}
 names!(category_name,category,Category,{Landmark=>"landmark",Cafe=>"cafe",Restaurant=>"restaurant",Bar=>"bar",Museum=>"museum",Park=>"park",Transit=>"transit",Hotel=>"hotel",Shop=>"shop",Hospital=>"hospital",Other=>"other"});
 names!(travel_name,travel,TravelMode,{Car=>"car",Transit=>"transit",Bike=>"bike",Foot=>"foot"});
-names!(time_name,time,TransitTimeMode,{Depart=>"depart",Arrive=>"arrive"});
+fn time(x: &str) -> Option<TransitTimeMode> {
+    match x {
+        "depart" => Some(TransitTimeMode::Depart),
+        "arrive" => Some(TransitTimeMode::Arrive),
+        _ => None,
+    }
+}
+#[cfg(test)]
+fn time_name(x: TransitTimeMode) -> &'static str {
+    match x {
+        TransitTimeMode::Depart => "depart",
+        TransitTimeMode::Arrive => "arrive",
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -133,15 +133,14 @@ fn preparation_tracks_unwitnessed_text_marks_theme_ime_and_renderer() {
                 ]));
             }
             3 => {
-                input.preedit = "漢字".into();
-                input.cursor_pos = 7;
-                input.preedit_cursor = Some((0, 0));
+                input.core.set_caret(7);
+                input.core.set_preedit("漢字", Some((0, 0)));
             }
             4 => {
-                input.cursor_pos = 0;
+                input.core.set_caret(0);
             }
             5 => {
-                input.preedit.clear();
+                input.core.clear_preedit();
                 input.set_rich_spans(None);
                 input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
             }
@@ -232,7 +231,7 @@ fn revealed_secret_does_not_leave_rich_input_snapshot() {
             .multiline(multiline)
             .with_initial_value("private é value")
             .with_secret(true);
-        input.reveal = true;
+        input.set_reveal(true);
         let style = input.multiline_style(theme.text_scale);
         let spans = vec![RichSpan::new(&input.text)];
         let width = if multiline { Some(200.0) } else { None };

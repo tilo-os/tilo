@@ -37,6 +37,9 @@ pub enum Placement {
     /// this instead of [`Self::TabIn`] so landing left or right of a particular
     /// tab remains stable even if focus changes while the app is starting.
     TabAt(GroupId, usize),
+    /// [`Self::TabAt`] without taking focus: the group keeps showing the tab
+    /// it showed. What a link opened in a background tab gets.
+    BackgroundTabAt(GroupId, usize),
     /// Its own window group, right of the group named here. Unlike [`Placement::NewGroup`] ("beside
     /// whatever has focus"), names a specific group, so the answer survives focus moving between launch and arrival. Falls back to [`Placement::NewGroup`] when gone, as [`Placement::TabIn`] does.
     RightOf(GroupId),
@@ -138,7 +141,7 @@ fn persist_adopted_toplevel(tree: &WorkspaceTree, surface_id: u64) {
     if app_id_for_surface(tree, surface_id)
         .is_some_and(|app_id| !app_id.trim().is_empty() && app_id != format!("anon-{surface_id}"))
     {
-        tree.flush_to_disk();
+        tree.queue_save();
     }
 }
 
@@ -222,7 +225,7 @@ pub fn open_hosted_app(
     // the room document; their adoption wrappers persist symbolic launch
     // records only after placement and workspace selection are settled.
     tree.seed_doc_from_cache();
-    tree.flush_to_disk();
+    tree.queue_save();
     tab_id
 }
 
@@ -250,21 +253,23 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         return false;
     };
     let destination = match placement {
-        Placement::TabAt(group, index) => tree.desktop.workspaces.iter().find_map(|workspace| {
-            workspace.strips.iter().find_map(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .any(|candidate| candidate.id == group)
-                    .then_some((
-                        strip.id,
-                        ui::widget::TabDropTarget::ExistingGroup {
-                            group_id: group,
-                            tab_index: index,
-                        },
-                    ))
+        Placement::TabAt(group, index) | Placement::BackgroundTabAt(group, index) => {
+            tree.desktop.workspaces.iter().find_map(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|candidate| candidate.id == group)
+                        .then_some((
+                            strip.id,
+                            ui::widget::TabDropTarget::ExistingGroup {
+                                group_id: group,
+                                tab_index: index,
+                            },
+                        ))
+                })
             })
-        }),
+        }
         Placement::TabIn(group) => tree.desktop.workspaces.iter().find_map(|workspace| {
             workspace.strips.iter().find_map(|strip| {
                 strip.window_groups.iter().find_map(|candidate| {
@@ -442,7 +447,7 @@ pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
     let tab_id = place_tab(tree, tab, Placement::NewGroup);
     // The local cache intentionally retains the window; room projection
     // filters the typed tile before any collaborative document write.
-    tree.flush_to_disk();
+    tree.queue_save();
     tab_id
 }
 
@@ -480,6 +485,21 @@ pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, 
         tab.id == group.active_tab && matches!(tab.tile, TileContent::WorkspaceActivity)
     })?;
     Some((strip_id, group_id, tab.id))
+}
+
+/// Where a tab placed in `group` goes: the exact index a placement names,
+/// else right of the tab the user was on, not at the end of the bar.
+fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
+    match placement {
+        Placement::TabAt(_, index) | Placement::BackgroundTabAt(_, index) => {
+            index.min(group.tabs.len())
+        }
+        _ => group
+            .tabs
+            .iter()
+            .position(|t| t.id == group.active_tab)
+            .map_or(group.tabs.len(), |i| i.saturating_add(1)),
+    }
 }
 
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
@@ -526,13 +546,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // focused-strip placement rule rather than landing in a random strip.
     let explicit_strip = match placement {
         Placement::GroupAt(strip, _) => ws.strips.iter().position(|s| s.id == strip),
-        Placement::TabAt(group, _) | Placement::TabIn(group) | Placement::RightOf(group) => {
-            ws.strips.iter().position(|s| {
-                s.window_groups
-                    .iter()
-                    .any(|candidate| candidate.id == group)
-            })
-        }
+        Placement::TabAt(group, _)
+        | Placement::BackgroundTabAt(group, _)
+        | Placement::TabIn(group)
+        | Placement::RightOf(group) => ws.strips.iter().position(|s| {
+            s.window_groups
+                .iter()
+                .any(|candidate| candidate.id == group)
+        }),
         Placement::NewGroup | Placement::IntoTab(_) => None,
     };
     // Target strip: explicit destination, then focused one, else the first.
@@ -550,7 +571,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // A tab target whose group is gone degrades to a new group rather than
     // silently landing somewhere arbitrary.
     let tab_target = match placement {
-        Placement::TabIn(g) | Placement::TabAt(g, _) => {
+        Placement::TabIn(g) | Placement::TabAt(g, _) | Placement::BackgroundTabAt(g, _) => {
             strip.window_groups.iter().position(|w| w.id == g)
         }
         // `IntoTab` only reaches here when its tab has gone; it degrades to a new group, as the variant's own documentation says.
@@ -565,16 +586,13 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         let Some(group) = strip.window_groups.get_mut(idx) else {
             return tab_id;
         };
-        let insert_at = match placement {
-            Placement::TabAt(_, index) => index.min(group.tabs.len()),
-            // Right of the tab the user was on, not at the end of the bar.
-            _ => group
-                .tabs
-                .iter()
-                .position(|t| t.id == group.active_tab)
-                .map_or(group.tabs.len(), |i| i.saturating_add(1)),
-        };
-        group.tabs.insert(insert_at, new_tab);
+        group
+            .tabs
+            .insert(tab_insert_index(group, placement), new_tab);
+        if matches!(placement, Placement::BackgroundTabAt(..)) {
+            // Behind the tab the person is reading: nothing moves.
+            return tab_id;
+        }
         group.active_tab = tab_id;
         let group_id = group.id;
         tree.desktop.active_strip.insert(ws_id, strip_id);
@@ -848,7 +866,7 @@ pub fn activate_surface(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
     tree.desktop.active_strip.insert(workspace_id, strip_id);
     tree.desktop.set_active_group(strip_id, group_id);
     mark_tree_changed(tree);
-    tree.flush_to_disk();
+    tree.queue_save();
     true
 }
 
@@ -924,7 +942,7 @@ pub fn retire_starting_foreign_surface(tree: &mut WorkspaceTree, surface_id: u64
         // A live Foreign tile serialises as a retryable LocalApp.  Failure is
         // terminal for this unpainted launch, so persist its removal before a
         // restart can turn the dead placeholder back into another launch.
-        tree.flush_to_disk();
+        tree.queue_save();
     }
     removed
 }
@@ -940,7 +958,7 @@ pub fn close_tab_for_destroyed_surface_and_persist(
 ) -> bool {
     let removed = close_tab_for_destroyed_surface(tree, destroyed_surface_id);
     if removed {
-        tree.flush_to_disk();
+        tree.queue_save();
     }
     removed
 }
@@ -1026,6 +1044,18 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
 pub(crate) fn tab_label_for_foreign(app_id: &str) -> String {
     if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
         return name;
+    }
+    // A legacy VM's window: its installed app's search entry names it (found
+    // above by `StartupWMClass`); otherwise its own id, and always the guest.
+    if let Some((guest, inner)) = legacy_agent_protocol::window::split_host_app_id(app_id) {
+        let name = crate::shell::launcher::display_name_for_package_id(inner);
+        let name = if name.trim().is_empty() {
+            inner.to_string()
+        } else {
+            name
+        };
+        let name: String = name.chars().take(24).collect();
+        return format!("{name} ({})", guest.label());
     }
     let label = crate::shell::launcher::display_name_for_package_id(app_id);
     let label = if label.trim().is_empty() {
@@ -1148,7 +1178,7 @@ mod tests {
             let mut tree = WorkspaceTree::bootstrap_demo();
             tree.persist_path = Some(path.clone());
             let tab = open_workspace_activity(&mut tree);
-            tree.flush_to_disk();
+            tree.queue_save();
             let saved = crate::shell::persist::load_tree_from(&path).expect("activity persisted");
             assert!(
                 saved
@@ -1165,7 +1195,7 @@ mod tests {
                 remove_tab(&mut tree, tab),
                 "activity is a closeable tiled window"
             );
-            tree.flush_to_disk();
+            tree.queue_save();
             let restarted =
                 crate::shell::persist::load_tree_from(&path).expect("closed activity state");
             assert!(
@@ -1278,6 +1308,7 @@ mod tests {
                             app_id: "so.tilo.word-processor".into(),
                             label: "Word Processor".into(),
                             note: "Opening here…".into(),
+                            missing: None,
                         },
                     };
                     let id = tab.id;
@@ -2052,7 +2083,7 @@ mod tests {
             // The persistence writer deliberately turns a live Foreign tile into
             // a symbolic LocalApp record.  A real surface destroy must remove that
             // record, not leave it available for the next session to relaunch.
-            tree.flush_to_disk();
+            tree.queue_save();
             let saved = crate::shell::persist::load_tree_from(&state_path)
                 .expect("live foreign state is a valid persistence snapshot");
             assert!(
@@ -2112,7 +2143,7 @@ mod tests {
                     label: "Restored app".into(),
                     note: String::new(),
                 };
-            persisted.flush_to_disk();
+            persisted.queue_save();
             // The prior session exits, releasing the state file's single writer.
             drop(persisted);
 
@@ -2297,7 +2328,7 @@ mod tests {
                 Some(prior_group),
                 "fixture sanity: the new foreign pane took focus while opening"
             );
-            tree.flush_to_disk();
+            tree.queue_save();
 
             assert_eq!(
                 crate::shell::launcher::take_sole_claimed_surface_for_failed_launch(PACKAGE),
@@ -2837,7 +2868,7 @@ mod tests {
                 }
                 tree.seed_doc_from_cache();
                 tree.persist_path = Some(state_path.clone());
-                tree.flush_to_disk();
+                tree.queue_save();
                 let active = tree.desktop.active;
                 let target_index = usize::from(attributed);
                 let target_id = tree.desktop.workspaces[target_index].id;
@@ -2915,7 +2946,8 @@ mod tests {
                 let state_path = state_dir.path().join("state.json");
                 let mut tree = WorkspaceTree::bootstrap_default();
                 tree.persist_path = Some(state_path.clone());
-                tree.flush_to_disk();
+                tree.queue_save();
+                crate::shell::persist::wait_for_saves();
                 let before = std::fs::read(&state_path).expect("saved empty desktop");
                 if attributed {
                     let room = tree.desktop.workspaces[0].room;
@@ -2924,6 +2956,7 @@ mod tests {
                     adopt_toplevel(&mut tree, 8_890, app_id);
                 }
                 assert_eq!(app_id_for_surface(&tree, 8_890), Some("anon-8890"));
+                crate::shell::persist::wait_for_saves();
                 assert_eq!(
                     std::fs::read(&state_path).expect("desktop remains readable"),
                     before,

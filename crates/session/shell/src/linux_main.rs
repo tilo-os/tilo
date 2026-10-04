@@ -62,10 +62,19 @@ fn install_crash_log_hook() {
             || "<unknown location>".to_string(),
             |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
         );
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("<unnamed>");
+        let contained = if tilo_rt::panic_boundary::is_isolated() {
+            "yes: the failing helper restarts and the session continues"
+        } else {
+            "no: the session ends"
+        };
         let body = format!(
             "tilo shell panic\n\
              ===============\n\
              timestamp: {ts}\n\
+             thread:    {thread}\n\
+             contained: {contained}\n\
              location:  {loc}\n\
              message:   {payload}\n\n\
              backtrace:\n{backtrace}\n"
@@ -86,6 +95,10 @@ fn install_crash_log_hook() {
         }
         default_hook(info);
     }));
+    // After the crash log: a panic outside a helper's panic boundary still
+    // ends the compositor, in every build. Inside one (the collaboration
+    // broker's thread) it unwinds to the helper's owner, which restarts it.
+    tilo_rt::panic_boundary::abort_outside_boundaries();
 }
 
 /// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
@@ -383,6 +396,24 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     std::process::ExitCode::SUCCESS
 }
 
+/// Make the person's and this device's settings records the session's
+/// settings document. Readers and writers in this process go through them;
+/// `settings.json` becomes the copy other processes read and write, which
+/// the session keeps current and takes their writes in from.
+fn install_session_settings() {
+    let Some(paths) = settings_store::SessionPaths::configured() else {
+        tracing::warn!("no config directory; settings are not kept this session");
+        return;
+    };
+    match settings_store::SessionSettings::open(paths) {
+        Ok(session) => settings_store::install_source(Some(std::sync::Arc::new(session))),
+        Err(error) => tracing::error!(
+            %error,
+            "cannot open the settings records; this session reads and writes settings.json itself"
+        ),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "startup decisions must remain in one ordered, single-threaded entry point before the compositor and its long-lived services start"
@@ -540,6 +571,10 @@ pub fn run() -> std::process::ExitCode {
         }
     };
 
+    // After first boot has written what it imports, so the records take it
+    // in, and before the compositor's first read.
+    install_session_settings();
+
     let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
     let enable_portals = compositor::parse_portals_from_args();
     match compositor::parse_mode_from_args() {
@@ -556,6 +591,9 @@ pub fn run() -> std::process::ExitCode {
             compositor::native::run();
         }
     }
+    // Layout changes are saved on a background thread; the process must not
+    // exit ahead of them.
+    shell::shell::persist::wait_for_saves_within(std::time::Duration::from_secs(10));
     std::process::ExitCode::SUCCESS
 }
 

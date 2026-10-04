@@ -244,6 +244,7 @@ impl Resource for WorkbookDoc {
                 anchor: Some(sheet.id.clone()),
                 title: sheet.name.clone(),
                 text: sheet.name.clone(),
+                action: None,
             })
             .collect()
     }

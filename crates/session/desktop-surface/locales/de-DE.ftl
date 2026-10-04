@@ -782,6 +782,13 @@ workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs k
 workspace-settings-invite-hint = Wähle eine Person und eine Rolle; Tilo signiert eine Einladung, die eine Stunde gilt.
 workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
 workspace-settings-invite-create = Erstellen
+workspace-settings-devices-title = Deine Geräte
+workspace-settings-device-here = { $device } (dieses Gerät)
+workspace-settings-device-shown = Angezeigt
+workspace-settings-device-hidden = Ausgeblendet
+workspace-settings-move-earlier = Nach oben
+workspace-settings-move-later = Nach unten
+workspace-settings-delete = Workspace löschen
 workspace-settings-invite-title = Personen einladen
 workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
 workspace-settings-glance-title = Auf einen Blick
@@ -833,18 +840,18 @@ a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und se
 
 # Empty-workspace launchpad
 launchpad-title = Gemeinsam etwas schaffen
-launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, ein Meeting, eine Einladung oder die Aktivität im Arbeitsbereich.
+launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
 launchpad-open-app = App öffnen
 launchpad-discuss = Besprechen
 launchpad-notes = Notizen
 launchpad-tasks = Aufgaben
-launchpad-meet = Meeting planen
+launchpad-meet = Anruf starten
 launchpad-invite = Personen einladen
 launchpad-activity = Auf dem Laufenden bleiben
 launchpad-discuss-detail = Die gemeinsame Unterhaltung öffnen
 launchpad-notes-detail = Gemeinsam Ideen aufschreiben
-launchpad-tasks-detail = Arbeit im Kalender planen
-launchpad-meet-detail = Chat öffnen, dann einen Sprach- oder Videoanruf starten
+launchpad-tasks-detail = Die Aufgabenliste im Kalender öffnen
+launchpad-meet-detail = Mit diesem Arbeitsbereich im Chat sprechen
 launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
 

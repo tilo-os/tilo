@@ -1,0 +1,24 @@
+[package]
+name = "legacy-agent-protocol"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The AF_VSOCK protocol between Tilo and the agent inside a legacy VM guest."
+
+[lib]
+name = "legacy_agent_protocol"
+path = "src/lib.rs"
+
+[dependencies]
+libc.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

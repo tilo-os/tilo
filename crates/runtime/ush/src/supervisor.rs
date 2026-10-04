@@ -8,9 +8,11 @@
 //! ush
 //!  ├─ resolve the environment record (the default is made on first use)
 //!  ├─ resolve its images to read-only trees                (crate::images)
+//!  ├─ a network namespace of its own, its DNS stub, its
+//!  │  nftables and pasta, from the NetHost grants          (tilo_egress)
 //!  ├─ compile the guest's seccomp filter                   (crate::seccomp)
 //!  ├─ start the broker on a socket in the session dir      (crate::broker)
-//!  ├─ spawn bwrap ─┬─ unshare, stack the images, pivot
+//!  ├─ spawn bwrap ─┬─ (inside the network namespace) unshare, stack, pivot
 //!  │               ├─ install the seccomp filter        ← the boundary
 //!  │               └─ exec tilo-ush guest-init ─┬─ install Landlock
 //!  │                                           └─ exec the shell
@@ -35,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tilo_clock::unix_now;
+use tilo_egress::{Egress, EgressOptions, Netns, spawn_egress};
 use tilo_environment::{Environment, HomePolicy, Target, ToolBuilder, is_record_key};
 
 use crate::audit::AuditLog;
@@ -78,6 +81,36 @@ ush: the shell's sandbox could not be set up, so no shell started;
 ush: bwrap's reason is above. An overlay mount refused with \"Invalid
 ush: argument\" usually means the images sit on a filesystem overlayfs
 ush: cannot stack on (another overlay): `dmesg` shows why.";
+
+/// The first line of every reason a session's sandbox was not built.
+const NOT_STARTED: &str = "ush: the shell's sandbox could not be set up, so no shell started";
+
+/// How this machine wires a guest's egress. The resolvers and `pasta` come
+/// from the machine; three variables exist for the integration tests, which
+/// fake the outside world on loopback:
+///
+/// - `TILO_USH_RESOLVER` — resolvers (`ip:port`, comma-separated) instead of
+///   the machine's `resolv.conf`;
+/// - `TILO_USH_EGRESS_MAP_HOST_LOOPBACK` — an address the guest reaches the
+///   host's loopback at;
+/// - `TILO_USH_EGRESS_REFUSE_NETFILTER=1` — act as if the kernel refused the
+///   packet filter, to prove the session then does not start.
+pub fn egress_options(host_root: &Path) -> EgressOptions {
+    let mut options = EgressOptions::from_host(host_root);
+    if let Some(list) = std::env::var_os("TILO_USH_RESOLVER") {
+        options.upstream = list
+            .to_string_lossy()
+            .split(',')
+            .filter_map(|a| a.trim().parse().ok())
+            .collect();
+    }
+    if let Some(addr) = std::env::var_os("TILO_USH_EGRESS_MAP_HOST_LOOPBACK") {
+        options.map_host_loopback = addr.to_string_lossy().parse().ok();
+    }
+    options.refuse_netfilter =
+        std::env::var_os("TILO_USH_EGRESS_REFUSE_NETFILTER").is_some_and(|v| v == "1");
+    options
+}
 
 /// Where the runtime's own binary is, as the supervisor sees it.
 /// `current_exe` rather than a constant: the guest must run the same build
@@ -271,13 +304,35 @@ impl Session {
             ],
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
+            grant_root: self.store.grant_root().map(Path::to_path_buf),
             runtime_bin: runtime_binary()?,
+            legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
             command: self.opts.command.clone(),
             term: self.opts.term.clone(),
             env: Vec::new(),
+            resolver: None,
         })
+    }
+
+    /// The guest's network: a namespace of its own and egress for the
+    /// record's `NetHost` grants. Fails closed — a policy that cannot be
+    /// enforced is an error, never an open network.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the namespace or its egress could not be set up.
+    pub fn network(&self, resolved: &Resolved) -> anyhow::Result<(Netns, Egress)> {
+        let netns = Netns::create()
+            .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: its network namespace: {e}"))?;
+        let policy = Policy::new(resolved.environment.grants.0.clone()).egress(Some(unix_now()));
+        if self.opts.verbose {
+            eprintln!("ush: network: {}", describe_policy(&policy));
+        }
+        let egress = spawn_egress(&netns, policy, &egress_options(&self.opts.host_root))
+            .map_err(|e| anyhow::anyhow!("{NOT_STARTED}:\nush: {e}"))?;
+        Ok((netns, egress))
     }
 
     /// May a restart request rebuild this session, or is it a one-shot? Only an
@@ -322,6 +377,10 @@ impl Session {
     }
 
     fn run_guest(&self, resolved: &Resolved, session_dir: &Path) -> anyhow::Result<(i32, bool)> {
+        // Before anything else: a guest whose network cannot be confined as
+        // its record says does not start.
+        let (netns, egress) = self.network(resolved)?;
+        let egress = Arc::new(egress);
         let seccomp_blob = crate::seccomp::write_guest_filter(session_dir)?;
         let broker_socket = session_dir.join("broker.sock");
         let broker = Broker::start(
@@ -339,10 +398,12 @@ impl Session {
                 images: resolved.images.clone(),
                 builder: Arc::clone(&self.builder),
                 landlock: "installed by the guest at startup".into(),
+                egress: Some(Arc::clone(&egress)),
             },
         )?;
 
         let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
+        plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
         seed_guest_home(&plan.guest_home)?;
 
@@ -374,7 +435,7 @@ impl Session {
         }
         plan.command = command;
 
-        let mut child = crate::guest::spawn(&plan)?;
+        let mut child = crate::guest::spawn(&plan, Some(&netns))?;
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
@@ -382,7 +443,21 @@ impl Session {
         }
         let restart = broker.restart_requested();
         drop(broker);
+        // The stub and pasta stop before the namespace's holder goes.
+        drop(egress);
+        drop(netns);
         Ok((code, restart))
+    }
+}
+
+/// A policy in words, for `-v`.
+fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
+    match policy {
+        tilo_egress::EgressPolicy::Any => "unrestricted (a * grant)".into(),
+        tilo_egress::EgressPolicy::Hosts(hosts) if hosts.is_empty() => {
+            "none (no host is granted)".into()
+        }
+        p @ tilo_egress::EgressPolicy::Hosts(_) => format!("only {}", p.describe().join(", ")),
     }
 }
 
@@ -428,7 +503,75 @@ pub enum ServeRequest {
         /// grants nothing a user typing it at the prompt would not have.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         command: Vec<String>,
+        /// Who asked the app for this session. Agents never reach
+        /// [`Target::Host`].
+        #[serde(default)]
+        requested_by: crate::host::RequestedBy,
+        /// For an environment on a relay: the session to re-attach to (hex),
+        /// as an earlier answer named it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_session: Option<String>,
     },
+    /// The environments there are, for Terminal's picker and its
+    /// environments panel.
+    ListEnvironments,
+    /// The person's relays an environment can run on.
+    ListRelays,
+    /// The person allowed Terminal's Host target, for `expiry` (the shell's
+    /// permission prompt answers with this). Only a caller outside every app
+    /// sandbox — the shell — may record it.
+    AllowHost { expiry: collab_types::caps::Expiry },
+    /// Make a new environment on the default environment's runtime, with
+    /// nothing added and nothing granted. Answers with every environment.
+    CreateEnvironment { name: String },
+    /// Apply one of the record's actions (`rename`) to an environment.
+    /// Answers with every environment.
+    EnvironmentAction {
+        record: String,
+        action: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+}
+
+/// One environment as an app sees it: what it is called, what it has, and
+/// which directories it was granted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvironmentEntry {
+    pub key: String,
+    pub name: String,
+    /// The packages its tools provide.
+    pub tools: Vec<String>,
+    /// Granted directories, `(path, writable)`.
+    pub grants: Vec<(String, bool)>,
+}
+
+impl EnvironmentEntry {
+    fn of(key: &str, env: &Environment) -> Self {
+        let policy = Policy::new(env.grants.0.clone());
+        let now = Some(unix_now());
+        let writable = policy.trusted_dirs(now);
+        let mut grants: Vec<(String, bool)> = writable
+            .iter()
+            .map(|dir| (dir.display().to_string(), true))
+            .collect();
+        grants.extend(
+            policy
+                .readable_dirs(now)
+                .iter()
+                .map(|dir| (dir.display().to_string(), false)),
+        );
+        Self {
+            key: key.to_owned(),
+            name: env.name.clone(),
+            tools: env
+                .tools
+                .iter()
+                .flat_map(|tool| tool.packages.iter().cloned())
+                .collect(),
+            grants,
+        }
+    }
 }
 
 fn default_cols() -> u16 {
@@ -446,9 +589,28 @@ pub enum ServeResponse {
         session: String,
         /// The environment record the session was built from.
         environment: String,
+        /// For an environment on a relay: the session's id there, which
+        /// re-attaches to it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_session: Option<String>,
     },
     Denied {
         reason: String,
+    },
+    /// The device's own shell needs the person's allow first. Everything
+    /// else about the request was acceptable, so asking makes sense.
+    HostNotAllowed {
+        reason: String,
+    },
+    /// Every environment, by key.
+    Environments {
+        environments: Vec<EnvironmentEntry>,
+    },
+    /// The allow was recorded.
+    Allowed,
+    /// The person's relays.
+    Relays {
+        relays: Vec<crate::relay::RelayPeer>,
     },
 }
 
@@ -460,19 +622,27 @@ pub enum ServeResponse {
 /// Returns the reason a target cannot be served: the host target (not served
 /// here), or a record key an app may not use.
 pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
-    let ServeRequest::OpenSession { target, .. } = req;
+    let ServeRequest::OpenSession { target, .. } = req else {
+        return Err("not a session request".into());
+    };
     match target {
         Target::Host => Err(
-            "not available: this supervisor builds environments only; the host target \
-             (your own login shell) is not served here"
+            "not available as an environment: the host target (your own login shell) \
+             is decided by the host gate"
                 .into(),
         ),
-        Target::Environment { record: None } => Ok(None),
+        Target::Environment {
+            location: tilo_environment::Location::Relay { .. },
+            ..
+        } => Err("an environment on a relay is carried there, not built here".into()),
+        Target::Environment { record: None, .. } => Ok(None),
         Target::Environment {
             record: Some(record),
+            ..
         } if is_record_key(record) => Ok(Some(record.clone())),
         Target::Environment {
             record: Some(record),
+            ..
         } => Err(format!("{record:?} does not name an environment record")),
     }
 }
@@ -567,7 +737,9 @@ fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
 
 fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Result<()> {
     let mut writer = stream.try_clone()?;
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut raw = stream.try_clone()?;
+    let (caller, carried) = crate::host::read_caller(&mut raw)?;
+    let mut reader = BufReader::new(std::io::Cursor::new(carried).chain(raw));
     let mut line = String::new();
     reader.read_line(&mut line)?;
 
@@ -583,6 +755,29 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             );
         }
     };
+    match &req {
+        ServeRequest::ListEnvironments
+        | ServeRequest::CreateEnvironment { .. }
+        | ServeRequest::EnvironmentAction { .. } => {
+            let response = match directory(&req, store) {
+                Ok(environments) => ServeResponse::Environments { environments },
+                Err(reason) => ServeResponse::Denied { reason },
+            };
+            return reply(&mut writer, &response, None);
+        }
+        ServeRequest::OpenSession {
+            target: Target::Host,
+            ..
+        } => return serve_host(stream, &mut writer, store, &caller, &req),
+        ServeRequest::OpenSession { target, .. } if is_relay(target) => {
+            return serve_relay(stream, &mut writer, store, &req);
+        }
+        ServeRequest::ListRelays => return reply(&mut writer, &list_relays(), None),
+        ServeRequest::AllowHost { expiry } => {
+            return reply(&mut writer, &allow_host(&caller, store, *expiry), None);
+        }
+        ServeRequest::OpenSession { .. } => {}
+    }
     let environment = match decide_serve(&req) {
         Ok(e) => e,
         Err(reason) => {
@@ -600,7 +795,10 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
         term,
         command,
         ..
-    } = req;
+    } = req
+    else {
+        return Ok(());
+    };
     let (master, slave) = open_pty(cols, rows)?;
 
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -634,6 +832,7 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
         &ServeResponse::Session {
             session: id.clone(),
             environment: record.clone(),
+            relay_session: None,
         },
         Some(master.as_raw_fd()),
     )?;
@@ -647,8 +846,393 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
     // When the guest exits first, this worker reaps it at once and closes the
     // connection, which is how Terminal tells a finished session from the
     // hand-off window in which its PTY master also reports `EIO`.
-    let mut child = child;
-    let termination = match wait_for_guest_or_terminal(stream, &child) {
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
+    );
+    Ok(())
+}
+
+/// Record the person's allow for Terminal's Host target. Only a caller
+/// outside every app sandbox — the shell, which put the prompt up — may.
+fn allow_host(
+    caller: &crate::host::Caller,
+    store: &Store,
+    expiry: collab_types::caps::Expiry,
+) -> ServeResponse {
+    if *caller != crate::host::Caller::Session {
+        return ServeResponse::Denied {
+            reason: "only the session's own shell records this allow".into(),
+        };
+    }
+    match crate::host::HostPolicy::record_allow(store, crate::host::TERMINAL_APP_ID, expiry) {
+        Ok(()) => ServeResponse::Allowed,
+        Err(e) => ServeResponse::Denied {
+            reason: format!("the allow could not be recorded: {e}"),
+        },
+    }
+}
+
+/// Answer a request about the environments themselves.
+fn directory(req: &ServeRequest, store: &Store) -> Result<Vec<EnvironmentEntry>, String> {
+    let records = Records::at(store.records_root());
+    match req {
+        ServeRequest::CreateEnvironment { name } => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("an environment needs a name".into());
+            }
+            // A new environment starts on the default environment's runtime
+            // release, or on the newest one this device holds.
+            let env = if let Ok(Some(default)) = records.load(tilo_environment::DEFAULT_RECORD) {
+                Environment {
+                    name: name.to_owned(),
+                    runtime: default.runtime,
+                    ..Environment::default()
+                }
+            } else {
+                let (release, image) = crate::images::on_this_device().current_runtime()?;
+                Environment::new(name, &release, tilo_environment::host_arch(), &image)
+            };
+            let id: String = uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(12)
+                .collect();
+            let key = format!("env-{id}");
+            records.create(&key, &env).map_err(|e| e.to_string())?;
+        }
+        ServeRequest::EnvironmentAction {
+            record,
+            action,
+            args,
+        } => {
+            let invoke = match action.as_str() {
+                "rename" => Environment::RENAME.with(
+                    args.get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ),
+                "grant-dir" => Environment::GRANT_DIR.with((
+                    args.get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    args.get("write")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                )),
+                other => {
+                    return Err(format!(
+                        "`{other}` is not an environment action an app may ask for here"
+                    ));
+                }
+            };
+            records.apply(record, invoke).map_err(|e| e.to_string())?;
+        }
+        ServeRequest::ListEnvironments
+        | ServeRequest::OpenSession { .. }
+        | ServeRequest::ListRelays
+        | ServeRequest::AllowHost { .. } => {}
+    }
+    let mut out = Vec::new();
+    for key in records.keys().map_err(|e| e.to_string())? {
+        if let Ok(Some(env)) = records.load(&key) {
+            out.push(EnvironmentEntry::of(&key, &env));
+        }
+    }
+    Ok(out)
+}
+
+/// Run the device's own login shell on a fresh pty and hand its master to
+/// the app — once [`crate::host::decide_host`] allows `caller` this request.
+fn serve_host(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    caller: &crate::host::Caller,
+    req: &ServeRequest,
+) -> anyhow::Result<()> {
+    let ServeRequest::OpenSession {
+        cols,
+        rows,
+        term,
+        command,
+        requested_by,
+        ..
+    } = req
+    else {
+        return Ok(());
+    };
+    let policy = crate::host::HostPolicy::in_force(store);
+    let ownership = crate::host::SessionOwnership::discover();
+    if let Err(denied) =
+        crate::host::decide_host(caller, *requested_by, &ownership, &policy, Some(unix_now()))
+    {
+        let reason = denied.reason();
+        AuditLog::at(store.audit_dir()).append(
+            &crate::audit::AuditRecord::new("serve", "host", "open-session", false)
+                .because(&reason),
+        );
+        let response = if denied == crate::host::HostDenied::NotAllowed {
+            ServeResponse::HostNotAllowed { reason }
+        } else {
+            ServeResponse::Denied { reason }
+        };
+        return reply(writer, &response, None);
+    }
+    crate::host::HostPolicy::spend_one_time(crate::host::TERMINAL_APP_ID);
+    let term = term.as_deref().unwrap_or("xterm-256color");
+    let (cols, rows) = (*cols, *rows);
+    let Some(account) = crate::host::login_account() else {
+        return reply(
+            writer,
+            &ServeResponse::Denied {
+                reason: "this account has no passwd entry to take a login shell from".into(),
+            },
+            None,
+        );
+    };
+    let (master, slave) = open_pty(cols, rows)?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        "host",
+        "open-session",
+        true,
+    ));
+    let child = spawn_on_pty(crate::host::host_command(&account, term, command), &slave)?;
+    drop(slave);
+    reply(
+        writer,
+        &ServeResponse::Session {
+            session: id.clone(),
+            environment: "host".into(),
+            relay_session: None,
+        },
+        Some(master.as_raw_fd()),
+    )?;
+    drop(master);
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, "host", "close-session", true).because(termination),
+    );
+    Ok(())
+}
+
+/// Carry the terminal to an environment session on one of the person's
+/// relays: `tilo-relay-environment` runs on the pty handed back, so the app
+/// gets a pty from this broker whatever the target. The answer names the
+/// relay session, which re-attaches to it later.
+fn serve_relay(
+    stream: &UnixStream,
+    writer: &mut UnixStream,
+    store: &Store,
+    req: &ServeRequest,
+) -> anyhow::Result<()> {
+    let ServeRequest::OpenSession {
+        target:
+            Target::Environment {
+                record,
+                location: tilo_environment::Location::Relay { relay },
+            },
+        cols,
+        rows,
+        term,
+        relay_session,
+        ..
+    } = req
+    else {
+        return Ok(());
+    };
+    let denied = |writer: &mut UnixStream, reason: String| {
+        reply(writer, &ServeResponse::Denied { reason }, None)
+    };
+    let identity = crate::relay::identity_paths();
+    let Some(peer) = crate::relay::relays(&identity)
+        .into_iter()
+        .find(|peer| peer.relay == *relay)
+    else {
+        return denied(writer, format!("{relay} is not one of your relays"));
+    };
+    let key = record
+        .clone()
+        .unwrap_or_else(|| tilo_environment::DEFAULT_RECORD.to_owned());
+    let session = match relay_session {
+        Some(session) if crate::relay::is_session_id(session) => {
+            crate::relay::RelaySession::Attach {
+                session: session.clone(),
+            }
+        }
+        Some(_) => return denied(writer, "not a relay session id".into()),
+        None => {
+            // The relay builds the guest from the record as this device
+            // holds it; the default comes into being on first use, as here.
+            let records = Records::at(store.records_root());
+            if let Err(e) = records.resolve(record.as_deref(), &*crate::images::on_this_device()) {
+                return denied(writer, e.to_string());
+            }
+            crate::relay::RelaySession::Open {
+                record: key.clone(),
+            }
+        }
+    };
+    let Some(binary) = crate::relay::bridge_binary() else {
+        return denied(
+            writer,
+            "tilo-relay-environment is not installed, so no relay session can open".into(),
+        );
+    };
+    let Some(identity_root) = crate::relay::identity_root(&identity) else {
+        return denied(writer, "this device has no identity".into());
+    };
+    let (master, slave) = open_pty(*cols, *rows)?;
+    let launch = RelayLaunch {
+        binary: &binary,
+        peer: &peer,
+        session: &session,
+        records_root: store.records_root(),
+        identity_root: &identity_root,
+        term: term.as_deref().unwrap_or("xterm-256color"),
+    };
+    let (child, status, session_id) = match start_relay_bridge(&launch, &slave)? {
+        Ok(started) => started,
+        Err(reason) => return denied(writer, reason),
+    };
+    drop(slave);
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+        &id,
+        &key,
+        "open-relay-session",
+        true,
+    ));
+    reply(
+        writer,
+        &ServeResponse::Session {
+            session: id.clone(),
+            environment: key.clone(),
+            relay_session: Some(session_id),
+        },
+        Some(master.as_raw_fd()),
+    )?;
+    drop(master);
+    adopt_relay_tools(status, store.records_root().to_path_buf());
+    let termination = finish_session(stream, child);
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, &key, "close-relay-session", true)
+            .because(termination),
+    );
+    Ok(())
+}
+
+fn is_relay(target: &Target) -> bool {
+    matches!(
+        target,
+        Target::Environment {
+            location: tilo_environment::Location::Relay { .. },
+            ..
+        }
+    )
+}
+
+fn list_relays() -> ServeResponse {
+    ServeResponse::Relays {
+        relays: crate::relay::relays(&crate::relay::identity_paths()),
+    }
+}
+
+/// What a relay session's bridge is started with.
+struct RelayLaunch<'a> {
+    binary: &'a Path,
+    peer: &'a crate::relay::RelayPeer,
+    session: &'a crate::relay::RelaySession,
+    records_root: &'a Path,
+    identity_root: &'a Path,
+    term: &'a str,
+}
+
+type StartedBridge = (std::process::Child, crate::relay::StatusReader, String);
+
+/// Start `tilo-relay-environment` on `slave` and wait for it to name the
+/// session; the inner error is why it did not open.
+fn start_relay_bridge(
+    launch: &RelayLaunch<'_>,
+    slave: &std::fs::File,
+) -> std::io::Result<Result<StartedBridge, String>> {
+    let (status_read, status_write) = crate::relay::status_pipe()?;
+    let mut cmd = crate::relay::bridge_command(
+        launch.binary,
+        launch.peer,
+        launch.session,
+        launch.records_root,
+        launch.identity_root,
+        launch.term,
+    );
+    let write_fd = status_write.as_raw_fd();
+    // SAFETY: `pre_exec` runs between fork and exec; it only calls dup2.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(move || crate::relay::install_status_fd(write_fd));
+    }
+    let mut child = spawn_on_pty(cmd, slave)?;
+    drop(status_write);
+    let mut status = crate::relay::StatusReader::new(status_read);
+    match status.next(Some(crate::relay::OPEN_PATIENCE)) {
+        Some(crate::relay::BridgeStatus::Session { session, .. }) => {
+            Ok(Ok((child, status, session)))
+        }
+        other => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Ok(Err(match other {
+                Some(crate::relay::BridgeStatus::Ended {
+                    reason: Some(reason),
+                    ..
+                }) => reason,
+                _ => format!("the session on {} did not open", launch.peer.label),
+            }))
+        }
+    }
+}
+
+/// Tools the relay builds for a session become the record's, as a `pkg
+/// install` on this device would.
+fn adopt_relay_tools(mut status: crate::relay::StatusReader, records_root: PathBuf) {
+    std::thread::spawn(move || {
+        let records = Records::at(records_root);
+        while let Some(line) = status.next(None) {
+            if let crate::relay::BridgeStatus::ToolBuilt {
+                record,
+                packages,
+                images,
+            } = line
+            {
+                for (arch, image) in images {
+                    let _ = records.apply(
+                        &record,
+                        Environment::ADD_TOOL.with((packages.clone(), arch, image)),
+                    );
+                }
+            }
+        }
+    });
+}
+
+/// Wait for whichever side of a served session ends first and tear the
+/// other down; returns the line the audit log records.
+///
+/// The request connection is the lifetime capability for the session, in
+/// both directions. When Terminal closes (or crashes) its end, this tears
+/// down exactly the child it created: dropping the pty master is not enough
+/// because a PID-namespace init may survive a terminal hangup. When the
+/// child exits first, it is reaped at once and the connection closed, which
+/// is how Terminal tells a finished session from the hand-off window in which
+/// its PTY master also reports `EIO`.
+fn finish_session(stream: &UnixStream, mut child: std::process::Child) -> String {
+    match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
             let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -665,11 +1249,7 @@ fn serve_one(stream: &UnixStream, store: &Store, host_root: &Path) -> anyhow::Re
             },
             Err(error) => format!("status failed: {error}"),
         },
-    };
-    AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new(&id, &record, "close-session", true).because(termination),
-    );
-    Ok(())
+    }
 }
 
 /// Which side ended a hosted session first.
@@ -752,10 +1332,6 @@ fn spawn_attached(
     launch: &Launch<'_>,
     slave: &std::fs::File,
 ) -> std::io::Result<std::process::Child> {
-    use std::os::fd::AsRawFd;
-    use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
-
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("run");
@@ -768,7 +1344,23 @@ fn spawn_attached(
     }
     cmd.env(crate::store::STORE_ENV, launch.store.root());
     cmd.env(crate::store::RECORDS_ENV, launch.store.records_root());
+    if let Some(root) = launch.store.grant_root() {
+        cmd.env(crate::store::GRANT_ROOT_ENV, root);
+    }
     cmd.env("TERM", launch.term);
+    spawn_on_pty(cmd, slave)
+}
+
+/// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
+/// its controlling terminal.
+fn spawn_on_pty(
+    mut cmd: std::process::Command,
+    slave: &std::fs::File,
+) -> std::io::Result<std::process::Child> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
     cmd.stderr(Stdio::from(slave.try_clone()?));
@@ -892,6 +1484,8 @@ mod tests {
             rows: 24,
             term: None,
             command: Vec::new(),
+            requested_by: crate::host::RequestedBy::Person,
+            relay_session: None,
         }
     }
 
@@ -900,14 +1494,46 @@ mod tests {
         assert_eq!(decide_serve(&open(Target::default_environment())), Ok(None));
         assert_eq!(
             decide_serve(&open(Target::Environment {
-                record: Some("work".into())
+                record: Some("work".into()),
+                location: tilo_environment::Location::ThisDevice,
             })),
             Ok(Some("work".into()))
         );
         let err = decide_serve(&open(Target::Host)).unwrap_err();
         assert!(err.starts_with("not available"), "{err}");
+
+        // The host target says when an agent asked for it; leaving it out is
+        // the person.
+        let host: ServeRequest = serde_json::from_str(
+            r#"{"op":"open-session","target":{"kind":"host"},"requested_by":"agent"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            host,
+            ServeRequest::OpenSession {
+                target: Target::Host,
+                requested_by: crate::host::RequestedBy::Agent,
+                ..
+            }
+        ));
+        assert!(matches!(
+            open(Target::Host),
+            ServeRequest::OpenSession {
+                requested_by: crate::host::RequestedBy::Person,
+                ..
+            }
+        ));
+        let refused: ServeResponse =
+            serde_json::from_str(r#"{"result":"host-not-allowed","reason":"ask"}"#).unwrap();
+        assert_eq!(
+            refused,
+            ServeResponse::HostNotAllowed {
+                reason: "ask".into()
+            }
+        );
         let err = decide_serve(&open(Target::Environment {
             record: Some("../../etc".into()),
+            location: tilo_environment::Location::ThisDevice,
         }))
         .unwrap_err();
         assert!(err.contains("does not name"), "{err}");
@@ -976,6 +1602,104 @@ mod tests {
             Arc::new(FixtureImages(images)),
             Arc::new(tilo_environment::NoToolBuilder),
         )
+    }
+
+    #[test]
+    fn the_environment_directory_lists_creates_and_renames_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        let records = Records::at(store.records_root());
+        let mut default = Environment::new(
+            tilo_environment::DEFAULT_NAME,
+            "2026.10",
+            tilo_environment::host_arch(),
+            &PackageId::from_bytes([1; 32]),
+        );
+        default.tools.clear();
+        records.create(DEFAULT_RECORD, &default).unwrap();
+
+        let listed = directory(&ServeRequest::ListEnvironments, &store).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].key, DEFAULT_RECORD);
+
+        let created = directory(
+            &ServeRequest::CreateEnvironment {
+                name: " Writing ".into(),
+            },
+            &store,
+        )
+        .unwrap();
+        let writing = created
+            .iter()
+            .find(|entry| entry.key != DEFAULT_RECORD)
+            .expect("the new environment is listed");
+        assert_eq!(writing.name, "Writing");
+        assert!(writing.tools.is_empty() && writing.grants.is_empty());
+        assert_eq!(
+            records.load(&writing.key).unwrap().unwrap().runtime,
+            default.runtime,
+            "a new environment starts on the default environment's runtime"
+        );
+
+        let renamed = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "rename".into(),
+                args: serde_json::json!({"name": "Prose"}),
+            },
+            &store,
+        )
+        .unwrap();
+        assert!(renamed.iter().any(|entry| entry.name == "Prose"));
+
+        let granted_dir = dir.path().join("src");
+        std::fs::create_dir_all(&granted_dir).unwrap();
+        let granted = directory(
+            &ServeRequest::EnvironmentAction {
+                record: writing.key.clone(),
+                action: "grant-dir".into(),
+                args: serde_json::json!({"path": granted_dir.display().to_string(), "write": true}),
+            },
+            &store,
+        )
+        .unwrap();
+        let entry = granted.iter().find(|e| e.key == writing.key).unwrap();
+        assert_eq!(
+            entry.grants,
+            vec![(granted_dir.display().to_string(), true)]
+        );
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "grant-dir".into(),
+                    args: serde_json::json!({"path": "/usr", "write": true}),
+                },
+                &store,
+            )
+            .is_err(),
+            "the record's own rules still refuse what the guest builds itself"
+        );
+        assert!(
+            directory(
+                &ServeRequest::EnvironmentAction {
+                    record: writing.key.clone(),
+                    action: "set-runtime".into(),
+                    args: serde_json::Value::Null,
+                },
+                &store,
+            )
+            .is_err(),
+            "only the actions an app may ask for here are applied"
+        );
+        assert!(
+            directory(
+                &ServeRequest::CreateEnvironment { name: "  ".into() },
+                &store
+            )
+            .is_err()
+        );
     }
 
     #[test]

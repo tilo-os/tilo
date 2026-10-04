@@ -75,20 +75,18 @@ pub struct WebArgs {
     /// file; then start as usual.
     #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
     pub install_token_file: Option<PathBuf>,
-    /// The device key (hex) of the session beside this node: its root
-    /// certifies it with the node's certificate, as one of the person's
-    /// devices, and the certificate is written to `--session-cert-out`.
-    #[arg(
-        long = "session-device",
-        value_name = "HEX",
-        requires_all = ["install_token_file", "session_cert_out"]
-    )]
+    /// The device key (hex) of the session beside this node, the shell that
+    /// runs the person's apps: pages learn it on `/node` to open apps there.
+    /// While the node waits for its certificate, its root certifies the
+    /// session with it, as one of the person's devices, and the certificate
+    /// is written to `--session-cert-out`.
+    #[arg(long = "session-device", value_name = "HEX", requires = "web")]
     pub session_device: Option<String>,
     /// Where the session's certificate is written (canonical encoding).
     #[arg(
         long = "session-cert-out",
         value_name = "PATH",
-        requires = "session_device"
+        requires_all = ["session_device", "install_token_file"]
     )]
     pub session_cert_out: Option<PathBuf>,
     #[cfg(feature = "agents")]
@@ -277,12 +275,9 @@ pub async fn await_certificate(
             "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
         })
     );
-    let session = match (&args.session_device, &args.session_cert_out) {
-        (Some(device), Some(cert_out)) => Some(tilo_relay::web::install::SessionDevice {
-            public_key: hex::decode(device.trim())
-                .ok()
-                .and_then(|bytes| bytes.try_into().ok())
-                .context("--session-device must be a 32-byte hex public key")?,
+    let session = match (session_device(args)?, &args.session_cert_out) {
+        (Some(public_key), Some(cert_out)) => Some(tilo_relay::web::install::SessionDevice {
+            public_key,
             cert_out: cert_out.clone(),
         }),
         _ => None,
@@ -302,6 +297,19 @@ pub async fn await_certificate(
     Ok(())
 }
 
+/// `--session-device`, decoded.
+fn session_device(args: &WebArgs) -> anyhow::Result<Option<[u8; 32]>> {
+    args.session_device
+        .as_deref()
+        .map(|device| {
+            hex::decode(device.trim())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .context("--session-device must be a 32-byte hex public key")
+        })
+        .transpose()
+}
+
 pub async fn serve(
     relay: &Relay,
     args: &WebArgs,
@@ -310,6 +318,9 @@ pub async fn serve(
     let Some(listen) = args.web else {
         return Ok(None);
     };
+    if let Some(device) = session_device(args)? {
+        relay.set_node_session(device);
+    }
     let web = relay
         .serve_web(web_config(args, listen, state_root))
         .await

@@ -2689,8 +2689,8 @@ mod tests {
             use ui::widget::Widget;
 
             let mut app = crate::app::SheetsApp::new();
-            app.shots_mode();
             let mut doc = AutoCommit::new();
+            crate::sample::write(&mut doc);
             app.sync(&mut doc, &ROOT);
             let sheet_id = SheetsDoc::sheet_resource_id(&doc, 0).expect("seeded sheet identity");
             let id = cell_resource_id(&sheet_id, 10, 100_000);

@@ -918,6 +918,11 @@ pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
         LiveFrame::Ops(OpsFrame::End { record }) => JsDecoded::PreviewEnd {
             record: record_to_js(record),
         },
+        LiveFrame::Ops(OpsFrame::Semantic { .. }) => {
+            return Err(JsError::new(
+                "semantic activity requires an authenticated record consumer",
+            ));
+        }
     };
     serde_json::to_string(&decoded).map_err(js_error)
 }
@@ -1471,6 +1476,28 @@ impl WasmPeer {
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)?;
         serde_json::to_string(&answer).map_err(js_error)
+    }
+
+    /// The device (hex) of the session a node runs beside its relay, the
+    /// one that runs the person's apps there; `undefined` from a host that
+    /// runs none.
+    ///
+    /// # Errors
+    ///
+    /// Rejects without a connection.
+    #[wasm_bindgen(js_name = nodeSession)]
+    pub async fn node_session(&self) -> Result<Option<String>, JsError> {
+        let (reply, receipt) = tokio::sync::oneshot::channel();
+        self.handle
+            .node_session_then(Box::new(move |answer| {
+                let _ = reply.send(answer);
+            }))
+            .map_err(js_error)?;
+        Ok(receipt
+            .await
+            .map_err(|_| js_error("peer session closed"))?
+            .map_err(js_error)?
+            .map(hex::encode))
     }
 
     /// Pre-admit whoever redeems the invitation this issues and presents

@@ -17,6 +17,7 @@ ROOT = TOOLS.parent
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 
+from ci import runner_labels
 from ci import workspace_graph as ci_select
 
 
@@ -34,6 +35,7 @@ BINARY_INPUTS = {
     "os/dev/cache-github-assets.sh",
     "tools/ci/check-build-env.sh",
     "tools/ci/resolve_builder.py",
+    "tools/ci/images.toml",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
@@ -51,6 +53,7 @@ VERIFICATION_INPUTS = {
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
     "tools/ci/workspace_graph.py",
+    "tools/ci/runner_labels.py",
     "tools/apps/app_channel_manifest.py",
     "tools/apps/canonical_app_verifier.py",
     "tools/apps/create_app_receipt.py",
@@ -96,10 +99,8 @@ def architecture_matrix(
         "include": [
             {
                 "arch": architecture,
-                "runner": "runner" if architecture == "x86_64" else "runner-arm64",
-                "build_runner": (
-                    "runner-large" if architecture == "x86_64" else "runner-large-arm64"
-                ),
+                "runner": runner_labels.NATIVE[architecture],
+                "build_runner": runner_labels.LARGE[architecture],
             }
             for architecture in architectures
         ]

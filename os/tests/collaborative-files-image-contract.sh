@@ -156,8 +156,6 @@ require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "Service=tilo-fs-rec
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "SocketMode=0600"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
-require_text /usr/share/tilo/selinux/tilo-base.cil "tilo_session_unit_file_t"
-require_text /usr/share/tilo/selinux/tilo-base.cil "(allow xdm_t tilo_session_unit_file_t (service (start stop status)))"
 require_text /usr/share/tilo/selinux/tilo-base.cil "(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))"
 require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-session --backend drm"
 require_line /usr/share/wayland-sessions/shell-peer-sync.desktop "Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync"
@@ -330,6 +328,18 @@ if [ "$mode" = runtime ]; then
   done
   [ -S "$user_runtime/tilo/services/tilo-fs.sock" ] || die "recipient service socket is absent"
   [ -d "$HOME/.cache/tilo/received-files" ] || die "recipient state root is absent"
+
+  # A listening socket proves nothing about identity: the recipient idles
+  # when its sandbox cannot read the device key. Start it and require that it
+  # loaded the certified identity the chain above verified.
+  systemctl --user start tilo-fs-recipient.service \
+    || die "recipient service does not start"
+  await_user_active tilo-fs-recipient.service
+  sleep 2
+  if journalctl --user -b -u tilo-fs-recipient.service --no-pager -q \
+    | grep -F 'no certified mount identity'; then
+    die "recipient service cannot load the device identity"
+  fi
 
   # SSH does not inherit the graphical user's display variables. Import only
   # the display and bus values from that same user's systemd manager. The

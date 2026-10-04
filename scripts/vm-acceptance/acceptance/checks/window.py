@@ -296,6 +296,78 @@ def touch(ctx, res):
                    f"tab bar {res.metrics['scroll_tab_bar']}, window {res.metrics['scroll_content']})")
 
 
+def _pointer_kind(st) -> str:
+    return (st["chrome"].get("pointer") or {}).get("kind", "")
+
+
+def _app_groups(st, app_id: str) -> list:
+    return [g for g in core.all_groups(st)
+            if any((t.get("tile") or {}).get("Foreign", {}).get("app_id") == app_id
+                   for t in g["tabs"])]
+
+
+@check("W18", AREA, "Touch is not the mouse: a tap on a launchpad card opens its app, the cursor "
+                    "stays hidden while touch is in use and returns with the mouse")
+def touch_first(ctx, res):
+    ctx.reset()
+    # A visible mouse cursor first, somewhere away from the launchpad cards.
+    ctx.vm.input("move", "8", "300")
+    ctx.wait_state(lambda s: _pointer_kind(s) != "hidden", 5, "a visible cursor after moving the mouse")
+    t = core.target_map(ctx.vm.targets())
+    card = t.get("launchpad:notes")
+    if card is None:
+        raise Unobservable("the empty workspace shows no launchpad:notes target "
+                           f"(targets: {sorted(n for n in t if n.startswith('launchpad'))})")
+    x, y = int(card[0] + card[2] / 2), int(card[1] + card[3] / 2)
+    ctx.vm.input("touch", "tap", str(x), str(y))
+    st = ctx.wait_state(lambda s: _pointer_kind(s) == "hidden", 5,
+                        "the cursor hidden after a touch")
+    res.metrics["pointer_after_tap"] = st["chrome"].get("pointer")
+    st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
+                        f"Notes opened by a tap on its launchpad card at {x},{y}")
+    expect(st["chrome"]["input"]["modality"] == "touch",
+           f"touch is the input in use after a tap ({st['chrome']['input']})")
+    ctx.shot("W18-tapped-card")
+    ctx.vm.input("move", "12", "300")
+    ctx.wait_state(lambda s: _pointer_kind(s) != "hidden", 5, "the cursor back after moving the mouse")
+
+
+@check("W19", AREA, "On-screen keyboard: tapping a text field shows it, tapping its keys types into "
+                    "the field, and typing on the physical keyboard hides it")
+def on_screen_keyboard(ctx, res):
+    ctx.reset()
+    group, _ = ctx.open_app("so.tilo.scratchpad")
+    ctx.settle(2.0)
+    r = _group_rect(ctx, group["id"])
+    # Scratchpad is one multi-line field filling the window under its heading.
+    x, y = int(r[0] + r[2] / 2), int(r[1] + r[3] * 0.65)
+    # The first touch plugs the touchscreen in; with one present the keyboard
+    # service runs in the default automatic mode.
+    ctx.vm.input("touch", "tap", str(x), str(y))
+    ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("connected"), 40,
+                   "the on-screen keyboard service connected once a touchscreen is present")
+    ctx.vm.input("touch", "tap", str(x), str(y))
+    st = ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("shown"), 15,
+                        f"the on-screen keyboard shown after tapping the field at {x},{y}")
+    osk = st["chrome"]["on_screen_keyboard"]
+    res.metrics["keyboard"] = osk["shown"]
+    ctx.shot("W19-keyboard")
+    k = osk["shown"]
+    before = osk.get("commits", 0)
+    # Letter keys fill the middle rows; three taps across the second row.
+    for fx in (0.2, 0.45, 0.7):
+        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
+        ctx.settle(0.4)
+    st = ctx.wait_state(lambda s: (s["chrome"].get("on_screen_keyboard") or {}).get("commits", 0) > before,
+                        10, "text committed into the field by tapping keyboard keys")
+    res.metrics["commits"] = st["chrome"]["on_screen_keyboard"]["commits"] - before
+    expect(_group_rect(ctx, group["id"]) is not None, "the field's window is still open")
+    ctx.shot("W19-typed")
+    ctx.vm.input("type", "x")
+    ctx.wait_state(lambda s: not (s["chrome"].get("on_screen_keyboard") or {}).get("shown"), 10,
+                   "the on-screen keyboard hidden after typing on the physical keyboard")
+
+
 def _strip_scroll(st, sid):
     return next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == sid)
 

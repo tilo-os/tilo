@@ -1,0 +1,24 @@
+# The tool catalog: tool images CI builds for every published env-runtime
+# (.forgejo/workflows/build-env-tools.yml), so `pkg install` of a common
+# tool is a cache hit instead of a build.
+#
+# One tool image per line: the packages it holds, as `pkg install` would be
+# given them.
+#
+# Not here: LibreOffice. Writer, Calc and Impress without weak dependencies
+# are 262 packages and a 1.25 GB image (Java, GTK, Mesa), too large to
+# publish for every runtime; `pkg install` builds it on demand.
+git
+python3
+pandoc
+ffmpeg-free
+ImageMagick
+ripgrep
+jq
+nodejs
+gcc make
+vim-enhanced
+htop
+unzip zip
+rsync
+openssh-clients

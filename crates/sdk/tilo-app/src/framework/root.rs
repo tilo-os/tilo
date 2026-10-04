@@ -9,9 +9,10 @@ use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{Resource, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use ui_core::PresencePayload;
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
-use ui_core::presence::PresenceCtx;
+use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::record::RecordSaveStatus;
 use ui_core::search::{SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
@@ -23,8 +24,11 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
 use super::live::Live;
+use super::rows::{find, join, merge, outside_document};
+use super::scenario::Run;
 use super::stage::Stages;
-use super::view::{Updaters, ViewCx};
+use super::surface::SurfacePublication;
+use super::view::{Bindings, Updaters, ViewCx};
 
 pub(crate) struct ResourceRoot<R: Resource> {
     title: &'static str,
@@ -44,8 +48,12 @@ pub(crate) struct ResourceRoot<R: Resource> {
     write: Option<PermissionScope>,
     stages: Stages,
     feeds: super::history::HistoryFeeds,
+    /// What the view was built for, and the fixtures a capture's views read.
+    run: Run,
     /// The settings the view follows, re-read when their document changes.
     storage: Rc<super::settings::ViewStorage>,
+    /// Edits the views bound to their local state.
+    bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
     effects: Effects<R>,
     content: Element,
@@ -54,6 +62,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's search entries at one live revision, indexed.
     search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
+    /// The view operation types of the nested resources at one live revision.
+    nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
     drawn_theme: Option<Theme>,
     /// Shapes text for `render`, which runs outside a frame.
@@ -155,11 +165,14 @@ impl<R: Resource> ResourceRoot<R> {
             write: None,
             stages: cx.stages,
             feeds: cx.feeds,
+            run: cx.run,
             storage: cx.storage,
+            bindings: cx.bindings,
             effects: cx.effects,
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
+            nested_views: std::cell::RefCell::new(None),
             drawn_theme: None,
             render_text: None,
             past: None,
@@ -179,8 +192,21 @@ impl<R: Resource> ResourceRoot<R> {
     /// Stage a screenshot scenario's view state: every view's
     /// [`on_stage`](super::ViewCx::on_stage) callback runs now, and every
     /// hosted surface stages on its next sync.
-    pub(crate) fn stage(&self, scenario: Option<&str>) {
+    /// Stage the views' state for `scenario`, and answer the collaborators
+    /// the capture shows as the presence frames their windows would send.
+    pub(crate) fn stage(
+        &self,
+        scenario: Option<&str>,
+    ) -> Vec<(String, PresenceKey, PresencePayload)> {
         self.stages.run(scenario);
+        self.run
+            .collaborators()
+            .iter()
+            .map(|(name, at)| {
+                let (key, payload) = at.presence::<R>(self.dispatch.app_id());
+                (name.clone(), key, payload)
+            })
+            .collect()
     }
 
     /// Follow `permissions`: the resource is editable while they grant
@@ -205,6 +231,130 @@ impl<R: Resource> ResourceRoot<R> {
 
     pub(crate) fn live(&self) -> &Live<R> {
         &self.live
+    }
+
+    /// Every hosted surface of this resource in the view, in tree order.
+    fn surfaces(&self, visit: &mut dyn FnMut(&dyn SurfacePublication<R>)) {
+        fn walk<R: Resource>(
+            widget: &dyn Widget,
+            visit: &mut dyn FnMut(&dyn SurfacePublication<R>),
+        ) {
+            if let Some(surface) =
+                ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(widget)
+            {
+                visit(surface);
+            }
+            widget.for_each_child(&mut |child| walk(child, visit));
+        }
+        walk(self.content.as_ref(), visit);
+    }
+
+    /// The resource as published: its own actions and children, the edits
+    /// views and surfaces bound to where the user is, the live rows surfaces
+    /// show, and the framework's operations every app answers.
+    fn publication(&self) -> tilo_actions::Resource {
+        let state = self.live.get();
+        let mut resource =
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &state);
+        let mut bound = self.bindings.declarations(&state);
+        let mut rows = Vec::new();
+        self.surfaces(&mut |surface| {
+            bound.extend(surface.bound_declarations());
+            rows.extend(
+                surface
+                    .live_rows()
+                    .into_iter()
+                    .map(super::LiveRow::into_resource),
+            );
+        });
+        for decl in bound {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == decl.id)
+            {
+                resource = resource.with_action(tilo_resource::declaration_spec(&decl));
+            }
+        }
+        merge(&mut resource.children, rows);
+        for spec in &self.presentation {
+            if spec.kind == tilo_actions::OperationKind::Document {
+                continue;
+            }
+            if resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                continue;
+            }
+            resource = resource.with_action(spec.clone());
+        }
+        if cfg!(not(target_family = "wasm"))
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "render")
+        {
+            resource = resource.with_action(render_spec());
+        }
+        for spec in super::history::specs() {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                resource = resource.with_action(spec);
+            }
+        }
+        for spec in self.effects.specs() {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
+        }
+        resource
+    }
+
+    /// The operation types of the views the resource's nested resources
+    /// publish (the editor of a note's rich-text body): presentations of the
+    /// resource this root has mounted, answered like its own.
+    fn nested_views(&self) -> Rc<HashSet<String>> {
+        fn collect(resources: &[tilo_actions::Resource], views: &mut HashSet<String>) {
+            for resource in resources {
+                views.extend(
+                    resource
+                        .actions
+                        .iter()
+                        .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
+                        .filter_map(|spec| spec.operation_type.clone()),
+                );
+                collect(&resource.children, views);
+            }
+        }
+        let revision = self.live.revision();
+        let mut cached = self.nested_views.borrow_mut();
+        match cached.as_ref() {
+            Some((at, views)) if *at == revision => Rc::clone(views),
+            _ => {
+                let mut views = HashSet::new();
+                collect(&R::children(&self.live.get()), &mut views);
+                let views = Rc::new(views);
+                *cached = Some((revision, Rc::clone(&views)));
+                views
+            }
+        }
+    }
+
+    /// The dispatcher the root's views submit through, which the host drains.
+    pub(crate) fn dispatcher(&self) -> &Dispatcher<R> {
+        &self.dispatch
     }
 
     /// The view as a stored PNG, at `scale` pixels per point.
@@ -272,7 +422,10 @@ impl<R: Resource> ResourceRoot<R> {
         };
         let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        let rgba = offscreen.render(&scene, theme.bg_app);
+        // A new renderer reserves room for a modest scene; a denser view
+        // overflows its first frame, which then comes back blank. Answer
+        // only a frame that kept all of its geometry.
+        let rgba = offscreen.try_render_resilient(&scene, theme.bg_app)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
         let hash = tilo_content::ContentStore::for_app()
@@ -368,14 +521,20 @@ impl SearchProvider for ResourceSearch {
             .into_iter()
             .filter_map(|hit| {
                 let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
-                Some(
-                    SearchResult::new(
+                let result = match &entry.action {
+                    Some(action) => {
+                        SearchResult::for_action(self.name, entry.title.clone(), action)
+                    }
+                    None => SearchResult::new(
                         self.name,
                         entry.title.clone(),
                         entry.anchor.clone().unwrap_or_default(),
-                    )
-                    .with_preview(entry.text.clone())
-                    .with_score(hit.rank.unwrap_or(0)),
+                    ),
+                };
+                Some(
+                    result
+                        .with_preview(entry.text.clone())
+                        .with_score(hit.rank.unwrap_or(0)),
                 )
             })
             .collect()
@@ -397,6 +556,21 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.content.as_mut()
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui_core::taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui_core::taffy::NodeId {
+        let node = self.content.build_layout(taffy, theme, node_map);
+        let content = (
+            std::ptr::from_ref(self.content.as_ref()).cast::<()>(),
+            self.content.concrete_type_name(),
+        );
+        super::surface::stand_in(node_map, node, content, self);
+        node
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -491,6 +665,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 handlers.insert(type_id);
             }
         }
+        handlers.extend(self.nested_views().iter().cloned());
         handlers
     }
 
@@ -538,9 +713,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
         }
-        // View openers from the resource/presentation catalogue (e.g.
-        // `tilo.rich-text.view` editor/compact) are already mounted; accept
-        // them so agents and Ctrl+K can switch without a missing-handler fault.
+        // View openers from the resource/presentation catalogue and from its
+        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
+        // editor/compact) are already mounted; accept them so agents and
+        // Ctrl+K can switch without a missing-handler fault.
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
@@ -550,7 +726,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         let known = R::local_operations()
             .into_iter()
             .chain(self.presentation.iter().cloned())
-            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id));
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
+            || self.nested_views().contains(request.type_id);
         if known {
             Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -595,57 +772,56 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resource =
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &self.live.get());
-        for spec in &self.presentation {
-            if spec.kind == tilo_actions::OperationKind::Document {
-                continue;
+        let mut resource = self.publication();
+        // The content may add live external entities beside the resource,
+        // never a document action: those are the resource's own. A hosted
+        // surface has already admitted what it adds. One naming the resource
+        // joins it rather than publishing it twice.
+        let surface = ui_core::widget::capability::capability::<dyn SurfacePublication<R>>(
+            self.content.as_ref(),
+        )
+        .is_some();
+        let mut extras = Vec::new();
+        for extra in ui_core::resources::resources_for(self.content.as_ref(), participant, doc) {
+            let extra = if surface {
+                extra
+            } else {
+                outside_document(extra)
+            };
+            if extra.id == resource.id {
+                join(&mut resource, extra);
+            } else {
+                extras.push(extra);
             }
-            if resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                continue;
-            }
-            resource = resource.with_action(spec.clone());
-        }
-        if cfg!(not(target_family = "wasm"))
-            && !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == "render")
-        {
-            resource = resource.with_action(render_spec());
-        }
-        for spec in super::history::specs() {
-            if !resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id)
-            {
-                resource = resource.with_action(spec);
-            }
-        }
-        for spec in self.effects.specs() {
-            let shadowed = resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            resource = resource.with_action(spec);
         }
         let mut resources = vec![resource];
-        resources.extend(ui_core::resources::resources_for(
-            self.content.as_ref(),
-            participant,
-            doc,
-        ));
+        resources.append(&mut extras);
         resources
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        ui_core::resources::PublishesResources::resource_for(self, None, doc, id)
+    }
+    /// Resource `id` in the published tree, or one the tree leaves out: a
+    /// child the resource resolves by id, or a live row a surface resolves.
+    fn resource_for(
+        &self,
+        _participant: Option<&tilo_actions::ParticipantId>,
+        _doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        if let Some(published) = find(&[self.publication()], id) {
+            return Some(published);
+        }
+        if let Some(child) = R::child(&self.live.get(), id) {
+            return Some(child);
+        }
+        let mut row = None;
+        self.surfaces(&mut |surface| {
+            if row.is_none() {
+                row = surface.live_row(id).map(super::LiveRow::into_resource);
+            }
+        });
+        row
     }
     fn document_action_result(
         &self,
@@ -677,8 +853,14 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         address: &tilo_actions::ActionAddress,
         result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
+        // The resource itself, or a child its dispatcher edits through it.
+        let ours = address.resource == self.dispatch.resource_id()
+            || address
+                .resource
+                .strip_prefix(R::KIND)
+                .is_some_and(|rest| rest.starts_with('/'));
         if let Err(error) = result
-            && address.resource == self.dispatch.resource_id()
+            && ours
         {
             if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
                 self.dispatch.refuse(&address.action, error.to_string());
@@ -725,5 +907,29 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_search_entry_naming_an_action_is_a_hit_that_invokes_it() {
+        let open = tilo_actions::ActionAddress::new("notes.page:1", "open");
+        let search = ResourceSearch {
+            name: "Notes",
+            indexed: Arc::new(IndexedEntries::new(vec![
+                SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
+                SearchEntry::new("Garden", "roses").anchored("page:2"),
+            ])),
+        };
+        let groceries = search.search("groceries");
+        assert_eq!(groceries.len(), 1);
+        assert_eq!(groceries[0].action_address(), Some(open));
+        let garden = search.search("garden");
+        assert_eq!(garden.len(), 1);
+        assert_eq!(garden[0].action_address(), None);
+        assert_eq!(garden[0].action_id, "page:2");
     }
 }

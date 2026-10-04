@@ -83,6 +83,7 @@ pub mod certification;
 pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
+pub mod fleet;
 pub mod image;
 #[cfg(target_os = "macos")]
 mod keychain;
@@ -119,6 +120,7 @@ pub use enrollment::{
     decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     verify_enrollment_token,
 };
+pub use fleet::{CertifiedFleet, DeviceStanding, FleetError};
 pub use image::{
     IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
     ImageEndorsementError, ImageSigningAuthorization, ImageSigningAuthorizationError,
@@ -250,6 +252,15 @@ impl DeviceIdentity {
             },
         )
     }
+}
+
+/// The enrolled home-peer registry below a device identity root.
+///
+/// It lives in its own device-trust-group directory rather than directly in
+/// the root: the session user records the identity's home peers while
+/// joining it, and the identity root itself stays writable only by root.
+pub fn home_peer_registry_path(identity_root: &std::path::Path) -> std::path::PathBuf {
+    identity_root.join("peers").join("home-peers.json")
 }
 
 #[cfg(test)]

@@ -276,7 +276,7 @@ impl GstState {
     /// Build the pipeline with no source yet. `None` when `GStreamer` cannot
     /// initialise or the sink chain cannot be built, so the engine falls back
     /// to the synthesized backend.
-    pub fn new(acceptance: FrameAcceptance, policy: HwPolicy) -> Option<Self> {
+    pub fn new(acceptance: FrameAcceptance, policy: HwPolicy, audio_output: bool) -> Option<Self> {
         gst::init().ok()?;
         // Pick up plugins a codec-pack merge added (or an unmerge removed)
         // before ranking, so new hardware decoders get their rank too.
@@ -305,7 +305,11 @@ impl GstState {
         // `volume` element: `playbin`'s own volume property re-negotiates the
         // stream, while the element is a plain gain stage that can be moved
         // per-source without disturbing the pipeline.
-        if let Ok(audio_bin) = gst::parse::bin_from_description(
+        // An engine that never plays sound decodes no audio stream and opens
+        // no audio device.
+        if !audio_output {
+            playbin.set_property_from_str("flags", "video+text+deinterlace+soft-colorbalance");
+        } else if let Ok(audio_bin) = gst::parse::bin_from_description(
             "audioconvert ! audioresample ! volume name=tilo_gain ! autoaudiosink name=tilo_asink",
             true,
         ) {

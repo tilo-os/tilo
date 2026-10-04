@@ -33,13 +33,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{
     AccessibilityPrefs, AppearancePrefs, ColorFilter, OnScreenKeyboard, ScreenReaderVoice,
     SwitchKeyPair, SystemPrefs,
 };
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{
+    El, caption, card, choice_row, error_row, rows, setting_row_described, value_row,
+};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -69,21 +71,6 @@ pub const SWITCH_KEYS_KEY: &str = "a11y.switch_keys";
 pub const SWITCH_SCAN_KEY: &str = "a11y.switch_scan";
 pub const READER_RATE_KEY: &str = "a11y.reader_rate";
 pub const READER_VOICE_KEY: &str = "a11y.reader_voice";
-const OSK_PACKAGE_ID: &str = "so.tilo.osk";
-const OSK_PACKAGE_KIND: &str = "service";
-
-pub(crate) fn osk_service_available() -> bool {
-    package_store::list_installed()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| launcher::manifest::read_manifest(&entry.manifest_path).ok())
-        .any(|manifest| {
-            manifest.package_id == OSK_PACKAGE_ID
-                && manifest.kind == OSK_PACKAGE_KIND
-                && manifest.entrypoint.gui_bin().is_some()
-        })
-}
-
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| {
@@ -302,26 +289,25 @@ impl AccessibilityPane {
         reason = "one declarative row list mirroring the visible Typing card"
     )]
     fn build_typing_card(&self) -> Box<dyn Widget> {
-        let osk_row = if osk_service_available() {
-            setting_row_described(
-                &t("a11y-osk"),
-                &t("a11y-osk-desc"),
-                Box::new(
-                    Self::choice(
-                        OnScreenKeyboard::OPTIONS
-                            .iter()
-                            .map(|s| (*s).to_string())
-                            .collect(),
-                        OSK_KEY,
-                        "on-screen-keyboard",
-                    )
-                    .with_id("a11y.on_screen_keyboard")
-                    .with_placeholder(self.access.on_screen_keyboard.label()),
-                ),
-            )
-        } else {
-            value_row(&t("a11y-osk"), &t("a11y-osk-missing"))
-        };
+        // The keyboard ships with every image and the compositor runs it.
+        // A sandboxed Settings cannot read the package catalogue, so it does
+        // not second-guess that; it only records the person's choice.
+        let osk_row = setting_row_described(
+            &t("a11y-osk"),
+            &t("a11y-osk-desc"),
+            Box::new(
+                Self::choice(
+                    OnScreenKeyboard::OPTIONS
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect(),
+                    OSK_KEY,
+                    "on-screen-keyboard",
+                )
+                .with_id("a11y.on_screen_keyboard")
+                .with_placeholder(self.access.on_screen_keyboard.label()),
+            ),
+        );
         card(
             &t("a11y-typing-title"),
             rows(vec![
@@ -469,6 +455,11 @@ impl AccessibilityPane {
                     ),
                 ),
             ]
+        } else if let Some(error) = super::installed_programs_unreadable() {
+            vec![error_row(
+                &t("a11y-screen-reader"),
+                &t_args("settings-programs-error", &[("error", error.into())]),
+            )]
         } else {
             vec![value_row(
                 &t("a11y-screen-reader"),

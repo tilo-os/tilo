@@ -599,6 +599,9 @@ pub struct NotesApp {
     legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
+    /// The framework host's durability state when Notes is hosted as a
+    /// resource surface: the host reports there, not to this widget.
+    hosted_save_status: Option<ui::LocalState<ui::record::RecordSaveStatus>>,
     pub(crate) workspace_lock: Option<advisory_lock::FileLock>,
     /// A host-portal file choice in flight. File access never escapes the
     /// workspace sandbox without an explicit portal grant.
@@ -949,6 +952,7 @@ impl NotesApp {
             workspace_asset_root,
             legacy_read_blocked: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            hosted_save_status: None,
             workspace_lock: None,
             markdown_transfer: None,
             markdown_job: ui::LatestRequest::new(),
@@ -1000,6 +1004,7 @@ impl NotesApp {
             prepared_local_focus: None,
             pending_responsive_view: None,
         };
+        app.main.use_local_actions(app.actions.local());
         app.refresh_link_pages();
         app.main.set_tags(app.selected_tag_chips());
         app.refresh_status();
@@ -1054,8 +1059,19 @@ impl NotesApp {
         let announce = self.status.state().save_status != save_status
             || self.status.state().page_path != path
             || self.status.state().page_count != self.workspace.pages().len();
+        let save_problem = match &self.record_save_status {
+            ui::record::RecordSaveStatus::Failed(reason)
+                if self.shots_save_status.is_none()
+                    && self.legacy_read_blocked.is_none()
+                    && self.legacy_fixture_storage.is_none() =>
+            {
+                Some(reason.clone())
+            }
+            _ => None,
+        };
         self.status.set_state(StatusBarState {
             save_status,
+            save_problem,
             page_path: path,
             page_count: self.workspace.pages().len(),
             word_count,
@@ -1107,7 +1123,9 @@ impl NotesApp {
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
-        let label = if self.built_narrow {
+        let label = if self.status.needs_attention() {
+            self.status.save_detail()
+        } else if self.built_narrow {
             self.status.save_text().to_string()
         } else {
             self.status.bubble_text()
@@ -1124,9 +1142,8 @@ impl NotesApp {
         // Reveal zone: the bottom-right corner band (plus the pill), so nudging
         // the pointer there re-surfaces the status on demand.
         let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
-        let over = self.shots_status
-            || self.status.state().save_status == SaveStatus::Failed
-            || zone.contains(self.last_mouse);
+        let over =
+            self.shots_status || self.status.needs_attention() || zone.contains(self.last_mouse);
         self.status_bubble.set_hover(over, now);
         // The bubble is useful status, but its fade is decorative.  Keep its
         // visibility transition discrete under reduced motion so people never
@@ -1998,10 +2015,24 @@ impl NotesApp {
     }
 
     /// Present the framework's workspace projection.
+    ///
+    /// Which note is open is this person's, not the document's: it stays
+    /// open, and its editor stays bound, while the note exists. Rebinding on
+    /// every edit would put the caret back at the start after each keystroke.
     pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<Workspace>) {
+        let selected = self
+            .workspace
+            .selected()
+            .filter(|page| state.get(*page).is_some());
         self.workspace = (**state).clone();
+        self.workspace.set_selected(selected);
+        if self.bound_page != selected {
+            self.bound_page = None;
+        }
         self.sidebar.sync_from_workspace(&self.workspace);
-        self.bound_page = self.workspace.selected();
+        if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
+            self.main.set_title(Some(page.title.clone()));
+        }
         self.refresh_link_pages();
         self.self_dirty = true;
     }
@@ -2010,10 +2041,29 @@ impl NotesApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
+        save_status: ui::LocalState<ui::record::RecordSaveStatus>,
     ) {
+        self.main.attach_notebook(dispatcher.clone());
         self.actions.attach(dispatcher);
         self.seeded = true;
         self.adopted = true;
+        self.hosted_save_status = Some(save_status);
+        self.follow_hosted_save_status();
+    }
+
+    /// Take the framework host's latest durability report, when hosted.
+    fn follow_hosted_save_status(&mut self) {
+        let Some(status) = self
+            .hosted_save_status
+            .as_ref()
+            .map(|state| state.with(Clone::clone))
+        else {
+            return;
+        };
+        if status != self.record_save_status {
+            self.record_save_status = status;
+            self.refresh_status();
+        }
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
@@ -2169,6 +2219,23 @@ impl NotesApp {
         Ok(())
     }
 
+    /// The published resource `id` a direct affordance acts through. Hosted
+    /// by the framework, the notebook itself is the framework root's door,
+    /// published from the [`Notebook`](crate::resource::Notebook) resource
+    /// over the state it presents; its pages stay this widget's.
+    fn acted_on_resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        use crate::resource::Notebook;
+        use ui::tilo_resource::Resource as _;
+        if self.actions.is_hosted() && id == Notebook::KIND {
+            return Some(ui::tilo_resource::publish::<Notebook>(
+                id,
+                Notebook::LABEL,
+                &self.workspace,
+            ));
+        }
+        ui::resources::resource(self, doc, id)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one flat dispatch over every canonical Notes event kind"
@@ -2247,7 +2314,8 @@ impl NotesApp {
             _ => None,
         };
         if let Some((resource_id, action_id)) = resource_action {
-            let resource = ui::resources::resource(self, doc, &resource_id)
+            let resource = self
+                .acted_on_resource(doc, &resource_id)
                 .ok_or("page action resource no longer exists")?;
             ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
         }
@@ -3794,7 +3862,7 @@ impl NotesApp {
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[doc(hidden)]
     #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
+    pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -4393,6 +4461,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.follow_hosted_save_status();
         let (state, path) = ui::doc::document(state, path);
         self.refresh_canonical_assets(state);
         if self.legacy_fixture_storage.is_none() {
@@ -4844,7 +4913,11 @@ impl Widget for NotesApp {
         children.push(
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
-                .with_description(self.status.right_text())
+                .with_description(if self.status.needs_attention() {
+                    self.status.save_detail()
+                } else {
+                    self.status.right_text()
+                })
                 .with_live(ui::a11y::Politeness::Polite)
                 .with_hashed_key("notes.save-status"),
         );
@@ -5072,19 +5145,16 @@ impl ui::widget::controls::ActionControls for NotesApp {
 }
 
 impl ui::undo::CommittedActions for NotesApp {
-    /// Hand the host the heads captured before a sidebar affordance dispatched
-    /// its page-tree action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
+    /// Hand the host the heads captured before an affordance or the body
+    /// editor dispatched through the local action host, so it records one
+    /// undo boundary for it; typing a word stays one step. Rising-edge:
+    /// cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the page's editor; everything else
-        // through the app's own host. One event does one or the other.
-        let body = ui::undo::CommittedActions::take_committed_action(self.main.body_editor_mut());
-        let notes = self.actions.take_committed();
-        body.or(notes)
+        self.actions.take_committed()
     }
     /// Typing a word in a note is one undo step.
     fn keeps_undo_step_open(&self) -> bool {
-        self.main.keeps_undo_step_open()
+        self.actions.keeps_step_open()
     }
 }
 
@@ -6426,8 +6496,7 @@ mod tests {
             app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
             let from_button = app
                 .last_dispatched_for_test()
-                .expect("the sidebar delete dispatched an action")
-                .clone();
+                .expect("the sidebar delete dispatched an action");
 
             assert_eq!(from_palette.type_id, from_button.type_id);
             assert_eq!(
@@ -7514,6 +7583,34 @@ mod tests {
                 .map(crate::actions::InlineMarkSpan::from_ui)
                 .collect::<Vec<_>>();
             assert_eq!(restored, marks);
+        }
+
+        eprintln!("phase rebinding_the_open_note_keeps_the_caret_where_it_was");
+        {
+            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+            let (index, block, end) = {
+                let editor = app.main.editor();
+                let index = editor.blocks().len().saturating_sub(1);
+                let block = &editor.blocks()[index];
+                (index, block.id.clone(), block.text().len())
+            };
+            assert!(end > 0);
+            app.main
+                .editor_mut()
+                .focus_block(index, ui::widget::CursorPlacement::End);
+            app.bound_page = None;
+            app.sync(&mut state.doc, &state.root);
+            let editor = app.main.editor();
+            let focused = editor
+                .focused_index()
+                .and_then(|focused| editor.blocks().get(focused))
+                .expect("the rebound editor keeps a focused block");
+            assert_eq!(focused.id, block, "the caret stays in its block");
+            assert_eq!(
+                focused.line.cursor_pos(),
+                end,
+                "the next letter is typed after the last one, not at the start"
+            );
         }
 
         eprintln!("phase mark_only_dirty_edge_dispatches_the_canonical_action");

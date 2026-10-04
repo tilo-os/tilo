@@ -40,7 +40,9 @@ members = [
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
+    "crates/browser/tilo-browser-compute",
     "crates/browser/tilo-browser-peer",
+    "crates/browser/paint-stream",
     "crates/hosting/tilo-room-service",
     "crates/hosting/tilo-moq",
     "apps/hot-reload-demo",
@@ -148,6 +150,7 @@ members = [
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
     "crates/dev/test-env",
+    "crates/dev/test-app-registry",
     "crates/dev/test-http",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
@@ -185,6 +188,7 @@ members = [
     "crates/packaging/app-cli",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
+    "crates/packaging/oci-images",
     "crates/packaging/cli-shim",
     "crates/packaging/install",
     "crates/packaging/installed-apps",
@@ -223,6 +227,7 @@ members = [
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-location",
+    "crates/platform/tilo-image-codec",
     "crates/platform/tilo-media",
     "crates/platform/tilo-net",
     "crates/platform/tilo-host-search",
@@ -237,6 +242,9 @@ members = [
 
     # Runtime
     "crates/runtime/cli",
+    "crates/runtime/legacy-agent",
+    "crates/runtime/legacy-agent-protocol",
+    "crates/runtime/legacy-vm",
     "crates/runtime/runtime",
     "crates/runtime/runtime-collab",
     "crates/runtime/runtime-connected",
@@ -251,7 +259,9 @@ members = [
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
     "crates/runtime/environment",
+    "crates/runtime/egress",
     "crates/runtime/ush",
+    "crates/runtime/env-tools",
 
     # Session
     "crates/session/console-control",
@@ -288,6 +298,7 @@ members = [
     "crates/system/fs-native",
     "crates/system/host-fs",
     "crates/system/host-info",
+    "crates/system/libvirt-domain",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
@@ -791,7 +802,11 @@ opt-level = 3
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, so a process can contain a helper that fails: the compositor
+# restarts its collaboration broker rather than end the session. Every other
+# panic still aborts the process: tilo-rt installs a hook that aborts outside
+# `tilo_rt::panic_boundary::isolate` (see that module).
+panic = "unwind"
 strip = "symbols"
 overflow-checks = false
 debug = "line-tables-only"
@@ -806,6 +821,7 @@ incremental = false
 [profile.wasm-release]
 inherits = "release"
 opt-level = 3
+panic = "abort"
 debug = false
 
 # Thin-app profile: release settings minus those incompatible with dynamic SDK

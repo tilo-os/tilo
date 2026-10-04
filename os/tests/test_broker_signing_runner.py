@@ -12,6 +12,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'dev'))
 import broker_signing_runner as b
 
+OPERATOR = {'local_user': 'operator', 'kube_context': 'operator@broker.example'}
+
 
 def binding():
     return {'schema': 1, 'cluster': 'aws-us-west-2', 'namespace': 'test',
@@ -28,8 +30,8 @@ class BrokerTests(unittest.TestCase):
             unpinned = binding()
             unpinned.pop('cluster')
             with self.assertRaisesRegex(ValueError, 'pinned broker target'):
-                b.BrokerRunner(unpinned)
-            runner = b.BrokerRunner(binding())
+                b.BrokerRunner(unpinned, **OPERATOR)
+            runner = b.BrokerRunner(binding(), **OPERATOR)
             client = b.transport.Transport(b.CONTEXT, binding(), runner)
             valid = client.exec_prefix() + ['docker', 'exec', '-i', 'c'*64, '/usr/bin/python3',
                 '/work/helpers/os/dev/stage-finalization-worker.py', 'receive']
@@ -50,7 +52,7 @@ class BrokerTests(unittest.TestCase):
                     sink.write(json.dumps({'status': {'token': 'k8s-aws-v1.' + argv[argv.index('--region') + 1]}}).encode())
                     return 42
                 header = json.loads(source.readline())
-                self.assertIn('--context=admin@tupo-production', argv)
+                self.assertIn('--context=operator@broker.example', argv)
                 data = source.read()
                 events.append((header,data))
                 self.assertEqual(set(header['auth']), {'aws-us-west-2'})
@@ -59,7 +61,7 @@ class BrokerTests(unittest.TestCase):
                 self.assertEqual(header['input_bytes'], len(data))
                 sink.write(b'public reply')
                 return 12
-            runner = b.BrokerRunner(binding(), process=process)
+            runner = b.BrokerRunner(binding(), process=process, **OPERATOR)
             client = b.transport.Transport(b.CONTEXT, binding(), runner)
             argv = client.exec_prefix()+['docker','exec','-i','c'*64,'/usr/bin/python3',
                 '/work/helpers/os/dev/stage-finalization-worker.py','receive']

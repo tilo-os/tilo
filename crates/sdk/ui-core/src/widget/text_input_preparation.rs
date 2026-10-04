@@ -39,7 +39,7 @@ impl Preparation {
                 .filter(|text| text.as_ref() == input.text)
                 .cloned()
                 .unwrap_or_else(|| Arc::from(input.text.as_str())),
-            preedit: input.preedit.clone(),
+            preedit: input.core.preedit().to_owned(),
             composition_caret: Self::composition_caret(input),
             style: style.clone(),
             width,
@@ -55,7 +55,7 @@ impl Preparation {
                 crate::text_render::Hyphenation::Custom(_)
             )
             && self.text.as_ref() == input.text
-            && self.preedit == input.preedit
+            && self.preedit == input.core.preedit()
             && self.composition_caret == Self::composition_caret(input)
             && self.style == *style
             // Exact finite bit identity is conservative for wrapping. Unknown
@@ -76,7 +76,10 @@ impl Preparation {
     }
 
     fn composition_caret(input: &TextInput) -> Option<(usize, Option<(usize, usize)>)> {
-        (!input.preedit.is_empty()).then_some((input.cursor_pos, input.preedit_cursor))
+        input
+            .core
+            .has_preedit()
+            .then_some((input.core.caret(), input.core.preedit_cursor()))
     }
 
     fn syntax_colors(theme: &Theme) -> SyntaxColors {

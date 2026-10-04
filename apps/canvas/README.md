@@ -1,10 +1,10 @@
 # Canvas
 
-Vector drawing and painting in real media, as fluent for an agent as for a
-person.
+Vector drawing, painting in real media and photo editing, as fluent for an
+agent as for a person.
 
-An artwork is layers of marks: shapes, paths, text and brush strokes, each a
-vector object with a stable id. A plain layer draws its marks as vector art.
+An artwork is layers of marks: shapes, paths, text, brush strokes and
+pictures, each an object with a stable id. A plain layer draws its marks as vector art.
 A layer with a medium (`oil`, `watercolour` and their presets, or one saved in
 the artwork) paints them through `tilo-wet-media`, re-simulated from the marks
 on every machine, so the painting syncs, merges and undoes as data.
@@ -16,17 +16,29 @@ everything an agent, a script or a screen reader does:
 
 | Action | What it does |
 | --- | --- |
-| `paint` | a passage of brush strokes in one step |
-| `draw` | shapes (rect, ellipse, polygon, line, SVG path, text, stroke) |
-| `edit-marks` | recolour, move, scale, rotate or re-layer marks by id |
-| `remove-marks`, `arrange` | remove, restack |
+| `paint` | a passage of brush strokes in one step, with a brush preset or the eraser |
+| `draw` | shapes (rect, ellipse, polygon, line, SVG path, text, stroke, image) |
+| `edit-marks` | recolour, move, scale, rotate, flip or re-layer marks by id; re-brush, smooth, simplify, extend, split and merge strokes; crop, straighten and adjust pictures |
+| `remove-marks`, `arrange` | remove (by id, or the strokes a path crosses), restack |
 | `add-layer`, `edit-layer`, `remove-layer` | layers and their media |
 | `select`, `use-selection` | an area: shapes, lasso, marks, magic wand, colour; fill, outline, mask, clear |
 | `combine` | shapes united, subtracted, intersected or excluded into one path |
-| `set-artwork` | title, size, ground texture and colour |
+| `set-artwork` | title, size, ground texture and colour; crop to a region or a mark |
+| `open` | a PNG, JPEG or WebP as a new artwork the size of the picture |
 | `save-medium`, `remove-medium` | media presets saved in the artwork |
 | `look` | a PNG of the artwork or a region, with an optional coordinate grid |
-| `inspect`, `media`, `history`, `export` | what is on it, what it can use, how it got here |
+| `inspect`, `media`, `history`, `export` | what is on it, what it can use, how it got here; PNG, JPEG or WebP at any scale |
+
+On a plain layer a stroke is drawn by its brush preset, worked out from the
+stroke mark alone: `pen` (crisp ink, pressure swells the line), `pencil`
+(grainy, pressure darkens it), `marker` (flat, see-through, overlaps
+darken), `airbrush` (soft spray that builds up), `charcoal` (ragged, catching
+the ground's tooth) and `calligraphy` (a broad nib at the stroke's `angle`).
+A stroke's `params` tune its flow, hardness, spacing, smoothing and taper.
+The `eraser` is a mark too: it clears the paint beneath it on its layer,
+plain or painted, and paint laid after it shows; `remove-marks` with `along`
+takes whole strokes instead. A pen tablet's pressure goes into the stroke's
+points; with a mouse the hand's speed stands in for it.
 
 Lettering uses the fonts Tilo ships (`media` lists them), so it looks the
 same on every machine: any weight between the face's lightest and boldest,
@@ -38,6 +50,29 @@ area and centre of mass) and each letter's box, for balancing icons and
 type by eye. Groups nest (`icons/mail`), and SVG export and import keep
 them, their shadows and text set along a path.
 
+## Pictures
+
+A picture is a mark like any other: placed from a file, a content address or
+a `data:` URI and kept by its content, so it syncs, merges and undoes as
+data. Its crop (fractions of the picture; the picture stays put and the
+frame follows), its straightening (a turn inside the frame, enlarged so no
+corner shows), a flip, opacity, blend and a clip by any mark or group are
+all edits of the mark, never of the pixels.
+
+Adjustments are non-destructive too: exposure, contrast, highlights and
+shadows, saturation and vibrance, hue, temperature and tint, a tone
+curve, black and white, invert, blur, sharpen and vignette. A mark's
+`adjust` grades its picture (or a shape's colours); a layer's grades
+everything on it, after each mark's own, the same way a layer's medium or
+texture changes how its marks look. One pipeline (`adjust.rs`) grades for
+the canvas, `look`, `export` and the thumbnails alike; the canvas grades a
+copy at the resolution it shows, so a slider drags live on a 12-megapixel
+photo, and an export grades the full picture.
+
+A person crops on the canvas (Enter, C or double-click on a picture; the
+turn handle straightens), drags the inspector's sliders with the result
+shown while dragging, and adds a picture from the header: on an empty
+sheet it becomes the artwork, sized to the picture.
 The selection is an area kept with the artwork, like the reference: it
 syncs and undoes, and is never drawn into it. Rectangles, ellipses, lassos,
 path data and marks' shapes select it; the magic wand and colour find it in
@@ -45,8 +80,10 @@ the artwork as the window shows it, every layer kind alike, and resolve to
 plain geometry where the action is authored, so every replica applies the
 same area. Shift adds, Alt subtracts, both intersect; grow, feather and
 invert refine it. What is made of it is ordinary data: a fill or outline is a
-path mark, paint kept inside it is cut to a mark of its shape
-(`clip: "selection"`, and the brush does it while there is a selection), and
+path mark, paint kept inside it carries that area with it (`clip:
+"selection"`, and the brush does it while there is a selection; `inspect`
+shows the box it is kept `inside`, and `edit-marks` with `clip: ""` lets it
+out), and
 `mask`/`clear` draw white or black into the layer's mask. A mask is a layer of
 grey marks (`<layer>-mask`) the layer is shown through, so brushes, shapes and
 selections all edit it; it inverts, switches off and goes with its layer. A

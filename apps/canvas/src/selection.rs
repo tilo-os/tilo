@@ -5,8 +5,8 @@
 //! The selection is kept with the artwork like the reference picture: it
 //! syncs and undoes, and is never drawn into the artwork. What is made from
 //! it is ordinary data: a fill or outline is a path mark, a mask is a layer
-//! of grey marks, a stroke kept inside the selection is cut to a mark of its
-//! shape. Nothing is a pixel buffer.
+//! of grey marks, a stroke kept inside the selection keeps its area. Nothing
+//! is a pixel buffer.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
@@ -96,7 +96,7 @@ fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
                 mark.id
             )));
         }
-        Shape::Stroke { .. } => crate::render::silhouette(&mark.shape),
+        Shape::Stroke { .. } => crate::render::silhouette(mark),
         shape if shape.closed() && filled => shape.path(),
         shape => {
             let width = mark.style.stroke_width.max(1.0);
@@ -335,16 +335,16 @@ impl UseSelection {
     }
 }
 
-/// The ordinary layer `id` names: masks have no mask of their own.
+/// The ordinary layer `id` names, or the one it masks when it names a
+/// mask: a mask is part of its layer, as the layers panel shows it.
 fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, ActionError> {
     let layer = art
         .layer(id)
         .ok_or_else(|| refuse(format!("there is no layer {id:?}")))?;
     if layer.is_mask() {
-        return Err(refuse(format!(
-            "{id:?} is the mask of {:?}; name that layer",
-            layer.mask_of
-        )));
+        return art
+            .layer(&layer.mask_of)
+            .ok_or_else(|| refuse(format!("{id:?} masks {:?}, which is gone", layer.mask_of)));
     }
     Ok(layer)
 }
@@ -436,26 +436,6 @@ pub(crate) fn remove_layer_marks(
         doc::remove(doc, doc::MARKS, &mark.id)?;
     }
     Ok(())
-}
-
-/// The mark strokes and shapes cut to the selection are cut to, on
-/// `layer`: one of the selection's shape that draws nothing itself, made
-/// once per shape and layer. Its id.
-pub(crate) fn selection_cut(
-    doc: &mut Doc,
-    art: &Artwork,
-    layer: &str,
-) -> Result<String, ActionError> {
-    let (shape, _) = selected_shape(art)?;
-    let id = derived_id("cut", &(&shape, layer), 0);
-    if art.mark(&id).is_none() {
-        let bottom = art.marks_of(layer).map(|mark| mark.order.as_str()).min();
-        let mut cut = placed(id.clone(), "Selection".into(), shape, Style::default());
-        layer.clone_into(&mut cut.layer);
-        cut.order = order::between(None, bottom);
-        doc::write_mark(doc, &cut)?;
-    }
-    Ok(id)
 }
 
 impl Combine {

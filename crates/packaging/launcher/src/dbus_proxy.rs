@@ -159,6 +159,14 @@ pub fn proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
     ))
 }
 
+/// Host-side path of the per-launcher system-bus proxy socket, for the
+/// packages [`crate::system_authority`] grants it.
+pub fn system_proxy_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
+    PathBuf::from(format!(
+        "/run/user/{uid}/tilo/dbus-proxy/{launcher_pid}-system.sock"
+    ))
+}
+
 /// In-sandbox bus path, matching Flatpak's convention: the app looks
 /// for `$DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus`.
 pub fn sandbox_bus_path(uid: u32) -> PathBuf {

@@ -48,7 +48,7 @@ fn an_early_seek_under_load_always_produces_a_picture() {
             std::thread::spawn(move || {
                 let mut stalls = Vec::new();
                 for open in 0..OPENS {
-                    let mut e = MediaEngine::with_config(EngineConfig::default().silent());
+                    let mut e = MediaEngine::with_config(EngineConfig::default().frames_only());
                     e.open(fixture_source());
                     let target = if (w + open) % 2 == 0 { 5_000 } else { 1_000 };
                     if let Err(error) = e.seek_and_wait(target, PER_OPEN) {

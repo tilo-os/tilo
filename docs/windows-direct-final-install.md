@@ -165,10 +165,10 @@ installed target UKI and ARM64 EFI loader from the source FAT32 ESP. The
 final readback emits `final_esp_partuuid`, `loader_path`, and `loader_sha256`
 for the guarded BootNext helper to verify against the physical ESP.
 
-On this Windows ARM64 host, Cosign runs in Fedora WSL. Pass
+On a Windows ARM64 host, Cosign can run in Fedora WSL. Pass
 `--cosign-command-json cosign-runner.json` to both `receipt` and `execute`,
 where the JSON is an argv array such as
-`["wsl.exe","-d","FedoraLinux-42","--exec","/home/xemmerling/.local/bin/cosign"]`.
+`["wsl.exe","-d","FedoraLinux-42","--exec","/home/you/.local/bin/cosign"]`.
 Also pass `--cosign-key-arg /mnt/c/path/to/cosign.pub` while `--verify-key`
 continues to name the same native Windows file for SHA256 binding. The
 WSL key path must be the exact `/mnt/<drive>/...` translation of that

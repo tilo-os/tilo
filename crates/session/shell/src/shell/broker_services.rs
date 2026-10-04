@@ -757,7 +757,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
             tilo_actions::EffectReceiptStatus::Succeeded,
         );
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         Ok(())
     }
@@ -1006,7 +1006,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             tilo_actions::EffectReceiptStatus::Succeeded,
         );
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         Some(id)
     }
@@ -1024,7 +1024,7 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
         if workspace.revoke_capability(capability) {
             tree.doc_revoke_capability(workspace_id, capability);
             tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-            tree.flush_to_disk();
+            tree.queue_save();
         }
     }
 }
@@ -1151,6 +1151,8 @@ pub fn native_services(
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
         launchable_catalogue: launchable_catalogue_path(),
+        // The session's records, installed before any broker starts.
+        settings: settings_store::installed_source(),
         ..Default::default()
     }
 }

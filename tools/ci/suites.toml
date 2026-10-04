@@ -48,6 +48,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
@@ -55,6 +56,7 @@ suites = [
   "os/tests/disk_image_user_labels.sh",
   "os/tests/rockchip_boot_gap.sh",
   "os/tests/rockchip_loader_test.py",
+  "os/tests/disk_sectors_test.py",
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
@@ -92,6 +94,7 @@ suites = [
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
+  "os/tests/test_cargo_freshness.py",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
@@ -200,6 +203,14 @@ name = "no-cisco-openh264"
 # finished-rootfs gate, and the CI/developer environments that alone may carry it.
 inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
 suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
+name = "mount-source-cache-keys"
+# A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
+# the kernel, a toolchain) keys its layer on that image's reference, so a local
+# Buildah build never reuses a layer installed from a previous snapshot.
+inputs = ["os/"]
+suites = ["os/tests/test_mount_source_cache_keys.py"]
 
 [[group]]
 name = "dev-feature-targets"
@@ -399,6 +410,16 @@ suites = [
 ]
 
 [[group]]
+name = "browser-compute-web"
+inputs = ["crates/browser/tilo-browser-compute/", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/dev/tilo-app-cli/src/targets/web.rs"]
+suites = [
+  "crates/browser/tilo-browser-compute/web/compute-domains.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/artifact.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/stage.test.mjs",
+  "crates/browser/tilo-browser-compute/scripts/test_packaging.py",
+]
+
+[[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
@@ -414,8 +435,11 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
@@ -466,15 +490,18 @@ package = "tilo-ui"
 # The design and spacing audits ratchet every app and shell source file; the
 # launcher audit reads each app's main.rs and the framework launcher.
 # Typography visual regression #[path]-includes the shared gallery showcase
-# builder that lives with the ui-examples scenarios.
+# builder that lives with the ui-examples scenarios. The paint stream's tests
+# draw the layout snapshots and screenshot recorded for tilo-paint-stream.
 inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
+  "crates/browser/paint-stream/tests/fixtures/",
 ]
 readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
+  "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/tests/design_token_audit.rs",
   "crates/sdk/ui-core/tests/spacing_token_audit.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
@@ -513,8 +540,13 @@ readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
-inputs = ["os/components.toml", "os/scripts/install-components.py"]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
+# The device session's names are checked against the board layer that installs it.
+inputs = [
+  "os/components.toml", "os/scripts/install-components.py",
+  "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
+  "os/usr/libexec/tilo-seat-session",
+]
+readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -532,11 +564,14 @@ inputs = [
   "rust-toolchain.toml", "Cargo.lock",
   # The outside-repository test builds a generated app against the checkout.
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
+  # Canonical worker builder sources and the real packaging manifest fixture.
+  "crates/browser/tilo-browser-compute/", "apps/calculator/tilo-app.toml",
 ]
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
   "crates/dev/tilo-app-cli/src/capability_usage.rs",
+  "crates/dev/tilo-app-cli/src/targets/web.rs",
 ]
 
 [[cargo]]
@@ -569,6 +604,11 @@ readers = ["crates/system/system-extension/src/bin/tilo-system-extension-manager
 package = "compat-service"
 inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json"]
 readers = ["crates/windows/compat-service/src/plan.rs"]
+
+[[cargo]]
+package = "legacy-vm"
+inputs = ["os/legacy-guest-snapshot.env"]
+readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
 package = "installer"
@@ -672,11 +712,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "calculator"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/calculator/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "contacts"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/contacts/src/framework_history_tests.rs"]
@@ -697,11 +732,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/slides/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "themes"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/themes/src/framework_history_tests.rs"]
@@ -720,16 +750,6 @@ readers = ["apps/weather/src/framework_history_tests.rs"]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "vpn"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/vpn/src/app.rs"]
 
 [[cargo]]
 package = "word-processor"
@@ -884,6 +904,16 @@ reason = "requires a native ARM KVM host and QEMU"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-nearby-pairing.sh"
+reason = "boots two VMs (KVM) from the gated dev disk"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
@@ -938,8 +968,17 @@ suite = "os/tests/boot_performance_gate.sh"
 reason = "needs a running installed image"
 
 [[unrequired]]
+suite = "os/tests/boot_units_gate.sh"
+reason = "runs inside a booted guest, as root"
+
+[[unrequired]]
 suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
+
+[[unrequired]]
+suite = "os/tests/booted_app_update.sh"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
@@ -1033,6 +1072,11 @@ suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
 
 [[unrequired]]
+suite = "os/tests/input-hotplug-check.sh"
+reason = "runs inside a booted guest's graphical session, partly as root"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
 reason = "root: loop devices and vfat/Btrfs mounts"
 workflow = "release-imager.yml"
@@ -1079,6 +1123,11 @@ suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
+suite = "os/tests/shared_disk_esp.sh"
+reason = "runs inside a booted guest, as root, and repartitions its disk"
+workflow = "dev-disk-boot-diagnostic.yml"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 workflow = "build-release-tools.yml"
@@ -1099,6 +1148,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"

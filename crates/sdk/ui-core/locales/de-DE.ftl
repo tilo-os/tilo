@@ -246,6 +246,28 @@ close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
 terminal-find-scrollback = Im Terminalverlauf suchen
+terminal-target-host = Dieses Gerät (ohne Sandbox)
+terminal-target-default = Standardumgebung
+terminal-target-legacy = Legacy-VM
+terminal-target-manage = Umgebungen verwalten…
+terminal-run-on = Ausführen auf:
+terminal-run-on-this-device = Diesem Gerät
+terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
+terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
+terminal-env-title = Umgebungen
+terminal-env-tools = Werkzeuge
+terminal-env-no-tools = Noch keine Werkzeuge — pkg install in der Umgebung ausführen
+terminal-env-grants = Ordner
+terminal-env-no-grants = Noch keine Ordner freigegeben — „Ordner freigeben…“ verwenden oder perm trust-dir in der Umgebung ausführen
+terminal-env-grant = Ordner freigeben…
+terminal-env-grant-title = Ordner für diese Umgebung wählen
+terminal-env-grant-accept = Freigeben
+terminal-env-read-only = nur lesen
+terminal-env-rename = Umbenennen
+terminal-env-open = Hier öffnen
+terminal-env-create = Erstellen
+terminal-env-name-placeholder = Name einer neuen Umgebung
+terminal-env-unavailable = Umgebungen werden über Tilos Shell-Laufzeit verwaltet, die hier nicht läuft.
 
 notes-image-edit = Bild bearbeiten
 notes-image-done = Fertig
@@ -277,6 +299,10 @@ tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
 tree-move-indent = In das Element darüber verschieben
 tree-move-outdent = Aus dem übergeordneten Element verschieben
+
+# The show/hide control inside every password field.
+text-input-show-password = Passwort anzeigen
+text-input-hide-password = Passwort verbergen
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Willkommen zurück bei Tilo
@@ -390,3 +416,10 @@ history-day-today = Heute
 history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
+
+widget-block-duplicate = Block mit Unterelementen duplizieren
+
+widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
+
+widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
+widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben

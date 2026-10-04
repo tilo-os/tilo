@@ -503,6 +503,7 @@ pub mod test_support;
 
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,
+    bound_publication: crate::bound_dispatch::BoundPublication,
     /// Pen samples on their way to the pointer events they describe.
     pen: crate::pen::PenInput,
     caller_palette: caller_palette::CallerPalette,
@@ -887,6 +888,7 @@ impl FrameHarness {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
+        self.bound_publication.clear();
         self.control_domain.close();
         if let Some(wake) = &self.component_wake {
             wake.close();
@@ -1319,6 +1321,7 @@ impl FrameHarness {
         control_domain.finish_initial_installation();
         let mut d = Self {
             control_domain,
+            bound_publication: Default::default(),
             pen: crate::pen::PenInput::default(),
             caller_palette: Default::default(),
             system_search: Default::default(),
@@ -2811,6 +2814,17 @@ impl FrameHarness {
                 &self.permissions,
             );
             self.root.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            // What the app presents above its window — a navigation card
+            // detached onto the desktop — is stacked over the frame as the
+            // live compositor stacks it, so a capture shows it.
+            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                self.root.as_mut(),
                 &mut self.scene,
                 Affine::IDENTITY,
                 &mut self.text,
@@ -4556,6 +4570,46 @@ impl FrameHarness {
         resources
     }
 
+    /// Every action contract violation that would make the live host refuse
+    /// to publish a mounted component's surface. The host withdraws a whole
+    /// component when one of its actions breaks its contract, so a test
+    /// asserts this is empty rather than finding the surface gone at runtime.
+    pub fn component_contract_violations(&mut self) -> Vec<tilo_actions::ContractViolation> {
+        self.drain_component_wakes();
+        let components = match crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        ) {
+            Ok(components) => components,
+            Err(error) => {
+                return vec![tilo_actions::ContractViolation {
+                    address: "application-root".into(),
+                    reason: format!("bound resources are not discoverable: {error:?}"),
+                }];
+            }
+        };
+        let mut violations = Vec::new();
+        for component in components {
+            match crate::bound_dispatch::bound_contract_violations(
+                self.root.as_mut(),
+                &component.binding,
+                &component.resources,
+            ) {
+                Ok(Some(found)) => violations.extend(found),
+                Ok(None) => violations.push(tilo_actions::ContractViolation {
+                    address: format!("{:?}", component.binding.instance_id),
+                    reason: "component is not mounted".into(),
+                }),
+                Err(error) => violations.push(tilo_actions::ContractViolation {
+                    address: format!("{:?}", component.binding.instance_id),
+                    reason: format!("{error:?}"),
+                }),
+            }
+        }
+        violations
+    }
+
     /// The live document. Used to dump state and to hand to a saver.
     pub fn state_mut(&mut self) -> &mut State {
         self.pump_component_wakes();
@@ -5148,6 +5202,29 @@ impl FrameHarness {
         })
     }
 
+    /// Component-owned transport aliases through the same publication namespace
+    /// used by the native host. This does not execute actions or drain wakes.
+    ///
+    /// # Errors
+    /// Refuses unavailable components or invalid publication identities.
+    pub fn published_bound_resources_of(
+        &self,
+        instance: Option<crate::application::InstanceId>,
+    ) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+        crate::bound_dispatch::discover_bound_resources(self.root.as_ref(), &self.state.doc, None)
+            .map_err(|e| crate::bound_dispatch::BoundActionError::Dispatch(e).into_door())?
+            .into_iter()
+            .filter(|s| instance.is_none_or(|id| s.binding.instance_id == id))
+            .flat_map(|s| {
+                s.resources.into_iter().map(move |r| {
+                    self.bound_publication
+                        .project(&s.binding, r)
+                        .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                })
+            })
+            .collect()
+    }
+
     fn invoke_bound_action_checked(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
@@ -5174,11 +5251,24 @@ impl FrameHarness {
         invocation: tilo_actions::InvocationId,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
-        let snapshots = crate::bound_dispatch::discover_bound_resources(
+        let translated = self.bound_publication.target(&address.address)?;
+        if translated
+            .as_ref()
+            .is_some_and(|target| target.address.instance_id != address.instance_id)
+        {
+            return Err(tilo_actions::DoorError::Unknown(address.address.clone()).into());
+        }
+        let address = translated
+            .as_ref()
+            .map_or(address, |target| &target.address);
+        let mut snapshots = crate::bound_dispatch::discover_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
             Some(&address.address),
         )?;
+        if let Some(target) = translated.as_ref() {
+            snapshots.retain(|snapshot| snapshot.binding.same_component(&target.binding));
+        }
         let target = crate::bound_dispatch::select_bound_target(
             &snapshots,
             &address.address,
@@ -5795,11 +5885,10 @@ impl FrameHarness {
                 {
                     resources.push(resource);
                 }
+                let app_id = crate::collaboration::local_app_id();
                 resources = resources
                     .into_iter()
-                    .filter_map(|resource| {
-                        Self::filter_pending_resource_for_authority(&self.permissions, resource)
-                    })
+                    .filter_map(|resource| self.permissions.permitted_resource(&app_id, resource))
                     .collect();
                 let (arguments, resource, spec) =
                     crate::bound_dispatch::resolve_resource_invocation(
@@ -5847,33 +5936,6 @@ impl FrameHarness {
             }
         };
         Ok(started)
-    }
-
-    fn filter_pending_resource_for_authority(
-        authority: &PermissionContext,
-        mut resource: tilo_actions::Resource,
-    ) -> Option<tilo_actions::Resource> {
-        use crate::permissions::Verb;
-        resource.actions.retain(|action| {
-            let verb = match action.contract.permission {
-                tilo_actions::PermissionRequirement::None => return true,
-                tilo_actions::PermissionRequirement::Read => Verb::Read,
-                tilo_actions::PermissionRequirement::Comment => Verb::Comment,
-                tilo_actions::PermissionRequirement::Write => Verb::Write,
-                tilo_actions::PermissionRequirement::Invite => Verb::Invite,
-                tilo_actions::PermissionRequirement::Admin => Verb::Admin,
-            };
-            authority.check(&crate::permissions::PermissionScope::app(
-                crate::collaboration::local_app_id(),
-                verb,
-            ))
-        });
-        resource.children = resource
-            .children
-            .into_iter()
-            .filter_map(|child| Self::filter_pending_resource_for_authority(authority, child))
-            .collect();
-        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
     }
 
     fn dispatch_control_invocations(&mut self) {

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Which architectures a Build / OS dev run builds.
 
-A main push builds x86_64; main's aarch64 is Build / OS dev (aarch64)
-(os-dev-arm.yml), which builds only the newest commit. A pull request builds
+Main pushes build in Build / OS dev (x86_64) and (aarch64) (os-dev-x86.yml,
+os-dev-arm.yml), newest commit only; a push here is a manual run. A pull
+request builds
 x86_64, and aarch64 as well when its own diff (from its real merge base)
 touches an architecture-specific input or it carries the `os-arm64` label.
 

@@ -12,6 +12,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
+//! | `/node` | — | [`NodeInfo`] |
 //! | `/certify` | `CertificationRequest` | `CertifyReply` |
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
 //! | `/session` | [`Hello`] | [`SessionChallenge`] |
@@ -170,6 +171,14 @@ pub struct HostInfo {
     /// SHA-256 of the TLS certificate (lowercase hex) when it is a
     /// development certificate a browser pins with `serverCertificateHashes`.
     pub certificate_sha256: Option<String>,
+}
+
+/// What a node runs beside its relay, for a member's session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeInfo {
+    /// The device of the session that runs the person's apps (legacy apps
+    /// among them) on the node: the device a page asks to open one.
+    pub session: Option<[u8; 32]>,
 }
 
 /// The host's answer to a session [`Hello`].

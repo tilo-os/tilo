@@ -76,11 +76,13 @@ impl Resource for ApiTester {
             anchor: Some(format!("api_tester.collection:{id}")),
             title: name.clone(),
             text: String::new(),
+            action: None,
         });
         let environments = state.environments.iter().map(|(id, name)| SearchEntry {
             anchor: Some(format!("api_tester.environment:{id}")),
             title: name.clone(),
             text: String::new(),
+            action: None,
         });
         collections.chain(environments).collect()
     }
@@ -94,7 +96,9 @@ impl ResourceApp for ApiTesterShell {
     const ID: &'static str = "so.tilo.api-tester";
     const TITLE: &'static str = "API Tester";
     const ICON: Option<&'static str> = Some("api-tester");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<ApiTester>) -> Element {
         cx.surface(ApiTesterApp::new())
