@@ -2620,9 +2620,7 @@ fn fact_list(
                 .no_wrap()
                 .align_start()
                 .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(
-                    IconWidget::new(icon, theme.tokens.metrics.icon_md).dim(),
-                ))
+                .push(Box::new(IconWidget::new(icon).dim()))
                 .push(Box::new(
                     Text::new(&text).with_role(ui::tokens::typography::TextRole::Body),
                 )),
