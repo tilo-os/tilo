@@ -32,8 +32,6 @@ pub struct ContactSearchProvider {
     snapshot: Arc<Mutex<ContactSearchSnapshot>>,
     #[cfg(test)]
     before_publish: Arc<Mutex<Option<RefreshPublicationHook>>>,
-    #[cfg(test)]
-    full_refreshes: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
@@ -75,8 +73,6 @@ impl ContactSearchProvider {
             snapshot: Arc::new(Mutex::new(ContactSearchSnapshot::default())),
             #[cfg(test)]
             before_publish: Arc::new(Mutex::new(None)),
-            #[cfg(test)]
-            full_refreshes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         if let Err(error) = provider.refresh(store) {
             // A malformed collaborative projection must never bring down the
@@ -148,140 +144,6 @@ impl ContactSearchProvider {
         catalog.advance_after(snapshot.catalog.stats().generation)?;
         snapshot.catalog = catalog;
         snapshot.lookup = lookup;
-        #[cfg(test)]
-        self.full_refreshes
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        drop(snapshot);
-        Ok(())
-    }
-
-    /// Update the retained catalogue for one locally-applied contact change.
-    /// The app only uses this when its in-memory CRDT projection was current
-    /// before dispatch; merges and bulk imports retain the full, atomic
-    /// [`Self::refresh`] path instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns a catalogue error if advancing the retained index would exceed
-    /// its generation space; callers then retain the prior searchable snapshot.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the atomic preflight, bounded catalogue mutation, and lookup publication must remain together so their fail-closed ordering is reviewable"
-    )]
-    pub(crate) fn apply_contact_change(
-        &self,
-        before: Option<&Contact>,
-        after: Option<&Contact>,
-    ) -> Result<(), ui::search::SearchCatalogError> {
-        let mut snapshot = self
-            .snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut affected_groups = BTreeSet::new();
-        if let Some(before) = before {
-            collect_group_keys(before, &mut affected_groups);
-        }
-        if let Some(after) = after {
-            collect_group_keys(after, &mut affected_groups);
-        }
-        let mut next_variants = affected_groups
-            .iter()
-            .filter_map(|key| {
-                snapshot
-                    .lookup
-                    .group_variants
-                    .get(key)
-                    .cloned()
-                    .map(|variants| (key.clone(), variants))
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut ignored_groups = BTreeSet::new();
-        if let Some(before) = before {
-            update_group_variants(&mut next_variants, before, false, &mut ignored_groups);
-        }
-        if let Some(after) = after {
-            update_group_variants(&mut next_variants, after, true, &mut ignored_groups);
-        }
-
-        let contact_resource = after
-            .map(|contact| crate::actions::contact_resource_id(contact.id))
-            .or_else(|| before.map(|contact| crate::actions::contact_resource_id(contact.id)));
-        let mut group_updates = Vec::with_capacity(affected_groups.len());
-        for key in &affected_groups {
-            let resource = crate::actions::group_resource_id(key);
-            let group = next_variants
-                .get(key)
-                .and_then(|variants| variants.keys().next().cloned());
-            group_updates.push((key.clone(), resource, group));
-        }
-
-        let removing_contact = before.is_some() && after.is_none();
-        if removing_contact
-            && !snapshot
-                .catalog
-                .contains(contact_resource.as_deref().unwrap_or_default())
-        {
-            return Err(ui::search::SearchCatalogError::MissingResource);
-        }
-        if group_updates
-            .iter()
-            .any(|(_, resource, group)| group.is_none() && !snapshot.catalog.contains(resource))
-        {
-            return Err(ui::search::SearchCatalogError::MissingResource);
-        }
-        let inserts = usize::from(after.is_some_and(|_| {
-            contact_resource
-                .as_deref()
-                .is_some_and(|resource| !snapshot.catalog.contains(resource))
-        })) + group_updates
-            .iter()
-            .filter(|(_, resource, group)| group.is_some() && !snapshot.catalog.contains(resource))
-            .count();
-        snapshot.catalog.preflight_mutations(
-            usize::from(contact_resource.is_some()) + group_updates.len(),
-            inserts,
-        )?;
-
-        if let Some(after) = after {
-            snapshot
-                .catalog
-                .upsert_record(contact_record(after, contact_result(after)))?;
-        } else if let Some(resource) = &contact_resource
-            && !snapshot.catalog.remove(resource)
-        {
-            return Err(ui::search::SearchCatalogError::MissingResource);
-        }
-        for (_, resource, group) in &group_updates {
-            if let Some(group) = group {
-                snapshot
-                    .catalog
-                    .upsert_record(group_record(resource.clone(), group))?;
-            } else if !snapshot.catalog.remove(resource) {
-                return Err(ui::search::SearchCatalogError::MissingResource);
-            }
-        }
-
-        if let Some(before) = before {
-            snapshot.lookup.contacts.remove(&before.id);
-        }
-        if let Some(after) = after {
-            snapshot
-                .lookup
-                .contacts
-                .insert(after.id, after.display_name());
-        }
-        for (key, resource, group) in group_updates {
-            if let Some(variants) = next_variants.remove(&key) {
-                snapshot.lookup.group_variants.insert(key, variants);
-            } else {
-                snapshot.lookup.group_variants.remove(&key);
-            }
-            if let Some(group) = group {
-                snapshot.lookup.groups.insert(resource, group);
-            } else {
-                snapshot.lookup.groups.remove(&resource);
-            }
-        }
         drop(snapshot);
         Ok(())
     }
@@ -308,12 +170,6 @@ impl ContactSearchProvider {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .catalog
             .stats()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn full_refreshes(&self) -> usize {
-        self.full_refreshes
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -353,15 +209,6 @@ fn update_group_variants(
         };
         if remove_key {
             variants.remove(&key);
-        }
-    }
-}
-
-fn collect_group_keys(contact: &Contact, keys: &mut BTreeSet<String>) {
-    for entry in &contact.groups {
-        let name = entry.value.trim();
-        if !name.is_empty() {
-            keys.insert(normalize_text(name));
         }
     }
 }
@@ -856,39 +703,6 @@ mod tests {
                 !provider.action_directory_cursor_is_current(&cursor),
                 "a complete replacement must advance the retained generation"
             );
-        }
-
-        // --- phase: exhausted_incremental_delta_keeps_the_published_snapshot_intact ---
-        {
-            let store = store_with_samples();
-            let provider = ContactSearchProvider::new(&store);
-            let before = store.contacts[0].clone();
-            let address = crate::actions::open_contact_address(before.id);
-            let old_hits = provider.search(&before.display_name());
-            let old_resource = provider
-                .resolve_action_resource(&address)
-                .expect("the current contact resolves");
-            {
-                let snapshot = provider.snapshot.lock().expect("snapshot lock");
-                snapshot
-                    .catalog
-                    .advance_after(u64::MAX - 1)
-                    .expect("the final generation is representable");
-            }
-            let mut after = before.clone();
-            after.first = "This update must not publish".into();
-
-            assert!(matches!(
-                provider.apply_contact_change(Some(&before), Some(&after)),
-                Err(ui::search::SearchCatalogError::GenerationExhausted)
-            ));
-            assert_eq!(provider.search(&before.display_name()), old_hits);
-            assert!(provider.search("this update must not publish").is_empty());
-            let resource = provider
-                .resolve_action_resource(&address)
-                .expect("the prior exact resource remains available");
-            assert_eq!(resource.id, old_resource.id);
-            assert_eq!(resource.label, old_resource.label);
         }
 
         // --- phase: search_and_exact_resolution_share_the_snapshot_publication_boundary ---

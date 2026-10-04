@@ -195,6 +195,18 @@ impl<R: Resource> ResourceRoot<R> {
     /// hosted surface stages on its next sync.
     /// Stage the views' state for `scenario`, and answer the collaborators
     /// the capture shows as the presence frames their windows would send.
+    /// The first widget of type `T` in the view, whatever wraps it: a
+    /// custom surface is found by its own type.
+    pub(crate) fn find_mut<T: 'static>(&mut self) -> Option<&mut T> {
+        fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
+            if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
+                return widget.as_any_mut()?.downcast_mut::<T>();
+            }
+            widget.children_mut().into_iter().find_map(find::<T>)
+        }
+        find::<T>(self.content.as_mut())
+    }
+
     pub(crate) fn stage(
         &self,
         scenario: Option<&str>,
