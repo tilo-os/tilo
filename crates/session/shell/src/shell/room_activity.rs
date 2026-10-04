@@ -343,10 +343,12 @@ fn activity_launch_event(
             Native::SpawnFailed { detail } => Shared::SpawnFailed {
                 detail: detail.clone(),
             },
-            Native::Failed { code, stderr_tail } => Shared::Failed {
-                code: *code,
-                stderr_tail: stderr_tail.clone(),
-            },
+            Native::Failed { code, stderr_tail } | Native::WindowLost { code, stderr_tail } => {
+                Shared::Failed {
+                    code: *code,
+                    stderr_tail: stderr_tail.clone(),
+                }
+            }
             Native::Exited => Shared::Exited,
         },
     }

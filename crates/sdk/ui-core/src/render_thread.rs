@@ -125,6 +125,26 @@ pub enum RenderRequest {
 
 /// A device and a renderer whose pipelines are compiled for it, with no
 /// surface yet.
+/// Why the drawing surface was lost, kept for the window that stops on it.
+static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Record why the drawing surface was lost; the first reason is the cause.
+fn note_surface_loss(reason: String) {
+    let mut slot = SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    slot.get_or_insert(reason);
+}
+
+/// The reason recorded by the render worker when it lost its surface.
+#[cfg(feature = "native")]
+pub(crate) fn take_surface_loss() -> Option<String> {
+    SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 #[cfg_attr(
     not(feature = "native"),
     allow(
@@ -481,6 +501,9 @@ pub fn spawn_render_thread(
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
                         tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
+                        note_surface_loss(format!(
+                            "its drawing surface could not be resized: {err}"
+                        ));
                         log_render_outcome(
                             frame_ix,
                             cpu_frame_id,
@@ -1154,6 +1177,7 @@ fn render_one_frame(
     } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
+        note_surface_loss("its render device is gone".to_owned());
         return FrameOutcome::SurfaceGone;
     };
     if frame_ix == 0 {
@@ -1172,6 +1196,9 @@ fn render_one_frame(
             // and ask main to redraw.
             if let Err(err) = configure_surface_checked(render_cx, surface) {
                 tracing::info!(%err, "drawing surface is gone; abandoning the frame");
+                note_surface_loss(format!(
+                    "its drawing surface could not be reconfigured: {err}"
+                ));
                 return FrameOutcome::SurfaceGone;
             }
             if let Some(observer) = presentation.filter(|_| timing::enabled()) {
@@ -1196,6 +1223,7 @@ fn render_one_frame(
             // Same shutdown race as the reconfigure above; panicking here
             // used to abort the process for an ordinary end of session.
             tracing::info!("drawing surface is no longer usable; stopping the render thread");
+            note_surface_loss("its drawing surface was lost".to_owned());
             return FrameOutcome::SurfaceGone;
         }
     };
