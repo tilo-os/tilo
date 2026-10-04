@@ -128,6 +128,16 @@ pub trait Resource: Sized + 'static {
         false
     }
 
+    /// Whether a later action may continue `action` ([`coalesces`](Self::coalesces)),
+    /// so its undo step stays open for it. One that never continues — a
+    /// paragraph split after a typed word, a block moved — is a step of its
+    /// own, recorded at once. The default keeps every step open for what may
+    /// follow.
+    fn continuable(action: &Self::Action) -> bool {
+        let _ = action;
+        true
+    }
+
     /// Whether `action` only annotates what the action before it in the
     /// same event wrote (who wrote the text just typed): it joins that
     /// step, and the next action continues the one it annotates.

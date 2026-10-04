@@ -151,6 +151,14 @@ impl<R: Resource> Reader<R> {
         self.revision
     }
 
+    /// Whether the state is `doc` as it stands: no change arrived since the
+    /// last sync.
+    pub fn follows(&self, doc: &Doc) -> bool {
+        !self.stale
+            && self.uncommitted.is_none()
+            && heads_of(doc).is_some_and(|heads| self.tracker.heads() == Some(heads.as_slice()))
+    }
+
     /// Count the unchanged state as a new revision, so everything following
     /// it takes it again (a surface dropping an optimistic preview).
     pub fn represent(&mut self) {

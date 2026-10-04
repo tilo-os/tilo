@@ -260,10 +260,25 @@ impl<R: Resource> ResourceRoot<R> {
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
-        let state = self.live.get();
+        self.publication_of(&self.live.get())
+    }
+
+    /// [`Self::publication`] of the resource as `doc` holds it now, which a
+    /// change from another window or participant may have moved past what
+    /// this view last synced.
+    fn current_publication(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+        if !self.live.follows(doc)
+            && let Ok(current) = R::read(doc)
+        {
+            return self.publication_of(&current);
+        }
+        self.publication()
+    }
+
+    fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         let mut resource =
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &state);
-        let mut bound = self.bindings.declarations(&state);
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state);
+        let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
         self.surfaces(&mut |surface| {
             bound.extend(surface.bound_declarations());
@@ -746,7 +761,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resource = self.publication();
+        let mut resource = self.current_publication(doc);
         // The content may add live external entities beside the resource,
         // never a document action: those are the resource's own. A hosted
         // surface has already admitted what it adds. One naming the resource
@@ -780,14 +795,25 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     fn resource_for(
         &self,
         _participant: Option<&tilo_actions::ParticipantId>,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        if let Some(published) = find(&[self.publication()], id) {
+        // A change from another window or participant may not have reached
+        // this view yet: an item it removed is gone, one it made is there.
+        if let Some(published) = find(&[self.current_publication(doc)], id) {
             return Some(published);
         }
-        if let Some(child) = R::child(&self.live.get(), id) {
-            return Some(child);
+        let current = if self.live.follows(doc) {
+            None
+        } else {
+            R::read(doc).ok()
+        };
+        let child = match &current {
+            Some(current) => R::child(current, id),
+            None => R::child(&self.live.get(), id),
+        };
+        if child.is_some() {
+            return child;
         }
         let mut row = None;
         self.surfaces(&mut |surface| {
