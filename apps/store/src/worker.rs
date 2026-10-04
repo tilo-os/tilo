@@ -846,7 +846,7 @@ mod tests {
             sync_authoritative_catalogue(&state);
             let provider = search_index.provider();
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&ui::search::SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("two directory rows produce a continuation");
 
