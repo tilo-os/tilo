@@ -1837,6 +1837,19 @@ impl BlockEditor {
         self.focused
     }
 
+    /// Whether the active source line or projected table cell owns an IME preedit.
+    pub fn is_composing(&self) -> bool {
+        self.focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                block.line.inner().is_composing()
+                    || self
+                        .table_editors
+                        .get(&block.id)
+                        .is_some_and(super::table::Table::projected_is_composing)
+            })
+    }
+
     pub fn focused_table_cell(&self) -> Option<(String, usize, usize)> {
         self.blocks.iter().find_map(|block| {
             self.table_editors
@@ -2535,13 +2548,11 @@ impl BlockEditor {
         self.indent_blocks(idx..self.list_subtree_end(last), delta)
     }
 
-    /// Selected roots and their descendants shift once, including entire code
+    /// Selected roots and their descendants, including entire code
     /// fences. A selection ending at column zero does not include that block.
-    fn try_indent_selection(&mut self, delta: i8) -> bool {
+    pub fn selected_block_range(&self) -> Option<std::ops::Range<usize>> {
         let Some(selection) = self.document_selection else {
-            return self
-                .focused
-                .is_some_and(|index| self.try_indent(index, delta));
+            return self.focused.and_then(|index| self.block_group_range(index));
         };
         let (first, last) = selection.ordered();
         let last = if last.byte == 0 && last.block > first.block {
@@ -2561,7 +2572,19 @@ impl BlockEditor {
             let row = self.fenced_code_run(end).map_or(end, |(_, end)| end);
             end = self.list_subtree_end(row);
         }
-        self.indent_blocks(start..end, delta)
+        self.blocks.get(start..end)?;
+        Some(start..end)
+    }
+
+    /// One block's complete authored fence and outline descendants.
+    pub fn block_group_range(&self, index: usize) -> Option<std::ops::Range<usize>> {
+        self.blocks.get(index)?;
+        Some(self.movable_group(index))
+    }
+
+    fn try_indent_selection(&mut self, delta: i8) -> bool {
+        self.selected_block_range()
+            .is_some_and(|range| self.indent_blocks(range, delta))
     }
 
     fn indent_blocks(&mut self, range: std::ops::Range<usize>, delta: i8) -> bool {
@@ -5475,6 +5498,18 @@ impl BlockEditor {
         };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
+    }
+
+    /// Clear selection and its keyboard/drag anchors without changing text.
+    pub fn clear_document_selection(&mut self) {
+        self.clear_cross_block_selection();
+        self.cross_block_drag_start = None;
+        self.kbd_sel_anchor = None;
+        if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) {
+            let cursor = block.line.cursor_pos();
+            block.line.inner_mut().set_selection(cursor, cursor);
+        }
+        self.dirty = true;
     }
 
     /// Plain-text serialization uses a newline for every crossed block
@@ -10897,10 +10932,7 @@ impl BlockEditor {
         // Do not let Enter, Tab, or Backspace become structural document edits.
         if self.is_focused
             && matches!(event, WindowEvent::KeyboardInput { .. })
-            && self
-                .focused
-                .and_then(|index| self.blocks.get(index))
-                .is_some_and(|block| block.line.inner().is_composing())
+            && self.is_composing()
         {
             *ctx.handled = true;
             return;
