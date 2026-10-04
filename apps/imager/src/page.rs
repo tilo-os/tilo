@@ -10,14 +10,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ui::tokens::TextRole;
+use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{Banner, Column, Container, Form, Row, Scrollable, Stepper, Text, Widget};
-
-use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED};
-
-/// The widest a page's column grows: a form and its review read best at a
-/// bounded measure (HIG §7a), the same one `FormPage` keeps.
-pub(crate) const READABLE_WIDTH: f32 = 720.0;
 
 /// A padding-free, content-sized column: one section of a page.
 pub(crate) fn stack() -> Column {
@@ -31,47 +25,27 @@ pub(crate) fn title(text: &str) -> Text {
         .with_heading_level(1)
 }
 
-/// A page body: its title, then each section a `GROUP` apart.
+/// A page body: its title, then each section a group apart.
 pub(crate) fn body(title_text: &str) -> Column {
-    stack().with_gap(GROUP).push(Box::new(title(title_text)))
+    stack()
+        .with_rhythm(Rhythm::Group)
+        .push(Box::new(title(title_text)))
 }
 
 /// A page body whose first row is built by the caller (a title with a
 /// trailing control).
 pub(crate) fn body_with(header: Box<dyn Widget>) -> Column {
-    stack().with_gap(GROUP).push(header)
+    stack().with_rhythm(Rhythm::Group).push(header)
 }
 
-/// A group of related lines inside a section: `RELATED` apart.
+/// A group of related lines inside a section.
 pub(crate) fn related() -> Column {
-    stack().with_gap(RELATED)
+    stack().with_rhythm(Rhythm::Related)
 }
 
-/// A form as one block of a scrolling page. The form's own grid admits a
-/// zero minimum height, so a page taller than its viewport would squeeze
-/// it under its rows; inside a container it keeps its full height.
+/// A form as one block of a scrolling page.
 pub(crate) fn form_block(form: Form) -> Box<dyn Widget> {
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_child(Box::new(form)),
-    )
-}
-
-/// A page's width: the readable column inside the page gutter.
-pub(crate) fn readable_page_width() -> f32 {
-    READABLE_WIDTH + 2.0 * PAGE_GUTTER
-}
-
-/// `widget` in the column beside the page's scrolling body, ending where the
-/// body's content ends: the scroll view keeps its scroll bar gutter on the
-/// trailing edge, and the page's fixed rows keep the same edge.
-fn beside_scroll(widget: Box<dyn Widget>) -> Box<dyn Widget> {
-    Box::new(
-        stack()
-            .with_horizontal_padding(0.0, ui::tokens::Metrics::BASE.scrollbar_gutter)
-            .push(widget),
-    )
+    Box::new(form)
 }
 
 /// The page's notice: a problem the person has to act on. What merely
@@ -169,25 +143,25 @@ impl Frame {
         if let Some(offset) = self.offset {
             scroll = scroll.with_persisted_offset(offset);
         }
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-            .with_vertical_padding(PAGE_GUTTER)
-            .with_gap(GROUP);
+        let mut column = Column::new().with_no_padding().with_rhythm(Rhythm::Group);
         if let Some(stepper) = self.stepper {
-            column = column.push(beside_scroll(Box::new(stepper)));
+            column = column.push(Box::new(stepper));
         }
         column = column.push(Box::new(scroll));
         if let Some(notice) = self.notice {
-            column = column.push(beside_scroll(notice));
+            column = column.push(notice);
         }
         if let Some(actions) = self.actions {
-            column = column.push(beside_scroll(Box::new(actions)));
+            column = column.push(Box::new(actions));
         }
+        // A wizard stands alone in its window: its readable column is
+        // centred, the page gutter around it.
         Box::new(
             Container::new()
                 .filling()
-                .with_centered_max_width(readable_page_width())
+                .with_inset(Rhythm::Group)
+                .readable()
+                .centered()
                 .with_child(Box::new(column)),
         )
     }

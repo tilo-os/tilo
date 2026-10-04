@@ -133,10 +133,7 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             Text::new(&description).with_role(TextRole::Body).dimmed(),
         ));
     }
-    let about = Gapped {
-        column: about,
-        gap: |rhythm| rhythm.sibling,
-    };
+    let about = about.with_rhythm(Rhythm::Sibling);
 
     // The main action: copy, through the fill-in dialog when the body has
     // variables.
@@ -155,50 +152,17 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         .on_effect(move || requests.borrow_mut().push(Action::Copy(id)))
     };
 
-    Box::new(Gapped {
-        column: Column::new()
+    Box::new(
+        Column::new()
             .with_id("snippets.detail")
+            .with_rhythm(Rhythm::Group)
             .push(Box::new(about))
             .push(Box::new(copy))
             .push(Box::new(BodyWell {
                 core: Rc::clone(core),
                 rect: Rect::ZERO,
             })),
-        gap: |rhythm| rhythm.group,
-    })
-}
-
-/// A column whose gap is a step of the theme's rhythm.
-struct Gapped {
-    column: Column,
-    gap: fn(&Rhythm) -> f32,
-}
-
-impl ui::widget::Decorator for Gapped {
-    type Inner = Column;
-
-    fn inner(&self) -> &Column {
-        &self.column
-    }
-
-    fn inner_mut(&mut self) -> &mut Column {
-        &mut self.column
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.column
-            .set_gap((self.gap)(&theme.tokens.spacing.rhythm));
-        Widget::build_layout(&mut self.column, taffy, theme, node_map)
-    }
-
-    fn name(&self) -> &'static str {
-        "SnippetColumn"
-    }
+    )
 }
 
 /// A button that acts on the open snippet, from the header row.

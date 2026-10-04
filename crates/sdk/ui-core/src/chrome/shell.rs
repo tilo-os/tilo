@@ -225,6 +225,15 @@ pub fn row_bleed(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
+/// The content edge of a window's overview or content column, from the
+/// column's leading edge: where the shell starts the column's header title,
+/// and so where the column's rows, headings and fields start their text.
+/// A list painted edge to edge in a column puts its rows' outer rects at
+/// `column_gutter - row_bleed`.
+pub fn column_gutter(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.rhythm.group)
+}
+
 /// Paint the selection of one row of a list: the hover or active lift of
 /// `ground` ([`selection_tier_on`]) on `rect` with the item radius
 /// (`radii.item`), and nothing for an idle row. A row is a lift with

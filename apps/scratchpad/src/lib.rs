@@ -77,10 +77,10 @@ impl ResourceApp for Scratchpad {
         .with_live(ui::a11y::Politeness::Polite);
         // The note is writing, not a form field: the editor is a plain surface
         // on the content ground, so the scrolling text runs to the pane's own
-        // edge. The status sits directly under it (no gap), so an idle note,
-        // whose status is empty, reserves nothing.
+        // edge. The status sits a related step under it; an idle note's status
+        // is empty and takes neither room nor the gap.
         let content = Column::new()
-            .with_gap(0.0)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
                 Column::new()
                     .with_no_padding()

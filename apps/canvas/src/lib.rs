@@ -165,11 +165,9 @@ fn rail(tools: &tools::Tools) -> Element {
     let rail = ui::widget::ToggleGroup::from_state(choices, &tools.tool)
         .vertical()
         .on_view("Tool", |_| {});
-    let inset = ui::tokens::Spacing::BASE.s2;
     Box::new(
         Column::new()
-            .with_vertical_padding(inset)
-            .with_horizontal_padding(inset, inset)
+            .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
             .with_gap(0.0)
             .push(Box::new(rail))
             .push(Box::new(Spacer::new()))
@@ -180,12 +178,10 @@ fn rail(tools: &tools::Tools) -> Element {
 /// The inspector above; under it the layers or the history.
 fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
     // A dense tool panel: one `s3` inset on every side.
-    let gutter = ui::tokens::Spacing::BASE.s3;
     let inspector = Column::new()
         .with_intrinsic_height()
-        .with_gap(gutter)
-        .with_vertical_padding(gutter)
-        .with_horizontal_padding(gutter, gutter)
+        .with_rhythm(ui::tokens::Rhythm::Sibling)
+        .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Sibling)
         .push(panels::inspector::panel(cx, tools));
     // The dock folds away to its tabs, giving the inspector the height.
     let open = LocalState::new(true);
@@ -247,12 +243,11 @@ fn dock_tabs(
         Dock::Layers => panels::layers::add_menu(cx, &tools),
         Dock::History => panels::history::checkpoint_button(cx),
     });
-    let spacing = ui::tokens::Spacing::BASE;
     Box::new(
         Row::new()
             .no_wrap()
-            .with_padding(spacing.s3, spacing.s1)
-            .with_gap(spacing.s1)
+            .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Tight)
+            .with_rhythm(ui::tokens::Rhythm::Tight)
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(Box::new(
                 Container::new()

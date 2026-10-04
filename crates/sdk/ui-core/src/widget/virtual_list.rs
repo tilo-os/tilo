@@ -2280,9 +2280,10 @@ mod tests {
             let first = semantics.children.first().expect("first mounted row");
             // One bleed in from the list's edges, and clear of the bar's
             // gutter while the rows overflow.
+            let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
             assert_eq!(
                 first.bounds.expect("row bounds").to_rect(),
-                Rect::new(8.0, -10.0, 280.0, 14.0)
+                Rect::new(8.0, -10.0, 300.0 - gutter - 8.0, 14.0)
             );
             assert_eq!(
                 list.mounted[0].widget.get_rect(),

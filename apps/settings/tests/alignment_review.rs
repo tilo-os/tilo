@@ -194,7 +194,7 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
         );
         // The next row starts a full row gap below the caption.
         assert!(
-            next_label.y0 - caption.y1 >= f64::from(settings::widgets::ROW_GAP) - 0.5,
+            next_label.y0 - caption.y1 >= f64::from(spacing().rhythm.sibling) - 0.5,
             "the next row is a row gap below the caption"
         );
         assert!(
@@ -400,9 +400,8 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
     let config = crate::support::ScratchConfig::new();
     let sp = spacing();
     assert_eq!(
-        settings::widgets::SECTION_GAP,
-        sp.s6,
-        "the section gap is the s6 step, not an authored pixel value"
+        sp.rhythm.group, sp.s6,
+        "the section gap is the group rhythm, the s6 step"
     );
     for (category, viewport) in [
         (Category::About, WIDE),

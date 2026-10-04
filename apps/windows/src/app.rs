@@ -23,12 +23,11 @@ use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::SpacingStep;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Banner, Button, ButtonRole, Column, Density, Element, Form, FormSection, ListRow,
     ModalDialog, ModelPath, NavPane, NavShell, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Spacer, Text, ToggleGroup, Widget,
+    SectionHeader, Text, ToggleGroup, Widget,
 };
 use ui::{TextKind, TextRole};
 use vello::Scene;
@@ -1340,27 +1339,23 @@ impl WindowsApp {
             Page::Appliance => self.appliance_page(&mut page),
             Page::PendingInstall => self.pending_page(&mut page),
         }
-        let mut column = page
-            .head
-            .into_iter()
-            .fold(Column::new().with_intrinsic_height(), Column::push);
+        // The head (a notice, the app's summary) above its settings: a page
+        // of sections on the readable column.
+        let mut content = page.head.into_iter().fold(
+            ui::widget::Page::new()
+                .with_semantic_key("windows-content")
+                .with_persisted_offset(Rc::clone(&self.content_scroll))
+                .with_cursor(self.cursor),
+            ui::widget::Page::head,
+        );
         if !page.sections.is_empty() {
-            // Two sibling gaps around an empty spacer: the sections stand a
-            // group gap below the head block, as they stand from each other.
-            column = column.push(Box::new(Spacer::token(SpacingStep::S0)));
             let form = page.sections.into_iter().fold(
                 Form::new().with_density(Some(Density::Compact)),
                 Form::section,
             );
-            column = column.push(Box::new(form));
+            content = content.section(Box::new(form));
         }
-        Box::new(
-            Scrollable::new_vertical()
-                .with_semantic_key("windows-content")
-                .with_persisted_offset(Rc::clone(&self.content_scroll))
-                .with_cursor(self.cursor)
-                .with_child(Box::new(column)),
-        )
+        Box::new(content)
     }
 
     fn empty_page(&self, page: &mut PageParts) {

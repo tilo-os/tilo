@@ -416,12 +416,12 @@ fn resize_reflows_between_split_and_compact() {
     assert!(!app.compact);
     assert!(app.editor_rect.area() > 0.0);
     assert!(app.preview_rect.area() > 0.0);
-    assert!(app.splitter.get_rect().area() > 0.0);
+    assert!(app.splitter.hit_rect().area() > 0.0);
 
     // Narrow → compact: a single pane, no divider.
     app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
     assert!(app.compact);
-    assert_eq!(app.splitter.get_rect().area(), 0.0);
+    assert_eq!(app.splitter.hit_rect().area(), 0.0);
     assert!(app.editor_rect.area() > 0.0, "editor pane shown");
     assert_eq!(app.preview_rect.area(), 0.0, "preview hidden in compact");
 
@@ -656,7 +656,7 @@ fn dragging_the_library_splitter_resizes_the_panes() {
     let mut harness = mounted(1280, 720);
     let (before, grab) = {
         let app = harness.root::<TypstApp>();
-        (app.editor_rect.width(), app.splitter.get_rect().center())
+        (app.editor_rect.width(), app.splitter.hit_rect().center())
     };
     harness.drag_at((grab.x, grab.y), (grab.x + 120.0, grab.y));
     let _ = harness.render_rgba();
@@ -666,7 +666,8 @@ fn dragging_the_library_splitter_resizes_the_panes() {
         "the editor grew from {before} to {}",
         app.editor_rect.width()
     );
-    assert!(app.split_ratio <= 0.82 && app.split_ratio >= 0.18);
+    let ratio = app.splitter.ratio().position();
+    assert!((0.18..=0.82).contains(&ratio), "{ratio}");
 }
 
 #[test]

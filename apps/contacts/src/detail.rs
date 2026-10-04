@@ -14,7 +14,7 @@ use ui::widget::{
 };
 
 use crate::model::{Address, Contact};
-use crate::view::{Readable, Request, Shared, queue};
+use crate::view::{Request, Shared, queue};
 
 /// A vCard type ("mobile", "work") as a property label ("Mobile"). A kind
 /// another app invented reads as the card wrote it.
@@ -197,6 +197,13 @@ pub(crate) fn contact_page(
         Scrollable::new_vertical()
             .with_semantic_key("contacts.detail")
             .with_persisted_offset(std::rc::Rc::clone(scroll))
-            .with_child(Box::new(Readable::new(page))),
+            // The facts keep to the readable column on the leading edge,
+            // the page gutter around it.
+            .with_child(Box::new(
+                ui::widget::Container::new()
+                    .with_inset(ui::tokens::Rhythm::Group)
+                    .readable()
+                    .with_child(Box::new(page.with_no_padding())),
+            )),
     )
 }

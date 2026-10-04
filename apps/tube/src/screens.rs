@@ -75,10 +75,10 @@ fn grow(child: impl ui::widget::Widget + 'static) -> Container {
 }
 
 /// A vertical page: groups `rhythm.group` apart inside the page gutter.
-fn page(theme: &Theme, children: Vec<Element>) -> Scrollable {
+fn page(children: Vec<Element>) -> Scrollable {
     let mut col = Column::new()
         .with_intrinsic_height()
-        .with_gap(theme.tokens.spacing.rhythm.group);
+        .with_rhythm(ui::tokens::Rhythm::Group);
     for child in children {
         col = col.push(child);
     }
@@ -210,12 +210,12 @@ fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> El
 fn skeleton_grid(ui: Ui<'_>) -> Column {
     let theme = ui.theme;
     let (columns, column) = grid_columns(ui);
-    let mut grid = stack().with_gap(theme.tokens.spacing.rhythm.group);
+    let mut grid = stack().with_rhythm(ui::tokens::Rhythm::Group);
     for _ in 0..2 {
         let mut row = Row::new()
             .no_wrap()
             .align_start()
-            .with_gap(theme.tokens.spacing.rhythm.section);
+            .with_rhythm(ui::tokens::Rhythm::Section);
         for _ in 0..columns {
             row = row.push(Box::new(
                 Container::new()
@@ -316,7 +316,7 @@ pub fn home(ui: Ui<'_>) -> Scrollable {
                 .on_action(search_action()),
         )
     };
-    page(ui.theme, vec![body])
+    page(vec![body])
 }
 
 pub fn trending(ui: Ui<'_>) -> Scrollable {
@@ -331,7 +331,7 @@ pub fn trending(ui: Ui<'_>) -> Scrollable {
     } else {
         video_grid(ui, videos)
     };
-    page(ui.theme, vec![body])
+    page(vec![body])
 }
 
 pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
@@ -354,7 +354,7 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
                 )
                 .with_child(Box::new(
                     stack()
-                        .with_gap(ui.theme.tokens.spacing.rhythm.related)
+                        .with_rhythm(ui::tokens::Rhythm::Related)
                         .push(Box::new(
                             Row::new()
                                 .no_wrap()
@@ -391,7 +391,7 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
         children.push(Box::new(creators));
     }
     children.push(latest);
-    page(ui.theme, children)
+    page(children)
 }
 
 pub fn history(ui: Ui<'_>) -> Scrollable {
@@ -412,7 +412,7 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
     } else {
         children.push(video_grid(ui, videos));
     }
-    page(ui.theme, children)
+    page(children)
 }
 
 /// The shared queue: membership syncs with collaborators, while each device
@@ -444,18 +444,15 @@ pub fn queue(ui: Ui<'_>) -> Scrollable {
             .dimmed(),
         ));
     }
-    page(ui.theme, children)
+    page(children)
 }
 
 pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
     let model = ui.model;
     let Some(pl) = model.playlist(id) else {
-        return page(
-            ui.theme,
-            vec![Box::new(
-                EmptyState::new(t("tube-playlist-missing")).with_icon(Icon::ListVideo),
-            )],
-        );
+        return page(vec![Box::new(
+            EmptyState::new(t("tube-playlist-missing")).with_icon(Icon::ListVideo),
+        )]);
     };
     let videos: Vec<&Video> = pl
         .video_ids
@@ -498,7 +495,7 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
     let mut header = Row::new()
         .no_wrap()
         .align_start()
-        .with_gap(ui.theme.tokens.spacing.rhythm.group);
+        .with_rhythm(ui::tokens::Rhythm::Group);
     if !pl.thumbnail_url.is_empty() && ui.imgs.store_handle().is_some() {
         header = header.push(Box::new(
             Container::new()
@@ -525,18 +522,15 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
     };
     let mut children: Vec<Element> = vec![Box::new(header)];
     children.push(list);
-    page(ui.theme, children)
+    page(children)
 }
 
 pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
     let model = ui.model;
     let Some(ch) = model.channel(id) else {
-        return page(
-            ui.theme,
-            vec![Box::new(
-                EmptyState::new(t("tube-creator-missing")).with_icon(Icon::Users),
-            )],
-        );
+        return page(vec![Box::new(
+            EmptyState::new(t("tube-creator-missing")).with_icon(Icon::Users),
+        )]);
     };
     let mut children: Vec<Element> = Vec::new();
     if !ch.banner_url.is_empty() && ui.imgs.store_handle().is_some() {
@@ -551,13 +545,13 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
 
     let mut name = Row::new()
         .no_wrap()
-        .with_gap(ui.theme.tokens.spacing.rhythm.related)
+        .with_rhythm(ui::tokens::Rhythm::Related)
         .push(Box::new(text(&ch.name, TextRole::Title)));
     if ch.verified {
         name = name.push(Box::new(ui::widget::IconWidget::new(Icon::Check)));
     }
     let mut about = stack()
-        .with_gap(ui.theme.tokens.spacing.rhythm.tight)
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .push(Box::new(name));
     if !ch.handle.is_empty() && ch.handle != ch.id {
         about = about.push(Box::new(
@@ -571,7 +565,7 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
     }
     let header = Row::new()
         .no_wrap()
-        .with_gap(ui.theme.tokens.spacing.rhythm.section)
+        .with_rhythm(ui::tokens::Rhythm::Section)
         .push(Box::new(channel_avatar(
             ui,
             &ch.id,
@@ -593,7 +587,7 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
             vec![video_grid(ui, videos)],
         )));
     }
-    page(ui.theme, children)
+    page(children)
 }
 
 fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
@@ -620,12 +614,9 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
     let theme = ui.theme;
     let (content_w, content_h) = content_size;
     let Some(v) = model.video(id) else {
-        return page(
-            theme,
-            vec![Box::new(
-                EmptyState::new(t("tube-video-missing")).with_icon(Icon::Film),
-            )],
-        );
+        return page(vec![Box::new(
+            EmptyState::new(t("tube-video-missing")).with_icon(Icon::Film),
+        )]);
     };
 
     prepare_player(ui, v, &player);
@@ -663,7 +654,7 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
             Row::new()
                 .no_wrap()
                 .align_start()
-                .with_gap(theme.tokens.spacing.rhythm.group)
+                .with_rhythm(ui::tokens::Rhythm::Group)
                 .push(Box::new(
                     Container::new()
                         .with_no_padding()
@@ -680,7 +671,7 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
     } else {
         Box::new(
             stack()
-                .with_gap(theme.tokens.spacing.rhythm.group)
+                .with_rhythm(ui::tokens::Rhythm::Group)
                 .push(Box::new(details))
                 .push(Box::new(up_next)),
         )
@@ -774,7 +765,7 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     let rhythm = &theme.tokens.spacing.rhythm;
     let dearrow = model.settings.dearrow_titles_on();
 
-    let mut facts = Row::new().with_gap(theme.tokens.spacing.s4);
+    let mut facts = Row::new().with_rhythm(ui::tokens::Rhythm::Section);
     let mut fact = |s: String| {
         facts = std::mem::take(&mut facts)
             .push(Box::new(text(&s, TextRole::Caption).numeric().dimmed()));
@@ -868,7 +859,7 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
     .role(ButtonRole::Secondary)
     .on_click(ui.push(Action::Navigate(Route::Settings)));
     Row::new()
-        .with_gap(ui.theme.tokens.spacing.rhythm.related)
+        .with_rhythm(ui::tokens::Rhythm::Related)
         .push(Box::new(like))
         .push(Box::new(queue))
         .push(Box::new(copy_link))
@@ -943,7 +934,7 @@ fn comment(ui: Ui<'_>, c: &crate::model::Comment) -> Row {
             Badge::text(t("tube-pinned")).style(ChipStyle::Neutral),
         ));
     }
-    let mut reactions = Row::new().with_gap(ui.theme.tokens.spacing.s4);
+    let mut reactions = Row::new().with_rhythm(ui::tokens::Rhythm::Section);
     if c.likes > 0 {
         reactions = reactions.push(Box::new(
             text(
@@ -1151,13 +1142,11 @@ fn settings_impl(
         .section(segment_settings(ui))
         .section(dearrow_settings(ui))
         .section(device_sync_settings(ui, sync, pairing_input));
-    // Forms are bounded to a readable measure: the content minimum plus one
-    // detail column.
-    let metrics = &ui.theme.tokens.metrics;
+    // Forms keep to the readable width on the leading edge.
     let column = Column::new().with_intrinsic_height().push(Box::new(
         Container::new()
             .with_no_padding()
-            .with_centered_max_width(metrics.content_min_width + metrics.inspector_width)
+            .readable()
             .with_child(Box::new(form)),
     ));
     Scrollable::new_vertical().with_child(Box::new(column))

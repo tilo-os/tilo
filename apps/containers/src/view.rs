@@ -305,10 +305,10 @@ pub(crate) fn container_list(
 }
 
 /// A list in the list column: its rows' text on the column's content edge
-/// (the shell's `s3` inset, where the column's title starts), their lift
+/// (the column gutter, where the column's title starts), their lift
 /// bleeding into the inset.
 fn list_column(list: Element) -> Element {
-    Box::new(Stack::new(SpacingStep::S0, vec![list]).inset(SpacingStep::S3, SpacingStep::S0))
+    Box::new(Stack::new(SpacingStep::S0, vec![list]).on_column_edge())
 }
 
 fn containers_empty(live: bool, intents: &Intents) -> Element {
@@ -354,6 +354,8 @@ struct Stack {
     gap: SpacingStep,
     inset_x: SpacingStep,
     inset_y: SpacingStep,
+    /// Inset sideways by the column gutter instead of `inset_x`.
+    column_edge: bool,
     /// As wide as its widest child instead of its parent.
     hug: bool,
 }
@@ -369,6 +371,7 @@ impl Stack {
             gap,
             inset_x: SpacingStep::S0,
             inset_y: SpacingStep::S0,
+            column_edge: false,
             hug: false,
         }
     }
@@ -382,6 +385,13 @@ impl Stack {
     fn inset(mut self, x: SpacingStep, y: SpacingStep) -> Self {
         self.inset_x = x;
         self.inset_y = y;
+        self
+    }
+
+    /// Stand the content on the column's content edge, where the shell
+    /// starts the column's title.
+    fn on_column_edge(mut self) -> Self {
+        self.column_edge = true;
         self
     }
 
@@ -411,7 +421,12 @@ impl ui::widget::Decorator for Stack {
         node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         let spacing = &theme.tokens.spacing;
-        let (x, y) = (spacing.step(self.inset_x), spacing.step(self.inset_y));
+        let x = if self.column_edge {
+            ui::num::f32_of_f64(ui::chrome::column_gutter(theme))
+        } else {
+            spacing.step(self.inset_x)
+        };
+        let y = spacing.step(self.inset_y);
         self.column = std::mem::take(&mut self.column).with_horizontal_padding(x, x);
         self.column.set_vertical_padding(y);
         self.column.set_gap(spacing.step(self.gap));
@@ -584,56 +599,12 @@ pub(crate) fn line_severity(line: &str) -> Tone {
 
 /// One line of output, in the ink of its severity: a warning or an error
 /// reads at a glance, as it does in a terminal.
-struct LogLine {
-    text: Text,
-    tone: Tone,
-    ink: Option<ui::vello::peniko::Color>,
-}
-
-impl LogLine {
-    fn new(line: &str) -> Self {
-        Self {
-            text: Text::new(line).with_role(TextRole::Code),
-            tone: line_severity(line),
-            ink: None,
-        }
-    }
-}
-
-impl ui::widget::Decorator for LogLine {
-    type Inner = Text;
-
-    fn inner(&self) -> &Text {
-        &self.text
-    }
-
-    fn inner_mut(&mut self) -> &mut Text {
-        &mut self.text
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::vello::kurbo::Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if self.tone != Tone::Neutral {
-            // The status colour, made legible on the well the line sits on.
-            let colors = &theme.tokens.colors;
-            let ink = colors.ink_on_any(
-                &[colors.surfaces.content],
-                self.tone.colour(theme),
-                ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-            );
-            if self.ink != Some(ink) {
-                self.ink = Some(ink);
-                self.text = std::mem::replace(&mut self.text, Text::new("")).with_color(ink);
-            }
-        }
-        self.text.draw(scene, transform, text, theme, presence);
-    }
+fn log_line(line: &str) -> Element {
+    let text = Text::new(line).with_role(TextRole::Code);
+    Box::new(match line_severity(line) {
+        Tone::Neutral => text,
+        tone => text.tone(tone),
+    })
 }
 
 fn logs(c: &Container) -> Element {
@@ -646,12 +617,9 @@ fn logs(c: &Container) -> Element {
 /// Output as the process wrote it, in a well: one line per line, never
 /// broken inside a word. A line wider than the column scrolls sideways.
 fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
-    let mut lines: Vec<Element> = lines
-        .map(|line| Box::new(LogLine::new(line)) as Element)
-        .collect();
-    // Room under the last line for the sideways scroll bar, which the
-    // scroll view lays over its content.
-    lines.push(Box::new(Spacer::token(SpacingStep::S2)));
+    // A line wider than the well scrolls sideways; the scroll view keeps
+    // the bar's lane under the last line while it does.
+    let lines: Vec<Element> = lines.map(log_line).collect();
     Box::new(
         Well::new().with_background().with_child(Box::new(
             Scrollable::new_horizontal()

@@ -15,12 +15,11 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, Container, ControlSize, Element, EmptyState, Field,
-    FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput, ProgressBar,
-    ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Spacer, StatGroup, StatTile, Text, ToggleGroup, Tone, TreeNode,
+    Banner, Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element,
+    EmptyState, Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection,
+    NumberInput, ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row,
+    Scrollable, Section, SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode,
     TreeRowDecoration, TreeRowTone, TreeView, Widget,
 };
 
@@ -442,19 +441,24 @@ fn timeline_heading(current: Order, intents: &Intents) -> Row {
         ))
         .push(Box::new(Spacer::new()))
         .push(Box::new(
-            ToggleGroup::new(
-                vec![
-                    Segment::new("Newest first").short("Newest"),
-                    Segment::new("Oldest first").short("Oldest"),
-                ],
-                usize::from(current == Order::OldestFirst),
+            Dropdown::from_state(
+                vec!["Newest first".to_owned(), "Oldest first".to_owned()],
+                &LocalState::new(
+                    match current {
+                        Order::NewestFirst => "Newest first",
+                        Order::OldestFirst => "Oldest first",
+                    }
+                    .to_owned(),
+                ),
             )
+            .with_id("backups-order")
+            .with_accessible_name("Order of snapshots")
             .control_size(ControlSize::Small)
-            .on_view("backups-order", move |index| {
-                order.push(Intent::SetOrder(if index == 0 {
-                    Order::NewestFirst
-                } else {
+            .on_change(move |choice| {
+                order.push(Intent::SetOrder(if choice == "Oldest first" {
                     Order::OldestFirst
+                } else {
+                    Order::NewestFirst
                 }));
             }),
         ))
@@ -473,7 +477,7 @@ pub fn content(
     // separate groups of the page, a group step apart.
     let mut page = Column::new()
         .with_intrinsic_height()
-        .with_gap(ui::tokens::Spacing::BASE.rhythm.group);
+        .with_rhythm(ui::tokens::Rhythm::Group);
     if let Some((title, message)) = model.failure {
         page = page.push(failure_banner(title, message, intents));
     }
@@ -723,6 +727,16 @@ fn snapshot_row(
     if let Some(source) = source {
         row = row.icon(source_icon(source.kind));
     }
+    let mut tags: Vec<(&str, ChipStyle)> = Vec::new();
+    if snapshot.kind == SnapType::Manual {
+        tags.push(("Manual", ChipStyle::Neutral));
+    }
+    if snapshot.retention == Retention::Keep {
+        tags.push(("Kept", ChipStyle::Neutral));
+    }
+    if !tags.is_empty() {
+        row = row.tags(&tags);
+    }
     match snapshot.status {
         SnapStatus::Complete => row,
         SnapStatus::Verifying => row.active(),
@@ -731,7 +745,7 @@ fn snapshot_row(
 }
 
 /// How many snapshots each class keeps.
-fn retention_page(states: &[LocalState<f64>; 4]) -> Row {
+fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
     let mut keep = FormSection::new("Snapshots to keep").grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
@@ -755,16 +769,12 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Row {
         .with_no_padding()
         .push(Box::new(keep))
         .push(Box::new(total));
-    // A form is bounded to a readable measure, so each count sits near its
-    // label; the spacer keeps it on the page's leading edge.
-    Row::new()
-        .push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_max_width(ui::tokens::Metrics::BASE.panel_width_sheet)
-                .with_child(Box::new(form)),
-        ))
-        .push(Box::new(Spacer::new()))
+    // A form is bounded to the readable measure, on the page's leading
+    // edge, so each count sits near its label.
+    Container::new()
+        .with_no_padding()
+        .readable()
+        .with_child(Box::new(form))
 }
 
 // ---- the selected snapshot ----------------------------------------------
@@ -896,7 +906,7 @@ pub fn restore_dialog(
         .on_dismiss(move || dismiss.push(Intent::CloseRestore))
 }
 
-/// The snapshot's file index as a tree, its top level open, sizes trailing.
+/// The snapshot's file index as a tree, every folder open, sizes trailing.
 fn file_tree(files: &[SnapFile]) -> Option<Element> {
     // Build the forest from the depth-ordered index.
     let mut stack: Vec<TreeNode<Option<u64>>> = Vec::new();
@@ -934,7 +944,8 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
         1 => roots.pop()?,
         _ => TreeNode::branch(0, "Snapshot", None, roots),
     };
-    let root_id = root.id;
+    let mut branches = Vec::new();
+    open_branches(&root, &mut branches);
     let mut tree = TreeView::new(root)
         .with_id("backups-restore-contents")
         .with_row_decoration(|model: &TreeNode<Option<u64>>, row, theme| {
@@ -952,8 +963,18 @@ fn file_tree(files: &[SnapFile]) -> Option<Element> {
             }
             face.tone(TreeRowTone::Primary)
         });
-    tree.restore_expanded([root_id]);
+    tree.restore_expanded(branches);
     Some(Box::new(tree))
+}
+
+/// The id of every folder under and including `node`.
+fn open_branches(node: &TreeNode<Option<u64>>, out: &mut Vec<u64>) {
+    if node.is_branch() {
+        out.push(node.id);
+        for child in &node.children {
+            open_branches(child, out);
+        }
+    }
 }
 
 // ---- first run and recovery -----------------------------------------------

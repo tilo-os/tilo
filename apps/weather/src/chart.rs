@@ -17,7 +17,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
-use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
+use vello::peniko::{BlendMode, Color, Fill};
 
 use ui::charts::{Sparkline, TrendCurve, TrendFill, TrendRange, TrendStyle};
 use ui::paint::PaintCtx;
@@ -370,28 +370,18 @@ fn draw_now_highlight(ctx: &mut PaintCtx<'_>, cols: &[HourColumn], geo: &StripGe
 /// clipped column reads as "more this way" instead of as a cut: the ground
 /// the strip stands on, from clear one fade-width in to whole at the edge.
 fn fade_scrolled_edges(ctx: &mut PaintCtx<'_>, geo: &StripGeometry, content_w: f64) {
+    use ui::surface::ContentEdge;
     let band = geo.band;
-    let fade = geo.col_w.min(band.width() / 4.0);
     let ground = ctx.theme.tokens.colors.surfaces.content;
     let before = geo.scroll_x > 0.5;
     let after = geo.scroll_x + band.width() < content_w - 0.5;
-    for (show, edge, inner) in [
-        (before, band.x0, band.x0 + fade),
-        (after, band.x1, band.x1 - fade),
+    for (show, edge) in [
+        (before, ContentEdge::Leading),
+        (after, ContentEdge::Trailing),
     ] {
-        if !show {
-            continue;
+        if show {
+            ui::surface::content_edge_fade(ctx.scene, ctx.transform, band, edge, ground);
         }
-        let rect = Rect::new(edge.min(inner), band.y0, edge.max(inner), band.y1);
-        let wash = Gradient::new_linear(Point::new(inner, band.y0), Point::new(edge, band.y0))
-            .with_stops([(0.0_f32, Color::TRANSPARENT), (1.0_f32, ground)]);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            &Brush::Gradient(wash),
-            None,
-            &rect,
-        );
     }
 }
 

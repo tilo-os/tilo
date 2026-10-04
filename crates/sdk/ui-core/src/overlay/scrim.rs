@@ -40,10 +40,16 @@ pub enum FadeEdge {
 /// Samples of the fade's ease; enough that no band shows at 8 bits.
 const FADE_STOPS: usize = 9;
 
+/// The least a fade over media is: over dark content (a night map, a dark
+/// photo) a fainter scrim does not move the picture enough to read as a
+/// band under the text, so any fade at all is at least this strong.
+pub const MIN_FADE_STRENGTH: f32 = 0.4;
+
 /// Fade `rect` from `media.scrim` at `strength` on `edge` to clear on the
 /// opposite edge, so text drawn on media near that edge (in `media.ink`)
 /// stays legible. One smooth gradient, eased so the fade has no visible
-/// start line; never stepped bands. `strength` is clamped to `0..=1`.
+/// start line; never stepped bands. `strength` is clamped to
+/// [`MIN_FADE_STRENGTH`]`..=1`; zero paints nothing.
 pub fn vertical_fade(
     scene: &mut Scene,
     transform: Affine,
@@ -52,10 +58,10 @@ pub fn vertical_fade(
     strength: f32,
     theme: &Theme,
 ) {
-    let strength = strength.clamp(0.0, 1.0);
     if strength <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
+    let strength = strength.clamp(MIN_FADE_STRENGTH, 1.0);
     let (strong, clear) = match edge {
         FadeEdge::Top => ((rect.x0, rect.y0), (rect.x0, rect.y1)),
         FadeEdge::Bottom => ((rect.x0, rect.y1), (rect.x0, rect.y0)),
@@ -129,6 +135,24 @@ mod tests {
                 .count();
             assert_eq!(fills, 1, "one linear gradient fill");
             assert_eq!(scene.encoding().draw_tags.len(), 1, "and nothing else");
+        }
+
+        // Case `a_faint_fade_still_takes_the_minimum_step`.
+        {
+            const { assert!(MIN_FADE_STRENGTH > 0.0 && MIN_FADE_STRENGTH < 1.0) };
+            let mut scene = Scene::new();
+            vertical_fade(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                FadeEdge::Top,
+                0.0,
+                &Theme::dark(),
+            );
+            assert!(
+                scene.encoding().draw_tags.is_empty(),
+                "no fade asked, none drawn"
+            );
         }
     }
 }

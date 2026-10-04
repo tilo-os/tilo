@@ -42,7 +42,7 @@ use crate::model::{
     sample_contacts,
 };
 use crate::vcard::VCardVersion;
-use crate::view::{Bridge, Compact, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
+use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
 
 mod dialogs;
 mod files;
@@ -225,7 +225,6 @@ enum MoreAction {
 /// separator).
 enum OpenMenu {
     Contact(ContactId, Vec<Option<ContextAction>>),
-    More(Vec<Option<MoreAction>>),
 }
 
 /// A menu waiting for its anchor: the row or the button it opens from is
@@ -233,7 +232,6 @@ enum OpenMenu {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum PendingMenu {
     Contact(ContactId),
-    More,
 }
 
 /// What the content column shows.
@@ -303,6 +301,14 @@ pub struct ContactsApp {
     destination: LocalState<Option<String>>,
     /// The list's order, as the sort control shows it.
     sort_choice: LocalState<String>,
+    /// Whether the sort control stands under the overview's header: only
+    /// while the list has rows to order.
+    sort_shown: bool,
+    /// The More menu's rows and whether each is enabled, as last handed to
+    /// its button.
+    more_shown: Vec<(MoreAction, bool)>,
+    /// The More command chosen in the menu, run after the event.
+    more_pick: std::sync::Arc<std::sync::Mutex<Option<MoreAction>>>,
     /// The sidebar rows last handed to the shell.
     sidebar_shown: Vec<(String, String, u32)>,
     content_shown: Option<ContentKey>,
@@ -371,14 +377,13 @@ pub struct ContactsApp {
 }
 
 /// The overview header's commands: search, more, and new contact.
-fn overview_actions(shared: &Shared) -> Vec<Element> {
+fn overview_actions(shared: &Shared, more: Vec<MenuItem>) -> Vec<Element> {
     vec![
         Box::new(ui::search::search_button(
             ui::search::SearchRequest::this_app(),
         )),
         Box::new(
-            Button::icon_only("contacts.more", Icon::MoreHorizontal, "More actions")
-                .on_view(queue(shared, Request::More)),
+            Button::icon_only(MORE_BUTTON, Icon::MoreHorizontal, "More actions").with_menu(more),
         ),
         Box::new(
             Button::icon_only("contacts.new", Icon::Plus, "New contact")
@@ -386,6 +391,9 @@ fn overview_actions(shared: &Shared) -> Vec<Element> {
         ),
     ]
 }
+
+/// The overview header's More button, which opens the [`MoreAction`] menu.
+const MORE_BUTTON: &str = "contacts.more";
 
 /// The list's orders: the control's value, its label, and the key.
 const SORTS: &[(&str, &str, SortKey)] = &[
@@ -407,7 +415,7 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
         .map(|(_, label, _)| (*label).to_owned())
         .collect();
     let chosen = std::rc::Rc::clone(shared);
-    let mut sort = Dropdown::from_state(labels.clone(), sort_choice)
+    let mut sort = Dropdown::from_state(labels, sort_choice)
         .with_id("contacts.sort")
         .with_accessible_name("Sort contacts")
         .on_change(move |value| {
@@ -421,21 +429,17 @@ fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
             .map(|(value, label, _)| ((*value).to_owned(), (*label).to_owned()))
             .collect(),
     );
-    Box::new(Compact::new(sort, labels, ControlSize::Small))
+    Box::new(sort.control_size(ControlSize::Small))
 }
 
-/// The first widget in `root`'s tree with `id`, depth first.
-fn find_rect(root: &dyn Widget, id: &str) -> Option<Rect> {
+/// The first widget in `root`'s tree with `id`, depth first, to change.
+fn find_mut<'w>(root: &'w mut dyn Widget, id: &str) -> Option<&'w mut dyn Widget> {
     if root.test_id() == Some(id) {
-        return Some(root.get_rect());
+        return Some(root);
     }
-    let mut found = None;
-    root.for_each_child(&mut |child| {
-        if found.is_none() {
-            found = find_rect(child, id);
-        }
-    });
-    found
+    root.children_mut()
+        .into_iter()
+        .find_map(|child| find_mut(child, id))
 }
 
 impl ContactsApp {
@@ -464,13 +468,12 @@ impl ContactsApp {
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
-            .overview_controls(sort_control(&shared, &sort_choice))
             .content(Box::new(EmptyPane::new(
                 std::rc::Rc::clone(&shared),
                 "No contact selected",
                 None,
             )))
-            .overview_header("All contacts", overview_actions(&shared));
+            .overview_header("All contacts", overview_actions(&shared, Vec::new()));
         Self {
             seed_samples,
             search_provider: crate::search_provider::ContactSearchProvider::new(&store),
@@ -503,6 +506,9 @@ impl ContactsApp {
             shared,
             destination,
             sort_choice,
+            sort_shown: false,
+            more_shown: Vec::new(),
+            more_pick: std::sync::Arc::default(),
             sidebar_shown: Vec::new(),
             content_shown: None,
             header_shown: None,
@@ -588,7 +594,12 @@ impl ContactsApp {
             }
             "favorites" => self.set_group_filter(Some(FAVORITES_FILTER.into())),
             "context" => self.pending_menu = self.selected.map(PendingMenu::Contact),
-            "more" => self.pending_menu = Some(PendingMenu::More),
+            "more" => {
+                self.publish_more();
+                if let Some(button) = self.more_button() {
+                    button.open(true);
+                }
+            }
             "confirm" => self.confirm_delete = self.selected,
             "import-conflict" => {
                 if let Some(existing) = self.selected.and_then(|id| self.store.get(id)).cloned() {
@@ -1396,6 +1407,59 @@ impl ContactsApp {
         self.dirty = true;
     }
 
+    /// The More menu's commands and whether each can run now.
+    fn more_rows(&self) -> Vec<(MoreAction, bool)> {
+        let importing = self.import_rx.is_some() || self.import_parse_rx.is_some();
+        let mut rows = vec![
+            (MoreAction::Import, !importing),
+            (
+                MoreAction::Export,
+                !self.store.is_empty() && !self.export_is_busy(),
+            ),
+        ];
+        if self.duplicate_candidate.is_some() {
+            rows.push((MoreAction::ReviewDuplicate, true));
+        }
+        rows
+    }
+
+    /// Hand the More button its rows when what they offer changed.
+    fn publish_more(&mut self) {
+        let rows = self.more_rows();
+        if rows == self.more_shown {
+            return;
+        }
+        let items = rows
+            .iter()
+            .map(|&(action, enabled)| {
+                let label = match action {
+                    MoreAction::Import if !enabled => "Importing…",
+                    MoreAction::Import => "Import contacts",
+                    MoreAction::Export => "Export contacts",
+                    MoreAction::ReviewDuplicate => "Review possible duplicate",
+                };
+                let pick = std::sync::Arc::clone(&self.more_pick);
+                MenuItem::action(label, move || {
+                    if let Ok(mut pick) = pick.lock() {
+                        *pick = Some(action);
+                    }
+                })
+                .with_enabled(enabled)
+            })
+            .collect();
+        if let Some(button) = self.more_button() {
+            button.set_items(items);
+            self.more_shown = rows;
+        }
+    }
+
+    /// The overview header's More button, inside the shell.
+    fn more_button(&mut self) -> Option<&mut ui::widget::MenuButton> {
+        find_mut(&mut self.shell, MORE_BUTTON)?
+            .as_any_mut()?
+            .downcast_mut::<ui::widget::MenuButton>()
+    }
+
     fn execute_more_action(&mut self, doc: &AutoCommit, action: MoreAction) {
         match action {
             MoreAction::Import => self.request_import(),
@@ -1555,6 +1619,7 @@ impl ContactsApp {
                 id: contact.id,
                 name: contact.display_name(),
                 secondary: contact.subtitle(),
+                favorite: contact.favorite,
             })
             .collect();
         let empty_title = match self.group_filter.as_deref() {
@@ -1562,6 +1627,14 @@ impl ContactsApp {
             Some(_) => Some("No one is in this group".to_owned()),
             None => None,
         };
+        let sortable = !rows.is_empty();
+        if sortable != self.sort_shown {
+            self.sort_shown = sortable;
+            self.shell.set_overview_controls(
+                sortable.then(|| sort_control(&self.shared, &self.sort_choice)),
+            );
+            self.structure_dirty = true;
+        }
         {
             let mut bridge = self.shared.borrow_mut();
             if bridge.rows != rows || bridge.empty_title != empty_title {
@@ -1601,6 +1674,7 @@ impl ContactsApp {
         if self.list_stale {
             self.publish_list();
         }
+        self.publish_more();
         if self.selected.is_some_and(|id| self.store.get(id).is_none()) {
             self.selected = self.visible_ids().first().copied();
         }
@@ -1666,8 +1740,7 @@ impl ContactsApp {
         }
     }
 
-    /// Open a menu: a contact's actions at `anchor`, or the More menu under
-    /// its button.
+    /// Open a contact's actions at `anchor`.
     fn open_menu_at(&mut self, menu: PendingMenu, anchor: Rect) {
         let mut built = ContextMenu::new();
         let open = match menu {
@@ -1703,30 +1776,6 @@ impl ContactsApp {
                 }
                 OpenMenu::Contact(id, rows)
             }
-            PendingMenu::More => {
-                let importing = self.import_rx.is_some() || self.import_parse_rx.is_some();
-                let mut rows = vec![Some(MoreAction::Import), Some(MoreAction::Export)];
-                if self.duplicate_candidate.is_some() {
-                    rows.push(Some(MoreAction::ReviewDuplicate));
-                }
-                for row in &rows {
-                    built.push(match row {
-                        Some(MoreAction::Import) => MenuItem::selection(if importing {
-                            "Importing…"
-                        } else {
-                            "Import contacts"
-                        })
-                        .with_enabled(!importing),
-                        Some(MoreAction::Export) => MenuItem::selection("Export contacts")
-                            .with_enabled(!self.store.is_empty() && !self.export_is_busy()),
-                        Some(MoreAction::ReviewDuplicate) => {
-                            MenuItem::selection("Review possible duplicate")
-                        }
-                        None => MenuItem::separator(),
-                    });
-                }
-                OpenMenu::More(rows)
-            }
         };
         built.open_anchored(anchor, self.rect);
         self.menu = built;
@@ -1751,9 +1800,6 @@ impl ContactsApp {
                     let x = row.x0 + row.height();
                     Rect::new(x, row.y0, x, row.y1)
                 }),
-            PendingMenu::More => find_rect(&self.shell, "contacts.more")
-                .filter(|rect| rect.width() > 0.0)
-                .map(|rect| Rect::new(rect.x0, rect.y1, rect.x1, rect.y1)),
         }
     }
 
@@ -1764,11 +1810,6 @@ impl ContactsApp {
                     self.execute_context_action(doc, id, *action);
                 }
             }
-            Some(OpenMenu::More(rows)) => {
-                if let Some(Some(action)) = rows.get(index) {
-                    self.execute_more_action(doc, *action);
-                }
-            }
             None => {}
         }
     }
@@ -1776,6 +1817,10 @@ impl ContactsApp {
     /// Turn what the panes and buttons asked for into view changes and
     /// document actions.
     fn apply_requests(&mut self, doc: &mut AutoCommit) {
+        let picked = self.more_pick.lock().ok().and_then(|mut pick| pick.take());
+        if let Some(action) = picked {
+            self.execute_more_action(doc, action);
+        }
         loop {
             let requests = self.shared.borrow_mut().take_requests();
             if requests.is_empty() {
@@ -1822,13 +1867,6 @@ impl ContactsApp {
                 }
             }
             Request::NewContact => self.begin_new_contact(),
-            Request::More => match self.menu_anchor(PendingMenu::More) {
-                Some(anchor) => {
-                    self.open_menu_at(PendingMenu::More, anchor);
-                    self.menu_follows = Some(PendingMenu::More);
-                }
-                None => self.pending_menu = Some(PendingMenu::More),
-            },
             Request::ToggleFavorite => {
                 if let Some(id) = self.selected {
                     self.toggle_favorite(doc, id);
@@ -2094,7 +2132,8 @@ impl Widget for ContactsApp {
         }
         if self.menu.is_open() {
             self.menu.layout_within(tr, theme);
-            self.menu.draw(scene, transform, tr, theme, presence);
+            self.menu
+                .draw_overlay(scene, transform, tr, theme, presence);
         }
         if let Some((_, dialog)) = &mut self.dialog {
             dialog.draw_overlay(scene, transform, tr, theme, presence);

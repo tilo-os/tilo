@@ -12,7 +12,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::style_helpers::{auto, length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -26,9 +25,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AppModel, AvatarFace, Column, ControlSize, Dropdown, EmptyState, EmptyStateContent,
-    Interaction, ListRowFace, ModelPath, RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt,
-    Widget,
+    AppModel, AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, ModelPath,
+    RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt, Widget,
 };
 
 use crate::form::{RowKind, TypeTarget};
@@ -44,6 +42,8 @@ pub(crate) struct ListEntry {
     pub name: String,
     /// The one secondary fact: the organization, or the job title.
     pub secondary: String,
+    /// A favourite carries a filled star after the name.
+    pub favorite: bool,
 }
 
 /// What the person asked for, queued by a pane or a header button and
@@ -60,8 +60,6 @@ pub(crate) enum Request {
     /// The list's order was chosen.
     Sort(crate::model::SortKey),
     NewContact,
-    /// The overview header's More button.
-    More,
     ToggleFavorite,
     EditSelected,
     DeleteSelected,
@@ -265,11 +263,10 @@ impl ContactList {
 
         let overflows = self.overflows();
         let bridge = self.shared.borrow();
-        // The rows' text starts on the column's content edge (the shell's
-        // `s3` column inset, where the column's title and the controls
-        // start); a row's lift bleeds past it. The scroll bar keeps its
-        // gutter.
-        let edge = f64::from(theme.tokens.spacing.s3) - ui::chrome::row_bleed(theme);
+        // The rows' text starts on the column's content edge, where the
+        // column's title starts; a row's lift bleeds past it. The scroll bar
+        // keeps its gutter.
+        let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let row_x0 = self.rect.x0 + edge;
         let width_end = if overflows {
             self.rect.x1 - self.gutter
@@ -306,6 +303,9 @@ impl ContactList {
                         focused: false,
                         disabled: false,
                     });
+                if row.favorite {
+                    face = face.mark(Icon::Star);
+                }
                 if let Some(next) = bridge.rows.get(index + 1) {
                     face = face.separator(bridge.selected == Some(next.id));
                 }
@@ -519,10 +519,13 @@ impl Widget for ContactList {
             .filter_map(|(offset, (id, rect))| {
                 let row = bridge.rows.iter().find(|row| row.id == *id)?;
                 let identity = row.id.to_string();
-                let face = ListRowFace::new(&row.name)
+                let mut face = ListRowFace::new(&row.name)
                     .secondary(&row.secondary)
                     .leading(RowLeading::Avatar(AvatarFace::new(&row.name, &identity)))
                     .selected(bridge.selected == Some(row.id));
+                if row.favorite {
+                    face = face.mark(Icon::Star);
+                }
                 Some(
                     face.accessibility(*rect, select_target(row.id))
                         .with_position(start + offset + 1, total)
@@ -655,124 +658,5 @@ impl ui::widget::Decorator for EmptyPane {
 
     fn test_id(&self) -> Option<&str> {
         Some("contacts.empty")
-    }
-}
-
-/// A dropdown as wide as its widest choice instead of an equal share of the
-/// row it stands in: a phone's kind beside its number, the list's order.
-pub(crate) struct Compact {
-    menu: Dropdown,
-    labels: Vec<String>,
-    size: ControlSize,
-}
-
-impl Compact {
-    pub(crate) fn new(menu: Dropdown, labels: Vec<String>, size: ControlSize) -> Self {
-        Self {
-            menu: menu.control_size(size),
-            labels,
-            size,
-        }
-    }
-}
-
-impl ui::widget::Decorator for Compact {
-    type Inner = Dropdown;
-
-    fn inner(&self) -> &Dropdown {
-        &self.menu
-    }
-
-    fn inner_mut(&mut self) -> &mut Dropdown {
-        &mut self.menu
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = Widget::build_layout(&mut self.menu, taffy, theme, node_map);
-        let style = self.size.label_style(theme);
-        let widest = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-            self.labels
-                .iter()
-                .map(|label| text.measure_style(label, None, &style).0)
-                .fold(0.0_f32, f32::max)
-        });
-        // The label, the chevron's pointer-sized slot and the field's
-        // insets on both sides.
-        let width =
-            widest + theme.tokens.metrics.min_pointer_target + 2.0 * theme.tokens.spacing.s3;
-        if let Ok(current) = taffy.style(node) {
-            let mut layout = current.clone();
-            layout.size.width = length(width.ceil());
-            layout.flex_shrink = 0.0;
-            let _ = taffy.set_style(node, layout);
-        }
-        node
-    }
-}
-
-/// A column bounded to a readable measure and centred in the space it is
-/// given, with the page gutter around it: detail pages and forms do not
-/// stretch across a wide window.
-pub(crate) struct Readable {
-    column: Column,
-    /// Its children are groups of sections (a page title, then a form),
-    /// spaced as such.
-    groups: bool,
-}
-
-impl Readable {
-    pub(crate) fn new(column: Column) -> Self {
-        Self {
-            column,
-            groups: false,
-        }
-    }
-
-    /// A page whose children are groups of sections.
-    pub(crate) fn of_groups(column: Column) -> Self {
-        Self {
-            column,
-            groups: true,
-        }
-    }
-}
-
-impl ui::widget::Decorator for Readable {
-    type Inner = Column;
-
-    fn inner(&self) -> &Column {
-        &self.column
-    }
-
-    fn inner_mut(&mut self) -> &mut Column {
-        &mut self.column
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.column.build_layout(taffy, theme, node_map);
-        if let Ok(style) = taffy.style(node) {
-            let mut style = style.clone();
-            let gutter = theme.tokens.spacing.s6;
-            // The readable measure forms use (`FormPage`), plus its gutters.
-            style.max_size.width = length(720.0 * theme.ui_scale + 2.0 * gutter);
-            style.size.width = percent(1.0_f32);
-            style.margin.left = auto();
-            style.margin.right = auto();
-            if self.groups {
-                style.gap.height = length(theme.tokens.spacing.rhythm.group);
-            }
-            let _ = taffy.set_style(node, style);
-        }
-        node
     }
 }

@@ -129,6 +129,16 @@ framework now does the job.
 | `literal_gap` | `.with_gap(12.0)`, `.with_padding(16)`, `.with_row_gap(…)`, `.with_column_gap(…)` | `.with_gap(spacing.sN)` etc., or delete it when the composition (form, section, list) already spaces its children. |
 | `literal_spacer` | `Spacer::fixed(12.0)` | Delete it when the gap belongs to the container; otherwise `Spacer::fixed(spacing.sN)`. |
 
+Gaps by relationship replace the reads and hacks apps used to get them:
+
+| Old | New |
+|---|---|
+| `.with_gap(Spacing::BASE.sN)`, `.with_gap(Spacing::BASE.rhythm.group)`, an app `mod rhythm { px::GROUP .. }` | `.with_rhythm(Rhythm::Group)` (or `Tight`, `Related`, `Sibling`, `Section`) on the `Column` / `Row`; it follows density, `ui_scale` and a custom spacing scale |
+| `.with_padding(h, v)` / `with_horizontal_padding` / `with_vertical_padding` with `Spacing::BASE` steps | `.with_padding_rhythm(Rhythm::Sibling, Rhythm::Tight)` (`None` for no inset on an axis) |
+| `Spacer::token(SpacingStep::S0)` between two children to double the column's gap | Delete it: a zero spacer is out of the flow now. Say the gap: `.with_rhythm(..)` on the column, or split the column in two |
+| Pushing a child only when it has content, or a spacer that "cancels" the gap of an empty one | `ui::widget::optional(Some(child))` / `optional(None)`, or `When::new(child, || shown)` / `When::from_state(&state, |s| ..)`; an absent child takes no gap. `Text::from_state` that renders `""` and a `ModelView` that builds `optional(None)` collapse the same way |
+| A `Decorator` around a `Column` that sets its gap from the theme in `build_layout` (snippets `Gapped`) | `Column::with_rhythm` |
+
 ### `typography`
 
 | Key | Matches | Replace with |
@@ -441,9 +451,12 @@ what the colour *did* at that line, first match wins:
 | `ui::surface::Region::{Content, Sidebar, Inspector}` | The region an area of the window is. |
 | `ui::surface::region(scene, transform, rect, region, theme) -> Color` | Paint a region's ground over `rect` (plus the shared-edge hairline where the material gives region and content one ground) and return the ground. For painted apps; `NavShell` calls it for its sidebar. |
 | `Theme::region(region) -> Color` | A region's ground, without painting (to measure against). |
-| `Theme::in_region(region) -> Theme`, `Theme::on_ground(ground) -> Theme` | The theme for what is drawn on that ground: `surfaces.content` re-pointed to it, ink tiers re-measured, `intent.selection` / `selection_hover` stepped from it. Pass it to the children's `draw`. |
+| `Theme::in_region(region) -> Theme`, `Theme::on_ground(ground) -> Theme` | The theme for what is drawn on that ground: `surfaces.content` re-pointed to it, ink tiers re-measured, `intent.selection` / `selection_hover` stepped from it. On a ground of the other polarity (`media.letterbox` under a light theme) the inverted fill is re-derived too, so a `Primary` button over media stays legible. Pass it to the children's `draw`. |
+| `Colors::wash_on(ground, Tone, WashStrength::{Rest, Selected}) -> Wash` | A status wash (an added line, a failed row) composited on its ground with `ink`, `ink_dim` and `mark` that read on it. `Selected` keeps the hue on the selection lift (`lift_on` alone drops it). Replaces app `WASH` alphas and `ChipStyle::Tinted(..).colors(..).fill` used as a row wash. |
+| `colors.media.guide` | A composition guide over a live picture (thirds, a level line): translucent media ink. |
+| `Text::tone(Tone)` | Status text ("Running", "Stopped", a person's name) in its tone's ink, resolved when drawn against the ground under it. Replaces `.with_color(semantic.success)`. |
 | `ui::surface::region_needs_edge(ground, content)`, `ui::tokens::colors::REGION_MIN_STEP` | Whether a tier is too close to content to separate by tone (only the high-contrast material). |
-| `theme.tokens.spacing.rhythm.{tight, related, sibling, section, group}` (`ui::tokens::Rhythm`) | Gaps by relationship (4 / 8 / 12 / 16 / 24 at 1×), scaled with `ui_scale` and a custom spacing. |
+| `theme.tokens.spacing.rhythm.{tight, related, sibling, section, group}` (`ui::tokens::RhythmScale`; `rhythm.get(Rhythm::Group)` by step) | Gaps by relationship (4 / 8 / 12 / 16 / 24 at 1×), scaled with `ui_scale` and a custom spacing. Containers take the step itself: `Column::with_rhythm(Rhythm::Group)`. |
 | `FrameHarness::render_png` / `render_rgba` | The frame over the window ground; `--shots` and `--responsive-matrix` write this (see Window chrome & shots). |
 | `ShotFrame::new(viewport, theme)` | Now clears to the window ground by default; delete a `.with_background(theme.bg_app)` / `.with_background(surfaces.content)`. |
 
@@ -1289,6 +1302,47 @@ Apply the first row that matches each call.
 | Axis labels drawn inside a `Chart`'s plot | Nothing to do: `Chart` sets them in a gutter outside the plot. |
 | `format!("-{}", ..)` for a negative tick on a function plane | `function_plane::format_tick(value, step)` (uses U+2212). |
 | `math::layout` at `size * text_scale` with glyphs that outgrow their bars | Unchanged call: math glyphs are content-sized now. `math::layout_wrapped(row, text, size, max_width)` breaks before top-level operators. |
+
+### Pages, forms and readable columns
+
+| Old | New |
+|---|---|
+| `Container::new().with_centered_max_width(720.0)` (or a `READABLE_WIDTH` constant) around a form, settings or a page of facts | `Container::new().readable()`: `metrics.readable_width` on the leading edge. Keep `with_centered_max_width` (or `.readable().centered()`) only for a page that stands alone, like a wizard. |
+| `Scrollable` + `Column` + max-width `Container` + a footer `Row` hand-built per screen | `Page::new().head(item).section(section)…` with `.with_persisted_offset(cell)` and `.with_pinned_actions(Actions::new(..))`. A `Page` has no title; the shell's header titles it. |
+| `FormPage::new(title, form)` with a `Heading` title, centred | Unchanged call; the title is `LargeTitle` and the column sits on the leading edge. `FormPage::untitled(form)` when the header already says it; `.with_header_action(button)`, `.with_persisted_offset(cell)`, `.with_pinned_actions(actions)`. |
+| `FormSection::new("")` or a section whose title repeats the page's | `FormSection::untitled()` (no heading, visible or accessible) |
+| A `Field` faked with a `Row` of a label `Text` and a value | `Field::custom(label, element)`: a read-only value, a `Row` of controls or buttons, lined up with the other fields |
+| `.content(Box::new(Row::new().push(button)…))` for a row of buttons in a grouped section | `FormSection::control_row(element)`: a row of the section, with its height and separators |
+| Help copy under the control beside its label, measured label offsets, a second label node for screen readers | Delete: help reads under the label while the label is beside the control, the label is the control's name (read once), a beside label sits on a tall control's first line, and every section of a `Form` shares one label column |
+| Settings row helpers (label growing to the control, description under the label) | `Field::new(label, control).with_help(description)` in a `FormSection::grouped()`; switches end on the trailing edge, and narrow windows stack rows with full-width controls |
+| A private 16-em chooser width | `metrics.chooser_width` |
+| `Container::new().with_no_padding()` around a `Form` "so it keeps its height in a scroll view" | Delete the wrapper: form grids keep an automatic minimum height |
+| A tile or link that should line up with the text beside it but lift on hover | `Container::new().hug().interactive(id, f)`: content-sized, no inset, the lift bleeds past the rect |
+| A column of buttons sized to the widest | `Column::with_intrinsic_width()` |
+| A `ModelView` wrapped in a `Container::filling()` so a `Scrollable::fill_parent_height()` inside gets a height | Delete the wrapper: `ModelView` passes percent heights and flex growth through |
+| An app `Swap` / slot whose content is replaced from outside the tree | `ui::widget::Slot::new(element)` (or `Slot::empty()`) and its `SlotHandle::set(element)`, adopted at the next sync |
+| A `ModelView` rebuilding a tabbed or wizard part each time it shows again | `Switch::from_state(&state, |s| key, |key| build)`: each part is built once and kept alive, scroll and drafts included |
+| A main column and an inspector-like aside laid out by hand, or a `Row` that never stacks | `Columns::new(main).aside(aside)`: the aside keeps `metrics.inspector_width` beside the main column and goes under it below the themed breakpoint |
+| A dashboard of cards in a centred `with_centered_max_width(1120.0)` | `Page::new().full_width()`: the page's gutter, reflowing across the column |
+| A footer of a status and actions pinned under a form by hand (a second `Scrollable` sharing the gutter) | `FormPage::with_pinned(element)` / `Page::with_pinned(element)` (`with_pinned_actions` for `Actions` alone) |
+| A `Page` or `FormPage` rebuilt every frame | `.with_semantic_key(key)`, `.with_cursor(point)` and `.with_persisted_offset(cell)` as on the `Scrollable` |
+| A `Following` decorator that rebuilds a `ResizableSplit` when its divider moves, or forwards `update` to its panes | Delete it: the split relays out its panes and forwards `update` itself. `.with_content_sized_first()` for a first pane at its content size until moved; `left()` / `right()` (and `_mut`) reach the panes |
+
+### Painted hosts
+
+A widget that paints its own content uses the same parts the retained
+widgets use, so it behaves like them:
+
+| Need | API |
+|---|---|
+| Pressable rects (keys, markers, clips): hover, press, focus ring, Tab between them, Enter/Space, accessible buttons | `PaintedTargets`: `begin_frame()`, `target(id, rect, label)` per frame, `handle_event(event, ctx)`, `interaction(id)` to paint, `paint_focus(..)`, `take_activated()`; forward `wants_tab_input`, `set_focus` (`set_host_focus`), `accessibility_children()` and `perform_action_at` / `perform_semantic_action` |
+| A scrolling viewport (a transcript, a history list, a modal body from `ModalLayout::body`) | `ScrollRegion`: `set_viewport(rect, theme)`, `set_content_size(w, h)`, `handle_event(event, ctx, theme)`, `paint(scene, t, theme, |scene, t| ..)` (clip, offset, edge fades, bar), `to_content(point)` for hit-testing, `primary_vertical_scroll()` / `apply_primary_vertical_scroll(..)` for assistive scrolling, `with_persisted_offset(cell)` |
+| A scroll bar of its own | `Scrollbar::track_in(lane, theme)` for the track in a `metrics.scrollbar_gutter` lane, `Scrollbar::paint_marks(.., &[TrackMark])` for search hits and changes, `BarFade` for the idle fade, `metrics.wheel_line` per wheel notch |
+| Fading content out at an edge (`DestOut` masks, `vertical_fade` over non-media, hand-made gradients) | `ui::surface::content_edge_fade(scene, t, rect, ContentEdge::Bottom, ground)`, only while more can scroll in from there; `Scrollable::with_edge_fade()` / `ScrollRegion::with_edge_fade()` do it for you |
+| A divider between two painted panes | `SplitHandle` with a `SplitRatio`: `set_rect`, `pane_rects()`, `handle_event`, `paint`, `accessibility()` (a separator with its value), `cursor_shape`; the same model `ResizableSplit` uses |
+| A column rule; crisp edges | `ui::surface::vertical_separator(..)`; `ui::paint::snap_rect(rect)` before edging a surface |
+| A swipe that commits | `metrics.swipe_commit` |
+| A retained control placed by hand that should take keyboard focus when pressed | `Embedded::take_focus_request()` after routing an event; take the host's focus in response |
 
 ### Which widget replaces which hand-drawn pattern
 
@@ -2271,6 +2325,22 @@ take them when its migration is reconciled.
 - **The block editor owns its handle column.** Hosts of a `BlockEditor`
   (chat, ebook, mail, notes, pdf-viewer, slides, word-processor) delete the
   gutter they reserved for its drag handles.
+- **A scroll bar takes its lane only while it is needed.** A `Scrollable`
+  reserves `metrics.scrollbar_gutter` (now 16: the thumb plus `s1` each
+  side) on its trailing edge only while its content overflows, and on its
+  bottom edge for a horizontal bar; a horizontal `Scrollable` lays its
+  content out at max-content width. Rows painted beside a scroll view to
+  "end where the content ends" drop their own gutter padding.
+- **Absent children take no gap.** A zero spacer (`Spacer::token(S0)`) is out
+  of the flow, so it no longer doubles a column's gap; bound text that
+  renders nothing and an empty `ModelView` collapse too. Say the gap with
+  `with_rhythm` instead.
+- **Forms read once and line up once.** A `Field`'s label is the control's
+  accessible name and is not a second node; all sections of a `Form` share
+  one label column; help reads under a beside label; `FormPage` titles in
+  `LargeTitle` on the leading edge and no longer fills its own ground.
+- **`ModalDialog` and `Popover` take no room in the flow.** Delete spacers or
+  wrappers that made room for them.
 - **Rows stand where they are laid out.** A `NavList` (or any `TreeView`)
   handed new sections before its first layout no longer animates its rows
   from the stock 28 px row, and a finished transition always leaves rows at

@@ -138,6 +138,7 @@ pub fn map_role(role: Role) -> AkRole {
         Role::RadioButton => AkRole::RadioButton,
         Role::Switch => AkRole::Switch,
         Role::Slider => AkRole::Slider,
+        Role::Separator => AkRole::Splitter,
         Role::SpinButton => AkRole::SpinButton,
         Role::ComboBox => AkRole::ComboBox,
         Role::TextInput => AkRole::TextInput,

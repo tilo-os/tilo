@@ -11,22 +11,18 @@
 //!
 //! ## Spacing vocabulary
 //!
-//! Every gap here is one of three named steps, so a pane reads as groups
-//! rather than as a wall of equally spaced lines:
+//! Every gap here is a relationship ([`Rhythm`]), resolved against the live
+//! theme at layout time, so a pane reads as groups rather than as a wall of
+//! equally spaced lines:
 //!
-//! - **caption gap** ([`spacing`]`().s1`) — a description hugs the label it
-//!   explains;
-//! - **[`ROW_GAP`]** — related rows inside one section (the scale's `s3`);
-//! - **[`SECTION_GAP`]** — one section to the next (the scale's `s6`).
-//!
-//! Helpers run before a `Theme` exists (a pane composes its tree and the host
-//! resolves the theme at layout time), so every measure here comes from the
-//! toolkit's *default* spacing scale via [`spacing`].
+//! - **tight** — a description hugs the label it explains;
+//! - **sibling** — related rows inside one section;
+//! - **group** — one section to the next.
 
 use std::cell::Cell;
 
 use ui::icons::Icon;
-use ui::tokens::{Metrics, Spacing, SpacingStep, TextRole};
+use ui::tokens::{Metrics, Rhythm, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
     Badge, Button, ChipStyle, Column, Container, ControlSize, IconSize, IconWidget, Row, Section,
@@ -47,15 +43,6 @@ pub fn spacing() -> Spacing {
     Spacing::default()
 }
 
-/// Vertical gap (logical px) between stacked sections in a pane: the scale's
-/// "before the next group" step.
-pub const SECTION_GAP: f32 = Spacing::BASE.s6;
-
-/// Vertical gap (logical px) between rows inside a single section — the
-/// toolkit's `s3` step. Smaller than [`SECTION_GAP`] so rows feel related
-/// within a group while still having visible separation.
-pub const ROW_GAP: f32 = Spacing::BASE.s3;
-
 /// One spacing step of empty space, resolved against the theme the host
 /// hands the tree at layout time (so it follows `ui_scale` and a custom
 /// theme's spacing preference).
@@ -63,27 +50,27 @@ pub fn gap(step: SpacingStep) -> El {
     Box::new(Spacer::token(step))
 }
 
-/// Stack a list of sections with a deliberate [`SECTION_GAP`] of air between
-/// each one. This is the standard body for a pane.
+/// Stack a list of sections a group apart. This is the standard body for a
+/// pane.
 pub fn cards(items: Vec<El>) -> El {
-    Box::new(stack(items, SECTION_GAP))
+    Box::new(stack(items, Rhythm::Group))
 }
 
 /// A vertical stack of pre-built rows — the standard body for a section.
-/// Rows are separated by [`ROW_GAP`], the "related rows" step of the scale.
+/// Rows are siblings: closer than sections, still visibly apart.
 pub fn rows(items: Vec<El>) -> El {
-    Box::new(stack(items, ROW_GAP))
+    Box::new(stack(items, Rhythm::Sibling))
 }
 
 /// An intrinsic-height column that owns one uniform `gap` between its
 /// children and no padding of its own. The shared building block behind
 /// [`cards`] and [`rows`]: the pane supplies the inset, the stack supplies
 /// only the rhythm.
-fn stack(items: Vec<El>, gap: f32) -> Column {
+fn stack(items: Vec<El>, gap: Rhythm) -> Column {
     let mut col = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(gap);
+        .with_rhythm(gap);
     for item in items {
         col = col.push(item);
     }
@@ -135,7 +122,7 @@ fn row_label_described(label: &str, description: &str) -> El {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(spacing().s1)
+                    .with_rhythm(Rhythm::Tight)
                     .push(Box::new(Text::new(label)))
                     .push(caption(description)),
             )),
@@ -193,7 +180,7 @@ pub fn slider_row_described(label: &str, description: &str, control: El) -> El {
             caption(description),
             control,
         ],
-        spacing().s1,
+        Rhythm::Tight,
     )
 }
 
@@ -212,7 +199,7 @@ pub fn item_row(title: &str, status: Vec<El>, details: &[String], actions: Vec<B
     let mut block = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(spacing().s1)
+        .with_rhythm(Rhythm::Tight)
         .push(Box::new(top));
     for detail in details {
         block = block.push(caption(detail));
@@ -220,7 +207,7 @@ pub fn item_row(title: &str, status: Vec<El>, details: &[String], actions: Vec<B
     if actions.is_empty() {
         return Box::new(block);
     }
-    let mut buttons = Row::new().with_gap(spacing().s2);
+    let mut buttons = Row::new().with_rhythm(Rhythm::Related);
     for action in actions {
         buttons = buttons.push(Box::new(action.control_size(ControlSize::Small)));
     }
@@ -228,7 +215,7 @@ pub fn item_row(title: &str, status: Vec<El>, details: &[String], actions: Vec<B
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(spacing().s2)
+            .with_rhythm(Rhythm::Related)
             .push(Box::new(block))
             .push(Box::new(buttons)),
     )
@@ -241,13 +228,13 @@ pub fn icon_row(icon: Icon, title: &str, detail: &str, control: El) -> El {
     let text = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(spacing().s1)
+        .with_rhythm(Rhythm::Tight)
         .push(Box::new(Text::new(title)))
         .push(caption(detail));
     let lead = Row::new()
         .no_wrap()
         .with_align_items(taffy::AlignItems::Center)
-        .with_gap(spacing().s3)
+        .with_rhythm(Rhythm::Sibling)
         .push(Box::new(IconWidget::new(icon)))
         .push(Box::new(
             Container::new()
@@ -357,7 +344,7 @@ pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
                 caption(description),
                 control,
             ],
-            spacing().s1,
+            Rhythm::Tight,
         );
     }
     stacked_block(
@@ -365,15 +352,15 @@ pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
             trailing_row(row_label(label), compact_control(control)),
             caption(description),
         ],
-        spacing().s1,
+        Rhythm::Tight,
     )
 }
 
-fn stacked_block(items: Vec<El>, gap: f32) -> El {
+fn stacked_block(items: Vec<El>, gap: Rhythm) -> El {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(gap);
+        .with_rhythm(gap);
     for item in items {
         column = column.push(item);
     }
@@ -385,7 +372,7 @@ fn stacked_block(items: Vec<El>, gap: f32) -> El {
 pub fn choice_row_stacked(label: &str, control: El) -> El {
     stacked_block(
         vec![Box::new(Text::new(label)) as El, control],
-        spacing().s1,
+        Rhythm::Tight,
     )
 }
 
@@ -413,7 +400,7 @@ pub fn hero(icon: Icon, title: &str) -> El {
     let row = Row::new()
         .no_wrap()
         .with_align_items(taffy::AlignItems::Center)
-        .with_gap(spacing().s3)
+        .with_rhythm(Rhythm::Sibling)
         .push(Box::new(IconWidget::new(icon).sized(IconSize::Large)))
         .push(Box::new(
             Container::new()

@@ -529,6 +529,10 @@ pub struct MediaColors {
     pub ink: Color,
     /// Secondary ink on [`Self::scrim`] and on the letterbox.
     pub ink_dim: Color,
+    /// A composition guide drawn over a live picture (thirds, a level
+    /// line, a crop frame's grid): media ink, translucent so the picture
+    /// stays the subject.
+    pub guide: Color,
 }
 
 impl MediaColors {
@@ -549,8 +553,37 @@ impl MediaColors {
             scrim: n(Self::GROUND_L),
             ink: n(Self::INK_L),
             ink_dim: n(Self::INK_DIM_L),
+            guide: n(Self::INK_L).with_alpha(Self::GUIDE_ALPHA),
         }
     }
+
+    /// How much of the picture a composition guide lets through.
+    const GUIDE_ALPHA: f32 = 0.55;
+}
+
+/// How strongly a [`Colors::wash_on`] status wash shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WashStrength {
+    /// A row at rest: an added line, a failed check.
+    Rest,
+    /// The same row while it is selected or under review: the selection
+    /// lift, still in the status hue.
+    Selected,
+}
+
+/// A status wash resolved on its ground: an opaque body and the inks that
+/// read on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wash {
+    /// Opaque body, already composited over the ground.
+    pub fill: Color,
+    /// Primary ink on [`Self::fill`] (body-text contrast).
+    pub ink: Color,
+    /// Secondary ink on [`Self::fill`] (body-text contrast).
+    pub ink_dim: Color,
+    /// The status colour itself as a mark on [`Self::fill`] (a `+` gutter
+    /// sign, a status dot): non-text contrast.
+    pub mark: Color,
 }
 
 #[derive(Clone, Debug)]
@@ -893,6 +926,47 @@ impl Colors {
         };
         oklch(g.l + step * t, chroma, hue)
     }
+
+    /// A status wash of `tone` over `ground`: an added or removed line, a
+    /// failed row, a reviewer's band. `Selected` takes the selection lift
+    /// of `ground` and keeps the wash's hue on it, where
+    /// [`Self::lift_on`] alone would drop to the neutral. The inks clear
+    /// body-text contrast on the composited body, so text keeps reading
+    /// under every strength on every ground.
+    #[must_use]
+    pub fn wash_on(
+        &self,
+        ground: Color,
+        tone: crate::widget::Tone,
+        strength: WashStrength,
+    ) -> Wash {
+        use crate::widget::Tone as T;
+        let tint = match tone {
+            T::Neutral => self.text_dim,
+            T::Success => self.semantic.success,
+            T::Warning => self.semantic.warning,
+            T::Danger => self.semantic.danger,
+            T::Info => self.semantic.info,
+            T::Presence(hue) => self.presence.hue(hue),
+        };
+        let (base, amount) = match strength {
+            WashStrength::Rest => (ground, Self::WASH_REST),
+            WashStrength::Selected => (self.lift_on(ground, 1.0), Self::WASH_SELECTED),
+        };
+        let fill = mix8(base, tint, amount);
+        let on = self.on_surface(fill);
+        Wash {
+            fill,
+            ink: on.ink,
+            ink_dim: on.ink_dim,
+            mark: self.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
+        }
+    }
+
+    /// How much of the status hue a resting wash carries.
+    const WASH_REST: f32 = 0.16;
+    /// How much of it a selected wash carries over the lift.
+    const WASH_SELECTED: f32 = 0.30;
 
     /// [`Intents::inverted`] while pressed: the hover step taken twice, so
     /// a press reads past the hover instead of matching it.
@@ -1878,5 +1952,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_selected_status_wash_keeps_its_hue_and_its_ink_reads() {
+        use crate::widget::Tone;
+        for (label, palette) in palettes() {
+            let colors = Colors::stock(&palette);
+            let ground = colors.surfaces.content;
+            for tone in [Tone::Success, Tone::Danger, Tone::Warning, Tone::Info] {
+                let rest = colors.wash_on(ground, tone, WashStrength::Rest);
+                let selected = colors.wash_on(ground, tone, WashStrength::Selected);
+                let lift = colors.lift_on(ground, 1.0);
+                // Selection stays in the status hue instead of falling to the
+                // neutral lift.
+                let chroma = |c: Color| Oklch::from_color(c).c;
+                assert!(
+                    chroma(selected.fill) > chroma(lift) + 0.01,
+                    "{label}/{tone:?}: selected wash lost its hue",
+                );
+                assert_ne!(rgba(rest.fill), rgba(selected.fill), "{label}/{tone:?}");
+                for wash in [rest, selected] {
+                    assert!(
+                        contrast_ratio(wash.ink, wash.fill) >= 4.5,
+                        "{label}/{tone:?}"
+                    );
+                    assert!(
+                        contrast_ratio(wash.ink_dim, wash.fill) >= 4.5,
+                        "{label}/{tone:?}"
+                    );
+                    assert!(
+                        contrast_ratio(wash.mark, wash.fill) >= 3.0,
+                        "{label}/{tone:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_media_guide_is_translucent_media_ink() {
+        let media = MediaColors::new(0.0);
+        assert!(media.guide.components[3] < 1.0);
+        assert!(media.guide.components[3] > 0.3);
+        assert_eq!(rgba(media.guide.with_alpha(1.0)), rgba(media.ink));
     }
 }

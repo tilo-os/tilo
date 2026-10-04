@@ -132,6 +132,8 @@ pub struct AuthenticatorApp {
     dispatch: Option<Dispatcher<Totp>>,
     /// Whether the list has accounts, for the window's header row to follow.
     has_accounts: Option<ui::LocalState<bool>>,
+    /// How many accounts the list has, for the header row's count.
+    account_count: Option<ui::LocalState<usize>>,
     /// A capture's clock was moved to its scenario's step already.
     clock_staged: bool,
 }
@@ -171,6 +173,7 @@ impl AuthenticatorApp {
             persistence_message: None,
             dispatch: None,
             has_accounts: None,
+            account_count: None,
             clock_staged: false,
         }
     }
@@ -180,6 +183,14 @@ impl AuthenticatorApp {
     #[must_use]
     pub(crate) fn with_account_signal(mut self, signal: ui::LocalState<bool>) -> Self {
         self.has_accounts = Some(signal);
+        self
+    }
+
+    /// Report through `signal` how many accounts the list has, for the
+    /// header row's count.
+    #[must_use]
+    pub(crate) fn with_count_signal(mut self, signal: ui::LocalState<usize>) -> Self {
+        self.account_count = Some(signal);
         self
     }
 
@@ -297,6 +308,9 @@ impl AuthenticatorApp {
         self.list.set_accounts(self.vault.ordered());
         if let Some(signal) = &self.has_accounts {
             signal.set(!self.list.is_empty());
+        }
+        if let Some(signal) = &self.account_count {
+            signal.set(self.list.len());
         }
     }
 

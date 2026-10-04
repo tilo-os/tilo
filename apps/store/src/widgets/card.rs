@@ -59,7 +59,6 @@ pub fn store_card(
     primary: CardAction<'_>,
     details: CardDetails<'_>,
     images: Option<&ui::ImageStore>,
-    theme: &ui::Theme,
 ) -> Box<dyn Widget> {
     let CardAction {
         kind: action,
@@ -67,11 +66,10 @@ pub fn store_card(
         binding: action_binding,
         in_progress: operation_active,
     } = primary;
-    let spacing = &theme.tokens.spacing;
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(spacing.s1)
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .push(Box::new(
             Text::new(&item.name).with_role(TextRole::Subheading),
         ))
@@ -82,7 +80,7 @@ pub fn store_card(
         ));
     let header = Row::new()
         .no_wrap()
-        .with_gap(spacing.s3)
+        .with_rhythm(ui::tokens::Rhythm::Sibling)
         .with_align_items(taffy::AlignItems::Center)
         .push(Box::new(app_icon(item, images, AvatarSize::Large)))
         .push(Box::new(
@@ -94,7 +92,7 @@ pub fn store_card(
     let body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(spacing.s3)
+        .with_rhythm(ui::tokens::Rhythm::Sibling)
         .push(Box::new(header))
         .push(Box::new(
             Text::new(&item.description)

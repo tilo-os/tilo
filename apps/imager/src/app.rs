@@ -1060,7 +1060,7 @@ impl ImagerApp {
         }
         lines = lines.push(Box::new(Self::centred(next, TextRole::Body).dimmed()));
         let mut body = page::stack()
-            .with_gap(crate::rhythm::px::GROUP)
+            .with_rhythm(ui::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
             .push(Box::new(lines));
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
@@ -1135,7 +1135,7 @@ impl ImagerApp {
             )
         };
         page::stack()
-            .with_gap(crate::rhythm::px::GROUP)
+            .with_rhythm(ui::tokens::Rhythm::Group)
             .push(Box::new(Self::ring_row(ring)))
             .push(Box::new(
                 page::related()

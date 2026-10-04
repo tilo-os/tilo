@@ -1735,27 +1735,37 @@ impl PhotosResources {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "every action on the open photograph is declared side by side with its translated label"
+)]
 pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource {
     let edits = *edits;
     let (w, h) = image.edited_size(&edits);
     let id = resource_id(image);
     let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
-    if let Some(spec) = operation("view", "View photograph", &PhotosOperation::View) {
-        resource = resource.with_action(spec.with_description("Bring this photograph into view"));
+    if let Some(spec) = operation(
+        "view",
+        &crate::strings::tr("photos-act-view-photograph"),
+        &PhotosOperation::View,
+    ) {
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-bring-this-photograph-into-view",
+        )));
     }
     resource = resource
         .with_action(
-            immediate_photos_spec("rotate-right", "Rotate right", edits.rotated_right())
-                .with_description("Turn the photograph a quarter turn clockwise"),
+            immediate_photos_spec("rotate-right", &crate::strings::tr("photos-act-rotate-right"), edits.rotated_right())
+                .with_description(crate::strings::tr("photos-act-turn-the-photograph-a-quarter-turn-clockwise")),
         )
         .with_action(
-            immediate_photos_spec("rotate-left", "Rotate left", edits.rotated_left())
-                .with_description("Turn the photograph a quarter turn anticlockwise"),
+            immediate_photos_spec("rotate-left", &crate::strings::tr("photos-act-rotate-left"), edits.rotated_left())
+                .with_description(crate::strings::tr("photos-act-turn-the-photograph-a-quarter-turn-anticlockwise")),
         )
         .with_action(
             ActionSpec::typed(
                 "crop",
-                "Crop to a region",
+                crate::strings::tr("photos-act-crop-to-a-region"),
                 "0.25,0.25,0.5,0.5",
                 ExecutionLocus::ClientLocal,
                 vec![ActionParam::required(
@@ -1777,16 +1787,20 @@ pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource 
             )
             .reversible()
             .with_description(
-                "Keep a region of what is currently shown, in normalized coordinates",
+                crate::strings::tr("photos-act-keep-a-region-of-what-is-currently"),
             ),
         )
-        .with_action(file_operation("open", "Open another photograph", true));
-    if let Some(spec) = operation("copy", "Copy photograph", &PhotosOperation::Copy) {
+        .with_action(file_operation("open", &crate::strings::tr("photos-act-open-another-photograph"), true));
+    if let Some(spec) = operation(
+        "copy",
+        &crate::strings::tr("photos-act-copy-photograph"),
+        &PhotosOperation::Copy,
+    ) {
         resource = resource.with_action(spec);
     }
     if let Some(spec) = operation(
         "share-reference",
-        "Share photograph reference",
+        &crate::strings::tr("photos-act-share-photograph-reference"),
         &PhotosOperation::ShareReference {
             resource_id: id.clone(),
         },
@@ -1796,7 +1810,7 @@ pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource 
     if let Some(source_content) = image.content.clone()
         && let Some(spec) = operation(
             EXPORT_EDITED_CONTENT_ACTION_ID,
-            "Produce edited image content",
+            &crate::strings::tr("photos-act-produce-edited-image-content"),
             &PhotosOperation::ExportEditedContent {
                 resource_id: id.clone(),
                 source_content,
@@ -1808,16 +1822,26 @@ pub(crate) fn open_image_resource(image: &OpenImage, edits: &Edits) -> Resource 
             spec.returns(ResultSpec::Resource {
                 resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
             })
-            .with_description(
-                "Render this photograph's current crop and rotation into immutable PNG content",
-            ),
+            .with_description(crate::strings::tr(
+                "photos-act-render-this-photograph-s-current-crop-and",
+            )),
         );
     }
-    resource = resource.with_action(file_operation("save", "Save edited photograph", false));
+    resource = resource.with_action(file_operation(
+        "save",
+        &crate::strings::tr("photos-act-save-edited-photograph"),
+        false,
+    ));
     if !edits.is_identity() {
         resource = resource.with_action(
-            immediate_photos_spec("reset", "Reset edits", Edits::default())
-                .with_description("Discard the crop and rotation, returning to the original"),
+            immediate_photos_spec(
+                "reset",
+                &crate::strings::tr("photos-act-reset-edits"),
+                Edits::default(),
+            )
+            .with_description(crate::strings::tr(
+                "photos-act-discard-the-crop-and-rotation-returning-to",
+            )),
         );
     }
     resource.with_child(Resource::new(
@@ -1848,7 +1872,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
         <crate::resource::Photos as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
     let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
         "photos.library",
-        "Photo library",
+        &crate::strings::tr("photos-act-photo-library"),
         &state,
     );
     root.children.insert(0, library_analysis_resource());
@@ -1901,10 +1925,20 @@ pub(crate) fn library_children(library: &crate::model::PhotoLibrary) -> Vec<Reso
 /// they are declared; `publish` drops Document specs from this list.
 pub(crate) fn library_local_operations() -> Vec<ActionSpec> {
     let mut specs = Vec::new();
-    if let Some(spec) = operation("open", "View photo library", &PhotosOperation::ViewLibrary) {
-        specs.push(spec.with_description("Browse and manage photographs in Photos"));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-act-view-photo-library"),
+        &PhotosOperation::ViewLibrary,
+    ) {
+        specs.push(spec.with_description(crate::strings::tr(
+            "photos-act-browse-and-manage-photographs-in-photos",
+        )));
     }
-    specs.push(file_operation("import", "Import photograph", true));
+    specs.push(file_operation(
+        "import",
+        &crate::strings::tr("photos-act-import-photograph"),
+        true,
+    ));
     specs.push(import_directory_spec(false));
     specs.push(import_directory_spec(true));
     specs
@@ -1927,37 +1961,39 @@ pub(crate) fn library_analysis_resource() -> Resource {
     let mut resource = Resource::new(
         "photos.library-analysis",
         "photos.library-analysis",
-        "Photo analysis",
+        crate::strings::tr("photos-act-photo-analysis"),
     );
     for (id, label, description, op) in [
         (
             "open",
-            "Open photo analysis",
-            "Review local model availability, library coverage, progress, and failures",
+            &crate::strings::tr("photos-act-open-photo-analysis"),
+            &crate::strings::tr(
+                "photos-act-review-local-model-availability-library-coverage-progress",
+            ),
             PhotosOperation::ViewLibraryAnalysis,
         ),
         (
             "analyze-library",
-            "Analyze unprocessed photographs",
-            "Use the verified local model on locally available photographs and share only bounded searchable results",
+            &crate::strings::tr("photos-act-analyze-unprocessed-photographs"),
+            &crate::strings::tr("photos-act-use-the-verified-local-model-on-locally"),
             PhotosOperation::AnalyzeLibrary,
         ),
         (
             "pause",
-            "Pause photo analysis",
-            "Stop scheduling photographs after the current local item finishes",
+            &crate::strings::tr("photos-act-pause-photo-analysis"),
+            &crate::strings::tr("photos-act-stop-scheduling-photographs-after-the-current-local"),
             PhotosOperation::PauseLibraryAnalysis,
         ),
         (
             "resume",
-            "Resume photo analysis",
-            "Continue the explicitly started queue on this device",
+            &crate::strings::tr("photos-act-resume-photo-analysis"),
+            &crate::strings::tr("photos-act-continue-the-explicitly-started-queue-on-this"),
             PhotosOperation::ResumeLibraryAnalysis,
         ),
         (
             "retry-failures",
-            "Retry failed photographs",
-            "Retry only photographs listed in the bounded local failure report",
+            &crate::strings::tr("photos-act-retry-failed-photographs"),
+            &crate::strings::tr("photos-act-retry-only-photographs-listed-in-the-bounded"),
             PhotosOperation::RetryLibraryAnalysisFailures,
         ),
     ] {
@@ -2146,16 +2182,24 @@ fn timeline_resource_for_id(library: &crate::model::PhotoLibrary, id: &str) -> O
 /// useful as a predictable destination, and it does not falsely imply there
 /// are hidden entries waiting to load.
 pub(crate) fn favorites_resource(count: usize) -> Resource {
-    let mut resource =
-        Resource::new("photos.favorites", FAVORITES_KIND, "Favorites").with_child(Resource::new(
-            "photos.favorites#count",
-            "photos.count",
-            format!("{count} photographs"),
-        ));
-    if let Some(spec) = operation("open", "View favorites", &PhotosOperation::ViewFavorites) {
-        resource = resource.with_action(
-            spec.with_description("Show photographs marked as favorites in the shared library"),
-        );
+    let mut resource = Resource::new(
+        "photos.favorites",
+        FAVORITES_KIND,
+        crate::strings::tr("photos-act-favorites"),
+    )
+    .with_child(Resource::new(
+        "photos.favorites#count",
+        "photos.count",
+        format!("{count} photographs"),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-act-view-favorites"),
+        &PhotosOperation::ViewFavorites,
+    ) {
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-photographs-marked-as-favorites-in-the",
+        )));
     }
     resource
 }
@@ -2177,13 +2221,24 @@ pub(crate) fn albums_resource_from_count(count: usize) -> Resource {
     } else {
         format!("{count} albums")
     };
-    let mut resource = Resource::new("photos.albums", ALBUMS_KIND, "Albums").with_child(
-        Resource::new("photos.albums#count", "photos.count", count_label),
-    );
-    if let Some(spec) = operation("open", "View albums", &PhotosOperation::ViewAlbums) {
-        resource = resource.with_action(
-            spec.with_description("Browse and manage the shared library's durable albums"),
-        );
+    let mut resource = Resource::new(
+        "photos.albums",
+        ALBUMS_KIND,
+        crate::strings::tr("photos-act-albums"),
+    )
+    .with_child(Resource::new(
+        "photos.albums#count",
+        "photos.count",
+        count_label,
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-act-view-albums"),
+        &PhotosOperation::ViewAlbums,
+    ) {
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-browse-and-manage-the-shared-library-s",
+        )));
     }
     resource
 }
@@ -2192,43 +2247,51 @@ pub(crate) fn albums_resource_from_count(count: usize) -> Resource {
 /// collaborative labels. Private face proposals never enter this resource.
 pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Resource {
     let count = crate::people::approved_people(library).len();
-    let mut resource =
-        Resource::new("photos.people", "photos.people", "People").with_child(Resource::new(
-            "photos.people#approved-count",
-            "photos.count",
-            format!("{count} approved people"),
-        ));
-    if let Some(spec) = operation("open", "Open People", &PhotosOperation::ViewPeople) {
-        resource = resource.with_action(
-            spec.with_description("Review local suggestions and browse approved people"),
-        );
+    let mut resource = Resource::new(
+        "photos.people",
+        "photos.people",
+        crate::strings::tr("photos-act-people"),
+    )
+    .with_child(Resource::new(
+        "photos.people#approved-count",
+        "photos.count",
+        format!("{count} approved people"),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-act-open-people"),
+        &PhotosOperation::ViewPeople,
+    ) {
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-review-local-suggestions-and-browse-approved-people",
+        )));
     }
     if let Some(spec) = operation(
         "manage-recognition",
-        "Manage local recognition model",
+        &crate::strings::tr("photos-act-manage-local-recognition-model"),
         &PhotosOperation::ManagePeopleRecognition,
     ) {
-        resource = resource.with_action(spec.with_description(
-            "Install or manage a signed local face-recognition model in Settings",
-        ));
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-install-or-manage-a-signed-local-face",
+        )));
     }
     if let Some(spec) = operation(
         "enable-local-recognition",
-        "Enable private People recognition",
+        &crate::strings::tr("photos-act-enable-private-people-recognition"),
         &PhotosOperation::EnablePeopleRecognition,
     ) {
-        resource = resource.with_action(spec.with_description(
-            "Allow signed local face recognition on this device; it does not scan or share anything yet",
-        ));
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-allow-signed-local-face-recognition-on-this",
+        )));
     }
     if let Some(spec) = operation(
         "scan-local-library",
-        "Scan local library for faces",
+        &crate::strings::tr("photos-act-scan-local-library-for-faces"),
         &PhotosOperation::AnalyzePeopleLibrary,
     ) {
-        resource = resource.with_action(spec.with_description(
-            "Use the opt-in signed local face model on a bounded local batch; suggestions remain private until approved",
-        ));
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-use-the-opt-in-signed-local-face",
+        )));
     }
     resource = resource.with_action(person_membership_with_name_spec());
     resource
@@ -2251,16 +2314,24 @@ pub(crate) fn places_resource(library: &crate::model::PhotoLibrary) -> Resource 
 }
 
 pub(crate) fn places_resource_from_count(count: usize) -> Resource {
-    let mut resource =
-        Resource::new("photos.places", PLACES_KIND, "Places").with_child(Resource::new(
-            "photos.places#count",
-            "photos.count",
-            format!("{count} located photographs"),
-        ));
-    if let Some(spec) = operation("open", "View places", &PhotosOperation::ViewPlaces) {
-        resource = resource.with_action(spec.with_description(
-            "Browse explicitly shared photo locations on an offline-first map; Photos never uploads coordinates",
-        ));
+    let mut resource = Resource::new(
+        "photos.places",
+        PLACES_KIND,
+        crate::strings::tr("photos-act-places"),
+    )
+    .with_child(Resource::new(
+        "photos.places#count",
+        "photos.count",
+        format!("{count} located photographs"),
+    ));
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-act-view-places"),
+        &PhotosOperation::ViewPlaces,
+    ) {
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-browse-explicitly-shared-photo-locations-on-an",
+        )));
     }
     resource
 }
@@ -2305,14 +2376,14 @@ pub(crate) fn place_resource(place_key: &str, label: &str, count: usize) -> Reso
     ));
     if let Some(spec) = operation(
         "open",
-        "View place",
+        &crate::strings::tr("photos-act-view-place"),
         &PhotosOperation::ViewPlace {
             place_key: place_key.to_owned(),
         },
     ) {
-        resource = resource.with_action(spec.with_description(
-            "Show this offline-capable place cluster; no location is sent to a map service",
-        ));
+        resource = resource.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-this-offline-capable-place-cluster-no",
+        )));
     }
     resource
 }
@@ -2403,12 +2474,14 @@ pub(crate) fn folder_resource(folder: &str, count: usize) -> Resource {
     );
     if let Some(spec) = operation(
         "open",
-        "Open folder",
+        &crate::strings::tr("photos-act-open-folder"),
         &PhotosOperation::ViewFolder {
             folder: folder.to_owned(),
         },
     ) {
-        item = item.with_action(spec.with_description("Show photographs in this shared folder"));
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-photographs-in-this-shared-folder",
+        )));
     }
     item
 }
@@ -2423,27 +2496,28 @@ pub(crate) fn person_resource(person: &str, count: usize) -> Resource {
     );
     if let Some(spec) = operation(
         "open",
-        "View person",
+        &crate::strings::tr("photos-act-view-person"),
         &PhotosOperation::ViewPerson {
             person: person.to_owned(),
         },
     ) {
-        item = item.with_action(spec.with_description("Show photographs tagged with this person"));
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-photographs-tagged-with-this-person",
+        )));
     }
     item = item
         .with_action(person_membership_spec(person))
         .with_action(person_rename_spec(person));
     if let Some(spec) = direct_spec(
         "remove-person",
-        "Remove person label",
+        &crate::strings::tr("photos-act-remove-person-label"),
         &PhotosAction::RemovePerson {
             person: person.to_owned(),
         },
     ) {
-        item =
-            item.with_action(spec.destructive().reversible().with_description(
-                "Remove this approved person label from every shared photograph",
-            ));
+        item = item.with_action(spec.destructive().reversible().with_description(
+            crate::strings::tr("photos-act-remove-this-approved-person-label-from-every"),
+        ));
     }
     item
 }
@@ -2457,12 +2531,14 @@ pub(crate) fn tag_resource(tag: &str, count: usize) -> Resource {
         ));
     if let Some(spec) = operation(
         "open",
-        "View tag",
+        &crate::strings::tr("photos-act-view-tag"),
         &PhotosOperation::ViewTag {
             tag: tag.to_owned(),
         },
     ) {
-        item = item.with_action(spec.with_description("Show photographs carrying this shared tag"));
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-photographs-carrying-this-shared-tag",
+        )));
     }
     item
 }
@@ -2477,14 +2553,14 @@ pub(crate) fn object_resource(object: &str, count: usize) -> Resource {
     );
     if let Some(spec) = operation(
         "open",
-        "View object",
+        &crate::strings::tr("photos-act-view-object"),
         &PhotosOperation::ViewObject {
             object: object.to_owned(),
         },
     ) {
-        item = item.with_action(
-            spec.with_description("Show photographs with this explicitly shared object label"),
-        );
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-photographs-with-this-explicitly-shared-object",
+        )));
     }
     item
 }
@@ -2498,14 +2574,14 @@ pub(crate) fn pet_resource(pet: &str, count: usize) -> Resource {
         ));
     if let Some(spec) = operation(
         "open",
-        "View pet",
+        &crate::strings::tr("photos-act-view-pet"),
         &PhotosOperation::ViewPet {
             pet: pet.to_owned(),
         },
     ) {
-        item = item.with_action(
-            spec.with_description("Show photographs with this explicitly shared pet label"),
-        );
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-photographs-with-this-explicitly-shared-pet",
+        )));
     }
     item
 }
@@ -2550,29 +2626,56 @@ impl PhotoResourceSeed {
     fn metadata_summary(&self) -> String {
         let mut parts = Vec::new();
         if let Some(folder) = &self.folder {
-            parts.push(format!("Folder: {folder}"));
+            parts.push(format!("{}: {folder}", crate::strings::tr("photos-folder")));
         }
         if !self.people.is_empty() {
-            parts.push(format!("People: {}", self.people.join(", ")));
+            parts.push(format!(
+                "{}: {}",
+                crate::strings::tr("photos-people"),
+                self.people.join(", ")
+            ));
         }
         if !self.tags.is_empty() {
-            parts.push(format!("Tags: {}", self.tags.join(", ")));
+            parts.push(format!(
+                "{}: {}",
+                crate::strings::tr("photos-tags"),
+                self.tags.join(", ")
+            ));
         }
         if let Some(captured_at) = &self.captured_at {
-            parts.push(format!("Captured: {captured_at}"));
+            parts.push(format!(
+                "{}: {captured_at}",
+                crate::strings::tr("photos-captured")
+            ));
         }
         if let Some(location) = &self.location {
-            parts.push(format!("Place: {}", location.display_name()));
+            parts.push(format!(
+                "{}: {}",
+                crate::strings::tr("photos-place"),
+                location.display_name()
+            ));
         }
         if let Some(analysis) = &self.analysis {
             if !analysis.description.is_empty() {
-                parts.push(format!("Description: {}", analysis.description));
+                parts.push(format!(
+                    "{}: {}",
+                    crate::strings::tr("photos-description"),
+                    analysis.description
+                ));
             }
             if !analysis.objects.is_empty() {
-                parts.push(format!("Objects: {}", analysis.objects.join(", ")));
+                parts.push(format!(
+                    "{}: {}",
+                    crate::strings::tr("photos-objects"),
+                    analysis.objects.join(", ")
+                ));
             }
             if !analysis.pets.is_empty() {
-                parts.push(format!("Pets: {}", analysis.pets.join(", ")));
+                parts.push(format!(
+                    "{}: {}",
+                    crate::strings::tr("photos-pets"),
+                    analysis.pets.join(", ")
+                ));
             }
         }
         parts.join(". ")
@@ -2646,7 +2749,7 @@ fn analysis_labels_resource(id: &str, kind: &str, label: &str, values: &[String]
 
 fn analysis_scalar_resource(id: &str, kind: &str, field: &str, value: &str) -> Resource {
     let value = if value.is_empty() {
-        "Not recorded"
+        &crate::strings::tr("photos-act-not-recorded")
     } else {
         value
     };
@@ -2680,10 +2783,10 @@ fn analysis_provenance_resource(
         resource = resource.with_child(analysis_scalar_resource(
             &format!("{id}/{field}"),
             &format!("photos.analysis.provenance.{field}"),
-            match field {
-                "model" => "Model",
-                "revision" => "Model revision",
-                _ => field,
+            &match field {
+                "model" => crate::strings::tr("photos-act-model"),
+                "revision" => crate::strings::tr("photos-act-model-revision"),
+                _ => field.to_owned(),
             },
             value,
         ));
@@ -2710,16 +2813,28 @@ fn analysis_component_provenance(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "each analysis component and its actions are declared side by side with their translated labels"
+)]
 fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     let id = format!("{photo_id}#analysis");
-    let mut root = Resource::new(&id, "photos.analysis", "Shared image intelligence");
+    let mut root = Resource::new(
+        &id,
+        "photos.analysis",
+        crate::strings::tr("photos-act-shared-image-intelligence"),
+    );
 
     let ocr_id = format!("{id}/ocr");
-    let mut ocr = Resource::new(&ocr_id, "photos.analysis.ocr", "Recognized text");
+    let mut ocr = Resource::new(
+        &ocr_id,
+        "photos.analysis.ocr",
+        crate::strings::tr("photos-act-recognized-text"),
+    );
     ocr = ocr.with_child(analysis_text_resource(
         &format!("{ocr_id}/text"),
         "photos.analysis.ocr.text",
-        "Recognized text",
+        &crate::strings::tr("photos-act-recognized-text"),
         &analysis.ocr_text,
     ));
     if let Some(provenance) = analysis_component_provenance(analysis, false) {
@@ -2731,7 +2846,7 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     }
     if let Some(spec) = operation(
         "refresh",
-        "Recognize text again locally",
+        &crate::strings::tr("photos-act-recognize-text-again-locally"),
         &PhotosOperation::AnalyzeText {
             resource_id: photo_id.to_owned(),
             language: analysis_component_provenance(analysis, false)
@@ -2741,56 +2856,62 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
                 .to_owned(),
         },
     ) {
-        ocr = ocr.with_action(spec.with_description(
-            "Replace only the shared OCR component after a bounded local recognition job",
-        ));
+        ocr = ocr.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-replace-only-the-shared-ocr-component-after",
+        )));
     }
     root = root.with_child(ocr);
 
     let vision_id = format!("{id}/vision");
-    let mut vision = Resource::new(&vision_id, "photos.analysis.vision", "Visual analysis")
-        .with_child(analysis_text_resource(
-            &format!("{vision_id}/description"),
-            "photos.analysis.description",
-            "Description",
-            &analysis.description,
-        ))
-        .with_child(analysis_labels_resource(
-            &format!("{vision_id}/objects"),
-            "photos.analysis.objects",
-            "object",
-            &analysis.objects,
-        ))
-        .with_child(analysis_labels_resource(
-            &format!("{vision_id}/pets"),
-            "photos.analysis.pets",
-            "pet",
-            &analysis.pets,
-        ))
-        .with_child(analysis_labels_resource(
-            &format!("{vision_id}/people"),
-            "photos.analysis.people",
-            "person",
-            &analysis.people,
-        ));
+    let mut vision = Resource::new(
+        &vision_id,
+        "photos.analysis.vision",
+        crate::strings::tr("photos-act-visual-analysis"),
+    )
+    .with_child(analysis_text_resource(
+        &format!("{vision_id}/description"),
+        "photos.analysis.description",
+        &crate::strings::tr("photos-act-description"),
+        &analysis.description,
+    ))
+    .with_child(analysis_labels_resource(
+        &format!("{vision_id}/objects"),
+        "photos.analysis.objects",
+        "object",
+        &analysis.objects,
+    ))
+    .with_child(analysis_labels_resource(
+        &format!("{vision_id}/pets"),
+        "photos.analysis.pets",
+        "pet",
+        &analysis.pets,
+    ))
+    .with_child(analysis_labels_resource(
+        &format!("{vision_id}/people"),
+        "photos.analysis.people",
+        "person",
+        &analysis.people,
+    ));
     if let Some(provenance) = analysis_component_provenance(analysis, true) {
         vision = vision.with_child(analysis_provenance_resource(
             &format!("{vision_id}/provenance"),
-            "Visual analysis",
+            &crate::strings::tr("photos-act-visual-analysis"),
             provenance,
         ));
     }
     if let Some(spec) = operation(
         "refresh",
-        "Analyze image again locally",
+        &crate::strings::tr("photos-act-analyze-image-again-locally"),
         &PhotosOperation::AnalyzeImage {
             resource_id: photo_id.to_owned(),
         },
     ) {
         let unavailable = local_vision_unavailable_reason();
         let spec = spec.with_description(match unavailable.as_deref() {
-            Some(reason) => format!("Unavailable: {reason}"),
-            None => "Replace only the shared description and recognized-object components after a signed local analysis job".to_owned(),
+            Some(reason) => crate::strings::tr_with("photos-unavailable", "reason", reason),
+            None => {
+                crate::strings::tr("photos-act-replace-only-the-shared-description-and-recognized")
+            }
         });
         vision = vision.with_action(match unavailable {
             Some(reason) => spec.unavailable("local_vision_unavailable", reason),
@@ -2805,14 +2926,14 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     // is the only deletion whose current action semantics are unambiguous.
     if let Some(spec) = direct_spec(
         "remove",
-        "Remove all shared analysis",
+        &crate::strings::tr("photos-act-remove-all-shared-analysis"),
         &PhotosAction::SetImageAnalysis {
             photo_id: photo_id.to_owned(),
             analysis: None,
         },
     ) {
         root = root.with_action(spec.destructive().reversible().with_description(
-            "Remove recognized text, description, object and pet labels, and their provenance without changing the photograph",
+            crate::strings::tr("photos-act-remove-recognized-text-description-object-and-pet"),
         ));
     }
     root
@@ -2892,10 +3013,7 @@ pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
 pub(crate) fn local_vision_unavailable_reason() -> Option<String> {
     tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
         .is_none()
-        .then(|| {
-            "No verified local image-analysis model is ready. Install and start one in Settings."
-                .to_owned()
-        })
+        .then(|| crate::strings::tr("photos-act-no-verified-local-image-analysis-model-is"))
 }
 
 #[allow(
@@ -2930,19 +3048,19 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         ));
         if let Some(spec) = operation(
             "view-place",
-            "View on map",
+            &crate::strings::tr("photos-act-view-on-map"),
             &PhotosOperation::ViewPlace {
                 place_key: location.place_key(),
             },
         ) {
-            item = item.with_action(spec.with_description(
-                "Open the local Places view without sending this coordinate anywhere",
-            ));
+            item = item.with_action(spec.with_description(crate::strings::tr(
+                "photos-act-open-the-local-places-view-without-sending",
+            )));
         }
     }
     if let Some(spec) = direct_spec(
         "open",
-        "Open photograph",
+        &crate::strings::tr("photos-act-open-photograph"),
         &PhotosAction::SelectPhoto {
             photo_id: photo.id.clone(),
         },
@@ -2951,10 +3069,10 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     if let Some(spec) = direct_spec(
         "favorite",
-        if photo.favorite {
-            "Remove favorite"
+        &if photo.favorite {
+            crate::strings::tr("photos-act-remove-favorite")
         } else {
-            "Favorite"
+            crate::strings::tr("photos-act-favorite")
         },
         &PhotosAction::SetFavorite {
             photo_id: photo.id.clone(),
@@ -2965,54 +3083,54 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     if let Some(spec) = operation(
         "share-reference",
-        "Share photograph reference",
+        &crate::strings::tr("photos-act-share-photograph-reference"),
         &PhotosOperation::ShareReference {
             resource_id: photo.id.clone(),
         },
     ) {
-        item = item.with_action(spec.with_description(
-            "Copy this library photograph's portable resource reference to the local clipboard",
-        ));
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-copy-this-library-photograph-s-portable-resource",
+        )));
     }
     item = item.with_action(photo_metadata_spec(&photo.id));
     item = item.with_action(photo_location_spec(&photo.id));
     if photo.location.is_some()
         && let Some(spec) = direct_spec(
             "clear-location",
-            "Remove shared location",
+            &crate::strings::tr("photos-act-remove-shared-location"),
             &PhotosAction::ClearPhotoLocation {
                 photo_id: photo.id.clone(),
             },
         )
     {
         item = item.with_action(spec.destructive().reversible().with_description(
-            "Remove the explicit shared location from this photograph; no files or pixels are changed",
+            crate::strings::tr("photos-act-remove-the-explicit-shared-location-from-this"),
         ));
     }
     if let Some(spec) = operation(
         "recognize-text",
-        "Recognize text locally",
+        &crate::strings::tr("photos-act-recognize-text-locally"),
         &PhotosOperation::AnalyzeText {
             resource_id: photo.id.clone(),
             language: "eng".to_owned(),
         },
     ) {
-        item = item.with_action(spec.with_description(
-            "Run local OCR and explicitly share only bounded text and provenance",
-        ));
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-run-local-ocr-and-explicitly-share-only",
+        )));
     }
     if let Some(spec) = operation(
         "analyze-image",
-        "Analyze image locally",
+        &crate::strings::tr("photos-act-analyze-image-locally"),
         &PhotosOperation::AnalyzeImage {
             resource_id: photo.id.clone(),
         },
     ) {
         let unavailable = local_vision_unavailable_reason();
         let description = if let Some(reason) = unavailable.as_deref() {
-            format!("Unavailable: {reason}")
+            crate::strings::tr_with("photos-unavailable", "reason", reason)
         } else {
-            "Use the signed local model to describe this image, extract generic labels and recognize text; explicitly share only the bounded result".to_owned()
+            crate::strings::tr("photos-act-use-the-signed-local-model-to-describe")
         };
         let spec = spec.with_description(description);
         item = item.with_action(match unavailable {
@@ -3023,7 +3141,7 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     if photo.analysis.is_some()
         && let Some(spec) = direct_spec(
             "remove-analysis",
-            "Remove shared analysis",
+            &crate::strings::tr("photos-act-remove-shared-analysis"),
             &PhotosAction::SetImageAnalysis {
                 photo_id: photo.id.clone(),
                 analysis: None,
@@ -3034,7 +3152,7 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     }
     if let Some(spec) = direct_spec(
         "remove",
-        "Remove from library",
+        &crate::strings::tr("photos-act-remove-from-library"),
         &PhotosAction::RemovePhoto {
             photo_id: photo.id.clone(),
         },
@@ -3050,14 +3168,18 @@ pub(crate) fn search_status_resource(message: &str) -> Resource {
     let mut resource = Resource::new(
         "photos.search-status",
         "photos.diagnostic",
-        "Photo search status",
+        crate::strings::tr("photos-act-photo-search-status"),
     )
     .with_child(Resource::new(
         "photos.search-status#message",
         "photos.status",
         message,
     ));
-    if let Some(spec) = operation("open", "Open photo library", &PhotosOperation::ViewLibrary) {
+    if let Some(spec) = operation(
+        "open",
+        &crate::strings::tr("photos-act-open-photo-library"),
+        &PhotosOperation::ViewLibrary,
+    ) {
         resource = resource.with_action(spec);
     }
     resource
@@ -3312,8 +3434,8 @@ fn photo_metadata_spec(photo_id: &str) -> ActionSpec {
     let photo_id = photo_id.to_owned();
     ActionSpec::typed(
         "set-metadata",
-        "Set photo metadata",
-        "Folder, people, tags, and capture date",
+        crate::strings::tr("photos-act-set-photo-metadata"),
+        crate::strings::tr("photos-act-folder-people-tags-and-capture-date"),
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::optional("folder", ParamType::Text, "shared folder label"),
@@ -3332,15 +3454,17 @@ fn photo_metadata_spec(photo_id: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Replace this photograph's shared folder, people, tags, and capture date")
+    .with_description(crate::strings::tr(
+        "photos-act-replace-this-photograph-s-shared-folder-people",
+    ))
 }
 
 fn photo_location_spec(photo_id: &str) -> ActionSpec {
     let photo_id = photo_id.to_owned();
     ActionSpec::typed(
         "set-location",
-        "Set shared location",
-        "Explicit WGS-84 coordinates and optional place label",
+        crate::strings::tr("photos-act-set-shared-location"),
+        crate::strings::tr("photos-act-explicit-wgs-84-coordinates-and-optional-place"),
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required("latitude", ParamType::Number, "latitude from -90 to 90"),
@@ -3369,9 +3493,9 @@ fn photo_location_spec(photo_id: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description(
-        "Explicitly share a compact location. Photos never uploads it for geocoding or map tiles.",
-    )
+    .with_description(crate::strings::tr(
+        "photos-act-explicitly-share-a-compact-location-photos-never",
+    ))
 }
 
 pub(crate) fn album_resource(album: &Album) -> Resource {
@@ -3386,18 +3510,18 @@ pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usiz
     ));
     if let Some(spec) = operation(
         "open",
-        "Open album",
+        &crate::strings::tr("photos-act-open-album"),
         &PhotosOperation::ViewAlbum {
             album_id: id.to_owned(),
         },
     ) {
-        item = item.with_action(
-            spec.with_description("Show this album's photographs without changing membership"),
-        );
+        item = item.with_action(spec.with_description(crate::strings::tr(
+            "photos-act-show-this-album-s-photographs-without-changing",
+        )));
     }
     if let Some(spec) = direct_spec(
         "remove",
-        "Remove album",
+        &crate::strings::tr("photos-act-remove-album"),
         &PhotosAction::RemoveAlbum { id: id.to_owned() },
     ) {
         item = item.with_action(spec.destructive().reversible());
@@ -3449,7 +3573,7 @@ fn person_membership_spec(person: &str) -> ActionSpec {
     let person = person.to_owned();
     ActionSpec::typed(
         "set-membership",
-        "Set person membership",
+        crate::strings::tr("photos-act-set-person-membership"),
         "JSON array of approved photos.photo:… ids (an empty array removes the label)",
         ExecutionLocus::ClientLocal,
         vec![photo_ids_param(
@@ -3465,7 +3589,9 @@ fn person_membership_spec(person: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Replace this approved person's shared photograph membership atomically")
+    .with_description(crate::strings::tr(
+        "photos-act-replace-this-approved-person-s-shared-photograph",
+    ))
 }
 
 /// The People root exposes creation as the same complete-membership action
@@ -3475,8 +3601,8 @@ fn person_membership_spec(person: &str) -> ActionSpec {
 fn person_membership_with_name_spec() -> ActionSpec {
     ActionSpec::typed(
         "set-person-membership",
-        "Create or set person membership",
-        "An approved name and the complete JSON array of approved photos.photo:… ids",
+        crate::strings::tr("photos-act-create-or-set-person-membership"),
+        crate::strings::tr("photos-act-an-approved-name-and-the-complete-json"),
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required("name", ParamType::Text, "approved person label"),
@@ -3490,7 +3616,9 @@ fn person_membership_with_name_spec() -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Create a shared person or replace one person's complete approved membership")
+    .with_description(crate::strings::tr(
+        "photos-act-create-a-shared-person-or-replace-one",
+    ))
 }
 
 /// Renaming to an existing label deliberately merges explicit labels.  It
@@ -3499,8 +3627,8 @@ fn person_rename_spec(person: &str) -> ActionSpec {
     let from = person.to_owned();
     ActionSpec::typed(
         "rename",
-        "Rename or merge person",
-        "New approved person label; an existing label merges shared memberships",
+        crate::strings::tr("photos-act-rename-or-merge-person"),
+        crate::strings::tr("photos-act-new-approved-person-label-an-existing-label"),
         ExecutionLocus::ClientLocal,
         vec![ActionParam::required(
             "name",
@@ -3515,14 +3643,16 @@ fn person_rename_spec(person: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Rename this approved person label, or merge it into an existing label")
+    .with_description(crate::strings::tr(
+        "photos-act-rename-this-approved-person-label-or-merge",
+    ))
 }
 
 fn create_album_spec() -> ActionSpec {
     ActionSpec::typed(
         "create-album",
-        "Create album",
-        "Stable album id and visible name",
+        crate::strings::tr("photos-act-create-album"),
+        crate::strings::tr("photos-act-stable-album-id-and-visible-name"),
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required(
@@ -3543,7 +3673,9 @@ fn create_album_spec() -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Create an album and its initial photograph membership atomically")
+    .with_description(crate::strings::tr(
+        "photos-act-create-an-album-and-its-initial-photograph",
+    ))
 }
 
 /// The agent/search counterpart of the visible library selection command.
@@ -3552,8 +3684,8 @@ fn create_album_spec() -> ActionSpec {
 fn set_favorites_spec() -> ActionSpec {
     ActionSpec::typed(
         "set-favorites",
-        "Set favorites",
-        "Photograph ids and desired favorite state",
+        crate::strings::tr("photos-act-set-favorites"),
+        crate::strings::tr("photos-act-photograph-ids-and-desired-favorite-state"),
         ExecutionLocus::ClientLocal,
         vec![
             photo_ids_param(
@@ -3571,7 +3703,9 @@ fn set_favorites_spec() -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Set the favorite marker for a bounded batch of selected photographs")
+    .with_description(crate::strings::tr(
+        "photos-act-set-the-favorite-marker-for-a-bounded",
+    ))
 }
 
 /// The same atomic multi-edit exposed by the visible selection inspector.
@@ -3580,8 +3714,8 @@ fn set_favorites_spec() -> ActionSpec {
 fn set_metadata_batch_spec() -> ActionSpec {
     ActionSpec::typed(
         "set-metadata-batch",
-        "Edit selected photo details",
-        "Photograph ids and explicit metadata dimensions to replace",
+        crate::strings::tr("photos-act-edit-selected-photo-details"),
+        crate::strings::tr("photos-act-photograph-ids-and-explicit-metadata-dimensions-to"),
         ExecutionLocus::ClientLocal,
         vec![
             photo_ids_param(
@@ -3669,17 +3803,17 @@ fn set_metadata_batch_spec() -> ActionSpec {
         },
     )
     .reversible()
-    .with_description(
-        "Atomically change chosen metadata: labels can be set, added, removed, or cleared without replacing unrelated values",
-    )
+    .with_description(crate::strings::tr(
+        "photos-act-atomically-change-chosen-metadata-labels-can-be",
+    ))
 }
 
 fn album_save_spec(album_id: &str) -> ActionSpec {
     let id = album_id.to_owned();
     ActionSpec::typed(
         "save",
-        "Save album",
-        "Name and complete membership",
+        crate::strings::tr("photos-act-save-album"),
+        crate::strings::tr("photos-act-name-and-complete-membership"),
         ExecutionLocus::ClientLocal,
         vec![
             ActionParam::required("name", ParamType::Text, "visible album name"),
@@ -3695,15 +3829,17 @@ fn album_save_spec(album_id: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Atomically rename this album and replace its membership")
+    .with_description(crate::strings::tr(
+        "photos-act-atomically-rename-this-album-and-replace-its",
+    ))
 }
 
 fn album_rename_spec(album_id: &str) -> ActionSpec {
     let album_id = album_id.to_owned();
     ActionSpec::typed(
         "rename",
-        "Rename album",
-        "New album name",
+        crate::strings::tr("photos-act-rename-album"),
+        crate::strings::tr("photos-act-new-album-name"),
         ExecutionLocus::ClientLocal,
         vec![ActionParam::required(
             "name",
@@ -3718,14 +3854,16 @@ fn album_rename_spec(album_id: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Change this album's visible name while keeping its stable id")
+    .with_description(crate::strings::tr(
+        "photos-act-change-this-album-s-visible-name-while",
+    ))
 }
 
 fn album_membership_spec(album_id: &str) -> ActionSpec {
     let album_id = album_id.to_owned();
     ActionSpec::typed(
         "set-membership",
-        "Set album membership",
+        crate::strings::tr("photos-act-set-album-membership"),
         "JSON array of photos.photo:… ids (an empty array clears the album)",
         ExecutionLocus::ClientLocal,
         vec![photo_ids_param(
@@ -3741,7 +3879,9 @@ fn album_membership_spec(album_id: &str) -> ActionSpec {
         },
     )
     .reversible()
-    .with_description("Replace this album's photograph membership atomically")
+    .with_description(crate::strings::tr(
+        "photos-act-replace-this-album-s-photograph-membership-atomically",
+    ))
 }
 
 fn direct_spec(id: &str, label: &str, action: &PhotosAction) -> Option<ActionSpec> {
@@ -3804,9 +3944,9 @@ fn import_directory_spec(reindex: bool) -> ActionSpec {
         "import-directory"
     };
     let label = if reindex {
-        "Reindex photo folder"
+        &crate::strings::tr("photos-act-reindex-photo-folder")
     } else {
-        "Import photo folder"
+        &crate::strings::tr("photos-act-import-photo-folder")
     };
     let path_param = if reindex {
         ActionParam::required(
@@ -3839,27 +3979,41 @@ fn import_directory_spec(reindex: bool) -> ActionSpec {
             let path = args.text("path").unwrap_or_default().trim().to_owned();
             let retain_exif_location = args.boolean("retain_exif_location").unwrap_or(true);
             let operation = if reindex {
-                PhotosOperation::ReindexDirectory { path, retain_exif_location }
+                PhotosOperation::ReindexDirectory {
+                    path,
+                    retain_exif_location,
+                }
             } else {
                 PhotosOperation::ImportDirectory {
                     path: (!path.is_empty()).then_some(path),
                     retain_exif_location,
                 }
             };
-            EncodedAction::encode_operation(PHOTOS_OPERATION_TYPE, &operation).unwrap_or_else(|error| EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                payload: format!("photos directory operation could not be serialized: {error}").into_bytes(),
-            })
+            EncodedAction::encode_operation(PHOTOS_OPERATION_TYPE, &operation).unwrap_or_else(
+                |error| EncodedAction {
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    payload: format!("photos directory operation could not be serialized: {error}")
+                        .into_bytes(),
+                },
+            )
         },
     )
     .with_contract(ActionContract {
         retry: RetryPolicy::AtMostOnce,
         execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Job,
-        tags: vec!["device-local".into(), "filesystem".into(), "portal".into(), "sensitive-path".into(), "bounded-index".into()],
+        tags: vec![
+            "device-local".into(),
+            "filesystem".into(),
+            "portal".into(),
+            "sensitive-path".into(),
+            "bounded-index".into(),
+        ],
         ..ActionContract::default()
     })
-    .with_description("Recursively index a selected folder with bounded real-file reads; paths never enter collaboration and EXIF GPS is never uploaded")
+    .with_description(crate::strings::tr(
+        "photos-act-recursively-index-a-selected-folder-with-bounded",
+    ))
 }
 
 /// The address of a photograph: what it is, not where a machine put it.

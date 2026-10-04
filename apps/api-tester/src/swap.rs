@@ -10,7 +10,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use ui::widget::{AppModel, Element, ModelPath, ResizableSplit, Widget};
+use ui::widget::{AppModel, Element, ModelPath, Widget};
 
 /// What the app holds to replace a slot's content.
 #[derive(Clone)]
@@ -92,53 +92,5 @@ impl ui::widget::Decorator for Swap {
 
     fn name(&self) -> &'static str {
         "Swap"
-    }
-}
-
-/// A [`ResizableSplit`] whose panes follow its divider.
-///
-/// The split moves its divider while it is dragged but leaves the layout it
-/// built for the panes as it was. Asking for a new layout whenever the
-/// divider has moved lets the panes follow it.
-pub(crate) struct Following<L: Widget + 'static, R: Widget + 'static> {
-    split: ResizableSplit<L, R>,
-    laid_out_at: f32,
-}
-
-impl<L: Widget + 'static, R: Widget + 'static> Following<L, R> {
-    pub(crate) fn new(split: ResizableSplit<L, R>) -> Self {
-        let laid_out_at = split.split_position();
-        Self { split, laid_out_at }
-    }
-}
-
-impl<L: Widget + 'static, R: Widget + 'static> ui::widget::Decorator for Following<L, R> {
-    type Inner = ResizableSplit<L, R>;
-
-    fn inner(&self) -> &ResizableSplit<L, R> {
-        &self.split
-    }
-
-    fn inner_mut(&mut self) -> &mut ResizableSplit<L, R> {
-        &mut self.split
-    }
-
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        // The split does not pass the per-frame update on to its panes.
-        let mut changed = self.split.update(state, path);
-        for pane in self.split.children_mut() {
-            changed |= pane.update(state, path);
-        }
-        changed
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let moved = (self.split.split_position() - self.laid_out_at).abs() > f32::EPSILON;
-        self.laid_out_at = self.split.split_position();
-        self.split.take_structure_dirty() | moved
-    }
-
-    fn name(&self) -> &'static str {
-        "Following"
     }
 }
