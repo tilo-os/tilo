@@ -170,8 +170,7 @@ fn two_fixture_builds_are_identical() {
             &nevras,
             &dir.path().join(format!("scratch{n}")),
             &out,
-            None,
-            None,
+            &env_tools::builder::SandboxOptions::default(),
             std::time::Duration::from_secs(120),
         )
         .unwrap();

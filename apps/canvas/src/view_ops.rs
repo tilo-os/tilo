@@ -41,7 +41,7 @@ const JPEG_QUALITY: u8 = 85;
 /// A rendered picture, encoded.
 pub struct Picture {
     pub bytes: Vec<u8>,
-    /// `png` or `jpeg`.
+    /// `png`, `jpeg` or `webp`.
     pub format: &'static str,
     pub width: u32,
     pub height: u32,
@@ -105,7 +105,12 @@ fn encode(rgba: &[u8], (width, height): (u32, u32), jpeg: bool) -> Result<Pictur
     })
 }
 
-fn render_rgba(
+/// Render `region` of `art` with `pixels_per_unit` as RGBA, its width
+/// and height.
+///
+/// # Errors
+/// Returns why nothing could be rendered.
+pub fn render_rgba(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
@@ -123,12 +128,25 @@ fn render_rgba(
 /// # Errors
 /// Returns the encoder's error.
 pub fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    encode_jpeg_at(rgba, width, height, JPEG_QUALITY)
+}
+
+/// Opaque RGBA8 as JPEG bytes at `quality` (1-100); alpha is dropped.
+///
+/// # Errors
+/// Returns the encoder's error.
+pub fn encode_jpeg_at(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
     let rgb: Vec<u8> = rgba
         .chunks_exact(4)
         .flat_map(|pixel| pixel.iter().take(3).copied())
         .collect();
     let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
         .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
         .map_err(|error| error.to_string())?;
     Ok(jpeg)
@@ -596,21 +614,55 @@ pub fn export(
     export: &Export,
 ) -> Result<(Picture, Value), String> {
     let scale = export.scale.unwrap_or(1.0);
-    if !(0.25..=4.0).contains(&scale) || art.width.max(art.height) * scale > 8192.0 {
+    if !(0.05..=4.0).contains(&scale) || art.width.max(art.height) * scale > 8192.0 {
         return Err(
-            "scale must be within 0.25..=4 and the picture at most 8192 pixels wide".into(),
+            "scale must be within 0.05..=4 and the picture at most 8192 pixels wide".into(),
         );
     }
-    let picture = render(
+    let format = export.format.as_deref().unwrap_or("png");
+    let quality = export.quality.unwrap_or(EXPORT_JPEG_QUALITY);
+    if !(1..=100).contains(&quality) {
+        return Err("quality is 1 to 100".into());
+    }
+    let (rgba, width, height) = render_rgba(
         renderer,
         text,
         art,
-        (art.bounds(), scale),
+        art.bounds(),
+        scale,
         &Options::default(),
-        false,
     )?;
-    let info = json!({"width": picture.width, "height": picture.height, "format": "png"});
-    Ok((picture, info))
+    let (bytes, format) = match format {
+        "png" => (encode_png(&rgba, width, height)?, "png"),
+        "jpeg" | "jpg" => (encode_jpeg_at(&rgba, width, height, quality)?, "jpeg"),
+        "webp" => (encode_webp(&rgba, width, height)?, "webp"),
+        other => return Err(format!("format {other:?} is png, jpeg or webp")),
+    };
+    let info = json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    Ok((
+        Picture {
+            bytes,
+            format,
+            width,
+            height,
+        },
+        info,
+    ))
+}
+
+/// JPEG quality of an export when the caller names none.
+const EXPORT_JPEG_QUALITY: u8 = 90;
+
+/// RGBA8 as lossless WebP bytes.
+///
+/// # Errors
+/// Returns the encoder's error.
+pub fn encode_webp(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut webp = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
+        .encode(rgba, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|error| error.to_string())?;
+    Ok(webp)
 }
 
 fn round(value: f64) -> f64 {
@@ -662,6 +714,20 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
                 fields.insert("brush".into(), brush.clone().into());
             }
         }
+        if let Shape::Image {
+            crop, straighten, ..
+        } = &mark.shape
+        {
+            if let Some(crop) = crop {
+                fields.insert("crop".into(), json!(crop));
+            }
+            if let Some(straighten) = straighten {
+                fields.insert("straighten".into(), (*straighten).into());
+            }
+        }
+        if let Some(adjust) = &mark.style.adjust {
+            fields.insert("adjust".into(), json!(adjust));
+        }
         if !mark.group.is_empty() {
             fields.insert("group".into(), mark.group.clone().into());
         }
@@ -701,8 +767,9 @@ pub fn part(art: &Artwork, ids: &[String]) -> Result<Artwork, String> {
     let clips: Vec<&str> = art
         .marks
         .iter()
-        .filter(|mark| chosen.contains(mark.id.as_str()) && !mark.clip.is_empty())
-        .map(|mark| mark.clip.as_str())
+        .filter(|mark| chosen.contains(mark.id.as_str()))
+        .flat_map(|mark| art.clips_of(mark))
+        .map(|clip| clip.id.as_str())
         .collect();
     chosen.extend(clips);
     let marks: Vec<&Mark> = art
@@ -846,6 +913,9 @@ fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
         }
         if layer.locked {
             fields.insert("locked".into(), true.into());
+        }
+        if let Some(adjust) = &layer.adjust {
+            fields.insert("adjust".into(), json!(adjust));
         }
         mask_fields(layer, fields);
     }

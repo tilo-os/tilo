@@ -162,6 +162,22 @@ pub struct Tools {
     pub sidebar: LocalState<bool>,
     /// The stop of a gradient fill the swatches recolour.
     pub stop: LocalState<usize>,
+    /// The selected picture's handles crop it, and its turn handle
+    /// straightens it, instead of stretching and turning the mark.
+    pub crop: LocalState<bool>,
+    /// The inspector's controls being dragged, shown on the canvas before
+    /// they are let go and become an edit.
+    pub live: Rc<RefCell<Vec<Live>>>,
+    /// Whether the chosen layer's adjustments are shown, with nothing
+    /// selected.
+    pub layer_adjust: LocalState<bool>,
+    /// The format a person asked to export the artwork in (`png`, `jpeg`,
+    /// `webp`), until the canvas renders it; empty when none was asked.
+    pub export: LocalState<String>,
+    /// An export being saved where the person chooses, until it is.
+    pub saving: Rc<RefCell<Option<ui::portal::SaveChannel>>>,
+    /// A picture being chosen to add, until the chooser answers.
+    pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
     /// The preset the brush lays strokes with on a plain layer.
     pub preset: LocalState<Preset>,
     /// The brush's opacity, `0..=1`.
@@ -181,6 +197,28 @@ pub struct Tools {
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+}
+
+/// A control whose value the canvas shows while it is dragged.
+#[derive(Clone)]
+pub struct Live {
+    /// The control's value, as it moves.
+    pub state: LocalState<f64>,
+    /// Its value when it was built: what the artwork already shows.
+    pub committed: f64,
+    /// The value onto the artwork as shown.
+    pub apply: Onto,
+}
+
+/// How a control's value changes the artwork as shown.
+pub type Onto = Rc<dyn Fn(&mut Artwork, f64)>;
+
+impl Live {
+    /// The value while it differs from what the artwork has.
+    pub fn moved(&self) -> Option<f64> {
+        let value = self.state.with(|value| *value);
+        ((value - self.committed).abs() > 1e-9).then_some(value)
+    }
 }
 
 /// The brush's paint and the chosen layer, apart from the rest of the
@@ -252,6 +290,12 @@ impl Default for Tools {
             view: LocalState::new(None),
             sidebar: LocalState::new(true),
             stop: LocalState::new(0),
+            crop: LocalState::new(false),
+            live: Rc::default(),
+            picking: Rc::default(),
+            export: LocalState::new(String::new()),
+            saving: Rc::default(),
+            layer_adjust: LocalState::new(false),
             preset: LocalState::new(Preset::Round),
             opacity: LocalState::new(1.0),
             flow: LocalState::new(round.flow),

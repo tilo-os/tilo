@@ -352,11 +352,10 @@ impl RegionSettings {
     /// fails (permissions, missing/read-only filesystem, etc).
     pub fn save(&self) -> std::io::Result<PathBuf> {
         let path = Self::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        std::fs::write(&path, self.to_json_merged(&existing))?;
+        settings_store::update_document_at(&path, |doc| {
+            let existing = serde_json::Value::Object(std::mem::take(doc)).to_string();
+            *doc = settings_store::parse(&self.to_json_merged(&existing));
+        })?;
         Ok(path)
     }
 }

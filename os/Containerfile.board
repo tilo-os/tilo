@@ -55,6 +55,8 @@ ARG TILO_HARDWARE_PROFILE
 # The update origin the board image records; a board dev image itself is
 # replaced with `bootc switch` to the next one.
 ARG TILO_TARGET_IMGREF
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=board-inputs,source=/tilo,target=/run/tilo-board \
@@ -80,6 +82,8 @@ FROM board-root AS split
 RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 FROM ${BASE_IMAGE} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
         systemd-boot-unsigned \
@@ -101,6 +105,8 @@ RUN --mount=type=tmpfs,target=/tmp \
 # registry_auth secret (a containers auth file) for a private registry.
 FROM uki-tools AS cfs-digest
 ARG TILO_CFS_SOURCE
+# Buildah leaves the bootc-helper mount out of the layer cache key; this ARG keys it on BOOTC_HELPER_IMAGE.
+ARG BOOTC_HELPER_IMAGE
 # The composefs repository it unpacks the layers into stays in a cache mount
 # (bootc patch 0003), so only layers it has not seen are fetched: the other
 # board's and the previous commit's are already there. Emptied past 40 GiB.
