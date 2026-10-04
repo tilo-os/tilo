@@ -358,49 +358,13 @@ pub(crate) fn source_resource_id(id: &str) -> String {
     format!("{}/source", file_resource_id(id))
 }
 
-/// What a new workspace opened without a file starts with: the `.typ`
-/// files of the Typst library in `dir`, name-sorted, or one empty file.
-pub(crate) fn starting_files(dir: Option<&std::path::Path>) -> Vec<TypstAction> {
-    let files = dir.map(library_files).unwrap_or_default();
-    if files.is_empty() {
-        vec![new_file("untitled.typ", None, "")]
-    } else {
-        files
-    }
-}
-
-fn library_files(dir: &std::path::Path) -> Vec<TypstAction> {
-    let Ok(folder) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf())) else {
-        return Vec::new();
-    };
-    tilo_files::blocking::list(&folder, &tilo_files::VPath::root())
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|entry| {
-            entry.kind == tilo_files::Kind::File
-                && std::path::Path::new(&entry.name)
-                    .extension()
-                    .is_some_and(|extension| extension == "typ")
-        })
-        .filter_map(|entry| {
-            let name = tilo_files::VPath::new(&entry.name).ok()?;
-            let bytes = tilo_files::blocking::read(&folder, &name).ok()?;
-            let path = dir.join(&entry.name);
-            Some(new_file(
-                &entry.name,
-                path.to_str(),
-                &String::from_utf8(bytes).ok()?,
-            ))
-        })
-        .collect()
-}
-
-/// The bundled examples a capture shows, each with a fixed id so every
-/// capture of a scenario is the same.
+/// The bundled example a capture shows, with a fixed id so every capture of
+/// a scenario is the same.
 pub(crate) fn sample_files(scenario: Option<&str>) -> Vec<TypstAction> {
     SAMPLES
         .iter()
         .enumerate()
+        .filter(|(index, _)| *index == DEFAULT_INDEX)
         .map(|(index, sample)| {
             let source = match scenario {
                 Some("scrolled") if index == DEFAULT_INDEX => crate::app::SCROLL_DEMO,
@@ -441,8 +405,8 @@ impl ResourceApp for TypstEditorShell {
         input.argument().map(RecordId::identify_file)
     }
 
-    /// A new workspace opened on a file starts with that file; one opened
-    /// on nothing starts with the user's Typst library, or an empty file.
+    /// A window edits one document: the file it was opened on, or a new
+    /// empty one. Another document is another editor in a desktop tab.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<TypstEditor>> {
         if !created {
             return Vec::new();
@@ -460,7 +424,7 @@ impl ResourceApp for TypstEditorShell {
                 &String::from_utf8_lossy(file.bytes()),
             )]
         } else {
-            starting_files(crate::app::library_dir().as_deref())
+            vec![new_file("untitled.typ", None, "")]
         };
         files
             .iter()
@@ -570,6 +534,36 @@ mod tests {
         assert_eq!(app.state().files.len(), 1, "a reopen adds nothing");
     }
 
+    /// A window edits one document: it starts blank, and Open loads a file
+    /// into it rather than beside it.
+    #[test]
+    fn a_window_edits_one_document_that_open_replaces() {
+        let mut app = TestApp::<TypstEditorShell>::new().unwrap();
+        let state = app.state();
+        assert_eq!(state.files.len(), 1);
+        assert_eq!(state.files[0].name, "untitled.typ");
+        assert!(
+            state.files[0].source.is_empty(),
+            "a new document never contains sample text"
+        );
+
+        let (_dir, path) = typ_file("other.typ", "= Other\n");
+        app.effect_confirmed(&crate::actions::TypstEffect::Open {
+            path: Some(path.clone()),
+        })
+        .unwrap();
+        app.settle();
+        let state = app.state();
+        assert_eq!(
+            state.files.len(),
+            1,
+            "the previous document is not kept behind the opened one"
+        );
+        assert_eq!(state.files[0].name, "other.typ");
+        assert_eq!(state.files[0].path.as_deref(), Some(path.as_str()));
+        assert_eq!(state.files[0].source, "= Other\n");
+    }
+
     #[test]
     fn saving_to_a_path_through_the_effect_writes_the_shown_source() {
         let (dir, path) = typ_file("notes.typ", "= Notes\n");
@@ -669,7 +663,7 @@ mod tests {
     fn a_capture_shows_the_examples_with_their_problems_as_live_rows() {
         let mut app = TestApp::<TypstEditorShell>::capture(Some("errors")).unwrap();
         let state = app.state();
-        assert_eq!(state.files.len(), SAMPLES.len());
+        assert_eq!(state.files.len(), 1, "a window edits one document");
         assert_eq!(
             state.file(&sample_id(DEFAULT_INDEX)).unwrap().source,
             crate::samples::ERROR_WARNING

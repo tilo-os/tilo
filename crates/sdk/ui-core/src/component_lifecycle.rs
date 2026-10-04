@@ -56,13 +56,6 @@ pub trait ComponentLifecycle: Widget {
             .collect()
     }
 
-    /// A durable writer owned by this root rather than the host. `None` means
-    /// no such writer exists. Implementations wait for all pending writes and
-    /// report failure; a queued flush is not success.
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        None
-    }
-
     /// Admit or defer the primary native window's ordinary close request.
     /// Roots that defer must later produce a one-shot close intent.
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
@@ -153,13 +146,6 @@ pub fn take_component_close_reports(
         .into_iter()
         .flat_map(take_component_close_reports)
         .collect()
-}
-
-/// Flush `widget`'s own durable writer, if it has one.
-pub fn try_flush_owned_persistence(
-    widget: &mut (impl Widget + ?Sized),
-) -> Option<Result<(), String>> {
-    capability_mut::<dyn ComponentLifecycle>(widget)?.try_flush_owned_persistence()
 }
 
 /// `widget`'s answer to an ordinary window close request.

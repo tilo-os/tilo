@@ -2861,7 +2861,6 @@ pub(crate) mod control_result_probe {
         pub(crate) calls: Rc<Cell<usize>>,
         pub(crate) polls: Rc<Cell<usize>>,
         pub(crate) commits: Rc<Cell<usize>>,
-        pub(crate) flushes: Rc<Cell<usize>>,
         pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
         pub(crate) payloads: Rc<RefCell<Vec<String>>>,
     }
@@ -2888,14 +2887,13 @@ pub(crate) mod control_result_probe {
     }
     #[allow(
         clippy::struct_excessive_bools,
-        reason = "independent test switches exercise acceptance, confirmation, typing, and persistence"
+        reason = "independent test switches exercise acceptance, confirmation and typing"
     )]
     pub(crate) struct Probe {
         observed: Observed,
         accepted: bool,
         pub(crate) confirmation: bool,
         pub(crate) terminal_after: Option<(usize, bool)>,
-        pub(crate) owned_flush: Option<Result<(), String>>,
         pub(crate) dirty_typing: bool,
         pub(crate) typed_text: bool,
     }
@@ -2908,7 +2906,6 @@ pub(crate) mod control_result_probe {
                     accepted,
                     confirmation: false,
                     terminal_after: None,
-                    owned_flush: None,
                     dirty_typing: false,
                     typed_text: false,
                 },
@@ -2920,7 +2917,6 @@ pub(crate) mod control_result_probe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
             dyn crate::resources::PublishesResources,
-            dyn crate::component_lifecycle::ComponentLifecycle,
             dyn crate::undo::UndoPoints
         );
 
@@ -3015,15 +3011,6 @@ pub(crate) mod control_result_probe {
                 .commits
                 .set(self.observed.commits.get().saturating_add(1));
             self.dirty_typing = false;
-        }
-    }
-
-    impl crate::component_lifecycle::ComponentLifecycle for Probe {
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            self.observed
-                .flushes
-                .set(self.observed.flushes.get().saturating_add(1));
-            self.owned_flush.clone()
         }
     }
 

@@ -7204,51 +7204,6 @@ fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
 }
 
 #[test]
-fn control_custody_core_launch_initial_install_preserves_prehost_control() {
-    thread_local! { static LEDGER: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new())); }
-    fn root() -> Box<dyn crate::widget::Widget> {
-        let ledger = LEDGER.with(Clone::clone);
-        let mut root = custody_owned_button("Launch control", ledger);
-        assert!(root.child.perform_action(
-            &crate::a11y::Action::Activate,
-            &mut automerge::AutoCommit::new(),
-            &ROOT
-        ));
-        Box::new(root)
-    }
-    fn open(_: &'static str) -> (State, crate::persist::DocWriter) {
-        (
-            State::new(),
-            crate::persist::DocWriter::disabled("inert custody launch fixture"),
-        )
-    }
-    let spec = crate::launch::LaunchSpec::new(HISTORY.app_id, root)
-        .open_app_global_state(open)
-        .history(&HISTORY);
-    let mut app = spec.build_controlled_app_for_test().unwrap();
-    assert_eq!(app.control_coverage().registered, 1);
-    assert!(app.control_coverage().legacy_compatibility_unqualified);
-    layout(&mut app);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    let saved = app.pending_history_controls();
-    assert_eq!(saved.len(), 1);
-    assert_eq!(
-        saved[0].invocation.address,
-        tilo_actions::ActionAddress::new("fixture:control", "run")
-    );
-    assert!(saved[0].invocation.arguments.is_empty());
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    LEDGER.with(|ledger| assert!(ledger.borrow().is_empty()));
-    let named_action_target = named(&mut app, "Continue");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    LEDGER.with(|ledger| assert_eq!(&*ledger.borrow(), &[serde_json::json!({})]));
-}
-
-#[test]
 fn control_custody_core_driver_embedded_return_covers_final_draw_callback() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));

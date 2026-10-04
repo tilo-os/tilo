@@ -720,10 +720,10 @@ tilo-app shot --viewport 1280x800
 tilo-app shot --output artifacts/empty.png --scenario empty
 ```
 
-Arguments after `--` are forwarded as app-defined screenshot options. Use
-`shot_root` only when a deterministic scenario needs different seeded data,
-or `shot_handler` for an app-specific capture pipeline. The default is the
-production widget tree at the requested viewport and active shot theme.
+Arguments after `--` are forwarded as app-defined screenshot options. A
+capture is the production view at the requested viewport and active shot
+theme; a scenario stages it through the resource's actions and its views'
+stage hooks.
 
 Build an installable package from the same app root with:
 
@@ -998,10 +998,9 @@ impl ResourceApp for App {
 The same declaration is shared by the real event loop, screenshots, the
 headless driver and `TestApp`. Use toolkit widgets for controls so focus,
 keyboard input, IME positioning, accessibility, theme behavior, and testing
-metadata remain one implementation rather than app-local replicas. The
-toolkit-level `LaunchSpec::new(id, app_root)` path, where the library returns a
-`Box<dyn Widget>` root itself, remains available for roots that manage their
-own documents.
+metadata remain one implementation rather than app-local replicas. A custom
+widget takes part as a surface (`ResourceSurface`) of the app's resource;
+every launch is the framework app's.
 
 Compose ordinary heterogeneous children with the layout macros instead of
 writing one allocation step per child:
