@@ -252,14 +252,10 @@ impl BrowserWidget {
             ));
         }
         if let Some(status) = self.capabilities.toolbar_status() {
-            let button = if self.compact_chrome {
-                Button::icon_only("browser.download-status", Icon::Download, &status)
-            } else {
-                Button::new("browser.download-status", &status, None)
-                    .with_icon(Icon::Download)
-                    .with_accessible_name(&format!("Downloads: {status}"))
-                    .tooltip("Show downloads")
-            };
+            // Like every other command in the row, an icon; the state it
+            // reports is its name and tooltip.
+            let button = Button::icon_only("browser.download-status", Icon::Download, &status)
+                .tooltip(&status);
             row = row.push(Box::new(self.bind_button(
                 button,
                 "browser.downloads",

@@ -271,6 +271,8 @@ pub struct SettingsPane {
     /// action. It is deliberately not a CRDT value: other collaborators
     /// cannot diagnose this profile's disk permissions or free space.
     history_clear_error: Option<String>,
+    /// Messages from the window, shown at the top of the page.
+    notices: Vec<crate::notice::Notice>,
 }
 
 impl SettingsPane {
@@ -287,7 +289,15 @@ impl SettingsPane {
             composed: None,
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
+            notices: Vec::new(),
         }
+    }
+
+    /// Show the window's messages at the top of the page.
+    #[must_use]
+    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
+        self.notices = notices;
+        self
     }
 
     /// Route hosted controls through Browser's canonical resource actions.
@@ -331,6 +341,7 @@ impl SettingsPane {
             )));
 
         let general = FormSection::new("General")
+            .grouped()
             .field(field_block(
                 "Homepage",
                 &self.presentation.homepage,
@@ -378,13 +389,10 @@ impl SettingsPane {
         }
 
         let row = |id: &str,
+                   icon: Icon,
                    title: &str,
-                   secondary: &str,
                    binding: &Option<tilo_actions::ActionBinding<()>>| {
-            let row = ListRow::new(id, title)
-                .icon(Icon::Shield)
-                .secondary(secondary)
-                .disclosure();
+            let row = ListRow::new(id, title).icon(icon).disclosure();
             Box::new(match binding {
                 Some(binding) => row.on_action(binding.clone()),
                 None => row,
@@ -397,14 +405,14 @@ impl SettingsPane {
                 FormSection::new("Autofill").content(Box::new(Section::new(vec![
                     row(
                         "browser.credentials.open",
+                        Icon::Shield,
                         "Passwords",
-                        "Saved logins for the page you are on",
                         &self.actions.open_passwords,
                     ),
                     row(
                         "browser.address.open",
+                        Icon::Home,
                         "Addresses",
-                        "Profiles stay on this device",
                         &self.actions.open_addresses,
                     ),
                 ]))),
@@ -412,32 +420,45 @@ impl SettingsPane {
             .section(
                 FormSection::new("Windows").content(Box::new(Section::new(vec![row(
                     "settings.new_private_window",
+                    Icon::Monitor,
                     "New private window",
-                    "Browsing data is removed when the window closes",
                     &self.actions.new_private_window,
                 )]))),
             );
 
-        // A page: a title over the form, bounded to a readable width,
-        // inset from the window edges and scrolled when the window is short.
-        let page = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(header))
-            .push(Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)))
-            .push(Box::new(form));
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(
-                    Container::new()
-                        .with_centered_max_width(
-                            theme.tokens.metrics.panel_width_sheet
-                                + theme.tokens.metrics.panel_width_utility,
-                        )
-                        .with_child(Box::new(page)),
-                )),
-        )
+        let mut parts: Vec<Box<dyn Widget>> = self
+            .notices
+            .iter()
+            .map(|notice| notice.widget(false))
+            .collect();
+        parts.push(Box::new(header));
+        parts.push(Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)));
+        parts.push(Box::new(form));
+        page(theme, parts)
     }
+}
+
+/// A content page of the browser: its parts in one column, bounded to a
+/// readable width, inset from the window edges and scrolled when the window
+/// is short. Settings and the Library share it, so both sit at the same top
+/// inset and between the same edges.
+pub(crate) fn page(theme: &Theme, parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
+    let mut column = Column::new().with_intrinsic_height();
+    for part in parts {
+        column = column.push(part);
+    }
+    Box::new(
+        Scrollable::new(ScrollAxis::Vertical)
+            .fill_parent_height()
+            .with_child(Box::new(
+                Container::new()
+                    .with_centered_max_width(
+                        theme.tokens.metrics.panel_width_sheet
+                            + theme.tokens.metrics.panel_width_utility,
+                    )
+                    .with_child(Box::new(column)),
+            )),
+    )
 }
 
 impl Default for SettingsPane {

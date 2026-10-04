@@ -166,6 +166,13 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
             .expect("Ctrl+F composes the find bar");
         let targets = harness.targets();
         let field = targets["browser.find.input"];
+        let window = targets["browser.root"];
+        // The field is a field, and the commands after it stay in the window.
+        assert!(
+            field.width() >= 200.0,
+            "the find field is squeezed to {}",
+            field.width()
+        );
         for id in [
             "browser.find.previous",
             "browser.find.next",
@@ -180,6 +187,8 @@ fn find_bar_and_download_status_share_the_toolbar_row_geometry() {
                 rect.center().y,
                 field.center().y
             );
+            assert!(rect.x0 >= field.x1, "{id} sits after the field");
+            assert!(rect.x1 <= window.x1, "{id} stays inside the window");
         }
     }
 

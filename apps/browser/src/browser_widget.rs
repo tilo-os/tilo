@@ -38,10 +38,9 @@ use ui::webview::{
     MediaElementInfo, NavigationDirection, PageFailure, PageKey, PageReply, PageRequest,
     SharedEngine, WebViewCommand, WebViewEvent,
 };
-use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Banner, Button, Column, Container, ContextMenu, Continuable, ControlSize,
-    EmptyState, FloatingSurfaceProvider, IconDescriptor, MenuItem, ProgressBar, WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
+    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, ProgressBar, WebView, Widget,
 };
 
 use crate::actions::{
@@ -65,7 +64,6 @@ const SUGGESTION_LIMIT: usize = 8;
 /// the user is editing it).
 const URL_INPUT_ID: &str = "browser.url_input";
 const PIP_FEEDBACK_LIFETIME: std::time::Duration = std::time::Duration::from_millis(4200);
-const PIP_FEEDBACK_FADE: std::time::Duration = std::time::Duration::from_millis(180);
 const SEARCH_QUERY_TOKEN: &str = "{query}";
 /// A `WebView` backend is external work: it can fail to produce either a load
 /// completion or an explicit failure.  Never leave an accepted resource
@@ -155,8 +153,25 @@ struct PipFeedback {
     started: ui::time::Instant,
     /// Screenshot/debug guidance is deliberately steady: headless rendering
     /// can be queued behind a busy renderer, and must not race the ordinary
-    /// short-lived live toast away before it is inspected.
+    /// short-lived live note away before it is inspected.
     persistent: bool,
+}
+
+/// What a person chose in the no-video note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PipChoice {
+    FloatPage,
+    SelectArea,
+}
+
+/// The panel anchored to a control of the toolbar, so a dismissal can say
+/// which one closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PanelKind {
+    Credentials,
+    Site,
+    Prompt,
+    Pip,
 }
 
 impl PipFeedback {
@@ -171,9 +186,7 @@ impl PipFeedback {
     fn persistent(kind: PipFeedbackKind) -> Self {
         Self {
             kind,
-            started: ui::time::now()
-                .checked_sub(PIP_FEEDBACK_FADE)
-                .unwrap_or_else(ui::time::Instant::now),
+            started: ui::time::now(),
             persistent: true,
         }
     }
@@ -188,6 +201,7 @@ const BROWSER_OPERATION_TYPE: &str = "browser.operation";
 /// A panel a review capture puts on screen.
 #[derive(Clone, Copy, Debug)]
 enum ReviewStage {
+    Typing { text: &'static str },
     Site { information: bool },
     Autofill { addresses: bool },
     Find,
@@ -765,10 +779,9 @@ fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
         DownloadStatus::AwaitingDestination => "Waiting for a save destination…".into(),
         DownloadStatus::Downloading => match entry.total_bytes {
             Some(total) => format!(
-                "{} of {}, {:.0}%",
+                "{} of {}",
                 ui::format::bytes_si(entry.received_bytes),
-                ui::format::bytes_si(total),
-                entry.progress * 100.0
+                ui::format::bytes_si(total)
             ),
             None => format!("{} downloaded", ui::format::bytes_si(entry.received_bytes)),
         },
@@ -833,7 +846,12 @@ pub struct BrowserWidget {
     page_menu: crate::page_menu::PageMenu,
     site: crate::site_controls::SiteControls,
     credentials: crate::credentials::Credentials,
-    site_panel: Option<Box<dyn Widget>>,
+    /// The popover open next to the toolbar control it belongs to: the site
+    /// or autofill panel, a permission or download question, or the no-video
+    /// note.
+    anchored_panel: Option<Box<dyn Widget>>,
+    panel_dismissed: ui::LocalState<Option<PanelKind>>,
+    pip_choice: ui::LocalState<Option<PipChoice>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
     private_window_request: ui::LocalState<bool>,
     private_window_notice: Option<String>,
@@ -947,9 +965,6 @@ pub struct BrowserWidget {
     active_pip_refresh_probe: Option<u64>,
     next_pip_refresh_at: Option<ui::time::Instant>,
     pip_feedback: Option<PipFeedback>,
-    pip_feedback_rect: Rect,
-    pip_float_page_rect: Rect,
-    pip_select_area_rect: Rect,
     pending_capture_studio: Option<ui::widget::CaptureMode>,
     cursor: Point,
     /// Whether the window is narrow enough for the compact toolbar; see
@@ -1000,6 +1015,16 @@ impl BrowserWidget {
         let engine: SharedEngine = TestEngine::new();
         engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
         let mut w = Self::with_engine(engine, true);
+        w.initial_url = SHOTS_URL.into();
+        w
+    }
+
+    /// Widget for `--shots`: as [`Self::new_headless`], but the page is a
+    /// blank document rather than the test engine's placeholder colour.
+    pub fn new_capture(mode: BrowsingMode) -> Self {
+        let engine = crate::capture_page::CapturePage::engine();
+        engine.send(WebViewCommand::Navigate(SHOTS_URL.to_string()));
+        let mut w = Self::with_engine_mode(engine, true, mode);
         w.initial_url = SHOTS_URL.into();
         w
     }
@@ -1257,7 +1282,9 @@ impl BrowserWidget {
             page_menu: crate::page_menu::PageMenu::default(),
             site: crate::site_controls::SiteControls::default(),
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
-            site_panel: None,
+            anchored_panel: None,
+            panel_dismissed: ui::LocalState::new(None),
+            pip_choice: ui::LocalState::new(None),
             pending_chrome_focus: None,
             private_window_request: ui::LocalState::new(false),
             private_window_notice: None,
@@ -1344,9 +1371,6 @@ impl BrowserWidget {
             active_pip_refresh_probe: None,
             next_pip_refresh_at: None,
             pip_feedback: None,
-            pip_feedback_rect: Rect::ZERO,
-            pip_float_page_rect: Rect::ZERO,
-            pip_select_area_rect: Rect::ZERO,
             pending_capture_studio: None,
             cursor: Point::ZERO,
             review_stage: None,
@@ -1466,9 +1490,14 @@ impl BrowserWidget {
         self.force_suggestions = true;
     }
 
-    /// Headless visual-review hook: show the settled no-video guidance card.
+    /// Headless visual-review hook: type `text` into the address field.
+    pub fn debug_type_address(&mut self, text: &'static str) {
+        self.review_stage = Some(ReviewStage::Typing { text });
+    }
+
+    /// Headless visual-review hook: show the settled no-video guidance note.
     pub fn debug_show_empty_pip_feedback(&mut self) {
-        self.pip_feedback = Some(PipFeedback::persistent(PipFeedbackKind::NoVideo));
+        self.set_pip_feedback(Some(PipFeedback::persistent(PipFeedbackKind::NoVideo)));
     }
 
     /// Headless visual-review hook for the toolbar's adopted `PiP` state.
@@ -1607,6 +1636,13 @@ impl BrowserWidget {
     /// autofill panel.
     pub fn debug_show_autofill(&mut self, addresses: bool) {
         self.review_stage = Some(ReviewStage::Autofill { addresses });
+    }
+
+    /// Where a capture presses to open the toolbar's overflow menu, once the
+    /// window has been laid out.
+    pub fn debug_overflow_center(&self) -> Option<(f64, f64)> {
+        let rect = self.find_rect(toolbar::OVERFLOW_ID)?;
+        Some((rect.center().x, rect.center().y))
     }
 
     /// Headless visual-review hook: find in page, open on a query.
@@ -2362,6 +2398,52 @@ impl BrowserWidget {
             })
     }
 
+    /// What the anchored panel reported since the last sync: a dismissal, a
+    /// choice in the no-video note, or the note running out.
+    fn apply_panel_events(&mut self) {
+        if let Some(kind) = self.panel_dismissed.get() {
+            self.panel_dismissed.set(None);
+            match kind {
+                PanelKind::Credentials => self.deactivate_credentials(),
+                PanelKind::Site => self.site.close(),
+                // Dismissing a question is declining it.
+                PanelKind::Prompt => self.capabilities.decline_prompt(&self.engine),
+                PanelKind::Pip => self.pip_feedback = None,
+            }
+            self.structure_dirty = true;
+        }
+        if let Some(choice) = self.pip_choice.get() {
+            self.pip_choice.set(None);
+            match choice {
+                PipChoice::FloatPage => self.float_current_page(),
+                PipChoice::SelectArea => {
+                    self.pending_capture_studio = Some(ui::widget::CaptureMode::Pip);
+                    self.pip_feedback = None;
+                }
+            }
+            self.structure_dirty = true;
+        }
+        // The note lingers while the pointer is over it.
+        let hovered = self
+            .anchored_panel
+            .as_ref()
+            .is_some_and(|panel| panel.get_rect().contains(self.cursor));
+        if !hovered
+            && self
+                .pip_feedback
+                .as_ref()
+                .is_some_and(PipFeedback::is_expired)
+        {
+            self.pip_feedback = None;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn set_pip_feedback(&mut self, feedback: Option<PipFeedback>) {
+        self.pip_feedback = feedback;
+        self.structure_dirty = true;
+    }
+
     fn begin_pip_probe(&mut self) {
         if self.active_pip {
             self.active_pip = false;
@@ -2371,13 +2453,13 @@ impl BrowserWidget {
             self.next_pip_refresh_at = None;
             self.pending_pip_region_update = None;
             self.published_pip_region = None;
-            self.pip_feedback = None;
+            self.set_pip_feedback(None);
             self.structure_dirty = true;
             return;
         }
         self.pip_request_seq = self.pip_request_seq.saturating_add(1);
         self.active_pip_probe = Some(self.pip_request_seq);
-        self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::Finding));
+        self.set_pip_feedback(Some(PipFeedback::transient(PipFeedbackKind::Finding)));
         self.engine.send(WebViewCommand::RequestMediaElement {
             request_id: self.pip_request_seq,
         });
@@ -2403,11 +2485,11 @@ impl BrowserWidget {
             return;
         }
         self.active_pip_probe = None;
-        self.pip_feedback = None;
+        self.set_pip_feedback(None);
 
         let region = self.media_element_region(&element);
         if region.width() < 1.0 || region.height() < 1.0 {
-            self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::NoVideo));
+            self.set_pip_feedback(Some(PipFeedback::transient(PipFeedbackKind::NoVideo)));
             self.finish_pip_operation_failure(
                 request_id,
                 "browser.picture_in_picture_unavailable",
@@ -2483,7 +2565,7 @@ impl BrowserWidget {
         self.next_pip_refresh_at = None;
         self.pending_pip_region_update = None;
         self.published_pip_region = None;
-        self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::NoVideo));
+        self.set_pip_feedback(Some(PipFeedback::transient(PipFeedbackKind::NoVideo)));
         self.structure_dirty = true;
     }
 
@@ -2571,11 +2653,7 @@ impl BrowserWidget {
         self.published_pip_region = Some(region);
         self.pending_pip_region_update = None;
         self.next_pip_refresh_at = None;
-        self.pip_feedback = None;
-        self.pip_feedback_rect = Rect::ZERO;
-        self.pip_float_page_rect = Rect::ZERO;
-        self.pip_select_area_rect = Rect::ZERO;
-        self.structure_dirty = true;
+        self.set_pip_feedback(None);
     }
 
     fn reject_media_element(&mut self, request_id: u64) {
@@ -2587,7 +2665,7 @@ impl BrowserWidget {
             return;
         }
         self.active_pip_probe = None;
-        self.pip_feedback = Some(PipFeedback::transient(PipFeedbackKind::NoVideo));
+        self.set_pip_feedback(Some(PipFeedback::transient(PipFeedbackKind::NoVideo)));
         self.finish_pip_operation_failure(
             request_id,
             "browser.picture_in_picture_unavailable",
@@ -2650,39 +2728,44 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(theme.tokens.spacing.s0)
             .push(self.build_toolbar(theme));
-        let inset = |banner: Banner| -> Box<dyn Widget> {
-            Box::new(Container::new().with_child(Box::new(banner)))
-        };
+        // Messages from the window: over a web page they run edge to edge
+        // under the toolbar, over the settings or library page they are the
+        // first part of the page.
+        let on_page = self.show_settings || self.show_library;
+        let mut notices: Vec<crate::notice::Notice> = Vec::new();
         if self.browsing_mode.is_private() {
-            column = column.push(Box::new(
-                Container::new()
-                    .with_id("browser.private-indicator")
-                    .with_child(Box::new(Banner::info("Private window").with_message(
-                    "Browsing data is removed when this window closes. Files you download remain.",
-                ))),
-            ));
+            notices.push(
+                crate::notice::Notice::info("Private window")
+                    .with_message(
+                        "Browsing data is removed when this window closes. Files you download remain.",
+                    )
+                    .with_id("browser.private-indicator"),
+            );
         }
         if let Some(message) = &self.private_window_notice {
-            column = column.push(inset(Banner::info(message)));
+            notices.push(crate::notice::Notice::info(message));
         }
         if self.close_blocked {
-            column = column.push(inset(
-                Banner::warning("This tab has an active download").with_message(
+            notices.push(
+                crate::notice::Notice::warning("This tab has an active download").with_message(
                     "Finish or cancel it in Downloads in the library, then close the tab.",
                 ),
-            ));
+            );
         }
-        if self.daily.open && !self.show_settings && !self.show_library {
+        // The history notice would only repeat the Library's own control.
+        if self.history_paused() && !self.show_library {
+            notices.push(
+                crate::notice::Notice::info("History paused")
+                    .with_message("Pages in this window are not saved to browsing history."),
+            );
+        }
+        if !on_page {
+            for notice in &notices {
+                column = column.push(notice.widget(true));
+            }
+        }
+        if self.daily.open && !on_page {
             column = column.push(self.daily.bar(theme));
-        }
-        if let Some(prompt) = self.capabilities.prompt(&self.engine) {
-            column = column.push(prompt);
-        }
-        if self.history_paused() {
-            column = column
-                .push(inset(Banner::info("History paused").with_message(
-                    "Pages in this window are not saved to browsing history.",
-                )));
         }
         // The content region is either the settings pane or the live page.
         let content: Box<dyn Widget> = if self.show_settings {
@@ -2690,10 +2773,11 @@ impl BrowserWidget {
                 SettingsPane::with_settings(&self.settings)
                     .with_presentation(self.settings_presentation.clone())
                     .with_action_bindings(self.settings_action_bindings())
-                    .with_history_clear_error(self.history_clear_error.clone()),
+                    .with_history_clear_error(self.history_clear_error.clone())
+                    .with_notices(notices),
             )
         } else if self.show_library {
-            self.build_library_composition(theme)
+            self.build_library_composition(theme, &notices)
         } else if let Some(error) = &self.load_error {
             let recovery = EmptyState::error("Couldn’t open this page", error)
                 .with_icon(Icon::Wifi)
@@ -2753,9 +2837,17 @@ impl BrowserWidget {
         let Some(stage) = self.review_stage.take() else {
             return;
         };
+        let url = self.tab_url().to_owned();
         match stage {
-            ReviewStage::Site { information } => self.site.stage_for_review(information),
-            ReviewStage::Autofill { addresses } => self.credentials.stage_for_review(addresses),
+            ReviewStage::Typing { text } => self.address.set(text.to_owned()),
+            ReviewStage::Site { information } => self.site.stage_for_review(information, &url),
+            ReviewStage::Autofill { addresses } => {
+                // The panels open from rows of the settings page, so that is
+                // the page behind them.
+                self.show_settings = true;
+                self.show_library = false;
+                self.credentials.stage_for_review(addresses, &url);
+            }
             ReviewStage::Find => self.daily.stage_for_review(),
         }
         self.structure_dirty = true;
@@ -3354,48 +3446,135 @@ impl BrowserWidget {
         self.find_rect(URL_INPUT_ID)
     }
 
-    /// Anchor Picture-in-Picture feedback to the overflow menu, the control
-    /// that holds the command, at every window width: a no-video explanation
-    /// stays visible (and clamped) rather than being silently dropped.
-    fn pip_feedback_anchor(&self) -> Option<Rect> {
-        self.find_rect(toolbar::OVERFLOW_ID)
-            .or_else(|| self.address_input_rect())
+    /// The anchored panel's content and the controls it opens beside, nearest
+    /// first, or `None` when nothing is open. A popover is placed against the
+    /// control that summoned it; when that control is not on screen (a
+    /// compact window moves some into the overflow menu), the next stands in.
+    fn anchored_panel_parts(
+        &self,
+        theme: &Theme,
+        width: f32,
+        max_height: f32,
+    ) -> Option<(PanelKind, Box<dyn Widget>, Vec<&'static str>)> {
+        let width = width.max(1.0);
+        if self.credentials.open {
+            let opener = if self.credentials.addresses_open() {
+                "browser.address.open"
+            } else {
+                "browser.credentials.open"
+            };
+            return Some((
+                PanelKind::Credentials,
+                self.credentials.panel(width, max_height),
+                vec![opener, toolbar::OVERFLOW_ID, URL_INPUT_ID],
+            ));
+        }
+        if self.site.open {
+            return Some((
+                PanelKind::Site,
+                self.site.panel(width, max_height),
+                vec!["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID],
+            ));
+        }
+        if let Some(prompt) = self.capabilities.prompt(&self.engine) {
+            let anchors = if self.capabilities.prompt_is_permission() {
+                vec!["browser.site.info", URL_INPUT_ID, toolbar::OVERFLOW_ID]
+            } else {
+                vec![
+                    "browser.download-status",
+                    toolbar::OVERFLOW_ID,
+                    URL_INPUT_ID,
+                ]
+            };
+            return Some((PanelKind::Prompt, prompt, anchors));
+        }
+        let feedback = self.pip_feedback.as_ref()?;
+        let spacing = &theme.tokens.spacing;
+        let note = |text: &str| -> Box<dyn Widget> {
+            Box::new(ui::widget::Text::new(text).with_role(ui::tokens::TextRole::Body))
+        };
+        let content: Box<dyn Widget> = match feedback.kind {
+            PipFeedbackKind::Finding => note("Finding the active video…"),
+            PipFeedbackKind::NoVideo => {
+                let choose = |id: &str, label: &str, icon: Icon, choice: PipChoice| {
+                    let pending = self.pip_choice.clone();
+                    Button::new(id, label, None)
+                        .with_icon(icon)
+                        .on_effect(move || pending.set(Some(choice)))
+                };
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(spacing.s3)
+                        .push(note("No visible video on this page"))
+                        .push(Box::new(
+                            ui::widget::Actions::new(choose(
+                                "browser.pip.float-page",
+                                "Float page",
+                                Icon::PictureInPicture2,
+                                PipChoice::FloatPage,
+                            ))
+                            .secondary(choose(
+                                "browser.pip.select-area",
+                                "Select area",
+                                Icon::MousePointer2,
+                                PipChoice::SelectArea,
+                            )),
+                        )),
+                )
+            }
+        };
+        Some((
+            PanelKind::Pip,
+            content,
+            vec![toolbar::OVERFLOW_ID, URL_INPUT_ID],
+        ))
     }
 
-    /// Keep the transient `PiP` guidance card wholly inside the Browser's
-    /// viewport. On compact chrome its logical anchor can sit near either
-    /// edge, so anchoring only the card's trailing side would clip the text
-    /// and first action offscreen.
-    fn pip_feedback_rect_for_anchor(
-        viewport: Rect,
-        anchor: Rect,
-        has_actions: bool,
-        theme: &Theme,
-    ) -> Option<Rect> {
-        let metrics = &theme.tokens.metrics;
+    /// The popover for whatever panel is open, anchored to its control.
+    fn build_anchored_panel(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
         let spacing = &theme.tokens.spacing;
-        let inset = f64::from(spacing.s3);
-        let available_width = viewport.width() - inset * 2.0;
-        if available_width <= 0.0 {
-            return None;
+        let metrics = &theme.tokens.metrics;
+        let window = self.rect;
+        // The popover pads its content on every side.
+        let pad = 2.0 * spacing.s4;
+        let room = window.width() as f32 - 2.0 * spacing.s3 - pad;
+        let width = metrics.panel_width_list.min(room);
+        let toolbar_bottom = self
+            .find_rect("browser.toolbar")
+            .map_or(0.0, |toolbar| toolbar.y1);
+        let max_height =
+            (window.height() as f32 - toolbar_bottom as f32 - spacing.s3 - pad).max(160.0);
+        let (kind, content, anchors) = self.anchored_panel_parts(theme, width, max_height)?;
+        // A control of the toolbar row opens its panel below the whole row,
+        // so the row stays uncovered.
+        let anchor = anchors.into_iter().find_map(|id| self.find_rect(id));
+        let anchor = anchor.map_or_else(
+            || Rect::new(window.x0, toolbar_bottom, window.x1, toolbar_bottom),
+            |control| {
+                if control.y1 < toolbar_bottom {
+                    Rect::new(control.x0, control.y0, control.x1, toolbar_bottom)
+                } else {
+                    control
+                }
+            },
+        );
+        let dismissed = self.panel_dismissed.clone();
+        let mut popover = Popover::with_content(
+            Container::new()
+                .with_no_padding()
+                .with_width(width)
+                .with_child(content),
+        )
+        .anchored(anchor)
+        .open(true)
+        .on_dismiss(move || dismissed.set(Some(kind)));
+        // Before the first layout the window has no size to stay inside.
+        if window.area() > 0.0 {
+            popover = popover.with_viewport(window.inset(-f64::from(spacing.s3)));
         }
-        let desired_width = f64::from(metrics.panel_width_list);
-        let width = desired_width.min(available_width);
-        // One row of text, plus a row of actions when the card asks for a
-        // decision.
-        let row = f64::from(metrics.panel_row_height);
-        let height = if has_actions {
-            2.0 * row + f64::from(spacing.s4)
-        } else {
-            row + f64::from(spacing.s4)
-        };
-        let left_bound = viewport.x0 + inset;
-        let right_bound = (viewport.x1 - inset - width).max(left_bound);
-        let x0 = (anchor.x1 - width).clamp(left_bound, right_bound);
-        let top_bound = viewport.y0 + inset;
-        let bottom_bound = (viewport.y1 - inset - height).max(top_bound);
-        let y0 = (anchor.y1 + f64::from(spacing.s2)).clamp(top_bound, bottom_bound);
-        Some(Rect::new(x0, y0, x0 + width, y0 + height))
+        Some(Box::new(popover))
     }
 
     fn request_navigation_history(&mut self, direction: NavigationDirection) {
@@ -4056,6 +4235,7 @@ impl Widget for BrowserWidget {
         self.tick_back_hold(ui::time::now());
         self.apply_engine_events();
         self.apply_review_stage();
+        self.apply_panel_events();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.flush_library_edits(state);
@@ -4093,6 +4273,9 @@ impl Widget for BrowserWidget {
         if self.rect.width() > 0.0 {
             self.compact_chrome = is_compact_chrome(self.chrome_width(), self.compact_breakpoint);
         }
+        // The popover is anchored to controls of the composition on screen,
+        // which the new one replaces below.
+        let anchored_panel = self.build_anchored_panel(theme);
         let mut composed = self.build_composition(theme);
         let child_node = composed.build_layout(taffy, theme, node_map);
         if let Some((id, state)) = address_state {
@@ -4131,37 +4314,20 @@ impl Widget for BrowserWidget {
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child_node` was just built in this one above.
         let mut children = vec![child_node];
-        self.site_panel = None;
-        if self.site.open || self.credentials.open {
-            // The panel hangs directly under the toolbar row — its controls'
-            // height plus the toolbar Container's padding either side, the
-            // same sum the toolbar itself lays out to, so the two agree at
-            // every UI scale — with one `s3` gutter from the window's left
-            // edge (and the same kept free on the right) and `s12` kept free
-            // at the foot.
-            let gutter = theme.tokens.spacing.s3;
-            let top = ControlSize::Regular.height(theme) as f32 + 2.0 * theme.tokens.spacing.s1;
-            let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
-            let height =
-                (self.rect.height() as f32 - top - theme.tokens.spacing.s12).clamp(180.0, 510.0);
-            let inset = theme.tokens.spacing.s4;
-            let mut panel = if self.credentials.open {
-                self.credentials.panel(width, height, inset)
-            } else {
-                self.site.panel(width, height, inset)
-            };
+        self.anchored_panel = None;
+        if let Some(mut panel) = anchored_panel {
             let panel_node = panel.build_layout(taffy, theme, node_map);
+            // The popover places itself against its anchor; the node only
+            // registers it with the tree.
             #[allow(
                 clippy::unwrap_used,
                 reason = "panel node was just created in this tree"
             )]
             let mut panel_style = taffy.style(panel_node).unwrap().clone();
             panel_style.position = taffy::Position::Absolute;
-            panel_style.inset.left = taffy::LengthPercentageAuto::length(gutter);
-            panel_style.inset.top = taffy::LengthPercentageAuto::length(top);
             let _ = taffy.set_style(panel_node, panel_style);
             children.push(panel_node);
-            self.site_panel = Some(panel);
+            self.anchored_panel = Some(panel);
         }
         #[allow(
             clippy::unwrap_used,
@@ -4193,7 +4359,7 @@ impl Widget for BrowserWidget {
         {
             c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
-        if let Some(panel) = &mut self.site_panel
+        if let Some(panel) = &mut self.anchored_panel
             && let Ok(children) = taffy.children(node)
             && let Some(&panel_node) = children.get(1)
         {
@@ -4244,13 +4410,9 @@ impl Widget for BrowserWidget {
         if let Some(c) = &mut self.composed {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        if let Some(panel) = &mut self.site_panel {
-            // A floating panel: its own material and shadow, with its content
-            // inked for that ground.
-            ui::widget::floating_surface::paint(scene, transform, panel.get_rect(), theme);
-            let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
-            panel.draw(scene, transform, text_renderer, &on_panel, presence);
-            panel.draw_overlay(scene, transform, text_renderer, &on_panel, presence);
+        // The popover paints its own material, shadow and content.
+        if let Some(panel) = &mut self.anchored_panel {
+            panel.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // Re-anchor under the address bar every draw (layout may not have
         // re-run since the suggestions changed).
@@ -4266,87 +4428,10 @@ impl Widget for BrowserWidget {
             .draw(scene, transform, text_renderer, theme, presence);
         self.back_menu
             .draw(scene, transform, text_renderer, theme, presence);
-        let feedback_hovered = self.pip_feedback_rect.contains(self.cursor);
-        let float_page_hovered = self.pip_float_page_rect.contains(self.cursor);
-        let select_area_hovered = self.pip_select_area_rect.contains(self.cursor);
-        if !feedback_hovered
-            && self.pip_feedback.as_ref().is_some_and(|feedback| {
-                feedback.kind == PipFeedbackKind::NoVideo && feedback.is_expired()
-            })
-        {
-            self.pip_feedback = None;
-            self.pip_feedback_rect = Rect::ZERO;
-        }
-        self.pip_feedback_rect = Rect::ZERO;
-        self.pip_float_page_rect = Rect::ZERO;
-        self.pip_select_area_rect = Rect::ZERO;
-        if let Some(feedback) = &self.pip_feedback {
-            let elapsed = feedback.started.elapsed();
-            let mut alpha = if self.motion_reduced {
-                1.0
-            } else {
-                (elapsed.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0)
-            };
-            if feedback.kind == PipFeedbackKind::NoVideo
-                && !feedback.persistent
-                && !feedback_hovered
-            {
-                let remaining = PIP_FEEDBACK_LIFETIME.saturating_sub(elapsed);
-                alpha =
-                    alpha.min((remaining.as_secs_f32() / PIP_FEEDBACK_FADE.as_secs_f32()).min(1.0));
-            }
-            if let Some(anchor) = self.pip_feedback_anchor() {
-                let has_actions = feedback.kind == PipFeedbackKind::NoVideo;
-                let Some(rect) =
-                    Self::pip_feedback_rect_for_anchor(self.rect, anchor, has_actions, theme)
-                else {
-                    return;
-                };
-                self.pip_feedback_rect = rect;
-                let card = match feedback.kind {
-                    PipFeedbackKind::Finding => {
-                        ToastCard::new("Finding the active video…", ToastKind::Info)
-                            .caption("Picture in Picture")
-                            .alpha(alpha)
-                    }
-                    PipFeedbackKind::NoVideo => {
-                        ToastCard::new("No visible video on this page", ToastKind::Warning)
-                            .caption("Picture in Picture")
-                            .actions(
-                                "Float page",
-                                Icon::PictureInPicture2,
-                                float_page_hovered,
-                                "Select area",
-                                Icon::MousePointer2,
-                                select_area_hovered,
-                            )
-                            .alpha(alpha)
-                    }
-                };
-                let hit = paint_card(scene, transform, text_renderer, theme, rect, &card);
-                self.pip_float_page_rect = hit.secondary_action_rect;
-                self.pip_select_area_rect = hit.primary_action_rect;
-            }
-        }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        if self.navigation_hold.waiting() {
-            return true;
-        }
-        if self.motion_reduced {
-            return self
-                .composed
-                .as_ref()
-                .is_some_and(|composed| composed.needs_animation_frame());
-        }
-        let feedback_animates = self.pip_feedback.as_ref().is_some_and(|feedback| {
-            feedback.started.elapsed() < PIP_FEEDBACK_FADE
-                || (feedback.kind == PipFeedbackKind::NoVideo
-                    && !feedback.persistent
-                    && feedback.started.elapsed() < PIP_FEEDBACK_LIFETIME)
-        });
-        feedback_animates
+        self.navigation_hold.waiting()
             || self
                 .composed
                 .as_ref()
@@ -4378,24 +4463,26 @@ impl Widget for BrowserWidget {
             self.focus_control_preserving_selection(id);
             *ctx.focus_target = Some(node);
         }
-        if self.site.open || self.credentials.open {
-            let dismiss = matches!(event,WindowEvent::KeyboardInput {event:key,..} if key.state==ElementState::Pressed && key.logical_key==WKey::Named(WNamedKey::Escape))
-                || matches!(event,WindowEvent::MouseInput {state:ElementState::Pressed,..} if self.site_panel.as_ref().is_some_and(|p|!p.get_rect().contains(self.cursor)));
-            if dismiss {
-                self.site.close();
-                self.deactivate_credentials();
-                self.structure_dirty = true;
-                *ctx.handled = true;
-                return;
-            }
-            if let Some(panel) = &mut self.site_panel
-                && let Ok(children) = ctx.taffy.children(ctx.node_id)
+        if let Some(panel) = &mut self.anchored_panel {
+            // The popover owns the pointer and the keyboard while it is up:
+            // Escape and a click outside dismiss it, and nothing reaches the
+            // page behind.
+            if let Ok(children) = ctx.taffy.children(ctx.node_id)
                 && let Some(&panel_node) = children.get(1)
             {
                 panel.handle_event(event, &mut ctx.reborrow(ctx.path, panel_node));
             }
-            *ctx.handled = true;
-            return;
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::Ime(_)
+            ) {
+                *ctx.handled = true;
+                return;
+            }
         }
         if self.page_menu.menu.is_open() {
             self.page_menu.menu.handle_event(event, ctx);
@@ -4544,34 +4631,6 @@ impl Widget for BrowserWidget {
                 return;
             }
         }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            }
-        ) && self
-            .pip_feedback
-            .as_ref()
-            .is_some_and(|feedback| feedback.kind == PipFeedbackKind::NoVideo)
-        {
-            if self.pip_select_area_rect.contains(self.cursor) {
-                self.pending_capture_studio = Some(ui::widget::CaptureMode::Pip);
-                self.pip_feedback = None;
-                self.pip_feedback_rect = Rect::ZERO;
-                self.pip_float_page_rect = Rect::ZERO;
-                self.pip_select_area_rect = Rect::ZERO;
-                *ctx.handled = true;
-                return;
-            }
-            if self.pip_float_page_rect.contains(self.cursor) {
-                self.float_current_page();
-                *ctx.handled = true;
-                return;
-            }
-        }
-
         if self.handle_address_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
@@ -4758,9 +4817,15 @@ impl Widget for BrowserWidget {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let feedback_expiry = self
+            .pip_feedback
+            .as_ref()
+            .filter(|feedback| !feedback.persistent)
+            .map(|feedback| feedback.started + PIP_FEEDBACK_LIFETIME);
         self.site
             .deadline()
             .into_iter()
+            .chain(feedback_expiry)
             .chain(self.credentials.deadline())
             .chain(
                 self.children()
@@ -4770,8 +4835,8 @@ impl Widget for BrowserWidget {
             .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
-        if self.site.open || self.credentials.open {
-            return self.site_panel.as_ref().map(|p| p.get_rect());
+        if let Some(panel) = &self.anchored_panel {
+            return Some(panel.get_rect());
         }
         self.page_menu
             .menu
@@ -4786,7 +4851,11 @@ impl Widget for BrowserWidget {
             .as_ref()
             .map(|c| c.as_ref() as &dyn Widget)
             .into_iter()
-            .chain(self.site_panel.as_ref().map(|p| p.as_ref() as &dyn Widget))
+            .chain(
+                self.anchored_panel
+                    .as_ref()
+                    .map(|p| p.as_ref() as &dyn Widget),
+            )
             .collect()
     }
 
@@ -4796,7 +4865,7 @@ impl Widget for BrowserWidget {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .into_iter()
             .chain(
-                self.site_panel
+                self.anchored_panel
                     .as_mut()
                     .map(|p| p.as_mut() as &mut (dyn Widget + '_)),
             )
@@ -4813,16 +4882,6 @@ impl Widget for BrowserWidget {
 
     fn test_id(&self) -> Option<&str> {
         Some("browser.root")
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        (self
-            .pip_feedback
-            .as_ref()
-            .is_some_and(|feedback| feedback.kind == PipFeedbackKind::NoVideo)
-            && (self.pip_float_page_rect.contains(point)
-                || self.pip_select_area_rect.contains(point)))
-        .then_some(winit::window::CursorIcon::Pointer)
     }
 }
 
@@ -6988,6 +7047,17 @@ mod tests {
     }
 
     fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
+        layout_keeping_tree(widget, width, height, theme);
+    }
+
+    /// Lay the widget out and hand back the tree and the widget's node, for
+    /// tests that dispatch events against it.
+    fn layout_keeping_tree(
+        widget: &mut BrowserWidget,
+        width: f32,
+        height: f32,
+        theme: &Theme,
+    ) -> (TaffyTree<()>, NodeId) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
         let mut text = TextRenderer::new();
@@ -7025,6 +7095,156 @@ mod tests {
         )
         .unwrap();
         widget.apply_layout(&tree, child, Point::ORIGIN);
+        (tree, child)
+    }
+
+    /// Press the left button at `point`, as a person would.
+    fn click_at(widget: &mut BrowserWidget, tree: &TaffyTree<()>, node: NodeId, point: Point) {
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ] {
+            let mut handled = false;
+            let mut focus = None;
+            widget.handle_event(
+                &event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: tree,
+                },
+            );
+        }
+    }
+
+    /// Panels open beside the control that opened them, and a dismissed
+    /// question is a declined one.
+    #[test]
+    fn panels_open_below_their_control_and_dismissing_a_question_declines_it() {
+        // Phase `the_site_panel_opens_below_the_toolbar_at_the_site_button`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_set_viewport_width(1000);
+            layout_at(&mut widget, 1000.0, 700.0);
+            widget.site.open = true;
+            layout_at(&mut widget, 1000.0, 700.0);
+            layout_at(&mut widget, 1000.0, 700.0);
+            let panel = widget.anchored_panel.as_ref().unwrap().get_rect();
+            let toolbar = widget.find_rect("browser.toolbar").unwrap();
+            let trigger = widget.find_rect("browser.site.info").unwrap();
+            assert!(
+                panel.y0 >= toolbar.y1,
+                "the panel {panel:?} leaves the toolbar {toolbar:?} uncovered"
+            );
+            assert!((panel.x0 - trigger.x0).abs() < 1.0, "{panel:?} {trigger:?}");
+            assert!(panel.y1 <= 700.0);
+        }
+
+        // Phase `an_autofill_panel_opens_at_its_settings_row`.
+        {
+            let mut widget = BrowserWidget::new_headless();
+            widget.debug_show_autofill(false);
+            layout_at(&mut widget, 1000.0, 800.0);
+            layout_at(&mut widget, 1000.0, 800.0);
+            layout_at(&mut widget, 1000.0, 800.0);
+            assert!(widget.credentials.open);
+            let panel = widget.anchored_panel.as_ref().unwrap().get_rect();
+            let row = widget.find_rect("browser.credentials.open").unwrap();
+            assert!((panel.x0 - row.x0).abs() < 1.0, "{panel:?} {row:?}");
+            assert!(
+                panel.y1 <= row.y0 || panel.y0 >= row.y1,
+                "the panel {panel:?} must not cover its row {row:?}"
+            );
+        }
+
+        // Phase `dismissing_a_permission_question_declines_it`.
+        {
+            fn within(widget: &dyn Widget, id: &str) -> bool {
+                widget.test_id() == Some(id)
+                    || widget.children().iter().any(|child| within(*child, id))
+            }
+            let capture = TestEngine::new();
+            let mut widget = BrowserWidget::with_engine(capture.clone(), true);
+            widget.debug_request_permission();
+            layout_at(&mut widget, 1000.0, 700.0);
+            let (tree, node) = layout_keeping_tree(&mut widget, 1000.0, 700.0, &Theme::dark());
+            let panel = widget.anchored_panel.as_ref().unwrap().get_rect();
+            assert!(panel.width() > 0.0);
+            // The question names its two answers, inside the popover.
+            let popover = widget.anchored_panel.as_ref().unwrap();
+            assert!(within(popover.as_ref(), "browser.decision.true.1.true"));
+            assert!(within(popover.as_ref(), "browser.decision.true.1.false"));
+            click_at(&mut widget, &tree, node, Point::new(900.0, 650.0));
+            layout_at(&mut widget, 1000.0, 700.0);
+            assert!(
+                capture
+                    .commands()
+                    .contains(&WebViewCommand::PermissionDecision {
+                        id: 1,
+                        allow: false
+                    })
+            );
+        }
+    }
+
+    /// The library lists show progress as a bar and search where it is a scope.
+    #[test]
+    fn library_downloads_show_a_progress_bar_and_search_is_offered_only_where_it_scopes() {
+        fn count(widget: &dyn Widget, matches: &dyn Fn(&dyn Widget) -> bool) -> usize {
+            usize::from(matches(widget))
+                + widget
+                    .children()
+                    .iter()
+                    .map(|child| count(*child, matches))
+                    .sum::<usize>()
+        }
+        let bars = |widget: &BrowserWidget| count(widget, &|node| node.name() == "ProgressBar");
+        let searches = |widget: &BrowserWidget| {
+            count(widget, &|node| {
+                node.test_id()
+                    .is_some_and(|id| id.starts_with("search-open"))
+            })
+        };
+
+        let mut downloads = BrowserWidget::new_headless();
+        downloads.debug_show_library("downloads");
+        downloads.debug_show_downloads("progress");
+        layout_at(&mut downloads, 1280.0, 800.0);
+        assert_eq!(bars(&downloads), 1, "one download, one bar");
+        assert_eq!(searches(&downloads), 1);
+        let entry = downloads.downloads.entries().first().unwrap().clone();
+        assert!(
+            !download_status_text(&entry).contains('%'),
+            "the bar carries the percentage"
+        );
+
+        let mut extensions = BrowserWidget::new_headless();
+        extensions.debug_show_library("extensions");
+        layout_at(&mut extensions, 1280.0, 800.0);
+        assert_eq!(
+            searches(&extensions),
+            0,
+            "extensions are not a search scope"
+        );
     }
 
     /// Engine navigation, gestures and canonical operations update the address bar and history buttons.
@@ -7345,8 +7565,8 @@ mod tests {
                 .unwrap();
             let history_tab = wide.find_rect("browser.library.sections").unwrap();
             assert!(
-                (120.0..=160.0).contains(&history_tab.x0),
-                "desktop title, tabs, and rows share a centered 920px Library measure"
+                (150.0..=200.0).contains(&history_tab.x0),
+                "desktop title, tabs, and rows share the centered measure Settings uses"
             );
             assert!(
                 first.x1 < 1_080.0,
@@ -7406,7 +7626,7 @@ mod tests {
                 ))
                 .unwrap();
             assert!(
-                (120.0..=160.0).contains(&history_tab.x0),
+                (150.0..=200.0).contains(&history_tab.x0),
                 "large text retains the desktop Library measure instead of becoming edge-to-edge"
             );
             assert!(
@@ -7653,7 +7873,7 @@ mod tests {
                 layout_at(&mut widget, 390.0, 700.0);
                 if id.ends_with("open") {
                     assert!(widget.credentials.open);
-                    let panel = widget.site_panel.as_ref().unwrap();
+                    let panel = widget.anchored_panel.as_ref().unwrap();
                     assert!(
                         panel.traps_focus(),
                         "modal must enable scoped host Tab navigation"
@@ -7847,7 +8067,7 @@ mod tests {
             let presence = PresenceCtx::default();
             for pass in 0..3 {
                 layout_at(&mut widget, 800.0, 560.0);
-                let panel = widget.site_panel.as_ref().unwrap();
+                let panel = widget.anchored_panel.as_ref().unwrap();
                 assert!(panel.get_rect().height() > 100.0);
                 let mut scene = Scene::new();
                 widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
@@ -7914,7 +8134,7 @@ mod tests {
                     widget.site.sync(&widget.engine);
                     layout_at(&mut widget, 390.0, 700.0);
                 }
-                let rect = widget.site_panel.as_ref().unwrap().get_rect();
+                let rect = widget.anchored_panel.as_ref().unwrap().get_rect();
                 assert!(
                     rect.x0 >= 0.0 && rect.x1 <= 390.0 && rect.height() > 100.0,
                     "{rect:?}"
@@ -7947,7 +8167,7 @@ mod tests {
             layout_at(&mut widget, 1000.0, 700.0);
             widget.site.open = true;
             layout_at(&mut widget, 1000.0, 700.0);
-            assert!(widget.site_panel.is_some());
+            assert!(widget.anchored_panel.is_some());
             let result = widget
                 .start_operation(
                     &ui::widget::ResourceOperation::local(
@@ -8075,7 +8295,7 @@ mod tests {
                 }));
             widget.apply_engine_events();
             layout_at(&mut widget, 1000.0, 700.0);
-            assert!(widget.site_panel.is_some());
+            assert!(widget.anchored_panel.is_some());
             assert!(
                 widget
                     .start_operation(
@@ -8225,34 +8445,22 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn pip_feedback_is_anchored_clamped_and_settles() {
-        // Phase `narrow_pip_feedback_is_clamped_inside_viewport_safe_bounds`.
-        {
-            let viewport = Rect::new(0.0, 0.0, 390.0, 844.0);
-            // Compact chrome has no dedicated PiP button; its semantic fallback
-            // anchor is close enough to the trailing edge that trailing-only
-            // alignment used to put the left side of this card offscreen.
-            let anchor = Rect::new(278.0, 12.0, 322.0, 52.0);
-            let theme = Theme::dark();
-            let card = BrowserWidget::pip_feedback_rect_for_anchor(viewport, anchor, true, &theme)
-                .unwrap();
-            let inset = f64::from(theme.tokens.spacing.s3);
-            assert!(card.x0 >= viewport.x0 + inset);
-            assert!(card.x1 <= viewport.x1 - inset);
-            assert!(card.y0 >= viewport.y0 + inset);
-            assert!(card.y1 <= viewport.y1 - inset);
-            assert!(
-                (card.width() - f64::from(theme.tokens.metrics.panel_width_list)).abs()
-                    < f64::EPSILON,
-                "the full action card still fits"
-            );
-        }
-
-        // Phase `compact_pip_feedback_uses_a_visible_toolbar_anchor`.
+        // Phase `narrow_pip_feedback_stays_inside_the_window_beside_the_overflow_menu`.
         {
             let mut widget = BrowserWidget::new_headless();
             widget.debug_set_viewport_width(390);
             widget.debug_show_empty_pip_feedback();
             layout_at(&mut widget, 390.0, 844.0);
+            layout_at(&mut widget, 390.0, 844.0);
+
+            let rect = widget.anchored_panel.as_ref().unwrap().get_rect();
+            assert!(rect.width() > 0.0);
+            assert!(rect.x0 >= 0.0 && rect.x1 <= 390.0, "{rect:?}");
+            let overflow = widget.find_rect(toolbar::OVERFLOW_ID).unwrap();
+            assert!(
+                rect.y0 >= overflow.y1,
+                "the note opens below the control that holds the command"
+            );
 
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
@@ -8263,17 +8471,13 @@ mod tests {
                 &Theme::dark(),
                 &PresenceCtx::empty(),
             );
-
-            assert!(widget.pip_feedback_rect.width() > 0.0);
-            assert!(widget.pip_feedback_rect.x0 >= 12.0);
-            assert!(widget.pip_feedback_rect.x1 <= 378.0);
             assert!(
                 !scene.encoding().draw_tags.is_empty(),
                 "compact feedback must remain visible even without a PiP toolbar button"
             );
         }
 
-        // Phase `reduced_motion_settles_pip_feedback_without_requesting_frames`.
+        // Phase `pip_feedback_needs_no_animation_frames_and_wakes_at_its_expiry`.
         {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             w.pip_feedback = Some(PipFeedback {
@@ -8281,18 +8485,23 @@ mod tests {
                 started: ui::time::now(),
                 persistent: false,
             });
-
-            assert!(w.needs_animation_frame());
-            w.set_motion_reduced(true);
-            assert!(
-                !w.needs_animation_frame(),
-                "reduced motion keeps the feedback visible but does not animate its fade"
-            );
+            assert!(!w.needs_animation_frame());
+            assert!(w.next_wake_deadline().is_some());
+            w.pip_feedback = Some(PipFeedback::persistent(PipFeedbackKind::NoVideo));
+            assert!(w.next_wake_deadline().is_none());
         }
 
         // Phase `actionable_pip_feedback_does_not_expire_under_the_pointer`.
         {
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            let mut w = BrowserWidget::new_headless();
+            w.pip_feedback = Some(PipFeedback {
+                kind: PipFeedbackKind::NoVideo,
+                started: ui::time::now(),
+                persistent: false,
+            });
+            layout_at(&mut w, 800.0, 600.0);
+            layout_at(&mut w, 800.0, 600.0);
+            let rect = w.anchored_panel.as_ref().unwrap().get_rect();
             w.pip_feedback = Some(PipFeedback {
                 kind: PipFeedbackKind::NoVideo,
                 started: ui::time::now()
@@ -8300,27 +8509,12 @@ mod tests {
                     .unwrap_or_else(ui::time::Instant::now),
                 persistent: false,
             });
-            w.pip_feedback_rect = Rect::new(100.0, 80.0, 426.0, 144.0);
-            w.cursor = w.pip_feedback_rect.center();
-            let mut scene = Scene::new();
-            let mut tr = TextRenderer::new();
-            w.draw_overlay(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            w.cursor = rect.center();
+            w.apply_panel_events();
             assert!(w.pip_feedback.is_some());
 
             w.cursor = Point::ZERO;
-            w.draw_overlay(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &Theme::dark(),
-                &PresenceCtx::default(),
-            );
+            w.apply_panel_events();
             assert!(w.pip_feedback.is_none());
         }
     }
@@ -8443,40 +8637,15 @@ mod tests {
         // Phase `no_video_select_area_requests_the_shared_shell_pip_picker_once`.
         {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            let (mut state, root) = synced(&mut w);
-            w.pip_feedback = Some(PipFeedback {
+            w.set_pip_feedback(Some(PipFeedback {
                 kind: PipFeedbackKind::NoVideo,
                 started: ui::time::now(),
                 persistent: false,
-            });
-            w.pip_feedback_rect = Rect::new(100.0, 80.0, 454.0, 192.0);
-            w.pip_float_page_rect = Rect::new(114.0, 154.0, 273.0, 184.0);
-            w.pip_select_area_rect = Rect::new(281.0, 154.0, 440.0, 184.0);
-            w.cursor = w.pip_select_area_rect.center();
+            }));
+            // The note's button queues the choice; the next sync acts on it.
+            w.pip_choice.set(Some(PipChoice::SelectArea));
+            w.apply_panel_events();
 
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.new_leaf(Style::default()).expect("test leaf");
-            let mut handled = false;
-            let mut focus = None;
-            w.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
-            );
-
-            assert!(handled);
             assert_eq!(
                 w.take_capture_studio_request(),
                 Some(ui::widget::CaptureMode::Pip)

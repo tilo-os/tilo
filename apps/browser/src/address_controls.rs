@@ -286,11 +286,6 @@ impl AddressControls {
                 column.push(line("Address autofill is unavailable in private windows.")),
             );
         }
-        if self.editing.is_none() {
-            column = column.push(line(
-                "Address profiles stay on this device. Filling requires your selection and confirmation.",
-            ));
-        }
         if !self.notice.is_empty() {
             column = column.push(line(&self.notice));
         }
