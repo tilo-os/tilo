@@ -94,7 +94,7 @@ pub mod compute_worker;
 pub mod daemon;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_bridge;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "linux")]
 pub mod environment_guest;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_host;

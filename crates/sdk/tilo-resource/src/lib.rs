@@ -141,8 +141,8 @@ pub use model::{
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, action_label, build_action,
-    declaration_spec, encode, origin_now_ms, publish,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Resource, SearchEntry, action_label,
+    build_action, declaration_spec, encode, origin_now_ms, publish,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
@@ -156,7 +156,8 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ChangeKind, ParamType, PermissionRequirement, Resource, RiskLevel,
+        ActionArgs, ActionParam, ChangeKind, OperationKind, ParamType, PermissionRequirement,
+        Resource, RiskLevel,
     };
 
     /// The default search entry of a record: all of its text, in one entry.

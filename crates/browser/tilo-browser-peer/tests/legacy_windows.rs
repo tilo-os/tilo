@@ -162,6 +162,7 @@ async fn native_window_reaches_browser_and_only_granted_input_returns() {
             hdr_static_metadata: None,
             bit_depth: 0,
             app_id: "org.chromium.Chromium".into(),
+            tab: 0,
         },
     );
     let encoded = [0, 0, 0, 1, 0x65, 0x88, 0x84];

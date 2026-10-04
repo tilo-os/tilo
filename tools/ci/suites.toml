@@ -48,6 +48,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
@@ -93,6 +94,7 @@ suites = [
   "os/tests/test_copy_windows_direct_final_install.py",
   "os/tests/test_create_development_disk.py",
   "os/tests/dev_base_inputs_tree.sh",
+  "os/tests/test_cargo_freshness.py",
   "os/tests/test_dev_builder_staging.py",
   "os/tests/test_development_boot.py",
   "os/tests/test_development_composefs.py",
@@ -524,8 +526,13 @@ readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
-inputs = ["os/components.toml", "os/scripts/install-components.py"]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
+# The device session's names are checked against the board layer that installs it.
+inputs = [
+  "os/components.toml", "os/scripts/install-components.py",
+  "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
+  "os/usr/libexec/tilo-seat-session",
+]
+readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -688,11 +695,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "calculator"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/calculator/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "contacts"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/contacts/src/framework_history_tests.rs"]
@@ -731,11 +733,6 @@ readers = ["apps/weather/src/framework_history_tests.rs"]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "vpn"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/vpn/src/app.rs"]
 
 [[cargo]]
 package = "word-processor"
@@ -890,6 +887,11 @@ reason = "requires a native ARM KVM host and QEMU"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
@@ -1039,6 +1041,11 @@ suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
 
 [[unrequired]]
+suite = "os/tests/input-hotplug-check.sh"
+reason = "runs inside a booted guest's graphical session, partly as root"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
 reason = "root: loop devices and vfat/Btrfs mounts"
 workflow = "release-imager.yml"
@@ -1085,6 +1092,11 @@ suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
+suite = "os/tests/shared_disk_esp.sh"
+reason = "runs inside a booted guest, as root, and repartitions its disk"
+workflow = "dev-disk-boot-diagnostic.yml"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 workflow = "build-release-tools.yml"
@@ -1105,6 +1117,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"

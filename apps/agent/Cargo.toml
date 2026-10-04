@@ -19,7 +19,6 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-serde = { workspace = true, features = ["derive"] }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 collab-types = { path = "../../crates/collab/collab-types" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }

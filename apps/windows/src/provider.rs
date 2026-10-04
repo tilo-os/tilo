@@ -222,6 +222,7 @@ impl CompatibilityProvider for EmptyProvider {
 
 /// Predictable fixture. It deliberately looks like the service response, not a
 /// mock of Wine: code depending on it cannot accidentally gain host execution.
+#[derive(Clone)]
 pub struct SampleProvider {
     catalogue: Catalogue,
 }

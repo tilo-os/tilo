@@ -118,7 +118,8 @@ env:
 
 jobs:
   plan:
-    runs-on: runner
+    # Orchestration only: it must not queue behind the test lanes.
+    runs-on: runner-quality
     timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
@@ -330,7 +331,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -1494,7 +1495,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1526,12 +1526,14 @@ jobs:
           # caches, since a cached layer keeps the file times of the build
           # that made it and any older than this commit escape
           # rewrite-timestamp's clamp (run 48898). Only main writes the layer
-          # caches, and only from a cold builder: a pull request reads main's,
-          # and a builder the runner slot seeded from main's previous dev
-          # build already holds these layers; exporting them cost every run
-          # about two to three minutes.
+          # caches: a pull request reads main's. Main writes the toolchain
+          # even from a seeded builder: after an RPM snapshot change neither
+          # this cache nor the slots' seeded state picked up the new stage,
+          # and every large slot re-ran its dnf install (45-120 s) on each
+          # build. Exporting it is cheap: the stage is a few layers, and
+          # blobs the cache already has are not uploaded again.
           cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build / OS dev: the dev binaries compile on the Fedora bootc base
       # (os/Containerfile.dev's dev-builder), which needs nothing from this
@@ -1625,7 +1627,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1690,7 +1691,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1751,7 +1751,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -1825,7 +1824,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -1916,7 +1914,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -2079,7 +2076,6 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
@@ -2366,7 +2362,6 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
-            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -2627,6 +2622,11 @@ jobs:
             ./os/tests/validation_drive_qemu.sh
           fi
           if [[ $HARDWARE_PROFILE == generic ]]; then
+          # A device joined to an identity from a nearby device holds only a
+          # public identity record and a member certificate. On its own
+          # throwaway overlay of the still-unbooted disk, it signs in straight
+          # to the desktop, without identity setup or recovery.
+          ./os/dev/test-joined-device-startup.sh "$TILO_DISK" --out "$TILO_RUN/joined-device"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
@@ -2690,6 +2690,18 @@ jobs:
           # the release gate that proves the compositor-owned first-use UI is
           # visible to an external AT-SPI consumer on the installed
           # graphical session.
+          # Password fields refuse Copy and Cut. Typed and copied with the
+          # real keyboard, ordinary chrome text reaches the session clipboard
+          # while the backup passphrase leaves it holding what it held.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-plain
+          ./os/dev/vm.sh type tiloplainprobe
+          ./os/dev/vm.sh keys ctrl-a ctrl-c
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh clipboard-is tiloplainprobe
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-copy-secret
+          ./os/dev/vm.sh type tilosecretprobe42
+          ./os/dev/vm.sh keys ctrl-a ctrl-c ctrl-x
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh \
+            clipboard-keeps tilo-clipboard-sentinel tilosecretprobe42
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
@@ -2722,12 +2734,41 @@ jobs:
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          # The empty workspace's cards perform what they name: the Notes card
+          # opens Notes itself rather than a launcher pre-filled with "Notes".
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The greetd login left the display manager's SELinux domain: the
+          # compositor and the apps it launched run as the user, in the
+          # session's logind scope and their own app scopes, and nothing of
+          # the session was denied home access in its first minute.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/session-context-check.sh
+
+          # Typing in a note is a keyboard's job, so the sentence reaches Notes
+          # through QEMU's keyboard as key presses, never an app API. The
+          # document must read back exactly what was typed, in order.
+          typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
+          ./os/dev/vm.sh type "$typed_sentence"
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing"
+
+          # Keyboards and mice plugged in after login must reach the running
+          # compositor: a USB keyboard hot-added on QEMU's own bus, then a
+          # virtual keyboard plugged and unplugged repeatedly, every time
+          # listed in the compositor's input snapshot as opened and dropped.
+          usb_kbd='QEMU QEMU USB Keyboard'
+          usb_kbds=$(./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh count '$usb_kbd'")
+          ./os/dev/vm.sh cmd 'device_add usb-kbd,id=hotplug-kbd'
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $((usb_kbds + 1))"
+          ./os/dev/vm.sh cmd 'device_del hotplug-kbd'
+          ./os/dev/vm.sh ssh "/usr/libexec/tilo/input-hotplug-check.sh wait-count '$usb_kbd' $usb_kbds"
 
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
-          # protected password field and instructions on the session bus.
-          ./os/dev/vm.sh keys meta_l-l
+          # protected password field and instructions on the session bus. The
+          # chord comes from the last virtual keyboard plugged in above, so it
+          # also proves a hot-plugged device's keys reach the compositor.
+          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh uinput \"\$XDG_RUNTIME_DIR/tilo/input-state.json\""
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
@@ -2777,6 +2818,7 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/serial.log
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/joined-device/
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
           if-no-files-found: ignore
 
@@ -3428,6 +3470,17 @@ jobs:
             echo "BASE_CHILD_DIGEST=$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
               | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
           } >> "$GITHUB_ENV"
+
+      # The Lenovo's sound card needs its topology, DSP firmware and UCM
+      # profile in the image; booting it on the laptop is the only test of the
+      # sound itself (DEVELOPMENT.md, "Board dev images on real hardware").
+      - name: Check the board image's audio stack
+        if: matrix.board == 'lenovo-83ed'
+        run: |
+          set -euo pipefail
+          podman run --rm --network none --entrypoint bash \
+            -v "$PWD/os/tests/board_audio_contract.sh:/run/board_audio_contract.sh:ro,z" \
+            "$BOARD_IMAGE" /run/board_audio_contract.sh --root /
 
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
       # does. The lane sealed the UKI with the digest install computes

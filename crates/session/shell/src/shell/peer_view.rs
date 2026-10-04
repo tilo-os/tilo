@@ -66,6 +66,44 @@ pub enum PushOutcome {
     DecodeFailed,
 }
 
+/// Frames of streams that have no view yet, by `(source peer, surface)`.
+///
+/// A stream's start and its first frames travel separately, and the first
+/// frame is the keyframe a decoder must begin at. A frame that overtakes the
+/// start is held here and decoded as soon as the view mounts, instead of the
+/// viewer waiting for the next keyframe. Bounded: the first frames of a few
+/// streams, and nothing larger than a frame on the wire.
+#[derive(Default)]
+pub struct EarlyFrames {
+    held: HashMap<(u64, u64), Vec<Vec<u8>>>,
+}
+
+impl EarlyFrames {
+    const STREAMS: usize = 8;
+    const FRAMES: usize = 4;
+
+    /// Keep `frame` of a stream with no view, in arrival order.
+    pub fn hold(&mut self, key: (u64, u64), frame: Vec<u8>) {
+        if !self.held.contains_key(&key) && self.held.len() >= Self::STREAMS {
+            return;
+        }
+        let frames = self.held.entry(key).or_default();
+        if frames.len() < Self::FRAMES {
+            frames.push(frame);
+        }
+    }
+
+    /// The frames held for a stream whose view just mounted.
+    pub fn take(&mut self, key: (u64, u64)) -> Vec<Vec<u8>> {
+        self.held.remove(&key).unwrap_or_default()
+    }
+
+    /// Drop a stream that ended.
+    pub fn forget(&mut self, key: (u64, u64)) {
+        self.held.remove(&key);
+    }
+}
+
 /// A peer's announcement that one of its surfaces is streaming: which
 /// surface, which app's tab shows it, how it is encoded, and where input on
 /// the local view goes back to.
@@ -80,6 +118,9 @@ pub struct PeerStreamStart {
     pub display_size: Option<(u32, u32)>,
     pub hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
     pub input_sink: Arc<dyn Fn(InputEvent) + Send + Sync>,
+    /// The workspace tab the sender shows the window in; `0` when it names
+    /// none and the view goes to the first free tab of the app.
+    pub tab: u64,
 }
 
 /// Peer-side widget rendering one shared surface: the decoder, the latest
@@ -621,6 +662,19 @@ impl Widget for PeerView {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } if self.pointer_inside => {
+                let ((dx, dy), _) = crate::shell::input_policy::axis_values(*delta);
+                if dx != 0.0 || dy != 0.0 {
+                    self.emit_input(InputEvent::PointerAxis { dx, dy });
+                }
+                *ctx.handled = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text))
+                if self.keyboard_focused && !text.is_empty() =>
+            {
+                self.emit_input(InputEvent::Text { text: text.clone() });
+                *ctx.handled = true;
+            }
             WindowEvent::KeyboardInput { event, .. } if self.keyboard_focused => {
                 if let Some(keycode) = crate::shell::input_policy::evdev_keycode(event) {
                     self.record_key(
@@ -816,6 +870,32 @@ mod tests {
     }
 
     #[test]
+    fn frames_ahead_of_their_stream_start_wait_bounded_in_order() {
+        let mut early = EarlyFrames::default();
+        for frame in 0..6_u8 {
+            early.hold((1, 2), vec![frame]);
+        }
+        assert_eq!(
+            early.take((1, 2)),
+            vec![vec![0], vec![1], vec![2], vec![3]],
+            "the first frames, keyframe first, and only a few"
+        );
+        assert!(early.take((1, 2)).is_empty());
+        for stream in 0..20 {
+            early.hold((stream, 0), vec![1]);
+        }
+        assert_eq!(
+            (0..20)
+                .filter(|stream| !early.take((*stream, 0)).is_empty())
+                .count(),
+            EarlyFrames::STREAMS
+        );
+        early.hold((3, 3), vec![1]);
+        early.forget((3, 3));
+        assert!(early.take((3, 3)).is_empty());
+    }
+
+    #[test]
     fn peer_view_records_inputs_and_keeps_click_focus() {
         fn pending_inputs_recorded_and_drained() {
             let mut view = PeerView::new(1, 9);
@@ -856,8 +936,61 @@ mod tests {
             ));
         }
 
+        fn wheel_and_composed_text_go_to_the_window_under_focus() {
+            let mut view = PeerView::new(42, 9);
+            let mut taffy = TaffyTree::<()>::new();
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            let send = |view: &mut PeerView, event: WindowEvent| {
+                let mut doc = automerge::AutoCommit::new();
+                let mut handled = false;
+                let mut focus = None;
+                view.handle_event(
+                    &event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
+                );
+                handled
+            };
+            let wheel = || WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            let commit = || WindowEvent::Ime(winit::event::Ime::Commit("é".into()));
+
+            // Neither reaches a window the pointer is not over or that has
+            // not been clicked into.
+            assert!(!send(&mut view, wheel()));
+            assert!(!send(&mut view, commit()));
+            assert!(view.take_pending_inputs().is_empty());
+
+            view.set_pointer_inside(true);
+            view.set_keyboard_focused(true);
+            let _ = view.take_pending_inputs();
+            assert!(send(&mut view, wheel()));
+            assert!(send(&mut view, commit()));
+            let events = view.take_pending_inputs();
+            assert!(
+                matches!(
+                    events.as_slice(),
+                    [InputEvent::PointerAxis { dx, dy }, InputEvent::Text { text }]
+                        if *dx == 0.0 && *dy < 0.0 && text == "é"
+                ),
+                "{events:?}"
+            );
+        }
+
         pending_inputs_recorded_and_drained();
         pointer_leave_preserves_click_focus_until_explicit_blur();
+        wheel_and_composed_text_go_to_the_window_under_focus();
     }
 
     #[test]
