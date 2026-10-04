@@ -9,6 +9,8 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
+
+use ui::tokens::TextRole;
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::presence::PresenceCtx;
@@ -55,25 +57,20 @@ impl MapInfoSheet {
         was_open
     }
 
-    pub(crate) fn draw(
+    /// Paint the sheet in the window's top layer, over the whole window.
+    pub(crate) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        viewport: Rect,
+        presence: &PresenceCtx,
     ) {
         if self.current.is_none() {
             return;
         }
-        self.dialog.layout_in(viewport, theme, text_renderer);
-        self.dialog.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &PresenceCtx::empty(),
-        );
+        self.dialog
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     /// Route one event through the shared modal. Returns true while the sheet
@@ -123,20 +120,21 @@ fn dialog_for(info: MapInfo, close_requested: Rc<Cell<bool>>) -> ModalDialog<Tex
     let (title, body) = match info {
         MapInfo::Attribution => (
             "Attribution",
-            "Map data and tiles © OpenStreetMap contributors",
+            "Map data and map tiles © OpenStreetMap contributors.",
         ),
         MapInfo::Licenses => (
             "Licenses",
-            "OpenStreetMap data — Open Database License (ODbL)\n\
-             OpenStreetMap Standard tiles — OSMF Tile Usage Policy\n\
-             © OpenStreetMap contributors",
+            "The map data is © OpenStreetMap contributors, available under \
+             the Open Database License (ODbL). The map tiles are \
+             OpenStreetMap Standard tiles, used under the OpenStreetMap \
+             Foundation's tile usage policy.",
         ),
     };
     let dismiss = Rc::clone(&close_requested);
-    ModalDialog::new(title, Text::new(body).with_size(13.0))
-        .primary_action("Close", move || close_requested.set(true))
+    ModalDialog::new(title, Text::new(body).with_role(TextRole::Body))
+        .primary_action("Done", move || close_requested.set(true))
         .on_dismiss(move || dismiss.set(true))
-        .with_max_size(440.0, 220.0)
+        .with_max_width(440.0)
         .open(true)
 }
 
@@ -193,12 +191,16 @@ mod tests {
         {
             let mut sheet = MapInfoSheet::default();
             sheet.open(MapInfo::Licenses);
-            sheet.draw(
+            let presence = PresenceCtx::empty();
+            presence
+                .viewport
+                .set(Some(Rect::new(0.0, 0.0, 1000.0, 700.0)));
+            sheet.draw_overlay(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
                 &Theme::dark(),
-                Rect::new(0.0, 0.0, 1000.0, 700.0),
+                &presence,
             );
 
             assert!(sheet.modal_capture().is_some());
