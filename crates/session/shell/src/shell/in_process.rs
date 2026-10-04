@@ -74,7 +74,8 @@ impl InProcessApps {
         )
     }
 
-    /// Mount `definition` for tab `tab` of `room`: on the tab's own record,
+    /// Mount `definition` for tab `tab` of `room` on `record` (the tab's
+    /// own, or the room's default the app shares between its windows),
     /// created by the app's genesis the first time, reopened every time
     /// after. `lend` hands the context what the shell lends the app.
     ///
@@ -86,6 +87,7 @@ impl InProcessApps {
         definition: &'static ApplicationDefinition,
         room: &str,
         tab: u64,
+        record: RecordId,
         lend: impl FnOnce(&mut HostContext),
     ) -> Result<AppComponent, LaunchError> {
         let records = self
@@ -114,7 +116,7 @@ impl InProcessApps {
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
         };
-        let checkout = RecordCheckout::new(RecordId::for_tab(tab), definition.record_kind.clone());
+        let checkout = RecordCheckout::new(record, definition.record_kind.clone());
         let (mut context, target) = match records.try_open_record(&checkout) {
             Ok(_) => {
                 let target = LaunchTarget::Record {
@@ -154,9 +156,15 @@ mod tests {
 
     fn mount_terminal(apps: &mut InProcessApps) -> ui::headless::FrameHarness {
         let component = apps
-            .mount(terminal::definition(), ROOM, TAB, |context| {
-                context.lend(terminal::HostedProcessServices::unavailable());
-            })
+            .mount(
+                terminal::definition(),
+                ROOM,
+                TAB,
+                RecordId::for_tab(TAB),
+                |context| {
+                    context.lend(terminal::HostedProcessServices::unavailable());
+                },
+            )
             .unwrap();
         let mut harness = ui::headless::FrameHarness::from_component(
             component,
@@ -225,5 +233,88 @@ mod tests {
             .expect("the tab's record is open")
             .unwrap();
         assert_eq!(kept, Some(target), "the tab's record keeps its last target");
+    }
+
+    /// Files mounted in the shell starts in the folder the shell names, and
+    /// a folder pinned to its Favourites is in the room's record of places,
+    /// there for the next Files tab.
+    #[test]
+    fn a_hosted_files_tab_starts_where_the_shell_says_and_keeps_its_favourites() {
+        let profile = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("harbour-plan.txt"), "plan").unwrap();
+        let folder = folder.path().canonicalize().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let mount = |apps: &mut InProcessApps, tab: u64| {
+            let startup = file_explorer::StartupInputs {
+                initial_dir: folder.clone(),
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+            };
+            let component = apps
+                .mount(
+                    file_explorer::definition(),
+                    ROOM,
+                    tab,
+                    RecordId::room_default(),
+                    |context| {
+                        context.lend(startup);
+                    },
+                )
+                .unwrap();
+            let mut harness = ui::headless::FrameHarness::from_component(
+                component,
+                (1000, 700),
+                ui::application::ComponentRunnerInputs::from_native_process(),
+            )
+            .unwrap();
+            harness.relayout();
+            harness
+        };
+        let mut harness = mount(&mut apps, 51);
+        assert!(
+            harness
+                .inspection_json()
+                .unwrap()
+                .contains("harbour-plan.txt"),
+            "Files lists the folder the shell named"
+        );
+        let places = |apps: &mut InProcessApps| {
+            let records = apps
+                .owners
+                .open(file_explorer::definition().app_id, ROOM)
+                .unwrap();
+            records
+                .with(&RecordId::room_default(), |doc| {
+                    file_explorer::FileExplorer::read(doc).map(|state| state.bookmarks)
+                })
+                .expect("the room's record of places is open")
+                .unwrap()
+        };
+        let before = places(&mut apps);
+        let place = folder.to_string_lossy().into_owned();
+        harness
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: 51,
+                    address: tilo_actions::ActionAddress::new("files.folder", "add-bookmark"),
+                },
+                serde_json::json!({ "path": place }).as_object().unwrap(),
+            )
+            .unwrap();
+        harness.relayout();
+        harness.flush_component_records().unwrap();
+        harness.close_components();
+        drop(harness);
+
+        let _next = mount(&mut apps, 52);
+        let after = places(&mut apps);
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "the pinned folder is in the room's places: {after:?}"
+        );
     }
 }
