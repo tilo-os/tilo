@@ -959,9 +959,14 @@ def check_present(address: str, state: Path, app_name: str, name: str) -> None:
         state.unlink(missing_ok=True)
 
 
-def check_typed(address: str, state: Path, expected: str, status: str | None = None) -> None:
+def check_typed(
+    address: str, state: Path, expected: str, status: str | None = None, min_chars: int | None = None,
+) -> None:
     """The document opened by `prepare_typing` holds exactly EXPECTED and,
-    with STATUS, the app names its save state STATUS and no other."""
+    with STATUS, the app names its save state STATUS and no other. With
+    MIN_CHARS, a text node holding at least that many of the typed characters
+    is enough: long typing runs are judged by how much arrived, not by every
+    key."""
     bus_name, pid_text = state.read_text().split()
     pid = int(pid_text)
     client = AtspiClient(address, bus_name)
@@ -973,17 +978,84 @@ def check_typed(address: str, state: Path, expected: str, status: str | None = N
                 texts = text_nodes(client)
             except GateError:
                 texts = {}
+            if min_chars is not None and any(len(text) >= min_chars for text in texts.values()):
+                longest = max(len(text) for text in texts.values())
+                print(f"typed text reads back: {longest} of {len(expected)} characters")
+                if status is not None:
+                    check_save_status(client, status, deadline)
+                return
             if expected in texts.values():
                 print(f"typed text reads back exactly: {expected!r}")
                 if status is not None:
                     check_save_status(client, status, deadline)
                 return
             time.sleep(POLL_SECONDS * 4)
-        seen = sorted({text for text in texts.values() if text})
-        raise GateError(f"typed {expected!r}, but the document's text nodes hold {seen!r}")
+        seen = sorted({text[:200] for text in texts.values() if text})
+        raise GateError(f"typed {expected[:200]!r}, but the document's text nodes hold {seen!r}")
     finally:
         close_app(pid)
         state.unlink(missing_ok=True)
+
+
+SESSION_LOG = Path.home() / ".local/state/tilo/session-logs/latest.log"
+HISTORY_BUTTON = "History"
+
+
+def session_log_lines() -> list[str]:
+    try:
+        return SESSION_LOG.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def wait_for_log_line(start: int, needle: str, subject: str, timeout: float) -> str:
+    """The first session log line after line START that holds NEEDLE."""
+    deadline = time.monotonic() + timeout
+    while True:
+        for line in session_log_lines()[start:]:
+            if needle in line:
+                return re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        if time.monotonic() >= deadline:
+            raise GateError(f"{subject}: the session log never showed {needle!r}")
+        time.sleep(POLL_SECONDS * 4)
+
+
+def reopen_history(address: str, app_name: str, package: str, expect_text: str) -> None:
+    """Open APP_NAME again on the document typed into before, require that it shows
+    EXPECT_TEXT, then open its History. Prints the reopened app's APP-STARTUP line and
+    History's HISTORY-OPEN line, which app_startup_check.py judges."""
+    start = len(session_log_lines())
+    bus_name, pid = open_in_session(address, app_name)
+    client = AtspiClient(address, bus_name)
+    try:
+        startup = wait_for_log_line(
+            start, f"stderr] APP-STARTUP app={package} ", app_name, LAUNCH_TIMEOUT_SECONDS)
+        print(startup)
+        deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        texts: dict[str, str] = {}
+        while not any(expect_text in text for text in texts.values()):
+            if time.monotonic() >= deadline:
+                seen = sorted({text[:80] for text in texts.values() if text})
+                raise GateError(f"{app_name} reopened without the typed note; it shows {seen!r}")
+            time.sleep(POLL_SECONDS * 4)
+            try:
+                texts = text_nodes(client)
+            except GateError:
+                texts = {}
+        deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        while True:
+            try:
+                client.click(client.tree(TYPING_TREE_NODE_LIMIT), HISTORY_BUTTON)
+                break
+            except GateError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(POLL_SECONDS * 4)
+        print(wait_for_log_line(
+            start, f"[app {package} stderr] HISTORY-OPEN ", f"{app_name} History",
+            START_TIMEOUT_SECONDS))
+    finally:
+        close_app(pid)
 
 
 SAVE_STATES = ("Saved", "Saving…", "Save failed", "Not saved")
@@ -1233,6 +1305,18 @@ def main() -> int:
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
     typed.add_argument("--status", help="the save state the app must name once the text reads back")
+    typed.add_argument(
+        "--min-chars", type=int,
+        help="accept a text node holding at least this many characters instead of exactly TEXT",
+    )
+    history = sub.add_parser(
+        "reopen-history",
+        help="open APP_NAME again, require the typed note, open History; print the app's "
+        "APP-STARTUP and HISTORY-OPEN lines",
+    )
+    history.add_argument("app_name")
+    history.add_argument("package")
+    history.add_argument("--expect-text", required=True)
     described = sub.add_parser(
         "described",
         help="check the document `type-into` opened has a node NAME described as DESCRIPTION",
@@ -1302,7 +1386,10 @@ def main() -> int:
             prepare_typing(address, args.app_name, args.create, args.state, args.field)
             return 0
         if args.command == "typed":
-            check_typed(address, args.state, args.text, args.status)
+            check_typed(address, args.state, args.text, args.status, args.min_chars)
+            return 0
+        if args.command == "reopen-history":
+            reopen_history(address, args.app_name, args.package, args.expect_text)
             return 0
         if args.command == "described":
             check_described(address, args.state, args.name, args.description)
