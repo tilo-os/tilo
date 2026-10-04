@@ -117,6 +117,41 @@ impl ResourceApp for App {
         ))
     }
 
+    /// A saved artwork, handed over by Files or named on the command line.
+    const OPENS: &'static [&'static str] = &[document::MEDIA_TYPE];
+    const ARGUMENTS: usize = 1;
+
+    /// An artwork file named on the command line opens as its own record,
+    /// the same one each time it is opened.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        let path = std::path::Path::new(input.argument()?);
+        let artwork = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(document::EXTENSION));
+        artwork.then(|| RecordId::identify_file(path))
+    }
+
+    /// The file's artwork, in the record it opened: a record made for the
+    /// file starts as it; a file handed to the window's artwork replaces it
+    /// as one step, Undo away from what was there.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ArtworkResource>> {
+        let Some(file) = input.file() else {
+            return Vec::new();
+        };
+        if !created && input.argument().is_some() {
+            // The file's own record, opened again: it is the artwork.
+            return Vec::new();
+        }
+        let Ok(text) = std::str::from_utf8(file.bytes()) else {
+            return Vec::new();
+        };
+        let open = CanvasAction::OpenArtwork(actions::OpenArtwork {
+            file: text.to_owned(),
+        });
+        Invoke::apply(&open).into_iter().collect()
+    }
+
     fn scenarios() -> &'static [&'static str] {
         &[
             "landscape",

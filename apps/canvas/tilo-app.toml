@@ -42,6 +42,7 @@ bin = "bin/canvas"
 type = "gui"
 splash-budget = 250
 
+# Files opens a saved artwork in Canvas.
 [providers]
-mime = []
-ext = []
+mime = ["application/vnd.tilo.artwork+json"]
+ext = ["artwork"]

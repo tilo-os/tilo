@@ -248,3 +248,37 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     }
     assert_eq!(shown(&mut app), before, "and brings them back");
 }
+
+#[test]
+fn an_artwork_file_opens_from_files_as_its_own_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Valley.artwork");
+    {
+        let mut painter = TestApp::<App>::new().unwrap();
+        for action in canvas::sample::landscape() {
+            painter
+                .invoke(ui::prelude::Invoke::apply(&action).unwrap())
+                .unwrap();
+        }
+        painter
+            .call(
+                "save-artwork",
+                serde_json::json!({"path": path.display().to_string()}),
+            )
+            .unwrap();
+    }
+    let painted = canvas::document::read(&path).unwrap();
+    let opened = TestApp::<App>::launched(&[&path.display().to_string()]).unwrap();
+    assert_eq!(opened.state().marks.len(), painted.marks.len());
+    assert_eq!(opened.versions().len(), 2, "opening the file is one step");
+
+    // Handed over by Files' "open with", into the window's artwork.
+    let (file, _receipt) = ui::application::OpenFile::new(
+        "Valley.artwork",
+        canvas::document::MEDIA_TYPE,
+        std::fs::read(&path).unwrap(),
+    )
+    .unwrap();
+    let handed = TestApp::<App>::handed(file).unwrap();
+    assert_eq!(handed.state().marks.len(), painted.marks.len());
+}
