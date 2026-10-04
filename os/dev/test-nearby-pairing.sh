@@ -73,6 +73,12 @@ vm_a() {
     TILO_VM_LAN_PORT=23901 TILO_VM_LAN_PEER=23902 TILO_VM_LAN_MAC="$mac_a" \
     "$vm" "$@"
 }
+# Wait until B's onboarding shows a node whose name contains each fragment.
+# `vm.sh ssh` hands its words to the guest's shell, so each fragment is quoted
+# for it.
+b_shows() {
+  vm_b ssh "/usr/libexec/tilo/native-atspi-smoke.sh oobe-text $(printf '%q ' "$@")"
+}
 vm_b() {
   TILO_RUN="$run_b" TILO_SSH_PORT="${TILO_NEARBY_SSH_B:-2232}" \
     TILO_VM_LAN_PORT=23902 TILO_VM_LAN_PEER=23901 TILO_VM_LAN_MAC="$mac_b" \
@@ -253,13 +259,13 @@ no_privileged_pairing() {
 sudo_b 'chmod 2750 /var/lib/tilo/enrollment-commits'
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "${code:0:3} ${code:3:3}"
+b_shows "${code:0:3} ${code:3:3}"
 approve_from_a "$code" refused || note "A's approval did not complete, as expected for a refused commit"
 failed="$(await_state failed 150)"
 printf '%s\n' "$failed" > "$out/b-status-failed.json"
 jq -e '.error | test("Permission denied")' <<<"$failed" >/dev/null \
   || die "the failed status does not carry the helper's error: $failed"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "Permission denied" "Try again"
+b_shows "Permission denied" "Try again"
 for attempt in $(seq 1 30); do
   vm_b ssh '! pgrep -u "$(id -u)" -x tilo-enroll >/dev/null' && break
   [ "$attempt" -lt 30 ] || die "the failed pairing helper is still running on B"
@@ -274,7 +280,7 @@ vm_b shot negative-error >/dev/null && cp -f "$run_b/negative-error.png" "$out/"
 sudo_b 'chmod 2770 /var/lib/tilo/enrollment-commits'
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "${code:0:3} ${code:3:3}"
+b_shows "${code:0:3} ${code:3:3}"
 approve_from_a "$code" paired || {
   cat "$out/paired-approve.txt" >&2
   die "A's approval failed"
