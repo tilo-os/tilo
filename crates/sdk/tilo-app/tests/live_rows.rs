@@ -279,16 +279,22 @@ impl ResourceSurface<Tally> for Jobs {
             job(1),
             job(2),
             // Names the resource's own child: its operation joins it.
-            LiveRow::new(TOTAL, "test.job.total", "Jobs total").operation(
-                ActionSpec::operation(
-                    "inspect",
-                    "Inspect the total",
-                    OperationKind::View,
-                    JOB_OPERATION,
-                    &json!({ "job": 0 }),
+            LiveRow::new(TOTAL, "test.job.total", "Jobs total")
+                .operation(
+                    ActionSpec::operation(
+                        "inspect",
+                        "Inspect the total",
+                        OperationKind::View,
+                        JOB_OPERATION,
+                        &json!({ "job": 0 }),
+                    )
+                    .unwrap(),
                 )
-                .unwrap(),
-            ),
+                .presentation(tilo_actions::ResourcePresentation {
+                    detail: Some("2 jobs running".into()),
+                    badge: None,
+                    preview: None,
+                }),
         ]
     }
 
@@ -347,6 +353,14 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
     let total = find(&resources, TOTAL).unwrap();
     assert_eq!(total.label, "Total 0", "the document child keeps its label");
     assert_eq!(action_ids(total), ["inspect"]);
+    assert_eq!(
+        total
+            .presentation
+            .as_ref()
+            .and_then(|presentation| presentation.detail.as_deref()),
+        Some("2 jobs running"),
+        "what only the surface knows presents the child"
+    );
     assert_eq!(
         find(&resources, "job:2").unwrap().actions[0].kind,
         OperationKind::Effect
