@@ -16,6 +16,8 @@ export interface PanoramaPaneReceipt {
   record: string;
   frame: number;
   gpuGeneration: number;
+  /** Present on runtime hosts exposing the semantic presentation seam. */
+  layoutGeneration?: number;
   presentedAtMs: number;
   logicalSize: [number, number];
   pixels: [number, number];

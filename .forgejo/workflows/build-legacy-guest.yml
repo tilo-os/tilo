@@ -28,6 +28,8 @@ on:
       - crates/runtime/legacy-agent-protocol/**
       - crates/runtime/legacy-vm/**
       - crates/system/libvirt-domain/**
+      - crates/hosting/tilo-relay/src/legacy_*.rs
+      - crates/hosting/tilo-relay/tests/legacy_on_kvm.rs
       - scripts/legacy-vm-e2e.py
       - os/dev/legacy-vm-e2e.sh
       - .forgejo/workflows/build-legacy-guest.yml
@@ -44,6 +46,8 @@ on:
       - crates/runtime/legacy-agent-protocol/**
       - crates/runtime/legacy-vm/**
       - crates/system/libvirt-domain/**
+      - crates/hosting/tilo-relay/src/legacy_*.rs
+      - crates/hosting/tilo-relay/tests/legacy_on_kvm.rs
       - scripts/legacy-vm-e2e.py
       - os/dev/legacy-vm-e2e.sh
       - .forgejo/workflows/build-legacy-guest.yml
@@ -288,14 +292,20 @@ jobs:
           fetch-depth: 1
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
-      # Debug: the shell's test-control socket exists only in debug builds.
-      - name: Build the shell and tilo-legacy
+      # Debug: the shell's test-control socket exists only in debug builds;
+      # `agent-control` is what a relay worker drives its headless shell by.
+      - name: Build the shell, tilo-legacy and the relay's tests
         run: |
           set -euo pipefail
           bash scripts/ci-run.sh "cargo build (legacy VM E2E)" -- \
-            cargo build --locked -p shell --bin shell -p legacy-vm --bin tilo-legacy
+            cargo build --locked -p shell --bin shell --features agent-control \
+            -p legacy-vm --bin tilo-legacy
           install -D -m 0755 target/debug/shell out/shell
           install -D -m 0755 target/debug/tilo-legacy out/tilo-legacy
+          relay_tests=$(cargo test --locked -p tilo-relay --test it --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.name == "it") | .executable' | tail -n 1)
+          test -x "$relay_tests"
+          install -D -m 0755 "$relay_tests" out/relay-it
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: legacy-vm-e2e-binaries

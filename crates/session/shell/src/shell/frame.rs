@@ -951,6 +951,68 @@ impl FrameBuilder {
         })
     }
 
+    /// Match `ui::App` for an app hosted in this process: Ctrl+T, Ctrl+W and
+    /// Ctrl+Shift+T that the app left unhandled are the desktop's tab chords —
+    /// another instance beside it, close its tab, reopen the last closed one.
+    /// Never while chrome (a palette, a menu, a dialog) holds the keyboard.
+    fn apply_hosted_tab_chord(&mut self, event: &WindowEvent, modifiers: Modifiers) -> bool {
+        use crate::shell::state::TileContent;
+        use ui::shell_tabs::TabRequest;
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != winit::event::ElementState::Pressed || key.repeat {
+            return false;
+        }
+        let mods = modifiers.state();
+        let Some(request) = ui::shell_tabs::chord_request(
+            &key.logical_key,
+            mods.control_key(),
+            mods.shift_key(),
+            mods.alt_key() || mods.super_key(),
+        ) else {
+            return false;
+        };
+        if self.host.modal_capture().is_some() {
+            return false;
+        }
+        let hosted = {
+            let chrome = self.chrome();
+            let tile = crate::shell::window_actions::active_tab_id(&chrome).and_then(|tab| {
+                let tree = chrome.tree();
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|candidate| candidate.id == tab)
+                    .map(|candidate| matches!(candidate.tile, TileContent::AppPlaceholder { .. }))
+            });
+            tile.unwrap_or(false)
+        };
+        if !hosted {
+            return false;
+        }
+        self.with_chrome(|st| match request {
+            TabRequest::OpenBeside { .. } => {
+                if let Err(error) = crate::shell::window_actions::duplicate_active_tab(st) {
+                    tracing::debug!(?error, "no new tab for the hosted app");
+                }
+            }
+            TabRequest::CloseThis => {
+                if let Err(error) = crate::shell::window_actions::close_active_tab(st) {
+                    tracing::debug!(?error, "hosted tab not closed");
+                }
+            }
+            TabRequest::ReopenClosed => {
+                st.reopen_closed_tab();
+            }
+            TabRequest::PlaceNextWindowBeside { .. } => {}
+        });
+        true
+    }
+
     fn active_tile_is_terminal(&self) -> bool {
         let chrome = self.chrome();
         let tree = chrome.tree();
@@ -2921,6 +2983,14 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         scale: f64,
     ) -> ui::accesskit::TreeUpdate {
+        // A modal sheet takes every key, so the reader's cursor belongs on
+        // the part of it that has the keyboard: the host is the focused
+        // widget, and the sheet's focused node its active descendant.
+        let focus = if self.host.modal_sheet_owns_keyboard() {
+            self.host_node.or(focus)
+        } else {
+            focus
+        };
         ui::accesskit_bridge::build_tree_update(self.host.as_ref(), &self.node_map, focus, scale)
     }
 
@@ -3199,6 +3269,9 @@ impl FrameBuilder {
             if activated {
                 handled = true;
             }
+        }
+        if !handled && self.apply_hosted_tab_chord(event, *modifiers) {
+            return true;
         }
         // Match `ui::App`: unmodified Tab advances the global DFS focus order
         // only when the focused widget did not claim it. A terminal and a
@@ -4165,6 +4238,89 @@ mod tests {
         ));
         fb.relayout();
         (fb, identity_dir)
+    }
+
+    #[test]
+    fn administrator_prompt_raised_during_onboarding_is_drawn_above_it_and_takes_the_keyboard() {
+        use crate::shell::portal_dialog::{
+            AuthenticationDecision, AuthenticationRequest, PortalDialogQueue,
+        };
+
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        let onboarding_focus = focused_name(&fb, focus);
+        assert!(onboarding_focus.is_some(), "onboarding holds focus");
+
+        // The polkit agent enqueues on the session queue while first-use
+        // setup is still on screen.
+        let queue = PortalDialogQueue::default();
+        let mut receiver = queue
+            .enqueue_authentication(AuthenticationRequest {
+                handle: "polkit:onboarding".into(),
+                message: "Administrator approval is required".into(),
+                action_id: "org.tilo.example".into(),
+                identities: vec!["quinn".into()],
+                identity: 0,
+                prompt: "Password:".into(),
+                echo: false,
+                notice: None,
+            })
+            .expect("queued");
+        fb.host_mut().set_portal_dialog_queue(queue);
+        assert!(fb.host().onboarding_active());
+
+        // The ordinary onboarding tick must bring the sheet up.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let state = fb.host().portal_dialog_state_json();
+        assert_eq!(state["kind"], "authentication", "sheet is up: {state}");
+        assert!(
+            fb.widget_registry()
+                .contains_key(crate::shell::trusted_ui::PORTAL_DIALOG_TARGET),
+            "the sheet is on screen above onboarding"
+        );
+        let _ = fb.paint();
+
+        // Typed keys reach the sheet's secret field, not the focused setup
+        // control underneath.
+        for key in ["h", "u", "n", "t"] {
+            let mut typed = key_press(Key::Character(key.into()));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+                event.text = Some(key.into());
+            }
+            assert!(fb.dispatch_event(
+                &typed,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert_eq!(fb.host().portal_dialog_state_json()["secret_len"], 4);
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 0,
+                secret: "hunt".into(),
+            })
+        );
+
+        // Answered: the sheet is gone and onboarding keeps its focus.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        assert!(!fb.host().portal_dialog_open());
+        assert!(fb.host().onboarding_active());
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(focused_name(&fb, focus), onboarding_focus);
     }
 
     #[test]

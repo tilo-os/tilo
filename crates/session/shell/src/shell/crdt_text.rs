@@ -16,17 +16,14 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::TypingRun;
 use ui::presence::{PathSegment, PresenceKey};
-use ui::text_selection::{next_char_boundary, prev_char_boundary};
+use ui::text_selection::grapheme_boundary_at_or_before;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
-
-/// Keystrokes stop coalescing into a single undo entry after this long idle.
-pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 
 /// Read the text a [`CrdtTextBody`] bound to `key` holds under `root`,
 /// without constructing the widget that owns it. A body sits at
@@ -85,8 +82,8 @@ pub struct CrdtTextBody {
     /// Mirror of the CRDT text, byte-indexed, kept in step by
     /// [`Self::sync`] and [`Self::splice`].
     pub text: String,
-    /// When the last edit landed. Drives the undo-coalescing debounce.
-    last_edit: Option<Instant>,
+    /// Closes a burst of typing into one undo entry.
+    typing: TypingRun,
 }
 
 impl CrdtTextBody {
@@ -96,7 +93,7 @@ impl CrdtTextBody {
             key,
             record: None,
             text: String::new(),
-            last_edit: None,
+            typing: TypingRun::default(),
         }
     }
 
@@ -108,7 +105,7 @@ impl CrdtTextBody {
             key,
             record: None,
             text: text.into(),
-            last_edit: None,
+            typing: TypingRun::default(),
         }
     }
 
@@ -184,46 +181,27 @@ impl CrdtTextBody {
         let Some(body) = self.resolve(state, root) else {
             return range.start;
         };
-        // Automerge `Text` is char-addressed; the mirror is byte-addressed.
+        let edit = ui::Edit {
+            at: range.start,
+            removed: range.len(),
+            inserted: s.to_owned(),
+        };
         // A `range` that doesn't land on char boundaries would be an
         // upstream bug (Automerge itself would then splice at the wrong
-        // char), so treat it the same as "resolve failed": skip the edit
-        // rather than panic on the byte slice.
-        let Some(before) = self.text.get(..range.start) else {
+        // char), so treat it the same as "resolve failed": skip the edit.
+        if edit.splice_automerge(state, &body, &self.text).is_none() {
             return range.start;
-        };
-        let Some(changed) = self.text.get(range.clone()) else {
-            return range.start;
-        };
-        let char_start = before.chars().count();
-        let char_count = changed.chars().count();
-        self.text.replace_range(range.clone(), s);
-        // A single edit's char count is bounded by the buffer length,
-        // nowhere near isize::MAX; `unwrap_or` only matters for a
-        // document large enough that no editor could scroll it anyway.
-        let char_count_isize = isize::try_from(char_count).unwrap_or(isize::MAX);
-        let _ = state.splice_text(&body, char_start, char_count_isize, s);
-        self.last_edit = Some(Instant::now());
+        }
+        edit.apply(&mut self.text);
+        self.typing.touch();
         range.start.saturating_add(s.len())
     }
 
-    /// Nearest char boundary at or below `pos`, clamped to the buffer.
+    /// The nearest boundary between whole characters as a person sees them
+    /// at or below `pos`, clamped to the buffer: where a caret may sit after
+    /// a peer's edit moved the text under it.
     pub fn clamp(&self, pos: usize) -> usize {
-        let mut p = pos.min(self.text.len());
-        while p > 0 && !self.text.is_char_boundary(p) {
-            p = p.saturating_sub(1);
-        }
-        p
-    }
-
-    /// Char boundary before `pos`, saturating at the start of the buffer.
-    pub fn prev_boundary(&self, pos: usize) -> usize {
-        prev_char_boundary(&self.text, pos)
-    }
-
-    /// Char boundary after `pos`, saturating at the end of the buffer.
-    pub fn next_boundary(&self, pos: usize) -> usize {
-        next_char_boundary(&self.text, pos)
+        grapheme_boundary_at_or_before(&self.text, pos)
     }
 
     /// Char index (the unit `PresenceCtx::carets` speaks) to a byte offset
@@ -238,13 +216,12 @@ impl CrdtTextBody {
 
     /// Whether the typing burst has gone quiet long enough to close an undo entry.
     pub fn needs_commit(&self) -> bool {
-        self.last_edit
-            .is_some_and(|t| t.elapsed() >= COMMIT_DEBOUNCE)
+        self.typing.needs_commit()
     }
 
     /// `Widget::on_commit` delegate — the burst is now closed.
     pub fn on_commit(&mut self) {
-        self.last_edit = None;
+        self.typing.close();
     }
 }
 
@@ -445,15 +422,13 @@ mod tests {
     fn crdt_text_char_boundaries_commit_debounce_and_presence_key() {
         fn boundaries_step_whole_chars() {
             let b = CrdtTextBody::with_seed(KEY, "aβc");
-            // β occupies bytes 1..3.
-            assert_eq!(b.next_boundary(1), 3);
-            assert_eq!(b.prev_boundary(3), 1);
-            // Ends are saturating, not wrapping.
-            assert_eq!(b.prev_boundary(0), 0);
-            assert_eq!(b.next_boundary(4), 4);
             // Clamp snaps into the middle of a char, and past the end.
             assert_eq!(b.clamp(2), 1);
             assert_eq!(b.clamp(99), 4);
+            // A caret never lands inside an accented letter or an emoji.
+            let b = CrdtTextBody::with_seed(KEY, "ae\u{301}👍🏽");
+            assert_eq!(b.clamp(2), 1);
+            assert_eq!(b.clamp("ae\u{301}👍".len()), "ae\u{301}".len());
         }
 
         fn char_index_to_byte_handles_multibyte_and_overrun() {
@@ -473,7 +448,8 @@ mod tests {
             b.splice(&mut doc, &tile, 0..0, "hi");
             // Still inside the debounce window, so the burst stays open.
             assert!(!b.needs_commit());
-            b.last_edit = Some(Instant::now().checked_sub(COMMIT_DEBOUNCE).unwrap());
+            b.typing
+                .touch_at(ui::time::now().checked_sub(ui::TYPING_RUN_IDLE).unwrap());
             assert!(b.needs_commit(), "a quiet burst must close");
             b.on_commit();
             assert!(!b.needs_commit());

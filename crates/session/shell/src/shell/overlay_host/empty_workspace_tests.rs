@@ -126,7 +126,7 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
                 "Discuss",
                 "Notes",
                 "Tasks",
-                "Plan a meeting",
+                "Start a call",
                 "Invite people",
                 "Catch up",
                 "Open an app"
@@ -212,6 +212,8 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
 
 #[test]
 fn app_cards_open_their_app_directly() {
+    /// Without an action host (as in this fixture) the call card
+    /// still open their app; with one they invoke its action, below.
     fn app_cards_open_their_app_without_the_launcher() {
         use tilo_desktop::launchpad::LaunchpadAction;
         for (card, app) in [
@@ -274,4 +276,173 @@ fn app_cards_open_their_app_directly() {
 
     app_cards_open_their_app_without_the_launcher();
     a_card_chosen_before_the_app_index_is_ready_opens_once_it_is();
+}
+
+/// A workspace the local person owns, a broker over it, and the live app
+/// `app_id` publishing `actions` on `resource` in that workspace, with the
+/// invocations the broker delivers to it.
+fn host_with_live_app(
+    app_id: &str,
+    resource: &str,
+    actions: &[&str],
+    contract: &tilo_actions::ActionContract,
+) -> (
+    ShellOverlayHost,
+    tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
+) {
+    use crate::shell::collab_broker_capnp::{PublishedAction, PublishedInput, PublishedSurface};
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let room = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let room = tree
+            .desktop
+            .active_workspace()
+            .expect("an active workspace")
+            .room
+            .to_string();
+        drop(tree);
+        room
+    };
+    let membership = chrome.borrow().tree_handle();
+    let broker = crate::shell::broker_services::test_broker_with_membership(membership);
+    broker.replace_published_surfaces_for_test(vec![PublishedSurface {
+        peer_id: 9,
+        app_id: app_id.into(),
+        route: crate::shell::collab_broker::CrdtRoute::app(app_id, room),
+        actions: actions
+            .iter()
+            .map(|action| PublishedAction {
+                resource: resource.into(),
+                action: (*action).into(),
+                resource_kind: resource.into(),
+                resource_label: resource.into(),
+                action_label: (*action).into(),
+                description: None,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract: contract.clone(),
+                input: PublishedInput::None,
+                view: None,
+            })
+            .collect(),
+        live: true,
+    }]);
+    let delivered = broker.capture_invocations_for_test(9);
+    host.attach_shortcut_trigger_broker(broker.clone());
+    drop(broker);
+    (host, delivered)
+}
+
+#[test]
+fn the_call_card_invokes_chats_start_call() {
+    use tilo_desktop::launchpad::LaunchpadAction;
+    for (card, app, resource, action) in [(
+        LaunchpadAction::Meet,
+        "so.tilo.chat",
+        "chat.workspace",
+        "start-call",
+    )] {
+        let (mut host, mut delivered) = host_with_live_app(
+            app,
+            resource,
+            &[action, "something-else"],
+            &tilo_actions::ActionContract::default(),
+        );
+        let apps = FakeApplications::install(&mut host, 0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let _ = doc.put(&root, card.path(), true);
+
+        host.sync(&mut doc, &root);
+
+        let deadline = Instant::now() + tilo_test_env::hang_bound();
+        let invocation = loop {
+            match delivered.try_recv() {
+                Ok(invocation) => break invocation,
+                Err(_) if Instant::now() < deadline => {
+                    host.update(&mut doc, &root);
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("{card:?} delivered nothing to {app}: {error}"),
+            }
+        };
+        assert_eq!(
+            (invocation.resource.as_str(), invocation.action.as_str()),
+            (resource, action),
+            "{card:?} invokes {app}'s {action}"
+        );
+        assert_eq!(
+            invocation.actor,
+            crate::shell::state::local_user_id_for_room(
+                &host
+                    .chrome
+                    .as_ref()
+                    .expect("chrome")
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .expect("an active workspace")
+                    .room
+            ),
+            "the card acts as the person this device acts for"
+        );
+        host.update(&mut doc, &root);
+        assert!(
+            delivered.try_recv().is_err(),
+            "{card:?} invokes exactly that action, once"
+        );
+        assert!(
+            apps.opened.borrow().is_empty(),
+            "{card:?} does not open a second copy of {app} beside its action"
+        );
+        assert!(!host.palette_visible(), "{card:?} needs no launcher step");
+        assert!(LaunchpadAction::take(&mut doc, &root).is_none());
+    }
+}
+
+/// A card whose action the app refuses before anything runs says so,
+/// naming the card and the reason, rather than doing nothing.
+#[test]
+fn a_refused_card_action_says_why() {
+    let (mut host, mut delivered) = host_with_live_app(
+        "so.tilo.chat",
+        "chat.workspace",
+        &["start-call"],
+        &tilo_actions::ActionContract {
+            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+            ..tilo_actions::ActionContract::default()
+        },
+    );
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_MEET, true);
+
+    host.sync(&mut doc, &root);
+    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    while !host.pending_launchpad_actions.is_empty() && Instant::now() < deadline {
+        host.update(&mut doc, &root);
+        std::thread::yield_now();
+    }
+
+    assert!(
+        host.pending_launchpad_actions.is_empty(),
+        "the refusal arrived"
+    );
+    assert!(delivered.try_recv().is_err(), "nothing ran");
+    let chrome = host.chrome.clone().expect("chrome");
+    let chrome = chrome.borrow();
+    let warning = chrome
+        .notifications()
+        .iter()
+        .find(|notification| notification.title.contains("Start a call"))
+        .expect("the card names itself in a warning");
+    assert!(
+        !warning.body.trim().is_empty(),
+        "the warning says why: {:?}",
+        warning.body
+    );
 }
