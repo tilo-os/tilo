@@ -3899,6 +3899,7 @@ impl App {
 
     /// Open the palette an app asked for ([`crate::host_palette`]): searching
     /// for its query, or on one of its actions. Whether one was opened.
+    #[cfg(feature = "native")]
     pub(crate) fn open_requested_palette(&mut self) -> bool {
         match crate::host_palette::take() {
             Some(crate::host_palette::PaletteRequest::Search(query)) => {
