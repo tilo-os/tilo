@@ -1055,6 +1055,6 @@ pub(super) fn add_track_label(kind: TrackKind) -> &'static str {
 fn clip_veil(theme: &Theme) -> Color {
     with_alpha(
         theme.tokens.colors.surfaces.content,
-        f64::from(ui::overlay::scrim::MODAL_STRENGTH) + 0.1,
+        f64::from(theme.tokens.colors.surfaces.scrim_strength) + 0.1,
     )
 }

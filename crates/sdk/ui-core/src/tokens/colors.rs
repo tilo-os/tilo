@@ -166,6 +166,10 @@ pub struct Surfaces {
     /// lifted, hue belongs to the material, so the scrim recedes into the
     /// neutral family rather than punching a black hole through it.
     pub scrim: Color,
+    /// Strength of every scrim at full openness — behind a modal Panel, a
+    /// sheet or an overlay drawer — as `chrome::fill_scrim` reads it. Per
+    /// theme: dark themes dim harder, since their grounds are near black.
+    pub scrim_strength: f32,
     /// The blurred material floating chrome is made of: [`Self::overlay`] at
     /// [`Self::material_opacity`]. Only for a surface the compositor blurs
     /// behind; without a backdrop blur, paint the opaque [`Self::overlay`]
@@ -770,6 +774,7 @@ impl Colors {
                 raised: n(ladder.raised),
                 overlay,
                 scrim: n(palette.scrim()),
+                scrim_strength: palette.scrim_strength(),
                 material: if opaque {
                     overlay
                 } else {

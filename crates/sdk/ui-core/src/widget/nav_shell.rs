@@ -476,7 +476,9 @@ pub struct NavGeometry {
     inspector_toggle_column: Option<Column>,
     history_column: Option<Column>,
     pub scrim: Rect,
-    pub scrim_strength: f32,
+    /// How far the drawer's scrim has faded in, `0..=1`; the theme's
+    /// `surfaces.scrim_strength` is applied at paint.
+    pub scrim_openness: f32,
     pub resize_handle: Rect,
 }
 
@@ -836,7 +838,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 (sidebar_header, sidebar_body) =
                     drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
                 g.scrim = Rect::new(0.0, hh, w, h);
-                g.scrim_strength = crate::overlay::scrim::MODAL_STRENGTH * unit_f32(sidebar_reveal);
+                g.scrim_openness = unit_f32(sidebar_reveal);
             }
         }
         SidebarPlacement::Screen => {
@@ -896,8 +898,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 );
                 if g.scrim == Rect::ZERO {
                     g.scrim = Rect::new(0.0, hh, w, h);
-                    g.scrim_strength =
-                        crate::overlay::scrim::MODAL_STRENGTH * unit_f32(inspector_reveal);
+                    g.scrim_openness = unit_f32(inspector_reveal);
                 }
             }
         }
@@ -2800,7 +2801,13 @@ impl NavShell {
                 );
             }
             if g.scrim.width() > 0.0 {
-                crate::chrome::fill_scrim(f.scene, f.transform, g.scrim, g.scrim_strength, f.theme);
+                crate::overlay::scrim::modal(
+                    f.scene,
+                    f.transform,
+                    g.scrim,
+                    g.scrim_openness,
+                    f.theme,
+                );
             }
             for column in [Column::Inspector, Column::Sidebar] {
                 let rect = g.column(column);

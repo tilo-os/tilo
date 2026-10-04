@@ -520,7 +520,7 @@ impl PdfApp {
                 scene,
                 base,
                 self.canvas_rect,
-                ui::overlay::scrim::MODAL_STRENGTH,
+                theme.tokens.colors.surfaces.scrim_strength,
                 theme,
             );
         }

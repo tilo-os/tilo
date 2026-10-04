@@ -318,7 +318,7 @@ fn an_open_drawer_is_modal_and_floats_over_the_content() {
         (g.sidebar_column.x0 - gap).abs() < 0.5,
         "the drawer floats s2 in"
     );
-    assert!(g.scrim.width() > 0.0 && g.scrim_strength > 0.0);
+    assert!(g.scrim.width() > 0.0 && g.scrim_openness > 0.0);
     let ids: Vec<_> = h
         .root::<NavShell>()
         .children()

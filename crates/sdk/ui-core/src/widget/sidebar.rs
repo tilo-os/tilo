@@ -741,7 +741,7 @@ impl SidebarDrawer {
         if self.scrim_rect.width() <= 0.0 {
             return;
         }
-        let strength = crate::overlay::scrim::MODAL_STRENGTH * unit_f32(self.flap.reveal());
+        let strength = theme.tokens.colors.surfaces.scrim_strength * unit_f32(self.flap.reveal());
         crate::chrome::fill_scrim(scene, transform, self.scrim_rect, strength, theme);
     }
 
