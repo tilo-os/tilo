@@ -109,6 +109,12 @@ pub fn line_h(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style("Ag", None, style).1)
 }
 
+/// How far below its line box's top `s` has its first baseline in `style`:
+/// what lines up text of two roles on one baseline.
+pub fn baseline(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
+    f64::from(tr.first_baseline_style(s, None, style))
+}
+
 /// The width `s` takes in `style`.
 pub fn measure_w(tr: &mut TextRenderer, s: &str, style: &TextStyle) -> f64 {
     f64::from(tr.measure_style(s, None, style).0)

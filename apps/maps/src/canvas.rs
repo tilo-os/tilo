@@ -10,7 +10,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color};
 
 use ui::paint::PaintCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::tokens::colors::PresenceHue;
@@ -737,30 +736,50 @@ fn draw_dashed(
 }
 
 /// What a map overlay layer paints against: the viewport projection, the
-/// themed map palette, and the visible map area it stays inside.
+/// themed map palette, the map area it stays inside, and the floating
+/// surfaces over the map.
 #[derive(Clone, Copy)]
 pub struct MapView<'a> {
     pub proj: &'a Projection,
     pub pal: &'a MapPalette,
     pub clip: Rect,
+    /// The floating surfaces over the map (the panel, the controls, the
+    /// cards, the footer), each grown by the gap a marker keeps from it. A
+    /// marker or a name plate that would reach under one is left out rather
+    /// than shown as a sliver at its edge.
+    pub chrome: &'a [Rect],
 }
 
-/// Draw all place markers; the selected one is enlarged and labelled.
-pub fn draw_markers(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    proj: &Projection,
-    model: &MapModel,
-    theme: &Theme,
-    pal: &MapPalette,
-    clip: Rect,
-) {
+impl MapView<'_> {
+    /// Whether a marker covering `bounds` stays clear of every floating
+    /// surface.
+    pub fn clear_of_chrome(&self, bounds: Rect) -> bool {
+        self.chrome
+            .iter()
+            .all(|surface| surface.intersect(bounds).area() <= 0.0)
+    }
+
+    /// Whether a name plate at `plate` shows whole: inside the map area and
+    /// clear of every floating surface.
+    pub fn shows_whole(&self, plate: Rect) -> bool {
+        plate.x0 >= self.clip.x0
+            && plate.x1 <= self.clip.x1
+            && plate.y0 >= self.clip.y0
+            && plate.y1 <= self.clip.y1
+            && self.clear_of_chrome(plate)
+    }
+}
+
+/// Draw all place markers; the selected one is enlarged and labelled. A
+/// marker that would reach under a floating surface or past the window's edge
+/// is left out.
+pub fn draw_markers(ctx: &mut PaintCtx<'_>, view: MapView<'_>, model: &MapModel) {
+    let MapView {
+        proj, pal, clip, ..
+    } = view;
+    let (t, theme) = (ctx.transform, ctx.theme);
     let selected = model.selected.clone();
-    // Clip the whole marker layer to the map area so pins and their labels never
-    // bleed out from under an overlay drawer (the caller passes the visible map
-    // region as `clip` when the narrow drawer is open).
-    scene.push_layer(
+    ctx.scene.push_layer(
         vello::peniko::Fill::NonZero,
         BlendMode::default(),
         1.0,
@@ -770,7 +789,10 @@ pub fn draw_markers(
     // Origin marker, if a route/origin is set.
     if let Some(o) = model.origin {
         let p = proj.project(o);
-        if clip.contains(p) {
+        // A 6 px ring with its 3 px stroke and shadow.
+        let bounds = Rect::from_center_size(p, (16.0, 16.0));
+        if view.shows_whole(bounds) {
+            let scene = &mut *ctx.scene;
             draw::fill_circle(scene, t, Point::new(p.x, p.y + 1.0), 6.5, pal.shadow);
             draw::fill_circle(scene, t, p, 6.0, pal.marker_ring);
             draw::stroke_circle(scene, t, p, 6.0, 3.0, pal.route);
@@ -784,11 +806,11 @@ pub fn draw_markers(
             continue;
         }
         let p = proj.project(place.pos);
-        if !clip.contains(p) {
+        if !view.shows_whole(pin_bounds(p, false)) {
             continue;
         }
         draw_pin(
-            scene,
+            ctx.scene,
             t,
             p,
             category_color(theme, place.category),
@@ -799,32 +821,40 @@ pub fn draw_markers(
 
     if let Some(sel) = model.selected_place() {
         let p = proj.project(sel.pos);
-        if clip.contains(p) {
-            draw_pin(scene, t, p, category_color(theme, sel.category), pal, true);
+        let pin = pin_bounds(p, true);
+        if view.shows_whole(pin) {
+            draw_pin(
+                ctx.scene,
+                t,
+                p,
+                category_color(theme, sel.category),
+                pal,
+                true,
+            );
             // The selected place's name, on a halo plate above its pin.
             let style = theme.text(TextRole::Caption).strong();
             let label = &sel.name;
-            let pad = f64::from(theme.tokens.spacing.s2);
-            let tw = draw::measure_w(tr, label, &style);
-            let lh = draw::line_h(tr, &style) + f64::from(theme.tokens.spacing.s1);
+            let sp = &theme.tokens.spacing;
+            let pad = f64::from(sp.s2);
+            let tw = draw::measure_w(ctx.text, label, &style);
+            let lh = draw::line_h(ctx.text, &style) + f64::from(sp.s1);
             let lx = p.x - tw / 2.0 - pad;
-            let ly = p.y - 34.0 - f64::from(theme.tokens.spacing.s2) - lh;
+            let (head_r, head_h) = pin_size(true);
+            let ly = p.y - head_h - head_r - f64::from(sp.s1) - lh;
             let rect = Rect::new(lx, ly, lx + tw + 2.0 * pad, ly + lh);
-            // Only draw the label if it fits inside the map area — otherwise it
-            // would be sliced at the drawer/panel edge into an unreadable
-            // fragment. The pin still shows; the drawer already names the place.
-            if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
+            // The name shows only whole; the pin still shows, and the panel
+            // already names the place.
+            if view.shows_whole(rect) {
                 draw::fill_round(
-                    scene,
+                    ctx.scene,
                     t,
                     rect,
                     f64::from(theme.tokens.radii.detail),
                     pal.label_plate,
                 );
-                let mut ctx = PaintCtx::new(scene, t, tr, theme);
                 let top = draw::vmid(ctx.text, rect.y0, rect.height(), &style);
                 draw::text(
-                    &mut ctx,
+                    ctx,
                     label,
                     Point::new(rect.x0 + pad, top),
                     &style,
@@ -833,7 +863,7 @@ pub fn draw_markers(
             }
         }
     }
-    scene.pop_layer();
+    ctx.scene.pop_layer();
 }
 
 /// Draw the live POI marker layer (Overpass results) over the basemap — OUR
@@ -883,9 +913,10 @@ pub fn draw_pois(
 
 /// One POI marker at its projected position: a category dot, or past
 /// [`POI_ICON_ZOOM`] a pictogram disc, with a name plate when zoomed in far
-/// enough or `selected`.
+/// enough or `selected`. A marker that would reach under a floating surface
+/// is left out.
 fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: bool) {
-    let MapView { proj, pal, clip } = view;
+    let MapView { proj, pal, .. } = view;
     let (scene, t, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
     let p = proj.project(poi.pos);
     let icons = proj.zoom() >= POI_ICON_ZOOM;
@@ -897,6 +928,11 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         (false, true) => 8.5,
         (false, false) => 4.5,
     };
+    // The selected halo rings the disc 4 px out.
+    let reach = r + if selected { 5.0 } else { 2.0 };
+    if !view.shows_whole(Rect::from_center_size(p, (2.0 * reach, 2.0 * reach))) {
+        return;
+    }
     draw::fill_circle(scene, t, Point::new(p.x, p.y + 0.9), r + 1.3, pal.shadow);
     draw::fill_circle(scene, t, p, r, col);
     draw::stroke_circle(
@@ -927,10 +963,10 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         let lx = p.x + r + f64::from(theme.tokens.spacing.s2);
         let ly = p.y - lh / 2.0;
         let plate = Rect::new(lx - s1, ly, lx + tw + s1, ly + lh);
-        // Only draw the name plate when it fits in the map area, so it is never
-        // sliced at the drawer / screen edge into an unreadable fragment. The
-        // marker still shows; the info card / list already carries the name.
-        if plate.x0 >= clip.x0 && plate.x1 <= clip.x1 && plate.y0 >= clip.y0 {
+        // The name plate shows only whole — never sliced at the window edge
+        // or under a floating surface into a fragment. The marker still
+        // shows; the place card and the list carry the name.
+        if view.shows_whole(plate) {
             draw::fill_round(
                 ctx.scene,
                 t,
@@ -1218,6 +1254,24 @@ fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
     p
 }
 
+/// A pin's head radius and its height from the tip to the head's centre.
+fn pin_size(selected: bool) -> (f64, f64) {
+    if selected { (11.0, 30.0) } else { (8.0, 22.0) }
+}
+
+/// Everything a pin at `anchor` paints: its head and outline (with the
+/// selected halo), down to its ground shadow.
+fn pin_bounds(anchor: Point, selected: bool) -> Rect {
+    let (r, h) = pin_size(selected);
+    let reach = r + if selected { 6.0 } else { 2.0 };
+    Rect::new(
+        anchor.x - reach,
+        anchor.y - h - reach,
+        anchor.x + reach,
+        anchor.y + r * 0.24,
+    )
+}
+
 /// Draw a themed teardrop pin anchored at `anchor`: a soft ground shadow, a
 /// category-coloured drop with a crisp light outline (so it reads on any basemap
 /// tone), and a light "eye". The selected pin is larger and wears a soft
@@ -1230,8 +1284,7 @@ fn draw_pin(
     pal: &MapPalette,
     selected: bool,
 ) {
-    let r = if selected { 11.0 } else { 8.0 };
-    let h = if selected { 30.0 } else { 22.0 };
+    let (r, h) = pin_size(selected);
     let center = Point::new(anchor.x, anchor.y - h);
 
     // Soft ground shadow at the tip, so the pin stands on the map rather than
@@ -1266,6 +1319,7 @@ mod tests {
     use super::*;
     use crate::model::{LatLon, MapModel, Poi};
     use crate::tiles::TileLayer;
+    use ui::text_render::TextRenderer;
 
     fn poi_at(id: &str, cat: Category, lat: f64, lon: f64) -> Poi {
         Poi {
@@ -1508,21 +1562,40 @@ mod tests {
             };
             let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
             let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let mut scene = Scene::new();
-            draw_markers(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &proj,
-                &model,
-                &theme,
-                &pal,
-                clip,
-            );
+            let paths = |chrome: &[Rect], tr: &mut TextRenderer| {
+                let mut scene = Scene::new();
+                let view = MapView {
+                    proj: &proj,
+                    pal: &pal,
+                    clip,
+                    chrome,
+                };
+                draw_markers(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, tr, &theme),
+                    view,
+                    &model,
+                );
+                scene.encoding().n_paths
+            };
             // The selected place projects into the clip, so the pin path was emitted.
             assert!(
                 clip.contains(proj.project(model.center)),
                 "the marker is on screen"
+            );
+            let open = paths(&[], &mut tr);
+            let none = paths(&[clip], &mut tr);
+            assert!(open > none, "the pin and its name plate paint");
+            // A floating surface over the pin hides it whole, name and all,
+            // rather than leaving a sliver at the surface's edge.
+            let at = proj.project(model.center);
+            let over = Rect::new(at.x - 4.0, at.y - 4.0, at.x + 200.0, at.y + 4.0);
+            assert_eq!(paths(&[over], &mut tr), none, "a covered pin is left out");
+            // A surface over only the name plate keeps the pin.
+            let plate = Rect::new(at.x - 2.0, at.y - 80.0, at.x + 2.0, at.y - 52.0);
+            let covered = paths(&[plate], &mut tr);
+            assert!(
+                covered > none && covered < open,
+                "the pin shows without its name"
             );
         }
 

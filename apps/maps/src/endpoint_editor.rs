@@ -385,6 +385,12 @@ impl EndpointEditor {
         field.input.begin_edit();
     }
 
+    /// How far the fields stand in from the content's leading edge: past
+    /// the endpoint markers, so what refines a field lines up with it.
+    pub(super) fn field_inset(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.icon_md) + f64::from(theme.tokens.spacing.s2)
+    }
+
     /// Paint the From and To fields — the toolkit's own fields, each after
     /// the marker it has on the map — and the swap button beside them.
     /// Returns the y below them.
@@ -402,7 +408,7 @@ impl EndpointEditor {
         let field_h = ButtonFace::height(ControlSize::Regular, theme);
         let marker_w = f64::from(theme.tokens.metrics.icon_md);
         let side = field_h;
-        let x0 = content.x0 + marker_w + s2;
+        let x0 = content.x0 + Self::field_inset(theme);
         let x1 = content.x1 - side - s2;
         let pal = MapPalette::from_theme(theme);
 

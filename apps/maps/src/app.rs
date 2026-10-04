@@ -205,6 +205,9 @@ pub struct MapsApp {
     history: Button,
     /// Where the History button was drawn this frame.
     history_rect: Rect,
+    /// The floating surfaces drawn over the map this frame (the panel, the
+    /// controls, the cards, the footer); the markers keep clear of them.
+    chrome_rects: Vec<Rect>,
     /// Transient status (searching, routing, a download, a failure).
     status_bubble: ui::StatusBubble,
     /// Directions From/To fields, dropdown, focus, debounce and hit routing.
@@ -225,6 +228,14 @@ pub struct MapsApp {
     /// Frame the route (or journey) once the window has its size: a staged
     /// or restored route fits the map beside the panel and the turn card.
     pending_fit: bool,
+    /// A place to bring to the centre of the visible map once the window has
+    /// its size.
+    pending_focus: Option<LatLon>,
+    /// Bring the place whose card is open clear of the card on the next
+    /// frame, once the card is laid out.
+    pending_poi_focus: bool,
+    /// Where the open place card was drawn this frame.
+    poi_card_rect: Rect,
     /// The turn card's intrinsic size in the current theme.
     nav_card_size: vello::kurbo::Size,
     /// Where each block of the panel's content ends (rows, cards, groups),
@@ -512,6 +523,7 @@ impl MapsApp {
                 history
             },
             history_rect: Rect::ZERO,
+            chrome_rects: Vec::new(),
             status_bubble: ui::StatusBubble::new(),
             endpoints: EndpointEditor::new(),
             left_down: false,
@@ -523,6 +535,9 @@ impl MapsApp {
             spacing: Spacing::default(),
             metrics: Metrics::BASE,
             pending_fit: false,
+            pending_focus: None,
+            pending_poi_focus: false,
+            poi_card_rect: Rect::ZERO,
             nav_card_size,
             panel_edges: Vec::new(),
             panel_origin: 0.0,
@@ -630,20 +645,14 @@ impl MapsApp {
         self.model.panel = Panel::Explore;
     }
 
-    /// Screenshot-only hook: open the offline-maps overlay with a couple of
-    /// already-saved regions and a plausible on-disk size, so the download UI
-    /// AND the managed-region list render headlessly. No network, no disk I/O —
-    /// the regions are bundled sample metadata, not real cache entries.
+    /// Screenshot-only hook: open the offline-maps sheet as the shipped map
+    /// source shows it — what stays on the device and a plausible on-disk
+    /// size. No network, no disk I/O.
     pub fn set_demo_offline(&mut self) {
         self.model.panel = Panel::Explore;
         self.model.selected = None;
         self.model.route = None;
-        self.model.regions = sample::regions();
-        // Demonstrate the download-by-place search: a typed city with candidate
-        // results in the shared dropdown (offline sample data — no network).
-        self.offline_panel
-            .set_demo(47_542_000, "Munich", sample::download_regions());
-        self.offline_panel.select_result(0);
+        self.offline_panel.open(47_542_000);
     }
 
     /// Screenshot-only hook: open the ⋯ overflow menu so its Attribution /
@@ -671,16 +680,21 @@ impl MapsApp {
     }
 
     /// Screenshot-only hook: the panel after a committed search ("café"):
-    /// its results listed nearest first, the first one selected. Offline
-    /// local data only — no network.
+    /// its results listed nearest first, the first one selected and brought
+    /// to the middle of the map, and the platform search open on the query.
+    /// Offline local data only — no network.
     pub fn set_demo_search(&mut self) {
         self.model.panel = Panel::Explore;
         self.model.route = None;
         self.model.query = "café".to_string();
-        let mut results = self.ranked_matches("café");
-        results.extend(self.ranked_matches("museum"));
+        let results = self.ranked_matches("café");
         self.model.selected = results.first().map(|place| place.id.clone());
+        if let Some(first) = results.first() {
+            self.center_on(first.pos);
+        }
         self.model.results = results;
+        self.search_opener
+            .open(ui::search::SearchRequest::this_app().with_query("café".to_string()));
     }
 
     /// Screenshot-only hook: select a travel mode in the Directions panel so
@@ -728,10 +742,16 @@ impl MapsApp {
                 }
             }
             Scenario::EditOrigin => self.set_demo_edit_origin(),
-            Scenario::Explore => self.model.panel = Panel::Explore,
+            Scenario::Explore => {
+                self.model.panel = Panel::Explore;
+                if let Some(place) = self.model.selected_place().cloned() {
+                    self.center_on(place.pos);
+                }
+            }
             Scenario::Search => self.set_demo_search(),
             Scenario::Pois => {
                 self.set_demo_pois();
+                self.pending_poi_focus = true;
                 // A narrow window shows the place card over the map, the
                 // place centred above it.
                 if self.overlay_mode()
@@ -741,8 +761,15 @@ impl MapsApp {
                 }
             }
             Scenario::Navigation => {
-                self.pending_fit = true;
+                // Under way: the map follows the start of the route at street
+                // level, and the turn card leads — the panel folds to its
+                // header (the drawer closes when narrow).
                 self.nav_open = false;
+                self.panel_collapsed = true;
+                self.model.zoom = 15.5;
+                if let Some(start) = self.model.origin {
+                    self.center_on(start);
+                }
             }
             Scenario::Transit | Scenario::TransitArrive => {
                 self.model.panel = Panel::Directions;
@@ -940,12 +967,19 @@ impl MapsApp {
         Some(Rect::new(x0, menu.y0, x0 + menu.width(), menu.y1))
     }
 
+    /// The places panel. The narrow drawer ends above the footer row, so the
+    /// map's credit and scale stay in view while it is open.
     fn panel_rect(&self) -> Rect {
         let x0 = self.rect.x0 + self.margin();
         let top = self
             .menu_rect()
             .map_or_else(|| self.rect.y0 + self.margin(), |menu| menu.y1 + self.gap());
-        Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - self.margin())
+        let bottom = if self.overlay_mode() {
+            self.overflow_rect().y0 - self.gap()
+        } else {
+            self.rect.y1 - self.margin()
+        };
+        Rect::new(x0, top, x0 + self.panel_w(), bottom.max(top))
     }
 
     /// The overflow button (attribution, offline maps, licences) in the
@@ -957,11 +991,11 @@ impl MapsApp {
         Rect::new(x1 - side, y1 - side, x1, y1)
     }
 
-    /// The leading edge of the map the floating cards keep to: beside the
-    /// docked panel, or the window margin.
+    /// The leading edge of the map the floating cards keep to: the window
+    /// margin, from the docked panel as from the window's edge.
     fn map_left_edge(&self) -> f64 {
         if self.panel_docked_expanded() {
-            self.panel_rect().x1 + self.gap()
+            self.panel_rect().x1 + self.margin()
         } else {
             self.rect.x0 + self.margin()
         }
@@ -1259,7 +1293,7 @@ impl MapsApp {
         // without this clobbering it (see `swap_ends`), because subsequent
         // re-routes read `dest`, not the selection.
         if let Some(p) = self.model.place(id).cloned() {
-            self.model.center = p.pos;
+            self.center_on(p.pos);
             self.model.dest = Some(p.pos);
             self.model.dest_name = p.name;
         }
@@ -1844,6 +1878,43 @@ impl MapsApp {
         self.model.zoom = zoom;
     }
 
+    /// Bring `pos` to the centre of the visible map area — beside the docked
+    /// panel, clear of the controls and under the turn card — rather than
+    /// the window's centre, where chrome may cover it. Before the window has
+    /// its size the camera centres on it once the size is known.
+    fn center_on(&mut self, pos: LatLon) {
+        if self.rect.area() <= 0.0 {
+            self.model.center = pos;
+            self.pending_focus = Some(pos);
+            return;
+        }
+        let zoom = self.model.zoom;
+        let world = geo::lonlat_to_world(pos, zoom);
+        let offset = self.visible_map_area().center() - self.view_center();
+        self.model.center = geo::world_to_lonlat(world.0 - offset.x, world.1 - offset.y, zoom);
+    }
+
+    /// Bring the place whose card is open to the middle of the map above
+    /// its card, so neither the card nor the panel covers it.
+    fn focus_selected_poi(&mut self) {
+        let Some(pos) = self
+            .selected_poi
+            .as_ref()
+            .and_then(|id| self.pois.iter().find(|poi| &poi.id == id))
+            .map(|poi| poi.pos)
+        else {
+            return;
+        };
+        let mut area = self.visible_map_area();
+        if self.poi_card_rect.area() > 0.0 {
+            area.y1 = area.y1.min(self.poi_card_rect.y0 - self.gap()).max(area.y0);
+        }
+        let zoom = self.model.zoom;
+        let world = geo::lonlat_to_world(pos, zoom);
+        let offset = area.center() - self.view_center();
+        self.model.center = geo::world_to_lonlat(world.0 - offset.x, world.1 - offset.y, zoom);
+    }
+
     fn zoom_by(&mut self, dz: f64, anchor: Point) {
         let proj = self.projection();
         let under = proj.unproject(anchor);
@@ -2019,6 +2090,7 @@ impl MapsApp {
             return;
         };
         self.model.center = poi.pos;
+        self.pending_poi_focus = true;
         self.selected_poi = Some(id.to_string());
         // The place card floats over the map: a narrow window closes the
         // drawer so the card and the place behind it show.
@@ -2484,11 +2556,10 @@ fn bounds_contains(outer: GeoBounds, inner: GeoBounds) -> bool {
 fn navigation_card_size(theme: &Theme) -> vello::kurbo::Size {
     let sp = &theme.tokens.spacing;
     let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
-    let title_row = ButtonFace::height(ControlSize::Small, theme).max(line(TextRole::Caption));
+    let instruction_row =
+        ButtonFace::height(ControlSize::Small, theme).max(line(TextRole::Heading));
     let height = f64::from(sp.s3) * 2.0
-        + title_row
-        + f64::from(sp.s2)
-        + line(TextRole::Heading)
+        + instruction_row
         + line(TextRole::Body)
         + f64::from(sp.s3) * 2.0
         + line(TextRole::Heading);
@@ -2562,53 +2633,69 @@ impl MapsApp {
             self.pending_fit = false;
             self.fit_current();
         }
+        if self.rect.area() > 0.0
+            && let Some(pos) = self.pending_focus.take()
+        {
+            self.center_on(pos);
+        }
         // Point the raster layer at the basemap style for the active theme (dark
         // tiles under a dark theme, light under light) before any tile is drawn,
         // so imagery and the drawn cartography never mix tones. A no-op on the
         // steady state; on a theme change it re-points the worker's decode.
         self.tiles.set_style(TileStyle::from_theme(theme));
         let pal = MapPalette::from_theme(theme);
+        let overlay = self.overlay_mode();
+
+        // The chrome is laid out and painted first, into its own scene, so
+        // the map knows what floats over it: the camera can bring a place
+        // clear of its card, and a pin or a name that would reach under the
+        // panel, a card or a control is left out rather than cut at its edge.
+        let mut chrome = Scene::new();
+        self.chrome_rects.clear();
+        self.poi_card_rect = Rect::ZERO;
+        self.draw_chrome(&mut chrome, t, tr, theme, overlay);
+        if std::mem::take(&mut self.pending_poi_focus) {
+            self.focus_selected_poi();
+        }
+
         let proj = self.projection();
         let clip = self.rect;
-
-        // When the narrow overlay drawer is open it floats over the map. Clip the
-        // marker/label layers to the map area *beside* it, so pins and their name
-        // plates are never sliced at the drawer's edge into unreadable fragments
-        // (docked/closed layouts keep the full clip).
-        let overlay = self.overlay_mode();
-        let map_clip = if overlay && self.nav_open {
-            let left = (self.panel_rect().x1 + self.gap()).min(clip.x1);
-            Rect::new(left, clip.y0, clip.x1, clip.y1)
-        } else {
-            clip
-        };
-
         let view = MapView {
             proj: &proj,
             pal: &pal,
             clip,
+            chrome: &[],
         };
-        let painted_tiles =
-            self.draw_map_layers(&mut PaintCtx::new(scene, t, tr, theme), view, map_clip);
+        let painted_tiles = self.draw_map_layers(&mut PaintCtx::new(scene, t, tr, theme), view);
+        let keep_clear = f64::from(theme.tokens.spacing.s1);
+        let floating: Vec<Rect> = self
+            .chrome_rects
+            .iter()
+            .map(|rect| rect.inflate(keep_clear, keep_clear))
+            .collect();
+        self.draw_markers(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            MapView {
+                chrome: &floating,
+                ..view
+            },
+        );
         // Loading / offline affordance while the substrate grid is showing —
         // above the map but below the chrome, and skipped while the drawer
         // covers the map (the drawer is the focus then).
         if !painted_tiles && self.basemap.is_empty() && !(overlay && self.nav_open) {
             self.draw_imagery_hint(scene, t, tr, theme);
         }
-        self.draw_chrome(scene, t, tr, theme, overlay);
+        scene.append(&chrome, None);
     }
 
-    /// Map layers only: real tiles or their vector/grid fallback, traffic,
-    /// route, transit, POIs and markers. Returns whether real imagery painted,
+    /// The base map: real tiles or their vector/grid fallback, traffic, the
+    /// route and the transit journey. Returns whether real imagery painted,
     /// which the caller needs to decide whether the offline/loading hint is due.
-    fn draw_map_layers(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        view: MapView<'_>,
-        map_clip: Rect,
-    ) -> bool {
-        let MapView { proj, pal, clip } = view;
+    fn draw_map_layers(&mut self, ctx: &mut PaintCtx<'_>, view: MapView<'_>) -> bool {
+        let MapView {
+            proj, pal, clip, ..
+        } = view;
         let theme = ctx.theme;
         // Map layers. Real OSM raster tiles paint first (non-blocking); the
         // stylised vector basemap is the fallback shown only until imagery is
@@ -2657,31 +2744,30 @@ impl MapsApp {
         {
             canvas::draw_transit(ctx.scene, ctx.transform, proj, j, theme, pal, clip);
         }
-        // Live POI marker layer (Overpass) — our own themed category markers
-        // over the basemap, decluttered and under the user's saved/selected
-        // pins.
+        painted_tiles
+    }
+
+    /// The markers: the live POI layer (Overpass) — our own themed category
+    /// markers, decluttered — under the person's own places and the selected
+    /// pin. `view.chrome` holds what floats over the map.
+    fn draw_markers(&self, ctx: &mut PaintCtx<'_>, view: MapView<'_>) {
         let visible_pois = self.visible_poi_indices();
         canvas::draw_pois(
             ctx,
-            MapView {
-                clip: map_clip,
-                ..view
-            },
+            view,
             &self.pois,
             &visible_pois,
             self.selected_poi.as_deref(),
         );
-        canvas::draw_markers(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            proj,
-            &self.model,
-            theme,
-            pal,
-            map_clip,
-        );
-        painted_tiles
+        canvas::draw_markers(ctx, view, &self.model);
+    }
+
+    /// Note a floating surface drawn over the map this frame, which the
+    /// markers keep clear of.
+    fn floats(&mut self, rect: Rect) {
+        if rect.area() > 0.0 {
+            self.chrome_rects.push(rect);
+        }
     }
 
     /// Chrome over the map: the places panel (docked, or a drawer over a
@@ -2701,11 +2787,20 @@ impl MapsApp {
         // The chrome that belongs to the map: under the drawer's scrim when
         // the drawer is open.
         self.map_controls.draw(scene, t, tr, theme);
-        self.draw_map_footer(scene, t, tr, theme);
-        self.draw_overflow(scene, t, tr, theme);
+        for rect in self.map_controls.rects() {
+            self.floats(rect);
+        }
+        if !drawer_open {
+            self.draw_map_footer(scene, t, tr, theme);
+            self.draw_overflow(scene, t, tr, theme);
+        }
         if drawer_open {
             ui::overlay::scrim::modal(scene, t, self.rect, 1.0, theme);
             self.click_targets.push((self.rect, Hit::CloseNav));
+            // The footer row stays above the scrim, under the drawer's end:
+            // the map's credit and scale never hide behind the drawer.
+            self.draw_map_footer(scene, t, tr, theme);
+            self.draw_overflow(scene, t, tr, theme);
             // Stale hit and accessibility geometry must not outlive the turn
             // card the open drawer hides.
             self.navigation_drag_handle = Rect::ZERO;
@@ -2738,6 +2833,7 @@ impl MapsApp {
         if self.overflow.is_open() {
             self.overflow
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
+            self.floats(self.overflow.get_rect());
         }
         self.draw_status(scene, t, tr, theme);
         self.map_controls.draw_tooltip(scene, t, tr, theme);
@@ -2754,6 +2850,7 @@ impl MapsApp {
     ) {
         let r = self.overflow_rect();
         let open = self.overflow.is_open();
+        self.floats(r);
         self.icon_button(
             &mut PaintCtx::new(scene, t, tr, theme),
             r,
@@ -2799,6 +2896,7 @@ impl MapsApp {
                 search.y1,
             );
             self.draw_history_button(scene, t, tr, theme, history, ButtonRole::Secondary);
+            self.floats(menu.union(history));
         }
     }
 
@@ -2806,7 +2904,13 @@ impl MapsApp {
     /// overflow button: the credit, then the scale's label with its bar a
     /// token gap after it, so the label never sits on the line. When the map
     /// is too narrow for both, the credit floats on its own pill above.
-    fn draw_map_footer(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_map_footer(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         let sp = &theme.tokens.spacing;
         let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
         let ink = on_panel(theme);
@@ -2829,6 +2933,7 @@ impl MapsApp {
             right - scale_w
         };
         let pill = Rect::new(scale_x0, overflow.y0, right, overflow.y1);
+        self.floats(pill);
         ui::widget::floating_surface::paint(scene, t, pill, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, &ink);
         let top = draw::vmid(ctx.text, pill.y0, pill.height(), &caption);
@@ -2870,6 +2975,7 @@ impl MapsApp {
                 right,
                 pill.y0 - self.gap(),
             );
+            self.floats(credit_pill);
             ui::widget::floating_surface::paint(ctx.scene, t, credit_pill, theme);
             let top = draw::vmid(ctx.text, credit_pill.y0, h, &caption);
             draw::text_clip(
@@ -2954,6 +3060,7 @@ impl MapsApp {
             return;
         };
         let rect = self.navigation_rect();
+        self.floats(rect);
         let visual =
             self.navigation_placement
                 .presentation_transform(transform, rect, theme.reduce_motion);
@@ -2962,23 +3069,32 @@ impl MapsApp {
         let sp = &theme.tokens.spacing;
         let (s1, s2, s3) = (f64::from(sp.s1), f64::from(sp.s2), f64::from(sp.s3));
         let pad = s3;
-        let caption = theme.text(TextRole::Caption);
+        let numeric_caption = theme.text(TextRole::Caption).numeric();
         let heading = theme.text(TextRole::Heading);
         let body_numeric = theme.text(TextRole::Body).numeric();
+        let heading_h = draw::line_h(tr, &heading);
 
-        // Title row: "Navigation" (the drag handle) and the End button.
+        // The next instruction: its manoeuvre icon and the instruction, with
+        // End on its line; the distance to it on the line below.
         let end_face = ButtonFace::new(Rect::ZERO, "End").control_size(ControlSize::Small);
         let end_w = end_face.intrinsic_width(tr, theme);
         let end_h = ButtonFace::height(ControlSize::Small, theme);
-        let end = Rect::new(
-            rect.x1 - pad - end_w,
+        let row_h = heading_h.max(end_h);
+        let row = Rect::new(
+            rect.x0 + pad,
             rect.y0 + pad,
             rect.x1 - pad,
-            rect.y0 + pad + end_h,
+            rect.y0 + pad + row_h,
+        );
+        let end = Rect::new(
+            row.x1 - end_w,
+            row.center().y - end_h / 2.0,
+            row.x1,
+            row.center().y + end_h / 2.0,
         );
         self.navigation_end_rect = end;
-        let handle = Rect::new(rect.x0, rect.y0, end.x0 - s1, end.y1 + s1);
-        self.navigation_drag_handle = handle;
+        // The instruction row is the drag handle; End stays a plain press.
+        self.navigation_drag_handle = Rect::new(rect.x0, rect.y0, end.x0 - s1, row.y1);
         Button::paint(
             scene,
             visual,
@@ -2989,29 +3105,17 @@ impl MapsApp {
                 .hovered(self.navigation_end_hovered),
         );
         let mut ctx = PaintCtx::new(scene, visual, tr, &ink);
-        let title_top = draw::vmid(ctx.text, end.y0, end.height(), &caption);
-        draw::text(
-            &mut ctx,
-            "Navigation",
-            Point::new(rect.x0 + pad, title_top),
-            &caption,
-            ink.text_dim,
-        );
         ui::surface::floating_drag_grip(ctx.scene, visual, rect, ink.text_tertiary);
-
-        // The next instruction: its manoeuvre icon, the instruction, and the
-        // distance to it on the line below.
         let instruction = route.steps.first();
         let icon = instruction.map_or(Icon::ArrowUp, |step| step.maneuver.icon());
         let text = instruction.map_or("Continue on the route", |step| step.instruction.as_str());
         let icon_side = f64::from(theme.tokens.metrics.icon_lg);
-        let instr_y = end.y1 + s2;
-        let heading_h = draw::line_h(ctx.text, &heading);
+        let instr_y = row.center().y - heading_h / 2.0;
         let icon_rect = Rect::new(
-            rect.x0 + pad,
-            instr_y + (heading_h - icon_side) / 2.0,
-            rect.x0 + pad + icon_side,
-            instr_y + (heading_h + icon_side) / 2.0,
+            row.x0,
+            row.center().y - icon_side / 2.0,
+            row.x0 + icon_side,
+            row.center().y + icon_side / 2.0,
         );
         icon.draw(ctx.scene, visual, icon_rect, ink.text_primary);
         let text_x = icon_rect.x1 + s3;
@@ -3021,10 +3125,10 @@ impl MapsApp {
             Point::new(text_x, instr_y),
             &heading,
             ink.text_primary,
-            rect.x1 - pad - text_x,
+            end.x0 - s2 - text_x,
         );
         let next_distance = instruction.map_or(route.distance_m, |step| step.distance_m);
-        let dist_y = instr_y + heading_h;
+        let dist_y = row.y1;
         draw::text(
             &mut ctx,
             &geo::fmt_distance(next_distance),
@@ -3043,19 +3147,20 @@ impl MapsApp {
             ink.tokens.colors.surfaces.content,
         );
 
-        // The summary: the time to go and the distance left.
+        // The summary: the time to go and, on its baseline, the distance left.
         let summary_y = rule_y + s3;
+        let duration = geo::fmt_duration(route.duration_s);
         let duration_style = heading.clone().numeric();
         draw::text(
             &mut ctx,
-            &geo::fmt_duration(route.duration_s),
+            &duration,
             Point::new(rect.x0 + pad, summary_y),
             &duration_style,
             ink.text_primary,
         );
         let remaining = format!("{} to go", geo::fmt_distance(route.distance_m));
-        let numeric_caption = caption.clone().numeric();
-        let rem_top = summary_y + (heading_h - draw::line_h(ctx.text, &numeric_caption)) / 2.0;
+        let rem_top = summary_y + draw::baseline(ctx.text, &duration, &duration_style)
+            - draw::baseline(ctx.text, &remaining, &numeric_caption);
         draw::text_right(
             &mut ctx,
             &remaining,
@@ -3132,6 +3237,8 @@ impl MapsApp {
         let x0 = (area.center().x - w / 2.0).max(area.x0);
         let y1 = area.y1;
         let card = Rect::new(x0, y1 - card_h, x0 + w, y1);
+        self.poi_card_rect = card;
+        self.floats(card);
         ui::widget::floating_surface::paint(scene, t, card, theme);
         self.click_targets.push((card, Hit::Consume));
 
@@ -3191,16 +3298,15 @@ impl MapsApp {
     }
 
     /// The traffic key, bottom-leading in the map area: with data, the
-    /// congestion levels with their counts and where the reports come from;
-    /// without, the honest "No traffic data". Nothing while the overlay is
-    /// off.
+    /// congestion levels with their counts; without, the honest "No traffic
+    /// data". Nothing while the overlay is off.
     #[allow(
         clippy::many_single_char_names,
         reason = "the shared drawing names (t: transform, x/y: the pen, s1–s4: spacing steps) \
               used consistently across every draw_* method in this file"
     )]
     fn draw_traffic_status(
-        &self,
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -3229,6 +3335,7 @@ impl MapsApp {
             let w = draw::measure_w(tr, text, &label) + 2.0 * s3;
             let h = self.overflow_rect().height();
             let pill = Rect::new(left, bottom - h, left + w, bottom);
+            self.floats(pill);
             ui::widget::floating_surface::paint(scene, t, pill, theme);
             let mut ctx = PaintCtx::new(scene, t, tr, &ink);
             let top = draw::vmid(ctx.text, pill.y0, h, &label);
@@ -3247,14 +3354,10 @@ impl MapsApp {
         let heading_h = draw::line_h(tr, &heading);
         let caption_h = draw::line_h(tr, &caption);
         let row_h = caption_h + s1;
-        let source_h = if self.traffic.source.is_some() {
-            caption_h
-        } else {
-            0.0
-        };
         let w = f64::from(sp.s16) * 3.0;
-        let h = s3 + heading_h + source_h + s2 + Congestion::ALL.len() as f64 * row_h + s2;
+        let h = s3 + heading_h + s2 + Congestion::ALL.len() as f64 * row_h + s2;
         let card = Rect::new(left, bottom - h, left + w, bottom);
+        self.floats(card);
         ui::widget::floating_surface::paint(scene, t, card, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, &ink);
         let x = card.x0 + s3;
@@ -3267,19 +3370,7 @@ impl MapsApp {
             &heading,
             ink.text_primary,
         );
-        y += heading_h;
-        if let Some(src) = &self.traffic.source {
-            draw::text_clip(
-                &mut ctx,
-                &ui::format::capitalize_first(src),
-                Point::new(x, y),
-                &caption,
-                ink.text_dim,
-                right - x,
-            );
-            y += caption_h;
-        }
-        y += s2;
+        y += heading_h + s2;
         let swatch_w = f64::from(sp.s4);
         for level in Congestion::ALL {
             let mid = y + caption_h / 2.0;
@@ -3328,6 +3419,7 @@ impl MapsApp {
         } else {
             pr
         };
+        self.floats(body);
         ui::widget::floating_surface::paint(scene, t, body, theme);
         self.click_targets.push((body, Hit::Consume));
         let ink = on_panel(theme);
@@ -3753,7 +3845,14 @@ impl MapsApp {
             y += s3;
         }
 
-        let saved: Vec<Place> = self.model.saved_places().into_iter().cloned().collect();
+        // A saved place already listed under the results is not listed twice.
+        let saved: Vec<Place> = self
+            .model
+            .saved_places()
+            .into_iter()
+            .filter(|place| !results.iter().any(|hit| hit.id == place.id))
+            .cloned()
+            .collect();
         if !saved.is_empty() {
             y = self.draw_group_header(
                 &mut PaintCtx::new(scene, t, tr, theme),
@@ -3847,7 +3946,8 @@ impl MapsApp {
         y = self.endpoints.draw_fields(scene, t, tr, theme, &frame);
 
         // "Use my location" — a real device-location fix for the origin; a
-        // small secondary action under the fields.
+        // small secondary action under the fields, in their column.
+        let field_x = x + EndpointEditor::field_inset(theme);
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         let (loc_label, loc_hit) = if self.locating {
             ("Locating…", None)
@@ -3856,7 +3956,7 @@ impl MapsApp {
         };
         let loc_face = ButtonFace::new(Rect::ZERO, loc_label).control_size(ControlSize::Small);
         let loc_w = loc_face.intrinsic_width(tr, theme);
-        let loc = Rect::new(x, y, x + loc_w, y + small_h);
+        let loc = Rect::new(field_x, y, field_x + loc_w, y + small_h);
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, theme),
             ButtonFace::new(loc, loc_label)
@@ -3922,16 +4022,17 @@ impl MapsApp {
         let body_numeric = theme.text(TextRole::Body).numeric();
         let duration = geo::fmt_duration(route.duration_s);
         let display_h = draw::line_h(tr, &display);
+        let distance = geo::fmt_distance(route.distance_m);
+        // The distance and Clear route stand on the duration's baseline.
+        let baseline = y + draw::baseline(tr, &duration, &display);
         let clear_face = ButtonFace::new(Rect::ZERO, "Clear route")
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small);
         let clear_w = clear_face.intrinsic_width(tr, theme);
-        let clear = Rect::new(
-            right - clear_w,
-            y + (display_h - small_h) / 2.0,
-            right,
-            y + (display_h + small_h) / 2.0,
-        );
+        let label = theme.text(TextRole::Label);
+        let label_top = (small_h - draw::line_h(tr, &label)) / 2.0;
+        let clear_y = baseline - label_top - draw::baseline(tr, "Clear route", &label);
+        let clear = Rect::new(right - clear_w, clear_y, right, clear_y + small_h);
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, theme),
             ButtonFace::new(clear, "Clear route")
@@ -3950,10 +4051,11 @@ impl MapsApp {
         );
         let duration_w = draw::measure_w(ctx.text, &duration, &display);
         let body_h = draw::line_h(ctx.text, &body_numeric);
+        let distance_top = baseline - draw::baseline(ctx.text, &distance, &body_numeric);
         draw::text_clip(
             &mut ctx,
-            &geo::fmt_distance(route.distance_m),
-            Point::new(x + duration_w + s3, y + (display_h - body_h) / 2.0),
+            &distance,
+            Point::new(x + duration_w + s3, distance_top),
             &body_numeric,
             theme.text_dim,
             clear.x0 - s2 - (x + duration_w + s3),

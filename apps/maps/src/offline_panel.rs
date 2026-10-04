@@ -18,7 +18,7 @@ use ui::tokens::TextRole;
 use ui::widget::modal_dialog;
 use ui::widget::{
     Autocomplete, AutocompleteOutcome, Button, ButtonFace, ButtonRole, ControlSize, ListRowFace,
-    ModalAction, ModalSpec, ProgressBar, Suggestion, Widget,
+    ModalAction, ModalSpec, NumberInput, ProgressBar, Suggestion, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -33,10 +33,11 @@ use crate::tiles::{DownloadProgress, GeoBounds, TileLayer};
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 
-/// Why the Download button is inert: the OpenStreetMap tile server's usage
-/// policy forbids fetching tiles nobody is viewing.
+/// What a refused download tells the person: the map source does not let
+/// areas be saved ahead (OpenStreetMap's tile server forbids fetching tiles
+/// nobody is viewing), but what they have looked at stays.
 pub(crate) const OFFLINE_AREAS_REFUSED: &str =
-    "OpenStreetMap's tile server doesn't allow saving areas";
+    "Places you've looked at stay on this device, so they still show offline.";
 const MAX_EXTRA_ZOOM: u8 = 6;
 
 /// Effect requested by a pointer interaction inside the panel.
@@ -70,8 +71,9 @@ pub(crate) struct OfflineFrame<'a> {
     pub viewport_zoom: u8,
     pub regions: &'a [DownloadedRegion],
     pub progress: DownloadProgress,
-    /// Whether the tile server permits saving areas; the Download button is
-    /// inert and says why when it does not.
+    /// Whether the tile server permits saving areas. When it does not, the
+    /// sheet offers no download: it says what stays on the device and how
+    /// to free it.
     pub downloads_allowed: bool,
     /// The pointer, for the hover state of the sheet's buttons.
     pub pointer: Point,
@@ -88,6 +90,9 @@ pub(crate) struct OfflinePanel {
     debounce: Option<Instant>,
     pick: Option<RegionHit>,
     field_rect: Option<Rect>,
+    /// How many zoom levels a download covers, from the area's own.
+    levels: NumberInput,
+    levels_rect: Option<Rect>,
     targets: Vec<(Rect, OfflineAction)>,
     progress_bar: ProgressBar,
 }
@@ -107,6 +112,13 @@ impl OfflinePanel {
             debounce: None,
             pick: None,
             field_rect: None,
+            levels: NumberInput::new(3.0)
+                .with_id("maps_download_levels")
+                .with_range(1.0, f64::from(MAX_EXTRA_ZOOM) + 1.0)
+                .with_step(1.0)
+                .with_accessible_name("Zoom levels")
+                .compact(),
+            levels_rect: None,
             targets: Vec::new(),
             progress_bar: ProgressBar::new(0.0),
         }
@@ -139,6 +151,7 @@ impl OfflinePanel {
         self.cache_bytes = bytes;
     }
 
+    #[cfg(test)]
     pub fn set_demo(&mut self, cache_bytes: u64, query: &str, results: Vec<RegionHit>) {
         self.open = true;
         self.zoom_extra = 2;
@@ -181,7 +194,8 @@ impl OfflinePanel {
         (!query.is_empty()).then_some(query)
     }
 
-    /// Route an event to the shared autocomplete field.
+    /// Route an event to the sheet's toolkit controls: the zoom-level
+    /// stepper under the pointer, else the shared autocomplete field.
     pub fn route_field_event(
         &mut self,
         event: &WindowEvent,
@@ -189,6 +203,16 @@ impl OfflinePanel {
         modifiers: winit::event::Modifiers,
         mouse: Point,
     ) -> bool {
+        let on_levels = self.levels_rect.is_some_and(|rect| rect.contains(mouse));
+        if on_levels || self.levels.is_editing() {
+            let handled = drive(&mut self.levels, event, scale, modifiers);
+            if let Some(levels) = self.levels.take_changed() {
+                self.zoom_extra = (levels.round() as u8).saturating_sub(1).min(MAX_EXTRA_ZOOM);
+            }
+            if handled || on_levels {
+                return handled;
+            }
+        }
         if let (
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -202,26 +226,7 @@ impl OfflinePanel {
         {
             self.input.begin_edit();
         }
-        let mut doc = AutoCommit::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return false;
-        };
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        self.input.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled = drive(&mut self.input, event, scale, modifiers);
         self.reconcile_field();
         handled
     }
@@ -303,16 +308,21 @@ impl OfflinePanel {
                 "maps.offline.close".to_string(),
             ));
         }
+        if let Some(levels) = self.levels_rect {
+            for (action, label, target) in [
+                (-1, "Fewer zoom levels", "maps.offline.zoom-out"),
+                (1, "More zoom levels", "maps.offline.zoom-in"),
+            ] {
+                targets.push((
+                    levels,
+                    OfflineAction::ZoomDelta(action),
+                    label.to_string(),
+                    target.to_string(),
+                ));
+            }
+        }
         for (rect, action) in &self.targets {
             let (label, target) = match action {
-                OfflineAction::ZoomDelta(-1) => (
-                    "Decrease download detail",
-                    "maps.offline.zoom-out".to_string(),
-                ),
-                OfflineAction::ZoomDelta(1) => (
-                    "Increase download detail",
-                    "maps.offline.zoom-in".to_string(),
-                ),
                 OfflineAction::Download => (
                     "Download selected area",
                     "maps.offline.download".to_string(),
@@ -419,6 +429,7 @@ impl OfflinePanel {
         self.input.is_editing()
     }
 
+    #[cfg(test)]
     /// Pick result `index` as the area to download, as accepting it in the
     /// field would.
     pub fn select_result(&mut self, index: usize) -> Option<RegionHit> {
@@ -441,10 +452,12 @@ impl OfflinePanel {
         self.cache_bytes
     }
 
-    /// Paint the sheet in the window's top layer: the area to download (a
-    /// place search, or the current view), how much detail, the estimate or
-    /// the running download's progress, what is stored on this device, and
-    /// the areas already downloaded. Its one action downloads.
+    /// Paint the sheet in the window's top layer. Where the map source lets
+    /// areas be saved: the area to download (a place search, or the current
+    /// view), how many zoom levels, the estimate or the running download's
+    /// progress, and Download as its one action. Where it does not: what
+    /// stays on the device anyway. Then what this device holds, with the way
+    /// to free it, and the areas already downloaded.
     #[allow(
         clippy::too_many_lines,
         reason = "the sheet is one top-to-bottom immediate-mode pass; its state, hit regions and \
@@ -460,6 +473,7 @@ impl OfflinePanel {
     ) {
         const MAX_ROWS: usize = 4;
         self.targets.clear();
+        let downloads = frame.downloads_allowed;
         let sp = &theme.tokens.spacing;
         let (s1, s2, s4) = (f64::from(sp.s1), f64::from(sp.s2), f64::from(sp.s4));
         let subheading = theme.text(TextRole::Subheading);
@@ -472,34 +486,47 @@ impl OfflinePanel {
         let control_h = ButtonFace::height(ControlSize::Regular, theme);
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         // The progress bar shows only once a download has started.
-        let bar_h = if frame.progress.total > 0 { s2 } else { 0.0 };
+        let bar_h = if downloads && frame.progress.total > 0 {
+            s2
+        } else {
+            0.0
+        };
 
         let shown = frame.regions.len().min(MAX_ROWS);
         let overflow = frame.regions.len() > shown;
-        let row_probe = ListRowFace::new("Area").secondary("Zoom");
+        let row_probe = ListRowFace::new("Area").secondary("12 MB");
         let row_h = row_probe.height(text, theme);
-        let list_h = if frame.regions.is_empty() {
-            caption_h
+        let regions_h = if frame.regions.is_empty() {
+            0.0
         } else {
-            shown as f64 * row_h + if overflow { s1 + caption_h } else { 0.0 }
+            s4 + sub_h + s1 + shown as f64 * row_h + if overflow { s1 + caption_h } else { 0.0 }
         };
+        // Without downloads the sheet says, wrapped to the body, what stays.
+        let note_w = ui::num::f32_of_f64(modal_dialog::body_width(
+            frame.window,
+            modal_dialog::MODAL_MAX_WIDTH,
+            theme,
+        ));
+        let note_h = f64::from(
+            text.measure_style(OFFLINE_AREAS_REFUSED, Some(note_w), &body)
+                .1,
+        );
         // The body is exactly the stack the painter advances through below.
-        let body_height = sub_h
-            + s2
-            + control_h
-            + s2
-            + caption_h
-            + s4
-            + control_h
-            + s2
-            + caption_h
-            + if bar_h > 0.0 { s2 + bar_h } else { 0.0 }
-            + s4
-            + small_h.max(body_h)
-            + s4
-            + sub_h
-            + s1
-            + list_h;
+        let form_h = if downloads {
+            sub_h
+                + s2
+                + control_h
+                + s2
+                + caption_h
+                + s4
+                + control_h
+                + s2
+                + caption_h
+                + if bar_h > 0.0 { s2 + bar_h } else { 0.0 }
+        } else {
+            note_h
+        };
+        let body_height = form_h + s4 + small_h.max(body_h) + regions_h;
 
         let request =
             self.download_request(frame.viewport_bounds, frame.viewport_zoom, frame.viewport);
@@ -507,23 +534,22 @@ impl OfflinePanel {
             || "Download this view".to_string(),
             |pick| format!("Download {}", pick.name),
         );
-        let actions = [ModalAction::primary(&label).enabled(frame.downloads_allowed)];
+        let primary = [ModalAction::primary(&label)];
+        let offered: &[ModalAction<'_>] = if downloads { &primary } else { &[] };
         let spec = ModalSpec::new("Offline maps")
-            .actions(&actions)
+            .actions(offered)
             .closable(true)
             .dismiss_on_scrim(true)
-            .max_width(f64::from(theme.tokens.metrics.panel_width_sheet) * 0.8)
             .body_height(body_height);
         let layout = modal_dialog::layout(frame.window, &spec, text, theme);
         let hovered_action = layout
             .actions
             .first()
             .is_some_and(|r| r.contains(frame.pointer));
-        let actions = [ModalAction::primary(&label)
-            .enabled(frame.downloads_allowed)
-            .hovered(hovered_action)];
+        let actions = [ModalAction::primary(&label).hovered(hovered_action)];
+        let offered: &[ModalAction<'_>] = if downloads { &actions } else { &[] };
         let spec = spec
-            .actions(&actions)
+            .actions(offered)
             .close_hovered(layout.close.is_some_and(|c| c.contains(frame.pointer)));
         modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
         self.targets.push((layout.scrim, OfflineAction::Close));
@@ -532,14 +558,7 @@ impl OfflinePanel {
             self.targets.push((close, OfflineAction::Close));
         }
         if let Some(download) = layout.actions.first() {
-            self.targets.push((
-                *download,
-                if frame.downloads_allowed {
-                    OfflineAction::Download
-                } else {
-                    OfflineAction::Consume
-                },
-            ));
+            self.targets.push((*download, OfflineAction::Download));
         }
 
         let ink = theme.on_ground(ui::chrome::panel_ground(theme));
@@ -549,123 +568,28 @@ impl OfflinePanel {
         let mut y = area.y0;
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &area);
 
-        // The area: a place search, or the current view.
-        let mut ctx = PaintCtx::new(scene, transform, text, &ink);
-        draw::text(
-            &mut ctx,
-            "Area",
-            Point::new(left, y),
-            &subheading,
-            ink.text_primary,
-        );
-        y += sub_h + s2;
-        let field = Rect::new(left, y, right, y + control_h);
-        self.field_rect = Some(field);
-        self.input.apply_layout_external(field);
-        self.input
-            .draw(scene, transform, text, &ink, &PresenceCtx::empty());
-        y += control_h + s2;
-        let mut ctx = PaintCtx::new(scene, transform, text, &ink);
-        let hint = match &self.pick {
-            Some(pick) if !pick.context.is_empty() => pick.context.clone(),
-            Some(pick) => pick.name.clone(),
-            None => "Search for a place, or download what the map shows now.".to_string(),
-        };
-        draw::text_clip(
-            &mut ctx,
-            &hint,
-            Point::new(left, y),
-            &caption,
-            ink.text_dim,
-            right - left,
-        );
-        y += caption_h + s4;
-
-        // Detail: how many zoom levels below the area's own.
-        let row = Rect::new(left, y, right, y + control_h);
-        let top = draw::vmid(ctx.text, row.y0, control_h, &body);
-        draw::text(
-            &mut ctx,
-            "Detail",
-            Point::new(left, top),
-            &body,
-            ink.text_primary,
-        );
-        let side = control_h;
-        let range = format!("Zoom {}–{}", request.z0, request.z1);
-        let range_w = draw::measure_w(ctx.text, "Zoom 19–19", &numeric);
-        let plus = Rect::new(right - side, row.y0, right, row.y1);
-        let minus = Rect::new(
-            plus.x0 - range_w - 2.0 * s2 - side,
-            row.y0,
-            plus.x0 - range_w - 2.0 * s2,
-            row.y1,
-        );
-        draw::text_center(
-            &mut ctx,
-            &range,
-            Point::new((minus.x1 + plus.x0) / 2.0, top),
-            &numeric,
-            ink.text_primary,
-        );
-        for (button, icon, name, delta) in [
-            (minus, Icon::Minus, "Less detail", -1),
-            (plus, Icon::Plus, "More detail", 1),
-        ] {
-            Button::paint(
+        if downloads {
+            y = self.draw_download_form(
                 scene,
                 transform,
                 text,
                 &ink,
-                &ButtonFace::icon_only(button, icon, name).hovered(button.contains(frame.pointer)),
+                Rect::new(left, y, right, area.y1),
+                &request,
+                frame,
             );
-            self.targets.push((button, OfflineAction::ZoomDelta(delta)));
-        }
-        y += control_h + s2;
-
-        // The estimate, or the running download.
-        let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
-        let readout = if !frame.downloads_allowed {
-            OFFLINE_AREAS_REFUSED.to_string()
-        } else if frame.progress.is_active() {
-            format!(
-                "Downloading {} of {} tiles…",
-                frame.progress.done, frame.progress.total
-            )
-        } else if frame.progress.total > 0 && frame.progress.done >= frame.progress.total {
-            if frame.progress.failed > 0 {
-                format!(
-                    "Downloaded {} tiles, {} failed",
-                    frame.progress.total, frame.progress.failed
-                )
-            } else {
-                format!("Downloaded {} tiles", frame.progress.total)
-            }
         } else {
-            format!(
-                "About {estimate} tiles, {}",
-                ui::format::bytes_si(u64::from(estimate) * 18_000)
-            )
-        };
-        let mut ctx = PaintCtx::new(scene, transform, text, &ink);
-        draw::text_clip(
-            &mut ctx,
-            &readout,
-            Point::new(left, y),
-            &caption.clone().numeric(),
-            ink.text_dim,
-            right - left,
-        );
-        y += caption_h;
-        if bar_h > 0.0 {
-            y += s2;
-            self.progress_bar
-                .set_progress(ui::num::f32_of_f64(frame.progress.fraction()));
-            self.progress_bar
-                .apply_layout_external(Rect::new(left, y, right, y + bar_h));
-            self.progress_bar
-                .draw(scene, transform, text, &ink, &PresenceCtx::empty());
-            y += bar_h;
+            self.field_rect = None;
+            self.levels_rect = None;
+            let mut ctx = PaintCtx::new(scene, transform, text, &ink);
+            ctx.text(
+                OFFLINE_AREAS_REFUSED,
+                &body,
+                ink.text_primary,
+                Point::new(left, y),
+                Some(note_w),
+            );
+            y += note_h;
         }
         y += s4;
 
@@ -703,27 +627,20 @@ impl OfflinePanel {
             ink.text_primary,
             clear.x0 - s2 - left,
         );
-        y += line_h + s4;
+        y += line_h;
 
         // The areas already downloaded.
-        draw::text(
-            &mut ctx,
-            "Downloaded areas",
-            Point::new(left, y),
-            &subheading,
-            ink.text_primary,
-        );
-        y += sub_h + s1;
-        if frame.regions.is_empty() {
-            draw::text_clip(
+        if !frame.regions.is_empty() {
+            y += s4;
+            draw::text(
                 &mut ctx,
-                "No downloaded areas yet.",
+                "Downloaded areas",
                 Point::new(left, y),
-                &caption,
-                ink.text_dim,
-                right - left,
+                &subheading,
+                ink.text_primary,
             );
-        } else {
+            y += sub_h + s1;
+            let side = control_h;
             for region in frame.regions.iter().take(shown) {
                 let trash = Rect::new(
                     right - side,
@@ -731,11 +648,11 @@ impl OfflinePanel {
                     right,
                     y + (row_h + side) / 2.0,
                 );
-                let detail = format!("Zoom {}–{}, {} tiles", region.z0, region.z1, region.tiles);
+                let footprint = ui::format::bytes_si(u64::from(region.tiles) * TILE_BYTES);
                 let rect = Rect::new(left - f64::from(sp.s3), y, trash.x0 - s1, y + row_h);
                 let mut ctx = PaintCtx::new(scene, transform, text, &ink);
                 ListRowFace::new(&region.name)
-                    .secondary(&detail)
+                    .secondary(&footprint)
                     .paint(&mut ctx, rect);
                 Button::paint(
                     scene,
@@ -763,10 +680,162 @@ impl OfflinePanel {
         }
         scene.pop_layer();
         modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
+        if downloads {
+            self.input
+                .draw_overlay(scene, transform, text, &ink, &PresenceCtx::empty());
+        }
+    }
+
+    /// The download form: the area (a place search, or the current view),
+    /// how many zoom levels, and the estimate or the running download's
+    /// progress. Returns the y below it.
+    fn draw_download_form(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        ink: &Theme,
+        body_rect: Rect,
+        request: &DownloadRequest,
+        frame: OfflineFrame<'_>,
+    ) -> f64 {
+        let sp = &ink.tokens.spacing;
+        let (s2, s4) = (f64::from(sp.s2), f64::from(sp.s4));
+        let subheading = ink.text(TextRole::Subheading);
+        let body = ink.text(TextRole::Body);
+        let caption = ink.text(TextRole::Caption);
+        let control_h = ButtonFace::height(ControlSize::Regular, ink);
+        let (left, right) = (body_rect.x0, body_rect.x1);
+        let mut y = body_rect.y0;
+
+        // The area: a place search, or the current view.
+        let mut ctx = PaintCtx::new(scene, transform, text, ink);
+        draw::text(
+            &mut ctx,
+            "Area",
+            Point::new(left, y),
+            &subheading,
+            ink.text_primary,
+        );
+        y += draw::line_h(ctx.text, &subheading) + s2;
+        let field = Rect::new(left, y, right, y + control_h);
+        self.field_rect = Some(field);
+        self.input.apply_layout_external(field);
         self.input
-            .draw_overlay(scene, transform, text, &ink, &PresenceCtx::empty());
+            .draw(scene, transform, text, ink, &PresenceCtx::empty());
+        y += control_h + s2;
+        let mut ctx = PaintCtx::new(scene, transform, text, ink);
+        let hint = match &self.pick {
+            Some(pick) if !pick.context.is_empty() => pick.context.clone(),
+            Some(pick) => pick.name.clone(),
+            None => "Search for a place, or download what the map shows now.".to_string(),
+        };
+        draw::text_clip(
+            &mut ctx,
+            &hint,
+            Point::new(left, y),
+            &caption,
+            ink.text_dim,
+            right - left,
+        );
+        y += draw::line_h(ctx.text, &caption) + s4;
+
+        // How many zoom levels, from the area's own: the toolkit's stepper.
+        let top = draw::vmid(ctx.text, y, control_h, &body);
+        draw::text(
+            &mut ctx,
+            "Zoom levels",
+            Point::new(left, top),
+            &body,
+            ink.text_primary,
+        );
+        self.levels.set_value(f64::from(self.zoom_extra) + 1.0);
+        let levels_w = self.levels.preferred_width(ink, text);
+        let levels = Rect::new(right - levels_w, y, right, y + control_h);
+        self.levels_rect = Some(levels);
+        self.levels.apply_layout_external(levels);
+        self.levels
+            .draw(scene, transform, text, ink, &PresenceCtx::empty());
+        y += control_h + s2;
+
+        // The estimate, or the running download.
+        let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
+        let readout = if frame.progress.is_active() {
+            format!(
+                "Downloading {} of {} tiles…",
+                frame.progress.done, frame.progress.total
+            )
+        } else if frame.progress.total > 0 && frame.progress.done >= frame.progress.total {
+            if frame.progress.failed > 0 {
+                format!(
+                    "Downloaded {} tiles, {} failed",
+                    frame.progress.total, frame.progress.failed
+                )
+            } else {
+                format!("Downloaded {} tiles", frame.progress.total)
+            }
+        } else {
+            format!(
+                "About {} to download",
+                ui::format::bytes_si(u64::from(estimate) * TILE_BYTES)
+            )
+        };
+        let mut ctx = PaintCtx::new(scene, transform, text, ink);
+        draw::text_clip(
+            &mut ctx,
+            &readout,
+            Point::new(left, y),
+            &caption.clone().numeric(),
+            ink.text_dim,
+            right - left,
+        );
+        y += draw::line_h(ctx.text, &caption);
+        if frame.progress.total > 0 {
+            y += s2;
+            self.progress_bar
+                .set_progress(ui::num::f32_of_f64(frame.progress.fraction()));
+            self.progress_bar
+                .apply_layout_external(Rect::new(left, y, right, y + s2));
+            self.progress_bar
+                .draw(scene, transform, text, ink, &PresenceCtx::empty());
+            y += s2;
+        }
+        y
     }
 }
+
+/// Drive one event through a toolkit control the sheet places by hand.
+fn drive(
+    widget: &mut dyn Widget,
+    event: &WindowEvent,
+    scale: f64,
+    modifiers: winit::event::Modifiers,
+) -> bool {
+    let mut doc = AutoCommit::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return false;
+    };
+    let mut handled = false;
+    let mut focus_target: Option<NodeId> = None;
+    widget.handle_event(
+        event,
+        &mut ui::widget::EventCtx {
+            scale_factor: scale,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        },
+    );
+    handled
+}
+
+/// About how much one stored map tile takes on disk.
+const TILE_BYTES: u64 = 18_000;
 
 fn region_base_zoom(sw: crate::model::LatLon, ne: crate::model::LatLon, viewport: Rect) -> u8 {
     let corners = [
@@ -777,8 +846,8 @@ fn region_base_zoom(sw: crate::model::LatLon, ne: crate::model::LatLon, viewport
     ];
     let zoom = geo::fit_bounds(
         &corners,
-        viewport.width().max(400.0),
-        viewport.height().max(300.0),
+        viewport.width().max(1.0),
+        viewport.height().max(1.0),
         40.0,
     )
     .map_or(12.0, |(_, zoom)| zoom);

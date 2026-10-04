@@ -167,6 +167,12 @@ impl MapControls {
         self.traffic_enabled = enabled;
     }
 
+    /// Where each control is drawn.
+    pub(super) fn rects(&self) -> [Rect; 4] {
+        let layout = self.layout();
+        MapControlAction::ALL.map(|action| layout.rect(action))
+    }
+
     pub(super) fn hit_test(&self, point: Point) -> Option<MapControlAction> {
         let layout = self.layout();
         MapControlAction::ALL

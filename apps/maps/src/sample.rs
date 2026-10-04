@@ -327,6 +327,20 @@ pub fn places() -> Vec<Place> {
             cell(2.6, 2.1),
         ),
         Place::new(
+            "cafe-frischhut",
+            "Café Frischhut",
+            Category::Cafe,
+            "Prälat-Zistl-Straße 8",
+            cell(-0.6, -3.0),
+        ),
+        Place::new(
+            "cafe-luitpold",
+            "Café Luitpold",
+            Category::Cafe,
+            "Brienner Straße 11",
+            cell(-1.4, 4.4),
+        ),
+        Place::new(
             "stadtmuseum",
             "Stadtmuseum",
             Category::Museum,
@@ -383,7 +397,7 @@ pub fn regions() -> Vec<DownloadedRegion> {
     vec![
         DownloadedRegion {
             id: "region-demo-1".to_string(),
-            name: "München Altstadt".to_string(),
+            name: "Munich old town".to_string(),
             min: cell(-6.0, -6.0),
             max: cell(6.0, 6.0),
             z0: 13,
@@ -838,15 +852,15 @@ pub fn download_regions() -> Vec<crate::net::RegionHit> {
             ne: LatLon::new(48.2482, 11.7229),
         },
         RegionHit {
-            name: "München Hauptbahnhof".into(),
-            context: "Bahnhofplatz, München".into(),
+            name: "Munich Central Station".into(),
+            context: "Bahnhofplatz, Munich".into(),
             pos: LatLon::new(48.1402, 11.5586),
             sw: LatLon::new(48.1382, 11.5556),
             ne: LatLon::new(48.1422, 11.5616),
         },
         RegionHit {
             name: "Marienplatz".into(),
-            context: "Altstadt-Lehel, München".into(),
+            context: "Altstadt-Lehel, Munich".into(),
             pos: LatLon::new(48.1374, 11.5755),
             sw: LatLon::new(48.1364, 11.5745),
             ne: LatLon::new(48.1384, 11.5765),
