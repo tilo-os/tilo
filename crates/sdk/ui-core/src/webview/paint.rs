@@ -432,7 +432,20 @@ struct PaintState {
     keyframe_needed: bool,
     /// Blobs the stream consumer was sent since its last whole frame.
     sent_blobs: std::collections::HashSet<[u8; 32]>,
+    /// Whether the app wants the page shown at all.
+    wanted_visible: bool,
+    /// When a view last drew this engine's page.
+    last_presented: Instant,
+    /// What the engine was last told: painting, or hidden.
+    painting: bool,
+    /// How long an undrawn page keeps painting.
+    hide_after: Duration,
 }
+
+/// A page no view has drawn for this long stops painting: the engine is
+/// told it is hidden, which stops its compositing and rendering until a view
+/// draws it again. Agents keep reading and operating a hidden page.
+const HIDE_UNPRESENTED: Duration = Duration::from_secs(2);
 
 /// Any engine, drawn as a display list. Commands and events pass through;
 /// the source's own requests and answers are consumed here.
@@ -476,6 +489,10 @@ impl PaintEngine {
                 patches: VecDeque::new(),
                 keyframe_needed: true,
                 sent_blobs: std::collections::HashSet::new(),
+                wanted_visible: true,
+                last_presented: crate::time::now(),
+                painting: true,
+                hide_after: HIDE_UNPRESENTED,
             }),
             draws,
         })
@@ -524,6 +541,18 @@ impl PaintEngine {
         }
     }
 
+    /// Paint while the app wants the page and someone sees it: a view drew
+    /// it recently, or a session shares it with someone watching.
+    fn update_visibility(&self, state: &mut PaintState) {
+        let seen =
+            crate::time::now().saturating_duration_since(state.last_presented) < state.hide_after;
+        let paint = state.wanted_visible && (seen || share_watched());
+        if paint != state.painting {
+            state.painting = paint;
+            self.inner.set_visible(paint);
+        }
+    }
+
     fn absorb(state: &mut PaintState, update: PaintUpdate) {
         if let Some(patch) = update.patch {
             if state.patches.len() >= MAX_QUEUED_PATCHES {
@@ -543,7 +572,14 @@ impl WebViewEngine for PaintEngine {
         Ok(tab)
     }
     fn set_visible(&self, visible: bool) {
-        self.inner.set_visible(visible);
+        let mut state = self.lock();
+        state.wanted_visible = visible;
+        self.update_visibility(&mut state);
+    }
+    fn presented(&self) {
+        let mut state = self.lock();
+        state.last_presented = crate::time::now();
+        self.update_visibility(&mut state);
     }
     fn set_modifiers(&self, modifiers: KeyModifiers) {
         self.inner.set_modifiers(modifiers);
@@ -591,6 +627,7 @@ impl WebViewEngine for PaintEngine {
             }
         }
         self.pump(&mut state);
+        self.update_visibility(&mut state);
         drop(state);
         passed
     }
@@ -616,6 +653,8 @@ impl WebViewEngine for PaintEngine {
     }
     fn take_paint_stream(&self, keyframe: bool) -> Vec<Payload> {
         let mut state = self.lock();
+        // A watched share keeps the page painting.
+        self.update_visibility(&mut state);
         self.pump(&mut state);
         if keyframe {
             state.keyframe_needed = true;
@@ -1145,6 +1184,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(paint_share)]
     fn a_streaming_engine_captures_only_while_a_session_watches() {
         let test = TestEngine::new();
         test.set_paint_snapshot(TOP);
@@ -1193,6 +1233,51 @@ mod tests {
             engine.take_paint_stream(false).is_empty(),
             "nothing changed since"
         );
+        set_share_watched(false);
+    }
+
+    #[test]
+    #[serial_test::serial(paint_share)]
+    fn a_page_no_view_draws_stops_painting_until_one_does() {
+        let test = TestEngine::new();
+        let engine = PaintEngine::streaming(test.clone());
+        engine.lock().hide_after = Duration::from_millis(30);
+        set_share_watched(false);
+        engine.presented();
+        drop(engine.drain_events());
+        assert!(
+            test.visibility_changes().is_empty(),
+            "drawn just now: still painting"
+        );
+
+        std::thread::sleep(Duration::from_millis(60));
+        drop(engine.drain_events());
+        assert_eq!(
+            test.visibility_changes(),
+            vec![false],
+            "undrawn: told it is hidden"
+        );
+        drop(engine.drain_events());
+        assert_eq!(test.visibility_changes(), vec![false], "and told once");
+
+        engine.presented();
+        assert_eq!(
+            test.visibility_changes(),
+            vec![false, true],
+            "drawn again: painting"
+        );
+
+        // A page the app hid stays hidden however recently it was drawn.
+        engine.set_visible(false);
+        engine.presented();
+        assert_eq!(test.visibility_changes(), vec![false, true, false]);
+        engine.set_visible(true);
+
+        // A watched share keeps an undrawn page painting.
+        std::thread::sleep(Duration::from_millis(60));
+        set_share_watched(true);
+        drop(engine.take_paint_stream(false));
+        assert_eq!(test.visibility_changes(), vec![false, true, false, true]);
         set_share_watched(false);
     }
 

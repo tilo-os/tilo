@@ -969,6 +969,14 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   if(op=="resize") TraceGeometry("resize-dispatch",id,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
   auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
 }
+#if defined(OS_LINUX)
+// Whether this machine has a GPU render node the browser could use.
+bool HasRenderNode() {
+  for(int node=128;node<136;++node)
+    if(access(("/dev/dri/renderD"+std::to_string(node)).c_str(),R_OK|W_OK)==0) return true;
+  return false;
+}
+#endif
 class App final : public CefApp,public CefBrowserProcessHandler {
  public:
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
@@ -976,11 +984,22 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // The Rust application owns browser onboarding; Chromium's first-run UI
     // cannot be completed in an offscreen embedding and can stall Linux init.
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+    // Tabs of one site share a renderer: many agent tabs on one site cost one
+    // process, while different sites stay isolated from each other.
+    if(process_type.empty() && !command_line->HasSwitch("process-per-site")) command_line->AppendSwitch("process-per-site");
 #if defined(OS_LINUX)
     // Every frame is rendered offscreen, yet Chromium's default Linux platform
     // exits unless it reaches an X server, and a Tilo app sandbox has none.
     if(process_type.empty() && !std::getenv("DISPLAY") && !command_line->HasSwitch("ozone-platform"))
       command_line->AppendSwitchWithValue("ozone-platform","headless");
+    // A machine without a GPU (a hosting server running agents) only falls
+    // back to software compositing in a separate GPU process, after failing
+    // EGL. Compose in the browser process instead, and trade caches for
+    // memory as Chromium does on low-end devices.
+    if(process_type.empty() && !HasRenderNode()) {
+      for(const char* flag:{"disable-gpu","in-process-gpu","enable-low-end-device-mode"})
+        if(!command_line->HasSwitch(flag)) command_line->AppendSwitch(flag);
+    }
 #endif
   }
   void OnContextInitialized() override {
