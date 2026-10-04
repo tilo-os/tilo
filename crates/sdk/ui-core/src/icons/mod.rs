@@ -160,6 +160,10 @@ pub enum Icon {
     Lock,
     /// Unlocked. Lucide `lock-open`.
     LockOpen,
+    /// Linked: moves with what it belongs to. Lucide `link`.
+    Link,
+    /// Unlinked: stays put on its own. Lucide `unlink`.
+    Unlink,
     /// An agent. Lucide `bot`.
     Bot,
     /// A person. Lucide `user`.
@@ -347,6 +351,8 @@ impl Icon {
             "moon" => Self::Moon,
             "a-large-small" => Self::ALargeSmall,
             "accessibility" => Self::Accessibility,
+            "link" => Self::Link,
+            "unlink" => Self::Unlink,
             _ => return None,
         })
     }
@@ -490,6 +496,8 @@ impl Icon {
             Self::Moon => "moon",
             Self::ALargeSmall => "a-large-small",
             Self::Accessibility => "accessibility",
+            Self::Link => "link",
+            Self::Unlink => "unlink",
         }
     }
 }
@@ -1109,6 +1117,22 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::LockOpen => vec![
             rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
             path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
+        ],
+        Icon::Link => vec![
+            path_from_d("M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"),
+            path_from_d("M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"),
+        ],
+        Icon::Unlink => vec![
+            path_from_d(
+                "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71",
+            ),
+            path_from_d(
+                "m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71",
+            ),
+            line_path(8.0, 2.0, 8.0, 5.0),
+            line_path(2.0, 8.0, 5.0, 8.0),
+            line_path(16.0, 19.0, 16.0, 22.0),
+            line_path(19.0, 16.0, 22.0, 16.0),
         ],
         Icon::Bot => vec![
             path_from_d("M12 8V4H8"),
@@ -2007,6 +2031,8 @@ mod tests {
                 Icon::EyeOff,
                 Icon::Lock,
                 Icon::LockOpen,
+                Icon::Link,
+                Icon::Unlink,
                 Icon::Bot,
                 Icon::User,
                 Icon::Flag,

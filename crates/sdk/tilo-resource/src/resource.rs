@@ -239,6 +239,19 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// What declared action `action` (one [`ActionDecl::answering`]) made,
+    /// answered to its caller once it applied to `doc` as `changes`: the
+    /// ids it minted, the area it selected, a warning that what it drew is
+    /// hidden. A compact summary, so the caller needs no second read to
+    /// see what happened. The default answers nothing.
+    fn answer(
+        _doc: &Doc,
+        _action: &str,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
     /// The stored layout of this resource's content, for services that act
     /// on it generically: History restores a past version through it, field
     /// by field and item by item. `#[resource]` returns the record's
@@ -554,6 +567,15 @@ impl<R: Resource> ActionDecl<R> {
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
         self
+    }
+
+    /// Answer the caller with what the action made, from
+    /// [`Resource::answer`].
+    #[must_use]
+    pub fn answering(self) -> Self {
+        self.returns(tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        })
     }
 }
 
