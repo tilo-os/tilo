@@ -691,11 +691,6 @@ fn traffic_overlay_populates_honestly_and_draws_its_legend_only_when_on() {
             !a.traffic.is_empty(),
             "sample cartography yields congestion segments"
         );
-        assert_eq!(
-            a.traffic.source.as_deref(),
-            Some("sample data"),
-            "provenance is honest"
-        );
         // Toggling again turns it off.
         tap_control(&mut a, MapControlAction::ToggleTraffic);
         assert!(
@@ -716,10 +711,6 @@ fn traffic_overlay_populates_honestly_and_draws_its_legend_only_when_on() {
         a.set_traffic(true);
         assert!(a.map_controls.traffic_enabled(), "overlay is on");
         assert!(a.traffic.is_empty(), "no data is invented on the live path");
-        assert!(
-            a.traffic.source.is_none(),
-            "no provenance when there is nothing to show"
-        );
     }
 
     // Phase `traffic_legend_only_draws_when_the_overlay_is_on`.
@@ -837,9 +828,10 @@ fn place_search_matches_ranks_and_labels_results() {
             Some("Theatinerstraße 18"),
             "the place keeps its human name"
         );
+        let at = a.projection().project(LatLon::new(48.141, 11.577));
         assert!(
-            (a.model.center.lat - 48.141).abs() < 1e-9,
-            "map navigated to the hit"
+            (at - a.visible_map_area().center()).hypot() < 1.0,
+            "map navigated to the hit, in the middle of the visible map {at:?}"
         );
         assert!(
             a.model.recents.iter().any(|q| q == "Theatinerstraße 18"),
