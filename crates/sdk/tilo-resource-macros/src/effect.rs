@@ -7,6 +7,34 @@ use syn::{Data, DeriveInput, Fields};
 
 use crate::{doc_lines, humanize, krate, param_type, snake_case};
 
+/// A field's `#[param(…)]`: its description, after `secret,` when the
+/// argument is a secret (an invite, a password) the host keeps out of logs,
+/// history and confirmations.
+#[derive(Default)]
+struct Param {
+    secret: bool,
+    description: Option<String>,
+}
+
+impl syn::parse::Parse for Param {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut param = Self::default();
+        if input.peek(syn::Ident) {
+            let flag: syn::Ident = input.parse()?;
+            if flag != "secret" {
+                return Err(syn::Error::new(flag.span(), "expected `secret`"));
+            }
+            param.secret = true;
+            if input.is_empty() {
+                return Ok(param);
+            }
+            input.parse::<syn::Token![,]>()?;
+        }
+        param.description = Some(input.parse::<syn::LitStr>()?.value());
+        Ok(param)
+    }
+}
+
 struct EnumOptions {
     operation: String,
 }
@@ -153,15 +181,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     let field_ident = field.ident.clone().ok_or_else(|| {
                         syn::Error::new(field.span(), "named field without a name")
                     })?;
-                    let mut described = None;
+                    let mut param = Param::default();
                     for attr in field
                         .attrs
                         .iter()
                         .filter(|attr| attr.path().is_ident("param"))
                     {
-                        described = Some(attr.parse_args::<syn::LitStr>()?.value());
+                        param = attr.parse_args::<Param>()?;
                     }
-                    fields.push((field_ident, field.ty.clone(), described));
+                    fields.push((field_ident, field.ty.clone(), param));
                 }
             }
             Fields::Unnamed(_) => {
@@ -174,8 +202,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
 
         let params = fields.iter().map(|(field, ty, described)| {
             let param = field.to_string();
-            let description = described.clone().unwrap_or_else(|| humanize(&param));
+            let description = described
+                .description
+                .clone()
+                .unwrap_or_else(|| humanize(&param));
             let (param_ty, optional) = param_type(ty);
+            let param_ty = if described.secret {
+                quote!(#krate::__private::ParamType::Secret)
+            } else {
+                param_ty
+            };
             if optional {
                 quote!(#krate::__private::ActionParam::optional_owned(#param, #param_ty, #description))
             } else {
