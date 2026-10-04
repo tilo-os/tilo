@@ -1,0 +1,11 @@
+# Audited ceilings of apps/ebook (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/ebook/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+"apps/ebook/src/main.rs" = 1
+
+[ratchets.surface_document_actions]
+"apps/ebook/src/resource.rs" = 1
