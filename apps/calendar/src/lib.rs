@@ -7,8 +7,7 @@
 //! task using the SDK rich-text editor.
 //!
 //! State lives in the Automerge CRDT (`doc`), interop is via iCalendar
-//! (`ics`), and `app_root()` is the single integration point used by both
-//! the live event loop and the `--shots` offscreen renderer.
+//! (`ics`), and [`CalendarShell`] is the app every host runs.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -68,17 +67,9 @@ pub use resource::{Calendar, CalendarShell};
 
 use ui::widget::Widget;
 
-/// Build the live app: it loads the user's persisted calendar (empty on a
-/// fresh machine) and any accounts configured in Settings. No sample data.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(CalendarApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.calendar", app_root)
-        .component_actions(actions::register)
-        .as_definition("Calendar")
+    ui::framework::definition::<CalendarShell>()
 }
 
 /// Build a fully-populated app for the hermetic `--shots` / test path. This
