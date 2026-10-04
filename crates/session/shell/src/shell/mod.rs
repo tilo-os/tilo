@@ -1543,34 +1543,61 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
 }
 
 /// The tab as the framework app's own component, when the host mounts that
-/// app in its own process: the terminal, on its tab's record, opening
-/// sessions through the session's process supervisor.
+/// app in its own process: the terminal on its tab's record, opening
+/// sessions through the session's process supervisor; Files on the room's
+/// record of places, starting where the shell says and opening documents
+/// through the shell.
 fn mount_in_process(
     request: &tilo_desktop::resolver::TileRequest<'_>,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> Option<tilo_desktop::resolver::TileResolution> {
     use tilo_desktop::resolver::TileResolution;
     let apps = inputs.in_process()?;
-    let ShellTile::AppPlaceholder {
-        kind: ShellKind::Terminal,
-        ..
-    } = &request.tab.tile
-    else {
+    let ShellTile::AppPlaceholder { kind, .. } = &request.tab.tile else {
         return None;
     };
-    let mounted = apps.borrow_mut().mount(
-        terminal::definition(),
-        &request.room.to_string(),
-        request.tab.id,
-        |context| {
-            // A fixture shows terminals that open no session.
-            context.lend(if inputs.is_fixture() {
-                terminal::HostedProcessServices::unavailable()
-            } else {
-                terminal::HostedProcessServices::default()
-            });
-        },
-    );
+    let room = request.room.to_string();
+    let tab = request.tab.id;
+    let mounted = match kind {
+        ShellKind::Terminal => apps.borrow_mut().mount(
+            terminal::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::for_tab(tab),
+            |context| {
+                // A fixture shows terminals that open no session.
+                context.lend(if inputs.is_fixture() {
+                    terminal::HostedProcessServices::unavailable()
+                } else {
+                    terminal::HostedProcessServices::default()
+                });
+            },
+        ),
+        ShellKind::FileExplorer => {
+            let startup = inputs.files_for_tab(tab).or_else(|| inputs.files.clone());
+            // Without a starting place the shell names, only a Linux
+            // session lets Files start at the person's home.
+            if startup.is_none() && (inputs.is_fixture() || !cfg!(target_os = "linux")) {
+                return None;
+            }
+            let services = inputs.file_services().cloned();
+            apps.borrow_mut().mount(
+                file_explorer::definition(),
+                &room,
+                tab,
+                ui::record::RecordId::room_default(),
+                |context| {
+                    if let Some(startup) = startup {
+                        context.lend(startup);
+                    }
+                    if let Some(services) = services {
+                        context.lend(services);
+                    }
+                },
+            )
+        }
+        _ => return None,
+    };
     Some(match mounted {
         Ok(component) => TileResolution::Component(component),
         Err(error) => TileResolution::Failed(error),
