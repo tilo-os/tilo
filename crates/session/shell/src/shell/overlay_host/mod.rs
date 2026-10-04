@@ -15003,6 +15003,25 @@ impl ShellOverlayHost {
                     st.bump();
                 }
             }
+            WorkspaceSettingsOutcome::ToggleDevice(index) => {
+                if let Some(chrome) = self.chrome.clone() {
+                    chrome.borrow_mut().toggle_active_workspace_device(index);
+                }
+            }
+            WorkspaceSettingsOutcome::MoveWorkspace(step) => {
+                if let Some(chrome) = self.chrome.clone() {
+                    chrome.borrow_mut().move_active_workspace(step);
+                }
+            }
+            WorkspaceSettingsOutcome::DeleteWorkspace => {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut state = chrome.borrow_mut();
+                    if state.delete_active_workspace() {
+                        state.overlays.ws_settings = false;
+                        state.bump();
+                    }
+                }
+            }
             WorkspaceSettingsOutcome::CreateInvite => {
                 if self.may_invite_here()
                     && let Some(chrome) = self.chrome.clone()
@@ -19445,6 +19464,20 @@ impl ShellOverlayHost {
                         .active_workspace()
                         .is_some_and(|workspace| workspace.may_administer(&acting_user))
             });
+            let devices: Vec<tilo_desktop::workspace_settings::overlay::WorkspaceDevice> = tree
+                .desktop
+                .active_workspace()
+                .and_then(|workspace| tree.personal_device_choices.get(&workspace.room))
+                .into_iter()
+                .flatten()
+                .map(
+                    |choice| tilo_desktop::workspace_settings::overlay::WorkspaceDevice {
+                        label: choice.label.clone(),
+                        shown: choice.shown,
+                        here: choice.here,
+                    },
+                )
+                .collect();
             self.workspace_settings_overlay.draw_contents(
                 scene,
                 plan.transform,
@@ -19461,6 +19494,7 @@ impl ShellOverlayHost {
                     governs_active_room,
                     owner_controls,
                     apps: &crate::shell::launcher::ShellApps,
+                    devices: &devices,
                 },
             );
         }
