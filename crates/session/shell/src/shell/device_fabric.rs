@@ -589,6 +589,36 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::shell::speaker_calibration::SpeakerHearing,
     },
+    /// The legacy app windows this device shows right now, each at the size
+    /// it shows it. The device running a listed window streams that one
+    /// window here, and stops once a refresh no longer lists it or the
+    /// refreshes stop. An empty list ends every stream to this device.
+    WindowViews {
+        views: Vec<WindowView>,
+    },
+}
+
+/// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
+/// more than a person can see at once on any one screen.
+pub const MAX_WINDOW_VIEWS: usize = 32;
+/// Largest window side, in logical pixels, a viewer may ask for.
+pub const MAX_WINDOW_VIEW_SIDE: u32 = 8192;
+
+/// One legacy app window a device shows: the workspace tab holding it and the
+/// tile's size in logical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowView {
+    pub tab: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl WindowView {
+    fn valid(&self) -> bool {
+        self.tab != 0
+            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.width)
+            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.height)
+    }
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -783,6 +813,16 @@ impl PersonalFabricActionEnvelope {
                 hearing,
             } => {
                 if !group.valid() || sweep == &[0; 16] || !hearing.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::WindowViews { views } => {
+                let mut tabs = BTreeSet::new();
+                if views.len() > MAX_WINDOW_VIEWS
+                    || !views
+                        .iter()
+                        .all(|view| view.valid() && tabs.insert(view.tab))
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2311,6 +2351,41 @@ mod tests {
         video_cannot_be_sent_to_an_audio_only_device();
         media_action_locators_reject_host_paths_and_url_credentials();
         media_terminal_actions_require_exact_nonzero_request_and_session();
+    }
+
+    #[test]
+    fn window_views_are_bounded_distinct_and_sized() {
+        let source = id("viewer");
+        let target = id("host");
+        let envelope = |views: Vec<WindowView>| PersonalFabricActionEnvelope {
+            request_id: [5; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::WindowViews { views },
+        };
+        let view = |tab, width, height| WindowView { tab, width, height };
+        let ok = |views| {
+            envelope(views)
+                .validate_at(&source, &target, 10_000)
+                .is_ok()
+        };
+
+        assert!(ok(Vec::new()), "an empty list ends every stream");
+        assert!(ok(vec![
+            view(7, 1280, 800),
+            view(8, 1, MAX_WINDOW_VIEW_SIDE)
+        ]));
+        assert!(!ok(vec![view(0, 1280, 800)]), "a tab id is never zero");
+        assert!(!ok(vec![view(7, 0, 800)]));
+        assert!(!ok(vec![view(7, 1280, MAX_WINDOW_VIEW_SIDE + 1)]));
+        assert!(
+            !ok(vec![view(7, 1280, 800), view(7, 640, 480)]),
+            "one size per tab"
+        );
+        assert!(!ok((1..=u64::try_from(MAX_WINDOW_VIEWS).unwrap() + 1)
+            .map(|tab| view(tab, 100, 100))
+            .collect()));
     }
 
     #[test]

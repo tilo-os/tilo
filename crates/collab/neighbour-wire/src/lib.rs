@@ -165,6 +165,12 @@ pub enum NeighbourMsg {
         /// serde default accepts pre-field postcard payloads.
         #[serde(default)]
         app_id: String,
+        /// The workspace tab holding the window, the same id on every device
+        /// of the room, so a viewer shows the stream in exactly that tab
+        /// even when several windows of one app are open. `0` when the
+        /// sender does not name one.
+        #[serde(default)]
+        tab: u64,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
@@ -550,6 +556,7 @@ mod tests {
                     colorimetry: None,
                     hdr_static_metadata: None,
                     bit_depth: 0,
+                    tab: 0,
                 },
             ),
             (
@@ -566,6 +573,7 @@ mod tests {
                     colorimetry: Some(Colorimetry::hdr10()),
                     hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
                     bit_depth: 10,
+                    tab: 0,
                 },
             ),
             (
@@ -804,7 +812,7 @@ mod tests {
             "SDR stream start",
             concat!(
                 "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
-                "6578616d706c652e456469746f72",
+                "6578616d706c652e456469746f7200",
             ),
         ),
         (
@@ -812,7 +820,7 @@ mod tests {
             concat!(
                 "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
                 "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
-                "0a156f72672e6578616d706c652e486472456469746f72",
+                "0a156f72672e6578616d706c652e486472456469746f7200",
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
