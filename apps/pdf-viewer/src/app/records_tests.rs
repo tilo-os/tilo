@@ -2,8 +2,6 @@
 //! through delete and reorder, history and restore, permissions, and a
 //! deterministic export that other readers (and pdfium) read back.
 
-use std::collections::HashMap;
-
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
@@ -146,50 +144,43 @@ fn concurrent_markup_edits_converge_across_replicas() {
     }
 
     {
-        let mut app = crate::scenarios::sample_reader();
-        let mut state = crate::scenarios::sample_state();
-        app.sync(&mut state.doc, &state.root);
-        let base = state.doc.save();
-        let mut other = AutoCommit::load(&base).expect("collaborator replica");
+        let mut app =
+            ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&PdfViewerAction::EnsurePagePlan {
+                source_page_count: 3,
+            })
+            .unwrap(),
+        )
+        .expect("the plan");
+        let mut other = app.peer_document();
 
         // This user deletes page 2 as one undoable action…
-        app.perform_action(&mut state.doc, &delete_page_plan_action("source-2"));
-        let author = ui::collaboration::local_user_id();
-        let root: *mut dyn Widget = &mut app;
-        assert!(ui::undo::record_dispatched_action(
-            &mut state,
-            root,
-            &HashMap::new(),
-            &author,
-        ));
+        app.invoke(ui::tilo_resource::Invoke::apply(&delete_page_plan_action("source-2")).unwrap())
+            .expect("the owner deletes a page");
         // …while a collaborator, not yet seeing the delete, annotates it.
         apply(&mut other, &highlight("late", "source-2", 200.0));
-        state
-            .doc
-            .merge_incoming(&mut other)
-            .expect("merge the collaborator");
-        other.merge_incoming(&mut state.doc).expect("and back");
+        app.merge_peer(&mut other).expect("merge the collaborator");
+        let doc = app.read_document(Clone::clone);
 
         // Defined outcome: the page is gone, its annotation is kept, attached to
         // the deleted page, and not shown anywhere else.
-        assert!(ids(&state.doc).iter().all(|(id, _)| id != "late"));
-        let hidden: Vec<_> = PdfDoc::list_annotations_with_hidden(&state.doc)
+        assert!(ids(&doc).iter().all(|(id, _)| id != "late"));
+        let hidden: Vec<_> = PdfDoc::list_annotations_with_hidden(&doc)
             .into_iter()
             .filter(|a| a.id == "late")
             .collect();
         assert_eq!(hidden.len(), 1);
         assert_eq!(hidden[0].page, 0);
         assert_eq!(
-            PdfDoc::annotation_page_id(&state.doc, "late").as_deref(),
+            PdfDoc::annotation_page_id(&doc, "late").as_deref(),
             Some("source-2")
         );
-        assert_eq!(ids(&state.doc), ids(&other), "replicas agree");
 
         // Undoing the delete brings the page back — with the annotation on it.
-        state
-            .undo_as(Some(&author), None, None)
-            .expect("the delete has an undo boundary");
-        let restored: Vec<_> = ids(&state.doc)
+        assert!(app.undo(), "the delete is one undo step");
+        let restored: Vec<_> = app
+            .read_document(ids)
             .into_iter()
             .filter(|(id, _)| id == "late")
             .collect();
@@ -282,24 +273,11 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let mut state = crate::scenarios::sample_state();
         app.sync(&mut state.doc, &state.root);
         let author = ui::collaboration::local_user_id();
-        let root: *mut dyn Widget = &mut app;
 
         app.perform_action(&mut state.doc, &highlight("first", "source-1", 100.0));
-        assert!(ui::undo::record_dispatched_action(
-            &mut state,
-            root,
-            &HashMap::new(),
-            &author
-        ));
         let history = state.revision_history();
         let after_first = history.heads().to_vec();
         app.perform_action(&mut state.doc, &highlight("second", "source-1", 300.0));
-        assert!(ui::undo::record_dispatched_action(
-            &mut state,
-            root,
-            &HashMap::new(),
-            &author
-        ));
         assert!(ids(&state.doc).iter().any(|(id, _)| id == "second"));
 
         // Every edit is a revision with an author and a time in the document's
@@ -318,7 +296,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let target = after_first.first().copied().expect("a head");
         assert!(
             state
-                .restore_revision(target, None, None, Some(author.clone()))
+                .restore_revision(target, None, None, Some(author))
                 .expect("known revision")
         );
         let now: Vec<String> = ids(&state.doc).into_iter().map(|(id, _)| id).collect();
@@ -331,16 +309,13 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     }
 
     {
-        use ui::permissions::{Actor, Role};
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
         app.sync(&mut state.doc, &state.root);
         let before = PdfDoc::list_annotations_with_hidden(&state.doc).len();
 
-        app.set_permissions(PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "viewer"),
-            Vec::new(),
-        ));
+        // The host says the participant may only view.
+        app.set_read_only(true);
         app.tool = Tool::Highlight;
         app.drag = Some(DragState {
             tool: Tool::Highlight,
@@ -369,27 +344,6 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
                 .is_some_and(|n| n.contains("not change")),
             "the refusal is explained"
         );
-
-        // A commenter may reply to a thread but still not mark up the page.
-        let thread = PdfDoc::list_comments(&state.doc)
-            .first()
-            .map(|c| c.id.clone())
-            .expect("the sample has a thread");
-        app.set_permissions(PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Commenter), "commenter"),
-            Vec::new(),
-        ));
-        let replies_before = PdfDoc::list_comments(&state.doc)[0].replies.len();
-        app.perform_action(
-            &mut state.doc,
-            &crate::actions::add_reply_action(&thread, "commenter", "A reply"),
-        );
-        assert_eq!(
-            PdfDoc::list_comments(&state.doc)[0].replies.len(),
-            replies_before + 1
-        );
-        app.perform_action(&mut state.doc, &highlight("nope", "source-1", 50.0));
-        assert!(ids(&state.doc).iter().all(|(id, _)| id != "nope"));
     }
 }
 

@@ -25,7 +25,6 @@ use crate::actions::PdfOperation;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
@@ -214,6 +213,11 @@ fn today_ymd() -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     ymd_from_unix_secs(secs)
+}
+
+/// The UTC date of a Unix time in milliseconds, as `YYYY-MM-DD`.
+pub(crate) fn ymd_from_unix_ms(ms: i64) -> String {
+    ymd_from_unix_secs(ms.div_euclid(1000))
 }
 
 /// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string. Pure,
@@ -689,7 +693,6 @@ pub struct PdfApp {
     rail_drag: Option<f64>,
     context_menu: Option<ContextMenu>,
     created_counter: i64,
-    commit_pending: bool,
     dirty: bool,
     /// Set by `rasterize_visible` when it hit the per-frame new-raster budget
     /// and still has uncached visible pages to render. Keeps `needs_redraw`
@@ -786,10 +789,10 @@ pub struct PdfApp {
     /// An in-progress drag of a sticky-note marker (reposition), if any.
     marker_drag: Option<ui::MarkerDrag>,
 
-    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
-    /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
-    /// action, and records the last one for parity checks with the palette.
-    actions: crate::resource::ActionSink,
+    /// Where edits go: the resource's dispatcher, attached by the host.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::PdfViewer>>,
+    /// The participant may only view the document.
+    read_only: bool,
     /// How each displayed page maps between the engine's page space, PDF
     /// user space and its card in the stack (rotation and fit included).
     page_maps: Vec<model::PageMap>,
@@ -811,9 +814,6 @@ pub struct PdfApp {
     existing_request: Option<String>,
     /// Whether page images currently leave the document's own markup out.
     reader_markup_hidden: bool,
-    /// The acting user's rights over this document, as the host decided
-    /// them for the current frame.
-    permissions: PermissionContext,
 }
 
 /// The content store an app constructed without one uses: the app's own
@@ -1178,7 +1178,6 @@ impl PdfApp {
             rail_drag: None,
             context_menu: None,
             created_counter: 100,
-            commit_pending: false,
             dirty: true,
             pending_raster: false,
             pending_visuals: false,
@@ -1211,7 +1210,13 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
-            actions: crate::resource::ActionSink::default(),
+            // Unit tests drive the reader without a host: its edits go
+            // through the same executor a hosted reader's do.
+            #[cfg(test)]
+            dispatcher: Some(ui::framework::testing::dispatcher(APP_ID)),
+            #[cfg(not(test))]
+            dispatcher: None,
+            read_only: false,
             page_maps: Vec::new(),
             resource_page_rotations: Vec::new(),
             form_fields: Vec::new(),
@@ -1221,86 +1226,63 @@ impl PdfApp {
             adopted: Vec::new(),
             existing_request: None,
             reader_markup_hidden: false,
-            permissions: PermissionContext::permissive(),
             markup_style: model::MarkupStyle::Highlight,
         }
     }
 
-    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction) —
-    /// the single mutation path shared with the Ctrl+K palette. The action is
-    /// applied through the Tilo action executor (a pinned actor + committed
-    /// change, so it replays byte-identically on peers), exactly as the palette
-    /// does. The doc heads captured just before the first action of the event
-    /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
+    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction)
+    /// through the resource's dispatcher — the single mutation path shared
+    /// with the Ctrl+K palette — applied to the document this event received,
+    /// so the reader reads it back at once. One event's actions are one undo
+    /// step.
     pub(crate) fn perform_action(
         &mut self,
         state: &mut AutoCommit,
         action: &crate::actions::PdfViewerAction,
     ) {
-        if !self.may(action.required_verb()) {
+        if self.read_only {
             self.status_note = Some("You can view this document but not change it".to_string());
             self.dirty = true;
             return;
         }
-        self.actions.dispatch_with_context(
+        let Some(dispatcher) = self.dispatcher.as_ref() else {
+            return;
+        };
+        if let Err(error) = dispatcher.apply_now_with(
             state,
-            crate::actions::PDF_VIEWER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("so.tilo.pdf-viewer", "PDF Viewer", action),
-        );
+            tilo_actions::ActionContext::for_action(APP_ID, "PDF Viewer", action),
+        ) {
+            self.status_note = Some(error.to_string());
+            self.dirty = true;
+        }
     }
 
-    /// Show markup the framework resource already holds.
-    /// An empty projection does not clear markup that has not been published yet.
+    /// Follow the record's state: which document its markup is made
+    /// against. The markup itself is read from the document every sync
+    /// receives, the live one or a past version.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PdfMarkup) {
         if self.record_source != state.source {
             self.record_source.clone_from(&state.source);
-            self.dirty = true;
-        }
-        if state.pages.is_empty()
-            && state.annotations.is_empty()
-            && state.comments.is_empty()
-            && state.signatures.is_empty()
-        {
-            return;
-        }
-        self.stored_annotations.clone_from(&state.annotations);
-        self.comments.clone_from(&state.comments);
-        if !self.page_maps.is_empty() {
-            self.annotations = self
-                .stored_annotations
-                .iter()
-                .map(|annotation| {
-                    self.page_map(annotation.page)
-                        .annotation_to_card(annotation)
-                })
-                .collect();
-            self.signatures = state
-                .signatures
-                .iter()
-                .map(|signature| self.page_map(signature.page).signature_to_card(signature))
-                .collect();
         }
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Attach the resource's dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::PdfViewer>,
     ) {
-        self.actions.attach(dispatcher);
+        self.read_only = dispatcher.read_only();
+        self.dispatcher = Some(dispatcher);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+    /// The participant's permission to edit changed.
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
+            self.dirty = true;
+        }
     }
 
     /// Test-only: open find and materialise matches for `query`.
@@ -1385,9 +1367,6 @@ impl PdfApp {
             &self.search_catalog,
             &ctx,
             &self.source_pages,
-            &self.annotations,
-            &self.comments,
-            &self.signatures,
         ) {
             Ok(ids) => ids,
             Err(error) => {
@@ -1403,20 +1382,6 @@ impl PdfApp {
         #[cfg(test)]
         {
             self.search_projection_refreshes += 1;
-        }
-    }
-
-    /// Whether the acting user may perform `verb` on this document.
-    pub(crate) fn may(&self, verb: ui::permissions::Verb) -> bool {
-        self.permissions
-            .check(&ui::permissions::PermissionScope::app(APP_ID, verb))
-    }
-
-    /// Replace the permission context (the host hands one over every frame).
-    pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        if self.permissions != permissions {
-            self.permissions = permissions;
-            self.dirty = true;
         }
     }
 
@@ -1497,7 +1462,7 @@ impl PdfApp {
             return;
         };
         match PdfDoc::source(state) {
-            None if self.may(ui::permissions::Verb::Write) => {
+            None if !self.read_only => {
                 let action = crate::actions::pin_source_action(&hash, len, &self.doc_name);
                 self.perform_action(state, &action);
             }
@@ -1525,7 +1490,7 @@ impl PdfApp {
         let Some((hash, _)) = self.source_blob.clone() else {
             return;
         };
-        if !self.may(ui::permissions::Verb::Write)
+        if self.read_only
             || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
             || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
@@ -1993,16 +1958,13 @@ impl PdfApp {
     )]
     fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
         let source_count = self.source_pages.len().max(1);
-        if self.actions.is_hosted() {
+        if !PdfDoc::has_page_plan(state) && !self.read_only {
             self.perform_action(
                 state,
                 &crate::actions::PdfViewerAction::EnsurePagePlan {
                     source_page_count: source_count,
                 },
             );
-        } else {
-            PdfDoc::ensure_page_plan(state, source_count);
-            PdfDoc::migrate_page_anchors(state);
         }
         let plan = PdfDoc::list_page_plan(state);
         if plan.is_empty() {
@@ -3479,7 +3441,6 @@ impl PdfApp {
         self.selected_anno = None;
         // Land the user on the Signatures rail, scrolled to the new field.
         self.focus_sidebar(SidebarTab::Signatures, sig_id);
-        self.commit_pending = true;
         self.reload(state);
         self.dirty = true;
     }
@@ -4435,7 +4396,6 @@ impl PdfApp {
                 self.load_error = None;
                 self.status_note = None;
                 self.reload(state);
-                self.commit_pending = true;
                 // Reset per-peer view state for the fresh document.
                 self.fit = FitMode::Page;
                 self.viewport.set_scroll(0.0, 0.0);
@@ -4534,7 +4494,6 @@ impl PdfApp {
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
                     self.status_note = None;
-                    self.commit_pending = true;
                     self.fit = FitMode::Page;
                     self.viewport.set_scroll(0.0, 0.0);
                     self.current_page = 1;
@@ -4933,10 +4892,8 @@ include!("app_events.rs");
 
 impl Widget for PdfApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
-        dyn ui::undo::UndoPoints
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5866,33 +5823,6 @@ impl Widget for PdfApp {
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        // The host's decision about this user's rights gates every edit this
-        // widget dispatches (see `perform_action`).
-        if &self.permissions != permissions {
-            self.permissions = permissions.clone();
-        }
-        // Root fills the whole window — never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
-    }
-}
-
-impl ui::undo::UndoPoints for PdfApp {
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-    }
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-    }
 }
 
 impl ui::search::capability::SearchSource for PdfApp {
@@ -5909,81 +5839,36 @@ impl ui::search::capability::SearchSource for PdfApp {
 }
 
 impl ui::resources::PublishesResources for PdfApp {
-    /// Publish the open document + its markup so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // Framework [`tilo_resource::publish`] owns `pdf.document`, page/zoom
-        // Views, and markup children. Find hits are live presentation only —
-        // keep that same standalone slice when hosted, never a second root.
-        if self.actions.is_hosted() {
-            return self
-                .pdf_resource_ctx()
-                .map(|ctx| crate::actions::find_result_resources(&ctx))
-                .unwrap_or_default();
-        }
-        self.publish_resources(doc)
+    /// The open document's live rows beside the resource's publication: its
+    /// outline and the current find hits, read from the PDF and the find bar
+    /// rather than the record, carrying only view operations.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.pdf_resource_ctx()
+            .map(|ctx| crate::actions::live_resources(&ctx))
+            .unwrap_or_default()
     }
+
     fn action_directory_resource_page(
         &self,
         doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // The framework root already publishes the document. The directory page
-        // keeps the same live find slice as `resources`, never a second root.
-        if self.actions.is_hosted() {
-            let resources = if cursor.is_empty() && max_results > 0 {
-                self.pdf_resource_ctx()
-                    .map(|ctx| crate::actions::find_result_resources(&ctx))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources,
-                next_cursor: Vec::new(),
-                exhausted: true,
-            });
-        }
-        // The directory is the published document. Page, outline, and find
-        // rows stay on the full resource tree; listing them here would walk
-        // the open document just to name the root actions.
-        let mut resources = if cursor.is_empty() && max_results > 0 {
-            self.pdf_resource_ctx()
-                .map(|ctx| crate::actions::provide_resources(&ctx, doc))
-                .unwrap_or_default()
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
         } else {
             Vec::new()
         };
-        if let Some(root) = resources.first_mut() {
-            root.children.clear();
-        }
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
             next_cursor: Vec::new(),
             exhausted: true,
         })
     }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted()
-            && self
-                .pdf_resource_ctx()
-                .is_some_and(|ctx| id == format!("pdf.document:{}", ctx.doc_id))
-        {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
 
-impl ui::undo::CommittedActions for PdfApp {
-    /// Hand the host the heads captured before an on-page affordance dispatched
-    /// its markup action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.pdf_resource_ctx()
+            .and_then(|ctx| crate::actions::resolve_live_resource(&ctx, id))
     }
 }
 
@@ -6387,6 +6272,24 @@ mod tests {
         );
     }
 
+    /// The resource `id` as the palette, an agent or a search hit reaches it:
+    /// the record's published tree, a child it resolves beyond its listed
+    /// page, or a live row the reader adds beside it.
+    fn resolve(app: &PdfApp, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
+            }
+            resource.children.iter().find_map(|child| find(child, id))
+        }
+        let state = <crate::PdfViewer as ui::tilo_resource::Resource>::read(doc).ok()?;
+        let published =
+            ui::tilo_resource::publish::<crate::PdfViewer>("pdf.document", "PDF", &state);
+        find(&published, id)
+            .or_else(|| <crate::PdfViewer as ui::tilo_resource::Resource>::child(&state, id))
+            .or_else(|| ui::resources::PublishesResources::resource(app, doc, id))
+    }
+
     /// The empty reader staged as screenshot `scenario` shows it.
     fn staged_empty(scenario: &str) -> PdfApp {
         let mut app = PdfApp::empty();
@@ -6492,19 +6395,24 @@ mod tests {
                 .into_iter()
                 .find_map(|result| result.action_address())
                 .expect("page text is globally searchable by a canonical action");
-            assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &hit.resource).is_some()
-            );
+            assert!(resolve(&app, &state.doc, &hit.resource).is_some());
 
+            // The markup people made is searched through the resource, each
+            // entry opening the published child it names.
+            let markup = <crate::PdfViewer as ui::tilo_resource::Resource>::read(&state.doc)
+                .expect("the record reads");
+            let entries = <crate::PdfViewer as ui::tilo_resource::Resource>::search(&markup);
+            let markup_hit = |needle: &str| {
+                entries
+                    .iter()
+                    .find(|entry| entry.title.contains(needle) || entry.text.contains(needle))
+                    .and_then(|entry| entry.action.clone())
+                    .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"))
+            };
             for needle in ["highlight", "Iroh relay"] {
-                let address = provider
-                    .search(needle)
-                    .into_iter()
-                    .find_map(|result| result.action_address())
-                    .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
-                let resource =
-                    crate::app::PdfApp::publish_resource(&app, &state.doc, &address.resource)
-                        .expect("search door resolves the addressed annotation/comment resource");
+                let address = markup_hit(needle);
+                let resource = resolve(&app, &state.doc, &address.resource)
+                    .expect("search door resolves the addressed annotation/comment resource");
                 assert!(
                     resource
                         .actions
@@ -6518,24 +6426,18 @@ mod tests {
                 .filter_map(|result| result.action_address())
                 .find(|address| address.resource.starts_with("pdf.outline:"))
                 .expect("PDF bookmarks are globally searchable by their canonical action");
-            let bookmark_resource =
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &bookmark_address.resource)
-                    .expect("bookmark search result resolves to the current outline resource");
+            let bookmark_resource = resolve(&app, &state.doc, &bookmark_address.resource)
+                .expect("bookmark search result resolves to the current outline resource");
             assert!(
                 bookmark_resource
                     .actions
                     .iter()
                     .any(|action| action.id == bookmark_address.action)
             );
-            let reply_address = provider
-                .search("folded it")
-                .into_iter()
-                .find_map(|result| result.action_address())
-                .expect("reply text is globally searchable by its canonical action");
+            let reply_address = markup_hit("folded it");
             assert!(reply_address.resource.starts_with("pdf.reply:"));
             assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &reply_address.resource)
-                    .is_some(),
+                resolve(&app, &state.doc, &reply_address.resource).is_some(),
                 "a reply search hit resolves to the durable reply resource"
             );
 
@@ -6553,9 +6455,8 @@ mod tests {
                 .filter_map(|result| result.action_address())
                 .find(|address| address.resource.starts_with("pdf.search-result:"))
                 .expect("bounded find result has a canonical global-search action");
-            let find_resource =
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
-                    .expect("current find-result address resolves");
+            let find_resource = resolve(&app, &state.doc, &find_address.resource)
+                .expect("current find-result address resolves");
             assert!(
                 find_resource
                     .actions
@@ -6565,8 +6466,7 @@ mod tests {
             app.search_input.set_text("filesystem");
             app.recompute_matches();
             assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
-                    .is_none(),
+                resolve(&app, &state.doc, &find_address.resource).is_none(),
                 "a stale find ordinal cannot be rebound to the next query"
             );
             // The changed find projection refreshes once; its settled successor
@@ -6579,7 +6479,7 @@ mod tests {
                 "unchanged sync avoids corpus traversal"
             );
 
-            let stale_resource = "pdf.page:document:source-1".to_string();
+            let stale_resource = "pdf.page:source-1".to_string();
             let action = crate::actions::delete_page_plan_action("source-1");
             app.perform_action(&mut state.doc, &action);
             app.sync(&mut state.doc, &state.root);
@@ -6593,9 +6493,7 @@ mod tests {
                 restarted.results.len() <= 1,
                 "a stale cursor restarts against the new generation"
             );
-            assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &stale_resource).is_none()
-            );
+            assert!(resolve(&app, &state.doc, &stale_resource).is_none());
         }
     }
 
@@ -6663,9 +6561,9 @@ mod tests {
                 "duplicate occurrences retain the immutable source page's searchable text"
             );
             let page_id = "source-1";
-            let resource_id = format!("pdf.page:document:{page_id}");
+            let resource_id = format!("pdf.page:{page_id}");
             assert!(
-                crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_some(),
+                resolve(&a, &state_a.doc, &resource_id).is_some(),
                 "the durable page id resolves through the provider"
             );
             assert_eq!(
@@ -6686,8 +6584,8 @@ mod tests {
             tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
             a.sync(&mut state_a.doc, &state_a.root);
             b.sync(&mut state_b.doc, &state_b.root);
-            assert!(crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_none());
-            assert!(crate::app::PdfApp::publish_resource(&b, &state_b.doc, &resource_id).is_none());
+            assert!(resolve(&a, &state_a.doc, &resource_id).is_none());
+            assert!(resolve(&b, &state_b.doc, &resource_id).is_none());
 
             // Concurrent page-plan actions merge like the other markup actions.
             let mut left = AutoCommit::load(&base).expect("left replica");
@@ -6715,34 +6613,31 @@ mod tests {
             assert!(merged_ids.contains(&"copy-left".to_string()));
             assert!(merged_ids.contains(&"copy-right".to_string()));
 
-            // The host records page-plan dispatches as author-scoped history; undo
-            // rolls back the action boundary rather than silently mutating a local
-            // raster plan.
-            let (mut undo_app, mut undo_state) = app_with_state();
-            let before = crate::doc::PdfDoc::list_page_plan(&undo_state.doc);
+            // A page-plan edit is one undo step of its author's: undo rolls
+            // back the action rather than silently mutating a local raster plan.
+            let mut undo_app = ui::framework::testing::TestApp::<crate::PdfViewerShell>::new()
+                .expect("the reader");
+            undo_app
+                .invoke(
+                    ui::tilo_resource::Invoke::apply(&PdfViewerAction::EnsurePagePlan {
+                        source_page_count: 3,
+                    })
+                    .unwrap(),
+                )
+                .expect("the plan");
+            let before = undo_app.state().pages;
             let undo_action = PdfViewerAction::DuplicatePagePlan {
                 id: "source-1".into(),
                 new_id: "copy-undo".into(),
                 source_page: 1,
                 imported: None,
             };
-            undo_app.perform_action(&mut undo_state.doc, &undo_action);
-            let local_author = ui::collaboration::local_user_id();
-            let root: *mut dyn Widget = &mut undo_app;
-            assert!(ui::undo::record_dispatched_action(
-                &mut undo_state,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ));
-            assert_eq!(
-                crate::doc::PdfDoc::list_page_plan(&undo_state.doc).len(),
-                before.len() + 1
-            );
-            undo_state
-                .undo_as(Some(&local_author), None, None)
-                .expect("shared page action has an undo boundary");
-            assert_eq!(crate::doc::PdfDoc::list_page_plan(&undo_state.doc), before);
+            undo_app
+                .invoke(ui::tilo_resource::Invoke::apply(&undo_action).unwrap())
+                .expect("the owner duplicates a page");
+            assert_eq!(undo_app.state().pages.len(), before.len() + 1);
+            assert!(undo_app.undo(), "shared page action is an undo step");
+            assert_eq!(undo_app.state().pages, before);
         }
 
         eprintln!("phase imported_occurrence_keeps_markup_through_move_duplicate_and_delete");
@@ -7800,9 +7695,10 @@ mod tests {
             app.create_note(&mut st.doc, 2, (120.0, 200.0));
             assert_eq!(app.annotations.len(), a0 + 1);
             assert_eq!(app.comments.len(), c0 + 1);
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "creating a note dispatched an action and stashed one undo boundary"
+            assert_eq!(
+                PdfDoc::list_comments(&st.doc).len(),
+                c0 + 1,
+                "creating a note landed in the shared document"
             );
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
         }
@@ -7994,10 +7890,6 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "ink dispatched an action and stashed one undo boundary"
-            );
             assert!(
                 PdfDoc::list_annotations(&st.doc)
                     .iter()
