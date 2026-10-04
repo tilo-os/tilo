@@ -406,7 +406,16 @@ impl ResourceApp for TerminalShell {
         // A window someone may type in runs its session; a past version, a
         // screenshot, a participant who may only view, and this crate's own
         // tests present a terminal with no process behind it.
-        let widget = if cx.mode().is_live() && !cx.read_only() && !cfg!(test) {
+        // Mounted in the shell, sessions open through the supervisor
+        // connection the shell lent; in its own process, locally.
+        let lent = cx.take_lent::<crate::HostedProcessServices>();
+        let widget = if cx.read_only() {
+            TerminalWidget::spawn_headless()
+        } else if let Some(services) = lent {
+            TerminalWidget::spawn_hosted(services)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+                .or_else(|_| TerminalWidget::spawn_headless())
+        } else if cx.mode().is_live() && !cfg!(test) {
             TerminalWidget::spawn_default().or_else(|_| TerminalWidget::spawn_headless())
         } else {
             TerminalWidget::spawn_headless()
