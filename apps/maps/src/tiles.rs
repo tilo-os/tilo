@@ -135,10 +135,10 @@ impl TileStyle {
     }
 
     /// Resolve the basemap style from the active theme by the lightness of its
-    /// base surface — robust across every named/custom theme (and the two
+    /// window ground — robust across every named/custom theme (and the two
     /// high-contrast tracks), not just the two built-ins.
     pub fn from_theme(theme: &Theme) -> Self {
-        let c = theme.tokens.colors.surfaces.base.to_rgba8();
+        let c = theme.tokens.colors.surfaces.content.to_rgba8();
         let lum = 0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b);
         if lum < 128.0 {
             TileStyle::Dark
