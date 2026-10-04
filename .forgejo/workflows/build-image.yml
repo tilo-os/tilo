@@ -2738,6 +2738,9 @@ jobs:
           # opens Notes itself rather than a launcher pre-filled with "Notes".
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # Quick Settings must reach the system, not merely open: change
+          # the power profile there and read it back from the daemon.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh quick-settings
           # The greetd login left the display manager's SELinux domain: the
           # compositor and the apps it launched run as the user, in the
           # session's logind scope and their own app scopes, and nothing of

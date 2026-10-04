@@ -358,6 +358,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'native-atspi-smoke.sh quick-settings' "$os" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
   && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
