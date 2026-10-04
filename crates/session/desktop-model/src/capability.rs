@@ -68,6 +68,10 @@ pub enum Capability {
         hosts: Option<Vec<String>>,
         scope: GrantScope,
     },
+    /// Terminal opening the device's own login shell, unconfined. Asked once
+    /// by the shell runtime's Host target; answered into its policy, never
+    /// bound into a sandbox.
+    HostShell { scope: GrantScope },
 }
 
 impl Capability {
@@ -101,6 +105,9 @@ impl Capability {
             // artifact, so it asks for the write verb, not the read
             // one a device probe would use.
             Capability::Print { .. } => vec![(Scope::Device("printer".into()), Verb::Write)],
+            Capability::HostShell { .. } => {
+                vec![(Scope::Device("host-shell".into()), Verb::Write)]
+            }
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts; `None` is the
                 // only thing that produces a wildcard scope — behaving
@@ -123,6 +130,7 @@ impl Capability {
             | Capability::Screencast { scope }
             | Capability::RemoteDesktop { scope }
             | Capability::Print { scope }
+            | Capability::HostShell { scope }
             | Capability::Network { scope, .. } => *scope,
         }
     }
@@ -150,6 +158,7 @@ impl Capability {
             // `Always` grant would re-prompt every job despite looking
             // granted in the Permissions tab.
             Scope::Device(d) if d == "printer" => Some(Capability::Print { scope }),
+            Scope::Device(d) if d == "host-shell" => Some(Capability::HostShell { scope }),
             Scope::NetHost(h) => Some(Capability::Network {
                 hosts: if h == "*" {
                     None
