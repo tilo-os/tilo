@@ -380,7 +380,7 @@ impl ChatApp {
             let row = Rect::new(rail.x0, y, rail.x1, y + row_h);
             let face = NavRowFace::new(row, "Channels")
                 .rail()
-                .icon(Icon::List)
+                .icon(Icon::Hash)
                 .state(SelectionState::new(
                     !self.inbox_open,
                     self.hovered(row),
@@ -474,11 +474,13 @@ impl ChatApp {
                     return;
                 }
                 let row = Rect::new(side.x0, y, side.x1, y + row_h);
-                let mut face = NavRowFace::new(row, &channel.name).state(SelectionState::new(
-                    channel.id == self.active_channel,
-                    self.hovered(row),
-                    false,
-                ));
+                let mut face = NavRowFace::new(row, &channel.name).icon(Icon::Hash).state(
+                    SelectionState::new(
+                        channel.id == self.active_channel,
+                        self.hovered(row),
+                        false,
+                    ),
+                );
                 if channel.unread > 0 {
                     face = face.count(NavCount::Live(channel.unread));
                 }
@@ -642,9 +644,7 @@ impl ChatApp {
                     false,
                 ),
             );
-            if is_voice {
-                face = face.icon(Icon::Volume2);
-            }
+            face = face.icon(if is_voice { Icon::Volume2 } else { Icon::Hash });
             if ch.unread > 0 && !is_voice {
                 face = face.count(NavCount::Live(ch.unread));
             }
@@ -2002,7 +2002,7 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, send, Hit::Send);
 
-        let emoji_face = ButtonFace::new(Rect::ZERO, "Emoji").role(ButtonRole::Plain);
+        let emoji_face = ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji");
         let emoji_w = emoji_face.intrinsic_width(tr, theme);
         let emoji = Rect::new(
             send.x0 - f64::from(sp.s1) - emoji_w,
@@ -2015,9 +2015,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(emoji, "Emoji")
-                .role(ButtonRole::Plain)
-                .hovered(self.hovered(emoji)),
+            &ButtonFace::icon_only(emoji, Icon::Smile, "Emoji").hovered(self.hovered(emoji)),
         );
         let picker_w = f64::from(theme.tokens.metrics.panel_width_utility);
         ChatApp::push_hit(

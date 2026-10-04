@@ -65,7 +65,7 @@ pub enum RowStatus<'a> {
 }
 
 impl RowStatus<'_> {
-    fn colour(self, theme: &Theme) -> Color {
+    pub(crate) fn colour(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match self {
             Self::Active => colors.semantic.success,
@@ -76,7 +76,7 @@ impl RowStatus<'_> {
         }
     }
 
-    fn spoken(self) -> Option<&'static str> {
+    pub(crate) fn spoken(self) -> Option<&'static str> {
         match self {
             Self::Active => Some("Active"),
             Self::Warning => Some("Needs attention"),
@@ -696,9 +696,23 @@ impl<'a> ListRowFace<'a> {
     }
 }
 
-fn paint_badge(ctx: &mut PaintCtx<'_>, m: &RowMetrics, column: Rect, badge: &str) {
-    let theme = ctx.theme;
-    let (width, height) = ctx.text.measure_style(badge, None, &m.badge);
+fn paint_badge(ctx: &mut PaintCtx<'_>, _m: &RowMetrics, column: Rect, badge: &str) {
+    paint_code_badge(ctx.scene, ctx.transform, ctx.text, ctx.theme, column, badge);
+}
+
+/// A short classifying code (`GET`, `.rs`) on its quiet pill at the leading
+/// edge of `column`, centred on the column's line: the one badge a list
+/// row and a navigation row share.
+pub(crate) fn paint_code_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    column: Rect,
+    badge: &str,
+) {
+    let style = RowMetrics::new(theme).badge;
+    let (width, height) = text.measure_style(badge, None, &style);
     let pad = f64::from(theme.tokens.spacing.s1);
     let pill = Rect::from_origin_size(
         (
@@ -709,18 +723,19 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &RowMetrics, column: Rect, badge: &str
     );
     let raised = theme.tokens.colors.surfaces.raised;
     crate::surface::card(
-        ctx.scene,
-        ctx.transform,
+        scene,
+        transform,
         pill,
         f64::from(theme.tokens.radii.detail),
         raised,
     );
-    ctx.text(
+    text.draw_style(
+        scene,
         badge,
-        &m.badge,
         theme.text_dim,
-        Point::new(pill.x0 + pad, pill.y0 + pad / 2.0),
+        transform.pre_translate(vello::kurbo::Vec2::new(pill.x0 + pad, pill.y0 + pad / 2.0)),
         None,
+        &style,
     );
 }
 

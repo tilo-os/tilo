@@ -39,6 +39,24 @@ pub enum Category {
 }
 
 impl Category {
+    /// The icon a marker and a place row show for the category.
+    pub fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self {
+            Category::Landmark => Icon::Flag,
+            Category::Cafe => Icon::Coffee,
+            Category::Restaurant => Icon::Utensils,
+            Category::Bar => Icon::Beer,
+            Category::Museum => Icon::Landmark,
+            Category::Park => Icon::Trees,
+            Category::Transit => Icon::TrainFront,
+            Category::Hotel => Icon::BedDouble,
+            Category::Shop => Icon::ShoppingBag,
+            Category::Hospital => Icon::Hospital,
+            Category::Other => Icon::MapPin,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Category::Landmark => "Landmark",
@@ -227,11 +245,15 @@ impl Maneuver {
         use ui::icons::Icon;
         match self {
             Maneuver::Depart | Maneuver::Continue | Maneuver::Merge => Icon::ArrowUp,
-            Maneuver::SlightLeft | Maneuver::Left | Maneuver::SharpLeft => Icon::ArrowLeft,
-            Maneuver::SlightRight | Maneuver::Right | Maneuver::SharpRight => Icon::ArrowRight,
+            Maneuver::SlightLeft => Icon::ArrowUpLeft,
+            Maneuver::Left => Icon::CornerUpLeft,
+            Maneuver::SharpLeft => Icon::ArrowDownLeft,
+            Maneuver::SlightRight => Icon::ArrowUpRight,
+            Maneuver::Right => Icon::CornerUpRight,
+            Maneuver::SharpRight => Icon::ArrowDownRight,
             Maneuver::Uturn => Icon::Undo2,
             Maneuver::Roundabout => Icon::RotateCw,
-            Maneuver::Arrive => Icon::Pin,
+            Maneuver::Arrive => Icon::Flag,
         }
     }
 
