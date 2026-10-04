@@ -658,12 +658,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if let Some(runner) = self.effects.as_mut()
-            && let Some(started) = runner.start(
-                op,
-                &mut self.surface,
-                Some(&mut *doc),
-                |surface, effect, cx| surface.effect(effect, cx),
-            )?
+            && let Some(started) =
+                runner.start(op, &mut self.surface, Some(&mut *doc), S::effect)?
         {
             return Ok(Some(started));
         }
