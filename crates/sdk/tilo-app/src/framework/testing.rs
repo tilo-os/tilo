@@ -156,12 +156,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// As [`Self::capture`].
     pub fn capture_at(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Self, LaunchError> {
+        Self::capture_on(scenario, viewport, &[])
+    }
+
+    /// [`Self::capture`] of the app launched with `arguments`, as
+    /// `--shots --scenario NAME ARGUMENTS` draws it: a capture of a file the
+    /// app was launched on.
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn capture_launched(
+        scenario: Option<&str>,
+        arguments: &[&str],
+    ) -> Result<Self, LaunchError> {
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::capture_on(scenario, A::shot_viewport(scenario), &arguments)
+    }
+
+    fn capture_on(
+        scenario: Option<&str>,
+        viewport: (u32, u32),
+        arguments: &[String],
+    ) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let mut app = Self::open(
             Profile::Temporary(profile),
             Role::Owner,
             AUTHOR,
-            &[],
+            arguments,
             None,
             Some((Capture::new(scenario.map(str::to_owned)), viewport)),
         )?;
