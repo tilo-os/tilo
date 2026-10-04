@@ -1530,6 +1530,23 @@ impl Action for CalendarAction {
         ExecutionLocus::ClientLocal
     }
 
+    /// What a server sent and the bookkeeping of a sync are content from
+    /// outside: they sync to everyone, but no undo takes them back.
+    fn change_kind(&self) -> tilo_actions::context::ChangeKind {
+        match self {
+            CalendarAction::AdoptRemoteEvent(_)
+            | CalendarAction::AdoptRemoteTask(_)
+            | CalendarAction::DropRemoteItem { .. } => tilo_actions::context::ChangeKind::External,
+            CalendarAction::SetRemoteBinding { .. }
+            | CalendarAction::AcknowledgeRemotePush { .. }
+            | CalendarAction::AcknowledgeRemoteDelete { .. }
+            | CalendarAction::SetSyncToken { .. } => {
+                tilo_actions::context::ChangeKind::Housekeeping
+            }
+            _ => tilo_actions::context::ChangeKind::Content,
+        }
+    }
+
     /// Outside-consequence undo: creating a remote event is undone by a
     /// remote delete (`del_outbox`); undoing that delete re-upserts and
     /// re-queues the push. Computed before `apply` so a delete can still

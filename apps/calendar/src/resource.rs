@@ -168,6 +168,16 @@ pub enum CalendarEffect {
         #[param("Attendee id")]
         attendee_id: String,
     },
+    /// Set a calendar's colour
+    ///
+    /// A display choice of this person, which follows them to their other
+    /// devices.
+    SetColor {
+        #[param("Calendar id")]
+        id: String,
+        #[param("indigo, emerald, amber, red, blue, violet or slate")]
+        color: String,
+    },
     /// Show or hide a calendar
     ///
     /// A display choice of this person, which follows them to their other
@@ -602,6 +612,7 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
         } else {
             None
         };
+        self.follow_display(cx.settings::<crate::display::CalendarDisplay>());
         self.attach_framework(
             cx.dispatcher(),
             accounts,
@@ -904,5 +915,38 @@ mod host_undo_tests {
         assert!(sync.contains("account"), "{sync}");
         let export = format!("{:?}", app.effect(&CalendarEffect::ExportIcs).unwrap_err());
         assert!(export.contains("export"), "{export}");
+    }
+
+    /// Hiding a calendar or choosing its colour is this person's setting:
+    /// kept beside the document, following them to their other devices.
+    #[test]
+    fn calendar_display_choices_are_personal_settings() {
+        let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
+        let (calendar, name) = crate::AccountStore::sample()
+            .all_calendars()
+            .find(|(_, calendar)| calendar.visible)
+            .map(|(_, calendar)| (calendar.id.clone(), calendar.name.clone()))
+            .expect("a shown sample calendar");
+        let checkbox = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::CheckBox
+                    && node
+                        .label()
+                        .is_some_and(|label| label.contains(name.as_str()))
+            })
+            .map(|(id, _)| id)
+            .expect("the calendar's visibility checkbox");
+        app.harness()
+            .perform_a11y_action(checkbox, &ui::a11y::Action::ToggleCheck)
+            .expect("toggle the checkbox");
+        let display = app.settings::<crate::display::CalendarDisplay>().get();
+        assert_eq!(display.visible.get(&calendar), Some(&false));
+        assert!(
+            !app.state().events.is_empty(),
+            "hiding changes no calendar content"
+        );
     }
 }
