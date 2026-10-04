@@ -1929,16 +1929,23 @@ impl Task {
             return Opening::Dropped;
         };
         let channel = sealed.channel_id();
-        let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+        let bound = self.ciphers.iter_mut().find_map(|(route, cipher)| {
             (crate::channels::Channels::channel(route) == channel
                 && route.workspace_id().ok() == Some(workspace_id))
-            .then_some(cipher)
+            .then_some((route, cipher))
         });
-        let Some(cipher) = cipher else {
+        let Some((route, cipher)) = bound else {
             return Opening::NoKeys(sealed.channel);
         };
         sealed
-            .open(|artifact, metadata, payload| cipher.open(artifact, metadata, payload))
+            .open_in_record(
+                &route.cluster_id,
+                &tilo_relay_protocol::live::LiveRecord {
+                    app: route.app_id.clone(),
+                    record: route.record.clone(),
+                },
+                |artifact, metadata, payload| cipher.open(artifact, metadata, payload),
+            )
             .ok()
             .and_then(|frame| frame.encode().ok())
             .map_or(Opening::Dropped, Opening::Opened)

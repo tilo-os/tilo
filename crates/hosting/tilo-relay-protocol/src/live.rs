@@ -44,6 +44,47 @@ pub const MAX_OPS_RATE: u32 = 240;
 pub const MAX_PREVIEW_TEXT_BYTES: usize = 1024;
 /// Text preview operations per frame.
 pub const MAX_PREVIEW_OPS: usize = 32;
+/// Canonical action-interaction JSON ceiling, matching the action protocol.
+pub const MAX_SEMANTIC_INTERACTION_BYTES: usize = 32 * 1024;
+
+/// Broker-reported semantic work on one exact record. This is an inert wire
+/// value, never physical input or proof of a document mutation. Receivers must
+/// authenticate the transport publisher, validate the canonical interaction
+/// and bind its principal and resource before presenting it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticFrame {
+    /// Version of this semantic envelope; currently 1.
+    pub version: u16,
+    /// Monotonic source sequence on the publisher's ordered record stream.
+    pub seq: u64,
+    /// Source wall-clock timestamp, not an ordering authority.
+    pub sent_at_ms: u64,
+    /// Host-minted execution correlation under the authenticated device.
+    pub execution: uuid::Uuid,
+    /// Exact source application instance, never an app-id selector.
+    pub peer: u64,
+    /// Canonical `tilo_actions::SemanticInteraction` JSON. The wire crate stays
+    /// independent of the action executor; its consumer validates that schema.
+    pub interaction_json: String,
+}
+
+impl SemanticFrame {
+    fn validate(&self) -> Result<()> {
+        if self.version != 1
+            || self.seq == 0
+            || self.sent_at_ms == 0
+            || self.execution.is_nil()
+            || self.peer == 0
+            || self.interaction_json.len() > MAX_SEMANTIC_INTERACTION_BYTES
+            || !serde_json::from_str::<serde_json::Value>(&self.interaction_json)
+                .is_ok_and(|value| value.is_object())
+        {
+            return Err(LiveWireError::Invalid);
+        }
+        Ok(())
+    }
+}
 /// Opaque object identifier and anchor ceiling (window, shape, block).
 pub const MAX_OBJECT_ID_BYTES: usize = 64;
 /// Scoped text anchor: `[1, uvarint(offset), postcard(scope key)]`.
@@ -294,18 +335,31 @@ pub enum OpsFrame {
         /// Record whose previews end.
         record: LiveRecord,
     },
+    /// Semantic invocation activity, separate from pointers and text previews.
+    /// Appended for wire compatibility: older receivers reject this variant.
+    Semantic {
+        /// Explicit audience and presentation record.
+        record: LiveRecord,
+        /// Inert event that still requires authenticated consumer admission.
+        event: SemanticFrame,
+    },
 }
 
 impl OpsFrame {
     /// The record this frame concerns.
     pub fn record(&self) -> &LiveRecord {
         match self {
-            Self::Preview { record, .. } | Self::End { record } => record,
+            Self::Preview { record, .. } | Self::End { record } | Self::Semantic { record, .. } => {
+                record
+            }
         }
     }
 
     fn validate(&self) -> Result<()> {
         self.record().validate()?;
+        if let Self::Semantic { event, .. } = self {
+            return event.validate();
+        }
         let Self::Preview { ops, .. } = self else {
             return Ok(());
         };
@@ -463,11 +517,38 @@ impl LiveFrame {
                 .map(|record| (LiveKind::Presence, presence.seq, record)),
             Self::Ops(OpsFrame::Preview { seq, record, .. }) => Some((LiveKind::Ops, *seq, record)),
             Self::Ops(OpsFrame::End { record }) => Some((LiveKind::Ops, 0, record)),
+            Self::Ops(OpsFrame::Semantic { record, event }) => {
+                Some((LiveKind::Ops, event.seq, record))
+            }
         }
     }
 }
 
 impl SealedLiveFrame {
+    /// Open only for an explicitly observed record and its canonical channel.
+    /// Holding a different channel key never authorizes a claim about this
+    /// record. Publisher identity and current membership remain the caller's
+    /// responsibility; decryption alone does not authenticate semantic work.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a different record digest or channel before opening, and any
+    /// authentication or canonical-frame failure from [`Self::open`].
+    pub fn open_in_record<E: std::fmt::Display>(
+        &self,
+        room: &str,
+        record: &LiveRecord,
+        open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
+    ) -> std::result::Result<LiveFrame, LiveSealError> {
+        if self.record != record.digest()
+            || self.channel_id()
+                != collab_types::document_channel_id(&record.app, room, &record.record)
+        {
+            return Err(LiveSealError::Mismatch);
+        }
+        self.open(open)
+    }
+
     /// The channel that sealed the frame.
     pub fn channel_id(&self) -> ChannelId {
         ChannelId(uuid::Uuid::from_bytes(self.channel))
@@ -632,6 +713,98 @@ mod tests {
 
     fn channel() -> ChannelId {
         ChannelId(uuid::Uuid::from_bytes([7; 16]))
+    }
+
+    fn semantic() -> LiveFrame {
+        LiveFrame::Ops(OpsFrame::Semantic {
+            record: record(),
+            event: SemanticFrame {
+                version: 1,
+                seq: 42,
+                sent_at_ms: 123,
+                execution: uuid::Uuid::from_bytes([1; 16]),
+                peer: 7,
+                interaction_json: "{}".into(),
+            },
+        })
+    }
+
+    #[test]
+    fn semantic_events_are_versioned_bounded_record_ops_not_pointers() {
+        let frame = semantic();
+        assert_eq!(frame.seal_tags(), Some((LiveKind::Ops, 42, &record())));
+        assert_eq!(LiveFrame::decode(&frame.encode().unwrap()).unwrap(), frame);
+        let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
+        assert_eq!(
+            SealedLiveFrame::decode(&bytes).unwrap().open(open).unwrap(),
+            frame
+        );
+        let LiveFrame::Ops(OpsFrame::Semantic { mut event, .. }) = frame else {
+            panic!("semantic fixture");
+        };
+        event.version = 2;
+        assert!(event.validate().is_err());
+        event.version = 1;
+        event.execution = uuid::Uuid::nil();
+        assert!(event.validate().is_err());
+        event.execution = uuid::Uuid::from_bytes([1; 16]);
+        event.interaction_json = "null".into();
+        assert!(event.validate().is_err());
+        event.interaction_json = " ".repeat(MAX_SEMANTIC_INTERACTION_BYTES + 1);
+        assert!(event.validate().is_err());
+        // Existing preview-end discriminants and payload remain unchanged.
+        assert_eq!(
+            LiveFrame::Ops(OpsFrame::End { record: record() })
+                .encode()
+                .unwrap(),
+            b"\x01\x01\x0dso.tilo.notes\x02r1"
+        );
+    }
+
+    #[test]
+    fn opening_for_a_mounted_record_refuses_a_different_record_or_channel() {
+        let expected = record();
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&expected.app, room, &expected.record);
+        let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
+            Ok::<_, String>((
+                EncryptionMetadata::content_key(3, channel, retention),
+                cleartext.to_vec(),
+            ))
+        })
+        .unwrap();
+        let sealed = SealedLiveFrame::decode(&bytes).unwrap();
+        let opened = sealed.open_in_record(room, &expected, |_, _, bytes| {
+            Ok::<_, String>(bytes.to_vec())
+        });
+        assert_eq!(opened.unwrap(), semantic());
+        let other = LiveRecord {
+            record: "other".into(),
+            ..expected.clone()
+        };
+        for (room, record) in [(room, other), ("another-room", expected.clone())] {
+            assert!(matches!(
+                sealed.open_in_record(
+                    room,
+                    &record,
+                    |_, _, _| -> std::result::Result<Vec<u8>, String> {
+                        panic!("a different mounted audience must be refused before opening")
+                    }
+                ),
+                Err(LiveSealError::Mismatch)
+            ));
+        }
+        // A valid record claim sealed under another record's held key is not
+        // authority for this record, even when its clear digest agrees.
+        let mut wrong_channel = sealed;
+        wrong_channel.channel = [9; 16];
+        assert!(
+            wrong_channel
+                .open_in_record(room, &expected, |_, _, _| {
+                    Err::<Vec<u8>, String>("must not open".into())
+                })
+                .is_err()
+        );
     }
 
     /// A stand-in content cipher that authenticates the artifact it was
