@@ -1997,6 +1997,41 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "::notice::pushed dev-trust integration image $ref ($digest)"
 
+      # A real boot of this image's own UKI: from an ESP beside an encrypted
+      # Tilo root, on a virtual panel larger than the firmware's mode, filmed
+      # through the disk unlock. The UKI splash and Plymouth must cover the
+      # whole panel in every phase (os/dev/check-boot-splash.py).
+      - name: Film the boot splash on a high-resolution panel
+        if: steps.dev-image.outputs.digest != ''
+        timeout-minutes: 45
+        env:
+          IMAGE_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          SPLASH_FRAMES: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            if [[ '${{ matrix.arch }}' == x86_64 ]]; then firmware='ovmf qemu-system-x86'; else firmware='qemu-efi-aarch64 qemu-system-arm'; fi
+            sudo -n apt-get update -qq
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+              cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
+          else
+            if [[ '${{ matrix.arch }}' == x86_64 ]]; then firmware='edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga'; else firmware='edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci'; fi
+            sudo -n dnf -y -q install cryptsetup dosfstools mtools skopeo util-linux zstd \
+              qemu-device-display-virtio-gpu $firmware >/dev/null
+          fi
+          rm -rf -- "$SPLASH_FRAMES"
+          python3 os/dev/check-boot-splash.py --arch '${{ matrix.arch }}' --out "$SPLASH_FRAMES" \
+            "docker://registry.tilo.so/tilo/tilo-ci@$IMAGE_DIGEST"
+      - name: Retain the boot splash frames
+        if: always() && steps.dev-image.outputs.digest != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-boot-splash-${{ matrix.arch }}
+          path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 7
+
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
