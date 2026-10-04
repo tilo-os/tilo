@@ -21,7 +21,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::{Segment, SegmentedFace, ToggleGroup};
 use ui::widget::toolbar::{Orientation, Toolbar};
-use ui::widget::{Button, ButtonFace, ControlSize, Dropdown, Widget};
+use ui::widget::{Button, ControlSize, Dropdown, Widget};
 
 /// What a control asked the editor to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,7 +77,6 @@ pub struct Chrome {
     close_problems: Button,
     /// The window's History button, placed in this bar so the window draws
     /// no History bar of its own.
-    history: Option<Button>,
     structure_dirty: bool,
     toolbar_rect: Rect,
     visible: Visible,
@@ -170,7 +169,6 @@ impl Chrome {
             view,
             close_problems: Button::icon_only("typst.close-problems", Icon::X, "Close problems")
                 .on_click(command(&queue, Command::ToggleProblems)),
-            history: Some(ui::widget::history_button()),
             structure_dirty: false,
             toolbar_rect: Rect::ZERO,
             visible: Visible::default(),
@@ -282,22 +280,7 @@ impl Chrome {
         let natural = self.natural_picker_width(tr, theme);
         let mut x = bar.x0 + pad;
 
-        // History sits at the trailing edge: a labelled button, an icon when
-        // the window is narrow.
-        let mut right = bar.x1 - pad;
-        if let Some(history) = &mut self.history {
-            history.set_compact_toolbar_presentation(compact);
-            let history_w = if compact {
-                control
-            } else {
-                ButtonFace::new(Rect::ZERO, "standalone-history-title")
-                    .icon(Icon::History)
-                    .intrinsic_width(tr, theme)
-            };
-            let history_rect = row(right - history_w, right);
-            history.apply_layout_external(history_rect);
-            right = history_rect.x0 - gap;
-        }
+        let right = bar.x1 - pad;
 
         let hidden = Rect::ZERO;
         let (mut prev_rect, mut next_rect, mut view_rect) = (hidden, hidden, hidden);
@@ -433,9 +416,6 @@ impl Chrome {
         if self.visible.close {
             children.push(&self.close_problems);
         }
-        if let Some(history) = &self.history {
-            children.push(history);
-        }
         children
     }
 
@@ -454,9 +434,6 @@ impl Chrome {
         children.push(&mut self.toolbar);
         if self.visible.close {
             children.push(&mut self.close_problems);
-        }
-        if let Some(history) = &mut self.history {
-            children.push(history);
         }
         children
     }
@@ -488,12 +465,6 @@ impl Chrome {
 
 #[cfg(test)]
 impl Chrome {
-    /// Leave the History button to the window's own bar, which the shared
-    /// History conformance tests drive by its name.
-    pub(crate) fn omit_history(&mut self) {
-        self.history = None;
-    }
-
     /// The toolbar's accessibility nodes, flattened.
     fn toolbar_nodes(&self) -> Vec<ui::a11y::AccessNode> {
         fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {

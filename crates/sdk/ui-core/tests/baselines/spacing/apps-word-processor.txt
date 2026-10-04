@@ -1,14 +1,8 @@
 # The spacing ratchet for apps-word-processor: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/word-processor/src/compact_swatch_palette.rs pixel_const 3
-apps/word-processor/src/find_bar.rs pixel_const 7
-apps/word-processor/src/history_panel.rs pixel_const 2
-apps/word-processor/src/recovery_banner.rs pixel_const 1
-apps/word-processor/src/review_overlay.rs pixel_const 4
 apps/word-processor/src/ruler.rs pixel_const 1
 apps/word-processor/src/style_color_picker.rs pixel_const 1
-apps/word-processor/src/widget.rs pixel_const 41
+apps/word-processor/src/widget.rs pixel_const 10
 apps/word-processor/src/widget/block_layout.rs pixel_const 2
-apps/word-processor/src/widget/toolbar.rs pixel_const 1
 apps/word-processor/src/zoom_control.rs pixel_const 1

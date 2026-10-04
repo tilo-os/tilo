@@ -109,23 +109,6 @@ impl SourceIdentity {
     }
 }
 
-impl Source {
-    /// One-line summary used under the source header.
-    pub fn summary(&self) -> String {
-        let where_from = if self.path.is_empty() {
-            "not downloaded".to_string()
-        } else {
-            self.path.clone()
-        };
-        format!(
-            "{}  ·  {}  ·  {}",
-            self.label,
-            fmt_size(self.size),
-            where_from
-        )
-    }
-}
-
 fn generic_hardware_profile() -> String {
     "generic".into()
 }
@@ -210,7 +193,7 @@ impl TiloRelease {
             name: self.display_name(),
             size: self.size,
             label: format!(
-                "Tilo {} ({}) · {}",
+                "Tilo {} ({}), {}",
                 self.version,
                 self.channel,
                 self.target_label()
@@ -375,11 +358,10 @@ impl TargetDrive {
                     .unwrap_or_else(|| "data".into())
             })
             .collect();
-        format!(
-            "{} partition(s): {}",
-            self.partitions.len(),
-            labels.join(", ")
-        )
+        match self.partitions.len() {
+            1 => format!("1 partition ({})", labels.join(", ")),
+            count => format!("{count} partitions ({})", labels.join(", ")),
+        }
     }
     /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
@@ -613,7 +595,7 @@ impl Filesystem {
     }
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Btrfs => "Btrfs — recommended",
+            Self::Btrfs => "Btrfs (recommended)",
             Self::Ext4 => "Ext4",
             Self::Xfs => "XFS",
         }

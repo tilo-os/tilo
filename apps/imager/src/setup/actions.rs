@@ -360,12 +360,12 @@ fn folder_resource(
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {}",
-            folder.mode,
+            "{}, {}",
+            mode_phrase(folder.mode),
             if folder.overridden {
-                "override"
+                "chosen for this folder"
             } else {
-                "common"
+                "the common choice"
             }
         )),
         badge: Some(format!("Folder {}", folder.index + 1)),
@@ -738,16 +738,15 @@ pub fn resource(state: &SetupProjection) -> Resource {
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "experience {} · common {} · {} folders · {} active · help {} · imports {}",
-            state
-                .selection
-                .experience
-                .unwrap_or("no experience selected"),
-            state.selection.common_mode,
-            state.selection.folder_count,
-            state.selection.active_folder_count,
-            open_closed(state.selection.help_open),
-            open_closed(state.selection.imports_open),
+            "{}, {} by default, {}{}",
+            experience_phrase(state.selection.experience),
+            mode_phrase(state.selection.common_mode).to_lowercase(),
+            folders_phrase(state.selection.folder_count),
+            if state.selection.folder_count == 0 {
+                String::new()
+            } else {
+                format!(", {} to bring over", state.selection.active_folder_count)
+            },
         )),
         badge: Some("Selection".into()),
         preview: None,
@@ -770,11 +769,14 @@ pub fn resource(state: &SetupProjection) -> Resource {
         "Setup review state",
     )
     .with_presentation(ResourcePresentation {
-        detail: Some(format!(
-            "ready {} · current page {}",
-            yes_no(state.review.ready),
-            state.page
-        )),
+        detail: Some(
+            if state.review.ready {
+                "Ready to review"
+            } else {
+                "Not ready to review yet"
+            }
+            .into(),
+        ),
         badge: Some("Review".into()),
         preview: None,
     });
@@ -784,18 +786,7 @@ pub fn resource(state: &SetupProjection) -> Resource {
         "Current setup availability",
     )
     .with_presentation(ResourcePresentation {
-        detail: Some(format!(
-            "Desktop {} · Full OS {} · Connected {} · Next {} · Back {} · Folder policies {} · Folder edits {} · Help {} · Imports {}",
-            yes_no(state.availability.desktop),
-            yes_no(state.availability.full_os),
-            yes_no(state.availability.connected),
-            yes_no(state.availability.next),
-            yes_no(state.availability.back),
-            yes_no(state.availability.folder_policies),
-            yes_no(state.availability.folder_edits),
-            yes_no(state.availability.help),
-            yes_no(state.availability.open_imports),
-        )),
+        detail: Some(available_phrase(&state.availability)),
         badge: Some("Availability".into()),
         preview: None,
     });
@@ -803,20 +794,15 @@ pub fn resource(state: &SetupProjection) -> Resource {
     Resource::new(SETUP_RESOURCE_ID, "imager.setup", "Guided Tilo setup")
         .with_presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {} · {} · {} folder(s) · review {} · Desktop {} · Full OS {} · Connected {} · Next {} · Back {}",
-                state.page,
-                state
-                    .selection
-                    .experience
-                    .unwrap_or("no experience selected"),
-                state.selection.common_mode,
-                state.selection.folder_count,
-                yes_no(state.review.ready),
-                yes_no(state.availability.desktop),
-                yes_no(state.availability.full_os),
-                yes_no(state.availability.connected),
-                yes_no(state.availability.next),
-                yes_no(state.availability.back),
+                "{} page, {}, {}",
+                match state.page {
+                    "experience" => "Experience",
+                    "folders" => "Folders",
+                    "review" => "Review",
+                    _ => "Setup",
+                },
+                experience_phrase(state.selection.experience),
+                folders_phrase(state.selection.folder_count),
             )),
             badge: Some(
                 match state.page {
@@ -836,7 +822,11 @@ pub fn resource(state: &SetupProjection) -> Resource {
         .with_action(next)
         .with_action(back)
         .with_action(with_availability(
-            immediate("open-imports", "Open folder imports", SetupOperation::OpenImports),
+            immediate(
+                "open-imports",
+                "Open folder imports",
+                SetupOperation::OpenImports,
+            ),
             state.availability.open_imports,
             "imports_not_on_page",
             "Folder imports are available on the experience and review pages",
@@ -850,12 +840,52 @@ pub fn resource(state: &SetupProjection) -> Resource {
         ])
 }
 
-const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+/// A folder mode as people read it.
+fn mode_phrase(mode: &str) -> &'static str {
+    match mode {
+        "connected" => "Connected",
+        "later" => "Decide later",
+        _ => "Copy",
+    }
 }
 
-const fn open_closed(value: bool) -> &'static str {
-    if value { "open" } else { "closed" }
+/// The chosen experience as people read it.
+fn experience_phrase(experience: Option<&str>) -> &'static str {
+    match experience {
+        Some("desktop") => "Tilo Desktop",
+        Some(_) => "Full Tilo",
+        None => "no experience chosen yet",
+    }
+}
+
+/// "1 folder", "3 folders", "no folders".
+fn folders_phrase(count: usize) -> String {
+    match count {
+        0 => "no folders".into(),
+        1 => "1 folder".into(),
+        count => format!("{count} folders"),
+    }
+}
+
+/// What setup can do right now, as one phrase.
+fn available_phrase(availability: &AvailabilityProjection) -> String {
+    let offered = [
+        (availability.desktop, "Tilo Desktop"),
+        (availability.full_os, "Full Tilo"),
+        (availability.connected, "connected folders"),
+        (availability.folder_policies, "folder choices"),
+        (availability.open_imports, "folder imports"),
+        (availability.next, "continuing"),
+        (availability.back, "going back"),
+    ]
+    .into_iter()
+    .filter_map(|(on, what)| on.then_some(what))
+    .collect::<Vec<_>>();
+    if offered.is_empty() {
+        "Nothing is available right now".into()
+    } else {
+        format!("Available now: {}", offered.join(", "))
+    }
 }
 
 /// Guided setup as a resource. The live projection is view state, not a shared

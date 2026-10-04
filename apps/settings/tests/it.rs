@@ -15,6 +15,54 @@
 /// account journal or writes a migration marker into their config.
 mod support {
     use settings::SettingsApp;
+    use ui::widget::Widget;
+    use vello::kurbo::Rect;
+
+    /// One row of the sidebar's navigation list as the accessibility tree
+    /// publishes it.
+    #[derive(Clone, Debug)]
+    pub struct NavRow {
+        pub label: String,
+        pub rect: Rect,
+        pub selected: bool,
+    }
+
+    /// The category rows the live tree's navigation list shows, in order.
+    /// Section headers are rows of the list too; they are told apart by
+    /// not being a destination (no row of a category carries their label).
+    pub fn nav_rows(root: &dyn Widget) -> Vec<NavRow> {
+        fn walk(w: &dyn Widget, out: &mut Vec<NavRow>) {
+            if w.name() == "NavList"
+                && let Some(tree) = w.accessibility()
+            {
+                for item in tree.children {
+                    if item.role != ui::a11y::Role::TreeItem {
+                        continue;
+                    }
+                    let (Some(label), Some(bounds)) = (item.name.clone(), item.bounds) else {
+                        continue;
+                    };
+                    out.push(NavRow {
+                        label,
+                        rect: bounds.to_rect(),
+                        selected: item.state.selected,
+                    });
+                }
+                return;
+            }
+            for child in w.children() {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out
+    }
+
+    /// The row labelled `label`, if the list shows one.
+    pub fn nav_row(root: &dyn Widget, label: &str) -> Option<NavRow> {
+        nav_rows(root).into_iter().find(|row| row.label == label)
+    }
 
     pub struct ScratchConfig {
         dir: tempfile::TempDir,
@@ -46,8 +94,6 @@ mod control_interaction;
 mod no_app_title_header;
 #[path = "scroll.rs"]
 mod scroll;
-#[path = "search_focus.rs"]
-mod search_focus;
 #[path = "shots_smoke.rs"]
 mod shots_smoke;
 

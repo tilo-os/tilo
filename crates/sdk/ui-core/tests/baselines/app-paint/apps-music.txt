@@ -1,11 +1,5 @@
 # The app-paint ratchet for apps-music: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/music/src/app/render.rs desktop_ground 3
-apps/music/src/app/render.rs literal_alpha 16
-apps/music/src/app/render.rs literal_radius 4
-apps/music/src/app/render.rs ramp_slot 6
-apps/music/src/app/render.rs raw_paint 35
-apps/music/src/art.rs literal_alpha 4
-apps/music/src/art.rs raw_paint 4
-apps/music/src/icon.rs raw_paint 30
+apps/music/src/app/render.rs raw_paint 1
+apps/music/src/icon.rs raw_paint 1

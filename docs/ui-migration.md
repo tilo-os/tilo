@@ -220,14 +220,14 @@ Every former accent use is exactly one of these. Decide by what the pixel
 | The accent was… | Now |
 |---|---|
 | the fill of a primary button, a switch that is on, a checked checkbox, a slider's filled track, a progress fill, a selected-count badge | `colors.intent.inverted` (fill) + `colors.intent.on_inverted` (label/glyph on it); hover/pressed `colors.intent.inverted_hover` |
-| the armed row of a menu, popover, dropdown, slash menu or result list (the row Enter or a click activates) | `colors.intent.inverted` + `colors.intent.on_inverted`, exactly like a primary action |
+| the armed row of a menu, popover, dropdown, slash menu or result list (the row Enter or a click activates) | the panel's overlay lift: `ui::widget::floating_surface::armed_row(theme)` (fill and ink), or `paint_armed_row(scene, t, row, inset, theme)`; a lift one and a half surface steps off the panel (HIG §9.3), never the inverted fill |
 | the background of a selected row, tab, segment, chip or grid cell (a list, table, sidebar, segmented control) | a lift of the surface it sits on: `colors.lift_on(ground, 1.0)` (hover `0.5`) with `colors.text_primary` ink. On the window ground use `colors.intent.selection` / `selection_hover`; inside a floating panel `ground = colors.surfaces.overlay`; on a segmented track `surfaces.raised` |
 | a translucent accent wash (`accent.with_alpha_factor(a)`) used as a hover/selected film | `colors.text_primary.with_alpha_factor(a)` or the matching veneer (`overlay_subtle` ≤ 0.15, `overlay_medium` ≤ 0.3, else `overlay_strong`) |
 | the text caret, the focus ring, a drop/insertion indicator, selection handles | `colors.intent.you` (`theme.border_focus` is the same colour) |
 | the text-selection highlight | `colors.intent.selection_tint` (already translucent; do not add alpha) |
 | a link | `colors.text_primary` with an underline |
 | an "active" icon or label tint | `colors.text_primary` (inactive stays `text_dim`) |
-| live / syncing / in-flight state | `colors.semantic.info`; recording/destructive state `colors.semantic.danger` |
+| live / syncing / in-flight state | `colors.semantic.info`; an unread count or anything that wants attention `colors.intent.you` (`ChipStyle::Live`); `colors.semantic.danger` only for an error, a failure or a destructive action |
 | a person, collaborator, agent, avatar | `colors.presence.of_rgb(ui::presence::user_color(id))` for an identity colour, `colors.presence.get(slot)` for a slot |
 | a chart or data series, a tag colour | `colors.presence.series(index)` (or `ChartPalette::from_theme(theme).categorical(index)`) |
 | decoration (a glow, a gradient, a coloured header, a tinted empty-state disc) | delete it, or use `colors.text_dim` / a lift |
@@ -397,7 +397,7 @@ what the colour *did* at that line, first match wins:
 | `bg_primary` as a card, field, well, key cap, chip, avatar ring or a button's rest face inside content | `theme.tokens.colors.surfaces.raised` (an avatar ring takes the ground it sits on instead). |
 | `bg_hover` / `bg_active` as the hover / pressed (or open, focused, selected) fill of a control with a filled rest face | Use the toolkit control (`Button`, `Checkbox`, `Dropdown`, `TextInput`, `SegmentedControl`, `NavShell`, `Table`) and delete the painter. Where the painter stays: `colors.lift_on(rest, 0.5)` for hover, `colors.lift_on(rest, 1.0)` for pressed/open/selected, with `rest` the face's own fill (normally `surfaces.raised`). |
 | `bg_hover` / `bg_active` under a transparent control or row (a ghost button, an icon button, a list row, a grid cell) on the window ground | `colors.intent.selection_hover` / `colors.intent.selection`. Draw the row with the region's theme (below) and the same tokens are right in a sidebar or inspector too. |
-| the same inside a floating panel (menu, popover, picker) | `colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5)` / `lift_on(.., 1.0)`; a menu's armed row is inverted, see [Choosing the intent](#choosing-the-intent). |
+| the same inside a floating panel (menu, popover, picker) | `colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5)` / `lift_on(.., 1.0)`; a menu's armed row is the stronger overlay lift, see [Choosing the intent](#choosing-the-intent). |
 | `bg_hover.with_alpha_factor(a)` as a wash (current-line band, gutter tint) | `colors.lift_on(ground, 0.5).with_alpha_factor(a)`, with `ground` the surface under the wash. |
 | `Theme { bg_app, bg_primary, bg_hover, bg_active, .. }` struct literal | Delete the four fields; better, build the theme with `Theme::dark()` / `light()` and change tokens. |
 | `theme.bg_app != other.bg_app` as "the theme changed" | `theme.tokens.colors.surfaces.content != other.tokens.colors.surfaces.content` |
@@ -577,7 +577,7 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | `drawer.draw_scrim(scene, transform)` | `drawer.draw_scrim(scene, transform, theme)` (`surfaces.scrim`, no literal black, no stepped shadow bands). |
 | Filling the sidebar rect yourself (`surfaces.sidebar`, `raised`, `bg_primary`, a literal), or `surface::region(.., Region::Sidebar, ..)` under a drawer | `let sidebar_theme = drawer.paint_panel(scene, transform, theme);` and draw the drawer's contents with `sidebar_theme`. Docked it is the region tier with no radius; as an overlay it is the floating material with `radii.panel` and the floating shadow, floating `s2` inside the window. |
 | `drawer.draw_toggle(scene, transform, theme, rect, hovered)` | `drawer.draw_toggle(scene, transform, text, theme, rect, hovered)`: the same Plain `Icon::PanelLeft` button `NavShell` draws. Put it at the top-leading corner (`rect` = `min_pointer_target` square in an `s3` inset). |
-| Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 720 (`compact_breakpoint`); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
+| Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
 | A collapse that the drawer forgot after the window crossed the breakpoint | Remembered per size class now; delete app code that re-applies it. |
 | An app holding a `FlapState` for its own sidebar or side panel, with its own breakpoint, scrim and slide arithmetic | A `SidebarDrawer` (`.right()` for a trailing panel). `FlapState::tick(layout, dt)` is now `tick(layout, dt, theme.tokens.motion.durations.base())` and `slide()` is gone: `reveal()` is already eased. |
 
@@ -793,7 +793,7 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | `SegmentedStyle::Pill`, `SegmentedFace::pill()` | `SegmentedStyle::Quiet` (a refinement under a primary choice) |
 | `SegmentedFace::radius(r)`, `SegmentedFace::left_labels(pad)` | delete |
 | a segment label that does not fit ("Wednesday" in a narrow week strip) | `Segment::new("Wednesday").short("Wed")` |
-| segment rects sized by hand | `SegmentedFace::height(size, theme)` × `SegmentedFace::intrinsic_width(labels, size, text, theme)`, split equally |
+| segment rects sized by hand | `SegmentedFace::height(size, theme)` × `SegmentedFace::intrinsic_width(labels, size, text, theme)`, split with `SegmentedFace::partition(rect, labels, size, text, theme)` (equal while every label fits an equal share, otherwise sized to the labels) |
 | accent-filled selected segment, a selected segment painted by the app | `ToggleGroup` / `SegmentedFace`: the chosen segment is a lift thumb |
 | hand-drawn tab row with an accent underline | `ToggleGroup::new(..).with_style(SegmentedStyle::Tabs)` (2 px primary-ink underline) |
 | `TriStateControl` | `ToggleGroup` with three segments |
@@ -816,6 +816,9 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | a "✓ " prefixed menu label | `.with_checked(true)` |
 | leading, trailing or doubled `MenuItem::separator()` | leave them; the menu shows a separator only between two rows. Delete any code that trims them |
 | a row highlighted by hand while its context menu is open | `menu.anchor_row(row_rect)` before `open_*` |
+| `menu.draw(scene, t, text, theme, presence)` in a painted widget's `draw` | delete it: a `ContextMenu` paints only in the window's top layer. Call `menu.draw_overlay(..)` from the widget's own `draw_overlay`, or return the menu from `children_mut` while it is open so the default `draw_overlay` reaches it |
+| `floating_surface::paint_armed_row(scene, t, row, theme)` | `paint_armed_row(scene, t, row, inset, theme)`, `inset` the row's distance from the panel edge (`menu_inset(theme)` for a menu on it) |
+| a menu placed by hand next to its button | `ContextMenu::open_anchored(button_rect, window)`; it opens under the button, aligns to its trailing edge at the window's edge and flips above near the bottom |
 | a hand-drawn caption above a dropdown ("Level" over a filter) | `Dropdown::new(..).caption("Level")` and delete the caption text |
 | a hand-drawn `▾` / chevron path on a dropdown-like field | `Dropdown` |
 | `Dropdown` at a fixed 40 px | nothing: it is a `Regular` control; `.control_size(ControlSize::Small)` in a toolbar |
@@ -826,7 +829,8 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 
 One family, styled by `ChipStyle`: `Neutral` (quiet, raised; a selected chip
 is a lift), `Tinted(Tone)` (a status or a person, a faint wash with neutral
-ink) and `Live` (the one filled pill: live, recording, an unread count).
+ink) and `Live` (the one filled pill, in your colour: an unread count, a
+mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 `Tone` is the shared `ui::widget::Tone`: `Neutral`, `Info`, `Success`,
 `Warning`, `Danger`, or a person with `Tone::of_identity(id)` /
 `Tone::Presence(hue)` (yourself: `Tone::Presence(colors.you)`).
@@ -914,11 +918,13 @@ ink) and `Live` (the one filled pill: live, recording, an unread count).
 | `InputHint::keycap_height(theme)` | Centring a row of keycaps |
 | `Colors::inverted_pressed()` | A pressed inverted control: the hover step taken twice, so press reads past hover |
 | `Colors::raised_on(ground)` | `surfaces.raised` as it stands on `ground`; `Theme::on_ground` applies it, so controls in a panel never sink into it |
-| `widget::floating_surface::{menu_inset, paint_armed_row}` | A painted menu's row inset and its inverted, concentric armed row |
+| `widget::floating_surface::{menu_inset, armed_row, paint_armed_row, OVERLAY_LIFT}` | A painted menu's row inset and its armed row: the panel's overlay lift, concentric with the panel |
+| `widget::floating_surface::{place_anchored, anchored_room}` | Place a painted floating Panel at its trigger: flip, align and shift at the window edges |
+| `SegmentedFace::partition(rect, labels, size, text, theme)` | A painted segmented strip's segment rects, sized to their labels |
 | `Widget::set_invalid(bool)` | A form's verdict on a control; `Field::with_error` sets it. `TextInput` edges itself in danger ink and reports `invalid` to assistive technology |
 
 Visible changes that need no code: a popover menu's rows are menu rows
-(`metrics.menu_row_height`, 32) with the inverted armed row and a small
+(`metrics.menu_row_height`, 32) with the lifted armed row and a small
 check; the dropdown list insets its rows like every menu and checks the
 applied value instead of lifting it; text fields lift under the pointer;
 tooltips are the floating material; a toast shows its severity as a leading
@@ -1077,7 +1083,13 @@ Apply the first row that matches each call.
 4. Stat tiles painted as cards with a value colour or an accent ticker. Use
    `StatTile` / `StatGroup` with a tone.
 5. Table headers, sort triangles, zebra stripes, selected-row fills and
-   column measurement around a `DataTable`.
+   column measurement around a `DataTable`, and any padding added to its
+   first or last column or for its scroll bar: the table insets its
+   columns from the lift and reserves the bar's column itself.
+10. A gutter left of a `BlockEditor` for its drag handles: the editor keeps
+    the handles in its own leading column and starts every block (text,
+    checklist boxes, quotes, code, embeds, tables, images) at one content
+    edge.
 6. Cover and thumbnail painters, generated-art gradients made of stacked
    rects, duration pills, progress bars and live badges over media, and
    column math for media grids (`card_columns` stays for custom layouts).
@@ -1392,6 +1404,7 @@ any per-pane scrim rect.
 | A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
 | An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
+| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Saving and saved show in the transient bubble; a failure is an error card with Try again that stays until the save succeeds. Delete any save pill, pinned bubble or hand-drawn failure text |
 
 StatusBubble, replacing the hand-rolled pattern (`pill_size` + a margin
 rect + a reveal zone + `push_layer(alpha)` + `draw_pill` + `poke` on change):
@@ -1713,3 +1726,44 @@ renders each preset with `themes::preview::ThemePreview`, and applying goes
 through `themes::apply` (refused while `ThemeDocument::findings` is not
 empty). `--shots --scenario gallery|editor|tinted|illegible` with
 `--theme <preset>` renders it in any preset.
+
+## Library changes awaiting app reconciliation
+
+These toolkit changes landed while app migrations were in flight. Apps
+merged before them were updated with them; every app below still has to
+take them when its migration is reconciled.
+
+- **Menus paint in the top layer.** `ContextMenu::draw` paints nothing; the
+  menu paints in `draw_overlay`. A painted app that calls `menu.draw(..)`
+  draws its menu from its own `draw_overlay` (or returns the open menu from
+  `children_mut`), and a host that owns a `TreeView` routes `draw_overlay`
+  to it. Apps that hold a `ContextMenu`: browser (`browser_tabs.rs`
+  `tab_menu.draw`, `page_menu.rs`, `browser_widget.rs` `back_menu`), chat
+  (`events.rs`), contacts, db-client, feeds (`app.rs` `feed_menu.draw`),
+  file-explorer (`context_menu`, `submenu`), mail, maps, monitor, music,
+  notes (`app.rs` `note_menu.draw`), osk, pdf-viewer, slides, terminal,
+  video-editor (`app.rs` `bin_menu.draw`), weather, word-processor. Apps
+  that own a `TreeView`: code-editor, db-client, notes, settings.
+- **Menus open at their trigger.** A header or toolbar button opens its menu
+  with `open_anchored(button_rect, window)`; the toolkit flips and shifts
+  it. Delete any hand placement (notes' note menu, every `open_at` of a
+  button's menu).
+- **The armed row is a lift.** `paint_armed_row` takes the row's `inset`;
+  painted menus (none in apps today) pass `menu_inset(theme)`.
+- **Unread is your colour.** `ChipStyle::Live` and `Badge::count` fill in
+  your colour. An app that painted an unread or attention count in
+  `semantic.danger` uses `Badge::count` / `NavCount::Live` instead; one that
+  used `Live` for an error uses `Tinted(Tone::Danger)`.
+- **Segments size to their labels.** A painted segmented strip splits its
+  rect with `SegmentedFace::partition` instead of equal shares: backups,
+  chat, diffmerge, disks, feeds, firewall, mail, osk, passwords, pdf-viewer,
+  photos, remote, totp, video-editor, vpn.
+- **Save status is a framework surface.** Notes replaces its save pill and
+  pinned bubble with `SaveStatusSurface`; any other app that shows save
+  state (code-editor, sheets, typst-editor, word-processor) does the same.
+- **The block editor owns its handle column.** Hosts of a `BlockEditor`
+  (chat, ebook, mail, notes, pdf-viewer, slides, word-processor) delete the
+  gutter they reserved for its drag handles.
+- **The sidebar collapses for the content's room.** `compact_breakpoint` is
+  840 (`sidebar_width` 280 + `content_min_width` 560): tests or shots that
+  pinned a docked sidebar at 720–839 px wide now see the drawer.

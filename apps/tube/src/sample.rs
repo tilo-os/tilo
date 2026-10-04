@@ -353,8 +353,8 @@ pub fn model() -> TubeModel {
             )
         },
         Video {
-            views: 41_000_000,
-            published: "Streaming".into(),
+            views: 12_400,
+            live: true,
             duration: 7200,
             category: "Music".into(),
             description: "A 24/7 livestream of mellow beats. No sponsor, no intro, no outro — just the girl, her desk, and the rain.".into(),
@@ -536,7 +536,16 @@ pub fn model() -> TubeModel {
     TubeModel {
         videos,
         channels: chans,
-        playlists: Vec::new(),
+        playlists: vec![crate::model::Playlist {
+            id: "pl_systems".into(),
+            title: "Systems programming from the metal up".into(),
+            channel_id: "ch_lowlevel".into(),
+            channel_name: "Low Level Learning".into(),
+            thumbnail_url: String::new(),
+            seed: "pl_systems".into(),
+            video_count: 3,
+            video_ids: vec!["vid_rust_async".into(), "vid_gpu".into(), "vid_fuse".into()],
+        }],
         // Start subscribed to a few so the Subscriptions tab is populated.
         subscriptions: vec![
             "ch_lowlevel".into(),
@@ -552,11 +561,19 @@ pub fn model() -> TubeModel {
         // was queued by a collaborator.
         queue: Vec::new(),
         history_owner: "profile:local".into(),
-        history: vec!["vid_black_holes".into(), "vid_donut".into()],
+        history: [
+            "vid_black_holes",
+            "vid_donut",
+            "vid_synth",
+            "vid_color",
+            "vid_gpu",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
         history_recovery_notice: None,
         settings,
         route: Route::Home,
-        search_query: String::new(),
         playhead: 0.0,
         playing: false,
         liked: Vec::new(),
@@ -565,8 +582,7 @@ pub fn model() -> TubeModel {
         // (auto-skips, share/like acknowledgements, worker status) so it never
         // shows events that didn't happen.
         notices: Vec::new(),
-        palette_open: false,
-        palette_query: String::new(),
+        notice_count: 0,
         // The bundled catalogue is, by definition, the offline sample.
         data_source: crate::model::DataSource {
             live: false,
@@ -576,7 +592,6 @@ pub fn model() -> TubeModel {
         search_hits: Vec::new(),
         search_playlist_hits: Vec::new(),
         search_channel_hits: Vec::new(),
-        search_type_filter: crate::model::SearchTypeFilter::default(),
         related_of: String::new(),
         related_hits: Vec::new(),
         // A few crowdsourced dislike counts (Return YouTube Dislike) so the
@@ -598,7 +613,5 @@ pub fn model() -> TubeModel {
         // The sample is fully populated, so it never shows a loading skeleton.
         feed_loading: false,
         feed_error: None,
-        search_loading: false,
-        search_error: None,
     }
 }

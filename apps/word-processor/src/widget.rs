@@ -22,7 +22,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_doc::model::Region;
 use tilo_doc::snapshot::{AttrVal, BlockView, NoteView};
-use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
@@ -44,22 +43,22 @@ use crate::WpFormat;
 use crate::compact_swatch_palette::{
     CompactSwatchPalette, PaletteChoice, PaletteKind, PaletteRequest,
 };
-use crate::find_bar::{FindBar, FindEffect, FindPalette};
+use crate::find_bar::{Blocks, FindBar, FindEffect, FindHost, FindMatch};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
-use crate::outline_pane::{OutlinePalette, OutlinePane};
+use crate::outline_pane::OutlinePane;
 use crate::paint_context::PaintContext;
 #[cfg(test)]
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
-use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
+use crate::recovery_banner::{RecoveryBanner, RecoveryDecision};
 use crate::review_overlay::{
-    DELETION_INK, INSERTION_INK, ReviewAction, ReviewColors, ReviewOverlay,
+    DELETION_INK, INSERTION_INK, ReviewAction, ReviewColors, ReviewOverlay, ReviewPlacement,
 };
 #[cfg(test)]
 use crate::review_overlay::{DELETION_RGB, INSERTION_RGB};
 #[cfg(test)]
 use crate::ruler::RulerMarker;
-use crate::ruler::{Ruler, RulerColors, RulerEffect, RulerModel};
+use crate::ruler::{Ruler, RulerEffect, RulerModel};
 use crate::style_color_picker::StyleColorPicker;
 use crate::style_menu::{StyleMenu, StyleMenuAction};
 use crate::template_picker::TemplatePicker;
@@ -69,6 +68,10 @@ use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::zoom_control::{MAX as ZOOM_MAX, MIN as ZOOM_MIN, STEP as ZOOM_STEP, ZoomControl};
 use ui::paint::with_alpha;
 use ui::portal;
+use ui::tokens::TextRole;
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace, ControlSize, SegmentedFace, Tone,
+};
 
 mod block_layout;
 mod image_layout;
@@ -86,8 +89,8 @@ use block_layout::LIST_MARKER_TEXT_GAP;
 use block_layout::{
     LIST_INDENT_STEP, align as block_align, bullet_glyph, cell_rc, cell_table, font as parse_font,
     indent as block_indent_attr, line_spacing as block_line_spacing, line_spacing_label,
-    list_level, list_marker_x, next_line_spacing, page_break_before as block_page_break_before,
-    style_align, style_key as block_style_key,
+    list_level, list_marker_x, page_break_before as block_page_break_before, style_align,
+    style_key as block_style_key,
 };
 #[cfg(test)]
 use image_layout::PaintOptions as ImagePaintOptions;
@@ -107,10 +110,7 @@ use text_runs::{
     block_runs_markup, char_font_family, char_font_size, char_highlight, note_numbering, note_text,
     parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
-use toolbar::{
-    COMPACT_TOOLBAR_BREAKPOINT, HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, item as toolbar_item,
-    pack_rows as pack_toolbar_rows, swatch_reserve_width,
-};
+use toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
 
 /// Convert the model's `(block, start, end)` ranges into serializable
 /// [`Span`](crate::actions::Span)s for an action payload.
@@ -168,11 +168,6 @@ enum CtxAction {
     },
     /// A comment or tracked-change operation contributed by the review overlay.
     Review(ReviewAction),
-    /// A lower-frequency command chosen from the compact toolbar's accessible
-    /// More menu. It deliberately reuses the exact toolbar action path.
-    Tool(ToolAction),
-    /// Opens the compact shared swatch grid for direct character formatting.
-    CompactPalette(PaletteKind),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,8 +195,6 @@ const PAPER_MUTED: Color = Color::from_rgb8(0x8a, 0x8a, 0x92);
 /// Alpha of the selection highlight painted on paper: translucent so the
 /// text reads through it.
 const PAPER_SELECTION_ALPHA: u8 = 0x4d;
-/// Alpha of the find-match band painted on paper.
-const FIND_HIGHLIGHT_ALPHA: u8 = 0x80;
 /// Alpha of the accent wash behind the header/footer band that is the active
 /// edit context (Word-style header/footer edit mode).
 const ACTIVE_BAND_FILL_ALPHA: u8 = 0x14;
@@ -209,41 +202,12 @@ const ACTIVE_BAND_FILL_ALPHA: u8 = 0x14;
 /// edited, so the body visibly recedes (like Word dimming the body in that mode).
 const BODY_DIM_VEIL_ALPHA: u8 = 0x66;
 
-/// OS-theme-driven chrome palette, resolved once per frame from the [`Theme`]
-/// (see [`ChromeColors::for_theme`]) so chrome honours light/dark mode. Paper
-/// colours (the sheet + its ink) are NOT here — see the `PAPER_*` consts above.
-/// + ink on it) are deliberately *not* here — see the `PAPER_*` consts above.
+/// The colours the page draws with, resolved once per frame from the
+/// [`Theme`]: the sheet itself and the theme's intents made legible on it.
+/// Window chrome reads the theme directly; only the document surface needs
+/// colours measured against the paper.
 #[derive(Clone, Copy)]
 struct ChromeColors {
-    /// Canvas behind the page (the desk). `surfaces.base`.
-    canvas: Color,
-    /// Bar / panel surface (toolbar, status bar, find bar, layout bar, side
-    /// panels). `surfaces.raised`.
-    bar: Color,
-    /// A slightly recessed surface for input fields / value boxes. `surfaces.base`.
-    field: Color,
-    /// The face of an inactive button / chip. `surfaces.raised` — the same
-    /// tone as the bar it sits on; what makes it read as a control is the
-    /// derived rest edge `ui::surface::card` paints from it (HIG §9.5), not
-    /// a ramp slot (`neutral[2]` sat within a shade of the dark bar and every
-    /// chip vanished at 1×).
-    chip: Color,
-    /// Hairline separators, bar rules and panel edges: derived against the
-    /// bar (`edge_on(bar)`), never the declared `border_standard`, which on
-    /// the dark preset is three shades from `raised` and invisible.
-    border: Color,
-    /// Primary chrome ink (button labels, panel headings).
-    text: Color,
-    /// Dimmed chrome ink (hints, secondary labels, match counts).
-    text_dim: Color,
-    /// Accent fill for active controls / layout guides (the "guide" blue).
-    accent: Color,
-    /// A translucent accent for inactive guide lines.
-    accent_faint: Color,
-    /// Ink that reads on top of an `accent` fill (active button labels).
-    on_accent: Color,
-    /// Scrollbar thumb tone.
-    scrollbar: Color,
     /// The OS accent made legible on the paper: the caret, the selection
     /// tint and the active header/footer band's edge and tab.
     paper_accent: Color,
@@ -251,78 +215,44 @@ struct ChromeColors {
     on_paper_accent: Color,
     /// The theme's `danger` made legible on the paper: the spelling squiggle.
     paper_danger: Color,
-    /// Find-match highlight painted on the paper (warning, translucent).
-    find_highlight: Color,
     /// Whisper tint on the sheet (missing-image / fidelity placeholders).
     paper_tint: Color,
     /// Hairline on the sheet (placeholder edges, image-handle contrast).
     paper_edge: Color,
-    /// The margin review cards beside the page.
-    review: ReviewColors,
-    /// The paper sheet, derived from the theme's lightest surface when it is
-    /// genuinely light, else [`PAPER_DEFAULT`]. Always a light tone so the
-    /// dark-authored document ink stays readable.
+    /// The paper sheet: the raised surface of a light theme, and the
+    /// canonical light sheet ([`PAPER_DEFAULT`]) under a dark one, so the
+    /// dark-authored document ink always reads.
     paper: Color,
-    /// How far the paper sheet is lifted off the desk behind it.
+    /// The sheet's lift off the desk behind it.
     paper_elevation: ui::tokens::Shadow,
 }
 
 impl ChromeColors {
-    /// Map the OS [`Theme`] onto the editor's chrome palette. Only the closest
-    /// available token is used for each slot — no new theme tokens are invented.
+    /// Map the [`Theme`] onto the page's palette.
     fn for_theme(theme: &Theme) -> Self {
         let c = &theme.tokens.colors;
-        // Prefer the theme's lightest neutral when actually light; dark themes
-        // keep the canonical light paper so document ink still contrasts.
-        // `neutral[10]` is the lightest ramp slot.
-        let lightest = c.neutral[10];
-        let paper = if luminance(lightest) >= 0.85 {
-            lightest
+        let paper = if luminance(c.surfaces.raised) >= 0.85 {
+            c.surfaces.raised
         } else {
             PAPER_DEFAULT
         };
-        let bar = c.surfaces.raised;
         let non_text = ui::tokens::colors::NON_TEXT_MIN_CONTRAST;
-        let paper_accent = c.ink_on(paper, theme.accent_primary, non_text);
-        let paper_warning = c.ink_on(paper, c.semantic.warning, non_text);
+        let paper_accent = c.ink_on(paper, c.intent.you, non_text);
         let on_paper = theme.on_surface(paper);
         Self {
-            canvas: c.surfaces.base,
-            bar,
-            field: c.surfaces.base,
-            chip: bar,
-            border: ui::surface::edge_on(bar),
-            text: c.text_primary,
-            text_dim: c.text_dim,
-            accent: theme.accent_primary,
-            accent_faint: with_alpha(theme.accent_primary, 0x70),
-            // Measured against the accent rather than assumed white, so a
-            // bright OS accent still carries a legible label.
-            on_accent: c.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST),
-            // The thumb is a draggable control on the canvas: the dim ink,
-            // stepped until it clears the non-text contrast floor on the
-            // desk (a ramp slot did not track the palette; a hairline tone
-            // fell short of 3:1 on paper).
-            scrollbar: c.ink_on(
-                c.surfaces.base,
-                c.text_dim,
-                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-            ),
             paper,
             paper_accent,
             on_paper_accent: theme.on_surface(paper_accent).ink,
             paper_danger: c.ink_on(paper, c.semantic.danger, non_text),
-            find_highlight: with_alpha(paper_warning, FIND_HIGHLIGHT_ALPHA),
             paper_tint: on_paper.tint,
             paper_edge: ui::surface::edge_on(paper),
-            review: ReviewColors::for_theme(theme, paper),
-            paper_elevation: theme.tokens.elevation.e3,
+            paper_elevation: theme.tokens.elevation.floating,
         }
     }
 }
 
 /// Relative luminance (0..1) of a colour — used only to decide whether a theme's
-/// "lightest" surface is light enough to serve as paper.
+/// raised surface is light enough to serve as paper.
 fn luminance(c: Color) -> f64 {
     let r = f64::from(c.r()) / 255.0;
     let g = f64::from(c.g()) / 255.0;
@@ -331,6 +261,13 @@ fn luminance(c: Color) -> f64 {
 }
 
 const PAGE_TOP: f64 = 28.0;
+/// The window width (at 1×) from which the outline docks beside a page it
+/// leaves readable; below it the outline is a drawer over the page.
+const OUTLINE_DOCKS_FROM: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64 + 600.0;
+/// The width from which the inspector docks beside a whole page; below it
+/// the inspector is a sheet over the page.
+const INSPECTOR_DOCKS_FROM: f64 =
+    ui::tokens::Metrics::BASE.inspector_width as f64 + MAX_PAGE_W + 48.0;
 const MAX_PAGE_W: f64 = 820.0;
 /// Body blocks retained as rich views for a large imported document. The
 /// canonical CRDT remains complete; this is strictly the renderer's bounded
@@ -344,275 +281,10 @@ const ESTIMATED_BLOCK_EXTENT: f64 = 34.0;
 /// Small documents keep the straightforward all-block cache. Larger imports
 /// switch to the bounded viewport cache below.
 const VIRTUALIZE_BODY_AFTER: usize = VIEWPORT_BLOCK_WINDOW * 2;
-/// Height of the horizontal ruler band carved out of the canvas top (below the
-/// toolbar / recovery banner / find bar, above the page).
-const RULER_H: f64 = 24.0;
 /// Vertical gap between consecutive discrete pages (the canvas shows through it),
 /// à la Google Docs. Together with `LETTER_RATIO` this drives true pagination.
 const PAGE_GAP: f64 = 22.0;
 const CARET_WIDTH: f64 = 2.0;
-const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
-const LAYOUT_BAR_H: f64 = 32.0;
-/// Layout-bar type roles (renderer input; scaled once) and the classic 1× chip.
-const LAYOUT_BAR_FONT: f32 = 13.0;
-const LAYOUT_BAR_STATUS_FONT: f32 = 12.5;
-const LAYOUT_CHIP_H: f64 = 22.0;
-
-/// A layout-bar chip: the measured label line box plus `s1`, never below the
-/// classic 22 px.
-fn layout_chip_h(label_h: f64, tk: ChromeTokens) -> f64 {
-    (label_h + tk.s1).max(LAYOUT_CHIP_H)
-}
-
-/// Top of one text line centred in a band: the same arithmetic as the
-/// toolkit's `widget::text::centered_text_top` (measured line box, never the
-/// font size), which is not publicly exported yet — see the F2 note in the
-/// review; delete this once it is.
-fn centred_line_top(band_y0: f64, band_h: f64, measured_line_h: f64) -> f64 {
-    band_y0 + (band_h - measured_line_h) / 2.0
-}
-
-/// The theme's spacing and radius tokens, resolved once per frame next to
-/// [`ChromeColors`] so every chrome band, chip and gap reads the OS grid
-/// rather than a private literal. Defaults to the unscaled base grid until
-/// the first draw hands over a theme.
-#[derive(Clone, Copy, Debug)]
-struct ChromeTokens {
-    s1: f64,
-    s2: f64,
-    s3: f64,
-    radius_sm: f64,
-    radius_md: f64,
-}
-
-impl ChromeTokens {
-    fn for_theme(theme: &Theme) -> Self {
-        let sp = &theme.tokens.spacing;
-        let radii = &theme.tokens.radii;
-        Self {
-            s1: f64::from(sp.s1),
-            s2: f64::from(sp.s2),
-            s3: f64::from(sp.s3),
-            radius_sm: f64::from(radii.sm),
-            radius_md: f64::from(radii.md),
-        }
-    }
-}
-
-/// Chrome type roles of the comment-thread panel (unscaled; the renderer
-/// applies the accessibility scale once).
-const THREAD_TITLE_FONT: f32 = 14.0;
-const THREAD_ROOT_FONT: f32 = 12.0;
-const THREAD_REPLY_FONT: f32 = 11.0;
-
-impl Default for ChromeTokens {
-    fn default() -> Self {
-        Self::for_theme(&Theme::dark())
-    }
-}
-
-/// Chrome type roles of the styles panel, passed unscaled to the renderer,
-/// which applies the accessibility scale once.
-const PANEL_LABEL_FONT: f32 = 12.5;
-const PANEL_CAPTION_FONT: f32 = 10.5;
-const PANEL_HINT_FONT: f32 = 11.0;
-const PANEL_NAME_FONT: f32 = 18.0;
-const PANEL_DIMS_FONT: f32 = 15.0;
-/// Inset of the styles panel's content column from its edges: the Panel
-/// section padding (HIG §7b `s4`), not an off-scale 14 px.
-const PANEL_PAD: f64 = ui::tokens::Spacing::BASE.s4 as f64;
-/// Classic 1× panel geometry, kept as the floors of [`PanelMetrics`]: a 1×
-/// panel keeps this rhythm, a larger text scale grows every row from its
-/// measured line box instead of painting captions under the control below.
-const PANEL_CONTROL_H: f64 = 24.0;
-const PANEL_WIDE_CONTROL_H: f64 = 26.0;
-const PANEL_CAPTION_ADV: f64 = 18.0;
-const PANEL_NAME_ADV: f64 = 24.0;
-const PANEL_HINT_ADV: f64 = 22.0;
-const PANEL_DIMS_ADV: f64 = 26.0;
-const PANEL_HEADING_ADV: f64 = 20.0;
-const PANEL_SWATCH_H: f64 = 22.0;
-const PANEL_CLOSE_W: f64 = 62.0;
-const PANEL_ALIGN_W: f64 = 28.0;
-const PANEL_CHIP_W: f64 = 96.0;
-const PANEL_TOGGLE_W: f64 = 60.0;
-const PANEL_VALUE_W: f64 = 60.0;
-const PANEL_SWATCH_STRIP_MIN_W: f64 = 120.0;
-const PANEL_SWATCH_STRIP_MAX_W: f64 = 196.0;
-const PANEL_IMAGE_LABEL_COL: f64 = 60.0;
-const PANEL_IMAGE_BUTTON_MIN_W: f64 = 48.0;
-const PANEL_IMAGE_BUTTON_MAX_W: f64 = 92.0;
-/// Deliberately off-scale seams: the 6 px between panel rows / chips and
-/// the 2 px between a stepper and its value box.
-/// Seams on the base grid (HIG §7b): control rows and the buttons in one
-/// row are siblings (`s2`); the cells of a stepper (`−` · value · `+`) read
-/// as one group but still keep a token step (`s1`), never a 2 px touch.
-const PANEL_ROW_SEAM: f64 = ui::tokens::Spacing::BASE.s2 as f64;
-const PANEL_STEP_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
-
-/// Measured line boxes of the styles panel's type roles plus the theme
-/// tokens; every row, chip and label slot in the panel derives from these,
-/// with the classic 1× values as floors. Resolved at the top of each frame
-/// (`draw_frame_chrome`) from the renderer that paints, so the panel width
-/// the canvas reserves and the rows it paints come from one measurement.
-#[derive(Clone, Copy, Debug)]
-struct PanelMetrics {
-    /// Renderer text scale the line boxes were measured under.
-    scale: f64,
-    lh_label: f64,
-    lh_caption: f64,
-    lh_hint: f64,
-    lh_name: f64,
-    lh_dims: f64,
-    tk: ChromeTokens,
-}
-
-impl PanelMetrics {
-    fn resolve(tr: &mut TextRenderer, tk: ChromeTokens) -> Self {
-        let lh = |tr: &mut TextRenderer, font: f32| f64::from(tr.measure("Ag", font, None).1);
-        Self {
-            scale: f64::from(tr.text_scale()),
-            lh_label: lh(tr, PANEL_LABEL_FONT),
-            lh_caption: lh(tr, PANEL_CAPTION_FONT),
-            lh_hint: lh(tr, PANEL_HINT_FONT),
-            lh_name: lh(tr, PANEL_NAME_FONT),
-            lh_dims: lh(tr, PANEL_DIMS_FONT),
-            tk,
-        }
-    }
-
-    /// The 1× metrics used before the first draw has a renderer.
-    fn fallback() -> Self {
-        let lh = |font: f32| f64::from(font) * 1.25;
-        Self {
-            scale: 1.0,
-            lh_label: lh(PANEL_LABEL_FONT),
-            lh_caption: lh(PANEL_CAPTION_FONT),
-            lh_hint: lh(PANEL_HINT_FONT),
-            lh_name: lh(PANEL_NAME_FONT),
-            lh_dims: lh(PANEL_DIMS_FONT),
-            tk: ChromeTokens::default(),
-        }
-    }
-
-    /// Width the panel reserves: the classic column grown with the text.
-    fn panel_w(&self) -> f64 {
-        STYLES_PANEL_W * self.scale
-    }
-
-    /// A chip / button / stepper row: the label line box plus `s2`.
-    fn control_h(&self) -> f64 {
-        (self.lh_label + self.tk.s2).max(PANEL_CONTROL_H)
-    }
-
-    /// The image inspector's and "new style" wider controls.
-    fn wide_control_h(&self) -> f64 {
-        (self.lh_label + self.tk.s2).max(PANEL_WIDE_CONTROL_H)
-    }
-
-    /// Advance from one control row to the next.
-    fn row_adv(&self) -> f64 {
-        self.control_h() + PANEL_ROW_SEAM
-    }
-
-    /// Advance past a small-caps section caption.
-    fn caption_adv(&self) -> f64 {
-        (self.lh_caption + self.tk.s1).max(PANEL_CAPTION_ADV)
-    }
-
-    /// Advance past the focused style's display name.
-    fn name_adv(&self) -> f64 {
-        self.lh_name.max(PANEL_NAME_ADV)
-    }
-
-    /// Advance past the style hint line.
-    fn hint_adv(&self) -> f64 {
-        (self.lh_hint + self.tk.s2).max(PANEL_HINT_ADV)
-    }
-
-    /// Advance past the image dimensions line.
-    fn dims_adv(&self) -> f64 {
-        (self.lh_dims + self.tk.s1).max(PANEL_DIMS_ADV)
-    }
-
-    /// Advance past a label that heads its own row of controls.
-    fn heading_adv(&self) -> f64 {
-        (self.lh_label + self.tk.s1).max(PANEL_HEADING_ADV)
-    }
-
-    /// Colour swatch height (and the custom-colour chip's side).
-    fn swatch_h(&self) -> f64 {
-        (self.lh_label + self.tk.s1).max(PANEL_SWATCH_H)
-    }
-
-    /// Top of a label line centred on a control of height `h` at `row_y`.
-    fn label_top(&self, row_y: f64, h: f64) -> f64 {
-        centred_line_top(row_y, h, self.lh_label)
-    }
-}
-
-/// The shared `ui::chrome::toolbar` geometry this app mirrors to pack rows
-/// and reserve their height. The toolkit's `draw` lays items out from a
-/// 14 px left pad with a 6 px gap, a 14 px separator before a group, a
-/// 34 px item floor (measured label line box + 12) and a 15 px label; the
-/// packer here must agree with it exactly or a row it admits would be drawn
-/// clipped. Until the toolkit publishes these (`ToolbarMetrics` /
-/// `item_rects`, review item F6), this struct is their single app-side
-/// statement.
-struct ToolbarModel {
-    /// Left padding `chrome::toolbar::draw` applies before the first item.
-    #[cfg(test)]
-    pad: f64,
-    /// Gap `chrome::toolbar::draw` places after each item.
-    #[cfg(test)]
-    gap: f64,
-    /// Extra width a group separator inserts before a `group_start` item.
-    #[cfg(test)]
-    sep: f64,
-    /// Right margin reserved when packing rows (breathing space at the
-    /// toolbar's right edge).
-    right_pad: f64,
-    /// Horizontal padding an item adds around its measured label.
-    item_pad: f64,
-    /// Vertical room a row keeps around its tallest label line box.
-    row_pad: f64,
-    /// The label size the toolkit paints (renderer input; scaled once).
-    label_font: f32,
-}
-
-const TOOLBAR_MODEL: ToolbarModel = ToolbarModel {
-    #[cfg(test)]
-    pad: 14.0,
-    #[cfg(test)]
-    gap: 6.0,
-    #[cfg(test)]
-    sep: 14.0,
-    right_pad: 18.0,
-    item_pad: 12.0,
-    row_pad: 16.0,
-    label_font: 15.0,
-};
-
-impl ToolbarModel {
-    /// Width of an item carrying `label_w` of measured text.
-    fn item_w(&self, label_w: f64) -> f64 {
-        label_w + self.item_pad
-    }
-
-    /// Height of one toolbar row holding labels up to `label_h` tall and a
-    /// zoom control `zoom_h` tall: the classic row, grown so the toolkit's
-    /// `label + 12` item and the zoom cluster both fit with room.
-    fn row_h(&self, label_h: f64, zoom_h: f64) -> f64 {
-        TOOLBAR_H
-            .max(zoom_h + self.item_pad)
-            .max(label_h + self.row_pad)
-    }
-}
-/// Width of the contextual styles panel reserved on the right of the canvas.
-const STYLES_PANEL_W: f64 = 250.0;
-/// Width of the document outline / navigation pane reserved on the LEFT of the
-/// canvas (mirrors the styles panel on the right).
-const OUTLINE_PANEL_W: f64 = 230.0;
 /// Find-match highlight is chrome on the paper — see `ChromeColors::find_highlight`.
 /// Amplitude (px) of the wavy spell-check underline.
 const SQUIGGLE_AMP: f64 = 1.6;
@@ -624,20 +296,13 @@ const NOTE_SEP: Color = Color::from_rgb8(0xb8, 0xb8, 0xbe);
 /// Footnote body text colour (slightly muted vs. body ink). Paper content.
 const NOTE_INK: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
 /// Footnote text size (smaller than body) and the gap above the separator.
-const NOTE_FONT: f32 = 11.0;
+const NOTE_CONTENT_PX: f32 = 11.0;
 const NOTE_AREA_GAP: f64 = 10.0;
 
 // Panel + guide chrome colours are theme-driven — see `ChromeColors`, not new consts.
 // Layout guides + handles use the theme accent — see `chrome.accent`/`chrome.accent_faint`.
 /// How close (px) the pointer must be to a guide line to grab it.
 const GUIDE_GRAB: f64 = 7.0;
-
-/// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
-/// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
-/// toolbar's last row, right of the colour swatches, so buttons never pack under it.
-/// Gap between the zoom stepper cluster and the colour-swatch strips on the
-/// toolbar's last row.
-const ZOOM_SWATCH_GAP: f64 = 16.0;
 
 /// Which layout element the bottom bar is editing. Each mode shows draggable
 /// guides on the page with live preview.
@@ -747,27 +412,6 @@ enum NumField {
     Indent,
 }
 
-#[derive(Clone, Copy)]
-struct PanelRow {
-    x0: f64,
-    right: f64,
-    y: f64,
-}
-
-#[derive(Clone, Copy)]
-struct NumRow {
-    field: NumField,
-    value: f32,
-    geometry: PanelRow,
-}
-
-struct PanelButton<'a> {
-    rect: Rect,
-    label: &'a str,
-    active: bool,
-    centered: bool,
-}
-
 impl NumField {
     fn get(self, s: &crate::styles::StyleProps) -> f32 {
         match self {
@@ -792,12 +436,18 @@ impl NumField {
             NumField::Indent => s.indent = v,
         }
     }
-    /// Style value units per pixel of horizontal drag.
-    fn scrub_factor(self) -> f32 {
-        match self {
-            NumField::Size => 0.1,
-            _ => 0.25,
-        }
+    /// The field the inspector edits this property with.
+    fn input(self) -> ui::widget::NumberInput {
+        let (min, max) = match self {
+            NumField::Size => (6.0, 200.0),
+            _ => (0.0, 200.0),
+        };
+        ui::widget::NumberInput::new(min)
+            .with_range(min, max)
+            .with_step(f64::from(self.step()))
+            .control_size(ControlSize::Small)
+            .compact()
+            .with_accessible_name(self.label())
     }
     /// Stepper (+/-) increment.
     fn step(self) -> f32 {
@@ -828,19 +478,14 @@ enum PanelHit {
     /// attr — direct formatting, not the style default). The "This paragraph"
     /// section, distinct from the named-style editor below it.
     ParaAlign(&'static str),
-    /// Cycle the **current paragraph(s)** line spacing (1.0 → 1.15 → 1.5 → 2.0).
-    ParaLineSpacing,
-    CycleFont,
+    /// Set the focused style's font family.
+    SetFont(&'static str),
     ToggleBold,
     ToggleItalic,
     SetColor([u8; 3]),
     /// Open the shared colour-picker popover to choose an arbitrary colour for
     /// the focused style (beyond the quick-preset swatches).
     OpenColorPicker,
-    /// The value box of a numeric field — click to type, drag to scrub.
-    Num(NumField),
-    /// A +/- stepper on a numeric field.
-    NumDelta(NumField, f32),
     /// Duplicate the current style under a fresh id and apply it.
     NewStyle,
     /// Scale the selected image by a factor (a resize stepper: `0.9` shrinks,
@@ -855,6 +500,8 @@ enum PanelHit {
     ImageCropInset,
     /// Restore the full source image without changing its display frame.
     ImageCropReset,
+    /// Put the selected object back in the text flow, between paragraphs.
+    ImageInline,
     /// Turn the selected object into a freely positioned page object.
     ImageFreePosition,
     /// Float the selected object at paragraph scope, with text on its right.
@@ -863,22 +510,45 @@ enum PanelHit {
     ImageWrapRight,
 }
 
-/// An in-progress drag-to-scrub on a numeric field.
-#[derive(Clone, Copy)]
-struct ScrubState {
-    field: NumField,
-    start_x: f64,
-    start_val: f32,
-    moved: bool,
+/// The zoom field of the status band: the page scale in percent, stepped
+/// by ten.
+fn zoom_field() -> ui::widget::NumberInput {
+    ui::widget::NumberInput::new(100.0)
+        .with_range(ZOOM_MIN * 100.0, ZOOM_MAX * 100.0)
+        .with_step(ZOOM_STEP * 100.0)
+        .with_suffix("%")
+        .control_size(ControlSize::Small)
+        .compact()
+        .with_accessible_name(t("a11y-zoom"))
 }
 
-/// Format a style value: integer when whole, else one decimal.
-fn fmt_num(v: f32) -> String {
-    if (v - v.round()).abs() < 0.05 {
-        format!("{}", num::i64_of_f32(v.round()))
-    } else {
-        format!("{v:.1}")
-    }
+/// The inspector's line-spacing menu, reporting the index of the spacing
+/// picked into `pick`.
+fn line_spacing_menu(pick: &std::rc::Rc<std::cell::Cell<Option<usize>>>) -> ui::widget::Dropdown {
+    let labels: Vec<String> = block_layout::LINE_SPACINGS
+        .iter()
+        .map(|spacing| line_spacing_label(*spacing))
+        .collect();
+    let pick = std::rc::Rc::clone(pick);
+    let names = labels.clone();
+    ui::widget::Dropdown::from_state(labels, &ui::LocalState::new(String::new()))
+        .on_change(move |label| {
+            if let Some(index) = names.iter().position(|name| name == label) {
+                pick.set(Some(index));
+            }
+        })
+        .control_size(ControlSize::Small)
+        .with_accessible_name(t("a11y-line-spacing"))
+}
+
+/// The inspector's paragraph-style menu; a pick lands in `choice` as the
+/// style's id.
+fn style_pick_menu(choice: &std::rc::Rc<std::cell::Cell<Option<String>>>) -> ui::widget::Dropdown {
+    let choice = std::rc::Rc::clone(choice);
+    ui::widget::Dropdown::from_state(Vec::new(), &ui::LocalState::new(String::new()))
+        .on_change(move |id| choice.set(Some(id.to_owned())))
+        .control_size(ControlSize::Small)
+        .with_accessible_name(t("panel-style"))
 }
 
 /// The toggleable inline mark a qdoc mark name denotes (Ctrl+B/I/U, toolbar,
@@ -1339,8 +1009,6 @@ pub struct WordProcessorWidget {
     /// lazily-decoded image cache (`None` = decode failed / unsupported format).
     blobs: std::collections::BTreeMap<String, Vec<u8>>,
     image_cache: std::collections::HashMap<String, Option<ui::widget::Image>>,
-    /// The toolbar button the pointer is currently over (for hover feedback).
-    hover_tool: Option<Rect>,
     blocks: Vec<BlockView>,
     /// Canonical body order for a large document. This is intentionally ids
     /// only: offscreen rich text/marks/attrs stay in qdoc until its viewport
@@ -1380,7 +1048,23 @@ pub struct WordProcessorWidget {
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
+    /// Each visible toolbar command's rect this frame, for hit-testing and
+    /// the accessibility tree.
     toolbar: Vec<(ToolAction, Rect)>,
+    /// The toolbar itself, hosted in the painted chrome.
+    tool_bar: ui::widget::Toolbar,
+    /// The commands the toolbar was built from.
+    tool_entries: Vec<ToolEntry>,
+    /// The command the toolbar fired since the last event was routed.
+    tool_fired: std::rc::Rc<std::cell::Cell<Option<ToolAction>>>,
+    /// The toolbar's band this frame.
+    tool_band: Rect,
+    /// The Find bar's band this frame (empty while it is closed).
+    find_band: Rect,
+    /// The theme for what is drawn on the paper, this frame.
+    paper_theme: Theme,
+    /// The window's theme this frame, for what is drawn on the desk.
+    desk_theme: Theme,
     /// System text scale used to size shared toolbar geometry and its hit map.
     /// Updated from the live theme before frame geometry is resolved.
     text_scale: f64,
@@ -1414,8 +1098,6 @@ pub struct WordProcessorWidget {
     /// The bottom layout bar's clickable chips: `(mode, rect)`.
     layout_chips: Vec<(LayoutMode, Rect)>,
     layout_bar_height: f64,
-    toolbar_label_widths: HashMap<String, f64>,
-    toolbar_row_height: f64,
     zoom_viewport: Rect,
     /// Whether the contextual styles panel is shown (dismissable via the toolbar
     /// "Styles" toggle).
@@ -1425,19 +1107,36 @@ pub struct WordProcessorWidget {
     panel_hits: Vec<(Rect, PanelHit)>,
     /// The numeric field currently being typed into (click-to-type), if any.
     editing_field: Option<NumField>,
-    /// Text buffer for the field being typed into.
-    edit_buf: String,
-    /// An active drag-to-scrub on a numeric field, if any.
-    scrub: Option<ScrubState>,
+    /// The inspector's style property fields.
+    num_inputs: Vec<NumSlot>,
+    /// The inspector's line-spacing menu, the choice it made, and where it
+    /// was drawn.
+    line_spacing: ui::widget::Dropdown,
+    line_spacing_pick: std::rc::Rc<std::cell::Cell<Option<usize>>>,
+    line_spacing_rect: Rect,
+    /// A failed save, shown as an error banner under the toolbar until the
+    /// next save succeeds or it is dismissed; holds the banner's dismiss
+    /// control as last drawn.
+    save_error: Option<Rect>,
+    /// The inspector's paragraph-style menu: the style it picked, the
+    /// `(id, name)` choices it offers, and where it was drawn.
+    style_pick: ui::widget::Dropdown,
+    style_pick_choice: std::rc::Rc<std::cell::Cell<Option<String>>>,
+    style_pick_options: Vec<(String, String)>,
+    style_pick_rect: Rect,
+    /// The inspector's scrolled column and how far it scrolls.
+    panel_body: Rect,
+    panel_scroll: f64,
+    panel_max_scroll: f64,
+    /// The zoom field in the status band, and where it was drawn.
+    zoom_input: ui::widget::NumberInput,
+    zoom_rect: Rect,
     /// Local page scale plus its toolbar drawing and hit-testing.
     zoom: ZoomControl,
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
     /// One-shot headless staging deferred until toolbar geometry is laid out.
     staged: StagedOverlays,
-    /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
-    /// the canvas top offset so no control is ever clipped.
-    toolbar_rows: usize,
     /// Footnotes / endnotes (materialized from the doc), sorted by note id; the
     /// in-text numbering is derived from `note-ref` document order, not this order.
     notes: Vec<NoteView>,
@@ -1495,16 +1194,17 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
-    /// The theme's spacing / radius tokens for this frame (see
-    /// [`ChromeTokens`]); resolved next to `chrome`.
-    tokens: ChromeTokens,
-    /// Measured styles-panel metrics for this frame (see [`PanelMetrics`]);
-    /// resolved at the top of `draw_frame_chrome`, read by the panel painter
-    /// and by the canvas geometry that reserves the panel's width.
-    panel_metrics: PanelMetrics,
+    /// The outline (the leading sidebar) and the inspector (the trailing
+    /// panel): docked beside the page in a wide window, floating drawers
+    /// over a scrim in a narrow one.
+    outline_drawer: ui::widget::SidebarDrawer,
+    inspector_drawer: ui::widget::SidebarDrawer,
+    /// Their show/hide buttons at the ends of the toolbar band.
+    outline_toggle: Rect,
+    inspector_toggle: Rect,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
-    /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
+    /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
     template_picker: TemplatePicker,
     unsaved_changes: UnsavedChanges,
     pending_replacement: Option<PendingReplacement>,
@@ -1585,20 +1285,14 @@ impl WordProcessorWidget {
         Ok(widget)
     }
 
-    fn styles_panel_width(&self) -> f64 {
-        STYLES_PANEL_W * self.text_scale
-    }
-
-    fn outline_panel_width(&self) -> f64 {
-        OUTLINE_PANEL_W * self.text_scale
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the constructor lists every child widget and its initial state in one place"
     )]
     pub fn new() -> Self {
-        Self {
+        let line_spacing_pick = std::rc::Rc::new(std::cell::Cell::new(None));
+        let style_pick_choice = std::rc::Rc::new(std::cell::Cell::new(None));
+        let mut widget = Self {
             inner: WordProcessor::new(),
             rect: Rect::ZERO,
             lifecycle: EditorLifecycle {
@@ -1623,7 +1317,6 @@ impl WordProcessorWidget {
             find: FindBar::default(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
-            hover_tool: None,
             blocks: Vec::new(),
             body_order: std::rc::Rc::default(),
             body_window_start: 0,
@@ -1643,6 +1336,13 @@ impl WordProcessorWidget {
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
             toolbar: Vec::new(),
+            tool_bar: ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal),
+            tool_entries: Vec::new(),
+            tool_fired: std::rc::Rc::new(std::cell::Cell::new(None)),
+            tool_band: Rect::ZERO,
+            find_band: Rect::ZERO,
+            paper_theme: Theme::light(),
+            desk_theme: Theme::dark(),
             text_scale: 1.0,
             rich_clip: None,
             scroll_y: 0.0,
@@ -1661,9 +1361,7 @@ impl WordProcessorWidget {
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
-            layout_bar_height: LAYOUT_BAR_H,
-            toolbar_label_widths: HashMap::new(),
-            toolbar_row_height: TOOLBAR_H,
+            layout_bar_height: 0.0,
             zoom_viewport: Rect::ZERO,
             // Keep the writing surface primary on first launch. The complete
             // style inspector is one click away and becomes an overlay on a
@@ -1671,11 +1369,35 @@ impl WordProcessorWidget {
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
             editing_field: None,
-            edit_buf: String::new(),
-            scrub: None,
+            num_inputs: [
+                NumField::Size,
+                NumField::SpaceBefore,
+                NumField::SpaceAfter,
+                NumField::Indent,
+            ]
+            .into_iter()
+            .map(|field| NumSlot {
+                field,
+                input: field.input(),
+                decimals: 0,
+                rect: Rect::ZERO,
+            })
+            .collect(),
+            line_spacing: ui::widget::Dropdown::new(Vec::new(), ""),
+            line_spacing_pick: std::rc::Rc::clone(&line_spacing_pick),
+            line_spacing_rect: Rect::ZERO,
+            save_error: None,
+            style_pick: ui::widget::Dropdown::new(Vec::new(), ""),
+            style_pick_choice: std::rc::Rc::clone(&style_pick_choice),
+            style_pick_options: Vec::new(),
+            style_pick_rect: Rect::ZERO,
+            panel_body: Rect::ZERO,
+            panel_scroll: 0.0,
+            panel_max_scroll: 0.0,
+            zoom_input: zoom_field(),
+            zoom_rect: Rect::ZERO,
             zoom: ZoomControl::new(),
             staged: StagedOverlays::default(),
-            toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
             proofing: ProofingPreferences::for_session(),
@@ -1693,7 +1415,8 @@ impl WordProcessorWidget {
                     .with_editor(
                         BlockEditor::new()
                             .with_wrap_lines(true)
-                            .with_compact_paragraph_spacing(true),
+                            .with_compact_paragraph_spacing(true)
+                            .with_block_handles(false),
                     )
                     .with_placeholder(&t("review-reply-placeholder"))
                     .with_submit(SubmitKey::ModEnter),
@@ -1706,8 +1429,18 @@ impl WordProcessorWidget {
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
-            tokens: ChromeTokens::default(),
-            panel_metrics: PanelMetrics::fallback(),
+            outline_drawer: ui::widget::SidebarDrawer::new()
+                .left()
+                .closed()
+                .breakpoint(OUTLINE_DOCKS_FROM),
+            inspector_drawer: ui::widget::SidebarDrawer::new()
+                .right()
+                .closed()
+                .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
+                .overlay_width(f64::from(ui::tokens::Metrics::BASE.inspector_width))
+                .breakpoint(INSPECTOR_DOCKS_FROM),
+            outline_toggle: Rect::ZERO,
+            inspector_toggle: Rect::ZERO,
             recovery: RecoveryBanner::default(),
             template_picker: TemplatePicker::default(),
             unsaved_changes: UnsavedChanges::default(),
@@ -1734,7 +1467,10 @@ impl WordProcessorWidget {
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             participant_host: false,
-        }
+        };
+        widget.line_spacing = line_spacing_menu(&line_spacing_pick);
+        widget.style_pick = style_pick_menu(&style_pick_choice);
+        widget
     }
 
     // ---- Framework hosting ---------------------------------------------------
@@ -2019,7 +1755,7 @@ impl WordProcessorWidget {
                 return Err("the Find query is too long".into());
             }
             let blocks = self.search_blocks(state);
-            let effect = self.find.open(Some(query), &blocks);
+            let effect = self.find.open(Some(query), &mut Blocks(&blocks));
             self.apply_find_effect(state, effect);
             return Ok(());
         }
@@ -3081,11 +2817,31 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
+    /// Edit the page margins on the page, as choosing Margins in the status
+    /// band does.
+    pub fn set_margins_mode(&mut self) {
+        self.toggle_layout_mode(LayoutMode::Margins);
+    }
+
+    /// Show or hide the document outline.
+    pub fn set_outline_open(&mut self, open: bool) {
+        if self.outline.is_open() != open {
+            self.outline.toggle();
+        }
+        self.lifecycle.dirty = true;
+    }
+
     /// Stage a representative non-destructive error toast for visual/a11y
     /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {
-        self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+        self.save_error = Some(Rect::ZERO);
         self.lifecycle.dirty = true;
+    }
+
+    /// Ask whether to save before a new document replaces this one, as
+    /// choosing a template with unsaved changes does.
+    pub fn stage_unsaved_changes_for_shot(&mut self) {
+        self.stage_replacement(PendingReplacement::Template(crate::Template::Report));
     }
 
     /// Stage the template picker for the next headless overlay pass.
@@ -3105,7 +2861,7 @@ impl WordProcessorWidget {
     /// than painting a mock search surface.
     pub fn stage_find_for_shot(&mut self, state: &AutoCommit, query: &str) {
         let blocks = self.search_blocks(state);
-        let effect = self.find.open(Some(query), &blocks);
+        let effect = self.find.open(Some(query), &mut Blocks(&blocks));
         self.apply_find_effect(state, effect);
         self.lifecycle.dirty = true;
     }
@@ -3569,15 +3325,16 @@ impl WordProcessorWidget {
                     tilo_files::native::atomic::write_preserving_target(path, &bytes).map_err(
                         |e| {
                             eprintln!("word-processor: could not write {}: {e}", path.display());
-                            self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                            self.save_error = Some(Rect::ZERO);
                             format!("could not write {}: {e}", path.display())
                         },
                     )?;
+                    self.save_error = None;
                     self.toast = Some((t("toast-saved"), ToastKind::Success));
                 }
                 Err(e) => {
                     eprintln!("word-processor: export failed: {e}");
-                    self.toast = Some((t("toast-save-failed"), ToastKind::Error));
+                    self.save_error = Some(Rect::ZERO);
                     return Err(format!("export failed: {e}"));
                 }
             }
@@ -3614,7 +3371,7 @@ impl WordProcessorWidget {
             None
         };
         let blocks = self.search_blocks(state);
-        let effect = self.find.open(seed.as_deref(), &blocks);
+        let effect = self.find.open(seed.as_deref(), &mut Blocks(&blocks));
         self.apply_find_effect(state, effect);
     }
 
@@ -3741,57 +3498,25 @@ impl WordProcessorWidget {
         }
     }
 
-    fn apply_find_effect_mut(&mut self, state: &mut AutoCommit, effect: FindEffect) {
-        match effect {
-            FindEffect::None => {}
-            FindEffect::SelectActive => self.select_current_match(state),
-            FindEffect::ReplaceCurrent => {
-                let Some((bid, start, end)) = self.find.active_match().cloned() else {
-                    return;
-                };
-                let replacement = self.find.replacement().to_string();
-                self.splice_via_action(
-                    state,
-                    crate::actions::RegionKind::Body,
-                    &bid,
-                    start,
-                    end,
-                    &replacement,
-                );
-                self.refresh_blocks(state);
-                self.lifecycle.needs_commit = true;
-                let blocks = self.search_blocks(state);
-                let effect = self.find.refresh(&blocks);
-                self.apply_find_effect(state, effect);
-            }
-            FindEffect::ReplaceAll => {
-                let replacement = self.find.replacement().to_string();
-                let mut matches = self.find.matches().to_vec();
-                // Replace from the highest char offset down so earlier offsets
-                // in a block stay valid.
-                matches.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-                for (bid, start, end) in matches.into_iter().rev() {
-                    self.splice_via_action(
-                        state,
-                        crate::actions::RegionKind::Body,
-                        &bid,
-                        start,
-                        end,
-                        &replacement,
-                    );
-                }
-                self.refresh_blocks(state);
-                self.lifecycle.needs_commit = true;
-                let blocks = self.search_blocks(state);
-                let effect = self.find.refresh(&blocks);
-                self.apply_find_effect(state, effect);
-            }
-        }
+    /// Carry what the person did in the Find bar to the document: search
+    /// again over the whole document, step to a match and select it, or
+    /// replace through the editor's own actions.
+    fn drive_find(&mut self, state: &mut AutoCommit) {
+        let mut find = std::mem::take(&mut self.find);
+        let effect = find.drive(&mut EditorFind { wp: self, state });
+        self.find = find;
+        self.apply_find_effect(state, effect);
     }
 
     #[cfg(test)]
-    fn replace_all(&mut self, state: &mut AutoCommit) {
-        self.apply_find_effect_mut(state, FindEffect::ReplaceAll);
+    fn replace_all_matches(&mut self, state: &mut AutoCommit, with: &str) -> usize {
+        let matches = self.find.matches().to_vec();
+        let replaced = EditorFind { wp: self, state }.replace_matches(&matches, with);
+        let mut find = std::mem::take(&mut self.find);
+        let effect = find.refresh(&mut EditorFind { wp: self, state });
+        self.find = find;
+        self.apply_find_effect(state, effect);
+        replaced
     }
 
     /// The bounded slice to materialize around the viewport, including at the
@@ -4106,17 +3831,6 @@ fn apply_edges(e: &mut Edges, page: Rect, side: Side, p: Point, kind: DragKind) 
     }
 }
 
-/// The shared draw arguments [`WordProcessorWidget::draw_styles_panel`]
-/// threads through its per-section helpers, so each one carries a handful of
-/// positions rather than the whole argument list.
-struct PanelDrawCtx<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    tr: &'a mut TextRenderer,
-    cc: ChromeColors,
-}
-
-#[derive(Clone, Copy)]
 struct RunningBand<'a> {
     blocks: &'a [BlockView],
     page_no: usize,
@@ -4317,27 +4031,30 @@ impl WordProcessorWidget {
         } else {
             t("band-footer")
         };
-        let approx = num::f64_of_usize(label.chars().count()) * 6.4 + 12.0;
+        let style = self.paper_theme.text(TextRole::Caption);
+        let (w, h) = tr.measure_style(&label, None, &style);
+        let pad_x = f64::from(self.paper_theme.tokens.spacing.s1);
         let tab = Rect::new(
-            band.x0 - 2.0,
-            band.y0 - 15.0,
-            band.x0 - 2.0 + approx,
-            band.y0 - 1.0,
+            pad.x0,
+            pad.y0 - f64::from(h),
+            pad.x0 + f64::from(w) + 2.0 * pad_x,
+            pad.y0,
         );
+        let radius = f64::from(self.paper_theme.tokens.radii.detail) / 2.0;
         scene.fill(
             Fill::NonZero,
             ctf,
             edge,
             None,
-            &vello::kurbo::RoundedRect::from_rect(tab, 2.0),
+            &vello::kurbo::RoundedRect::from_rect(tab, radius),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &label,
-            10.0,
             self.chrome.on_paper_accent,
-            ctf * Affine::translate((tab.x0 + 6.0, tab.y0 + 1.5)),
+            ctf * Affine::translate((tab.x0 + pad_x, tab.y0)),
             None,
+            &style,
         );
     }
 
@@ -4378,13 +4095,13 @@ impl WordProcessorWidget {
             self.ime_rect = Some(ctf.transform_rect_bbox(c));
             scene.fill(Fill::NonZero, ctf, self.chrome.paper_accent, None, &c);
             if !self.ime_preedit.is_empty() {
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &self.ime_preedit,
-                    12.0,
                     PAPER_INK,
                     ctf * Affine::translate((c.x0, c.y0)),
                     None,
+                    &ui::text_render::TextStyle::content(num::f32_of_f64(c.height() * 0.75)),
                 );
             }
         }
@@ -4582,22 +4299,13 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
+        theme: &Theme,
         band: Rect,
         page_x: f64,
         page_w: f64,
     ) {
         let model = self.ruler_model(band, page_x, page_w);
-        let colors = RulerColors {
-            bar: self.chrome.bar,
-            field: self.chrome.field,
-            paper: self.chrome.paper,
-            border: self.chrome.border,
-            text: self.chrome.text,
-            text_dim: self.chrome.text_dim,
-            accent: self.chrome.accent,
-            accent_faint: self.chrome.accent_faint,
-        };
-        self.ruler.draw(scene, transform, text, colors, &model);
+        self.ruler.draw(scene, transform, text, theme, &model);
     }
 
     fn apply_ruler_preview(&mut self, effect: RulerEffect) {
@@ -4762,7 +4470,15 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         page: Rect,
     ) {
-        let accent = self.chrome.accent;
+        // The guides are what you are dragging: your colour, made legible
+        // on the paper; the guide at rest is a quieter hairline of it.
+        let theme = &self.paper_theme;
+        let you = self.chrome.paper_accent;
+        let rest = self.chrome.paper_edge;
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
+        let grip = f64::from(theme.tokens.spacing.s1);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let label_style = theme.text(TextRole::Caption).numeric();
         if let Some(e) = self.active_edges() {
             let drag = self.guide_drag;
             for side in [Side::Left, Side::Right, Side::Top, Side::Bottom] {
@@ -4772,120 +4488,214 @@ impl WordProcessorWidget {
                     DragKind::Pair => g.side == side || g.side.opposite() == side,
                     DragKind::Single => g.side == side,
                 });
-                let col = if active {
-                    accent
+                let (col, t) = if active {
+                    (you, rule * 2.0)
                 } else {
-                    self.chrome.accent_faint
+                    (rest, rule)
                 };
-                let t = if active { 2.0 } else { 1.0 };
-                let line = if vert {
-                    Rect::new(c - t / 2.0, page.y0, c + t / 2.0, page.y1)
+                // At rest a guide runs through the margins only, from the
+                // page's edge to the text block's corner on either side, so
+                // it never runs along the text; the guide being dragged
+                // spans the page.
+                let (lo, hi) = if vert {
+                    (page.y0 + e.top, page.y1 - e.bottom)
                 } else {
-                    Rect::new(page.x0, c - t / 2.0, page.x1, c + t / 2.0)
+                    (page.x0 + e.left, page.x1 - e.right)
                 };
-                scene.fill(Fill::NonZero, transform, col, None, &line);
-                // grip dot at the line's midpoint
+                let (start, end) = if vert {
+                    (page.y0, page.y1)
+                } else {
+                    (page.x0, page.x1)
+                };
+                let spans = if active {
+                    vec![(start, end)]
+                } else {
+                    vec![(start, lo), (hi, end)]
+                };
+                for (a, b) in spans {
+                    let line = if vert {
+                        Rect::new(c - t / 2.0, a, c + t / 2.0, b)
+                    } else {
+                        Rect::new(a, c - t / 2.0, b, c + t / 2.0)
+                    };
+                    scene.fill(Fill::NonZero, transform, col, None, &line);
+                }
+                // A grip in the margin shows where to take the guide: half
+                // way across the top margin on a side guide, half way across
+                // the leading margin on a top or bottom one.
                 let (gx, gy) = if vert {
-                    (c, f64::midpoint(page.y0, page.y1))
+                    (c, f64::midpoint(start, lo))
                 } else {
-                    (f64::midpoint(page.x0, page.x1), c)
+                    (f64::midpoint(start, lo), c)
                 };
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    accent,
+                    you,
                     None,
-                    &vello::kurbo::Circle::new((gx, gy), 4.0),
+                    &vello::kurbo::Circle::new((gx, gy), grip),
                 );
-                // value label, offset inside the page
+                // The value, set just inside the page beside its guide.
                 let label = format!("{}", num::i64_of_f64(e.get(side).round()));
                 let (lx, ly) = if vert {
-                    (c + 6.0, page.y0 + 16.0)
+                    (c + gap, page.y0 + gap)
                 } else {
-                    (page.x0 + 10.0, c + 5.0)
+                    (page.x0 + gap, c + gap)
                 };
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &label,
-                    12.0,
-                    accent,
+                    you,
                     transform * Affine::translate((lx, ly)),
                     None,
+                    &label_style,
                 );
             }
         } else if self.layout_mode == LayoutMode::Spacing
             && let Some((hx, hy)) = self.spacing_handle()
         {
-            let pill = Rect::new(hx - 20.0, hy - 3.0, hx + 20.0, hy + 3.0);
+            let half = f64::from(theme.tokens.spacing.s4);
+            let pill = Rect::new(hx - half, hy - grip / 2.0, hx + half, hy + grip / 2.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                accent,
+                you,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(pill, 3.0),
+                &vello::kurbo::RoundedRect::from_rect(pill, grip / 2.0),
             );
             let label = format!("{} px", num::i64_of_f64(self.focused_space_after().round()));
-            tr.draw_text(
+            let (_, h) = tr.measure_style(&label, None, &label_style);
+            tr.draw_style(
                 scene,
                 &label,
-                12.0,
-                accent,
-                transform * Affine::translate((hx + 30.0, hy - 7.0)),
+                you,
+                transform * Affine::translate((hx + half + gap, hy - f64::from(h) / 2.0)),
                 None,
+                &label_style,
             );
         }
     }
 
-    /// The bottom layout bar: mode chips + a live readout / hint.
+    /// The status band's height: one small control with the tightest step
+    /// above and below.
+    fn status_band_height(theme: &Theme) -> f64 {
+        ButtonFace::height(ControlSize::Small, theme) + 2.0 * f64::from(theme.tokens.spacing.s1)
+    }
+
+    /// The status band along the bottom: the Margins / Spacing layout modes
+    /// as one segmented control, the live readout of the mode in use, the
+    /// word and character counts, and the zoom field. It stands on the
+    /// content ground with one hairline above it.
     fn draw_layout_bar(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        _theme: &Theme,
+        theme: &Theme,
         bar: Rect,
     ) {
-        let cc = self.chrome;
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0),
-        );
+        ui::chrome::status_bar::draw(scene, transform, tr, theme, bar, "", "");
+        let sp = &theme.tokens.spacing;
+        let (s3, s4) = (f64::from(sp.s3), f64::from(sp.s4));
+        let cy = bar.center().y;
+        let control_h = ButtonFace::height(ControlSize::Small, theme);
 
-        let tk = self.tokens;
-        let cy = f64::midpoint(bar.y0, bar.y1);
-        let mut x = bar.x0 + tk.s3;
-        self.layout_chips.clear();
+        // The two layout modes are toggles, at most one of them in use and
+        // neither at rest: plain buttons that stand on the selection lift
+        // while their mode is on.
+        let gap = f64::from(sp.s1);
+        let mut x = bar.x0 + s3;
+        let mut chips = Vec::with_capacity(2);
         for (mode, label) in [
             (LayoutMode::Margins, t("layout-margins")),
             (LayoutMode::Spacing, t("layout-spacing")),
         ] {
-            let (label_width, label_height) = tr.measure(&label, LAYOUT_BAR_FONT, None);
-            // A chip is its measured label plus `s2` each side, centred on
-            // the bar's centre line at the measured chip height.
-            let w = 2.0 * tk.s2 + f64::from(label_width);
-            let chip_h = layout_chip_h(f64::from(label_height), tk);
-            let r = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
-            let active = self.layout_mode == mode;
-            let fg = if active { cc.on_accent } else { cc.text_dim };
-            chip_face(scene, transform, &cc, r, tk.radius_md, active);
-            tr.draw_text(
+            let w = ButtonFace::new(Rect::ZERO, &label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme);
+            let rect = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
+            Button::paint(
                 scene,
-                &label,
-                LAYOUT_BAR_FONT,
-                fg,
-                transform * Affine::translate((x + tk.s2, cy - f64::from(label_height) / 2.0)),
-                None,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &label)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small)
+                    .toggled(self.layout_mode == mode)
+                    .hovered(rect.contains(self.pointer)),
             );
-            self.layout_chips.push((mode, r));
-            x += w + tk.s2;
+            chips.push((mode, rect));
+            x = rect.x1 + gap;
+        }
+        let strip_x1 = x - gap;
+        self.layout_chips = chips;
+
+        // Trailing: the zoom field, then the counts before it.
+        let zoom_w = self.zoom_input.preferred_width(theme, tr);
+        let zoom = Rect::new(
+            bar.x1 - s3 - zoom_w,
+            cy - control_h / 2.0,
+            bar.x1 - s3,
+            cy + control_h / 2.0,
+        );
+        if !self.zoom_input.is_editing() {
+            self.zoom_input
+                .set_value((self.zoom.factor() * 100.0).round());
+        }
+        self.zoom_input.apply_layout_external(zoom);
+        self.zoom_rect = zoom;
+        Widget::draw(
+            &mut self.zoom_input,
+            scene,
+            transform,
+            tr,
+            theme,
+            &PresenceCtx::empty(),
+        );
+
+        let style = theme.text(TextRole::Caption).numeric();
+        let ink = theme.tokens.colors.text_dim;
+        let mut right = zoom.x0 - s4;
+        let mut left = strip_x1 + s4;
+        for readout in self.status_readouts().into_iter().rev() {
+            let (w, h) = tr.measure_style(&readout, None, &style);
+            let w = f64::from(w);
+            if right - w < left {
+                break;
+            }
+            tr.draw_style(
+                scene,
+                &readout,
+                ink,
+                transform * Affine::translate((right - w, cy - f64::from(h) / 2.0)),
+                None,
+                &style,
+            );
+            right -= w + s4;
         }
 
-        let readout = match self.layout_mode {
-            LayoutMode::Margins => t_args(
+        if let Some(readout) = self.layout_readout() {
+            let (w, h) = tr.measure_style(&readout, None, &style);
+            if left + f64::from(w) <= right {
+                tr.draw_style(
+                    scene,
+                    &readout,
+                    theme.tokens.colors.text_primary,
+                    transform * Affine::translate((left, cy - f64::from(h) / 2.0)),
+                    None,
+                    &style,
+                );
+                left += f64::from(w) + s4;
+            }
+        }
+        let _ = left;
+    }
+
+    /// The live value of the layout mode in use, or nothing at rest.
+    fn layout_readout(&self) -> Option<String> {
+        match self.layout_mode {
+            LayoutMode::Margins => Some(t_args(
                 "layout-margins-readout",
                 &[
                     arg("l", num::i64_of_f64(self.margins.left.round())),
@@ -4893,57 +4703,21 @@ impl WordProcessorWidget {
                     arg("r", num::i64_of_f64(self.margins.right.round())),
                     arg("b", num::i64_of_f64(self.margins.bottom.round())),
                 ],
-            ),
+            )),
             LayoutMode::Spacing => {
                 let name = self.focused_style_key().map_or_else(
                     || t("style-body"),
                     |k| crate::styles::style_display_name(&k, &self.sheet.get(&k)),
                 );
-                t_args(
+                Some(t_args(
                     "layout-spacing-readout",
                     &[
                         arg("name", name),
                         arg("px", num::i64_of_f64(self.focused_space_after().round())),
                     ],
-                )
+                ))
             }
-            LayoutMode::None => t("layout-none-hint"),
-        };
-        // Whether the hint fits depends on the localized text, the current
-        // document count, and the actual chip widths — a fixed pixel breakpoint
-        // lets long translations paint through the status label. Keep status
-        // persistent, but omit the redundant hint when those two would collide.
-        let status = self.status_count_label();
-        let (status_width, status_height) = tr.measure(&status, LAYOUT_BAR_STATUS_FONT, None);
-        let status_rect =
-            Self::layout_bar_status_rect(bar, x + tk.s3, f64::from(status_width), tk.s3);
-        let readout_x = x + tk.s3;
-        let (readout_width, readout_height) = tr.measure(&readout, LAYOUT_BAR_STATUS_FONT, None);
-        let readout_end = status_rect
-            .as_ref()
-            .map_or(bar.x1 - tk.s3, |rect| rect.x0 - tk.s3);
-        if readout_x + f64::from(readout_width) <= readout_end {
-            tr.draw_text(
-                scene,
-                &readout,
-                LAYOUT_BAR_STATUS_FONT,
-                cc.text_dim,
-                transform * Affine::translate((readout_x, cy - f64::from(readout_height) / 2.0)),
-                None,
-            );
-        }
-        // Document status is always docked in chrome. A floating surface can
-        // overlap the paper at any zoom, not merely in narrow tiles.
-        if let Some(status_rect) = status_rect {
-            tr.draw_text(
-                scene,
-                &status,
-                LAYOUT_BAR_STATUS_FONT,
-                cc.text_dim,
-                transform
-                    * Affine::translate((status_rect.x0, cy - f64::from(status_height) / 2.0)),
-                None,
-            );
+            LayoutMode::None => None,
         }
     }
 
@@ -4952,879 +4726,409 @@ impl WordProcessorWidget {
         self.view.styles_panel_visible
     }
 
-    /// Narrow tiles present the inspector as a temporary rail over the page;
-    /// wide windows reserve space for it. This keeps the document useful at
+    /// Narrow tiles present the inspector as a sheet over the page; wide
+    /// windows reserve space for it. This keeps the document useful at
     /// phone/three-column widths without making advanced formatting unreachable.
     fn styles_panel_overlay(&self) -> bool {
-        self.view.styles_panel_visible
-            && self.rect.width() < self.panel_metrics.panel_w() + MAX_PAGE_W + 48.0
+        self.view.styles_panel_visible && self.inspector_drawer.is_overlay()
     }
 
-    /// The contextual paragraph panel, in two clearly-labelled sections: **This
-    /// paragraph** (direct formatting — alignment + line spacing instance attrs)
-    /// and **Paragraph style** (the named-style editor: a picker + property rows
-    /// that mutate the *style*, so every block of that style updates live).
+    /// The contextual inspector. Docked, it is the window's inspector region;
+    /// over a narrow window it floats as a sheet over a scrim. A header names
+    /// what it inspects beside its close button, and below it the image
+    /// inspector or the paragraph's two sections scroll as one column.
     fn draw_styles_panel(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         panel: Rect,
     ) {
-        let cc = self.chrome;
-        self.panel_rect = panel;
         self.panel_hits.clear();
-        // Background + left border.
-        scene.fill(Fill::NonZero, transform, cc.bar, None, &panel);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.border,
-            None,
-            &Rect::new(panel.x0, panel.y0, panel.x0 + 1.0, panel.y1),
+        let local = theme.clone();
+        let sp = &local.tokens.spacing;
+        self.panel_rect = panel;
+        let pad = f64::from(local.tokens.spacing.s4);
+        let x0 = panel.x0 + pad;
+        let right = panel.x1 - pad;
+
+        // Header: what the panel inspects, and its close button.
+        let image = self.selected_image_id().is_some();
+        let title = if image {
+            t("panel-image")
+        } else {
+            t("toolbar-styles")
+        };
+        let target = f64::from(local.tokens.metrics.min_pointer_target);
+        let header = Rect::new(
+            x0,
+            panel.y0 + f64::from(sp.s2),
+            right,
+            panel.y0 + f64::from(sp.s2) + target,
         );
-        // Clip content to the panel so nothing bleeds into the bars.
+        let close = Rect::new(right - target, header.y0, right, header.y1);
+        let title_style = local.text(TextRole::Heading);
+        let (_, title_h) = tr.measure_style(&title, None, &title_style);
+        tr.draw_style(
+            scene,
+            &title,
+            local.tokens.colors.text_primary,
+            transform * Affine::translate((x0, header.center().y - f64::from(title_h) / 2.0)),
+            Some(num::f32_of_f64((close.x0 - x0).max(1.0))),
+            &title_style,
+        );
+        let close_label = t("panel-close");
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            &local,
+            &ButtonFace::icon_only(close, Icon::X, &close_label)
+                .hovered(close.contains(self.pointer)),
+        );
+        self.panel_hits.push((close, PanelHit::Close));
+
+        // The column below the header scrolls when it is taller than the
+        // panel.
+        let body = Rect::new(panel.x0, header.y1 + f64::from(sp.s2), panel.x1, panel.y1);
+        self.panel_body = body;
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
-            &panel,
+            &body,
         );
-
-        // Every row below derives from the measured panel metrics (1× floors),
-        // so a scaled label never paints under the control that follows it.
-        let pm = self.panel_metrics;
-        let pad = PANEL_PAD;
-        let x0 = panel.x0 + pad;
-        let right = panel.x1 - pad;
-        let inner_w = right - x0;
-        let mut y = panel.y0 + pad;
-
-        // A visible dismissal affordance matters on narrow screens: the
-        // inspector overlays the document there, so relying only on a tap in
-        // the dimmed background makes the way back needlessly undiscoverable.
-        let close_label = t("panel-close");
-        let close_w = (f64::from(tr.measure(&close_label, PANEL_LABEL_FONT, None).0)
-            + 2.0 * pm.tk.s3)
-            .max(PANEL_CLOSE_W);
-        let close = Rect::new(right - close_w, y, right, y + pm.control_h());
-        draw_legacy_btn(scene, transform, tr, &cc, close, &close_label, false, true);
-        self.panel_hits.push((close, PanelHit::Close));
-        y += pm.row_adv();
-
-        // When an image is selected, the panel becomes an image inspector
-        // (resize + flip) instead of the paragraph editor.
-        if self.selected_image_id().is_some() {
-            self.draw_image_inspector(scene, transform, tr, x0, right, y);
-            scene.pop_layer();
-            return;
-        }
-
-        let Some(key) = self.focused_style_key() else {
-            tr.draw_text(
-                scene,
-                &t("panel-caret-hint"),
-                PANEL_LABEL_FONT,
-                cc.text_dim,
-                transform * Affine::translate((x0, y)),
-                Some(num::f32_of_f64(inner_w)),
-            );
-            scene.pop_layer();
-            return;
-        };
-        // A snapshot of the focused style, threaded through every panel
-        // section below that reads it.
-        let st = self.sheet.get(&key);
-
-        let mut ctx = PanelDrawCtx {
+        let top = body.y0 - self.panel_scroll;
+        let mut ctx = PanelCtx {
             scene,
             transform,
             tr,
-            cc,
+            theme: &local,
+            x0,
+            right,
+            y: top,
+            clip: body,
         };
-
-        y = self.draw_panel_this_paragraph(&mut ctx, x0, right, y);
-        y = self.draw_panel_style_header(&mut ctx, x0, right, y, &key, &st);
-        y = self.draw_panel_font_weight(&mut ctx, x0, right, y, &st);
-        y = self.draw_panel_colour(&mut ctx, x0, right, y, &st);
-
-        // Numeric rows (style defaults: size, spacing before/after, indent).
-        for field in [
-            NumField::Size,
-            NumField::SpaceBefore,
-            NumField::SpaceAfter,
-            NumField::Indent,
-        ] {
-            self.draw_num_row(
+        if image {
+            self.draw_image_inspector(&mut ctx);
+        } else if let Some(key) = self.focused_style_key() {
+            let st = self.sheet.get(&key);
+            self.draw_panel_this_paragraph(&mut ctx);
+            self.draw_panel_style(&mut ctx, &key, &st);
+        } else {
+            let style = local.text(TextRole::Body);
+            ctx.tr.draw_style(
                 ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &NumRow {
-                    field,
-                    value: field.get(&st),
-                    geometry: PanelRow { x0, right, y },
-                },
+                &t("panel-caret-hint"),
+                local.tokens.colors.text_dim,
+                transform * Affine::translate((x0, ctx.y)),
+                Some(num::f32_of_f64((right - x0).max(1.0))),
+                &style,
             );
-            y += pm.row_adv();
+            ctx.y += f64::from(ctx.tr.measure_style("Ag", None, &style).1);
         }
-
-        panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
-        y += pm.tk.s3;
-
-        // New style from this.
-        {
-            let r = Rect::new(x0, y, right, y + pm.wide_control_h());
-            draw_btn(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: r,
-                    label: &t("panel-new-style"),
-                    active: false,
-                    centered: true,
-                },
-            );
-            self.panel_hits.push((r, PanelHit::NewStyle));
-        }
-
+        let content_h = ctx.y + pad - top;
         ctx.scene.pop_layer();
+        self.panel_max_scroll = (content_h - body.height()).max(0.0);
+        self.panel_scroll = self.panel_scroll.clamp(0.0, self.panel_max_scroll);
     }
 
-    /// "This paragraph" section: alignment (L/C/R/J) and line-spacing cycling
-    /// chip on the current paragraph(s) — direct/instance formatting, not the
-    /// named style below it. Returns the `y` past it.
-    fn draw_panel_this_paragraph(
-        &mut self,
-        ctx: &mut PanelDrawCtx,
-        x0: f64,
-        right: f64,
-        mut y: f64,
-    ) -> f64 {
-        let pm = self.panel_metrics;
-        // ================= This paragraph (direct formatting) =============
-        ctx.tr.draw_text(
-            ctx.scene,
-            &t("panel-this-paragraph"),
-            PANEL_CAPTION_FONT,
-            ctx.cc.text_dim,
-            ctx.transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += pm.caption_adv();
-
-        // Alignment: L / C / R / J — the current paragraph(s), via an instance
-        // `align` attr (not the style default).
-        {
-            let cur = self.current_align();
-            // Compact single-glyph buttons: a long localized label ("Ausrichtung"
-            // in German) must not collide with the L button, so the four glyphs are
-            // narrow — moving the strip right to open a gap after the label.
-            let bw = (pm.control_h() + pm.tk.s1).max(PANEL_ALIGN_W);
-            let gap = PANEL_ROW_SEAM;
-            let strip_left = right - 4.0 * bw - 3.0 * gap;
-            ctx.tr.draw_text(
-                ctx.scene,
-                &t("panel-align"),
-                PANEL_LABEL_FONT,
-                ctx.cc.text,
-                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
-                None,
-            );
-            for (i, (label, val)) in [
-                ("L", "left"),
-                ("C", "center"),
-                ("R", "right"),
-                ("J", "justify"),
-            ]
+    /// "This paragraph": direct formatting of the paragraph(s) under the
+    /// caret — alignment as a segmented control and line spacing as a menu.
+    fn draw_panel_this_paragraph(&mut self, ctx: &mut PanelCtx<'_>) {
+        ctx.section(&t("panel-this-paragraph"), true);
+        ctx.field_label(&t("panel-align"));
+        let values = ["left", "center", "right", "justify"];
+        let labels = [
+            t("panel-align-left"),
+            t("panel-align-center"),
+            t("panel-align-right"),
+            t("panel-align-justify"),
+        ];
+        let current = self.current_align();
+        let selected = values
             .iter()
-            .enumerate()
-            {
-                let rx = strip_left + num::f64_of_usize(i) * (bw + gap);
-                let r = Rect::new(rx, y, rx + bw, y + pm.control_h());
-                draw_btn(
-                    ctx.scene,
-                    ctx.transform,
-                    ctx.tr,
-                    &ctx.cc,
-                    &PanelButton {
-                        rect: r,
-                        label,
-                        active: cur == *val,
-                        centered: true,
-                    },
-                );
-                self.panel_hits.push((r, PanelHit::ParaAlign(val)));
-            }
-            y += pm.row_adv();
+            .position(|v| *v == current)
+            .unwrap_or(usize::MAX);
+        let rects = ctx.segmented(&labels, selected, self.pointer);
+        for (rect, value) in rects.into_iter().zip(values) {
+            self.panel_hits.push((rect, PanelHit::ParaAlign(value)));
         }
-
-        // Line spacing: a cycling chip (1.0 → 1.15 → 1.5 → 2.0) on the current
-        // paragraph(s).
-        {
-            ctx.tr.draw_text(
-                ctx.scene,
-                &t("panel-line-spacing"),
-                PANEL_LABEL_FONT,
-                ctx.cc.text,
-                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
-                None,
-            );
-            let label = line_spacing_label(self.current_line_spacing());
-            let w = (f64::from(ctx.tr.measure(&label, PANEL_LABEL_FONT, None).0) + 2.0 * pm.tk.s3)
-                .max(PANEL_CHIP_W);
-            let r = Rect::new(right - w, y, right, y + pm.control_h());
-            draw_btn(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: r,
-                    label: &label,
-                    active: false,
-                    centered: true,
-                },
-            );
-            self.panel_hits.push((r, PanelHit::ParaLineSpacing));
-            y += pm.row_adv();
+        ctx.field_label(&t("panel-line-spacing"));
+        let rect = ctx.control_line();
+        let current = line_spacing_label(self.current_line_spacing());
+        if !self.line_spacing.is_open() {
+            self.line_spacing.set_selected(current);
         }
-
-        panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
-        y += pm.tk.s3;
-        y
+        let viewport = self.floating_viewport();
+        self.line_spacing_rect = Self::host_menu(&mut self.line_spacing, ctx, rect, viewport);
     }
 
-    /// "Paragraph style" section: the focused style's display name + hint,
-    /// and the style-picker grid (click a chip to apply it). Returns the `y`
-    /// past it.
-    fn draw_panel_style_header(
+    /// Lay out and draw a hosted menu in `rect`; returns where it was drawn
+    /// (nothing while scrolled out of view).
+    fn host_menu(
+        menu: &mut ui::widget::Dropdown,
+        ctx: &mut PanelCtx<'_>,
+        rect: Rect,
+        viewport: Rect,
+    ) -> Rect {
+        menu.apply_layout_external(rect);
+        menu.set_viewport(viewport);
+        if !ctx.visible(rect) {
+            return Rect::ZERO;
+        }
+        Widget::draw(
+            menu,
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            ctx.theme,
+            &PresenceCtx::empty(),
+        );
+        rect
+    }
+
+    /// "Paragraph style": the named style under the caret, picked from a
+    /// menu, then the style's properties, which change every paragraph of
+    /// that style.
+    fn draw_panel_style(
         &mut self,
-        ctx: &mut PanelDrawCtx,
-        x0: f64,
-        right: f64,
-        mut y: f64,
+        ctx: &mut PanelCtx<'_>,
         key: &str,
         st: &crate::styles::StyleProps,
-    ) -> f64 {
-        // ================= Paragraph style (the named preset) =============
-        let inner_w = right - x0;
-        let pm = self.panel_metrics;
-        // `st` is a snapshot of the focused style (read-only copy), taken once
-        // by the caller and threaded through every panel section that needs it.
-        let display_name = crate::styles::style_display_name(key, st);
-        ctx.tr.draw_text(
-            ctx.scene,
-            &t("panel-style"),
-            PANEL_CAPTION_FONT,
-            ctx.cc.text_dim,
-            ctx.transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += pm.caption_adv();
-        ctx.tr.draw_text(
-            ctx.scene,
-            &display_name,
-            PANEL_NAME_FONT,
-            ctx.cc.text,
-            ctx.transform * Affine::translate((x0, y)),
-            Some(num::f32_of_f64(inner_w)),
-        );
-        y += pm.name_adv();
-        // Caption: name the preset semantics explicitly so this section reads as
-        // "edit the shared style" — distinct from the toolbar, which formats only
-        // the current selection. This is what keeps the two homes unambiguous.
-        ctx.tr.draw_text(
-            ctx.scene,
-            &t_args("panel-style-hint", &[arg("name", display_name)]),
-            PANEL_HINT_FONT,
-            ctx.cc.text_dim,
-            ctx.transform * Affine::translate((x0, y)),
-            Some(num::f32_of_f64(inner_w)),
-        );
-        y += pm.hint_adv();
-
-        // ---- Style picker -------------------------------------------------
-        let order = self.sheet.order();
-        let gap = PANEL_ROW_SEAM;
-        let col_w = (inner_w - gap) / 2.0;
-        let chip_h = pm.control_h();
-        for (i, id) in order.iter().enumerate() {
-            let col = num::f64_of_usize(i % 2);
-            let row = num::f64_of_usize(i / 2);
-            let cx = x0 + col * (col_w + gap);
-            let cy = y + row * (chip_h + gap);
-            let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
-            let name = crate::styles::style_display_name(id, &self.sheet.get(id));
-            draw_btn(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: r,
-                    label: &name,
-                    active: id.as_str() == key,
-                    centered: false,
-                },
-            );
-            self.panel_hits.push((r, PanelHit::Pick(id.clone())));
+    ) {
+        ctx.section(&t("panel-style"), false);
+        let options: Vec<(String, String)> = self
+            .sheet
+            .order()
+            .iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    crate::styles::style_display_name(id, &self.sheet.get(id)),
+                )
+            })
+            .collect();
+        if options != self.style_pick_options {
+            self.style_pick.set_value_options(options.clone());
+            self.style_pick_options = options;
         }
-        let rows = num::f64_of_usize(order.len().div_ceil(2));
-        y += rows * (chip_h + gap) + PANEL_ROW_SEAM;
-        panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
-        y += pm.tk.s3;
-        y
-    }
+        if !self.style_pick.is_open() {
+            self.style_pick.set_selected(key);
+        }
+        let rect = ctx.control_line();
+        let viewport = self.floating_viewport();
+        self.style_pick_rect = Self::host_menu(&mut self.style_pick, ctx, rect, viewport);
+        ctx.caption(&t("panel-style-hint"));
 
-    /// Editable style-default properties, part 1: font family (cycling chip)
-    /// and Bold/Italic toggles. Returns the `y` past it.
-    fn draw_panel_font_weight(
-        &mut self,
-        ctx: &mut PanelDrawCtx,
-        x0: f64,
-        right: f64,
-        mut y: f64,
-        st: &crate::styles::StyleProps,
-    ) -> f64 {
-        // ---- Editable style properties (defaults for every block of this style;
-        // alignment + line spacing are the direct controls above, not here). The
-        // "PARAGRAPH STYLE" header + style name already frame this as the preset
-        // editor, so no separate sub-header is needed.
-
-        let pm = self.panel_metrics;
-        // Font (cycles sans → serif → mono).
-        {
-            ctx.tr.draw_text(
-                ctx.scene,
-                &t("panel-font"),
-                PANEL_LABEL_FONT,
-                ctx.cc.text,
-                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
-                None,
-            );
-            let fl = t(match st.font.as_str() {
-                "serif" => "panel-font-serif",
-                "mono" => "panel-font-mono",
-                _ => "panel-font-sans",
-            });
-            let w = (f64::from(ctx.tr.measure(&fl, PANEL_LABEL_FONT, None).0) + 2.0 * pm.tk.s3)
-                .max(PANEL_CHIP_W);
-            let r = Rect::new(right - w, y, right, y + pm.control_h());
-            draw_btn(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: r,
-                    label: &fl,
-                    active: false,
-                    centered: true,
-                },
-            );
-            self.panel_hits.push((r, PanelHit::CycleFont));
-            y += pm.row_adv();
+        // Font family, as a segmented control.
+        ctx.field_label(&t("panel-font"));
+        let fonts = ["sans", "serif", "mono"];
+        let labels = [
+            t("panel-font-sans"),
+            t("panel-font-serif"),
+            t("panel-font-mono"),
+        ];
+        let selected = fonts
+            .iter()
+            .position(|f| *f == st.font.as_str())
+            .unwrap_or(0);
+        let rects = ctx.segmented(&labels, selected, self.pointer);
+        for (rect, font) in rects.into_iter().zip(fonts) {
+            self.panel_hits.push((rect, PanelHit::SetFont(font)));
         }
 
-        // Weight: Bold / Italic toggles.
-        {
-            ctx.tr.draw_text(
-                ctx.scene,
-                &t("panel-weight"),
-                PANEL_LABEL_FONT,
-                ctx.cc.text,
-                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
-                None,
-            );
-            let bold = t("panel-bold");
-            let italic = t("panel-italic");
-            let widest = f64::from(ctx.tr.measure(&bold, PANEL_LABEL_FONT, None).0)
-                .max(f64::from(ctx.tr.measure(&italic, PANEL_LABEL_FONT, None).0));
-            let bw = (widest + 2.0 * pm.tk.s2).max(PANEL_TOGGLE_W);
-            let seam = PANEL_ROW_SEAM;
-            let ch = pm.control_h();
-            let rb = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
-            let ri = Rect::new(right - bw, y, right, y + ch);
-            draw_btn(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: rb,
-                    label: &t("panel-bold"),
-                    active: st.bold,
-                    centered: true,
-                },
-            );
-            draw_btn(
-                ctx.scene,
-                ctx.transform,
-                ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: ri,
-                    label: &t("panel-italic"),
-                    active: st.italic,
-                    centered: true,
-                },
-            );
+        // Bold and italic, as two toggles side by side.
+        ctx.field_label(&t("panel-weight"));
+        let (rb, ri) = ctx.pair();
+        ctx.button(rb, &t("panel-bold"), Some(st.bold), self.pointer);
+        ctx.button(ri, &t("panel-italic"), Some(st.italic), self.pointer);
+        if ctx.visible(rb) {
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
-            y += pm.row_adv();
         }
-        y
+        self.draw_panel_style_properties(ctx, st);
     }
 
-    /// Editable style-default properties, part 2: the colour swatch strip +
-    /// "Custom…" affordance that opens the shared colour-picker popover.
-    /// Returns the `y` past it.
-    fn draw_panel_colour(
+    /// The style's colour, sizes and spacing, then a new style from this
+    /// paragraph's look.
+    fn draw_panel_style_properties(
         &mut self,
-        ctx: &mut PanelDrawCtx,
-        x0: f64,
-        right: f64,
-        mut y: f64,
+        ctx: &mut PanelCtx<'_>,
         st: &crate::styles::StyleProps,
-    ) -> f64 {
-        // Colour: quick-preset swatches + a "Custom…" affordance that opens the
-        // shared `ColorPicker` popover for an arbitrary colour.
-        let inner_w = right - x0;
-        let pm = self.panel_metrics;
-        let sh = pm.swatch_h();
-        {
-            let label = t("panel-colour");
-            let (label_w, _) = ctx.tr.measure(&label, PANEL_LABEL_FONT, None);
-            ctx.tr.draw_text(
-                ctx.scene,
-                &label,
-                PANEL_LABEL_FONT,
-                ctx.cc.text,
-                ctx.transform * Affine::translate((x0, pm.label_top(y, sh))),
-                None,
-            );
-            let n = STYLE_PALETTE.len();
-            let sw_gap = pm.tk.s1;
-            // The strip starts at the control column: right of the measured
-            // label plus `s3`, between the classic bounds grown with the text.
-            let room = (inner_w - f64::from(label_w) - pm.tk.s3).max(0.0);
-            let strip_w = room
-                .clamp(
-                    PANEL_SWATCH_STRIP_MIN_W * pm.scale,
-                    PANEL_SWATCH_STRIP_MAX_W * pm.scale,
-                )
-                .min(room);
-            let sw = (strip_w - sw_gap * (num::f64_of_usize(n) - 1.0)) / num::f64_of_usize(n);
-            let sx0 = right - strip_w;
-            for (i, c) in STYLE_PALETTE.iter().enumerate() {
-                let sx = sx0 + num::f64_of_usize(i) * (sw + sw_gap);
-                let r = Rect::new(sx, y, sx + sw, y + sh);
-                let col = Color::from_rgb8(c[0], c[1], c[2]);
-                ctx.scene.fill(
-                    Fill::NonZero,
-                    ctx.transform,
-                    col,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 4.0),
-                );
-                if *c == st.color {
-                    // The selection ring is the chrome ink: it contrasts the
-                    // bar on both palettes, where a literal white ring
-                    // vanished against a white panel.
-                    ctx.scene.stroke(
-                        &vello::kurbo::Stroke::new(2.0),
-                        ctx.transform,
-                        ctx.cc.text,
-                        None,
-                        &vello::kurbo::RoundedRect::from_rect(r, 4.0),
-                    );
-                }
+    ) {
+        // Colour: the document palette as swatches and a custom colour.
+        ctx.field_label(&t("panel-colour"));
+        let swatch_gap = f64::from(ctx.theme.tokens.spacing.s1);
+        let count = STYLE_PALETTE.len() + 1;
+        let side = ((ctx.right - ctx.x0 - swatch_gap * num::f64_of_usize(count - 1))
+            / num::f64_of_usize(count))
+        .min(ButtonFace::height(ControlSize::Small, ctx.theme));
+        let names = swatch_names(PaletteKind::Text);
+        let mut x = ctx.x0;
+        for (c, name) in STYLE_PALETTE.iter().zip(names) {
+            let r = Rect::new(x, ctx.y, x + side, ctx.y + side);
+            if ctx.visible(r) {
+                ColorSwatchFace::new(r, Color::from_rgb8(c[0], c[1], c[2]), name)
+                    .selected(*c == st.color)
+                    .hovered(r.contains(self.pointer))
+                    .paint(ctx.scene, ctx.transform, ctx.tr, ctx.theme);
                 self.panel_hits.push((r, PanelHit::SetColor(*c)));
             }
-            y += sh + pm.tk.s2;
-            // "Custom…" — shows the current colour chip and opens the full
-            // picker. The chip sits on the control column with the swatches
-            // above it, not under the label column.
-            let chip = Rect::new(sx0, y, sx0 + sh, y + sh);
-            let cur = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
-            // An authored colour gets an edge measured against itself, so a
-            // swatch matching the bar still reads as a chip.
-            ui::surface::card(ctx.scene, ctx.transform, chip, 4.0, cur);
-            let btn = Rect::new(chip.x1 + pm.tk.s2, y, right, y + sh);
-            draw_btn(
+            x += side + swatch_gap;
+        }
+        let custom = Rect::new(x, ctx.y, x + side, ctx.y + side);
+        if ctx.visible(custom) {
+            let label = t("panel-colour-custom");
+            Button::paint(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
-                &ctx.cc,
-                &PanelButton {
-                    rect: btn,
-                    label: &t("panel-colour-custom"),
-                    active: self.color_picker.is_open(),
-                    centered: true,
-                },
+                ctx.theme,
+                &ButtonFace::icon_only(custom, Icon::Plus, &label)
+                    .control_size(ControlSize::Small)
+                    .hovered(custom.contains(self.pointer)),
             );
-            self.panel_hits.push((btn, PanelHit::OpenColorPicker));
-            self.panel_hits.push((chip, PanelHit::OpenColorPicker));
-            y += sh + pm.tk.s2;
+            self.panel_hits.push((custom, PanelHit::OpenColorPicker));
         }
-        y
+        ctx.y += side + f64::from(ctx.theme.tokens.spacing.rhythm.related);
+
+        // Size and spacing, as number fields two to a line, each under its
+        // label.
+        for pair in [
+            [NumField::Size, NumField::Indent],
+            [NumField::SpaceBefore, NumField::SpaceAfter],
+        ] {
+            let (left, right) = ctx.label_pair(&pair[0].label(), &pair[1].label());
+            for (field, column) in pair.into_iter().zip([left, right]) {
+                let value = f64::from(field.get(st));
+                let decimals = usize::from(value.fract().abs() > 0.05);
+                let Some(slot) = self.num_inputs.iter_mut().find(|slot| slot.field == field) else {
+                    continue;
+                };
+                if slot.decimals != decimals {
+                    slot.input = field.input().with_precision(decimals);
+                    slot.decimals = decimals;
+                }
+                if !slot.input.is_editing() {
+                    slot.input.set_value(value);
+                }
+                let w = slot
+                    .input
+                    .preferred_width(ctx.theme, ctx.tr)
+                    .min(column.width());
+                let rect = Rect::new(column.x0, column.y0, column.x0 + w, column.y1);
+                slot.input.apply_layout_external(rect);
+                if ctx.visible(rect) {
+                    Widget::draw(
+                        &mut slot.input,
+                        ctx.scene,
+                        ctx.transform,
+                        ctx.tr,
+                        ctx.theme,
+                        &PresenceCtx::empty(),
+                    );
+                    slot.rect = rect;
+                } else {
+                    slot.rect = Rect::ZERO;
+                }
+            }
+        }
+
+        // A new style from this paragraph's look.
+        ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
+        let r = ctx.control_line();
+        ctx.button(r, &t("panel-new-style"), None, self.pointer);
+        if ctx.visible(r) {
+            self.panel_hits.push((r, PanelHit::NewStyle));
+        }
     }
 
-    /// The image inspector shown in the styles panel when an image is selected:
-    /// the current display size, a Size stepper (Smaller / Larger, aspect-locked),
-    /// Flip toggles, crop controls, and placement controls. Registers its controls
-    /// as `panel_hits` so pointer and assistive-technology activation share one
-    /// dispatch path.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the image inspector paints its size, flip, crop and placement rows in one top-to-bottom pass sharing the running y cursor"
-    )]
-    fn draw_image_inspector(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        x0: f64,
-        right: f64,
-        y0: f64,
-    ) {
-        let cc = self.chrome;
-        let pm = self.panel_metrics;
-        let ch = pm.wide_control_h();
-        let inner_w = right - x0;
-        let mut y = y0;
-
-        tr.draw_text(
-            scene,
-            &t("panel-image"),
-            PANEL_CAPTION_FONT,
-            cc.text_dim,
-            transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += pm.caption_adv() + pm.tk.s1;
-
-        // Current display dimensions (from this frame's laid geometry).
+    /// The image inspector shown when an image is selected: its size, a
+    /// smaller / larger stepper (aspect-locked), flips, crop and placement.
+    /// Its controls register as `panel_hits` so pointer and assistive
+    /// technology activation share one dispatch path.
+    fn draw_image_inspector(&mut self, ctx: &mut PanelCtx<'_>) {
         let (dw, dh) = self.selected_image_dims().unwrap_or((0.0, 0.0));
         let dims = format!(
             "{} × {} px",
             num::i64_of_f64(dw.round()),
             num::i64_of_f64(dh.round())
         );
-        tr.draw_text(
-            scene,
-            &dims,
-            PANEL_DIMS_FONT,
-            cc.text,
-            transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += pm.dims_adv();
-        panel_divider(scene, transform, &cc, x0, right, y);
-        y += pm.tk.s3;
+        ctx.text_line(&dims, TextRole::Body, false, false);
+        ctx.y += f64::from(ctx.theme.tokens.spacing.rhythm.related);
 
-        // ---- Size (aspect-locked scale steppers) --------------------------
-        // Leave a label column on the left; the two buttons share the right side.
-        tr.draw_text(
-            scene,
-            &t("panel-image-size"),
-            PANEL_LABEL_FONT,
-            cc.text,
-            transform * Affine::translate((x0, pm.label_top(y, ch))),
-            None,
-        );
-        let seam = PANEL_ROW_SEAM;
-        let bw = ((inner_w - PANEL_IMAGE_LABEL_COL * pm.scale) / 2.0 - seam).clamp(
-            PANEL_IMAGE_BUTTON_MIN_W * pm.scale,
-            PANEL_IMAGE_BUTTON_MAX_W * pm.scale,
-        );
-        let rs = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
-        let rl = Rect::new(right - bw, y, right, y + ch);
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rs,
-            &t("panel-image-smaller"),
-            false,
-            true,
-        );
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rl,
-            &t("panel-image-larger"),
-            false,
-            true,
-        );
-        self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
-        self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
-        y += ch + pm.tk.s2;
-
-        self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
-        y += ch + pm.tk.s3;
-
-        // ---- Crop ---------------------------------------------------------
-        // Cropping keeps the object's display frame, while changing the source
-        // window inside it. A small deterministic inset is an accessible,
-        // keyboard/palette-equivalent starting point; Reset is always available
-        // once a crop exists.
-        tr.draw_text(
-            scene,
-            &t("panel-image-crop"),
-            PANEL_LABEL_FONT,
-            cc.text,
-            transform * Affine::translate((x0, pm.label_top(y, ch))),
-            None,
-        );
-        let crop = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
-        let reset = Rect::new(right - bw, y, right, y + ch);
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            crop,
-            &t("panel-image-crop-inset"),
-            false,
-            true,
-        );
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            reset,
-            &t("panel-image-crop-reset"),
-            false,
-            true,
-        );
-        self.panel_hits.push((crop, PanelHit::ImageCropInset));
-        self.panel_hits.push((reset, PanelHit::ImageCropReset));
-        y += ch + pm.tk.s3;
-
-        // ---- Object placement --------------------------------------------
-        // Keep Position as a real heading, rather than competing with three
-        // controls in the same horizontal row. This preserves the label at both
-        // desktop widths and the 390px inspector overlay.
-        tr.draw_text(
-            scene,
-            &t("panel-image-position"),
-            PANEL_LABEL_FONT,
-            cc.text,
-            transform * Affine::translate((x0, y)),
-            None,
-        );
-        y += pm.heading_adv();
-        let placement_gap = PANEL_ROW_SEAM;
-        let placement_w =
-            ((inner_w - placement_gap * 2.0) / 3.0).max(PANEL_IMAGE_BUTTON_MIN_W * pm.scale);
-        let free = Rect::new(x0, y, x0 + placement_w, y + ch);
-        let left = Rect::new(
-            free.x1 + placement_gap,
-            y,
-            free.x1 + placement_gap + placement_w,
-            y + ch,
-        );
-        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + ch);
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            free,
-            &t("panel-image-free"),
-            false,
-            true,
-        );
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            left,
-            &t("panel-image-wrap-left"),
-            false,
-            true,
-        );
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            right_wrap,
-            &t("panel-image-wrap-right"),
-            false,
-            true,
-        );
-        self.panel_hits.push((free, PanelHit::ImageFreePosition));
-        self.panel_hits.push((left, PanelHit::ImageWrapLeft));
-        self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
-    }
-
-    fn draw_panel_image_flip(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        x0: f64,
-        right: f64,
-        y: f64,
-        bw: f64,
-    ) {
-        let cc = self.chrome;
         let img_id = self.selected_image_id();
-        let (fh, fv) = self
+        let block = self
             .blocks
             .iter()
             .find(|b| Some(&b.id) == img_id.as_ref())
-            .map_or((false, false), |b| {
-                (
-                    matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
-                    matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
-                )
-            });
-        let pm = self.panel_metrics;
-        let ch = pm.wide_control_h();
-        let seam = PANEL_ROW_SEAM;
-        tr.draw_text(
-            scene,
-            &t("panel-image-flip"),
-            PANEL_LABEL_FONT,
-            cc.text,
-            transform * Affine::translate((x0, pm.label_top(y, ch))),
-            None,
-        );
-        let rh = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
-        let rv = Rect::new(right - bw, y, right, y + ch);
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rh,
-            &t("panel-image-flip-h"),
-            fh,
-            true,
-        );
-        draw_legacy_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            rv,
-            &t("panel-image-flip-v"),
-            fv,
-            true,
-        );
-        self.panel_hits.push((rh, PanelHit::ImageFlipH));
-        self.panel_hits.push((rv, PanelHit::ImageFlipV));
-    }
+            .cloned();
+        let (fh, fv) = block.as_ref().map_or((false, false), |b| {
+            (
+                matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
+                matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+            )
+        });
 
-    fn draw_num_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        row: &NumRow,
-    ) {
-        let NumRow {
-            field,
-            value,
-            geometry: PanelRow { x0, right, y },
-        } = *row;
-        let cc = self.chrome;
-        let pm = self.panel_metrics;
-        let ch = pm.control_h();
-        tr.draw_text(
-            scene,
-            &field.label(),
-            PANEL_LABEL_FONT,
-            cc.text,
-            transform * Affine::translate((x0, pm.label_top(y, ch))),
-            None,
-        );
-        let value_w = (f64::from(tr.measure("999.9", PANEL_LABEL_FONT, None).0) + pm.tk.s3)
-            .max(PANEL_VALUE_W);
-        let plus = Rect::new(right - ch, y, right, y + ch);
-        let vb = Rect::new(
-            plus.x0 - PANEL_STEP_SEAM - value_w,
-            y,
-            plus.x0 - PANEL_STEP_SEAM,
-            y + ch,
-        );
-        let minus = Rect::new(
-            vb.x0 - PANEL_STEP_SEAM - ch,
-            y,
-            vb.x0 - PANEL_STEP_SEAM,
-            y + ch,
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            &PanelButton {
-                rect: minus,
-                label: "−",
-                active: false,
-                centered: true,
-            },
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            &PanelButton {
-                rect: plus,
-                label: "+",
-                active: false,
-                centered: true,
-            },
-        );
-        // Value box.
-        let editing = self.editing_field == Some(field);
-        let scrubbing = self.scrub.is_some_and(|s| s.field == field);
-        // A field at rest has its derived edge; an edit / scrub in flight
-        // takes the accent ring instead (state, not a second edge).
-        ui::surface::card(scene, transform, vb, 5.0, cc.field);
-        if editing || scrubbing {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                cc.accent,
-                None,
-                &ui::surface::edge_outline(vb, 5.0),
-            );
+        for (label, first, second, toggles) in [
+            (
+                t("panel-image-size"),
+                (t("panel-image-smaller"), PanelHit::ImageScale(0.9), false),
+                (t("panel-image-larger"), PanelHit::ImageScale(1.1), false),
+                false,
+            ),
+            (
+                t("panel-image-flip"),
+                (t("panel-image-flip-h"), PanelHit::ImageFlipH, fh),
+                (t("panel-image-flip-v"), PanelHit::ImageFlipV, fv),
+                true,
+            ),
+            (
+                t("panel-image-crop"),
+                (t("panel-image-crop-inset"), PanelHit::ImageCropInset, false),
+                (t("panel-image-crop-reset"), PanelHit::ImageCropReset, false),
+                false,
+            ),
+        ] {
+            ctx.field_label(&label);
+            let (r1, r2) = ctx.pair();
+            for (rect, (label, hit, on)) in [(r1, first), (r2, second)] {
+                ctx.button(rect, &label, toggles.then_some(on), self.pointer);
+                if ctx.visible(rect) {
+                    self.panel_hits.push((rect, hit));
+                }
+            }
         }
-        let text = if editing {
-            format!("{}_", self.edit_buf)
-        } else {
-            fmt_num(value)
-        };
-        let (text_w, text_h) = tr.measure(&text, PANEL_LABEL_FONT, None);
-        let tx = f64::midpoint(vb.x0, vb.x1) - f64::from(text_w) / 2.0;
-        tr.draw_text(
-            scene,
-            &text,
-            PANEL_LABEL_FONT,
-            cc.text,
-            transform
-                * Affine::translate((tx, centred_line_top(vb.y0, vb.height(), f64::from(text_h)))),
-            None,
-        );
-        self.panel_hits.push((vb, PanelHit::Num(field)));
-        self.panel_hits
-            .push((minus, PanelHit::NumDelta(field, -field.step())));
-        self.panel_hits
-            .push((plus, PanelHit::NumDelta(field, field.step())));
+
+        // Placement, as one segmented control the width of the column.
+        ctx.field_label(&t("panel-image-position"));
+        let labels = [
+            t("panel-image-inline"),
+            t("panel-image-free"),
+            t("panel-image-wrap-left"),
+            t("panel-image-wrap-right"),
+        ];
+        let selected =
+            block
+                .as_ref()
+                .map_or(usize::MAX, |b| match (image_anchor(b), image_wrap(b)) {
+                    ("page", _) => 1,
+                    (_, "left") => 2,
+                    (_, "right") => 3,
+                    _ => 0,
+                });
+        let rects = ctx.segmented(&labels, selected, self.pointer);
+        for (rect, hit) in rects.into_iter().zip([
+            PanelHit::ImageInline,
+            PanelHit::ImageFreePosition,
+            PanelHit::ImageWrapLeft,
+            PanelHit::ImageWrapRight,
+        ]) {
+            self.panel_hits.push((rect, hit));
+        }
     }
 
     // ---- document outline / navigation pane -------------------------------
@@ -5951,106 +5255,224 @@ impl WordProcessorWidget {
     }
 }
 
-/// A horizontal 1px divider line inside the panel: the bar's derived edge
-/// (`ui::surface::separator`) on the pixel row at `y`. The callers already
-/// inset it by the panel padding, so it never runs into the panel edge.
-fn panel_divider(
-    scene: &mut Scene,
+/// The running column of the inspector: where the next row goes, what it
+/// draws with, and the visible band rows are clipped to.
+struct PanelCtx<'a> {
+    scene: &'a mut Scene,
     transform: Affine,
-    cc: &ChromeColors,
+    tr: &'a mut TextRenderer,
+    theme: &'a Theme,
     x0: f64,
-    x1: f64,
+    right: f64,
     y: f64,
-) {
-    ui::surface::separator(scene, transform, x0, x1, y + 0.5, 0.0, cc.bar);
+    clip: Rect,
 }
 
-/// A floating panel (HIG §9.1 Panel role: the comment thread, the colour
-/// picker and swatch popovers): elevation, the panel ground and the panel
-/// border, all derived from the theme. One recipe for the crate — the
-/// toolkit exposes the three parts but not yet the composition.
-pub(crate) fn paint_panel(
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    rect: Rect,
-    radius: f64,
-) {
-    ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        ui::chrome::panel_ground(theme),
-        None,
-        &vello::kurbo::RoundedRect::from_rect(rect, radius),
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        ui::chrome::panel_border(theme),
-        None,
-        &ui::surface::edge_outline(rect, radius),
-    );
-}
+impl PanelCtx<'_> {
+    /// Whether `rect` shows in the scrolled column at all.
+    fn visible(&self, rect: Rect) -> bool {
+        rect.y1 > self.clip.y0 && rect.y0 < self.clip.y1
+    }
 
-/// The face of a chrome chip / button (HIG §9.5 "Button Neutral"): at rest
-/// the chip tone with its derived edge (`ui::surface::card`), active the
-/// accent fill with no edge — selected accent never carries a hairline.
-fn chip_face(
-    scene: &mut Scene,
-    transform: Affine,
-    cc: &ChromeColors,
-    r: Rect,
-    radius: f64,
-    active: bool,
-) {
-    if active {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            cc.accent,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(r, radius),
+    /// One block of text, wrapped to the column.
+    fn text_line(&mut self, text: &str, role: TextRole, strong: bool, dim: bool) {
+        let style = if strong {
+            self.theme.text(role).strong()
+        } else {
+            self.theme.text(role)
+        };
+        let width = num::f32_of_f64((self.right - self.x0).max(1.0));
+        let colors = &self.theme.tokens.colors;
+        let ink = if dim {
+            colors.text_dim
+        } else {
+            colors.text_primary
+        };
+        let (_, h) = self.tr.measure_style(text, Some(width), &style);
+        let rect = Rect::new(self.x0, self.y, self.right, self.y + f64::from(h));
+        if self.visible(rect) {
+            self.tr.draw_style(
+                self.scene,
+                text,
+                ink,
+                self.transform * Affine::translate((self.x0, self.y)),
+                Some(width),
+                &style,
+            );
+        }
+        self.y += f64::from(h);
+    }
+
+    /// A section header in `Subheading`, a group's gap above it unless it is
+    /// the panel's first.
+    fn section(&mut self, title: &str, first: bool) {
+        if !first {
+            self.y += f64::from(self.theme.tokens.spacing.rhythm.group);
+        }
+        self.text_line(title, TextRole::Subheading, false, false);
+        self.y += f64::from(self.theme.tokens.spacing.rhythm.related);
+    }
+
+    /// A field's label, in secondary ink, over the control on the line
+    /// below it. Every field of the inspector is set this way, so labels
+    /// and controls share one leading edge.
+    fn field_label(&mut self, label: &str) {
+        self.text_line(label, TextRole::Label, false, true);
+        self.y += f64::from(self.theme.tokens.spacing.rhythm.tight);
+    }
+
+    /// One line of `Caption` in secondary ink under the control above it.
+    fn caption(&mut self, text: &str) {
+        self.y -= f64::from(self.theme.tokens.spacing.rhythm.related)
+            - f64::from(self.theme.tokens.spacing.rhythm.tight);
+        self.text_line(text, TextRole::Caption, false, true);
+        self.y += f64::from(self.theme.tokens.spacing.rhythm.related);
+    }
+
+    /// A line one small control tall, the width of the column; returns it
+    /// for the control.
+    fn control_line(&mut self) -> Rect {
+        let h = ButtonFace::height(ControlSize::Small, self.theme);
+        let line = Rect::new(self.x0, self.y, self.right, self.y + h);
+        self.y += h + f64::from(self.theme.tokens.spacing.rhythm.related);
+        line
+    }
+
+    /// A control line split into two equal halves.
+    fn pair(&mut self) -> (Rect, Rect) {
+        let gap = f64::from(self.theme.tokens.spacing.s2);
+        let line = self.control_line();
+        let mid = f64::midpoint(line.x0, line.x1);
+        (
+            Rect::new(line.x0, line.y0, mid - gap / 2.0, line.y1),
+            Rect::new(mid + gap / 2.0, line.y0, line.x1, line.y1),
+        )
+    }
+
+    /// Two fields side by side, each label over its half of the control
+    /// line below; returns the two halves.
+    fn label_pair(&mut self, first: &str, second: &str) -> (Rect, Rect) {
+        let gap = f64::from(self.theme.tokens.spacing.s2);
+        let mid = f64::midpoint(self.x0, self.right);
+        let style = self.theme.text(TextRole::Label);
+        let ink = self.theme.tokens.colors.text_dim;
+        let width = num::f32_of_f64((mid - gap / 2.0 - self.x0).max(1.0));
+        let (_, h) = self.tr.measure_style(first, Some(width), &style);
+        let label = Rect::new(self.x0, self.y, self.right, self.y + f64::from(h));
+        if self.visible(label) {
+            for (text, x) in [(first, self.x0), (second, mid + gap / 2.0)] {
+                self.tr.draw_style(
+                    self.scene,
+                    text,
+                    ink,
+                    self.transform * Affine::translate((x, self.y)),
+                    Some(width),
+                    &style,
+                );
+            }
+        }
+        self.y += f64::from(h) + f64::from(self.theme.tokens.spacing.rhythm.tight);
+        self.pair()
+    }
+
+    /// A segmented control the width of the column on its own line;
+    /// returns each segment's rect (none while scrolled out of view).
+    fn segmented(&mut self, labels: &[String], selected: usize, pointer: Point) -> Vec<Rect> {
+        let h = SegmentedFace::height(ControlSize::Small, self.theme);
+        let row = Rect::new(self.x0, self.y, self.right, self.y + h);
+        let rects = self.segmented_in(row, labels, selected, pointer);
+        self.y += h + f64::from(self.theme.tokens.spacing.rhythm.related);
+        rects
+    }
+
+    /// A segmented control filling `row`; returns each segment's rect.
+    fn segmented_in(
+        &mut self,
+        row: Rect,
+        labels: &[String],
+        selected: usize,
+        pointer: Point,
+    ) -> Vec<Rect> {
+        if !self.visible(row) || labels.is_empty() {
+            return Vec::new();
+        }
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let n = num::f64_of_usize(labels.len());
+        let seg = row.width() / n;
+        let rects: Vec<Rect> = (0..labels.len())
+            .map(|i| {
+                let i = num::f64_of_usize(i);
+                Rect::new(row.x0 + i * seg, row.y0, row.x0 + (i + 1.0) * seg, row.y1)
+            })
+            .collect();
+        let hovered = rects.iter().position(|r| r.contains(pointer));
+        ui::widget::ToggleGroup::paint(
+            self.scene,
+            self.transform,
+            self.tr,
+            self.theme,
+            &SegmentedFace::new(&rects, &refs, selected)
+                .control_size(ControlSize::Small)
+                .hovered(hovered),
         );
-    } else {
-        ui::surface::card(scene, transform, r, radius, cc.chip);
+        rects
+    }
+
+    /// A small secondary button in `rect`; with `toggle`, a toggle that
+    /// stands on the selection lift while on.
+    fn button(&mut self, rect: Rect, label: &str, toggle: Option<bool>, pointer: Point) {
+        if !self.visible(rect) {
+            return;
+        }
+        Button::paint(
+            self.scene,
+            self.transform,
+            self.tr,
+            self.theme,
+            &ButtonFace::new(rect, label)
+                .control_size(ControlSize::Small)
+                .toggled(toggle == Some(true))
+                .hovered(rect.contains(pointer)),
+        );
     }
 }
 
-/// A panel chip / button: rounded rect + label. `center` centers the label
-/// (approximate), else left-pads it.
-fn draw_btn(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    cc: &ChromeColors,
-    button: &PanelButton<'_>,
-) {
-    let PanelButton {
-        rect: r,
-        label,
-        active,
-        centered: center,
-    } = *button;
-    let fg = if active { cc.on_accent } else { cc.text };
-    chip_face(scene, transform, cc, r, 6.0, active);
-    // Centre on the measured label box, not a per-glyph estimate: a scaled
-    // or localised label lands on the button's centre line either way.
-    let (label_w, label_h) = tr.measure(label, PANEL_LABEL_FONT, None);
-    let tx = if center {
-        (f64::midpoint(r.x0, r.x1) - f64::from(label_w) / 2.0).max(r.x0 + 4.0)
-    } else {
-        r.x0 + 8.0
-    };
-    let ty = centred_line_top(r.y0, r.height(), f64::from(label_h));
-    tr.draw_text(
-        scene,
-        label,
-        PANEL_LABEL_FONT,
-        fg,
-        transform * Affine::translate((tx, ty)),
-        Some(num::f32_of_f64(r.width() - 6.0)),
-    );
+/// One numeric style property's field in the inspector.
+struct NumSlot {
+    field: NumField,
+    input: ui::widget::NumberInput,
+    /// Decimals the field shows: none unless the document's value has some.
+    decimals: usize,
+    /// Where it was drawn this frame (empty while scrolled out of view).
+    rect: Rect,
+}
+
+/// The spoken names of a palette's swatches, in palette order.
+fn swatch_names(kind: PaletteKind) -> Vec<String> {
+    match kind {
+        PaletteKind::Text => [
+            "color-black",
+            "color-gray",
+            "color-red",
+            "color-blue",
+            "color-green",
+            "color-amber",
+            "color-purple",
+        ]
+        .into_iter()
+        .map(|key| t_args("a11y-text-colour-name", &[arg("colour", t(key))]))
+        .collect(),
+        PaletteKind::Highlight => [
+            "color-yellow",
+            "color-green",
+            "color-cyan",
+            "color-pink",
+            "color-orange",
+        ]
+        .into_iter()
+        .map(|key| t_args("a11y-highlight-name", &[arg("colour", t(key))]))
+        .collect(),
+    }
 }
 
 /// One node of the word processor's accessibility tree: an [`ui::a11y::AccessNode`]
@@ -6118,7 +5540,8 @@ fn tool_action_id(action: ToolAction) -> String {
         ToolAction::ToggleHistory => "toggle-history".into(),
         ToolAction::InsertToc => "insert-table-of-contents".into(),
         ToolAction::NewMenu => "new-from-template".into(),
-        ToolAction::More => "more-tools".into(),
+        ToolAction::TextColorPalette => "text-color".into(),
+        ToolAction::HighlightPalette => "highlight".into(),
         ToolAction::TextColor(None) => "text-color-default".into(),
         ToolAction::TextColor(Some(rgb)) => {
             format!("text-color-{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
@@ -6131,7 +5554,7 @@ fn tool_action_id(action: ToolAction) -> String {
 }
 
 /// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
-/// toolbar labels are terse glyphs ("B", "H1", "🖼 Image") tuned for sighted
+/// toolbar faces are terse ("B", "x²", an icon) for sighted
 /// users; a screen reader needs the spelled-out verb instead.
 fn tool_action_a11y_label(a: ToolAction) -> String {
     let key = match a {
@@ -6158,7 +5581,8 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::ToggleHistory => "a11y-version-history",
         ToolAction::InsertToc => "a11y-insert-toc",
         ToolAction::NewMenu => "a11y-new-from-template",
-        ToolAction::More => "a11y-more-tools",
+        ToolAction::TextColorPalette => "picker-text-color",
+        ToolAction::HighlightPalette => "picker-highlight",
         ToolAction::TextColor(c) => {
             return match c {
                 Some(rgb) => {
@@ -6320,41 +5744,11 @@ impl WordProcessorWidget {
                 A11yTreeNode::leaf(node)
             })
             .collect();
-        // The stepper is painted by a small custom component, but it is part
-        // of this toolbar—not a pointer-only ornament. Source both the bounds
-        // and targets from that component's live hit list so keyboard/AT and
-        // pointer activation always address exactly the same controls.
-        buttons.extend(
-            self.zoom
-                .accessibility_targets()
-                .into_iter()
-                .map(|(target, rect)| {
-                    let (name, description) = match target {
-                        ZoomControl::TARGET_OUT => {
-                            (t("a11y-zoom-out"), t("a11y-zoom-out-description"))
-                        }
-                        ZoomControl::TARGET_RESET => {
-                            (t("a11y-zoom-reset"), t("a11y-zoom-reset-description"))
-                        }
-                        ZoomControl::TARGET_IN => {
-                            (t("a11y-zoom-in"), t("a11y-zoom-in-description"))
-                        }
-                        _ => (String::new(), String::new()),
-                    };
-                    A11yTreeNode::leaf(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_description(description)
-                            .with_value(format!("{:.0}%", self.zoom.factor() * 100.0))
-                            .with_bounds(rect)
-                            .with_action_target(target)
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            }),
-                    )
-                }),
-        );
+        // The zoom field sits in the status band but belongs to the view
+        // controls: expose it with them.
+        if let Some(node) = Widget::accessibility(&self.zoom_input) {
+            buttons.push(A11yTreeNode::leaf(node.with_bounds(self.zoom_rect)));
+        }
         Some(A11yTreeNode {
             node: AccessNode::new(Role::Toolbar).with_name(t("a11y-group-formatting")),
             children: buttons,
@@ -6402,6 +5796,11 @@ impl WordProcessorWidget {
             .iter()
             .filter_map(|(rect, hit)| {
                 let (id, name, description) = match hit {
+                    PanelHit::ImageInline => (
+                        "inline",
+                        t("a11y-image-inline"),
+                        t("a11y-image-inline-description"),
+                    ),
                     PanelHit::ImageFreePosition => (
                         "free",
                         t("a11y-image-free-position"),
@@ -6494,6 +5893,9 @@ impl WordProcessorWidget {
         if let Some(palette) = self.compact_swatch_palette.accessibility() {
             children.push(A11yTreeNode::leaf(palette));
         }
+        if let Some(find) = self.find.accessibility() {
+            children.push(A11yTreeNode::leaf(find.with_bounds(self.find_band)));
+        }
 
         A11yTreeNode {
             node: AccessNode::new(Role::Document).with_state(AccessState {
@@ -6541,7 +5943,6 @@ struct FrameGeometry {
     canvas_clip: Rect,
     canvas_left: f64,
     canvas_right: f64,
-    tb_h: f64,
     layout_bar_top: f64,
     history_top: f64,
     history_h: f64,
@@ -6738,15 +6139,18 @@ impl WordProcessorWidget {
         theme: &Theme,
         full: Rect,
     ) -> FrameGeometry {
-        let mut available = full.width();
-        if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            available -= self.styles_panel_width();
-        }
-        if self.outline.is_open() {
-            available -= self.outline_panel_width();
-        }
+        let tb_h = Self::toolbar_band_height(theme);
+        let below = Rect::new(
+            full.x0,
+            full.y0 + tb_h,
+            full.x1,
+            full.y1.max(full.y0 + tb_h),
+        );
+        let column = self.resolve_drawers(theme, below);
+        let available = column.width();
         let mobile_page = available < 600.0;
         let accessible_page = self.text_scale > 1.01;
+        let page_right = self.page_area_right(theme, column, mobile_page || accessible_page);
         if self.view.auto_fit_page {
             // Phone-sized tiles use a responsive editing sheet instead of
             // shrinking an entire Letter page until its body copy is 7 px.
@@ -6756,79 +6160,38 @@ impl WordProcessorWidget {
             } else if mobile_page {
                 1.0
             } else {
-                ((available - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
+                ((page_right - column.x0 - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
             };
             self.zoom.set(fit);
         }
-        // The toolbar may wrap to several rows on a narrow window; reserve its
-        // actual (possibly multi-row) height so the canvas top sits below it and
-        // no control is clipped. `draw_toolbar` re-derives the same packing, so
-        // the reserved band and the drawn rows always agree.
-        self.zoom.measure(text_renderer);
-        self.tokens = ChromeTokens::for_theme(theme);
-        self.panel_metrics = PanelMetrics::resolve(text_renderer, self.tokens);
-        self.toolbar_label_widths.clear();
-        let mut label_h = 0.0_f64;
-        for (_, item) in self
-            .toolbar_button_specs(false)
-            .into_iter()
-            .chain(self.toolbar_button_specs(true))
-        {
-            let weight = if item.cue == LabelCue::Bold {
-                ui::text_render::TextWeight::Bold
-            } else {
-                ui::text_render::TextWeight::Regular
-            };
-            let (width, height) =
-                text_renderer.measure_weighted(&item.label, TOOLBAR_MODEL.label_font, None, weight);
-            self.toolbar_label_widths
-                .insert(item.label, TOOLBAR_MODEL.item_w(f64::from(width)));
-            label_h = label_h.max(f64::from(height));
-        }
-        self.toolbar_row_height = TOOLBAR_MODEL
-            .row_h(label_h, self.zoom.height())
-            .max(chrome::toolbar::metrics(num::f32_of_f64(self.text_scale)).row_height);
-        let tb_h = self.toolbar_height(full.width());
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
+        self.tool_band = tb;
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
         // No bottom status strip: its readout floats as a transient component,
         // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
         let content_bottom = full.y1.max(full.y0 + tb_h);
-        // The bar is its measured chip plus `s1` above and below (1× floor 32).
-        let chip_h = layout_chip_h(
-            f64::from(text_renderer.measure("Mg", LAYOUT_BAR_FONT, None).1),
-            self.tokens,
-        );
-        self.layout_bar_height = LAYOUT_BAR_H.max(chip_h + 2.0 * self.tokens.s1);
+        self.layout_bar_height = Self::status_band_height(theme);
         let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0 + tb_h);
         // Version-history strip: a band between the canvas and the layout bar,
         // so the page shrinks rather than the history painting over the text.
-        let history_h = self.history.band_height();
+        // The strip stands clear of the page above it and the status band
+        // below it.
+        let history_h = if self.history.is_open() {
+            self.history.band_height() + 2.0 * f64::from(theme.tokens.spacing.s2)
+        } else {
+            0.0
+        };
         let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
-        // Reserve the styles panel out of the canvas so the page re-centers in the
-        // remaining width (and scrolled content never paints under the panel).
-        let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - self.panel_metrics.panel_w()).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        // Reserve the outline / navigation pane out of the canvas LEFT (mirrors the
-        // styles panel on the right) so the page re-centers and scrolled content
-        // never paints under the pane.
-        let canvas_left = if self.outline.is_open() {
-            (full.x0 + self.outline_panel_width()).min(canvas_right - 1.0)
-        } else {
-            full.x0
-        };
+        // The page's column: what the docked outline and inspector leave.
+        let canvas_left = column.x0;
+        let canvas_right = column.x1.max(canvas_left + 1.0);
         // Reserve + draw the crash-recovery banner (when staged) and the Find
         // bar (when open), stacked directly under the toolbar. The find bar
         // is measured against the canvas width it will span first, so the
         // band it reserves (one row, or two when the controls would run off
         // the window) is the band it paints.
-        self.find
-            .measure(text_renderer, theme, canvas_right - canvas_left);
         let (recovery_h, find_h) = self.draw_recovery_and_find_bars(
             scene,
             transform,
@@ -6845,7 +6208,7 @@ impl WordProcessorWidget {
         // fixed-height strip while the page scrolls/zooms; its tick + marker
         // positions are mapped through the zoom so they track the page edge.
         let ruler_h = if self.view.ruler_visible {
-            RULER_H
+            Ruler::band_height(theme, text_renderer)
         } else {
             0.0
         };
@@ -6856,7 +6219,6 @@ impl WordProcessorWidget {
             history_top,
         );
         self.zoom_viewport = canvas;
-        scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
         // transform scales about this point, so the page stays centered and the
@@ -6864,7 +6226,7 @@ impl WordProcessorWidget {
         // changes. The toolbar/find-bar/status bar are drawn with the unscaled
         // `transform` and are unaffected.
         self.zoom
-            .set_anchor(Point::new(f64::midpoint(canvas.x0, canvas.x1), canvas.y0));
+            .set_anchor(Point::new(f64::midpoint(canvas.x0, page_right), canvas.y0));
         let ctf = self.content_transform(transform);
 
         // Per-side page geometry — every margin is independently customizable.
@@ -6882,7 +6244,7 @@ impl WordProcessorWidget {
         // unscaled canvas. Scaling about the canvas centre then keeps both page
         // edges visible in auto-fit mode instead of pinning the left edge and
         // clipping the right.
-        let page_x = f64::midpoint(canvas.x0, canvas.x1) - page_w / 2.0;
+        let page_x = f64::midpoint(canvas.x0, page_right) - page_w / 2.0;
         let page_top = canvas.y0 + PAGE_TOP;
         let content_x = page_x + m.left;
         let content_w = num::f32_of_f64((page_w - m.left - m.right).max(80.0));
@@ -6897,7 +6259,7 @@ impl WordProcessorWidget {
                 canvas_right,
                 canvas.y0,
             );
-            self.draw_ruler(scene, transform, text_renderer, band, page_x, page_w);
+            self.draw_ruler(scene, transform, text_renderer, theme, band, page_x, page_w);
         } else {
             self.ruler.clear();
         }
@@ -6915,7 +6277,6 @@ impl WordProcessorWidget {
             canvas_clip: transform.transform_rect_bbox(canvas),
             canvas_left,
             canvas_right,
-            tb_h,
             layout_bar_top,
             history_top,
             history_h,
@@ -6929,6 +6290,29 @@ impl WordProcessorWidget {
             m,
             letter_h,
             page_pitch,
+        }
+    }
+
+    /// The trailing edge of the area the page centres in. Review cards stand
+    /// in a column beside the page: when a page centred in the whole
+    /// `column` would leave too little room for them on its trailing side,
+    /// the page moves over (and, fitted, shrinks) so the cards never cover
+    /// the text. A phone-sized or large-text sheet keeps the whole width.
+    fn page_area_right(&self, theme: &Theme, column: Rect, responsive: bool) -> f64 {
+        if responsive || !self.review.shows_cards() {
+            return column.x1;
+        }
+        let reserve = ReviewOverlay::column_reserve(theme);
+        let zoom = if self.view.auto_fit_page {
+            ((column.width() - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
+        } else {
+            self.zoom.factor()
+        };
+        let beside = (column.width() - MAX_PAGE_W * zoom) / 2.0;
+        if beside >= reserve {
+            column.x1
+        } else {
+            (column.x1 - reserve).max(column.x0 + 1.0)
         }
     }
 
@@ -6949,58 +6333,53 @@ impl WordProcessorWidget {
             right: canvas_right,
             top: tb_bottom,
         } = *geometry;
-        let recovery_h = self.recovery.height();
+        let mut recovery_h = self.recovery.height(theme);
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
-            let cc = self.chrome;
-            self.recovery.draw(
+            self.recovery
+                .draw(scene, transform, text_renderer, theme, rbar);
+        }
+        // A failed save stays in view, in the flow above the page, until it
+        // is resolved: an error banner, not a toast over the text.
+        if self.save_error.is_some() {
+            let sp = &theme.tokens.spacing;
+            let (across, along) = (f64::from(sp.s3), f64::from(sp.s2));
+            let h = ButtonFace::height(ControlSize::Regular, theme) + 2.0 * along;
+            let top = tb_bottom + recovery_h + along;
+            let rect = Rect::new(canvas_left + across, top, canvas_right - across, top + h);
+            let title = t("toast-save-failed");
+            let close = ui::widget::Banner::paint(
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                rect,
+                &ui::widget::BannerContent::new(ui::widget::BannerKind::Error, &title)
+                    .dismissible(true),
+                self.pointer,
+            );
+            self.save_error = Some(close);
+            recovery_h += h + 2.0 * along;
+        }
+        let find_h = self.find.height(theme);
+        self.find_band = Rect::new(
+            canvas_left,
+            tb_bottom + recovery_h,
+            canvas_right,
+            tb_bottom + recovery_h + find_h,
+        );
+        if find_h > 0.0 {
+            let presence = PresenceCtx::empty();
+            presence.viewport.set(Some(self.rect));
+            self.find.draw(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                RecoveryPalette {
-                    border: cc.border,
-                    chip: cc.chip,
-                    text: cc.text,
-                    on_accent: cc.on_accent,
-                    accent: theme.accent_primary,
-                    notice: with_alpha(theme.accent_primary, 0x22),
-                },
-                rbar,
-            );
-        }
-        let find_h = self.find.height();
-        if find_h > 0.0 {
-            let fbar = Rect::new(
-                canvas_left,
-                tb_bottom + recovery_h,
-                canvas_right,
-                tb_bottom + recovery_h + find_h,
-            );
-            let cc = self.chrome;
-            self.find.draw(
-                PaintContext::new(scene, transform, text_renderer),
-                theme,
-                &PresenceCtx::empty(),
-                FindPalette {
-                    bar: cc.bar,
-                    chip: cc.chip,
-                    border: cc.border,
-                    text: cc.text,
-                    text_dim: cc.text_dim,
-                    accent: cc.accent,
-                    on_accent: cc.on_accent,
-                    danger: theme.tokens.colors.semantic.danger,
-                },
-                fbar,
+                &presence,
+                self.find_band,
             );
         }
         (recovery_h, find_h)
     }
 
-    /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
-    /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
-    /// table id lay out as a grid; everything else stacks normally.
     /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
     /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
     /// table id lay out as a grid; everything else stacks normally.
@@ -7935,13 +7314,11 @@ impl WordProcessorWidget {
         } = *input;
         let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
         let sheet = Rect::new(fg.page_x, ptop, fg.page_x + fg.page_w, ptop + fg.letter_h);
-        chrome::page::draw(
-            scene,
-            fg.ctf,
-            sheet,
-            self.chrome.paper,
-            &self.chrome.paper_elevation,
-        );
+        // The sheet: lifted off the desk by the floating shadow, with an
+        // edge derived from the paper so it separates from a light desk too.
+        let radius = f64::from(self.paper_theme.tokens.radii.detail);
+        ui::surface::shadow(scene, fg.ctf, sheet, radius, &self.chrome.paper_elevation);
+        ui::surface::card(scene, fg.ctf, sheet, radius, self.chrome.paper);
         let page_no = i + 1;
         // Header band: the top margin, inset by the L/R text margins.
         let head_band = Rect::new(
@@ -7998,18 +7375,19 @@ impl WordProcessorWidget {
         }
         // Default page indicator in the gap — only when no footer was drawn.
         if !drew_footer && !foot_editing {
+            // Drawn in the inter-page gap on the desk: window ink.
             let label = t_args("page-indicator", &[arg("n", num::i64_of_usize(page_no))]);
-            let approx = num::f64_of_usize(label.chars().count()) * 6.4;
-            let lx = f64::midpoint(sheet.x0, sheet.x1) - approx / 2.0;
-            let ly = sheet.y1 + PAGE_GAP / 2.0 - 6.0;
-            // Drawn in the inter-page gap on the canvas — chrome, so themed.
-            text_renderer.draw_text(
+            let style = self.desk_theme.text(TextRole::Caption).numeric();
+            let (w, h) = text_renderer.measure_style(&label, None, &style);
+            let lx = f64::midpoint(sheet.x0, sheet.x1) - f64::from(w) / 2.0;
+            let ly = sheet.y1 + (PAGE_GAP - f64::from(h)) / 2.0;
+            text_renderer.draw_style(
                 scene,
                 &label,
-                11.0,
-                self.chrome.text_dim,
+                self.desk_theme.tokens.colors.text_dim,
                 fg.ctf * Affine::translate((lx, ly)),
                 None,
+                &style,
             );
         }
     }
@@ -8111,7 +7489,14 @@ impl WordProcessorWidget {
             }
 
             if l.kind == "fidelity" {
-                Self::draw_laid_fidelity(scene, fg, text_renderer, l, &self.chrome);
+                Self::draw_laid_fidelity(
+                    scene,
+                    fg,
+                    text_renderer,
+                    l,
+                    &self.chrome,
+                    &self.paper_theme,
+                );
                 continue;
             }
 
@@ -8121,16 +7506,16 @@ impl WordProcessorWidget {
                 // counters grow into the paragraph and visibly collide at
                 // large text. Measure with the exact font/scale used below,
                 // then reserve the same perceived gap for every counter width.
-                let (marker_width, _) =
-                    text_renderer.measure(bul, l.size / text_renderer.text_scale(), None);
+                let marker = ui::text_render::TextStyle::content(l.size);
+                let (marker_width, _) = text_renderer.measure_style(bul, None, &marker);
                 let marker_x = list_marker_x(l.text_x, f64::from(marker_width));
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     bul,
-                    l.size / text_renderer.text_scale(),
                     l.ink,
                     fg.ctf * Affine::translate((marker_x, l.y_top)),
                     None,
+                    &marker,
                 );
             }
 
@@ -8201,13 +7586,13 @@ impl WordProcessorWidget {
                     &caret,
                 );
                 if !self.ime_preedit.is_empty() {
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &self.ime_preedit,
-                        l.size,
                         l.ink,
                         fg.ctf * Affine::translate((caret.x0, caret.y0)),
                         None,
+                        &ui::text_render::TextStyle::content(l.size),
                     );
                 }
             }
@@ -8288,7 +7673,14 @@ impl WordProcessorWidget {
                 }
             }
         } else {
-            Self::draw_missing_image(scene, fg.ctf, text_renderer, rect, &self.chrome);
+            Self::draw_missing_image(
+                scene,
+                fg.ctf,
+                text_renderer,
+                rect,
+                &self.chrome,
+                &self.paper_theme,
+            );
         }
         // Selection chrome: when this image is the caret's block, ring it
         // with an accent border + corner resize handles so it reads as
@@ -8298,7 +7690,7 @@ impl WordProcessorWidget {
                 scene,
                 fg.ctf,
                 rect,
-                self.chrome.accent,
+                self.chrome.paper_accent,
                 self.chrome.paper,
             );
         }
@@ -8310,8 +7702,10 @@ impl WordProcessorWidget {
         text_renderer: &mut TextRenderer,
         rect: Rect,
         chrome: &ChromeColors,
+        paper: &Theme,
     ) {
-        let rounded = vello::kurbo::RoundedRect::from_rect(rect, 6.0);
+        let rounded =
+            vello::kurbo::RoundedRect::from_rect(rect, f64::from(paper.tokens.radii.detail));
         scene.fill(Fill::NonZero, transform, chrome.paper_tint, None, &rounded);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -8320,13 +7714,20 @@ impl WordProcessorWidget {
             None,
             &rounded,
         );
-        text_renderer.draw_text(
+        let label = t("canvas-image-missing");
+        let style = paper.text(TextRole::Body);
+        let (_, h) = text_renderer.measure_style(&label, None, &style);
+        text_renderer.draw_style(
             scene,
-            &t("canvas-image-missing"),
-            14.0,
-            PAPER_MUTED,
-            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
+            &label,
+            paper.tokens.colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.x0 + f64::from(paper.tokens.spacing.s3),
+                    rect.center().y - f64::from(h) / 2.0,
+                )),
             None,
+            &style,
         );
     }
 
@@ -8375,6 +7776,7 @@ impl WordProcessorWidget {
         text_renderer: &mut TextRenderer,
         l: &Laid,
         chrome: &ChromeColors,
+        paper: &Theme,
     ) {
         let box_rect = Rect::new(
             l.text_x,
@@ -8387,15 +7789,22 @@ impl WordProcessorWidget {
             fg.ctf,
             chrome.paper_tint,
             None,
-            &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0),
+            &vello::kurbo::RoundedRect::from_rect(box_rect, f64::from(paper.tokens.radii.detail)),
         );
-        text_renderer.draw_text(
+        let label = t("canvas-embedded-content");
+        let style = paper.text(TextRole::Body);
+        let (_, h) = text_renderer.measure_style(&label, None, &style);
+        text_renderer.draw_style(
             scene,
-            &t("canvas-embedded-content"),
-            14.0,
-            PAPER_MUTED,
-            fg.ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)),
+            &label,
+            paper.tokens.colors.text_dim,
+            fg.ctf
+                * Affine::translate((
+                    box_rect.x0 + f64::from(paper.tokens.spacing.s3),
+                    box_rect.center().y - f64::from(h) / 2.0,
+                )),
             None,
+            &style,
         );
     }
 
@@ -8438,9 +7847,17 @@ impl WordProcessorWidget {
                 .filter(|(bid, _, _)| bid == &l.id)
                 .map(|(_, cs, ce)| (char_to_byte(&l.text, *cs), char_to_byte(&l.text, *ce)))
                 .collect();
+            let current = self
+                .find
+                .active_match()
+                .filter(|(bid, _, _)| bid == &l.id)
+                .map(|(_, cs, ce)| (char_to_byte(&l.text, *cs), char_to_byte(&l.text, *ce)));
             let (top, bottom) = layout_clip_band(fg, ly);
             let ranges = spans_within(&ranges, layout.source_range_within(top, bottom));
-            for rects in layout.selection_rects_many_within(&ranges, top, bottom) {
+            for (range, rects) in ranges
+                .iter()
+                .zip(layout.selection_rects_many_within(&ranges, top, bottom))
+            {
                 for (rx0, ry0, rx1, ry1) in rects {
                     let r = Rect::new(
                         l.text_x + f64::from(rx0),
@@ -8448,7 +7865,13 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         ly + f64::from(ry1),
                     );
-                    scene.fill(Fill::NonZero, fg.ctf, self.chrome.find_highlight, None, &r);
+                    ui::widget::find_bar::paint_find_match(
+                        scene,
+                        fg.ctf,
+                        r,
+                        current == Some(*range),
+                        &self.paper_theme,
+                    );
                 }
             }
         }
@@ -8462,6 +7885,11 @@ impl WordProcessorWidget {
         {
             for (bs, be, cid) in block_comment_ranges(b) {
                 let rects = layout.selection_rects(bs, be);
+                let wash = ReviewColors::comment_highlight(
+                    &self.paper_theme,
+                    self.chrome.paper,
+                    self.review.comment_author(&cid).unwrap_or_default(),
+                );
                 for &(rx0, ry0, rx1, ry1) in &rects {
                     let r = Rect::new(
                         l.text_x + f64::from(rx0),
@@ -8469,13 +7897,7 @@ impl WordProcessorWidget {
                         l.text_x + f64::from(rx1),
                         ly + f64::from(ry1),
                     );
-                    scene.fill(
-                        Fill::NonZero,
-                        fg.ctf,
-                        self.chrome.review.comment_highlight,
-                        None,
-                        &r,
-                    );
+                    scene.fill(Fill::NonZero, fg.ctf, wash, None, &r);
                 }
                 // Anchor the marker at the start line's top, and remember
                 // the range's right edge (max rect x1) for the inline tab.
@@ -8633,14 +8055,14 @@ impl WordProcessorWidget {
                 let label = num.to_string();
                 // Superscript: smaller font, raised toward the line's top.
                 let sup_size = (l.size * 0.7).max(8.0);
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &label,
-                    sup_size,
                     l.ink,
                     fg.ctf
                         * Affine::translate((l.text_x + f64::from(mx), ly + f64::from(my) - 1.0)),
                     None,
+                    &ui::text_render::TextStyle::content(sup_size),
                 );
                 page_notes.entry(l.page).or_default().push(num);
             }
@@ -8684,7 +8106,7 @@ impl WordProcessorWidget {
                 if nums.is_empty() {
                     continue;
                 }
-                let line_h = (f64::from(NOTE_FONT) * 1.4).ceil();
+                let line_h = (f64::from(NOTE_CONTENT_PX) * 1.4).ceil();
                 let area_h = num::f64_of_usize(nums.len()) * line_h;
                 // Bottom of the text band on this page (above the footer margin).
                 let band_bottom =
@@ -8708,13 +8130,13 @@ impl WordProcessorWidget {
                 for num in nums {
                     if let Some(text) = num_to_note.get(&num) {
                         let line = format!("{num}. {text}");
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &line,
-                            NOTE_FONT,
                             NOTE_INK,
                             fg.ctf * Affine::translate((left, ny)),
                             None,
+                            &ui::text_render::TextStyle::content(NOTE_CONTENT_PX),
                         );
                         ny += line_h;
                     }
@@ -8738,18 +8160,22 @@ impl WordProcessorWidget {
             && only.text.is_empty()
             && let Some(l) = first
         {
+            // The hint starts past the caret, so the caret never stands on
+            // its first letter, and is set in the paragraph's own size.
             let placeholder = t("canvas-empty-placeholder");
-            text_renderer.draw_text(
+            let style = ui::text_render::TextStyle::content(l.size);
+            let x = l.text_x + CARET_WIDTH + f64::from(self.paper_theme.tokens.spacing.s1);
+            text_renderer.draw_style(
                 scene,
                 &placeholder,
-                16.5,
-                PAPER_MUTED,
-                ctf * Affine::translate((l.text_x, l.y_top)),
+                self.paper_theme.tokens.colors.text_tertiary,
+                ctf * Affine::translate((x, l.y_top)),
                 // The empty-state hint shares the authored paragraph's live
                 // column width. At 200% text a one-line hint used to extend
                 // beyond the responsive sheet, unlike real paragraph text.
                 // Let the shared text renderer wrap it at that exact bound.
-                Some(num::f32_of_f64(l.width.max(1.0))),
+                Some(num::f32_of_f64((l.width - (x - l.text_x)).max(1.0))),
+                &style,
             );
         }
     }
@@ -8807,22 +8233,19 @@ impl WordProcessorWidget {
     /// overflows the canvas.
     fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, canvas: Rect) {
         if self.max_scroll > 0.0 {
-            let track = canvas.height();
-            let thumb_h = (track * track / (track + self.max_scroll)).max(28.0);
-            let frac = self.scroll_y / self.max_scroll;
-            let thumb_y = canvas.y0 + frac * (track - thumb_h);
-            let thumb = Rect::new(
-                canvas.x1 - 8.0,
-                thumb_y + 2.0,
-                canvas.x1 - 4.0,
-                thumb_y + thumb_h - 2.0,
-            );
-            scene.fill(
-                Fill::NonZero,
+            let gutter = f64::from(self.desk_theme.tokens.metrics.scrollbar_gutter);
+            let track = Rect::new(canvas.x1 - gutter, canvas.y0, canvas.x1, canvas.y1);
+            ui::widget::Scrollbar::vertical().draw(
+                scene,
                 transform,
-                self.chrome.scrollbar,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(thumb, 2.0),
+                track,
+                ui::widget::scrollbar::ScrollMetrics::new(
+                    canvas.height() + self.max_scroll,
+                    canvas.height(),
+                    self.scroll_y,
+                ),
+                &self.desk_theme,
+                false,
             );
         }
     }
@@ -8995,7 +8418,7 @@ impl WordProcessorWidget {
         handled: &mut bool,
     ) {
         if self.rect.contains(self.pointer) {
-            let tb_h = self.toolbar_height(self.rect.width());
+            let tb_h = self.tool_band.height();
             let over_body = self.pointer.y >= self.rect.y0 + tb_h
                 && self.pointer.y <= self.rect.y1 - self.layout_bar_height
                 && !(self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
@@ -9022,6 +8445,16 @@ impl WordProcessorWidget {
             MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
             MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
         };
+        // Over the inspector, the wheel scrolls its column.
+        if self.styles_panel_visible() && self.panel_body.contains(self.pointer) {
+            let next = (self.panel_scroll - dy).clamp(0.0, self.panel_max_scroll);
+            if next.to_bits() != self.panel_scroll.to_bits() {
+                self.panel_scroll = next;
+                self.lifecycle.dirty = true;
+            }
+            *handled = true;
+            return;
+        }
         if ctrl {
             // Ctrl + wheel zooms (a step per notch of scroll), the standard
             // editor gesture. Scroll-up (positive dy) zooms in.
@@ -9055,39 +8488,22 @@ impl WordProcessorWidget {
         handled: &mut bool,
     ) {
         self.pointer = Point::new(x / scale_factor, y / scale_factor);
-        // Toolbar hover feedback — repaint only when the hovered button changes.
-        let new_hover = if self.pointer.y < self.rect.y0 + tb_h {
-            self.toolbar
+        let _ = tb_h;
+        // Hover lifts on the chrome the editor paints itself.
+        let hover_changed = self.outline.pointer_moved(self.pointer)
+            | self.recovery.pointer_moved(self.pointer)
+            | self.review.pointer_moved(self.pointer)
+            | self.panel_rect.contains(self.pointer)
+            | self.thread_panel.contains(self.pointer)
+            | self
+                .layout_chips
                 .iter()
-                .find(|(_, r)| r.contains(self.pointer))
-                .map(|(_, r)| *r)
-        } else {
-            None
-        };
-        if new_hover != self.hover_tool {
-            self.hover_tool = new_hover;
+                .any(|(_, r)| r.contains(self.pointer));
+        if hover_changed {
             self.lifecycle.dirty = true;
             *handled = true;
         }
-        if let Some(sc) = self.scrub {
-            // Drag-to-scrub a numeric style field (live preview for every
-            // block of that style).
-            let dx = self.pointer.x - sc.start_x;
-            if dx.abs() > 3.0 {
-                if let Some(s) = self.scrub.as_mut() {
-                    s.moved = true;
-                }
-                let v = sc
-                    .field
-                    .clamp(sc.start_val + num::f32_of_f64(dx) * sc.field.scrub_factor());
-                if let Some(key) = self.focused_style_key()
-                    && let Some(st) = self.sheet.styles.get_mut(&key)
-                {
-                    sc.field.set(st, v);
-                }
-                self.lifecycle.dirty = true;
-            }
-            *handled = true;
+        if false {
         } else if self.object_drag.is_some() {
             let cp = self.pointer_to_content(self.pointer);
             let Some(drag) = self.object_drag.as_mut() else {
@@ -9194,7 +8610,7 @@ impl WordProcessorWidget {
         self.handle_left_press_body(state, shift, ctrl, handled);
     }
 
-    /// While the context / "New ▾" template / paragraph-style menu is open,
+    /// While the context / "New" template / paragraph-style menu is open,
     /// route the left press to it: a row dispatches its action, a click
     /// outside dismisses it. Either way the click is consumed so it never
     /// reaches the page beneath. Returns whether a menu claimed the press.
@@ -9217,7 +8633,7 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // Likewise route the press to the "New ▾" template picker when open.
+        // Likewise route the press to the "New" template picker when open.
         if self.template_picker.is_open() {
             if let Some(template) = self.template_picker.click(self.pointer) {
                 self.request_template(state, template);
@@ -9247,6 +8663,16 @@ impl WordProcessorWidget {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
+        // The failed-save banner's dismiss control.
+        if self
+            .save_error
+            .is_some_and(|close| close.contains(self.pointer))
+        {
+            self.save_error = None;
+            self.lifecycle.dirty = true;
+            *handled = true;
+            return true;
+        }
         // Crash-recovery banner (just under the toolbar): a click on
         // Restore / Discard resolves the offer before any other hit-test.
         if let Some(decision) = self.recovery.handle_click(self.pointer) {
@@ -9263,14 +8689,18 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // A press anywhere commits a pending typed numeric edit.
-        if self.editing_field.is_some() {
-            self.commit_num_edit(state);
-        }
-        // A narrow-window inspector is a modal-ish rail: clicking the dimmed
-        // document dismisses it instead of placing a caret through the overlay.
-        if self.styles_panel_overlay() && !self.panel_rect.contains(self.pointer) {
+        // A drawer over the page dismisses on a press on its scrim, instead
+        // of placing a caret through it.
+        if self.inspector_drawer.press_dismisses(self.pointer) {
             self.view.styles_panel_visible = false;
+            self.lifecycle.dirty = true;
+            *handled = true;
+            return true;
+        }
+        if self.outline_drawer.press_dismisses(self.pointer) {
+            if self.outline.is_open() {
+                self.outline.toggle();
+            }
             self.lifecycle.dirty = true;
             *handled = true;
             return true;
@@ -9315,17 +8745,11 @@ impl WordProcessorWidget {
         // Find bar (when open): dispatch clicks on its fields + controls.
         // The recovery banner (when shown) sits above the find bar, so the
         // find band starts below it.
-        if self.find.is_open() {
-            let recovery_h = self.recovery.height();
-            let fbar_top = self.rect.y0 + tb_h + recovery_h;
-            let fbar_bot = fbar_top + self.find.height();
-            if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
-                let effect = self.find.click(self.pointer, &self.blocks);
-                self.apply_find_effect_mut(state, effect);
-                self.lifecycle.dirty = true;
-                *handled = true;
-                return true;
-            }
+        if self.find.is_open() && self.find_band.contains(self.pointer) {
+            let _ = state;
+            self.lifecycle.dirty = true;
+            *handled = true;
+            return true;
         }
         // Ruler band (when on): grab a marker to drag, else a click in the
         // page span adds a tab stop on the current paragraph.
@@ -9336,40 +8760,6 @@ impl WordProcessorWidget {
             return true;
         }
         if self.pointer.y < self.rect.y0 + tb_h {
-            // The right-aligned zoom component owns its hit targets and scale.
-            if self.zoom.click(self.pointer) {
-                self.view.auto_fit_page = false;
-                self.lifecycle.dirty = true;
-                *handled = true;
-                return true;
-            }
-            // Reverse so the colour swatches (pushed after the chrome
-            // buttons) win a hit-test on any overlap at a crowded edge.
-            let clicked = self
-                .toolbar
-                .iter()
-                .rev()
-                .find(|(_, r)| r.contains(self.pointer))
-                .map(|(a, _)| *a);
-            if let Some(action) = clicked {
-                self.apply_tool(state, action);
-                self.refresh_blocks(state);
-                self.lifecycle.dirty = true;
-                // View toggles (panels) + opening the New menu are not undo
-                // points; everything else (including TOC generation) is.
-                if !matches!(
-                    action,
-                    ToolAction::ToggleStyles
-                        | ToolAction::ToggleRuler
-                        | ToolAction::ToggleOutline
-                        | ToolAction::ToggleHistory
-                        | ToolAction::NewMenu
-                ) {
-                    self.lifecycle.needs_commit = true;
-                    self.save_status = DocumentSaveStatus::Modified;
-                    self.note_edit_for_autosave(state);
-                }
-            }
             *handled = true;
             return true;
         }
@@ -9408,7 +8798,7 @@ impl WordProcessorWidget {
         // Accept/Reject) are drawn through the zoom transform, so they
         // hit-test in content space too. A hit dispatches + consumes the
         // click before it can start a text selection.
-        if let Some(action) = self.review.action_at(cp) {
+        if let Some(action) = self.review.action_at(self.pointer) {
             self.dispatch_review_action(action, state);
             self.lifecycle.dirty = true;
             *handled = true;
@@ -9525,21 +8915,7 @@ impl WordProcessorWidget {
     /// scrub, ruler marker, or layout guide) into the document, or — with no
     /// drag active — end a text-selection drag.
     fn handle_left_release(&mut self, state: &mut AutoCommit, handled: &mut bool) {
-        if let Some(sc) = self.scrub.take() {
-            if sc.moved {
-                // A scrub persists the style edit (every instance follows).
-                self.persist_stylesheet_via_actions(state);
-                self.lifecycle.needs_commit = true;
-            } else {
-                // A plain click (no drag) focuses the field for typing.
-                self.editing_field = Some(sc.field);
-                let cur = self
-                    .focused_style_key()
-                    .map_or(0.0, |k| sc.field.get(&self.sheet.get(&k)));
-                self.edit_buf = fmt_num(cur);
-            }
-            self.lifecycle.dirty = true;
-            *handled = true;
+        if false {
         } else if let Some(drag) = self.object_drag.take() {
             if drag.moved {
                 self.perform_action(
@@ -9722,7 +9098,7 @@ impl WordProcessorWidget {
         ctrl: bool,
         handled: &mut bool,
     ) {
-        if self.handle_key_press_guards(state, logical_key, text, ctrl, handled) {
+        if self.handle_key_press_guards(state, logical_key, ctrl, handled) {
             return;
         }
         if ctrl && let Key::Character(s) = logical_key {
@@ -9983,7 +9359,6 @@ impl WordProcessorWidget {
         &mut self,
         state: &mut AutoCommit,
         logical_key: &Key,
-        text: Option<&str>,
         ctrl: bool,
         handled: &mut bool,
     ) -> bool {
@@ -10020,37 +9395,8 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // While typing into a numeric style field, capture digits + editing
-        // keys (Enter commits, Esc cancels, Backspace deletes).
+        // While a style field has the keyboard, the document does not.
         if self.editing_field.is_some() {
-            match logical_key {
-                Key::Named(NamedKey::Enter) => self.commit_num_edit(state),
-                Key::Named(NamedKey::Escape) => {
-                    self.editing_field = None;
-                    self.edit_buf.clear();
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.edit_buf.pop();
-                    self.apply_edit_buf_live();
-                }
-                _ => {
-                    let typed: String = text
-                        .map(|t| {
-                            t.chars()
-                                .filter(|c| c.is_ascii_digit() || *c == '.')
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    for ch in typed.chars() {
-                        if ch == '.' && self.edit_buf.contains('.') {
-                            continue;
-                        }
-                        self.edit_buf.push(ch);
-                    }
-                    self.apply_edit_buf_live();
-                }
-            }
-            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -10563,7 +9909,7 @@ impl Widget for WordProcessorWidget {
         // Reload the stylesheet from the doc unless a live, not-yet-persisted
         // local edit is in progress (a guide drag, a numeric scrub, or typing
         // into a panel field) — reloading would discard the live preview.
-        if self.guide_drag.is_none() && self.scrub.is_none() && self.editing_field.is_none() {
+        if self.guide_drag.is_none() && self.editing_field.is_none() {
             self.sheet = self.inner.stylesheet(state);
         }
         // Reload the persisted page margins (document-level page setup) unless a
@@ -10630,9 +9976,9 @@ impl Widget for WordProcessorWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Status is persistent bottom chrome, so it has no independent fade
-        // lifecycle to animate while the editor is otherwise idle.
-        false
+        // Only the outline and inspector drawers move, while they open or
+        // close.
+        self.outline_drawer.is_animating() || self.inspector_drawer.is_animating()
     }
 
     fn wants_tab_input(&self) -> bool {
@@ -10647,6 +9993,9 @@ impl Widget for WordProcessorWidget {
         } else if self.context_menu.is_open()
             || self.style_menu.is_open()
             || self.template_picker.is_open()
+            || self.tool_bar.is_overflow_open()
+            || self.line_spacing.is_open()
+            || self.style_pick.is_open()
         {
             Some(self.rect)
         } else {
@@ -10676,6 +10025,8 @@ impl Widget for WordProcessorWidget {
         // light/dark mode + the OS palette. (`draw_frame_chrome` resolves the
         // spacing tokens and the measured panel metrics alongside it.)
         self.chrome = ChromeColors::for_theme(theme);
+        self.paper_theme = theme.on_ground(self.chrome.paper);
+        self.desk_theme = theme.clone();
         self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0));
         let full = self.rect;
         let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
@@ -10711,12 +10062,10 @@ impl Widget for WordProcessorWidget {
                 note_numbers: &note_nums,
             },
         );
-        self.review.draw(
-            &mut PaintContext::new(scene, fg.ctf, text_renderer),
-            fg.canvas,
-            markers.comment_markers,
-            markers.change_markers,
-            &self.chrome.review,
+        self.review.draw_pips(
+            &mut ui::paint::PaintCtx::new(scene, fg.ctf, text_renderer, theme),
+            self.chrome.paper,
+            &markers.comment_markers,
         );
         self.draw_footnotes(
             scene,
@@ -10739,6 +10088,15 @@ impl Widget for WordProcessorWidget {
         // covers the body but the band + its caret stay crisp on top.
         self.draw_running_region_veil(scene, &fg, text_renderer, num_pages, sy);
 
+        self.draw_review_column(
+            scene,
+            (transform, &fg),
+            text_renderer,
+            theme,
+            presence,
+            &markers,
+        );
+
         scene.pop_layer();
 
         self.draw_scrollbar(scene, transform, fg.canvas);
@@ -10750,68 +10108,29 @@ impl Widget for WordProcessorWidget {
 
         self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
 
-        // Contextual styles panel on the right (between toolbar and layout bar).
-        if self.styles_panel_visible() {
-            let overlay = self.styles_panel_overlay();
-            if overlay {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
-                    None,
-                    &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
-                );
-            }
-            let panel = Rect::new(
-                if overlay {
-                    (full.x1 - self.panel_metrics.panel_w()).max(full.x0)
-                } else {
-                    fg.canvas_right
-                },
-                full.y0 + fg.tb_h,
-                full.x1,
-                fg.layout_bar_top,
-            );
-            self.draw_styles_panel(scene, transform, text_renderer, panel);
-        } else {
-            self.panel_rect = Rect::ZERO;
-            self.panel_hits.clear();
-        }
-
-        // Document outline / navigation pane on the left (between toolbar and
-        // layout bar). Drawn after `self.laid` is set so the active-heading
-        // highlight reflects this frame's pagination.
-        if self.outline.is_open() {
-            let outline_band =
-                Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
-            let entries = self.outline_entries();
-            let active = self.active_outline_block();
-            let cc = self.chrome;
-            self.outline.draw(
-                &mut PaintContext::new(scene, transform, text_renderer),
-                outline_band,
-                &entries,
-                active.as_deref(),
-                OutlinePalette {
-                    background: cc.bar,
-                    border: cc.border,
-                    chip: cc.chip,
-                    text: cc.text,
-                    text_dim: cc.text_dim,
-                },
-            );
-        } else {
-            self.outline.clear_frame();
-        }
-
         if fg.history_h > 0.0 {
-            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
+            // Inset from the column's sides by the gutter the status band's
+            // controls keep, and from the page and the status band.
+            let sp = &theme.tokens.spacing;
+            let (across, along) = (f64::from(sp.s3), f64::from(sp.s2));
+            let band = Rect::new(
+                fg.canvas_left + across,
+                fg.history_top + along,
+                fg.canvas_right - across,
+                fg.layout_bar_top - along,
+            );
             self.history
                 .draw(scene, transform, text_renderer, theme, presence, band);
         }
 
-        let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
+        let lbar = Rect::new(
+            fg.canvas_left,
+            fg.layout_bar_top,
+            fg.canvas_right,
+            fg.content_bottom,
+        );
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
+        self.draw_drawers(scene, transform, text_renderer, theme);
     }
 
     #[expect(
@@ -10933,26 +10252,58 @@ impl Widget for WordProcessorWidget {
             *ctx.handled = true;
             return;
         }
-        // The toolbar may have wrapped to several rows; hit-test against its
-        // actual bottom (`tb_h`), matching `draw`.
-        let tb_h = self.toolbar_height(self.rect.width());
+        if self.route_toolbar_event(event, ctx) {
+            return;
+        }
+        if self.route_hosted_fields(event, ctx) {
+            return;
+        }
+        let tb_h = self.tool_band.height();
 
         // Find/replace embeds the shared TextInput rather than maintaining a
         // second text editor. Feed it raw events first so IME, selection and
         // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
         // deliberately left for the editor-level toggle below.
-        if self.lifecycle.focused && self.find.is_open() {
+        let over_find = self.find.is_open()
+            && match event {
+                WindowEvent::MouseInput { .. } => self.find_band.contains(self.pointer),
+                _ => false,
+            };
+        // The bar takes typing while the editor has focus, the pointer over
+        // its band, and hover; the wheel and gestures stay the page's.
+        let for_find = match event {
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => self.lifecycle.focused,
+            WindowEvent::CursorMoved { .. } => true,
+            WindowEvent::MouseInput { .. } => over_find || self.lifecycle.focused,
+            _ => false,
+        };
+        if self.find.is_open() && for_find {
             let mut find_handled = false;
-            let effect = self.find.handle_event(
+            self.find.handle_event(
                 event,
                 &mut ui::widget::EventCtx {
                     handled: &mut find_handled,
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
-                &self.blocks,
             );
-            self.apply_find_effect_mut(ctx.state, effect);
-            if find_handled {
+            self.drive_find(ctx.state);
+            if over_find
+                && matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        ..
+                    }
+                )
+            {
+                self.lifecycle.focused = true;
+                self.find.set_host_focused(true);
+                *ctx.focus_target = Some(ctx.node_id);
+            }
+            if !self.find.is_open() {
+                self.lifecycle.dirty = true;
+            }
+            if find_handled || over_find {
                 self.lifecycle.dirty = true;
                 *ctx.handled = true;
                 // Cursor movement still feeds the editor below so its shared
@@ -10963,6 +10314,7 @@ impl Widget for WordProcessorWidget {
             }
         }
         match event {
+            // Drag-and-drop a file onto the window        match event {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
             WindowEvent::DroppedFile(path) => {
@@ -11108,13 +10460,26 @@ impl Widget for WordProcessorWidget {
         }
         // Toast first, so an open menu stacks above it.
         self.draw_toast(scene, transform, text_renderer, theme);
+        let toolbar_presence = PresenceCtx::empty();
+        toolbar_presence
+            .viewport
+            .set(Some(self.floating_viewport()));
+        Widget::draw_overlay(
+            &mut self.tool_bar,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &toolbar_presence,
+        );
+        let viewport = self.floating_viewport();
         for menu in [
             &mut self.context_menu,
             self.template_picker.menu_mut(),
             self.style_menu.menu_mut(),
         ] {
             if menu.is_open() {
-                menu.constrain_to(self.rect);
+                menu.constrain_to(viewport);
             }
         }
         if self.context_menu.is_open() {
@@ -11127,6 +10492,29 @@ impl Widget for WordProcessorWidget {
                 presence,
             );
         }
+        if self.styles_panel_visible() {
+            let local = if self.styles_panel_overlay() {
+                theme.on_ground(ui::chrome::panel_ground(theme))
+            } else {
+                theme.in_region(ui::surface::Region::Inspector)
+            };
+            let overlay_presence = PresenceCtx::empty();
+            overlay_presence
+                .viewport
+                .set(Some(self.floating_viewport()));
+            for menu in [&mut self.line_spacing, &mut self.style_pick] {
+                if menu.is_open() {
+                    Widget::draw_overlay(
+                        menu,
+                        scene,
+                        transform,
+                        text_renderer,
+                        &local,
+                        &overlay_presence,
+                    );
+                }
+            }
+        }
         self.compact_swatch_palette
             .draw(scene, transform, text_renderer, theme, presence);
         self.template_picker
@@ -11137,7 +10525,6 @@ impl Widget for WordProcessorWidget {
             self.find
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.draw_comment_thread(scene, transform, text_renderer, theme, presence);
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
                 scene,
@@ -11260,6 +10647,7 @@ impl Widget for WordProcessorWidget {
         }
         if let Some(panel_hit) = self.panel_hits.iter().find_map(|(_, panel_hit)| {
             let id = match panel_hit {
+                PanelHit::ImageInline => "inline",
                 PanelHit::ImageFreePosition => "free",
                 PanelHit::ImageWrapLeft => "left",
                 PanelHit::ImageWrapRight => "right",
@@ -11270,19 +10658,6 @@ impl Widget for WordProcessorWidget {
         }) {
             self.apply_panel_hit(state, panel_hit);
             return true;
-        }
-        // This reaches the ZoomControl's own action method rather than
-        // duplicating its step/reset rules in the semantic event path.
-        for id in [
-            ZoomControl::TARGET_OUT,
-            ZoomControl::TARGET_RESET,
-            ZoomControl::TARGET_IN,
-        ] {
-            if ui::a11y::hash_key(&id) == target && self.zoom.activate_target(id) {
-                self.view.auto_fit_page = false;
-                self.lifecycle.dirty = true;
-                return true;
-            }
         }
         let Some(tool) = self.toolbar.iter().find_map(|(tool, _)| {
             let id = format!("word-processor.toolbar:{}", tool_action_id(*tool));
@@ -11328,9 +10703,7 @@ impl Widget for WordProcessorWidget {
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
             // persisted style values.
-            self.editing_field = None;
-            self.edit_buf.clear();
-            self.scrub = None;
+            self.focus_hosted(None, false);
         }
         self.lifecycle.dirty = true;
     }
@@ -11459,7 +10832,7 @@ impl ui::record::capability::RecordScoped for WordProcessorWidget {
         if self.file_choice.is_some() {
             return Err("Resolve the selected file choice before switching documents".into());
         }
-        if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
+        if self.guide_drag.is_some() || self.editing_field.is_some() {
             return Err(
                 "Finish or cancel the active document edit before switching documents".into(),
             );
@@ -11785,6 +11158,39 @@ impl ui::widget::AppWidget for WordProcessorWidget {
     }
 }
 
+/// A comment's own text, its paragraphs joined.
+fn thread_root_text(comment: &tilo_doc::snapshot::CommentView) -> String {
+    comment
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Lay `view` out in `x0..x1` from `top` so its text, not the editor's
+/// padding around it, starts at `x0` (the edge the author's name above it
+/// starts at). Returns its height.
+fn lay_out_flush(
+    view: &mut RichTextView,
+    (x0, x1, top): (f64, f64, f64),
+    tr: &mut TextRenderer,
+    theme: &Theme,
+) -> f64 {
+    let height = view.layout(Rect::new(x0, top, x1, top), theme, tr);
+    let inset = view
+        .editor_mut()
+        .blocks()
+        .first()
+        .map_or(0.0, |block| block.line.caret_rect(theme, 0).x0 - x0);
+    if inset > 0.5 {
+        view.layout(Rect::new(x0 - inset, top, x1 + inset, top), theme, tr)
+    } else {
+        height
+    }
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CommentThreadLayout {
@@ -11830,13 +11236,120 @@ impl CommentThreadLayout {
 }
 
 impl WordProcessorWidget {
-    /// Draw the expanded, durable comment thread above the inline margin
-    /// anchor. The panel is on-demand, retaining the compact canvas as the
-    /// primary surface while keeping each persisted reply visible and usable.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the thread panel paints its header, persisted replies and composer in one pass sharing the running y cursor"
-    )]
+    /// The margin column beside the page: a card per comment and tracked
+    /// change, and the open thread expanded in place of its comment's card.
+    fn draw_review_column(
+        &mut self,
+        scene: &mut Scene,
+        (transform, fg): (Affine, &FrameGeometry),
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        markers: &Pass2Markers,
+    ) {
+        let to_window = self.zoom.transform(Affine::IDENTITY);
+        let placement = ReviewPlacement {
+            canvas: fg.canvas,
+            page_x1: (to_window * Point::new(fg.page_x + fg.page_w, 0.0)).x,
+            to_window,
+        };
+        let (_, width) = ReviewOverlay::column(theme, &placement);
+        let thread = self
+            .thread_comment
+            .clone()
+            .zip(self.comment_thread_height(width, tr, theme));
+        self.review.draw_cards(
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            &placement,
+            (&markers.comment_markers, &markers.change_markers),
+            thread.as_ref().map(|(id, height)| (id.as_str(), *height)),
+        );
+        if let Some(slot) = self.review.expanded_slot() {
+            self.draw_comment_thread(scene, transform, tr, theme, presence, slot);
+        } else {
+            self.thread_panel = Rect::ZERO;
+            self.thread_submit = Rect::ZERO;
+            self.thread_cancel = Rect::ZERO;
+        }
+    }
+
+    /// The comment whose thread is open, its replies in reading order.
+    fn open_thread(&self) -> Option<tilo_doc::snapshot::CommentView> {
+        let id = self.thread_comment.as_ref()?;
+        let mut comment = self
+            .review
+            .comments()
+            .iter()
+            .find(|c| &c.id == id)
+            .cloned()
+            .or_else(|| self.thread_snapshot.clone())?;
+        crate::review_overlay::sort_replies(&mut comment);
+        Some(comment)
+    }
+
+    /// The open thread's card: its comment's card, expanded in place.
+    fn thread_face(comment: &tilo_doc::snapshot::CommentView) -> CardFace<'_> {
+        CardFace::new()
+            .title(&comment.author)
+            .leading_stripe(Tone::of_identity(&comment.author))
+    }
+
+    /// Lay out the open thread's card body from `top`, `x0..x1`: the
+    /// comment, every reply shown (up to three) and the composer with its
+    /// actions. Returns the body's height; positions the reply views and
+    /// the composer.
+    fn lay_out_thread_body(
+        &mut self,
+        comment: &tilo_doc::snapshot::CommentView,
+        (x0, x1, top): (f64, f64, f64),
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let sp = &theme.tokens.spacing;
+        let related = f64::from(sp.rhythm.related);
+        let tight = f64::from(sp.rhythm.tight);
+        let wrap = num::f32_of_f64((x1 - x0).max(1.0));
+        let root = thread_root_text(comment);
+        let mut y = top;
+        y += f64::from(
+            tr.measure_style(&root, Some(wrap), &theme.text(TextRole::Body))
+                .1,
+        );
+        let replies: Vec<_> = comment.replies.iter().take(3).collect();
+        self.thread_reply_views
+            .resize_with(replies.len(), RichTextView::new);
+        let who_style = theme.text(TextRole::Caption).strong();
+        for (reply, view) in replies.iter().zip(&mut self.thread_reply_views) {
+            y += related;
+            y += f64::from(tr.measure_style(&reply.author, Some(wrap), &who_style).1) + tight;
+            view.show_views(&reply.blocks);
+            y += lay_out_flush(view, (x0, x1, y), tr, theme);
+        }
+        y += f64::from(sp.s3);
+        // The composer stands in a field well, its actions under it.
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        y += field_h + f64::from(sp.s2) + ButtonFace::height(ControlSize::Small, theme);
+        y - top
+    }
+
+    /// The open thread's height at `width`, the slot its comment's card
+    /// gives up for it.
+    fn comment_thread_height(
+        &mut self,
+        width: f64,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<f64> {
+        let comment = self.open_thread()?;
+        let face = Self::thread_face(&comment);
+        let body = face.body_rect(tr, theme, Rect::new(0.0, 0.0, width, 1.0e4));
+        let content = self.lay_out_thread_body(&comment, (body.x0, body.x1, body.y0), tr, theme);
+        Some(face.height_for_body(tr, theme, width, content))
+    }
+
+    /// Draw the open thread in `slot`, where its comment's card stands in
+    /// the margin: the same card, expanded with every reply and the reply
+    /// composer, so the thread and the card are one object.
     fn draw_comment_thread(
         &mut self,
         scene: &mut Scene,
@@ -11844,154 +11357,107 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
+        slot: Rect,
     ) {
-        let Some(id) = self.thread_comment.clone() else {
-            return;
-        };
-        let comment = self
-            .review
-            .comments()
-            .iter()
-            .find(|c| c.id == id)
-            .cloned()
-            .or_else(|| self.thread_snapshot.clone());
-        let Some(comment) = comment else {
+        let Some(comment) = self.open_thread() else {
             self.close_comment_thread();
             return;
         };
-        let cc = self.chrome;
-        let tk = self.tokens;
-        let pm = self.panel_metrics;
-        // One rhythm: `s3` panel padding and between sibling blocks, `s2`
-        // between related rows (title → root, bubble → bubble), `s1` inside
-        // a bubble. The panel floats `s3` off the window edge and `s2` above
-        // the layout bar, so it never sits on either.
-        let pad = tk.s3;
-        let width = self.rect.width().clamp(260.0, 372.0);
-        let height = (self.rect.height() * 0.48).clamp(238.0, 360.0);
-        let bottom = self.rect.y1 - self.layout_bar_height - tk.s2;
-        let panel = Rect::new(
-            self.rect.x1 - width - tk.s3,
-            bottom - height,
-            self.rect.x1 - tk.s3,
-            bottom,
+        self.thread_panel = slot;
+        let face = Self::thread_face(&comment);
+        face.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, tr, theme),
+            slot,
         );
-        self.thread_panel = panel;
-        paint_panel(scene, transform, theme, panel, tk.radius_md);
-        let title = t("review-thread");
-        let (_, title_h) = tr.measure(&title, THREAD_TITLE_FONT, None);
-        tr.draw_text(
+        let body = face.body_rect(tr, theme, slot);
+        self.lay_out_thread_body(&comment, (body.x0, body.x1, body.y0), tr, theme);
+        let sp = &theme.tokens.spacing;
+        let tight = f64::from(sp.rhythm.tight);
+        let colors = &theme.tokens.colors;
+        let wrap = num::f32_of_f64(body.width().max(1.0));
+        let body_style = theme.text(TextRole::Body);
+        let who_style = theme.text(TextRole::Caption).strong();
+        let root = thread_root_text(&comment);
+        tr.draw_style(
             scene,
-            &title,
-            THREAD_TITLE_FONT,
-            cc.text,
-            transform * Affine::translate((panel.x0 + pad, panel.y0 + pad)),
-            None,
+            &root,
+            colors.text_primary,
+            transform * Affine::translate((body.x0, body.y0)),
+            Some(wrap),
+            &body_style,
         );
-        let root_top = panel.y0 + pad + f64::from(title_h) + tk.s2;
-        let root = comment
-            .blocks
+        // Each reply: its author over its text, both from the body's edge.
+        for (reply, view) in comment
+            .replies
             .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let root_layout = RichTextLayout::shape_styled(
-            &mut tr.font_system,
-            &[RichSpan::new(format!("{}  {}", comment.author, root))],
-            &RichTextLayout::block_style(false, THREAD_ROOT_FONT, FontFamily::Sans, 1.0),
-            Some(num::f32_of_f64(width - 2.0 * pad)),
-            TextAlign::Left,
-            vec![],
-            vec![],
-        );
-        tr.draw_rich(
-            scene,
-            &root_layout,
-            transform * Affine::translate((panel.x0 + pad, root_top)),
-            cc.text,
-        );
-        // Footer: the reply field `s3` above the action row, both `pad` in
-        // from the panel; replies stop `s3` above the field.
-        let btn_h = pm.wide_control_h();
-        let field_h = pm.wide_control_h() + tk.s1;
-        let btn_top = panel.y1 - pad - btn_h;
-        let field_top = btn_top - tk.s3 - field_h;
-        let replies_bottom = field_top - tk.s3;
-        let mut y = root_top + f64::from(root_layout.height()) + tk.s3;
-        let replies: Vec<_> = comment.replies.iter().take(3).collect();
-        self.thread_reply_views
-            .resize_with(replies.len(), RichTextView::new);
-        for (reply, view) in replies.iter().zip(&mut self.thread_reply_views) {
-            // A reply bubble is indented `s2` under the root and pads its
-            // author and body `s2` horizontally, `s1` vertically.
-            let bubble_x0 = panel.x0 + pad + tk.s2;
-            let bubble_x1 = panel.x1 - pad;
-            let (_, author_h) = tr.measure(&reply.author, THREAD_REPLY_FONT, None);
-            let body_top = y + tk.s1 + f64::from(author_h);
-            view.show_views(&reply.blocks);
-            let body_h = view.layout(
-                Rect::new(bubble_x0 + tk.s2, body_top, bubble_x1 - tk.s2, body_top),
-                theme,
-                tr,
-            );
-            let h = body_top - y + body_h + tk.s1;
-            if y + h > replies_bottom {
-                break;
-            }
-            let bubble = Rect::new(bubble_x0, y, bubble_x1, y + h);
-            ui::surface::card(scene, transform, bubble, tk.radius_sm, cc.chip);
-            tr.draw_text(
+            .take(3)
+            .zip(&mut self.thread_reply_views)
+        {
+            let who_h = f64::from(tr.measure_style(&reply.author, Some(wrap), &who_style).1);
+            tr.draw_style(
                 scene,
                 &reply.author,
-                THREAD_REPLY_FONT,
-                cc.text_dim,
-                transform * Affine::translate((bubble.x0 + tk.s2, bubble.y0 + tk.s1)),
-                None,
+                colors.text_primary,
+                transform * Affine::translate((body.x0, view.rect().y0 - tight - who_h)),
+                Some(wrap),
+                &who_style,
             );
             view.draw(scene, transform, tr, theme);
-            y += h + tk.s2;
         }
-        let field = Rect::new(
-            panel.x0 + pad,
-            field_top,
-            panel.x1 - pad,
-            field_top + field_h,
+
+        // The composer in its field well, then Cancel and Send (the card's
+        // one primary action) along the card's foot.
+        let btn_h = ButtonFace::height(ControlSize::Small, theme);
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        let btn_top = body.y1 - btn_h;
+        let field_top = btn_top - f64::from(sp.s2) - field_h;
+        let field = Rect::new(body.x0, field_top, body.x1, field_top + field_h);
+        ui::surface::card(
+            scene,
+            transform,
+            field,
+            f64::from(theme.tokens.radii.control),
+            colors.surfaces.raised,
         );
-        self.thread_reply.layout(field, theme, tr);
+        let line = f64::from(tr.measure_style("Ag", None, &body_style).1);
+        let editor_y = field.center().y - line / 2.0;
+        self.thread_reply.layout(
+            Rect::new(field.x0, editor_y, field.x1, editor_y + line),
+            theme,
+            tr,
+        );
         self.thread_reply
             .draw(scene, transform, tr, theme, presence);
-        // Action row: each button is its measured label plus `s3` each side,
-        // trailing-aligned, `s2` apart (siblings of one action group).
         let cancel_label = t("review-cancel-reply");
         let submit_label = t("review-send-reply");
-        let btn_w = |tr: &mut TextRenderer, label: &str| {
-            f64::from(tr.measure(label, PANEL_LABEL_FONT, None).0) + 2.0 * tk.s3
-        };
-        let submit_w = btn_w(tr, &submit_label);
-        let cancel_w = btn_w(tr, &cancel_label);
-        let submit_x1 = panel.x1 - pad;
-        self.thread_submit = Rect::new(submit_x1 - submit_w, btn_top, submit_x1, btn_top + btn_h);
-        let cancel_x1 = self.thread_submit.x0 - tk.s2;
+        let submit_w = ButtonFace::new(Rect::ZERO, &submit_label)
+            .role(ButtonRole::Primary)
+            .control_size(ControlSize::Small)
+            .intrinsic_width(tr, theme);
+        let cancel_w = ButtonFace::new(Rect::ZERO, &cancel_label)
+            .control_size(ControlSize::Small)
+            .intrinsic_width(tr, theme);
+        self.thread_submit = Rect::new(body.x1 - submit_w, btn_top, body.x1, btn_top + btn_h);
+        let cancel_x1 = self.thread_submit.x0 - f64::from(sp.s2);
         self.thread_cancel = Rect::new(cancel_x1 - cancel_w, btn_top, cancel_x1, btn_top + btn_h);
-        draw_legacy_btn(
+        Button::paint(
             scene,
             transform,
             tr,
-            &cc,
-            self.thread_cancel,
-            &cancel_label,
-            false,
-            true,
+            theme,
+            &ButtonFace::new(self.thread_cancel, &cancel_label)
+                .control_size(ControlSize::Small)
+                .hovered(self.thread_cancel.contains(self.pointer)),
         );
-        draw_legacy_btn(
+        Button::paint(
             scene,
             transform,
             tr,
-            &cc,
-            self.thread_submit,
-            &submit_label,
-            true,
-            true,
+            theme,
+            &ButtonFace::new(self.thread_submit, &submit_label)
+                .role(ButtonRole::Primary)
+                .control_size(ControlSize::Small)
+                .hovered(self.thread_submit.contains(self.pointer)),
         );
     }
 
@@ -12271,9 +11737,21 @@ impl WordProcessorWidget {
             | ToolAction::TableDelete) => self.apply_table_tool(state, table_action),
             ToolAction::ToggleStyles => {
                 self.view.styles_panel_visible = !self.view.styles_panel_visible;
+                if self.view.styles_panel_visible {
+                    self.inspector_drawer.open();
+                } else {
+                    self.inspector_drawer.close();
+                }
             }
             ToolAction::ToggleRuler => self.view.ruler_visible = !self.view.ruler_visible,
-            ToolAction::ToggleOutline => self.outline.toggle(),
+            ToolAction::ToggleOutline => {
+                self.outline.toggle();
+                if self.outline.is_open() {
+                    self.outline_drawer.open();
+                } else {
+                    self.outline_drawer.close();
+                }
+            }
             ToolAction::ToggleHistory if self.hosted() => {}
             ToolAction::ToggleHistory => {
                 self.history.toggle();
@@ -12285,7 +11763,10 @@ impl WordProcessorWidget {
             }
             ToolAction::InsertToc => self.generate_toc(state),
             ToolAction::NewMenu => self.open_template_picker(),
-            ToolAction::More => self.open_toolbar_overflow(),
+            ToolAction::TextColorPalette => self.open_compact_swatch_palette(PaletteKind::Text),
+            ToolAction::HighlightPalette => {
+                self.open_compact_swatch_palette(PaletteKind::Highlight);
+            }
         }
     }
 
@@ -12311,64 +11792,15 @@ impl WordProcessorWidget {
         self.edit_table_via_action(state, edit);
     }
 
-    /// Open the compact toolbar's lower-frequency command menu. The action
-    /// payloads remain the same toolbar actions; this is presentation-only
-    /// routing, not a second implementation of commands.
+    /// Open the toolbar's More menu, as a person choosing it would.
     fn open_toolbar_overflow(&mut self) {
-        let anchor = self
-            .toolbar
-            .iter()
-            .find(|(action, _)| *action == ToolAction::More)
-            .map_or_else(
-                || Point::new(self.rect.x1 - 72.0, self.rect.y0 + TOOLBAR_H),
-                |(_, rect)| Point::new(rect.x0, rect.y1),
-            );
-        let mut menu = ContextMenu::new();
-        menu.set_text_scale(crate::num::f32_of_f64(self.text_scale));
-        menu.set_viewport(Some(self.rect));
-        let mut actions = Vec::new();
-        let minimal = self.rect.width() / self.text_scale < 260.0;
-        let mut overflow = Vec::new();
-        if minimal {
-            overflow.extend([
-                ToolAction::Bold,
-                ToolAction::Italic,
-                ToolAction::Underline,
-                ToolAction::FontCycle,
-                ToolAction::ToggleStyles,
-            ]);
-        }
-        overflow.extend([
-            ToolAction::Strike,
-            ToolAction::Super,
-            ToolAction::Sub,
-            ToolAction::FontSizeDec,
-            ToolAction::FontSizeInc,
-            ToolAction::InsertTable,
-            ToolAction::InsertImage,
-            ToolAction::ToggleRuler,
-            ToolAction::ToggleOutline,
-            ToolAction::ToggleHistory,
-            ToolAction::InsertToc,
-        ]);
-        if self.hosted() {
-            overflow.retain(|action| *action != ToolAction::ToggleHistory);
-        }
-        for action in overflow {
-            menu.push(MenuItem::action(tool_action_a11y_label(action), || {}));
-            actions.push(Some(CtxAction::Tool(action)));
-        }
-        // The desktop swatch strips are compacted into two labelled entries,
-        // each opening the shared, visual swatch grid. This keeps More scannable
-        // without making direct colour/highlight formatting desktop-only.
-        menu.push(MenuItem::action(t("toolbar-text-color"), || {}));
-        actions.push(Some(CtxAction::CompactPalette(PaletteKind::Text)));
-        menu.push(MenuItem::action(t("toolbar-highlight"), || {}));
-        actions.push(Some(CtxAction::CompactPalette(PaletteKind::Highlight)));
-        menu.open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
-        menu.constrain_to(self.rect);
-        self.context_menu = menu;
-        self.context_actions = actions;
+        let _ = Widget::perform_semantic_action(
+            &mut self.tool_bar,
+            "toolbar.overflow",
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        );
         self.lifecycle.dirty = true;
     }
 
@@ -12393,51 +11825,12 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Apply the typed buffer to the editing field as a live preview (no persist).
-    fn apply_edit_buf_live(&mut self) {
-        let Some(field) = self.editing_field else {
-            return;
-        };
-        // A typed "nan"/"inf"/"-inf" parses successfully as f32 but is not a usable
-        // style value (it would corrupt layout math and, if the style is ever
-        // JSON-exported, panic inside serde_json) — treat it like any other
-        // unparseable input and fall back to 0.0.
-        let v = field.clamp(
-            self.edit_buf
-                .parse::<f32>()
-                .ok()
-                .filter(|v| v.is_finite())
-                .unwrap_or(0.0),
-        );
-        let Some(key) = self.focused_style_key() else {
-            return;
-        };
-        if let Some(st) = self.sheet.styles.get_mut(&key) {
-            field.set(st, v);
-        }
-        self.lifecycle.dirty = true;
-    }
-
-    /// Commit the typed numeric edit to the document and blur the field.
-    fn commit_num_edit(&mut self, state: &mut AutoCommit) {
-        if self.editing_field.is_none() {
-            return;
-        }
-        self.apply_edit_buf_live();
-        self.persist_stylesheet_via_actions(state);
-        self.lifecycle.needs_commit = true;
-        self.editing_field = None;
-        self.edit_buf.clear();
-        self.lifecycle.dirty = true;
-    }
-
     /// Dispatch a click on a styles-panel target.
     fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
         match hit {
             PanelHit::Close => {
                 self.view.styles_panel_visible = false;
-                self.editing_field = None;
-                self.scrub = None;
+                self.focus_hosted(None, false);
                 self.lifecycle.dirty = true;
             }
             PanelHit::Pick(id) => {
@@ -12451,15 +11844,8 @@ impl WordProcessorWidget {
                 self.save_status = DocumentSaveStatus::Modified;
                 self.lifecycle.dirty = true;
             }
-            PanelHit::CycleFont => {
-                self.edit_focused_style(state, true, |st| {
-                    st.font = match st.font.as_str() {
-                        "sans" => "serif",
-                        "serif" => "mono",
-                        _ => "sans",
-                    }
-                    .into();
-                });
+            PanelHit::SetFont(font) => {
+                self.edit_focused_style(state, true, |st| st.font = font.into());
             }
             PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
             PanelHit::ToggleItalic => {
@@ -12478,33 +11864,17 @@ impl WordProcessorWidget {
                 self.save_status = DocumentSaveStatus::Modified;
                 self.lifecycle.dirty = true;
             }
-            PanelHit::ParaLineSpacing => {
-                let next = next_line_spacing(self.inner.caret_line_spacing(state));
-                self.dispatch_block_attr(
-                    state,
-                    "line_spacing",
-                    crate::actions::AttrVal::Float(next),
-                );
-                self.refresh_blocks(state);
-                self.lifecycle.needs_commit = true;
-                self.save_status = DocumentSaveStatus::Modified;
-                self.lifecycle.dirty = true;
-            }
             PanelHit::SetColor(c) => self.edit_focused_style(state, true, |st| st.color = c),
             PanelHit::OpenColorPicker => self.open_color_picker(),
-            PanelHit::NumDelta(field, d) => {
-                self.edit_focused_style(state, true, |st| {
-                    let nv = field.clamp(field.get(st) + d);
-                    field.set(st, nv);
-                });
-            }
-            PanelHit::Num(field) => self.apply_panel_hit_num_start(field),
             PanelHit::NewStyle => self.apply_panel_hit_new_style(state),
             PanelHit::ImageScale(factor) => self.apply_panel_hit_image_scale(state, factor),
             PanelHit::ImageFlipH => self.apply_panel_hit_image_flip(state, true),
             PanelHit::ImageFlipV => self.apply_panel_hit_image_flip(state, false),
             PanelHit::ImageCropInset => self.apply_panel_hit_image_crop(state, true),
             PanelHit::ImageCropReset => self.apply_panel_hit_image_crop(state, false),
+            PanelHit::ImageInline => {
+                self.apply_panel_hit_image_placement(state, "inline", "none");
+            }
             PanelHit::ImageFreePosition => {
                 self.apply_panel_hit_image_placement(state, "page", "none");
             }
@@ -12515,23 +11885,6 @@ impl WordProcessorWidget {
                 self.apply_panel_hit_image_placement(state, "paragraph", "right");
             }
         }
-    }
-
-    /// `PanelHit::Num`: start a scrub candidate — a drag scrubs the value, a
-    /// plain click (no movement) focuses the field for typing (handled on
-    /// release).
-    fn apply_panel_hit_num_start(&mut self, field: NumField) {
-        let start_val = self
-            .focused_style_key()
-            .map_or(0.0, |k| field.get(&self.sheet.get(&k)));
-        self.editing_field = None;
-        self.scrub = Some(ScrubState {
-            field,
-            start_x: self.pointer.x,
-            start_val,
-            moved: false,
-        });
-        self.lifecycle.dirty = true;
     }
 
     /// `PanelHit::NewStyle`: duplicate the focused style under a fresh id.
@@ -12727,50 +12080,44 @@ impl WordProcessorWidget {
         self.context_menu.close();
         self.style_menu.close();
         self.template_picker.close();
-        let (palette, labels, title, clear_label): (&[[u8; 3]], Vec<String>, String, String) =
-            match kind {
-                PaletteKind::Text => (
-                    &STYLE_PALETTE,
-                    [
-                        "color-black",
-                        "color-gray",
-                        "color-red",
-                        "color-blue",
-                        "color-green",
-                        "color-amber",
-                        "color-purple",
-                    ]
-                    .into_iter()
-                    .map(|key| t_args("a11y-text-colour-name", &[arg("colour", t(key))]))
-                    .collect(),
-                    t("picker-text-color"),
-                    t("a11y-text-color-default"),
-                ),
-                PaletteKind::Highlight => (
-                    &HIGHLIGHT_PALETTE,
-                    [
-                        "color-yellow",
-                        "color-green",
-                        "color-cyan",
-                        "color-pink",
-                        "color-orange",
-                    ]
-                    .into_iter()
-                    .map(|key| t_args("a11y-highlight-name", &[arg("colour", t(key))]))
-                    .collect(),
-                    t("picker-highlight"),
-                    t("a11y-highlight-clear"),
-                ),
-            };
-        let anchor = Point::new(self.pointer.x, self.pointer.y);
+        let (palette, title, clear_label): (&[[u8; 3]], String, String) = match kind {
+            PaletteKind::Text => (
+                &STYLE_PALETTE,
+                t("picker-text-color"),
+                t("a11y-text-color-default"),
+            ),
+            PaletteKind::Highlight => (
+                &HIGHLIGHT_PALETTE,
+                t("picker-highlight"),
+                t("a11y-highlight-clear"),
+            ),
+        };
+        let labels = swatch_names(kind);
+        let command = match kind {
+            PaletteKind::Text => ToolAction::TextColorPalette,
+            PaletteKind::Highlight => ToolAction::HighlightPalette,
+        };
+        let anchor = self
+            .toolbar
+            .iter()
+            .find(|(action, _)| *action == command)
+            .map_or(self.pointer, |(_, rect)| {
+                Point::new(rect.x0, self.tool_band.y1)
+            });
+        let current = match kind {
+            PaletteKind::Text => self.current_text_color(),
+            PaletteKind::Highlight => self.current_highlight_color(),
+        };
         self.compact_swatch_palette.open(PaletteRequest {
             kind,
+            selected: current.and_then(|rgb| palette.iter().position(|c| *c == rgb)),
             colors: palette,
             labels,
             title,
             clear_label,
             anchor,
             host: self.rect,
+            theme: &self.desk_theme,
         });
         self.lifecycle.dirty = true;
     }
@@ -13234,24 +12581,6 @@ impl WordProcessorWidget {
                 self.lifecycle.needs_commit = true;
             }
             CtxAction::Review(action) => self.dispatch_review_action(action, state),
-            CtxAction::CompactPalette(kind) => self.open_compact_swatch_palette(kind),
-            CtxAction::Tool(tool) => {
-                self.apply_tool(state, tool);
-                self.refresh_blocks(state);
-                if !matches!(
-                    tool,
-                    ToolAction::ToggleStyles
-                        | ToolAction::ToggleRuler
-                        | ToolAction::ToggleOutline
-                        | ToolAction::ToggleHistory
-                        | ToolAction::More
-                        | ToolAction::NewMenu
-                ) {
-                    self.lifecycle.needs_commit = true;
-                    self.save_status = DocumentSaveStatus::Modified;
-                    self.note_edit_for_autosave(state);
-                }
-            }
         }
         self.context_menu.close();
         self.lifecycle.dirty = true;
@@ -13264,6 +12593,9 @@ impl WordProcessorWidget {
     /// Reads the current frame's `panel_hits` (rebuilt every draw), so the chip
     /// rects are live at right-click time.
     fn style_chip_at(&self, p: Point) -> Option<String> {
+        if self.style_pick_rect.contains(p) {
+            return self.focused_style_key();
+        }
         self.panel_hits.iter().find_map(|(r, h)| match h {
             PanelHit::Pick(id) if r.contains(p) => Some(id.clone()),
             _ => None,
@@ -13386,20 +12718,38 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Open the "New ▾" picker below the toolbar's leading edge.
+    /// Open the "New" picker under the New button (under the toolbar's
+    /// leading edge while New sits in the More menu).
     fn open_template_picker(&mut self) {
-        // Anchor below the toolbar's left edge (where the "New ▾" button lives).
-        let anchor_x = self
+        let gap = f64::from(self.desk_theme.tokens.spacing.s2);
+        let anchor = self
             .toolbar
-            .first()
-            .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
-        let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
+            .iter()
+            .find(|(action, _)| *action == ToolAction::NewMenu)
+            .map_or_else(
+                || {
+                    Rect::new(
+                        self.tool_band.x0,
+                        self.tool_band.y0,
+                        self.tool_band.x0,
+                        self.tool_band.y1,
+                    )
+                },
+                |(_, rect)| *rect,
+            );
+        let anchor = Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap);
         self.template_picker
             .set_text_scale(crate::num::f32_of_f64(self.text_scale));
-        self.template_picker.set_viewport(self.rect);
-        self.template_picker.open_at(Point::new(anchor_x, anchor_y));
-        self.template_picker.menu_mut().constrain_to(self.rect);
+        self.template_picker
+            .open_anchored(anchor, self.floating_viewport());
         self.lifecycle.dirty = true;
+    }
+
+    /// Where menus and pickers may float: the window less a small margin,
+    /// so a floating panel never runs flush against the window's edge.
+    fn floating_viewport(&self) -> Rect {
+        self.rect
+            .inset(-f64::from(self.desk_theme.tokens.spacing.s2))
     }
 
     /// Replace the open document's content with `template`'s Markdown, **in place**
@@ -13671,9 +13021,8 @@ impl WordProcessorWidget {
             .collect()
     }
 
-    /// The compact bottom-chrome variant only carries the immediate editing
-    /// facts; filename and save state remain available from the title surface.
-    fn status_count_label(&self) -> String {
+    /// The status readouts on the trailing side of the status band.
+    fn status_readouts(&self) -> Vec<String> {
         let words: usize = self
             .blocks
             .iter()
@@ -13684,216 +13033,418 @@ impl WordProcessorWidget {
             .iter()
             .map(|block| block.text.chars().count())
             .sum();
-        t_args(
-            "status-count",
-            &[
-                arg("words", num::i64_of_usize(words)),
-                arg("chars", num::i64_of_usize(chars)),
-            ],
-        )
+        vec![
+            t_args("status-words", &[arg("words", num::i64_of_usize(words))]),
+            t_args("status-chars", &[arg("chars", num::i64_of_usize(chars))]),
+        ]
     }
 
-    /// Allocate the docked document-status label wholly inside `bar`, after the
-    /// layout chips and hint. Returning `None` at extremely narrow widths is
-    /// preferable to either overlapping a control or painting over the page.
-    fn layout_bar_status_rect(bar: Rect, after_x: f64, width: f64, margin: f64) -> Option<Rect> {
-        let x0 = bar.x1 - margin - width;
-        (x0 >= after_x).then_some(Rect::new(x0, bar.y0, x0 + width, bar.y1))
-    }
-
-    /// Draw the zoom component in the toolbar's last row.
-    fn draw_zoom_control(
+    /// Route an event to the fields hosted in the inspector and the status
+    /// band (the style property fields, the line-spacing menu and the zoom
+    /// field): hover always, a press on one focuses it, typing goes to the
+    /// focused one. A value they produce is applied here. Returns whether
+    /// one of them took the event.
+    fn route_hosted_fields(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        row: Rect,
-    ) {
-        self.zoom.draw(
-            &mut PaintContext::new(scene, transform, tr),
-            row,
-            self.chrome.chip,
-            self.chrome.text,
-        );
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let pointer = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
+            }
+            _ => self.pointer,
+        };
+        let mut took = false;
+        let panel = self.styles_panel_visible();
+        // An open menu owns every event until it closes.
+        let open_menu = [&mut self.style_pick, &mut self.line_spacing]
+            .into_iter()
+            .find(|menu| panel && menu.is_open())
+            .map(|menu| Self::forward(menu, event, ctx));
+        if open_menu.is_some() {
+            self.drain_hosted_fields(ctx.state);
+            *ctx.handled = true;
+            self.lifecycle.dirty = true;
+            return true;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                if panel {
+                    for slot in &mut self.num_inputs {
+                        Self::forward(&mut slot.input, event, ctx);
+                    }
+                    Self::forward(&mut self.line_spacing, event, ctx);
+                    Self::forward(&mut self.style_pick, event, ctx);
+                }
+                Self::forward(&mut self.zoom_input, event, ctx);
+                if *ctx.handled {
+                    self.lifecycle.dirty = true;
+                }
+                // Hover is shared with the rest of the editor.
+                *ctx.handled = false;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => took = self.press_hosted(pointer, panel, event, ctx),
+            WindowEvent::MouseInput { .. } => {
+                for slot in &mut self.num_inputs {
+                    if Widget::wants_pointer_capture(&slot.input) {
+                        Self::forward(&mut slot.input, event, ctx);
+                        took = true;
+                    }
+                }
+                if Widget::wants_pointer_capture(&self.zoom_input) {
+                    Self::forward(&mut self.zoom_input, event, ctx);
+                    took = true;
+                }
+                for menu in [&mut self.line_spacing, &mut self.style_pick] {
+                    if Widget::wants_pointer_capture(menu) {
+                        Self::forward(menu, event, ctx);
+                        took = true;
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let done = key.state == ElementState::Pressed
+                    && matches!(
+                        key.logical_key,
+                        Key::Named(NamedKey::Enter | NamedKey::Escape | NamedKey::Tab)
+                    );
+                took = self.type_into_hosted(event, ctx);
+                if took && done {
+                    self.focus_hosted(None, false);
+                }
+            }
+            WindowEvent::Ime(_) => took = self.type_into_hosted(event, ctx),
+            _ => {}
+        }
+        self.drain_hosted_fields(ctx.state);
+        if took {
+            *ctx.handled = true;
+            self.lifecycle.dirty = true;
+        }
+        took
     }
 
-    /// Build the toolbar's button spec list (action, label, width,
-    /// active-state) for this frame: formatting toggles, the contextual table
-    /// section (editing controls inside a cell, else "Insert table"), and the
-    /// panel/pane toggles. Paragraph-style presets/controls live in the side
-    /// panel, not here — see [`ToolAction`].
-    fn toolbar_button_specs(&self, compact: bool) -> Vec<(ToolAction, ToolbarItem)> {
-        let mut specs = self.primary_toolbar_specs();
-        if compact {
-            specs.extend([
-                toolbar_item(
-                    ToolAction::FontCycle,
-                    self.current_font().label(),
-                    58.0,
-                    false,
-                ),
-                toolbar_item(
-                    ToolAction::ToggleStyles,
-                    t("toolbar-styles"),
-                    64.0,
-                    self.view.styles_panel_visible,
-                ),
-                toolbar_item(
-                    ToolAction::More,
-                    t("toolbar-more"),
-                    62.0,
-                    self.context_menu.is_open(),
-                ),
-            ]);
+    /// A press on a hosted field focuses it and goes to it; returns
+    /// whether one took it.
+    fn press_hosted(
+        &mut self,
+        pointer: Point,
+        panel: bool,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let field = panel
+            .then(|| {
+                self.num_inputs
+                    .iter()
+                    .find(|slot| slot.rect.contains(pointer))
+                    .map(|slot| slot.field)
+            })
+            .flatten();
+        let zoom = self.zoom_rect.contains(pointer);
+        self.focus_hosted(field, zoom);
+        if let Some(field) = field {
+            if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
+                Self::forward(&mut slot.input, event, ctx);
+            }
+        } else if zoom {
+            Self::forward(&mut self.zoom_input, event, ctx);
+        } else if panel && self.line_spacing_rect.contains(pointer) {
+            Self::forward(&mut self.line_spacing, event, ctx);
+        } else if panel && self.style_pick_rect.contains(pointer) {
+            Self::forward(&mut self.style_pick, event, ctx);
         } else {
-            specs.extend(self.desktop_toolbar_specs());
+            return false;
         }
-        for (_, item) in &mut specs {
-            item.width = (item.width * self.text_scale).max(
-                self.toolbar_label_widths
-                    .get(&item.label)
-                    .copied()
-                    .unwrap_or(0.0),
-            );
-        }
-        specs
+        true
     }
 
-    /// Controls shared by both responsive toolbar compositions.
-    fn primary_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
-        let mut specs = vec![
-            toolbar_item(
-                ToolAction::NewMenu,
-                t("toolbar-new"),
-                64.0,
-                self.template_picker.is_open(),
-            ),
-            toolbar_item(
+    /// Hand typing to the hosted field that has the keyboard; returns
+    /// whether one had it.
+    fn type_into_hosted(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if let Some(field) = self.editing_field {
+            if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
+                Self::forward(&mut slot.input, event, ctx);
+            }
+            true
+        } else if Widget::is_focused(&self.zoom_input) {
+            Self::forward(&mut self.zoom_input, event, ctx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Give keyboard focus to one hosted field (a style property, or the
+    /// zoom field), taking it from the others; `None, false` releases it.
+    fn focus_hosted(&mut self, field: Option<NumField>, zoom: bool) {
+        for slot in &mut self.num_inputs {
+            let on = Some(slot.field) == field;
+            if Widget::is_focused(&slot.input) != on {
+                Widget::set_focus(&mut slot.input, on);
+            }
+        }
+        if Widget::is_focused(&self.zoom_input) != zoom {
+            Widget::set_focus(&mut self.zoom_input, zoom);
+        }
+        self.editing_field = field;
+    }
+
+    /// Hand one event to a hosted widget.
+    fn forward(widget: &mut dyn Widget, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        widget.handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+    }
+
+    /// Apply what the hosted fields produced: a style property, a line
+    /// spacing, or a zoom level.
+    fn drain_hosted_fields(&mut self, state: &mut AutoCommit) {
+        let changes: Vec<(NumField, f64)> = self
+            .num_inputs
+            .iter_mut()
+            .filter_map(|slot| slot.input.take_changed().map(|v| (slot.field, v)))
+            .collect();
+        for (field, value) in changes {
+            self.edit_focused_style(state, true, |st| field.set(st, num::f32_of_f64(value)));
+        }
+        if let Some(index) = self.line_spacing_pick.take()
+            && let Some(spacing) = block_layout::LINE_SPACINGS.get(index).copied()
+        {
+            self.dispatch_block_attr(
+                state,
+                "line_spacing",
+                crate::actions::AttrVal::Float(spacing),
+            );
+            self.refresh_blocks(state);
+            self.lifecycle.needs_commit = true;
+            self.save_status = DocumentSaveStatus::Modified;
+            self.lifecycle.dirty = true;
+        }
+        if let Some(id) = self.style_pick_choice.take() {
+            self.apply_panel_hit(state, PanelHit::Pick(id));
+        }
+        if let Some(percent) = self.zoom_input.take_changed() {
+            self.set_zoom(percent / 100.0);
+        }
+    }
+
+    /// The toolbar's commands for this frame, grouped: New; bold, italic
+    /// and underline; type and colour; the rarer character formats;
+    /// insertion (the table group turns into
+    /// table editing inside a cell); then, at the trailing edge, the view
+    /// toggles. Commands that do not fit go to the toolbar's More menu.
+    fn toolbar_entries(&self) -> Vec<ToolEntry> {
+        let mut entries = vec![
+            ToolEntry::command(ToolAction::NewMenu, t("toolbar-new")),
+            ToolEntry::Separator,
+            ToolEntry::toggle(
                 ToolAction::Bold,
-                "B",
-                34.0,
+                t("toolbar-bold"),
                 self.mark_active_in_selection("strong"),
             ),
-            toolbar_item(
+            ToolEntry::toggle(
                 ToolAction::Italic,
-                "I",
-                30.0,
+                t("toolbar-italic"),
                 self.mark_active_in_selection("em"),
             ),
-            toolbar_item(
+            ToolEntry::toggle(
                 ToolAction::Underline,
-                "U",
-                32.0,
+                t("toolbar-underline"),
                 self.mark_active_in_selection("underline"),
             ),
-        ];
-        if !self.selection_blocks_cached().is_empty() {
-            specs.push(toolbar_item(
-                ToolAction::Hyperlink,
-                t("toolbar-link"),
-                52.0,
-                false,
-            ));
-        }
-        specs
-    }
-
-    /// Desktop-only direct formatting, contextual table, and view controls.
-    fn desktop_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
-        let mut specs = vec![
-            toolbar_item(
+            ToolEntry::Separator,
+            ToolEntry::command(ToolAction::FontCycle, self.current_font().label()),
+            ToolEntry::command(ToolAction::FontSizeDec, t("toolbar-size-down")),
+            ToolEntry::command(ToolAction::FontSizeInc, t("toolbar-size-up")),
+            ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
+            ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
+            ToolEntry::Separator,
+            ToolEntry::toggle(
                 ToolAction::Strike,
-                "S",
-                30.0,
+                t("toolbar-strikethrough"),
                 self.mark_active_in_selection("strike"),
             ),
-            toolbar_item(
+            ToolEntry::toggle(
                 ToolAction::Super,
-                "x²",
-                34.0,
+                t("toolbar-superscript"),
                 self.mark_active_in_selection("super"),
             ),
-            toolbar_item(
+            ToolEntry::toggle(
                 ToolAction::Sub,
-                "x₂",
-                34.0,
+                t("toolbar-subscript"),
                 self.mark_active_in_selection("sub"),
             ),
+            ToolEntry::Separator,
         ];
-        // Paragraph-style presets (H1/H2/Body/List) and paragraph controls
-        // (alignment, line spacing) are the side panel's job, not the toolbar —
-        // see `ToolAction`. Quick headings remain on Ctrl+1/2/3.
-        specs.extend([
-            toolbar_item(
-                ToolAction::FontCycle,
-                self.current_font().label(),
-                58.0,
-                false,
-            ),
-            toolbar_item(ToolAction::FontSizeDec, "A−", 34.0, false),
-            toolbar_item(ToolAction::FontSizeInc, "A+", 34.0, false),
-        ]);
-        // Contextual table section: editing controls inside a cell, else insert.
+        if !self.selection_blocks_cached().is_empty() {
+            entries.push(ToolEntry::command(ToolAction::Hyperlink, t("toolbar-link")));
+        }
         if self.current_block_style().0 == "cell" {
-            specs.extend([
-                toolbar_item(ToolAction::TableRowAdd, t("toolbar-row-add"), 54.0, false),
-                toolbar_item(ToolAction::TableRowDel, t("toolbar-row-del"), 54.0, false),
-                toolbar_item(ToolAction::TableColAdd, t("toolbar-col-add"), 52.0, false),
-                toolbar_item(ToolAction::TableColDel, t("toolbar-col-del"), 52.0, false),
-                toolbar_item(ToolAction::TableDelete, "✕", 30.0, false),
+            entries.extend([
+                ToolEntry::command(ToolAction::TableRowAdd, t("toolbar-row-add")),
+                ToolEntry::command(ToolAction::TableRowDel, t("toolbar-row-del")),
+                ToolEntry::command(ToolAction::TableColAdd, t("toolbar-col-add")),
+                ToolEntry::command(ToolAction::TableColDel, t("toolbar-col-del")),
+                ToolEntry::command(ToolAction::TableDelete, t("toolbar-table-delete")),
             ]);
         } else {
-            specs.push(toolbar_item(
+            entries.push(ToolEntry::command(
                 ToolAction::InsertTable,
                 t("toolbar-table"),
-                78.0,
-                false,
             ));
         }
-        // The Image button is drawn as a vector glyph (a lucide `Image` icon,
-        // overlaid below after the chrome lays the toolbar out) with no text
-        // label — replacing the old emoji-prefixed "🖼 Image" caption. The empty
-        // label keeps the chrome button blank so only the icon shows.
-        specs.extend([
-            toolbar_item(ToolAction::InsertImage, "", 40.0, false),
-            toolbar_item(
-                ToolAction::ToggleStyles,
-                t("toolbar-styles"),
-                64.0,
-                self.view.styles_panel_visible,
-            ),
-            toolbar_item(
+        entries.extend([
+            ToolEntry::command(ToolAction::InsertImage, t("toolbar-image")),
+            ToolEntry::command(ToolAction::InsertToc, t("toolbar-toc")),
+            ToolEntry::Spacer,
+            ToolEntry::toggle(
                 ToolAction::ToggleRuler,
                 t("toolbar-ruler"),
-                60.0,
                 self.view.ruler_visible,
             ),
         ]);
-        // Navigation: outline pane toggle + table-of-contents generator.
-        specs.extend([toolbar_item(
-            ToolAction::ToggleOutline,
-            t("toolbar-outline"),
-            72.0,
-            self.outline.is_open(),
-        )]);
         // Hosted, History is the framework's surface; one control opens it.
         if !self.hosted() {
-            specs.push(toolbar_item(
+            entries.push(ToolEntry::toggle(
                 ToolAction::ToggleHistory,
                 t("toolbar-history"),
-                68.0,
                 self.history.is_open(),
             ));
         }
-        specs.push(toolbar_item(
-            ToolAction::InsertToc,
-            t("toolbar-toc"),
-            48.0,
-            false,
-        ));
-        specs
+        entries
     }
 
+    /// Bring the hosted toolbar in line with this frame's commands: rebuilt
+    /// when a command appears, goes or is renamed, otherwise only its toggles
+    /// are set, so hover, focus and an open More menu survive.
+    fn sync_toolbar(&mut self) {
+        let entries = self.toolbar_entries();
+        let same = entries.len() == self.tool_entries.len()
+            && entries
+                .iter()
+                .zip(&self.tool_entries)
+                .all(|(a, b)| a.same_shape(b));
+        if same {
+            for (index, (now, before)) in entries.iter().zip(&self.tool_entries).enumerate() {
+                if let (
+                    ToolEntry::Command {
+                        active: Some(on), ..
+                    },
+                    ToolEntry::Command {
+                        active: Some(was), ..
+                    },
+                ) = (now, before)
+                    && on != was
+                {
+                    self.tool_bar.set_active(index, *on);
+                }
+            }
+        } else {
+            let mut bar = ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal);
+            for entry in &entries {
+                bar = match entry {
+                    ToolEntry::Command {
+                        action,
+                        label,
+                        active,
+                    } => {
+                        let fired = std::rc::Rc::clone(&self.tool_fired);
+                        let action = *action;
+                        let on_click = move || fired.set(Some(action));
+                        match active {
+                            Some(on) => bar.push_toggle(label, *on, on_click),
+                            None => bar.push_button(label, on_click),
+                        }
+                    }
+                    ToolEntry::Separator => bar.push_separator(),
+                    ToolEntry::Spacer => bar.push_spacer(),
+                };
+            }
+            self.tool_bar = bar;
+        }
+        self.tool_entries = entries;
+    }
+
+    /// Paint the outline and the inspector on their drawers: the region
+    /// beside the page when docked, the floating material over a scrim when
+    /// a drawer covers the page. The outline is drawn after `self.laid` is
+    /// set so its current heading reflects this frame's pagination.
+    fn draw_drawers(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.outline_drawer.sidebar_rect().width() > 0.5 {
+            self.outline_drawer.draw_scrim(scene, transform, theme);
+            let local = self.outline_drawer.paint_panel(scene, transform, theme);
+            let entries = self.outline_entries();
+            let active = self.active_outline_block();
+            self.outline.draw(
+                &mut PaintContext::new(scene, transform, text_renderer),
+                &local,
+                self.outline_drawer.sidebar_rect(),
+                &entries,
+                active.as_deref(),
+            );
+        } else {
+            self.outline.clear_frame();
+        }
+        if self.inspector_drawer.sidebar_rect().width() > 0.5 {
+            self.inspector_drawer.draw_scrim(scene, transform, theme);
+            let local = self.inspector_drawer.paint_panel(scene, transform, theme);
+            let panel = self.inspector_drawer.sidebar_rect();
+            self.draw_styles_panel(scene, transform, text_renderer, &local, panel);
+        } else {
+            self.panel_rect = Rect::ZERO;
+            self.panel_body = Rect::ZERO;
+            self.panel_hits.clear();
+            for slot in &mut self.num_inputs {
+                slot.rect = Rect::ZERO;
+            }
+            self.line_spacing_rect = Rect::ZERO;
+            self.style_pick_rect = Rect::ZERO;
+        }
+    }
+
+    /// Bring the outline and inspector drawers in line with what is shown,
+    /// advance their reveal, and lay them out in `below` (everything under
+    /// the toolbar). Returns the page's column.
+    fn resolve_drawers(&mut self, theme: &Theme, below: Rect) -> Rect {
+        for (drawer, open) in [
+            (&mut self.outline_drawer, self.outline.is_open()),
+            (&mut self.inspector_drawer, self.view.styles_panel_visible),
+        ] {
+            drawer.scale_for(theme);
+            drawer.resolve(below);
+            if drawer.is_open() != open {
+                drawer.snap(open);
+            }
+            drawer.tick(theme);
+        }
+        let column = self.outline_drawer.resolve(below);
+        self.inspector_drawer.resolve(column)
+    }
+
+    /// The toolbar band's height: one pointer-target control with the
+    /// band's padding (`s1`, as `toolbar::band_padding`) above and below.
+    fn toolbar_band_height(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.min_pointer_target)
+            + 2.0 * f64::from(theme.tokens.spacing.s1)
+    }
+
+    /// Lay out and paint the toolbar in its band `tb` (the band has no fill
+    /// of its own, only a hairline under it), then record each visible
+    /// command's rect for hit-testing and the accessibility tree.
     fn draw_toolbar(
         &mut self,
         scene: &mut Scene,
@@ -13902,324 +13453,163 @@ impl WordProcessorWidget {
         theme: &Theme,
         tb: Rect,
     ) {
-        let compact = self.use_compact_toolbar(tb.width());
-        let specs = self.responsive_toolbar_specs(tb.width());
-        let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
-
-        // Responsive packing: when the controls don't fit `tb.width()`, wrap to
-        // additional rows so nothing is ever clipped or unreachable. The packer's
-        // width model mirrors `chrome::toolbar::draw`, so each row-slice it admits
-        // is drawn by `draw` without overflow. `tb` is the FULL multi-row toolbar
-        // rect (its height already reserves every row — see `toolbar_height`).
-        let mut widths: Vec<f64> = items.iter().map(|it| it.width).collect();
-        let mut starts: Vec<bool> = items.iter().map(|it| it.group_start).collect();
-        // Reserve the right-aligned swatch strips + zoom stepper (drawn directly,
-        // not as chrome buttons) as a trailing phantom item so no button row
-        // extends under them; `toolbar_height` mirrors this exactly.
-        // Zoom is a fundamental view control, not an overflow command. It stays
-        // in the toolbar at every width; only the two dense swatch strips move
-        // into More on a compact surface.
-        widths.push(
-            self.zoom.width()
-                + if compact {
-                    0.0
-                } else {
-                    (swatch_reserve_width() + ZOOM_SWATCH_GAP) * self.text_scale
-                },
+        self.sync_toolbar();
+        ui::widget::toolbar::paint_band(scene, transform, theme, tb);
+        let across = f64::from(theme.tokens.spacing.s3);
+        let target = f64::from(theme.tokens.metrics.min_pointer_target);
+        let along = (tb.height() - target) / 2.0;
+        // The outline's toggle at the leading corner, the inspector's at the
+        // trailing one, the commands between them.
+        self.outline_toggle = Rect::new(
+            tb.x0 + across,
+            tb.y0 + along,
+            tb.x0 + across + target,
+            tb.y1 - along,
         );
-        starts.push(true);
-        let rows = pack_toolbar_rows(&widths, &starts, tb.width(), self.text_scale);
-        self.toolbar_rows = rows.len();
-
-        // Fill the whole toolbar background once (so inter-row gaps are toned
-        // consistently), then draw each row's buttons at its own band.
-        scene.fill(
-            Fill::NonZero,
+        self.inspector_toggle = Rect::new(
+            tb.x1 - across - target,
+            tb.y0 + along,
+            tb.x1 - across,
+            tb.y1 - along,
+        );
+        self.outline_drawer.draw_toggle(
+            scene,
             transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &tb,
+            tr,
+            theme,
+            self.outline_toggle,
+            self.outline_toggle.contains(self.pointer),
         );
-
-        let row_h = self.toolbar_row_height;
-        let mut all_rects: Vec<Rect> = Vec::with_capacity(items.len());
-        for (ri, (s, e)) in rows.iter().enumerate() {
-            let ry0 = tb.y0 + num::f64_of_usize(ri) * row_h;
-            let row_rect = Rect::new(tb.x0, ry0, tb.x1, ry0 + row_h);
-            // The trailing swatch reservation is a phantom (index == items.len()),
-            // drawn separately below — clamp it out of the real button slice.
-            let e_btn = (*e).min(items.len());
-            if *s < e_btn
-                && let Some(row_items) = items.get(*s..e_btn)
-            {
-                let metrics = chrome::toolbar::metrics(num::f32_of_f64(self.text_scale));
-                let rects = chrome::toolbar::draw_with_metrics(
-                    scene, transform, tr, theme, row_rect, row_items, &metrics,
-                );
-                all_rects.extend(rects);
+        self.inspector_drawer.draw_toggle(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.inspector_toggle,
+            self.inspector_toggle.contains(self.pointer),
+        );
+        let inner = Rect::new(
+            self.outline_toggle.x1 + across,
+            tb.y0 + along,
+            self.inspector_toggle.x0 - across,
+            tb.y1 - along,
+        );
+        self.tool_bar.lay_out_in(inner, tr, theme);
+        let presence = PresenceCtx::empty();
+        presence.viewport.set(Some(self.floating_viewport()));
+        Widget::draw(&mut self.tool_bar, scene, transform, tr, theme, &presence);
+        self.toolbar.clear();
+        self.toolbar
+            .push((ToolAction::ToggleOutline, self.outline_toggle));
+        let mut target = 0usize;
+        for entry in self.tool_entries.iter().take(self.tool_bar.visible_count()) {
+            if let ToolEntry::Command { action, .. } = entry {
+                if let Some(rect) = self.tool_bar.synthetic_accessibility_rect(&[target]) {
+                    self.toolbar.push((*action, rect));
+                }
+                target += 1;
             }
         }
-        self.toolbar = specs.into_iter().map(|(a, _)| a).zip(all_rects).collect();
+        self.toolbar
+            .push((ToolAction::ToggleStyles, self.inspector_toggle));
+    }
 
-        // Paint the vector "Insert image" glyph (a lucide `Image` icon) centred in
-        // its blank toolbar button — the button carries no text label, so the
-        // glyph *is* its face. Drawn here (not by the chrome toolbar, which only
-        // renders text) so the emoji-free icon reads at the OS chrome ink.
-        if let Some((_, r)) = self
-            .toolbar
-            .iter()
-            .find(|(a, _)| matches!(a, ToolAction::InsertImage))
+    /// Route an event to the toolbar: hover always, presses inside its band,
+    /// the release that completes one, and everything while its More menu is
+    /// open. A command it fires runs here. Returns whether the toolbar took
+    /// the event.
+    fn route_toolbar_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let pointer = match event {
+            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            )),
+            _ => None,
+        };
+        let menu_open = self.tool_bar.is_overflow_open();
+        let in_band = pointer.unwrap_or(self.pointer);
+        let claims = menu_open
+            || match event {
+                WindowEvent::CursorMoved { .. } => true,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => self.tool_band.contains(in_band),
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => self.tool_bar.wants_pointer_capture(),
+                _ => false,
+            };
+        if !claims {
+            return false;
+        }
+        if !menu_open
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
         {
-            let s = 18.0 * self.text_scale;
-            let cx = f64::midpoint(r.x0, r.x1);
-            let cy = f64::midpoint(r.y0, r.y1);
-            let glyph = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
-            Icon::Image.draw(scene, transform, glyph, self.chrome.text);
-        }
-
-        // Per-run text-colour swatch row, appended at the right of the LAST
-        // toolbar row. The chrome toolbar only draws text buttons, so the coloured
-        // squares are painted directly here (and registered as `TextColor` click
-        // targets) — no `ui` change needed. The leading neutral swatch clears the
-        // run colour.
-        let last_row_y = tb.y0 + (num::f64_of_usize(rows.len()) - 1.0) * row_h;
-        // Zoom stepper: right-aligned on the last toolbar row (its width reserved
-        // as part of the trailing packer phantom below, so buttons never run under
-        // it). The colour/highlight swatch strips pack to its left.
-        let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
-        self.draw_zoom_control(scene, transform, tr, last_row);
-        if !compact {
-            let swatch_x1 = (tb.x1 - self.zoom.width() - ZOOM_SWATCH_GAP).max(tb.x0);
-            let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
-            let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
-            // Highlight swatch strip, packed just left of the text-colour strip.
-            let hl_band = Rect::new(
-                tb.x0,
-                last_row_y,
-                (text_left - 10.0 * self.text_scale).max(tb.x0),
-                last_row_y + row_h,
-            );
-            self.draw_highlight_swatches(scene, transform, tr, hl_band);
-        }
-
-        // Subtle hover highlight over the button under the pointer. A low-alpha
-        // tint of the primary text colour reads as a veneer in both light
-        // (dark-on-light) and dark (light-on-dark) modes.
-        if let Some(hr) = self.hover_tool {
-            let pad = Rect::new(hr.x0 - 2.0, hr.y0 + 1.0, hr.x1 + 2.0, hr.y1 - 1.0);
-            let veneer = with_alpha(self.chrome.text, 0x14);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                veneer,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(pad, 6.0),
-            );
-        }
-    }
-
-    /// The toolbar's full height for the current window width — `TOOLBAR_H` per
-    /// wrapped row. Computed from the same packer `draw_toolbar` uses so the
-    /// canvas top offset and the drawn rows always agree.
-    fn toolbar_height(&self, width: f64) -> f64 {
-        let compact = self.use_compact_toolbar(width);
-        let specs = self.responsive_toolbar_specs(width);
-        let mut widths: Vec<f64> = specs.iter().map(|(_, item)| item.width).collect();
-        let mut starts: Vec<bool> = specs.iter().map(|(_, item)| item.group_start).collect();
-        widths.push(
-            self.zoom.width()
-                + if compact {
-                    0.0
-                } else {
-                    (swatch_reserve_width() + ZOOM_SWATCH_GAP) * self.text_scale
-                },
-        );
-        starts.push(true);
-        let rows = pack_toolbar_rows(&widths, &starts, width, self.text_scale);
-        num::f64_of_usize(rows.len()) * self.toolbar_row_height
-    }
-
-    /// A medium canvas should never leave one low-frequency control stranded on
-    /// a second ribbon row. Prefer the compact, explicit More menu whenever the
-    /// complete desktop set would wrap, while retaining the full grouped set on
-    /// widths where it is genuinely a single coherent row.
-    fn use_compact_toolbar(&self, width: f64) -> bool {
-        if width < COMPACT_TOOLBAR_BREAKPOINT {
-            return true;
-        }
-        let full = self.toolbar_button_specs(false);
-        let mut widths: Vec<f64> = full.iter().map(|(_, item)| item.width).collect();
-        let mut starts: Vec<bool> = full.iter().map(|(_, item)| item.group_start).collect();
-        widths
-            .push((swatch_reserve_width() + ZOOM_SWATCH_GAP) * self.text_scale + self.zoom.width());
-        starts.push(true);
-        pack_toolbar_rows(&widths, &starts, width, self.text_scale).len() > 1
-    }
-
-    /// At very large system text on a phone-sized tile, expose one clear New
-    /// entry and one complete More entry. Keeping the normal compact row here
-    /// would consume most of the viewport as five single-item rows.
-    fn responsive_toolbar_specs(&self, width: f64) -> Vec<(ToolAction, ToolbarItem)> {
-        let compact = self.use_compact_toolbar(width);
-        let mut specs = self.toolbar_button_specs(compact);
-        if width / self.text_scale < 260.0 {
-            specs.retain(|(action, _)| matches!(action, ToolAction::NewMenu | ToolAction::More));
-            for (_, item) in &mut specs {
-                item.width = (58.0 * self.text_scale).max(
-                    self.toolbar_label_widths
-                        .get(&item.label)
-                        .copied()
-                        .unwrap_or(0.0),
-                );
+            let toggle = if self.outline_toggle.contains(in_band) {
+                Some(ToolAction::ToggleOutline)
+            } else if self.inspector_toggle.contains(in_band) {
+                Some(ToolAction::ToggleStyles)
+            } else {
+                None
+            };
+            if let Some(action) = toggle {
+                self.tool_clicked(ctx.state, action);
+                *ctx.handled = true;
+                return true;
             }
         }
-        specs
+        let mut handled = false;
+        Widget::handle_event(
+            &mut self.tool_bar,
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
+        );
+        if handled
+            || (matches!(event, WindowEvent::CursorMoved { .. })
+                && (self.outline_toggle.contains(in_band)
+                    || self.inspector_toggle.contains(in_band)))
+        {
+            self.lifecycle.dirty = true;
+        }
+        if let Some(action) = self.tool_fired.take() {
+            self.tool_clicked(ctx.state, action);
+        }
+        // Hover is shared with the rest of the editor; everything else the
+        // toolbar takes is its own.
+        if matches!(event, WindowEvent::CursorMoved { .. }) && !menu_open {
+            return false;
+        }
+        *ctx.handled = true;
+        true
     }
 
-    /// Draw the text-colour swatch row at the right edge of the toolbar and
-    /// register each swatch as a `TextColor` click target in `self.toolbar`.
-    /// The current run's colour gets a white selection ring. The first swatch is
-    /// the neutral/default (an `A` glyph on the surface colour) — it clears any
-    /// per-run `color` mark.
-    fn draw_color_swatches(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        tb: Rect,
-    ) -> f64 {
-        let scale = f64::from(tr.text_scale());
-        let cur = self.current_text_color();
-        let cy = f64::midpoint(tb.y0, tb.y1);
-        let sw = 20.0 * scale;
-        let gap = 5.0 * scale;
-        let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
-        let total = num::f64_of_usize(n) * sw + (num::f64_of_usize(n) - 1.0) * gap;
-        // Right-align the strip, leaving a small margin from the toolbar's edge.
-        let strip_left = (tb.x1 - 14.0 * scale - total).max(tb.x0 + 14.0 * scale);
-        let mut x = strip_left;
-        let y0 = cy - sw / 2.0;
-
-        // Neutral / default swatch: surface-toned square with an "A", clears colour.
-        let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        ui::surface::card(scene, transform, nr, 4.0, self.chrome.chip);
-        if cur.is_none() {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0 * scale),
-                transform,
-                self.chrome.text,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(nr, 4.0 * scale),
-            );
-        }
-        tr.draw_text(
-            scene,
-            "A",
-            13.0,
-            self.chrome.text,
-            transform * Affine::translate((x + 5.5 * scale, y0 + 2.0 * scale)),
-            None,
-        );
-        self.toolbar.push((ToolAction::TextColor(None), nr));
-        x += sw + gap;
-
-        for c in &STYLE_PALETTE {
-            let r = Rect::new(x, y0, x + sw, y0 + sw);
-            let col = Color::from_rgb8(c[0], c[1], c[2]);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                col,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
-            );
-            if cur == Some(*c) {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(2.0 * scale),
-                    transform,
-                    self.chrome.text,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
-                );
-            }
-            self.toolbar.push((ToolAction::TextColor(Some(*c)), r));
-            x += sw + gap;
-        }
-        strip_left
-    }
-
-    /// Draw the highlight (text-background) swatch row, right-aligned within
-    /// `tb`, and register each swatch as a `Highlight` click target. The leading
-    /// neutral swatch (a crossed marker on the surface tone) clears any highlight.
-    /// The current run's highlight gets a white selection ring. Skips drawing if
-    /// the band is too narrow (the toolbar is tightly packed).
-    fn draw_highlight_swatches(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        tb: Rect,
-    ) {
-        let scale = f64::from(tr.text_scale());
-        let cur = self.current_highlight_color();
-        let cy = f64::midpoint(tb.y0, tb.y1);
-        let sw = 20.0 * scale;
-        let gap = 5.0 * scale;
-        let n = HIGHLIGHT_PALETTE.len() + 1; // +1 for the neutral "no highlight"
-        let total = num::f64_of_usize(n) * sw + (num::f64_of_usize(n) - 1.0) * gap;
-        // Not enough room beside the text-colour strip: skip (the buttons + Styles
-        // panel remain the path to highlight). Avoids overlapping the chrome.
-        if tb.width() < total + 14.0 * scale {
-            return;
-        }
-        let strip_left = (tb.x1 - total).max(tb.x0 + 4.0 * scale);
-        let mut x = strip_left;
-        let y0 = cy - sw / 2.0;
-
-        // Neutral / "no highlight" swatch: surface-toned square with a "▱" hint.
-        let nr = Rect::new(x, y0, x + sw, y0 + sw);
-        ui::surface::card(scene, transform, nr, 4.0, self.chrome.chip);
-        if cur.is_none() {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0 * scale),
-                transform,
-                self.chrome.text,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(nr, 4.0 * scale),
-            );
-        }
-        tr.draw_text(
-            scene,
-            "▱",
-            12.0,
-            self.chrome.text,
-            transform * Affine::translate((x + 4.0 * scale, y0 + 2.5 * scale)),
-            None,
-        );
-        self.toolbar.push((ToolAction::Highlight(None), nr));
-        x += sw + gap;
-
-        for c in &HIGHLIGHT_PALETTE {
-            let r = Rect::new(x, y0, x + sw, y0 + sw);
-            let col = Color::from_rgb8(c[0], c[1], c[2]);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                col,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
-            );
-            if cur == Some(*c) {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(2.0 * scale),
-                    transform,
-                    self.chrome.text,
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
-                );
-            }
-            self.toolbar.push((ToolAction::Highlight(Some(*c)), r));
-            x += sw + gap;
+    /// Run a toolbar command chosen by pointer, keyboard or the More menu.
+    fn tool_clicked(&mut self, state: &mut AutoCommit, action: ToolAction) {
+        self.apply_tool(state, action);
+        self.refresh_blocks(state);
+        self.lifecycle.dirty = true;
+        if action.edits_document() {
+            self.lifecycle.needs_commit = true;
+            self.save_status = DocumentSaveStatus::Modified;
+            self.note_edit_for_autosave(state);
         }
     }
 
@@ -14235,9 +13625,41 @@ impl WordProcessorWidget {
     }
 }
 
-#[cfg(test)]
-#[path = "widget/r2_chrome_metrics.rs"]
-mod r2_chrome_metrics;
+/// The editor as the Find bar's host: it searches the whole document and
+/// replaces matches through the editor's own undoable splice.
+struct EditorFind<'a> {
+    wp: &'a mut WordProcessorWidget,
+    state: &'a mut AutoCommit,
+}
+
+impl FindHost for EditorFind<'_> {
+    fn search_blocks(&mut self) -> Vec<BlockView> {
+        self.wp.search_blocks(self.state)
+    }
+
+    fn replace_matches(&mut self, matches: &[FindMatch], with: &str) -> usize {
+        let mut matches = matches.to_vec();
+        // Replace from the highest char offset down so earlier offsets in a
+        // block stay valid.
+        matches.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        for (block, start, end) in matches.iter().rev() {
+            self.wp.splice_via_action(
+                self.state,
+                crate::actions::RegionKind::Body,
+                block,
+                *start,
+                *end,
+                with,
+            );
+        }
+        if !matches.is_empty() {
+            self.wp.refresh_blocks(self.state);
+            self.wp.lifecycle.needs_commit = true;
+            self.wp.lifecycle.dirty = true;
+        }
+        matches.len()
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -14312,27 +13734,3 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
 #[cfg(test)]
 #[path = "widget/mark_boundary_tests.rs"]
 mod mark_boundary_tests;
-
-fn draw_legacy_btn(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    cc: &ChromeColors,
-    rect: Rect,
-    label: &str,
-    active: bool,
-    centered: bool,
-) {
-    draw_btn(
-        scene,
-        transform,
-        tr,
-        cc,
-        &PanelButton {
-            rect,
-            label,
-            active,
-            centered,
-        },
-    );
-}
