@@ -360,7 +360,7 @@ mod tests {
         let bound = Sample::Wipe { passes: 3 }.bound();
         assert_eq!(bound.id, "wipe");
         assert_eq!(bound.label, "Wipe");
-        assert!(bound.params.is_empty());
+        assert!(bound.params().is_empty());
         assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
         let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(
