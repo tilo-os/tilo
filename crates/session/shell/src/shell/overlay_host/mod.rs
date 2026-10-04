@@ -38,6 +38,7 @@ mod emoji_layer;
 mod history;
 pub(crate) mod layers;
 mod now_playing;
+mod sheet_accessibility;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
@@ -382,6 +383,22 @@ struct PendingLaunchpadApp {
     give_up_at: Instant,
 }
 
+/// How often a launchpad card's app action, delivered once its app is up,
+/// is asked whether it was admitted.
+const LAUNCHPAD_ACTION_POLL: Duration = Duration::from_millis(100);
+
+/// A launchpad card's app action awaiting admission: the app may be
+/// launching first. The card's title names it if it is refused.
+struct PendingLaunchpadAction {
+    title: String,
+    admission: tilo_actions::remote::Pending<
+        Result<
+            (u64, tilo_actions::remote::InvocationReceipt),
+            tilo_actions::remote::ActionHostError,
+        >,
+    >,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -469,6 +486,9 @@ pub struct ShellOverlayHost {
     /// A launchpad app card awaiting the Applications index; see
     /// [`Self::retry_pending_launchpad_app`].
     pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Launchpad cards' app actions awaiting admission; see
+    /// [`Self::poll_pending_launchpad_actions`].
+    pending_launchpad_actions: Vec<PendingLaunchpadAction>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -1544,6 +1564,7 @@ impl ShellOverlayHost {
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(&mut backdrop, transform, text_renderer, theme);
             return ShellSceneSections {
                 backdrop,
                 topbar,
@@ -1658,6 +1679,12 @@ impl ShellOverlayHost {
                 theme,
                 presence,
             );
+            self.draw_portal_dialog_sheet(
+                &mut above_quick_settings,
+                transform,
+                text_renderer,
+                theme,
+            );
         }
         self.pairing.draw(
             &mut above_quick_settings,
@@ -1720,18 +1747,9 @@ impl ShellOverlayHost {
                 crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
                     .is_some()
             }),
-            LayerId::QuickSettings => {
-                flags.quick_settings
-                    && self.chrome.as_ref().is_some_and(|chrome| {
-                        matches!(
-                            chrome.borrow().quick_settings.current_level(),
-                            crate::shell::quick_settings::QsLevel::Root
-                                | crate::shell::quick_settings::QsLevel::Notifications
-                                | crate::shell::quick_settings::QsLevel::Clipboard
-                                | crate::shell::quick_settings::QsLevel::Devices
-                        )
-                    })
-            }
+            // Every page publishes: the root, each drill-in, and the Wi-Fi
+            // password prompt that replaces the network list.
+            LayerId::QuickSettings => flags.quick_settings && self.chrome.is_some(),
             LayerId::NowPlaying => self.now_playing_published(),
             LayerId::ShortcutHelp => flags.shortcut_help,
             // Stacked; answered above.
@@ -2009,6 +2027,7 @@ impl ShellOverlayHost {
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
+            pending_launchpad_actions: Vec::new(),
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
@@ -2904,49 +2923,13 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The chrome as the shell narrator reads it: the overlay semantics
-    /// published to AT-SPI, the notification stack's live region, and the
-    /// hardware-key readout as a polite live status.
+    /// The chrome as the shell narrator reads it: the same semantics
+    /// published to AT-SPI, whose live regions carry the notification
+    /// banner, the hardware-key readout and a held pad's mapping.
     pub fn chrome_narration_snapshot(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, Politeness, Role};
-        let mut root = Widget::accessibility(self)
-            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")));
-        if let Some(chrome) = self.chrome.as_ref()
-            && let Some(node) = self
-                .notification_stack
-                .accessibility(&ChromeNotifications::new(chrome))
-        {
-            root.children.push(node);
-        }
-        let readout = self.chrome.as_ref().and_then(|chrome| {
-            chrome
-                .borrow()
-                .osd
-                .filter(|osd| osd.is_live(Instant::now()))
-                .map(|osd| osd.caption())
-        });
-        root.children.push(
-            AccessNode::new(Role::StaticText)
-                .with_name(t("a11y-status-readout"))
-                .with_live(Politeness::Polite)
-                .with_value(readout.unwrap_or_default()),
-        );
-        let pad_map = self.chrome.as_ref().and_then(|chrome| {
-            chrome
-                .borrow()
-                .pad_map
-                .as_ref()
-                .map(|map| (map.name.clone(), map.narration()))
-        });
-        if let Some((name, narration)) = pad_map {
-            root.children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(name)
-                    .with_live(Politeness::Polite)
-                    .with_value(narration),
-            );
-        }
-        root
+        use ui::a11y::{AccessNode, Role};
+        Widget::accessibility(self)
+            .unwrap_or_else(|| AccessNode::new(Role::Group).with_name(t("a11y-workspace")))
     }
 
     /// Paint what a held pad's controls do, if a pad map is up.
@@ -5494,6 +5477,7 @@ impl ShellOverlayHost {
                         display_name = %event.display_name,
                         "session helper exited without a window the user asked to open"
                     );
+                    crate::shell::launcher::restart_session_helper(&event.package_id);
                     continue;
                 }
                 LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
@@ -7134,6 +7118,10 @@ impl ShellOverlayHost {
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
+        if let Some(target) = action.app_action() {
+            self.invoke_launchpad_app_action(doc, root, target, action.label());
+            return true;
+        }
         if let Some((app_id, display_name)) = action.app_target() {
             self.open_launchpad_app(doc, root, app_id, display_name);
             return true;
@@ -7195,6 +7183,99 @@ impl ShellOverlayHost {
                     .unwrap_or_else(Instant::now),
             });
         }
+    }
+
+    /// Invoke the typed action a launchpad card names in its app, as the
+    /// person this device acts for in the active workspace. The action host
+    /// delivers it to the running app or launches the app into the workspace
+    /// first, so the card itself does what it names (starts the call, say)
+    /// rather than leaving the person to find it in the app. A session without
+    /// an action host still opens the app.
+    fn invoke_launchpad_app_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        target: tilo_desktop::launchpad::LaunchpadAppAction,
+        title: String,
+    ) {
+        use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let Some(broker) = self.shortcut_triggers.broker() else {
+            self.open_launchpad_app(doc, root, target.app_id, target.display_name);
+            return;
+        };
+        let caller = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let caller = tree.desktop.active_workspace().map(|workspace| {
+                let workspace_room = workspace.room.to_string();
+                (
+                    tilo_actions::remote::Caller::local_person(
+                        state.local_user_for_room(&workspace.room),
+                    )
+                    .in_room(&workspace_room),
+                    workspace_room,
+                )
+            });
+            drop(tree);
+            caller
+        };
+        let Some((caller, workspace_room)) = caller else {
+            return;
+        };
+        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
+        let admission = crate::shell::remote_actions::BrokerActionHost::new(broker).invoke_job(
+            &caller,
+            InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: application_action_target(
+                    &workspace_room,
+                    target.app_id,
+                    target.resource,
+                    target.action,
+                ),
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+            },
+        );
+        self.pending_launchpad_actions
+            .push(PendingLaunchpadAction { title, admission });
+        self.poll_pending_launchpad_actions();
+    }
+
+    /// Settle launchpad card actions whose admission arrived. One that was
+    /// refused names its card and the reason, so a card never fails silently.
+    fn poll_pending_launchpad_actions(&mut self) {
+        use tilo_actions::remote::PendingPoll;
+        let chrome = self.chrome.clone();
+        self.pending_launchpad_actions.retain_mut(|pending| {
+            let refusal = match pending.admission.poll_ready() {
+                PendingPoll::Waiting => return true,
+                PendingPoll::Ready(Ok(_)) => None,
+                PendingPoll::Ready(Err(error)) => Some(error.to_string()),
+                PendingPoll::Abandoned => Some(t("launchpad-action-unanswered")),
+            };
+            if let (Some(reason), Some(chrome)) = (refusal, chrome.as_ref()) {
+                tracing::warn!(
+                    target: "tilo::app_launch",
+                    card = %pending.title,
+                    %reason,
+                    "launchpad card action was refused"
+                );
+                chrome.borrow_mut().push_warning_notification(
+                    t_args(
+                        "host-action-cannot-run",
+                        &[("title", pending.title.as_str().into())],
+                    ),
+                    reason,
+                );
+            }
+            false
+        });
     }
 
     /// Retry a launchpad app card the Applications index could not resolve
@@ -9172,7 +9253,9 @@ impl ShellOverlayHost {
                 );
                 Some(self.qs_clipboard_query.len() != before)
             }
-            Key::Named(NamedKey::Backspace) => Some(self.qs_clipboard_query.pop().is_some()),
+            Key::Named(NamedKey::Backspace) => {
+                Some(ui::delete_last_grapheme(&mut self.qs_clipboard_query))
+            }
             Key::Named(NamedKey::Escape) if !self.qs_clipboard_query.is_empty() => {
                 self.qs_clipboard_query.clear();
                 Some(true)
@@ -11328,21 +11411,7 @@ impl ShellOverlayHost {
                         );
                     }
                 }
-                tilo_desktop::text_entry::Edit::Changed => {
-                    let char_count = self.status_draft.chars().count();
-                    if char_count > ui::MAX_STATUS_CHARS {
-                        let mut byte_cap = self.status_draft.len();
-                        for (seen, (byte, _)) in self.status_draft.char_indices().enumerate() {
-                            if seen == ui::MAX_STATUS_CHARS {
-                                byte_cap = byte;
-                                break;
-                            }
-                        }
-                        self.status_draft.truncate(byte_cap);
-                        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
-                        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
-                    }
-                }
+                tilo_desktop::text_entry::Edit::Changed => self.cap_status_draft(),
                 tilo_desktop::text_entry::Edit::Ignored
                 | tilo_desktop::text_entry::Edit::ConsumedQuiet => {}
             }
@@ -12524,12 +12593,47 @@ impl ShellOverlayHost {
         true
     }
 
+    /// Keep a typed status within [`ui::MAX_STATUS_CHARS`].
+    fn cap_status_draft(&mut self) {
+        let Some((byte_cap, _)) = self.status_draft.char_indices().nth(ui::MAX_STATUS_CHARS) else {
+            return;
+        };
+        self.status_draft.truncate(byte_cap);
+        self.status_selection.anchor = self.status_selection.anchor.min(byte_cap);
+        self.status_selection.cursor = self.status_selection.cursor.min(byte_cap);
+    }
+
+    /// An input method's text for whichever chrome field holds the keyboard
+    /// (the workspace name, the status), typed at its caret as keys are.
+    /// `false` when no such field is open.
+    fn commit_into_chrome_field(&mut self, text: &str) -> bool {
+        use tilo_desktop::text_entry::{Edit, commit};
+        if !self.palette_visible
+            && let Some(chrome) = self.chrome.clone()
+        {
+            let mut st = chrome.borrow_mut();
+            let mut sel = st.editing_workspace_name_selection;
+            if let Some(buf) = st.editing_workspace_name.as_mut() {
+                if commit(text, buf, &mut sel) == Edit::Changed {
+                    st.editing_workspace_name_selection = sel;
+                    st.bump();
+                }
+                return true;
+            }
+        }
+        if self.status_editing {
+            if commit(text, &mut self.status_draft, &mut self.status_selection) == Edit::Changed {
+                self.cap_status_draft();
+            }
+            return true;
+        }
+        false
+    }
+
     /// Every workspace-rename chord but `Enter`, applied to `buf`/`sel` in
-    /// place and returned as `(consumed, needs_bump, selection)`. `Enter`
-    /// is special-cased by the caller, which needs to drop the borrow this
-    /// only holds a `&mut` into. Split out of
-    /// [`Self::handle_workspace_rename_key`] to keep it under
-    /// `too_many_lines`.
+    /// place through the chrome's shared field editing and returned as
+    /// `(consumed, needs_bump, selection)`. `Enter` is special-cased by the
+    /// caller, which needs to drop the borrow this only holds a `&mut` into.
     fn apply_workspace_rename_key(
         logical_key: &Key,
         ctrl: bool,
@@ -12537,155 +12641,12 @@ impl ShellOverlayHost {
         buf: &mut String,
         mut sel: ui::text_selection::Selection,
     ) -> (bool, bool, ui::text_selection::Selection) {
-        use ui::text_selection::{
-            Selection, next_char_boundary, next_word_boundary, prev_char_boundary,
-            prev_word_boundary,
+        use tilo_desktop::text_entry::{Edit, Mods, apply};
+        let (consumed, needs_bump) = match apply(logical_key, Mods { shift, ctrl }, buf, &mut sel) {
+            Edit::Changed => (true, true),
+            Edit::ConsumedQuiet | Edit::Submit | Edit::Cancel => (true, false),
+            Edit::Ignored => (false, false),
         };
-        let mut consumed = true;
-        let mut needs_bump = true;
-        match logical_key {
-            Key::Named(NamedKey::ArrowLeft) => {
-                let new_pos = if !ctrl && !shift && !sel.is_collapsed() {
-                    sel.range().start
-                } else if ctrl {
-                    prev_word_boundary(buf, sel.cursor)
-                } else {
-                    prev_char_boundary(buf, sel.cursor)
-                };
-                sel.cursor = new_pos;
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let new_pos = if !ctrl && !shift && !sel.is_collapsed() {
-                    sel.range().end
-                } else if ctrl {
-                    next_word_boundary(buf, sel.cursor)
-                } else {
-                    next_char_boundary(buf, sel.cursor)
-                };
-                sel.cursor = new_pos;
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::Home) => {
-                sel.cursor = 0;
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::End) => {
-                sel.cursor = buf.len();
-                if !shift {
-                    sel.collapse_to_cursor();
-                }
-            }
-            Key::Named(NamedKey::Backspace) => {
-                if sel.is_collapsed() {
-                    if sel.cursor > 0 {
-                        let prev = prev_char_boundary(buf, sel.cursor);
-                        buf.replace_range(prev..sel.cursor, "");
-                        sel = Selection::collapsed(prev);
-                    }
-                } else {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
-                }
-            }
-            Key::Named(NamedKey::Delete) => {
-                if sel.is_collapsed() {
-                    if sel.cursor < buf.len() {
-                        let next = next_char_boundary(buf, sel.cursor);
-                        buf.replace_range(sel.cursor..next, "");
-                    }
-                } else {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
-                }
-            }
-            Key::Named(NamedKey::Space) => {
-                let r = sel.range();
-                buf.replace_range(r.clone(), " ");
-                sel = Selection::collapsed(r.start.saturating_add(1));
-            }
-            Key::Character(s) if ctrl => {
-                let (c, n, new_sel) = Self::apply_workspace_rename_ctrl_chord(s.as_str(), buf, sel);
-                consumed = c;
-                needs_bump = n;
-                sel = new_sel;
-            }
-            Key::Character(s) => {
-                let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-                if filtered.is_empty() {
-                    consumed = false;
-                    needs_bump = false;
-                } else {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), &filtered);
-                    sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
-                }
-            }
-            _ => {
-                consumed = false;
-                needs_bump = false;
-            }
-        }
-        (consumed, needs_bump, sel)
-    }
-
-    /// The `Ctrl`-chord half of [`Self::apply_workspace_rename_key`]:
-    /// select-all, copy, cut, paste. Split out to keep the caller under
-    /// `too_many_lines`.
-    fn apply_workspace_rename_ctrl_chord(
-        s: &str,
-        buf: &mut String,
-        mut sel: ui::text_selection::Selection,
-    ) -> (bool, bool, ui::text_selection::Selection) {
-        use ui::text_selection::{Selection, clipboard_copy, clipboard_paste};
-        let mut consumed = true;
-        let mut needs_bump = true;
-        match s {
-            "a" | "A" => {
-                sel.anchor = 0;
-                sel.cursor = buf.len();
-            }
-            "c" | "C" => {
-                let r = sel.range();
-                if let Some(selected) = buf.get(r) {
-                    clipboard_copy(selected);
-                }
-                needs_bump = false;
-            }
-            "x" | "X" => {
-                let r = sel.range();
-                if r.is_empty() {
-                    needs_bump = false;
-                } else if let Some(selected) = buf.get(r.clone()) {
-                    clipboard_copy(selected);
-                    buf.replace_range(r.clone(), "");
-                    sel = Selection::collapsed(r.start);
-                } else {
-                    needs_bump = false;
-                }
-            }
-            "v" | "V" => {
-                if let Some(paste) = clipboard_paste() {
-                    let r = sel.range();
-                    buf.replace_range(r.clone(), &paste);
-                    sel = Selection::collapsed(r.start.saturating_add(paste.len()));
-                } else {
-                    needs_bump = false;
-                }
-            }
-            _ => {
-                consumed = false;
-                needs_bump = false;
-            }
-        }
         (consumed, needs_bump, sel)
     }
 
@@ -16081,8 +16042,18 @@ impl Widget for ShellOverlayHost {
     )]
     fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
         let (doc, path) = ui::doc::document(doc, path);
-        if let Some(onboarding) = self.onboarding.as_mut() {
-            return onboarding.update(doc, path);
+        if self.onboarding.is_some() {
+            // Compositor-owned sheets (polkit administrator prompts, network
+            // secrets) are raised by the system on behalf of the person in
+            // front of the screen, including while first-use setup is still
+            // running. Their requesters block until the sheet is answered,
+            // so the queue must keep moving under onboarding too.
+            let dialog_dirty = self.pump_portal_dialogs();
+            let onboarding_dirty = self
+                .onboarding
+                .as_mut()
+                .is_some_and(|onboarding| onboarding.update(doc, path));
+            return onboarding_dirty || dialog_dirty;
         }
         let pairing_dirty = self.pairing.pump(doc, path);
         // Runs first so an invite token / prompt is in chrome before draw.
@@ -16124,6 +16095,7 @@ impl Widget for ShellOverlayHost {
                     });
         }
         self.retry_pending_launchpad_app(doc, path);
+        self.poll_pending_launchpad_actions();
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
@@ -16664,6 +16636,7 @@ impl Widget for ShellOverlayHost {
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
             self.capture_studio
                 .draw(scene, transform, text_renderer, theme, presence);
             return;
@@ -16720,6 +16693,7 @@ impl Widget for ShellOverlayHost {
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
         }
         self.capture_studio
             .draw(scene, transform, text_renderer, theme, presence);
@@ -16813,6 +16787,29 @@ impl Widget for ShellOverlayHost {
                 taffy: ctx.taffy,
             },
         ) {
+            return;
+        }
+        // A compositor-owned sheet raised during first-use setup (an
+        // administrator prompt, a network secret) is drawn above onboarding
+        // and is modal over it: its keys and clicks must reach the sheet,
+        // not the setup control that still holds focus underneath. Focus is
+        // left untouched, so onboarding resumes where it was once the sheet
+        // is answered or dismissed.
+        if self.onboarding.is_some()
+            && self.route_portal_dialog_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: &mut *ctx.handled,
+                    focus_target: &mut *ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
+        {
             return;
         }
         if let Some(onboarding) = self.onboarding.as_mut() {
@@ -17211,6 +17208,12 @@ impl Widget for ShellOverlayHost {
                 },
             )
         {
+            return;
+        }
+        if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
+            && self.commit_into_chrome_field(text)
+        {
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput {
@@ -17654,10 +17657,15 @@ impl Widget for ShellOverlayHost {
                         } else if matches!(
                             state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Wifi
+                                | crate::shell::quick_settings::QsLevel::WifiDetails(_)
                         ) {
                             root.children.push(
-                                self.qs_wifi_pane
-                                    .accessibility_snapshot(&state.quick_settings),
+                                if let Some(prompt) = state.quick_settings.wifi_password.as_ref() {
+                                    self.wifi_password_accessibility(prompt)
+                                } else {
+                                    self.qs_wifi_pane
+                                        .accessibility_snapshot(&state.quick_settings)
+                                },
                             );
                         } else if matches!(
                             state.quick_settings.current_level(),
@@ -18186,6 +18194,8 @@ impl Widget for ShellOverlayHost {
                 }
             }
         }
+        self.append_modal_sheet_accessibility(&mut root);
+        root.children.extend(self.live_status_accessibility());
         Some(root)
     }
 
@@ -18196,9 +18206,17 @@ impl Widget for ShellOverlayHost {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
+            // A sheet's target never falls back to a pointer click: a stale
+            // one must not press whatever is now under its old bounds.
+            if !handled {
+                tracing::debug!(target, ?action, "a11y: sheet action not applied");
+            }
+            return true;
+        }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -18510,7 +18528,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 8] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -18549,6 +18567,12 @@ impl ShellOverlayHost {
                 self.pending_launchpad_app
                     .as_ref()
                     .and_then(|_| now.checked_add(LAUNCHPAD_APP_RETRY)),
+            ),
+            (
+                "launchpad-action",
+                (!self.pending_launchpad_actions.is_empty())
+                    .then(|| now.checked_add(LAUNCHPAD_ACTION_POLL))
+                    .flatten(),
             ),
         ]
     }
@@ -21033,7 +21057,11 @@ impl ShellOverlayHost {
         self.file_picker_overlay
             .draw(self.rect, scene, transform, text_renderer, theme, presence);
 
-        self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+        // The contextual tour paints after this pass; it draws the sheet
+        // itself, above the tour, so the sheet is never covered.
+        if self.onboarding.is_none() {
+            self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
+        }
 
         // A held pad button works over modals too, like the keys below.
         self.draw_pad_map(scene, transform, text_renderer, theme);

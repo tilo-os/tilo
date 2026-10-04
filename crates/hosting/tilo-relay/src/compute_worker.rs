@@ -175,6 +175,10 @@ pub struct WorkerEnvironments {
     pub host: Option<crate::environment_host::EnvironmentHost>,
     /// Legacy apps, on a worker with KVM.
     pub legacy: Option<crate::legacy_host::LegacyWorker>,
+    /// Where the hosted environments' legacy launches go: the relay, over
+    /// this worker's connection once it is attached.
+    #[cfg(target_os = "linux")]
+    pub legacy_route: Option<crate::legacy_route::LegacyLaunchRoute>,
 }
 
 impl WorkerEnvironments {
@@ -193,6 +197,16 @@ impl WorkerEnvironments {
         } else {
             BTreeSet::new()
         }
+    }
+
+    /// Hand the relay connection to whatever sends launches up it.
+    fn attach_relay(&self, connection: &iroh::endpoint::Connection) {
+        #[cfg(target_os = "linux")]
+        if let Some(route) = &self.legacy_route {
+            route.set_relay(connection.clone());
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = connection;
     }
 
     fn hosts_anything(&self) -> bool {
@@ -354,6 +368,7 @@ pub async fn run_production_compute_worker(
         .as_ref()
         .map(|host| AbortOnDrop(host.spawn_reaper()));
     let connection = client.connection();
+    config.environments.attach_relay(&connection);
 
     loop {
         tokio::select! {

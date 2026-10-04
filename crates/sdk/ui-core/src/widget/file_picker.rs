@@ -36,7 +36,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::{TextInput, Widget};
 
 pub const FOOTER_HEIGHT: f64 = 56.0;
 pub const HEADER_HEIGHT: f64 = 64.0;
@@ -106,6 +106,11 @@ const FILENAME_HEIGHT: f64 = 36.0;
 const PADDING: f64 = 12.0;
 const BUTTON_WIDTH: f64 = 96.0;
 const BUTTON_HEIGHT: f64 = 32.0;
+/// The replace prompt's card, at most; a narrow picker narrows it.
+const REPLACE_CARD_WIDTH: f64 = 440.0; // a dialog card's size, as the picker's own, not spacing
+const REPLACE_CARD_HEIGHT: f64 = 140.0; // a dialog card's size, not spacing
+/// What Replace does, under the replace prompt's question.
+const REPLACE_PROMPT_DETAIL: &str = "Replacing it overwrites its contents.";
 const BUTTON_GAP: f64 = 8.0;
 const HEADER_ICON_PX: f64 = 18.0;
 const ROW_ICON_PX: f64 = 16.0;
@@ -122,7 +127,14 @@ enum PickerFocus {
     Filename,
     Cancel,
     Confirm,
+    /// The replace prompt's Cancel: keep the existing file, back to the name.
+    KeepExisting,
+    /// The replace prompt's destructive Replace.
+    Replace,
 }
+
+/// Semantic key of the replace prompt that parents its two buttons.
+const REPLACE_PROMPT_KEY: u64 = 9;
 
 impl PickerFocus {
     const fn id(self) -> u64 {
@@ -133,6 +145,8 @@ impl PickerFocus {
             Self::Filename => 4,
             Self::Cancel => 5,
             Self::Confirm => 6,
+            Self::KeepExisting => 7,
+            Self::Replace => 8,
         }
     }
 
@@ -144,6 +158,8 @@ impl PickerFocus {
             4 => Some(Self::Filename),
             5 => Some(Self::Cancel),
             6 => Some(Self::Confirm),
+            7 => Some(Self::KeepExisting),
+            8 => Some(Self::Replace),
             _ => None,
         }
     }
@@ -231,11 +247,17 @@ pub struct FilePicker {
     filters: Vec<FileFilter>,
     active_filter: usize,
 
-    filename: String,
+    /// The Save-mode filename: the shared text field, so caret, selection,
+    /// clipboard and input methods behave as in every other field.
+    filename: TextInput,
     first_visible: usize,
 
     /// Set on Open / Cancel. `None` until resolved.
     pending_outcome: Option<FilePickerOutcome>,
+    /// A Save target that already exists, waiting for the person to say
+    /// whether to replace it. While set, the prompt is the only thing on the
+    /// picker that takes input.
+    replace_prompt: Option<PathBuf>,
 
     // Hit-test rects, recomputed on each `apply_layout` / `draw`.
     open_rect: Rect,
@@ -243,6 +265,9 @@ pub struct FilePicker {
     up_rect: Rect,
     filter_rect: Rect,
     filename_rect: Rect,
+    replace_card_rect: Rect,
+    keep_existing_rect: Rect,
+    replace_rect: Rect,
     /// `(entry_index, rect)` for the currently-visible rows only.
     entry_rows: Vec<(usize, Rect)>,
     /// `(ancestor_path, rect)` for each clickable breadcrumb segment.
@@ -266,6 +291,8 @@ pub struct FilePicker {
     hover_entry: Option<usize>,
     /// `0` = Cancel, `1` = the mode-specific confirmation action.
     hover_button: Option<u8>,
+    /// The replace prompt button under the pointer.
+    hover_prompt: Option<PickerFocus>,
     /// The active control inside this immediate-mode modal.  It is reflected
     /// in both paint and accessibility semantics.
     focus: Option<PickerFocus>,
@@ -300,14 +327,24 @@ impl FilePicker {
             accessible_roots: roots,
             filters: vec![FileFilter::all()],
             active_filter: 0,
-            filename: String::new(),
+            // A file name is not prose: no spelling marks, and never an
+            // autocorrection rewriting a word of it.
+            filename: TextInput::local()
+                .with_kind(crate::widget::TextInputKind::Name)
+                .with_plain_chrome()
+                .with_accessible_name("Filename")
+                .with_placeholder("Filename…"),
             first_visible: 0,
             pending_outcome: None,
+            replace_prompt: None,
             open_rect: Rect::ZERO,
             cancel_rect: Rect::ZERO,
             up_rect: Rect::ZERO,
             filter_rect: Rect::ZERO,
             filename_rect: Rect::ZERO,
+            replace_card_rect: Rect::ZERO,
+            keep_existing_rect: Rect::ZERO,
+            replace_rect: Rect::ZERO,
             entry_rows: Vec::new(),
             crumb_rects: Vec::new(),
             crumb_widths: HashMap::new(),
@@ -316,6 +353,7 @@ impl FilePicker {
             last_click: None,
             hover_entry: None,
             hover_button: None,
+            hover_prompt: None,
             focus: None,
             has_keyboard_focus: false,
         };
@@ -367,7 +405,8 @@ impl FilePicker {
 
     #[must_use]
     pub fn with_filename(mut self, name: impl Into<String>) -> Self {
-        self.filename = name.into();
+        let name = name.into();
+        self.set_filename(&name);
         self
     }
 
@@ -401,8 +440,15 @@ impl FilePicker {
             .map_or("All files", |f| f.label.as_str())
     }
 
+    /// Put `name` in the filename field with the caret after it, so typing
+    /// continues it.
+    fn set_filename(&mut self, name: &str) {
+        self.filename.set_text(name);
+        self.filename.set_cursor_pos(name.len());
+    }
+
     pub fn filename(&self) -> &str {
-        &self.filename
+        self.filename.value()
     }
 
     pub fn confirm_label(&self) -> &str {
@@ -439,6 +485,32 @@ impl FilePicker {
 
     pub fn click_cancel(&mut self) {
         self.pending_outcome = Some(FilePickerOutcome::Cancelled);
+    }
+
+    /// The existing file a Save is waiting to replace, while the picker asks
+    /// whether to.
+    pub fn replace_prompt(&self) -> Option<&Path> {
+        self.replace_prompt.as_deref()
+    }
+
+    /// Answer the replace prompt with Replace: the Save resolves to the
+    /// existing file.
+    pub fn confirm_replace(&mut self) {
+        if let Some(target) = self.replace_prompt.take() {
+            self.hover_prompt = None;
+            self.pending_outcome = Some(FilePickerOutcome::Selected(vec![target]));
+        }
+    }
+
+    /// Answer the replace prompt with Cancel: nothing is chosen, and the
+    /// name is back in front of the person to change.
+    pub fn keep_existing(&mut self) {
+        if self.replace_prompt.take().is_some() {
+            self.hover_prompt = None;
+            self.focus = None;
+            self.ensure_valid_focus();
+            self.sync_filename_focus();
+        }
     }
 
     pub fn take_outcome(&mut self) -> Option<FilePickerOutcome> {
@@ -615,6 +687,7 @@ impl FilePicker {
             self.rect.x1 - PADDING,
             filename_top + FILENAME_HEIGHT - m.field_inset_y,
         );
+        self.filename.apply_layout_external(self.filename_rect);
 
         let up_x1 = self.rect.x1 - PADDING;
         let up_x0 = up_x1 - m.up_w;
@@ -645,7 +718,27 @@ impl FilePicker {
             self.entry_rows
                 .push((i, Rect::new(row_x0, y0, row_x1, y0 + ROW_HEIGHT)));
         }
+        self.layout_replace_prompt();
         self.ensure_valid_focus();
+    }
+
+    /// The replace prompt: a card centred on the picker, its buttons in the
+    /// footer's order (Cancel, then the action) at its bottom edge.
+    fn layout_replace_prompt(&mut self) {
+        let w = REPLACE_CARD_WIDTH
+            .min(self.rect.width() - 2.0 * PADDING)
+            .max(0.0);
+        let h = REPLACE_CARD_HEIGHT.min(self.rect.height()).max(0.0);
+        let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
+        let y0 = self.rect.y0 + (self.rect.height() - h) / 2.0;
+        self.replace_card_rect = Rect::new(x0, y0, x0 + w, y0 + h);
+        let by1 = self.replace_card_rect.y1 - PADDING;
+        let by0 = by1 - BUTTON_HEIGHT;
+        let replace_x1 = self.replace_card_rect.x1 - PADDING;
+        let replace_x0 = replace_x1 - BUTTON_WIDTH;
+        let keep_x1 = replace_x0 - BUTTON_GAP;
+        self.replace_rect = Rect::new(replace_x0, by0, replace_x1, by1);
+        self.keep_existing_rect = Rect::new(keep_x1 - BUTTON_WIDTH, by0, keep_x1, by1);
     }
 
     /// Native dialog focus order, kept in one place so keyboard, AT focus
@@ -653,6 +746,9 @@ impl FilePicker {
     /// its selected row, exactly like a native listbox, rather than making a
     /// long directory consume every Tab press.
     fn focus_targets(&self) -> Vec<PickerFocus> {
+        if self.replace_prompt.is_some() {
+            return vec![PickerFocus::KeepExisting, PickerFocus::Replace];
+        }
         let mut targets = Vec::with_capacity(6);
         if self.can_go_up() {
             targets.push(PickerFocus::Up);
@@ -718,14 +814,44 @@ impl FilePicker {
             self.focus = Some(focus);
             self.has_keyboard_focus = true;
         }
+        self.sync_filename_focus();
+    }
+
+    /// The filename field holds the caret exactly while it is the focused
+    /// control of a focused picker.
+    fn sync_filename_focus(&mut self) {
+        let focused = self.has_keyboard_focus && self.focus == Some(PickerFocus::Filename);
+        if self.filename.is_focused() != focused {
+            Widget::set_focus(&mut self.filename, focused);
+        }
+    }
+
+    /// Whether `event` is typing for the focused filename field rather than
+    /// the picker's own navigation (Tab, Escape, Enter).
+    fn is_filename_input(&self, event: &WindowEvent) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        if self.mode != FilePickerMode::Save
+            || self.focus != Some(PickerFocus::Filename)
+            || self.replace_prompt.is_some()
+        {
+            return false;
+        }
+        match event {
+            WindowEvent::Ime(_) => true,
+            WindowEvent::KeyboardInput { event, .. } => !matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Tab | NamedKey::Escape | NamedKey::Enter)
+            ),
+            _ => false,
+        }
     }
 
     fn can_commit_open(&self) -> bool {
         match self.mode {
             FilePickerMode::Open => self.validated_selected_files().is_some(),
             FilePickerMode::Save => {
-                (!self.filename.trim().is_empty()
-                    && self.safe_save_target(self.filename.trim()).is_some())
+                (!self.filename().trim().is_empty()
+                    && self.safe_save_target(self.filename().trim()).is_some())
                     || self.first_selected_file().is_some()
             }
             FilePickerMode::Directory => self.validated_directory_choice().is_some(),
@@ -782,6 +908,14 @@ impl FilePicker {
             }
             Some(PickerFocus::List) => {
                 self.activate_selected_entry();
+                true
+            }
+            Some(PickerFocus::KeepExisting) => {
+                self.keep_existing();
+                true
+            }
+            Some(PickerFocus::Replace) => {
+                self.confirm_replace();
                 true
             }
             _ => false,
@@ -871,16 +1005,15 @@ impl FilePicker {
     fn commit_open(&mut self) {
         match self.mode {
             FilePickerMode::Save => {
-                let name = self.filename.trim();
-                if !name.is_empty() {
-                    self.pending_outcome = Some(match self.safe_save_target(name) {
-                        Some(target) => FilePickerOutcome::Selected(vec![target]),
-                        None => FilePickerOutcome::Cancelled,
-                    });
-                } else if let Some(p) = self.first_selected_file() {
-                    self.pending_outcome = Some(FilePickerOutcome::Selected(vec![p]));
+                let name = self.filename().trim();
+                let target = if name.is_empty() {
+                    self.first_selected_file()
                 } else {
-                    self.pending_outcome = Some(FilePickerOutcome::Cancelled);
+                    self.safe_save_target(name)
+                };
+                match target {
+                    Some(target) => self.commit_save(target),
+                    None => self.pending_outcome = Some(FilePickerOutcome::Cancelled),
                 }
             }
             FilePickerMode::Open => {
@@ -893,6 +1026,32 @@ impl FilePicker {
                     self.pending_outcome = Some(FilePickerOutcome::Selected(paths));
                 }
             }
+        }
+    }
+
+    /// Save to `target` — unless something is already there. A folder is
+    /// opened, as typing a folder's name does in every save dialog; an
+    /// existing file is replaced only once the person says so.
+    fn commit_save(&mut self, target: PathBuf) {
+        match fs::metadata(&target) {
+            Ok(meta) if meta.is_dir() => {
+                if self.can_navigate_to(&target) {
+                    self.navigate_to(&target);
+                    self.set_filename("");
+                    self.focus_control(PickerFocus::Filename);
+                }
+            }
+            // A dangling symlink is still a name taken in this folder.
+            _ if fs::symlink_metadata(&target).is_ok() => {
+                self.replace_prompt = Some(target);
+                self.hover_prompt = None;
+                // Cancel holds focus: Enter on its own never destroys a file.
+                self.focus = Some(PickerFocus::KeepExisting);
+                self.has_keyboard_focus = true;
+                self.sync_filename_focus();
+                self.apply_layout_helper();
+            }
+            _ => self.pending_outcome = Some(FilePickerOutcome::Selected(vec![target])),
         }
     }
 
@@ -1001,7 +1160,8 @@ impl FilePicker {
         }
         // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
-            entry.name.clone_into(&mut self.filename);
+            let name = entry.name.clone();
+            self.set_filename(&name);
         }
         if is_double && self.mode == FilePickerMode::Directory {
             self.last_click = None;
@@ -1096,7 +1256,7 @@ impl Widget for FilePicker {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.adopt_theme(theme);
         self.apply_layout_helper();
@@ -1124,10 +1284,23 @@ impl Widget for FilePicker {
 
         self.draw_header_and_breadcrumbs(scene, transform, text_renderer, theme);
         self.draw_entry_rows(scene, transform, text_renderer, theme);
-        self.draw_footer(scene, transform, text_renderer, theme);
+        self.draw_footer(scene, transform, text_renderer, theme, presence);
+        self.draw_replace_prompt(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.replace_prompt.is_some() {
+            self.on_replace_prompt_event(event, ctx);
+            return;
+        }
+        if self.is_filename_input(event) {
+            self.has_keyboard_focus = true;
+            self.sync_filename_focus();
+            self.filename.handle_event(event, ctx);
+            self.ensure_valid_focus();
+            *ctx.handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
@@ -1148,6 +1321,24 @@ impl Widget for FilePicker {
             }
             _ => {}
         }
+        self.sync_filename_focus();
+        if self.mode == FilePickerMode::Save
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+            )
+        {
+            // The field places its caret and drags its selection itself; the
+            // picker still sees the press to move focus onto the field.
+            let mut field_handled = false;
+            self.filename.handle_event(
+                event,
+                &mut crate::widget::EventCtx {
+                    handled: &mut field_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
+            );
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1162,104 +1353,121 @@ impl Widget for FilePicker {
     )]
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        let filename_cursor = self.filename.cursor_pos();
+        let filename_anchor =
+            self.filename
+                .selection_range_public()
+                .map_or(filename_cursor, |(start, end)| {
+                    if start == filename_cursor { end } else { start }
+                });
         let controls = self
             .a11y_controls()
             .into_iter()
-            .map(|control| match control {
-                PickerFocus::Up => AccessNode::new(Role::Button)
-                    .with_name("Up")
-                    .with_key(control.id())
-                    .with_bounds(self.up_rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.has_keyboard_focus && self.focus == Some(control),
-                        ..Default::default()
-                    }),
-                PickerFocus::List => {
-                    let total = self.entries.len();
-                    let rows = self
-                        .entry_rows
-                        .iter()
-                        .filter_map(|(index, rect)| {
-                            let entry = self.entries.get(*index)?;
-                            Some(
-                                AccessNode::new(Role::ListItem)
-                                    .with_name(entry.name.clone())
-                                    .with_hashed_key(&entry.path)
-                                    .with_bounds(*rect)
-                                    .with_position(index.saturating_add(1), total)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        focused: self.has_keyboard_focus
-                                            && self.focus == Some(PickerFocus::List)
-                                            && self.selection.primary().or_else(|| {
-                                                self.entry_rows.first().map(|(first, _)| *first)
-                                            }) == Some(*index),
-                                        selected: self.selection.is_selected(*index),
-                                        expanded: entry.is_dir.then_some(false),
-                                        ..Default::default()
-                                    }),
-                            )
-                        })
-                        .collect();
-                    AccessNode::new(Role::List)
-                        .with_name(if self.mode == FilePickerMode::Directory {
-                            "Folders"
-                        } else {
-                            "Files"
-                        })
+            .filter_map(|control| {
+                Some(match control {
+                    PickerFocus::Up => AccessNode::new(Role::Button)
+                        .with_name("Up")
                         .with_key(control.id())
-                        .with_bounds(self.list_rect())
+                        .with_bounds(self.up_rect)
                         .with_state(AccessState {
                             focusable: true,
                             focused: self.has_keyboard_focus && self.focus == Some(control),
                             ..Default::default()
-                        })
-                        .with_children(rows)
-                }
-                PickerFocus::Filter => AccessNode::new(Role::ComboBox)
-                    .with_name("File type")
-                    .with_value(self.active_filter_label())
-                    .with_key(control.id())
-                    .with_bounds(self.filter_rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.has_keyboard_focus && self.focus == Some(control),
-                        expanded: Some(false),
-                        ..Default::default()
-                    }),
-                PickerFocus::Filename => AccessNode::new(Role::TextInput)
-                    .with_name("Filename")
-                    .with_value(self.filename.clone())
-                    .with_text_selection(self.filename.len(), self.filename.len())
-                    .with_key(control.id())
-                    .with_bounds(self.filename_rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.has_keyboard_focus && self.focus == Some(control),
-                        ..Default::default()
-                    }),
-                PickerFocus::Cancel | PickerFocus::Confirm => {
-                    let (label, rect, enabled) = if control == PickerFocus::Cancel {
-                        ("Cancel", self.cancel_rect, true)
-                    } else {
-                        (self.confirm_label(), self.open_rect, self.can_commit_open())
-                    };
-                    AccessNode::new(Role::Button)
-                        .with_name(label)
+                        }),
+                    PickerFocus::List => {
+                        let total = self.entries.len();
+                        let rows = self
+                            .entry_rows
+                            .iter()
+                            .filter_map(|(index, rect)| {
+                                let entry = self.entries.get(*index)?;
+                                Some(
+                                    AccessNode::new(Role::ListItem)
+                                        .with_name(entry.name.clone())
+                                        .with_hashed_key(&entry.path)
+                                        .with_bounds(*rect)
+                                        .with_position(index.saturating_add(1), total)
+                                        .with_state(AccessState {
+                                            focusable: true,
+                                            focused: self.has_keyboard_focus
+                                                && self.focus == Some(PickerFocus::List)
+                                                && self.selection.primary().or_else(|| {
+                                                    self.entry_rows.first().map(|(first, _)| *first)
+                                                }) == Some(*index),
+                                            selected: self.selection.is_selected(*index),
+                                            expanded: entry.is_dir.then_some(false),
+                                            ..Default::default()
+                                        }),
+                                )
+                            })
+                            .collect();
+                        AccessNode::new(Role::List)
+                            .with_name(if self.mode == FilePickerMode::Directory {
+                                "Folders"
+                            } else {
+                                "Files"
+                            })
+                            .with_key(control.id())
+                            .with_bounds(self.list_rect())
+                            .with_state(AccessState {
+                                focusable: true,
+                                focused: self.has_keyboard_focus && self.focus == Some(control),
+                                ..Default::default()
+                            })
+                            .with_children(rows)
+                    }
+                    PickerFocus::Filter => AccessNode::new(Role::ComboBox)
+                        .with_name("File type")
+                        .with_value(self.active_filter_label())
                         .with_key(control.id())
-                        .with_bounds(rect)
+                        .with_bounds(self.filter_rect)
                         .with_state(AccessState {
-                            focusable: enabled,
-                            focused: enabled
-                                && self.has_keyboard_focus
-                                && self.focus == Some(control),
-                            disabled: !enabled,
+                            focusable: true,
+                            focused: self.has_keyboard_focus && self.focus == Some(control),
+                            expanded: Some(false),
                             ..Default::default()
-                        })
-                }
+                        }),
+                    PickerFocus::Filename => AccessNode::new(Role::TextInput)
+                        .with_name("Filename")
+                        .with_value(self.filename().to_owned())
+                        .with_text_selection(filename_anchor, filename_cursor)
+                        .with_key(control.id())
+                        .with_bounds(self.filename_rect)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: self.has_keyboard_focus && self.focus == Some(control),
+                            ..Default::default()
+                        }),
+                    PickerFocus::Cancel | PickerFocus::Confirm => {
+                        let (label, rect, enabled) = if control == PickerFocus::Cancel {
+                            ("Cancel", self.cancel_rect, true)
+                        } else {
+                            (self.confirm_label(), self.open_rect, self.can_commit_open())
+                        };
+                        AccessNode::new(Role::Button)
+                            .with_name(label)
+                            .with_key(control.id())
+                            .with_bounds(rect)
+                            .with_state(AccessState {
+                                focusable: enabled,
+                                focused: enabled
+                                    && self.has_keyboard_focus
+                                    && self.focus == Some(control),
+                                disabled: !enabled,
+                                ..Default::default()
+                            })
+                    }
+                    // Only on the replace prompt, which replaces this list.
+                    PickerFocus::KeepExisting | PickerFocus::Replace => return None,
+                })
             })
             .collect();
+        // The replace prompt is modal over the picker: the controls behind
+        // it cannot be reached until it is answered.
+        let controls = match self.replace_prompt_accessibility() {
+            Some(prompt) => vec![prompt],
+            None => controls,
+        };
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(self.title.clone())
@@ -1292,7 +1500,19 @@ impl Widget for FilePicker {
         true
     }
 
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.filename)
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if self.replace_prompt.is_some() {
+            return match path {
+                [0] => Some(self.replace_card_rect),
+                [0, 0] => Some(self.keep_existing_rect),
+                [0, 1] => Some(self.replace_rect),
+                _ => None,
+            };
+        }
         let (&control_index, rest) = path.split_first()?;
         let control = *self.a11y_controls().get(control_index)?;
         match (control, rest) {
@@ -1310,6 +1530,16 @@ impl Widget for FilePicker {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        if self.replace_prompt.is_some() {
+            let control = match path {
+                [0] => return true,
+                [0, 0] => PickerFocus::KeepExisting,
+                [0, 1] => PickerFocus::Replace,
+                _ => return false,
+            };
+            self.focus_control(control);
+            return true;
+        }
         let Some((&control_index, rest)) = path.split_first() else {
             return false;
         };
@@ -1352,10 +1582,33 @@ impl Widget for FilePicker {
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
+        if self.replace_prompt.is_some() {
+            let control = match key_path {
+                [REPLACE_PROMPT_KEY, key] => PickerFocus::from_id(*key)
+                    .filter(|c| matches!(c, PickerFocus::KeepExisting | PickerFocus::Replace)),
+                _ => None,
+            };
+            let Some(control) = control else {
+                return false;
+            };
+            return match action {
+                Action::Focus => {
+                    self.focus_control(control);
+                    true
+                }
+                Action::Activate => {
+                    self.focus_control(control);
+                    self.activate_focus()
+                }
+                _ => false,
+            };
+        }
         let Some((&control_key, rest)) = key_path.split_first() else {
             return false;
         };
-        let Some(control) = PickerFocus::from_id(control_key) else {
+        let Some(control) = PickerFocus::from_id(control_key)
+            .filter(|c| !matches!(c, PickerFocus::KeepExisting | PickerFocus::Replace))
+        else {
             return false;
         };
         if control == PickerFocus::List {
@@ -1397,6 +1650,148 @@ impl Widget for FilePicker {
 }
 
 impl FilePicker {
+    /// The name of the file the replace prompt is about.
+    fn replace_prompt_name(&self) -> Option<String> {
+        let target = self.replace_prompt.as_ref()?;
+        Some(target.file_name().map_or_else(
+            || target.to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        ))
+    }
+
+    /// The replace prompt as assistive technology and agents read it: a
+    /// modal dialog that asks the question, with Cancel and Replace.
+    fn replace_prompt_accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let name = self.replace_prompt_name()?;
+        let button = |control: PickerFocus, label: &str, rect: Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(label)
+                .with_key(control.id())
+                .with_bounds(rect)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.has_keyboard_focus && self.focus == Some(control),
+                    ..Default::default()
+                })
+        };
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name(format!(
+                    "A file named \u{201c}{name}\u{201d} already exists here. Replace it?"
+                ))
+                .with_description(REPLACE_PROMPT_DETAIL)
+                .with_key(REPLACE_PROMPT_KEY)
+                .with_bounds(self.replace_card_rect)
+                .with_state(AccessState {
+                    modal: true,
+                    focusable: true,
+                    focused: self.has_keyboard_focus,
+                    ..Default::default()
+                })
+                .with_children(vec![
+                    button(PickerFocus::KeepExisting, "Cancel", self.keep_existing_rect),
+                    button(PickerFocus::Replace, "Replace", self.replace_rect),
+                ]),
+        )
+    }
+
+    /// Paint the replace prompt over the dimmed picker.
+    fn draw_replace_prompt(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(name) = self.replace_prompt_name() else {
+            return;
+        };
+        let tokens = &theme.tokens;
+        let radius = f64::from(tokens.radii.md);
+        let frame = RoundedRect::from_rect(self.rect, radius);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &frame,
+        );
+        crate::chrome::fill_scrim(
+            scene,
+            transform,
+            self.rect,
+            crate::widget::modal_frame::MODAL_SCRIM_ALPHA,
+            theme,
+        );
+        scene.pop_layer();
+
+        let card = self.replace_card_rect;
+        let card_shape = RoundedRect::from_rect(card, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::chrome::panel_ground(theme),
+            None,
+            &card_shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::chrome::panel_border(theme),
+            None,
+            &crate::surface::edge_outline(card, radius),
+        );
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a card a few hundred logical pixels wide fits f32 exactly enough for wrapping"
+        )]
+        let text_w = (card.width() - 2.0 * PADDING).max(0.0) as f32;
+        let heading_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
+        let heading = format!("Replace \u{201c}{name}\u{201d}?");
+        let (_, heading_h) = text_renderer.measure(&heading, heading_size, Some(text_w));
+        text_renderer.draw_text(
+            scene,
+            &heading,
+            heading_size,
+            tokens.colors.text_primary,
+            transform.pre_translate(Vec2::new(card.x0 + PADDING, card.y0 + PADDING)),
+            Some(text_w),
+        );
+        let body_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let body = format!(
+            "A file named \u{201c}{name}\u{201d} already exists here. {REPLACE_PROMPT_DETAIL}"
+        );
+        text_renderer.draw_text(
+            scene,
+            &body,
+            body_size,
+            tokens.colors.text_dim,
+            transform.pre_translate(Vec2::new(
+                card.x0 + PADDING,
+                card.y0 + PADDING + f64::from(heading_h) + f64::from(tokens.spacing.s2),
+            )),
+            Some(text_w),
+        );
+
+        let keep = footer_button(
+            text_renderer,
+            theme,
+            self.keep_existing_rect,
+            "Cancel",
+            false,
+        )
+        .hovered(self.hover_prompt == Some(PickerFocus::KeepExisting))
+        .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::KeepExisting));
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &keep);
+        let replace = footer_button(text_renderer, theme, self.replace_rect, "Replace", false)
+            .style(crate::widget::ButtonStyle::Danger)
+            .hovered(self.hover_prompt == Some(PickerFocus::Replace))
+            .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Replace));
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &replace);
+    }
+
     /// Title bar, up button and breadcrumb trail. Split out of `draw` to
     /// keep that function readable.
     fn draw_header_and_breadcrumbs(
@@ -1583,16 +1978,17 @@ impl FilePicker {
     /// Save-mode filename field, filter chip and Cancel/Open(Save)
     /// buttons. Split out of `draw` to keep that function readable.
     fn draw_footer(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
         let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.mode == FilePickerMode::Save {
-            self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
+            self.draw_filename_field(scene, transform, text_renderer, theme, presence);
         }
         if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
             self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
@@ -1618,12 +2014,12 @@ impl FilePicker {
     /// Save-mode filename text field. Split out of `draw_footer` to keep
     /// that under the line cap.
     fn draw_filename_field(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row_size: f32,
+        presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
         let field = self.filename_rect;
@@ -1657,28 +2053,13 @@ impl FilePicker {
                 &s,
             );
         }
-        let shown = if self.filename.is_empty() {
-            "Filename…"
-        } else {
-            &self.filename
-        };
-        let color = if self.filename.is_empty() {
-            tokens.colors.text_dim
-        } else {
-            tokens.colors.text_primary
-        };
-        // Centre on the measured line, not the font size.
-        let (_, shown_h) = text_renderer.measure(shown, row_size, None);
-        text_renderer.draw_text(
+        Widget::draw(
+            &mut self.filename,
             scene,
-            shown,
-            row_size,
-            color,
-            transform.pre_translate(Vec2::new(
-                field.x0 + self.metrics.inset_x,
-                field.y0 + (field.height() - f64::from(shown_h)) / 2.0,
-            )),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            presence,
         );
     }
 
@@ -1904,27 +2285,12 @@ impl FilePicker {
                     {
                         self.click_open();
                     }
-                    Some(PickerFocus::Filename)
-                        if matches!(ke.logical_key, Key::Named(NamedKey::Space)) =>
-                    {
-                        self.filename.push(' ');
-                    }
                     _ => {}
                 }
                 *handled = true;
             }
-            Key::Named(NamedKey::Backspace) if self.focus == Some(PickerFocus::Filename) => {
-                self.filename.pop();
-                self.ensure_valid_focus();
-                *handled = true;
-            }
             Key::Named(NamedKey::Backspace) if self.focus == Some(PickerFocus::List) => {
                 self.go_up();
-                *handled = true;
-            }
-            Key::Character(s) if self.focus == Some(PickerFocus::Filename) => {
-                self.filename.push_str(s);
-                self.ensure_valid_focus();
                 *handled = true;
             }
             Key::Character(s) if self.focus == Some(PickerFocus::List) => {
@@ -1935,6 +2301,63 @@ impl FilePicker {
             }
             _ => {}
         }
+    }
+
+    /// Input while the replace prompt is up: it is modal over the picker, so
+    /// it takes every event and only its own two buttons respond.
+    fn on_replace_prompt_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = p;
+                let hover = if self.keep_existing_rect.contains(p) {
+                    Some(PickerFocus::KeepExisting)
+                } else if self.replace_rect.contains(p) {
+                    Some(PickerFocus::Replace)
+                } else {
+                    None
+                };
+                self.hover_prompt = hover;
+                self.hover_button = None;
+                self.hover_entry = None;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.keep_existing_rect.contains(self.last_cursor) {
+                    self.keep_existing();
+                } else if self.replace_rect.contains(self.last_cursor) {
+                    self.focus = Some(PickerFocus::Replace);
+                    self.confirm_replace();
+                }
+            }
+            WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
+                self.has_keyboard_focus = true;
+                self.ensure_valid_focus();
+                let shift = ctx.modifiers.state().shift_key();
+                match &ke.logical_key {
+                    Key::Named(NamedKey::Tab) => self.move_focus(shift),
+                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => self.move_focus(true),
+                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                        self.move_focus(false);
+                    }
+                    Key::Named(NamedKey::Escape) => self.keep_existing(),
+                    Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                        self.activate_focus();
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        *ctx.handled = true;
     }
 
     fn activate_selected_entry(&mut self) {
@@ -2607,6 +3030,46 @@ mod tests {
                 dispatch(&mut picker, &key_char(ch));
             }
             assert_eq!(picker.filename(), "new.txt");
+            // Backspace takes back one character as a person sees it, and an
+            // input method's commit lands at the caret.
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            dispatch(&mut picker, &key_char("👍🏽"));
+            dispatch(&mut picker, &key_char("e\u{301}"));
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            assert_eq!(picker.filename(), "new👍🏽");
+            dispatch(
+                &mut picker,
+                &key_named(winit::keyboard::NamedKey::Backspace),
+            );
+            assert_eq!(picker.filename(), "new");
+            dispatch(
+                &mut picker,
+                &WindowEvent::Ime(winit::event::Ime::Preedit("tx".into(), Some((2, 2)))),
+            );
+            assert_eq!(picker.filename(), "new", "a composition is not the value");
+            dispatch(
+                &mut picker,
+                &WindowEvent::Ime(winit::event::Ime::Commit(".txt".into())),
+            );
+            assert_eq!(picker.filename(), "new.txt");
             picker.click_open();
             assert_eq!(
                 picker.take_outcome(),
@@ -2685,6 +3148,245 @@ mod tests {
         save_mode_revalidates_a_symlinked_current_directory();
     }
 
+    #[test]
+    fn saving_over_an_existing_file_asks_first() {
+        use crate::a11y::{Action, Role};
+        use winit::keyboard::NamedKey;
+
+        fn save_picker(root: &Path, name: &str) -> FilePicker {
+            let mut picker = FilePicker::new("Export", root, vec![root.to_path_buf()])
+                .with_mode(FilePickerMode::Save)
+                .with_filename(name);
+            picker.set_rect(Rect::new(0.0, 0.0, 600.0, 420.0));
+            Widget::set_focus(&mut picker, true);
+            picker
+        }
+
+        fn prompt_node(picker: &FilePicker) -> crate::a11y::AccessNode {
+            let dialog = Widget::accessibility(picker).expect("picker semantics");
+            assert_eq!(dialog.children.len(), 1, "only the prompt is reachable");
+            let prompt = dialog.children[0].clone();
+            assert_eq!(prompt.role, Role::Dialog);
+            assert!(prompt.state.modal);
+            prompt
+        }
+
+        fn enter_asks_and_escape_keeps_the_file() {
+            let (_g, root) = temp_tree();
+            let mut picker = save_picker(&root, "alpha.txt");
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert_eq!(picker.take_outcome(), None, "nothing is chosen yet");
+            assert_eq!(
+                picker.replace_prompt(),
+                Some(root.join("alpha.txt").as_path())
+            );
+            let prompt = prompt_node(&picker);
+            assert_eq!(
+                prompt.name.as_deref(),
+                Some("A file named \u{201c}alpha.txt\u{201d} already exists here. Replace it?")
+            );
+            let names: Vec<_> = prompt
+                .children
+                .iter()
+                .map(|button| {
+                    (
+                        button.name.clone().unwrap_or_default(),
+                        button.state.focused,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                names,
+                vec![("Cancel".to_owned(), true), ("Replace".to_owned(), false)],
+                "Cancel holds focus, so Enter alone never replaces"
+            );
+            // Typing does not reach the name behind the prompt.
+            dispatch(&mut picker, &key_char("x"));
+            assert_eq!(picker.filename(), "alpha.txt");
+
+            dispatch(&mut picker, &key_named(NamedKey::Escape));
+            assert_eq!(picker.replace_prompt(), None);
+            assert_eq!(picker.take_outcome(), None, "Escape leaves the picker open");
+            assert_eq!(picker.focus, Some(PickerFocus::Filename));
+            assert_eq!(fs::read(root.join("alpha.txt")).unwrap(), b"a");
+
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert!(picker.replace_prompt().is_some());
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert_eq!(
+                picker.replace_prompt(),
+                None,
+                "Enter on Cancel keeps the file"
+            );
+            assert_eq!(picker.take_outcome(), None);
+        }
+
+        fn keyboard_reaches_replace() {
+            let (_g, root) = temp_tree();
+            let mut picker = save_picker(&root, "alpha.txt");
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            dispatch(&mut picker, &key_named(NamedKey::Tab));
+            assert_eq!(picker.focus, Some(PickerFocus::Replace));
+            dispatch_mods(&mut picker, &key_named(NamedKey::Tab), shift());
+            assert_eq!(picker.focus, Some(PickerFocus::KeepExisting));
+            dispatch(&mut picker, &key_named(NamedKey::ArrowRight));
+            assert_eq!(picker.focus, Some(PickerFocus::Replace));
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert_eq!(
+                picker.take_outcome(),
+                Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
+            );
+        }
+
+        fn pointer_answers_the_prompt() {
+            let (_g, root) = temp_tree();
+            let mut picker = save_picker(&root, "alpha.txt");
+            let at = picker.open_rect().center();
+            dispatch(&mut picker, &cursor_at(at));
+            dispatch(&mut picker, &left_press());
+            assert!(picker.replace_prompt().is_some(), "Save asks first");
+            // The picker's own Save button is behind the prompt now.
+            dispatch(&mut picker, &left_press());
+            assert_eq!(picker.take_outcome(), None);
+            let at = picker.keep_existing_rect.center();
+            dispatch(&mut picker, &cursor_at(at));
+            dispatch(&mut picker, &left_press());
+            assert_eq!(picker.replace_prompt(), None);
+            assert_eq!(picker.take_outcome(), None);
+
+            let at = picker.open_rect().center();
+            dispatch(&mut picker, &cursor_at(at));
+            dispatch(&mut picker, &left_press());
+            let at = picker.replace_rect.center();
+            dispatch(&mut picker, &cursor_at(at));
+            dispatch(&mut picker, &left_press());
+            assert_eq!(
+                picker.take_outcome(),
+                Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
+            );
+        }
+
+        fn semantic_actions_answer_the_prompt() {
+            let (_g, root) = temp_tree();
+            let mut picker = save_picker(&root, "alpha.txt");
+            let mut doc = AutoCommit::new();
+            let path = automerge::ROOT;
+            assert!(Widget::perform_action_at(
+                &mut picker,
+                &Action::Activate,
+                &[PickerFocus::Confirm.id()],
+                &mut doc,
+                &path,
+            ));
+            assert!(picker.replace_prompt().is_some());
+            assert!(
+                !Widget::perform_action_at(
+                    &mut picker,
+                    &Action::Activate,
+                    &[PickerFocus::Confirm.id()],
+                    &mut doc,
+                    &path,
+                ),
+                "the picker behind the prompt cannot be operated"
+            );
+            let prompt = prompt_node(&picker);
+            let replace = prompt.children[1].key.expect("Replace key");
+            assert!(Widget::perform_action_at(
+                &mut picker,
+                &Action::Activate,
+                &[prompt.key.expect("prompt key"), replace],
+                &mut doc,
+                &path,
+            ));
+            assert_eq!(
+                picker.take_outcome(),
+                Some(FilePickerOutcome::Selected(vec![root.join("alpha.txt")]))
+            );
+        }
+
+        fn new_names_save_without_asking_and_folders_open() {
+            let (_g, root) = temp_tree();
+            let mut picker = save_picker(&root, "fresh.txt");
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert_eq!(
+                picker.take_outcome(),
+                Some(FilePickerOutcome::Selected(vec![root.join("fresh.txt")]))
+            );
+
+            let mut picker = save_picker(&root, "nested");
+            dispatch(&mut picker, &key_named(NamedKey::Enter));
+            assert_eq!(picker.take_outcome(), None);
+            assert_eq!(picker.current_dir(), root.join("nested").as_path());
+            assert_eq!(picker.filename(), "");
+        }
+
+        fn double_clicking_an_existing_file_asks_too() {
+            let (_g, root) = temp_tree();
+            let mut picker = save_picker(&root, "");
+            let row = picker.entry_rect(1).expect("alpha.txt row").center();
+            dispatch(&mut picker, &cursor_at(row));
+            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &left_press());
+            assert_eq!(picker.take_outcome(), None);
+            assert_eq!(
+                picker.replace_prompt(),
+                Some(root.join("alpha.txt").as_path())
+            );
+        }
+
+        enter_asks_and_escape_keeps_the_file();
+        keyboard_reaches_replace();
+        pointer_answers_the_prompt();
+        semantic_actions_answer_the_prompt();
+        new_names_save_without_asking_and_folders_open();
+        double_clicking_an_existing_file_asks_too();
+    }
+
+    #[test]
+    fn the_name_field_selects_all_like_every_text_field() {
+        use winit::keyboard::NamedKey;
+        let (_g, root) = temp_tree();
+        let mut picker = FilePicker::new("Export", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Save)
+            .with_filename("gradient.png");
+        picker.set_rect(Rect::new(0.0, 0.0, 600.0, 420.0));
+        Widget::set_focus(&mut picker, true);
+
+        dispatch_mods(&mut picker, &key_char("a"), ctrl());
+        dispatch(&mut picker, &key_char("x"));
+        assert_eq!(
+            picker.filename(),
+            "x",
+            "Ctrl+A selects the name, typing replaces it"
+        );
+
+        // Away from the field, then three clicks on it select its line.
+        dispatch(&mut picker, &key_named(NamedKey::Tab));
+        let field = picker.filename_rect().center();
+        dispatch(&mut picker, &cursor_at(field));
+        for _ in 0..3 {
+            dispatch(&mut picker, &left_press());
+            dispatch(&mut picker, &left_release());
+        }
+        dispatch(&mut picker, &key_char("y"));
+        assert_eq!(
+            picker.filename(),
+            "y",
+            "triple-click selects the whole name"
+        );
+
+        assert!(!picker.filename.spellcheck_enabled());
+        assert!(!picker.filename.autocorrect_enabled());
+    }
+
+    fn left_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
     fn dispatch_mods(picker: &mut FilePicker, event: &WindowEvent, mods: winit::event::Modifiers) {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.leaf_node(Style::default());
@@ -2714,35 +3416,17 @@ mod tests {
     }
 
     fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = winit::keyboard::Key::Named(named);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::key_event(
+            &winit::keyboard::Key::Named(named),
+            ElementState::Pressed,
+        )
     }
 
     fn key_char(s: &str) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = winit::keyboard::Key::Character(s.into());
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::key_event(
+            &winit::keyboard::Key::Character(s.into()),
+            ElementState::Pressed,
+        )
     }
 
     fn shift() -> winit::event::Modifiers {

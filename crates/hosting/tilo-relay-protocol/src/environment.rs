@@ -37,6 +37,11 @@ use crate::legacy_window::{InputEvent, MAX_INPUT_EVENTS};
 pub const ENVIRONMENT_PROTOCOL_VERSION: u16 = 1;
 /// Largest encoded frame on any environment or legacy stream.
 pub const MAX_ENVIRONMENT_FRAME_BYTES: usize = 256 * 1024;
+/// Largest frame on the pipes between a KVM worker and the process that
+/// runs one legacy launch (`tilo-legacy relay-stream`): [`LegacyFrame`]s
+/// out, [`WindowInput`]s in, each postcard behind a little-endian `u32`
+/// length.
+pub const LEGACY_PIPE_FRAME_BYTES: usize = MAX_ENVIRONMENT_FRAME_BYTES;
 /// Largest pty chunk one [`ClientFrame::Input`] or [`ServerFrame::Output`]
 /// carries; larger writes are split.
 pub const MAX_PTY_CHUNK_BYTES: usize = 32 * 1024;

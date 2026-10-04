@@ -109,10 +109,6 @@ impl Default for SiteControls {
     }
 }
 impl SiteControls {
-    pub fn share_runtime_state(&mut self, other: &Self) {
-        self.runtime_exceptions = other.runtime_exceptions.clone();
-    }
-
     pub fn initialize(&mut self, engine: &SharedEngine, persistent: bool) {
         self.persistent = persistent;
         if engine.supports_native_filtering() {
@@ -611,7 +607,7 @@ mod tests {
             assert!(!loaded.contains("https://example.com/"));
         }
 
-        // Phase `private_tabs_share_runtime_exceptions_without_disk_persistence`.
+        // Phase `private_exceptions_stay_in_memory_without_disk_persistence`.
         {
             let recorder = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
@@ -622,9 +618,7 @@ mod tests {
             normal_exceptions.save(&normal_file).unwrap();
             let normal_before = std::fs::read(&normal_file).unwrap();
             let mut first = SiteControls::default();
-            let mut second = SiteControls::default();
             first.initialize(&engine, false);
-            second.share_runtime_state(&first);
             first.committed = Some("https://private.test".into());
             first.action = Some((
                 7,
@@ -642,13 +636,13 @@ mod tests {
                 message: "disabled".into(),
             }));
             assert!(
-                second
+                first
                     .runtime_exceptions
                     .lock()
                     .unwrap()
                     .contains("https://private.test/child")
             );
-            second.initialize(&engine, false);
+            first.initialize(&engine, false);
             assert!(recorder.commands().iter().any(|command| {
                 matches!(command, WebViewCommand::SetSiteExceptions(origins) if origins == &["https://private.test".to_string()])
             }));

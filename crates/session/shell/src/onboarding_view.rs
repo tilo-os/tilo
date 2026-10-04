@@ -18,9 +18,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
-use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -598,7 +596,7 @@ pub struct OnboardingView {
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
-    nearby_child: Option<Child>,
+    nearby: Option<crate::onboarding_nearby::NearbyPairing>,
     nearby_status: Option<String>,
     /// The verification code both devices show while pairing waits for
     /// approval.
@@ -838,7 +836,7 @@ impl OnboardingView {
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
-            nearby_child: None,
+            nearby: None,
             nearby_status: None,
             nearby_code: None,
             nearby_active_for_snapshot: false,
@@ -1664,7 +1662,7 @@ impl OnboardingView {
 
     /// Pairing with a nearby device is under way.
     fn nearby_active(&self) -> bool {
-        self.nearby_child.is_some() || self.nearby_active_for_snapshot
+        self.nearby.is_some() || self.nearby_active_for_snapshot
     }
 
     /// The ways forward from a choice screen, one card per flow.
@@ -2935,47 +2933,9 @@ impl OnboardingView {
     }
 }
 
-fn terminate_nearby_pairing(child: &mut Option<Child>) {
-    let Some(mut child) = child.take() else {
-        return;
-    };
-    let Ok(pid) = i32::try_from(child.id()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    };
-    let group = pid.saturating_neg();
-    // SAFETY: the process is spawned with `process_group(0)`, making its
-    // validated PID the process-group ID. A negative target is confined to
-    // that group and cannot signal the compositor's own group.
-    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(750))
-        .unwrap_or_else(Instant::now);
-    loop {
-        let leader_finished = child.try_wait().ok().flatten().is_some();
-        // Signal 0 only checks whether any descendant still occupies the
-        // dedicated group. Do not return just because pkexec itself exited:
-        // tilo-home-peer-control or tilo-enroll may still be winding down.
-        let group_gone = unsafe { libc::kill(group, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        if leader_finished && group_gone {
-            return;
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // SAFETY: same dedicated process group as above. This is the bounded
-    // fallback for a broker or enrollment worker that ignored SIGTERM.
-    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-    let _ = child.wait();
-}
-
 impl Drop for OnboardingView {
     fn drop(&mut self) {
-        terminate_nearby_pairing(&mut self.nearby_child);
+        self.nearby = None;
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
@@ -3113,49 +3073,22 @@ impl Widget for OnboardingView {
         }
         if start_nearby
             && self.flow.screen() == Screen::Nearby
-            && self.nearby_child.is_none()
+            && self.nearby.is_none()
             && self.persist_progress(PersistedStage::AcquiringIdentity)
         {
             match (&self.identity_dir, &self.nearby_status_path) {
                 (Some(identity_dir), Some(status_path)) => {
-                    let _ = std::fs::remove_file(status_path);
                     let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
                     let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
                         .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
-                    let requester = tilo_relay_protocol::ProcessLease::capture(std::process::id());
-                    let spawn = requester
-                        .map_err(|error| error.to_string())
-                        .and_then(|lease| {
-                            Command::new("pkexec")
-                                .args([
-                                    "/usr/libexec/tilo-home-peer-control",
-                                    "pair-device",
-                                    "--identity-root",
-                                ])
-                                .arg(identity_root)
-                                .arg("--identity-dir")
-                                .arg(identity_dir)
-                                .args(["--label", &label, "--status-file"])
-                                .arg(status_path)
-                                .arg("--requester-pid")
-                                .arg(lease.pid().to_string())
-                                .arg("--requester-start-time")
-                                .arg(lease.start_time().to_string())
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::piped())
-                                .stderr(Stdio::piped())
-                                // pkexec, the privileged broker and tilo-enroll must
-                                // share a revocable lifetime.  A dedicated process
-                                // group lets Cancel, Back and compositor teardown
-                                // stop the whole transaction instead of merely
-                                // orphaning a privileged descendant.
-                                .process_group(0)
-                                .spawn()
-                                .map_err(|error| error.to_string())
-                        });
-                    match spawn {
-                        Ok(child) => {
-                            self.nearby_child = Some(child);
+                    match crate::onboarding_nearby::NearbyPairing::start(
+                        &identity_root,
+                        identity_dir,
+                        status_path,
+                        &label,
+                    ) {
+                        Ok(pairing) => {
+                            self.nearby = Some(pairing);
                             self.nearby_status = Some(t("onboarding-nearby-waiting"));
                             self.nearby_code = None;
                             self.error = None;
@@ -3175,7 +3108,7 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_CONNECT_CANCEL) {
             let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
-            terminate_nearby_pairing(&mut self.nearby_child);
+            self.nearby = None;
             if let Some(path) = &self.nearby_status_path {
                 let _ = std::fs::remove_file(path);
             }
@@ -3184,82 +3117,34 @@ impl Widget for OnboardingView {
             self.invalidation.structure();
         }
 
-        if self.nearby_child.is_some()
-            && let Some(path) = &self.nearby_status_path
-            && let Ok(bytes) = std::fs::read(path)
-            && let Ok(status) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            && let Some(code) = status
-                .get("verification_code")
-                .and_then(serde_json::Value::as_str)
-            && self.nearby_code.as_deref() != Some(code)
-        {
-            self.nearby_code = Some(code.to_owned());
-            self.nearby_status = Some(t("onboarding-nearby-code"));
-            self.invalidation.structure();
-        }
-        let finished_nearby_child = match self.nearby_child.take() {
-            Some(mut child) => {
-                if let Some(status) = child.try_wait().ok().flatten() {
-                    Some((child, status))
-                } else {
-                    self.nearby_child = Some(child);
-                    None
-                }
+        let nearby = self
+            .nearby
+            .as_mut()
+            .map(|pairing| pairing.poll(Instant::now()));
+        match nearby {
+            None | Some(crate::onboarding_nearby::NearbyEvent::Idle) => {}
+            Some(crate::onboarding_nearby::NearbyEvent::Code(code)) => {
+                self.nearby_code = Some(code);
+                self.nearby_status = Some(t("onboarding-nearby-code"));
+                self.invalidation.structure();
             }
-            None => None,
-        };
-        if let Some((mut child, status)) = finished_nearby_child {
-            // `try_wait` reaps the leader when it has exited. Keep the
-            // explicit wait as a defensive lifecycle guarantee if platform
-            // behavior changes, and never leave a completed broker child in
-            // the compositor.
-            let _ = child.wait();
-            self.nearby_code = None;
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            if let Some(mut stream) = child.stdout.take() {
-                let _ = stream.read_to_string(&mut stdout);
+            Some(crate::onboarding_nearby::NearbyEvent::Joined(identity)) => {
+                self.nearby = None;
+                self.nearby_code = None;
+                self.flow.complete_connected(identity);
+                self.identity_ready_page = false;
+                let _ = self.persist_progress(PersistedStage::IdentityReady);
+                self.error = None;
+                self.nearby_status = Some(t("onboarding-nearby-connected"));
+                self.invalidation.structure();
             }
-            if let Some(mut stream) = child.stderr.take() {
-                let _ = stream.read_to_string(&mut stderr);
+            Some(crate::onboarding_nearby::NearbyEvent::Failed(message)) => {
+                self.nearby = None;
+                self.nearby_code = None;
+                self.nearby_status = None;
+                self.error = Some(message);
+                self.invalidation.structure();
             }
-            if status.success() {
-                match serde_json::from_str::<serde_json::Value>(
-                    stdout.lines().last().unwrap_or_default(),
-                ) {
-                    Ok(result) => {
-                        let fingerprint = result
-                            .get("identity")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned();
-                        let path = result
-                            .get("record_path")
-                            .and_then(serde_json::Value::as_str)
-                            .map(PathBuf::from);
-                        if let Some(path) = path.filter(|_| fingerprint.len() == 64) {
-                            self.flow
-                                .complete_connected(MintedIdentity { fingerprint, path });
-                            self.identity_ready_page = false;
-                            let _ = self.persist_progress(PersistedStage::IdentityReady);
-                            self.error = None;
-                            self.nearby_status = Some(t("onboarding-nearby-connected"));
-                        } else {
-                            self.error = Some(t("onboarding-nearby-invalid-identity"));
-                        }
-                    }
-                    Err(_) => self.error = Some(t("onboarding-nearby-invalid-identity")),
-                }
-            } else {
-                self.error = Some(match stderr.lines().last() {
-                    Some(detail) => t_args(
-                        "onboarding-nearby-failed-detail",
-                        &[("detail", detail.into())],
-                    ),
-                    None => t("onboarding-nearby-failed"),
-                });
-            }
-            self.invalidation.structure();
         }
 
         if read_bool(state, root, KEY_BACKUP_ANOTHER) {
@@ -3364,7 +3249,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
             clear_secret(&self.connect_passphrase);
-            terminate_nearby_pairing(&mut self.nearby_child);
+            self.nearby = None;
             self.nearby_status = None;
             self.nearby_code = None;
             if !(self.recovery_only && self.flow.screen() == Screen::Existing) {
@@ -3836,8 +3721,7 @@ impl Widget for OnboardingView {
         // The codecs worker and status watcher only raise `codec_changed`,
         // and nearby pairing reports through its child and a status file;
         // nothing wakes the compositor for them, so look while they run.
-        let polling =
-            self.codec_running.is_some() || self.codec_watching || self.nearby_child.is_some();
+        let polling = self.codec_running.is_some() || self.codec_watching || self.nearby.is_some();
         let mut earliest = if polling {
             self.synced_at.checked_add(BACKGROUND_POLL)
         } else {
@@ -3949,6 +3833,8 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3981,11 +3867,11 @@ mod tests {
             .expect("spawn pairing-shaped process tree");
         let pgid = i32::try_from(child.id()).expect("test process ID");
         // Give the shell enough time to create the descendant that used to
-        // survive when only the immediate pkexec process was killed.
+        // survive when only the group leader was killed.
         std::thread::sleep(Duration::from_millis(40));
         let mut child = Some(child);
 
-        terminate_nearby_pairing(&mut child);
+        crate::onboarding_nearby::terminate(&mut child);
 
         assert!(child.is_none());
         let deadline = tilo_test_env::hang_deadline();

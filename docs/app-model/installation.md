@@ -156,22 +156,60 @@ An OS image ships a second store, in the same shape, at
 ```
 
 It is written during the image build by `os/scripts/pack-apps.sh`, which
-runs the ordinary `tilo-app-package pack` + `tilo-install install` against a
-`TILO_APPS_DATA_DIR` pointed there — so every preinstalled package went
-through the same packing, signing and install path a user's own package
-goes through, and is described by the same `InstalledPackage` fields.
+runs the ordinary `tilo-install install` against a `TILO_APPS_DATA_DIR`
+pointed there — so every preinstalled package went through the same
+verification and install path a user's own package goes through, and is
+described by the same `InstalledPackage` fields. A release image installs
+the app collection Release / apps published: the very `.tapp` files the
+registry serves, signed by the registry's publisher, at the registry's
+versions. A development image whose apps changed since the last published
+collection packs its own commit's apps instead; the registry's newer
+releases still update them.
 The build drops the content store afterwards: the image's store is
 read-only, never installs again, and its trees are already materialised.
 It exists so a fresh install has apps to list before anyone has run
 `tilo-install`.
 
-`package_store::list_installed` reads both stores, system first,
-and a user entry **shadows** a system entry with the same id — installing
-your own build of a preinstalled app replaces it in the launcher rather
-than producing a duplicate row. In a developer build (debug, or
-`--features dev-overrides`), `TILO_APPS_SYSTEM_DIR` overrides the system
-path the same way `TILO_APPS_DATA_DIR` overrides the user one; a release
-build ignores it and always reads the image's store.
+The image's apps are installed packages like any other: `app list
+--installed` lists them (from `image`), and `app update <name>`, `app
+update`, `tilo update` and the App Store's **Update** / **Update all**
+update them from the registry with the same signature and trust chain a
+user's own install gets (the pinned registry owner key, the publisher the
+signed entry names, attestations). An update installs the newer version
+into the user store, where it **shadows** the image's copy;
+`package_store::list_installed` reads both stores, system first, and lists
+the copy that runs. Updating an app never needs an image switch or a reboot.
+All of them read one list of repositories, `$XDG_CONFIG_HOME/tilo-store/registries.toml`,
+which `app repo` edits; the sandboxed App Store reads it through the app host
+(`repositories`), so it keeps no copy of its own.
+
+Which copy runs (`package_store::runs_over_image`):
+
+- the newer of the two. An image update that ships a newer build of an app
+  than the user updated to wins, so a stale user copy never hides a fix
+  the image carries; the next `app update` removes that copy. An image
+  update with an older build does not take a user-updated app back.
+- except a copy the user went back to on purpose: `app rollback` below the
+  image's version (or a forced install of an older build) marks the user
+  row `held`, and it runs whatever the image ships until the next update.
+- `app rollback` with no older published version between, or `--to` the
+  image's version, removes the user copy, which returns to the image's.
+  `tilo-install uninstall` does the same; the image's copy itself cannot be
+  removed.
+
+In a developer build (debug, or `--features dev-overrides`),
+`TILO_APPS_SYSTEM_DIR` overrides the system path the same way
+`TILO_APPS_DATA_DIR` overrides the user one; a release build ignores it and
+always reads the image's store.
+
+What is not an app, and so updates only with the image: the compositor
+(`shell`), the launcher and sandbox (`tilo-launcher`, `tilo-app-host`), the
+package tools themselves (`tilo-install`, `app`, `tilo`), the greeter,
+installer, unlock helper and system services, and the runtime bundle
+(`/usr/lib/tilo-runtime/<v>`) apps link against. These decide what an app
+may do or verify what it is, so a package must not be able to replace
+them. Every package in `/usr/share/tilo-apps`, Settings and Files
+included, is an app and updates per app.
 
 Being preinstalled grants a package nothing. The sandbox is still built
 from its manifest, the payload is still bound read-only, and the one

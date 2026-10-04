@@ -98,17 +98,15 @@ class ComponentManifestPolicyTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
-    def build_outputs(self, root: Path, *, browser: bool) -> Path:
+    def build_outputs(self, root: Path) -> Path:
         out = root / "out"
-        (out / "optional").mkdir(parents=True)
+        out.mkdir(parents=True)
         manifest = installer.load_manifest(REPO / "os/components.toml")
         for entry in manifest.files():
-            if entry.source and not entry.source.startswith("/") and entry.source != "browser":
+            if entry.source and not entry.source.startswith("/"):
                 (out / entry.source).parent.mkdir(parents=True, exist_ok=True)
                 (out / entry.source).write_bytes(b"\x7fELF" + entry.source.encode())
                 (out / entry.source).chmod(0o700)
-        if browser:
-            (out / "optional/browser").write_bytes(b"\x7fELFbrowser")
         return out
 
     def run_installer(self, *args: str) -> int:
@@ -119,14 +117,13 @@ class InstallerTests(unittest.TestCase):
         with self.subTest(phase='image layers match manifest'):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                out = self.build_outputs(root, browser=False)
+                out = self.build_outputs(root)
                 image = root / "image"
-                status = self.run_installer("--from", str(out), "--from", str(out / "optional"),
-                                            "--dest", str(image), "--by-layer", "--all")
+                status = self.run_installer("--from", str(out), "--dest", str(image), "--by-layer", "--all")
                 self.assertEqual(status, 0)
                 manifest = installer.load_manifest(REPO / "os/components.toml")
                 expected = {f"{e.layer}{e.to}" for e in manifest.files()
-                            if e.layer != "direct" and e.component != "browser" and not e.dev_only}
+                            if e.layer != "direct" and not e.dev_only}
                 installed = {p.relative_to(image).as_posix()
                              for p in image.rglob("*") if p.is_file() or p.is_symlink()}
                 self.assertEqual(installed, expected)
@@ -134,14 +131,6 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(shell.stat().st_mode & 0o777, 0o755)
                 self.assertEqual(os.readlink(image / "desktop-binaries/usr/bin/store"), "app")
                 self.assertFalse((image / "desktop-binaries/usr/bin/browser").exists())
-        with self.subTest(phase='optional browser installed when built'):
-            with tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                out = self.build_outputs(root, browser=True)
-                status = self.run_installer("--from", str(out), "--from", str(out / "optional"),
-                                            "--dest", str(root / "layer"), "browser")
-                self.assertEqual(status, 0)
-                self.assertTrue((root / "layer/usr/bin/browser").is_file())
         with self.subTest(phase='production selection never includes dev only components'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             production = {c.name for c in installer.select_components(manifest, [], True)}
@@ -152,6 +141,7 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("native-runtime-host", dev)
             self.assertNotIn("control", production)
             self.assertNotIn("vmd", production)
+            self.assertNotIn("test-registry", production)
             self.assertIn("shell", production)
             self.assertIn("native-runtime-host", production)
         with self.subTest(phase='dev cargo plan adds dev features'):
@@ -159,7 +149,8 @@ class InstallerTests(unittest.TestCase):
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
             self.assertIn("dev-overrides", features)
-            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-control", "tilo-vmd"})
+            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-control", "tilo-vmd",
+                                         "tilo-test-registry"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertNotIn("dev-overrides", production_features)
         with self.subTest(phase='mixed dev and production layers are rejected'):

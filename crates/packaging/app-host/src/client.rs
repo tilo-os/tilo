@@ -128,6 +128,7 @@ impl BlockingClient {
                 cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
                 runtime: manifest.package.runtime.unwrap_or_default(),
                 source: String::new(),
+                held: false,
                 system: !entry.get_user_managed(),
             });
         }
@@ -223,6 +224,21 @@ impl BlockingClient {
                 .get()
                 .map_err(|e| e.to_string())?
                 .get_status(),
+        )
+    }
+
+    /// The person's app repositories, as `app repo list --json` prints them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the host service cannot read them.
+    pub fn repositories(&self) -> Result<String, String> {
+        let request = self.client.repositories_request();
+        text_result(
+            self.wait(request.send().promise)?
+                .get()
+                .map_err(|e| e.to_string())?
+                .get_json(),
         )
     }
 

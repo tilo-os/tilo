@@ -60,6 +60,7 @@ fn paint(art: &mut Replica<ArtworkResource>, layer: Option<&str>, strokes: Vec<N
         CanvasAction::Paint(Paint {
             layer: layer.map(Into::into),
             strokes,
+            group: None,
         }),
     )
     .unwrap();
@@ -242,6 +243,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 colour: String::new(),
                 ..line("blank", [0.0, 0.0], [10.0, 0.0], 1.0)
             }],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -254,6 +256,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 line("crayon", [0.0, 0.0], [10.0, 0.0], 1.0),
                 "crayon",
             )],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -269,6 +272,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 params: Some(BTreeMap::from([("load".to_owned(), 0.3)])),
                 ..line("loaded", [0.0, 0.0], [10.0, 0.0], 1.0)
             }],
+            group: None,
         }),
     )
     .unwrap_err();

@@ -376,6 +376,37 @@ fn revert(doc: &mut AutoCommit, targets: &[Version], verb: &str) -> Result<(), S
 /// somebody else has since changed what a step touched.
 pub fn undo(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
+    take_back(doc, scope, targets)
+}
+
+/// Take back every step of `scope`'s in effect made after the version
+/// `heads`, as one new change: back to a checkpoint or a change from
+/// history without counting steps. Returns the steps, newest first.
+///
+/// # Errors
+/// As [`undo`].
+pub fn undo_since(
+    doc: &mut AutoCommit,
+    scope: &Scope,
+    heads: &[ChangeHash],
+) -> Result<Vec<Version>, String> {
+    let since: HashSet<ChangeHash> = doc
+        .get_changes(heads)
+        .iter()
+        .map(|change| change.hash())
+        .collect();
+    let targets: Vec<Version> = undo_targets(doc, scope, usize::MAX)
+        .into_iter()
+        .filter(|version| since.contains(&version.hash))
+        .collect();
+    take_back(doc, scope, targets)
+}
+
+fn take_back(
+    doc: &mut AutoCommit,
+    scope: &Scope,
+    targets: Vec<Version>,
+) -> Result<Vec<Version>, String> {
     if targets.is_empty() {
         return Err(nothing_to_undo(doc, scope));
     }

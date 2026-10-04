@@ -55,6 +55,10 @@ pub enum ManifestError {
     DuplicateCapability(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
+    #[error("package.optional-runtimes lists {0:?} more than once, or as package.runtime as well")]
+    DuplicateOptionalRuntime(String),
+    #[error("package.optional-runtimes lists more than {MAX_OPTIONAL_RUNTIMES} runtimes")]
+    TooManyOptionalRuntimes,
     #[error("kind=app requires `[entrypoint]` with `bin` set")]
     AppMissingEntrypoint,
     #[error("kind=format-provider requires non-empty `providers.mime`")]
@@ -194,6 +198,8 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
 
     Version::parse(&m.package.version)
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
+
+    validate_optional_runtimes(m)?;
 
     match (&m.package.kind, &m.package.runtime) {
         (Kind::Runtime, Some(_)) => return Err(ManifestError::RuntimeKindHasRuntime),
@@ -556,6 +562,42 @@ fn valid_resource_kind(kind: &str) -> bool {
         })
 }
 
+/// How many further runtime bundles one package may ask the launcher to
+/// mount.
+pub const MAX_OPTIONAL_RUNTIMES: usize = 4;
+
+fn validate_optional_runtimes(m: &Manifest) -> Result<(), ManifestError> {
+    let optional = &m.package.optional_runtimes;
+    if optional.is_empty() {
+        return Ok(());
+    }
+    if m.package.kind == Kind::Runtime {
+        return Err(ManifestError::RuntimeKindHasRuntime);
+    }
+    if optional.len() > MAX_OPTIONAL_RUNTIMES {
+        return Err(ManifestError::TooManyOptionalRuntimes);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for raw in optional {
+        validate_runtime_string(raw)?;
+        // Bundles are installed and mounted by version alone, so two
+        // references naming one version would name one bundle.
+        let version = raw
+            .split_once('/')
+            .map_or(raw.as_str(), |(_, version)| version);
+        let base = m
+            .package
+            .runtime
+            .as_deref()
+            .and_then(|runtime| runtime.split_once('/'))
+            .map(|(_, version)| version);
+        if !seen.insert(version) || base == Some(version) {
+            return Err(ManifestError::DuplicateOptionalRuntime(raw.clone()));
+        }
+    }
+    Ok(())
+}
+
 fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
     let (name, ver) = raw
         .split_once('/')
@@ -707,21 +749,62 @@ mode = "off"
                 "expected app-entrypoint error, got {e:?}"
             );
         }
-        // phase: stamped_browser_runtime_manifest_accepted
+        // phase: browser_manifest_names_its_engine_runtime
         {
             let source = include_str!("../../../../apps/browser/tilo-app.toml");
-            let stamped = source.replace(
-                "runtime  = \"tilo-runtime/2026.07\"",
-                "runtime  = \"tilo-runtime/2026.7.0-browser\"",
-            );
-            assert_ne!(stamped, source, "browser runtime stamp did not match");
-            let manifest = Manifest::from_toml_str(&stamped).expect("stamped browser TOML");
+            let manifest = Manifest::from_toml_str(source).expect("browser TOML");
             assert_eq!(
                 manifest.package.runtime.as_deref(),
-                Some("tilo-runtime/2026.7.0-browser")
+                Some("tilo-runtime/2026.07")
+            );
+            assert_eq!(
+                manifest.package.optional_runtimes,
+                ["tilo-runtime/2026.10.0-chromium"]
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
         }
+    }
+
+    #[test]
+    fn optional_runtimes_are_runtime_references() {
+        let mut m = minimal_runtime_manifest();
+        // phase: a_runtime_package_names_no_further_runtimes
+        m.package.optional_runtimes = vec!["tilo-runtime/2026.10.0-chromium".into()];
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::RuntimeKindHasRuntime)
+        );
+        m.package.kind = Kind::Service;
+        m.package.runtime = Some("tilo-runtime/2026.07".into());
+        assert_eq!(validate_manifest(&m), Ok(()));
+        // phase: a_malformed_reference_is_refused
+        m.package.optional_runtimes = vec!["chromium".into()];
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::BadRuntimeForm(_))
+        ));
+        // phase: one_bundle_version_is_named_once
+        m.package.optional_runtimes = vec![
+            "tilo-runtime/2026.10.0-chromium".into(),
+            "engine/2026.10.0-chromium".into(),
+        ];
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::DuplicateOptionalRuntime(_))
+        ));
+        m.package.optional_runtimes = vec!["tilo-runtime/2026.07".into()];
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::DuplicateOptionalRuntime(_))
+        ));
+        // phase: the_list_is_bounded
+        m.package.optional_runtimes = (0..=MAX_OPTIONAL_RUNTIMES)
+            .map(|minor| format!("tilo-runtime/2026.{}.0", minor + 10))
+            .collect();
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::TooManyOptionalRuntimes)
+        );
     }
 
     #[test]

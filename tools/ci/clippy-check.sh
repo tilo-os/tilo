@@ -11,9 +11,9 @@
 # members only; warnings in registry and vendored dependencies are not ours and
 # stay capped.
 #
-# `--all-features` is deliberately not used: it also selects ui/webview-wpe,
-# whose native SDK exists only in the OS image builder. The release-app
-# workflow separately compiles the shipped thin-app feature.
+# `--all-features` is deliberately not used: some features link native SDKs
+# that exist only in the OS image builder. The release-app workflow separately
+# compiles the shipped thin-app feature.
 
 set -uo pipefail
 

@@ -16,10 +16,14 @@
 //!   owns the seat, and the composing input method is not running;
 //! * otherwise nobody does.
 //!
-//! Whether the on-screen keyboard is wanted is [`osk_wanted`]: its preference
-//! is `auto`, `always` or `never`, and `auto` follows the input hardware in
-//! use — a touchscreen with nothing typed on a physical keyboard since the
-//! last touch, or a convertible folded into tablet mode.
+//! Whether the on-screen keyboard runs is [`osk_service_wanted`]: its
+//! preference is `auto`, `always` or `never`, and `auto` keeps it running
+//! wherever a touchscreen or a convertible's tablet mode can need it. Whether
+//! it is shown for a focused field is [`osk_wanted`], which follows the input
+//! in use — a touch with nothing typed on a physical keyboard since, or a
+//! convertible folded into tablet mode. Keeping the service alive while it is
+//! merely hidden means a tap into a field never waits for, or races, a fresh
+//! keyboard process binding the input method.
 //!
 //! The on-screen keyboard does not try to feed the composer: its keys are
 //! committed text, not key events a composer could compose, and splitting one
@@ -147,7 +151,18 @@ impl OskInput {
     }
 }
 
-/// Whether the on-screen keyboard should own an otherwise idle seat.
+/// Whether the on-screen keyboard should run and own an otherwise idle seat:
+/// in `Auto`, whenever the hardware has a touchscreen or reports tablet mode,
+/// whether or not it is currently shown (see [`osk_wanted`]).
+pub fn osk_service_wanted(preference: OskPreference, input: OskInput) -> bool {
+    match preference {
+        OskPreference::Always => true,
+        OskPreference::Never => false,
+        OskPreference::Auto => input.tablet_mode || input.touchscreen,
+    }
+}
+
+/// Whether the on-screen keyboard should be shown for a focused field.
 ///
 /// In `Auto`, a convertible in tablet mode always gets it: its keyboard is
 /// folded away. Otherwise it needs a touchscreen, and a key press on a
@@ -370,6 +385,13 @@ mod tests {
                 expected,
                 "{preference:?} {input:?}"
             );
+            // Whatever hides it, a keyboard that can be shown keeps running.
+            if expected {
+                assert!(
+                    osk_service_wanted(preference, input),
+                    "{preference:?} {input:?}"
+                );
+            }
         }
 
         // The stored preference defaults to automatic; the old boolean is
@@ -402,6 +424,10 @@ mod tests {
         assert!(wanted(&environment), "pointer use is not typing");
         environment.note_used(ui::InputModality::Keyboard);
         assert!(!wanted(&environment));
+        assert!(
+            osk_service_wanted(Auto, OskInput::from_environment(&environment)),
+            "typing hides the keyboard but keeps it running for the next touch"
+        );
     }
 
     #[test]
