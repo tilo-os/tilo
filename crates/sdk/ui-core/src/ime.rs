@@ -68,17 +68,8 @@ impl ImeSurroundingText {
         if !text.is_char_boundary(anchor) || !text.is_char_boundary(focus) {
             return None;
         }
-        let mut start = anchor.min(focus).saturating_sub(Self::CONTEXT);
-        while !text.is_char_boundary(start) {
-            start += 1;
-        }
-        let mut end = anchor
-            .max(focus)
-            .saturating_add(Self::CONTEXT)
-            .min(text.len());
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
+        let start = text.ceil_char_boundary(anchor.min(focus).saturating_sub(Self::CONTEXT));
+        let end = text.floor_char_boundary(anchor.max(focus).saturating_add(Self::CONTEXT));
         Some(Self {
             text: text.get(start..end)?.to_owned(),
             anchor: anchor - start,

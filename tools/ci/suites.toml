@@ -410,6 +410,11 @@ suites = [
 ]
 
 [[group]]
+name = "browser-compute-web"
+inputs = ["crates/browser/tilo-browser-compute/"]
+suites = ["crates/browser/tilo-browser-compute/web/compute-domains.test.mjs"]
+
+[[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
@@ -892,6 +897,11 @@ reason = "boots the installed OS image in a VM and signs in"
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-nearby-pairing.sh"
+reason = "boots two VMs (KVM) from the gated dev disk"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
@@ -946,8 +956,17 @@ suite = "os/tests/boot_performance_gate.sh"
 reason = "needs a running installed image"
 
 [[unrequired]]
+suite = "os/tests/boot_units_gate.sh"
+reason = "runs inside a booted guest, as root"
+
+[[unrequired]]
 suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
+
+[[unrequired]]
+suite = "os/tests/booted_app_update.sh"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"

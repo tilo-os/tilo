@@ -174,7 +174,7 @@ pub use compute_worker::{
 pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
-pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
+pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};
 pub use mesh::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
     PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,

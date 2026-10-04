@@ -893,6 +893,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
@@ -1843,12 +1844,18 @@ fn key_press(logical_key: Key) -> WindowEvent {
     // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
     // inspected by winit-internal code that the host never reaches).
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    // A character key carries its text, as a real keyboard's does; text
+    // fields type from it.
+    let text = match &logical_key {
+        Key::Character(text) => Some(text.clone()),
+        _ => None,
+    };
     ev.logical_key = logical_key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = None;
+    ev.text = text;
     WindowEvent::KeyboardInput {
         device_id: unsafe { std::mem::zeroed() },
         event: ev,
