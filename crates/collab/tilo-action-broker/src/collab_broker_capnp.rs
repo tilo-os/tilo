@@ -6096,6 +6096,32 @@ fn app_settings_capability(
     ))
 }
 
+/// The `LiveActivity` capability of the app `route` certifies, over the
+/// host's board, for as long as the channel stays admitted.
+fn live_activity_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::live_activity::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "a live activity belongs to a certified app route".into(),
+        ));
+    }
+    let Some(board) = state.services.live_activities.clone() else {
+        return Err(capnp::Error::failed(
+            "this host presents no live activities".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::live_activity::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::live_activity::LiveActivityServer::new(app_id, board, revalidate),
+    ))
+}
+
 fn delegate_realtime_command(
     services: &HostServices,
     context: &crate::services::RealtimeRequestContext,
@@ -6639,6 +6665,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         match app_settings_capability(&self.state, route, self.verified_identity.clone()) {
             Ok(settings) => {
                 results.get().set_settings(settings);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn live_activity(
+        self: Rc<Self>,
+        _params: channel_handle::LiveActivityParams,
+        mut results: channel_handle::LiveActivityResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match live_activity_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(activity) => {
+                results.get().set_activity(activity);
                 Promise::ok(())
             }
             Err(error) => Promise::err(error),

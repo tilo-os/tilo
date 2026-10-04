@@ -204,18 +204,17 @@ pub struct OverlayFlags {
     pub clock: bool,
 }
 
+/// The live activity Clocks shows outside its windows: the timer or
+/// stopwatch running, and a due timer to announce once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "this is a backwards-compatible JSON snapshot produced by the Clocks app; active, stopwatch, paused, and overlay are independent wire fields, and replacing them with enums would change the external schema"
+    reason = "active, stopwatch, paused, and overlay are independent fields of the activity Clocks shows"
 )]
 pub struct ClockActivity {
-    #[serde(default)]
-    pub version: u8,
     #[serde(default = "clock_activity_active_default")]
     pub active: bool,
-    /// UUID of the exact timer represented by this snapshot. Older Clocks
-    /// builds omit it; the singleton stopwatch intentionally has no ID.
+    /// The timer shown; `None` is the stopwatch.
     #[serde(default)]
     pub activity_id: Option<String>,
     pub label: String,
@@ -225,10 +224,6 @@ pub struct ClockActivity {
     pub paused: bool,
     #[serde(default)]
     pub overlay: bool,
-    #[serde(default)]
-    pub generation: u64,
-    #[serde(default)]
-    pub producer_pid: u32,
     #[serde(default)]
     pub notification_id: Option<String>,
     #[serde(default)]

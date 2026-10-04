@@ -13,7 +13,6 @@ use super::{
 use crate::model::{Clocks, bounded_label};
 use crate::{ClocksShell, OnThisDevice, ShellSnapshot};
 use std::collections::BTreeSet;
-use std::path::Path;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
 
@@ -77,21 +76,32 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     }
 }
 
-fn snapshot(runtime: &Path) -> ShellSnapshot {
-    serde_json::from_slice(&std::fs::read(runtime.join("tilo/clocks.json")).unwrap()).unwrap()
+/// What the shell presents of Clocks' live activity now; an ended one is
+/// shown as inactive.
+fn snapshot() -> ShellSnapshot {
+    ui::collaboration::channel_live_activity::shown().map_or_else(
+        || ShellSnapshot {
+            active: false,
+            activity_id: None,
+            label: String::new(),
+            remaining_secs: 0,
+            stopwatch: false,
+            paused: false,
+            overlay: false,
+            notification_id: None,
+            notification_title: String::new(),
+            notification_body: String::new(),
+        },
+        |shown| serde_json::from_value(shown).unwrap(),
+    )
 }
 
-fn command(runtime: &Path, command: &str, activity_id: Option<&str>) {
-    std::fs::write(
-        runtime.join("tilo/clocks-command.json"),
-        serde_json::json!({
-            "version": 1,
-            "command": command,
-            "activity_id": activity_id,
-        })
-        .to_string(),
-    )
-    .unwrap();
+/// Press `command` on the floating clock, as the shell does.
+fn command(command: &str, activity_id: Option<&str>) {
+    ui::collaboration::channel_live_activity::press(serde_json::json!({
+        "command": command,
+        "activity_id": activity_id,
+    }));
 }
 
 #[test]
@@ -100,35 +110,33 @@ fn command(runtime: &Path, command: &str, activity_id: Option<&str>) {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let runtime = home.runtime().to_path_buf();
     let mut app = TestApp::<ClocksShell>::new().unwrap();
 
     // Phase: nothing runs, so the shell shows nothing.
     app.settle();
-    assert!(!snapshot(&runtime).active, "idle: inactive tombstone");
+    assert!(!snapshot().active, "idle: nothing shown");
 
     // Phase: a running timer is what the shell shows, by its id.
     app.invoke(Clocks::ADD_TIMER.with(("Laundry".into(), 2_700)))
         .unwrap();
     app.settle();
     let id = app.state().timers.ids().next().unwrap().as_str().to_owned();
-    let shown = snapshot(&runtime);
+    let shown = snapshot();
     assert!(shown.active && !shown.paused && !shown.overlay, "{shown:?}");
     assert_eq!(shown.activity_id.as_deref(), Some(id.as_str()));
     assert_eq!(shown.label, "Laundry");
 
     // Phase: the shell's controls change exactly the timer they name.
-    command(&runtime, "toggle", Some(&id));
+    command("toggle", Some(&id));
     app.settle();
     app.settle();
     assert!(
-        !runtime.join("tilo/clocks-command.json").exists(),
+        ui::collaboration::channel_live_activity::take_controls().is_empty(),
         "the command is taken once"
     );
     let timer = app.state().timers.values().next().cloned().unwrap();
     assert_eq!(timer.ends_at_ms, None, "toggle pauses the running timer");
-    command(&runtime, "add-minute", Some(&id));
+    command("add-minute", Some(&id));
     app.settle();
     app.settle();
     let timer = app.state().timers.values().next().cloned().unwrap();
@@ -148,8 +156,8 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
     )
     .unwrap();
     app.settle();
-    assert!(snapshot(&runtime).overlay, "floating timer");
-    command(&runtime, "close", Some(&id));
+    assert!(snapshot().overlay, "floating timer");
+    command("close", Some(&id));
     app.settle();
     app.settle();
     assert!(
@@ -162,11 +170,11 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
 
     // Phase: stopwatch controls never reach a timer.
     let before = app.state().timers;
-    command(&runtime, "toggle-stopwatch", None);
+    command("toggle-stopwatch", None);
     app.settle();
     app.settle();
     assert!(app.state().stopwatch.is_running(), "stopwatch started");
-    command(&runtime, "lap-stopwatch", None);
+    command("lap-stopwatch", None);
     app.settle();
     app.settle();
     assert_eq!(app.state().stopwatch.laps_ms.len(), 1, "one lap");
@@ -181,11 +189,8 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(1_100));
     app.settle();
-    assert!(
-        snapshot(&runtime).notification_id.is_some(),
-        "the timer rang"
-    );
-    let first = snapshot(&runtime);
+    assert!(snapshot().notification_id.is_some(), "the timer rang");
+    let first = snapshot();
     assert_eq!(first.notification_title, "Timer finished");
     assert_eq!(first.notification_body, "Tea");
     assert!(
@@ -193,7 +198,7 @@ fn a_live_window_keeps_the_shell_floating_clock_and_answers_its_controls() {
         "the window shows the notice"
     );
     app.settle();
-    let later = snapshot(&runtime);
+    let later = snapshot();
     assert!(!later.active, "nothing runs any more");
     assert_eq!(
         later.notification_id, first.notification_id,

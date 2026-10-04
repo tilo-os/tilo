@@ -1170,6 +1170,7 @@ pub fn native_services(
         launchable_catalogue: launchable_catalogue_path(),
         // The session's records, installed before any broker starts.
         settings: settings_store::installed_source(),
+        live_activities: Some(super::live_activities::board()),
         ..Default::default()
     }
 }
