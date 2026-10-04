@@ -618,8 +618,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
                 .iter()
                 .map(Block::content)
                 .collect();
-            let author = self.editor.local_author().map(str::to_owned);
-            let mut host = Through(&mut self.source, author);
+            let mut host = Through(&mut self.source);
             match edit::commit(&mut host, doc, presented, &edited) {
                 Ok(renames) => rename(&mut self.editor, &renames),
                 Err(error) => tracing::debug!(%error, "rich-text edit not applied"),
@@ -696,7 +695,7 @@ fn rename(editor: &mut BlockEditor, renames: &[(String, String)]) {
 }
 
 /// A source as the edit host: edits applied through it, results read back.
-struct Through<'a, S>(&'a mut S, Option<String>);
+struct Through<'a, S>(&'a mut S);
 
 impl<S: RichTextSource> Host for Through<'_, S> {
     fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError> {
@@ -706,10 +705,6 @@ impl<S: RichTextSource> Host for Through<'_, S> {
     fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
         self.0.sync(doc);
         self.0.with_state(read)
-    }
-
-    fn author(&self) -> Option<&str> {
-        self.1.as_deref()
     }
 }
 

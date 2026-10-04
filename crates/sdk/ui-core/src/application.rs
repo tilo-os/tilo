@@ -788,8 +788,9 @@ pub enum WindowRole {
     /// Its window announces the component's own app id, by which the
     /// compositor (on the private display it launched the surface on) floats
     /// it outside the workspace and shows it only while a text field is
-    /// focused. Its controls type into other apps' fields, so no headless
-    /// drive may operate it.
+    /// focused. It is a session service started without a room, so it
+    /// attaches to no workspace runtime. Its controls type into other apps'
+    /// fields, so no headless drive may operate it.
     InputSurface,
 }
 

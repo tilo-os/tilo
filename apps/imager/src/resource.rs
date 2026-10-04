@@ -13,9 +13,10 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{self, ActionDecl, Doc, Effect, ModelError, Resource};
+use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction, profile_declarations, register};
@@ -117,20 +118,149 @@ pub enum ImagerEffect {
     },
 }
 
-/// Framework app.
+/// The imager: one binary, three flows over the one resource. A plain
+/// launch is the write wizard; `--setup` the guided Tilo setup;
+/// `--import-folders` the later folder imports.
 pub struct ImagerShell;
+
+/// Which flow a window shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flow {
+    Wizard,
+    Setup,
+    Imports,
+}
+
+impl Flow {
+    /// The flow a screenshot scenario shows.
+    fn of_scenario(scenario: Option<&str>) -> Self {
+        match scenario {
+            Some(name) if name.starts_with("setup-") => Self::Setup,
+            Some(name) if name.starts_with("import-") => Self::Imports,
+            _ => Self::Wizard,
+        }
+    }
+}
+
+/// The write wizard's screenshot scenarios, one per meaningful station.
+const WIZARD_SCENARIOS: &[&str] = &[
+    "source",
+    "source-empty",
+    "drive",
+    "drive-empty",
+    "drive-internal",
+    "customize",
+    "customize-timezone-open",
+    "export",
+    "confirm",
+    "progress",
+    "done",
+    "done-failed",
+];
+
+/// Every screenshot scenario: the wizard's, then the setup's and the
+/// imports', so the gallery reads top to bottom.
+static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
+    WIZARD_SCENARIOS
+        .iter()
+        .chain(crate::setup::view::SCENARIOS)
+        .chain(crate::setup::import_view::SCENARIOS)
+        .copied()
+        .collect()
+});
+
+/// The plain ISO the drive scenarios review.
+fn sample_iso() -> Source {
+    Source {
+        kind: crate::model::SourceKind::IsoFile,
+        path: "/home/user/Downloads/Fedora-Workstation-Live-42.iso".into(),
+        name: "Fedora-Workstation-Live-42.iso".into(),
+        size: 2_113_929_216,
+        label: "Fedora-WS-Live-42-1-1".into(),
+        installable: false,
+        identity: None,
+        expected_sha256: None,
+    }
+}
+
+/// Review `sources` in order, each one remembering the one before it.
+fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
+    let mut previous: Option<&Source> = None;
+    let mut invokes = Vec::new();
+    for (rank, source) in sources.iter().enumerate() {
+        invokes.extend(
+            Invoke::apply(&ImagerAction::SelectSource {
+                source: Box::new(source.clone()),
+                previous: previous.cloned().map(Box::new),
+                recent_rank: -(rank as i64),
+            })
+            .ok(),
+        );
+        previous = Some(source);
+    }
+    invokes
+}
 
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
     const ID: &'static str = "so.tilo.imager";
     const TITLE: &'static str = "Disk Imager";
     const ICON: Option<&'static str> = Some("imager");
+    const FLAGS: &'static [&'static str] = &["--setup", "--import-folders"];
+
+    fn scenarios() -> &'static [&'static str] {
+        &SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1180, 820)
     }
 
+    fn fixture(fixture: &mut Fixture<Imager>) {
+        let flow = Flow::of_scenario(fixture.scenario());
+        fixture.provide(flow);
+    }
+
+    /// The reviewed image (and the images reviewed before it) each wizard
+    /// scenario shows; the drives, the station and the job are staged by
+    /// the surface.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Imager>> {
+        let mut history = crate::model::sample_recent_sources();
+        history.reverse();
+        match name {
+            Some("source-empty") => Vec::new(),
+            Some("drive-empty") => review(&[sample_iso()]),
+            Some("drive-internal") => review(&[crate::model::sample_source()]),
+            Some("drive") => {
+                history.extend([crate::model::sample_source(), sample_iso()]);
+                review(&history)
+            }
+            name if Flow::of_scenario(name) == Flow::Wizard => {
+                history.push(crate::model::sample_source());
+                review(&history)
+            }
+            _ => Vec::new(),
+        }
+    }
+
     fn view(cx: &mut ViewCx<Imager>) -> Element {
-        cx.surface(ImagerApp::new())
+        let flow = cx.fixture::<Flow>().map_or_else(
+            || {
+                if cx.launch_flag("--import-folders") {
+                    Flow::Imports
+                } else if cx.launch_flag("--setup") {
+                    Flow::Setup
+                } else {
+                    Flow::Wizard
+                }
+            },
+            |flow| *flow,
+        );
+        match flow {
+            Flow::Wizard => cx.surface(ImagerApp::new()),
+            Flow::Setup => crate::setup::view::view(cx),
+            Flow::Imports => crate::setup::import_view::view(cx),
+        }
     }
 }
 
@@ -140,7 +270,11 @@ impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_framework(cx.dispatcher(), cx.mode());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or("source"));
     }
 
     fn effect(&mut self, effect: ImagerEffect, cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
@@ -474,5 +608,53 @@ mod tests {
         assert!(app.state().profile.enroll_local_identity);
         app.call("clear-source", serde_json::json!({})).unwrap();
         assert!(app.state().source.is_none());
+    }
+
+    #[test]
+    fn every_scenario_captures_its_flow_without_touching_the_machine() {
+        for scenario in
+            std::iter::once(None).chain(ImagerShell::scenarios().iter().copied().map(Some))
+        {
+            let mut app = ui::framework::testing::TestApp::<ImagerShell>::capture(scenario)
+                .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
+            let inspection = app.harness().inspection_json().unwrap();
+            assert!(!inspection.is_empty(), "{scenario:?}");
+        }
+
+        let mut drive =
+            ui::framework::testing::TestApp::<ImagerShell>::capture(Some("drive")).unwrap();
+        assert_eq!(
+            drive.state().source.map(|source| source.name),
+            Some("Fedora-Workstation-Live-42.iso".to_owned()),
+            "the scenario reviewed the image through the resource's actions"
+        );
+        assert!(
+            drive.harness().inspection_json().unwrap().contains("sdb"),
+            "the sample drives are staged"
+        );
+        let mut empty =
+            ui::framework::testing::TestApp::<ImagerShell>::capture(Some("source-empty")).unwrap();
+        assert!(empty.state().source.is_none());
+        assert!(!empty.harness().inspection_json().unwrap().contains("sdb"));
+    }
+
+    #[test]
+    fn launch_switches_choose_the_flow() {
+        let mut setup =
+            ui::framework::testing::TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let resources = setup.harness().resources();
+        assert!(
+            find(&resources, "imager.setup").is_some(),
+            "the guided setup"
+        );
+        assert!(find(&resources, "imager.job").is_none());
+        let mut imports =
+            ui::framework::testing::TestApp::<ImagerShell>::launched(&["--import-folders"])
+                .unwrap();
+        let resources = imports.harness().resources();
+        assert!(
+            find(&resources, "imager.import").is_some(),
+            "the folder imports"
+        );
     }
 }

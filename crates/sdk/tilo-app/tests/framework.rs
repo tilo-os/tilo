@@ -143,6 +143,13 @@ fn an_input_surface_window_announces_its_own_app_id() {
     );
 }
 
+#[test]
+fn an_input_surface_runs_without_a_workspace_runtime() {
+    let args = tilo_app::launch::LaunchArgs::component();
+    assert!(!tilo_app::framework::launch_spec::<InputSurfaceApp>().attaches_runtime(&args));
+    assert!(tilo_app::framework::launch_spec::<ChecklistApp>().attaches_runtime(&args));
+}
+
 fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
     app.state()
         .items

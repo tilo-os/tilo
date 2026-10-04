@@ -185,6 +185,7 @@ impl Resource for Remote {
                 title: connection.name.clone(),
                 text: connection.host.clone(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

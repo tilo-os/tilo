@@ -2,4 +2,3 @@
 # Each count may only go down; the target is an empty file.
 
 [ratchets.standalone_launch]
-"apps/imager/src/main.rs" = 1

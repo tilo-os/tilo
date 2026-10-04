@@ -2,6 +2,5 @@
 # Each count may only go down; the target is an empty file.
 
 [ratchets.raw_operation_handler]
-"apps/slides/src/app.rs" = 3
 
 [ratchets.surface_document_actions]

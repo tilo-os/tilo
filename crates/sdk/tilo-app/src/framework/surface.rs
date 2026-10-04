@@ -6,7 +6,7 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
-use tilo_resource::{ActionDecl, Effect, NoEffect, Resource};
+use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
 use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
@@ -163,6 +163,15 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         None
     }
 
+    /// Search entries for what the surface shows that the resource does not
+    /// hold — a page's text, a book's outline, the processes running —
+    /// indexed with the resource's own ([`Resource::search`]) as the app's
+    /// one search source. Read whenever someone searches, so keep it to what
+    /// the surface already has at hand.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        Vec::new()
+    }
+
     /// Whether the document actions this surface's own `PublishesResources`
     /// offers (edits bound to its selection, published as hand-built rows)
     /// still reach the published tree. Otherwise they are dropped, and a
@@ -180,6 +189,7 @@ pub(crate) trait SurfacePublication<R: Resource> {
     fn bound_declarations(&self) -> Vec<ActionDecl<R>>;
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
+    fn search_entries(&self) -> Vec<SearchEntry>;
 }
 
 impl<R: Resource, S: ResourceSurface<R, E>, E: Effect> SurfaceHost<R, S, E> {
@@ -621,6 +631,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.surface.live_row(id)
+    }
+
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.surface.search_entries()
     }
 }
 

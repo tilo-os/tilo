@@ -1811,11 +1811,12 @@ fn apply_paste_fragment(
     }
 }
 
-fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
+fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) -> Written {
     let new = dm.insert_block(Some(after), "paragraph");
     if !text.is_empty() {
         dm.splice_text(&new, 0, 0, text);
     }
+    Written::body(new, 0, text)
 }
 
 /// The last body block as `append-paragraph`/`continue-paragraph` resolve it
@@ -1853,20 +1854,21 @@ pub fn body_end_at(doc: &AutoCommit, c: &Containers, id: String) -> BodyEnd {
     }
 }
 
-fn apply_append_paragraph(dm: &mut DocMut, text: &str) {
+fn apply_append_paragraph(dm: &mut DocMut, text: &str) -> Written {
     let target = match body_end(dm.doc, dm.c) {
         Some(end) if end.chars == 0 && end.kind.as_deref() == Some("paragraph") => end.id,
         Some(end) => dm.insert_block(Some(&end.id), "paragraph"),
         None => dm.insert_block(None, "paragraph"),
     };
     dm.splice_text(&target, 0, 0, text);
+    Written::body(target, 0, text)
 }
 
-fn apply_continue_paragraph(dm: &mut DocMut, text: &str) {
+fn apply_continue_paragraph(dm: &mut DocMut, text: &str) -> Option<Written> {
     // Validated before the mutable view: the last body block is a text block.
-    if let Some(end) = body_end(dm.doc, dm.c).filter(|end| end.text_block) {
-        dm.splice_text(&end.id, end.chars, 0, text);
-    }
+    let end = body_end(dm.doc, dm.c).filter(|end| end.text_block)?;
+    dm.splice_text(&end.id, end.chars, 0, text);
+    Some(Written::body(end.id, end.chars, text))
 }
 
 fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
@@ -2107,7 +2109,56 @@ fn apply_add_comment(
     }
 }
 
-fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
+/// The text an action typed in: `len` characters of `block` from `start`.
+struct Written {
+    region: Region,
+    block: String,
+    start: usize,
+    len: usize,
+}
+
+impl Written {
+    fn new(region: Region, block: &str, start: usize, text: &str) -> Self {
+        Self {
+            region,
+            block: block.to_owned(),
+            start,
+            len: text.chars().count(),
+        }
+    }
+
+    fn body(block: String, start: usize, text: &str) -> Self {
+        Self {
+            region: Region::Body,
+            block,
+            start,
+            len: text.chars().count(),
+        }
+    }
+
+    /// Mark the written text as `author`'s, as part of the edit that wrote it.
+    fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
+        if self.len == 0 || author.is_empty() {
+            return;
+        }
+        let span = Span {
+            block: self.block.clone(),
+            start: self.start,
+            end: self.start.saturating_add(self.len),
+        };
+        add_mark_region(
+            dm,
+            self.region,
+            &span,
+            tilo_doc::schema::MARK_AUTHOR,
+            &MarkVal::Str(author.to_owned()),
+        );
+    }
+}
+
+/// Apply a text action; what it typed in, when it typed text in one known
+/// place.
+fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) -> Option<Written> {
     match action {
         RichTextAction::SpliceText {
             region,
@@ -2115,7 +2166,10 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             at,
             del,
             ins,
-        } => apply_splice_text(dm, region.to_region(), block, *at, *del, ins),
+        } => {
+            apply_splice_text(dm, region.to_region(), block, *at, *del, ins);
+            Some(Written::new(region.to_region(), block, *at, ins))
+        }
         RichTextAction::ReplaceSelection {
             region,
             start_block,
@@ -2123,15 +2177,33 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             end_block,
             end,
             ins,
-        } => apply_replace_selection(
-            dm,
-            region.to_region(),
-            start_block,
-            *start,
-            end_block,
-            *end,
-            ins,
-        ),
+        } => {
+            apply_replace_selection(
+                dm,
+                region.to_region(),
+                start_block,
+                *start,
+                end_block,
+                *end,
+                ins,
+            );
+            Some(Written::new(region.to_region(), start_block, *start, ins))
+        }
+        RichTextAction::InsertParagraph { after, text } => {
+            Some(apply_insert_paragraph(dm, after, text))
+        }
+        RichTextAction::AppendParagraph { text } => Some(apply_append_paragraph(dm, text)),
+        RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
+        other => {
+            apply_block_text_action(dm, other);
+            None
+        }
+    }
+}
+
+/// The text actions that set marks, paste or replace blocks wholesale.
+fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
+    match action {
         RichTextAction::SetMark {
             region,
             spans,
@@ -2166,11 +2238,6 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             blocks,
             *adopt_first_style,
         ),
-        RichTextAction::InsertParagraph { after, text } => {
-            apply_insert_paragraph(dm, after, text);
-        }
-        RichTextAction::AppendParagraph { text } => apply_append_paragraph(dm, text),
-        RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
         RichTextAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
         RichTextAction::RemoveRegionBlocks { region, blocks } => {
             apply_remove_region_blocks(dm, region.to_region(), blocks);
@@ -2455,6 +2522,9 @@ impl RichTextAction {
         // origin and replay, and minted without scanning the document.
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         let cx = tilo_resource::ActionCx::for_apply(doc, &payload, 0);
+        // Who typed the text in: the invoker the envelope pins, so a replay
+        // marks exactly what the origin marked.
+        let author = cx.author().map(str::to_owned);
         let mut ids = tilo_doc::model::IdGen::for_action(cx);
         let mut dm = DocMut {
             doc,
@@ -2463,7 +2533,13 @@ impl RichTextAction {
         };
 
         match self.domain() {
-            ActionDomain::Text => apply_text_action(&mut dm, self),
+            ActionDomain::Text => {
+                if let (Some(written), Some(author)) =
+                    (apply_text_action(&mut dm, self), author.as_deref())
+                {
+                    written.attribute(&mut dm, author);
+                }
+            }
             ActionDomain::Formatting => apply_formatting_action(&mut dm, self),
             ActionDomain::Media => apply_media_action(&mut dm, self),
             ActionDomain::Table => apply_table_action(&mut dm, self),

@@ -1240,12 +1240,19 @@ mod tests {
             let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
             let hash = tilo_content::hash_bytes(&png);
             let mut doc = automerge::AutoCommit::new();
-            photos::doc::PhotosDoc::seed(&mut doc);
-            photos::doc::PhotosDoc::set_image(
-                &mut doc,
-                Some(&photos::OpenImage::from_path("/tmp/source.png", 64, 32).with_content(&hash)),
+            let photo = photos::model::LibraryPhoto::from_image(
+                photos::OpenImage::from_path("/tmp/source.png", 64, 32).with_content(&hash),
             );
-            photos::doc::PhotosDoc::set_edits(&mut doc, &photos::Edits::default().rotated_right());
+            let photo_id = photo.id.clone();
+            for action in [
+                photos::actions::PhotosAction::ImportPhoto { photo },
+                photos::actions::PhotosAction::set(
+                    &photo_id,
+                    &photos::Edits::default().rotated_right(),
+                ),
+            ] {
+                tilo_actions::Action::apply(&action, &mut doc).expect("the photograph is edited");
+            }
             doc.commit();
 
             assert!(

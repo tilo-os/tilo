@@ -158,6 +158,7 @@ impl Resource for CodeEditor {
                     anchor: Some(anchor),
                     title: file.name.clone(),
                     text: file.path.clone(),
+                    ..Default::default()
                 }
             })
             .collect()
@@ -304,6 +305,12 @@ impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
+    }
+
+    /// The symbols declared in the buffers and the running project search's
+    /// hits; the files are the resource's own entries.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.code_search_entries()
     }
 }
 
@@ -465,10 +472,11 @@ mod tests {
         // A symbol the scan found reveals where it is declared.
         sample.app.settle();
         let (address, line) = editor(&mut sample.app, |app| {
-            let hit = ui::search::capability::search_providers(app)[0]
-                .search("primes_below")
+            let source =
+                ui::framework::testing::search_source::<CodeEditor>(app.code_search_entries());
+            let hit = ui::search::SearchProvider::search(&source, "primes_below")
                 .into_iter()
-                .find(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
+                .find(|hit| hit.kind == crate::search_entries::SYMBOL_KIND)
                 .expect("the symbol is found");
             let symbol = app
                 .search_symbols_for_test()

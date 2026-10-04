@@ -1236,7 +1236,7 @@ pub struct VideoEditorApp {
     /// would replicate to everyone sharing the project. So it is handed a
     /// local document of its own, and the real write goes out as the same
     /// media action every other title property uses.
-    font_picker: Option<(MediaId, Box<ui::widget::Dropdown>, AutoCommit)>,
+    font_picker: Option<(MediaId, Box<ui::widget::Dropdown>)>,
     /// Which channel the curve editor is showing. Presentation, like
     /// `collapsed`: the curve itself carries all four channels whatever is on
     /// screen, so this never reaches the document.
@@ -3975,21 +3975,14 @@ impl VideoEditorApp {
         } else {
             current
         };
-        // The dropdown reads its current value out of the document it is
-        // given, so the family in force is seeded there and synced in —
-        // which is also what lands the highlight on it when the list opens.
-        let mut doc = AutoCommit::new();
-        let _ = automerge::transaction::Transactable::put(
-            &mut doc,
-            &automerge::ROOT,
-            "font",
-            shown.as_str(),
-        );
-        let mut dd = ui::widget::Dropdown::new(options, "font")
+        // The choice is view state until it is committed through the media
+        // action: the family in force starts it, which is also what lands
+        // the highlight on it when the list opens.
+        let chosen = ui::LocalState::new(shown);
+        let dd = ui::widget::Dropdown::from_state(options, &chosen)
             .with_id("title_font")
             .open();
-        dd.sync(&mut doc, &automerge::ROOT);
-        self.font_picker = Some((mid, Box::new(dd), doc));
+        self.font_picker = Some((mid, Box::new(dd)));
     }
 
     /// Take whatever the open picker settled on, if it has closed.
@@ -3997,7 +3990,7 @@ impl VideoEditorApp {
     /// Returns the family to write — an empty string for the default — so
     /// the caller commits it through the ordinary media action.
     fn take_font_choice(&mut self) -> Option<(MediaId, String)> {
-        let (mid, dd, _) = self.font_picker.as_ref()?;
+        let (mid, dd) = self.font_picker.as_ref()?;
         if dd.is_open() {
             return None;
         }
@@ -5980,8 +5973,7 @@ impl VideoEditorApp {
         if layout.title_font.is_some() && self.system_fonts.is_empty() {
             self.system_fonts = tr.system_families();
         }
-        if let (Some((_, dropdown, _)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font)
-        {
+        if let (Some((_, dropdown)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font) {
             dropdown.apply_layout_external(rect);
             dropdown.draw(scene, transform, tr, theme, presence);
         }
@@ -6017,7 +6009,6 @@ impl VideoEditorApp {
 impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::UndoControl,
-        dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence
     );
 
@@ -6408,24 +6399,11 @@ impl Widget for VideoEditorApp {
         // whatever it is covering.
         if self.font_picker.is_some() {
             let l = self.inspector_layout(&r);
-            if let Some((_, dd, local)) = self.font_picker.as_mut() {
+            if let Some((_, dd)) = self.font_picker.as_mut() {
                 if let Some(rect) = l.title_font {
                     dd.apply_layout_external(rect);
                 }
-                let root = automerge::ROOT;
-                dd.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: ctx.scale_factor,
-                        modifiers: ctx.modifiers,
-                        state: local,
-                        path: &root,
-                        handled: ctx.handled,
-                        focus_target: ctx.focus_target,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
+                dd.handle_event(event, ctx);
             }
             if let Some((mid, family)) = self.take_font_choice() {
                 let same = self
@@ -7313,20 +7291,6 @@ impl ui::presence::capability::PublishesPresence for VideoEditorApp {
             crate::presence::point_frame(editing, self.playhead),
             crate::presence::range_frame(selected),
         ])
-    }
-}
-
-impl ui::search::capability::SearchSource for VideoEditorApp {
-    /// Fold the open project into Tilo global search: every marker, title and
-    /// bin source becomes a findable *place*, and choosing one seeks there.
-    ///
-    /// A snapshot rather than a borrow, because the host queries the provider
-    /// off the paint path — see
-    /// [`ProjectSearchProvider`](crate::search_provider::ProjectSearchProvider).
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ProjectSearchProvider::new(&self.project),
-        )]
     }
 }
 

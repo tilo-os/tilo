@@ -2465,7 +2465,6 @@ dependencies = [
 name = "containers"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "bounded-command",
  "runtime-dylib",
  "serde",
@@ -8939,6 +8938,7 @@ dependencies = [
 name = "notes"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "chrono",
  "runtime-dylib",

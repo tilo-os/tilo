@@ -4,17 +4,21 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionSpec, OperationKind};
+use tilo_actions::ActionSpec;
 use tilo_document::RichText;
 use ui::application::OpenFile;
-use ui::framework::{LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx,
+    ViewCx,
+};
 use ui::headless::FrameHarness;
 use ui::permissions::UserId;
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 // `Resource` is in scope for both `Notebook` and nested `RichText`.
-use crate::actions::{NOTES_ACTION_TYPE, NOTES_OPERATION_TYPE, NotesAction, NotesOperation};
+use crate::actions::{NOTES_ACTION_TYPE, NotesAction};
 use crate::app::NotesApp;
 use crate::doc::NotesDoc;
+use crate::effect::NotesEffect;
 use crate::model::{PageId, Workspace};
 use ui::widget::Element;
 
@@ -66,29 +70,6 @@ impl Resource for Notebook {
         crate::actions::notebook_bound_actions(state)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        [
-            ("back", "Back", NotesOperation::NavigateBack),
-            ("forward", "Forward", NotesOperation::NavigateForward),
-        ]
-        .into_iter()
-        .filter_map(|(id, label, operation)| {
-            ActionSpec::operation(
-                id,
-                label,
-                OperationKind::View,
-                NOTES_OPERATION_TYPE,
-                &operation,
-            )
-            .ok()
-        })
-        .chain([
-            crate::actions::file_operation("import-markdown", "Import Markdown", None),
-            crate::actions::markdown_content_operation(),
-        ])
-        .collect()
-    }
-
     fn children(state: &Workspace) -> Vec<tilo_actions::Resource> {
         crate::actions::notebook_children(state)
     }
@@ -106,6 +87,7 @@ impl Resource for Notebook {
                 title: page.title.clone(),
                 text: String::new(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
@@ -150,20 +132,21 @@ impl ResourceApp for NotesShell {
             .filter(|stem| !stem.trim().is_empty())
             .unwrap_or("Imported note");
         // Images next to a file named on the command line come with it.
-        let (markdown, assets) = input
-            .argument()
-            .map(std::path::Path::new)
-            .and_then(|path| {
-                crate::app::adopt_canonical_markdown_assets(path, markdown, None)
-                    .map_err(|error| tracing::warn!(%error, "notes: launched images stay behind"))
-                    .ok()
-            })
-            .unwrap_or_else(|| (markdown.to_owned(), Vec::new()));
+        let (markdown, assets) = input.argument().map_or_else(
+            || (markdown.to_owned(), Vec::new()),
+            |path| {
+                crate::app::adopt_canonical_markdown_assets(std::path::Path::new(path), markdown)
+            },
+        );
         Invoke::apply(&crate::actions::import_markdown_action(
             page, title, &markdown, assets,
         ))
         .into_iter()
         .collect()
+    }
+
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::metadata::CATALOG)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -204,7 +187,16 @@ fn launched_note<'a>(input: &LaunchInput<'a>) -> Option<(PageId, &'a OpenFile)> 
     Some((uuid::Builder::from_random_bytes(bytes).into_uuid(), file))
 }
 
-impl ResourceSurface<Notebook> for NotesApp {
+impl ResourceSurface<Notebook, NotesEffect> for NotesApp {
+    fn effect(&mut self, effect: NotesEffect, cx: &mut EffectCx<Notebook, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    /// Back and forward are offered only where they lead.
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.navigation_statuses()
+    }
+
     fn present(&mut self, state: &Rc<Workspace>) {
         self.adopt_resource_state(state);
     }

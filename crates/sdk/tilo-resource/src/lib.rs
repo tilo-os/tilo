@@ -173,6 +173,7 @@ pub mod __private {
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
             action: None,
+            ..Default::default()
         }]
     }
 

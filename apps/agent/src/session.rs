@@ -2724,8 +2724,8 @@ impl Session {
             payload: PresencePayload::Caret { pos: caret_pos },
         })?;
         let editor = self.editor.as_mut().context("no document yet")?;
-        let actions = crate::apply::authored(action, &self.cfg.agent_id);
-        let delta = editor.apply::<word_processor::framework::Document>(&actions)?;
+        let delta =
+            editor.apply::<word_processor::framework::Document>(std::slice::from_ref(action))?;
         if let Some(data) = delta {
             self.link.send(&CollabRequest::document_incremental(data))?;
             if let RichTextAction::SpliceText { at, ins, .. } = action
@@ -4170,15 +4170,20 @@ mod tests {
             let socket = dir.path().join("collab.sock");
             let _broker = peer::spawn_with_agent_actions(
                 &socket,
-                &[(PHOTOS, PRODUCE), (PHOTOS, "view"), (WRITER, "place-image")],
+                &[(PHOTOS, PRODUCE), (PHOTOS, "open"), (WRITER, "place-image")],
             );
             let mut photo = automerge::AutoCommit::new();
-            photos::doc::PhotosDoc::seed(&mut photo);
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
             let source_hash = content.put(&source).unwrap();
-            let open = photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash);
-            photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
-            let image_id = photos::actions::resource_id(&open);
+            let held = photos::model::LibraryPhoto::from_image(
+                photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash),
+            );
+            let image_id = held.id.clone();
+            tilo_actions::Action::apply(
+                &photos::actions::PhotosAction::ImportPhoto { photo: held },
+                &mut photo,
+            )
+            .unwrap();
             let mut document = automerge::AutoCommit::new();
             let model = tilo_doc::model::init(&mut document, &automerge::ROOT);
             let mut ids = tilo_doc::model::seeded_id_gen(&document, &model);
@@ -4222,7 +4227,7 @@ mod tests {
                             resource.children.clear();
                             resource
                                 .actions
-                                .retain(|action| action.id == PRODUCE || action.id == "view");
+                                .retain(|action| action.id == PRODUCE || action.id == "open");
                             for action in &mut resource.actions {
                                 if action.id == PRODUCE {
                                     action.contract.result = result.clone();
@@ -4373,7 +4378,7 @@ mod tests {
                     &session.broker_catalogue,
                     &session.cfg.permissions,
                 );
-                if [PRODUCE, "view", "place-image"]
+                if [PRODUCE, "open", "place-image"]
                     .iter()
                     .all(|id| offers.iter().any(|offer| offer.address().action == *id))
                 {
@@ -4398,7 +4403,7 @@ mod tests {
             let mut steps = vec![producer.clone()];
             match between {
                 Between::Nothing => {}
-                Between::BrokerView => steps.push(bound_step("view", serde_json::Map::new())),
+                Between::BrokerView => steps.push(bound_step("open", serde_json::Map::new())),
                 Between::Duplicate => steps.push(producer),
                 Between::LocalRotate => steps.push(plan::Step::own(Instruction::Perform {
                     id: surface::encode_address(&tilo_actions::ActionAddress::new(
@@ -4443,8 +4448,10 @@ mod tests {
                         _ => None,
                     })
                     .collect(),
-                rotation: photos::doc::PhotosDoc::edits(session.peers["photos"].doc())
-                    .rotate_quarters,
+                rotation: photos::doc::PhotosDoc::library(session.peers["photos"].doc())
+                    .photos
+                    .first()
+                    .map_or(0, |photo| photo.edits.rotate_quarters),
             }
         }
 
@@ -4563,7 +4570,7 @@ mod tests {
                     Between::BrokerView,
                     false,
                 );
-                assert_no_consumer(&observed, &[PRODUCE, "view"]);
+                assert_no_consumer(&observed, &[PRODUCE, "open"]);
             }
 
             // Case `run_plan_invalidates_content_after_a_skipped_duplicate`.

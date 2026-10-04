@@ -71,21 +71,21 @@
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
-    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec, RetryPolicy, RiskLevel,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ParamType, Resource, ResultSpec, RiskLevel,
 };
 use ui::tilo_resource::{ActionCx, ActionDecl};
 
 use crate::doc::SlidesDoc;
+use crate::effects::SlidesEffect;
 use crate::model::{
     Background, Element, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W,
     STROKE_ROLES, Slide, TextAlign, new_id,
 };
+use ui::tilo_resource::Effect as _;
 
 /// Registry `type_id` for every Slides action.
 pub const SLIDES_ACTION_TYPE: &str = "slides.action";
-pub const SLIDES_OPERATION_TYPE: &str = "slides.operation";
 
 pub fn slide_resource_id(slide: &str) -> String {
     format!("slides.slide:{slide}")
@@ -142,160 +142,19 @@ pub fn notes_child(
 }
 
 pub fn open_slide_address(slide: &str) -> ActionAddress {
-    ActionAddress::new(slide_resource_id(slide), "open")
+    ActionAddress::new(slide_resource_id(slide), "open-slide")
 }
 
 pub fn open_element_address(element: &str) -> ActionAddress {
-    ActionAddress::new(element_resource_id(element), "open")
+    ActionAddress::new(element_resource_id(element), "open-element")
 }
 
 pub fn open_text_address(element: &str) -> ActionAddress {
-    ActionAddress::new(text_resource_id(element), "open")
+    ActionAddress::new(text_resource_id(element), "edit-text")
 }
 
 pub fn open_notes_address(slide: &str) -> ActionAddress {
-    ActionAddress::new(notes_resource_id(slide), "open")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SlidesOperation {
-    ShowEditor,
-    ShowOverview,
-    StartPresentation,
-    /// Starts presenting with an explicit local output policy. This is view
-    /// state, not a CRDT mutation: each collaborator keeps control of their
-    /// own physical displays.
-    StartPresentationOn {
-        output: PresentationOutput,
-    },
-    EndPresentation,
-    RevealSlide {
-        slide: String,
-    },
-    RevealElement {
-        slide: String,
-        element: String,
-        edit_text: bool,
-    },
-    RevealNotes {
-        slide: String,
-    },
-    Open {
-        path: Option<String>,
-    },
-    SaveAs {
-        path: Option<String>,
-    },
-    /// The deck's [outline](crate::outline).
-    Read,
-}
-
-/// User-visible audience-output policies. Kept serializable at the action
-/// boundary instead of leaking host monitor indices into documents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PresentationOutput {
-    LargestExternal,
-    PrimaryExternal,
-}
-
-#[cfg(test)]
-mod file_action_tests {
-    use super::*;
-    #[test]
-    fn path_argument_binds_into_background_save() {
-        let spec = file_operation("save-as", "Save presentation", true);
-        let encoded = spec
-            .build_json(
-                serde_json::json!({"path":"/tmp/a.odp"})
-                    .as_object()
-                    .unwrap(),
-            )
-            .unwrap();
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(SlidesOperation::SaveAs {
-                path: Some("/tmp/a.odp".into())
-            })
-        );
-        assert!(matches!(
-            spec.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
-        assert_eq!(spec.contract.result, ResultSpec::Job);
-    }
-}
-
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SlidesOperation>, String> {
-    if type_id != SLIDES_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, SLIDES_OPERATION_TYPE, &value)
-        .expect("SlidesOperation is always serializable");
-    match value {
-        SlidesOperation::ShowEditor
-        | SlidesOperation::ShowOverview
-        | SlidesOperation::RevealSlide { .. }
-        | SlidesOperation::RevealElement { .. }
-        | SlidesOperation::RevealNotes { .. } => spec
-            .with_contract(ActionContract::view())
-            .retry_policy(RetryPolicy::Idempotent),
-        SlidesOperation::StartPresentation
-        | SlidesOperation::StartPresentationOn { .. }
-        | SlidesOperation::EndPresentation => spec.with_contract(ActionContract::view()),
-        SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => spec.destructive(),
-        SlidesOperation::Read => spec
-            .with_contract(ActionContract {
-                result: ResultSpec::Json {
-                    schema: crate::outline::result_schema(),
-                },
-                ..ActionContract::view()
-            })
-            .reads_document(),
-    }
-}
-
-fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "optional absolute path",
-        OperationKind::Effect,
-        SLIDES_OPERATION_TYPE,
-        vec![ActionParam::optional(
-            "path",
-            ParamType::Text,
-            "ODP path; omit to use the system picker",
-        )],
-        move |args: &ActionArgs| {
-            let path = args
-                .text("path")
-                .filter(|p| !p.trim().is_empty())
-                .map(str::to_string);
-            let operation = if save {
-                SlidesOperation::SaveAs { path }
-            } else {
-                SlidesOperation::Open { path }
-            };
-            EncodedAction {
-                type_id: SLIDES_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("SlidesOperation serializes"),
-            }
-        },
-    )
-    .with_contract(ActionContract {
-        risk: tilo_actions::RiskLevel::Destructive,
-        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    })
+    ActionAddress::new(notes_resource_id(slide), "open-notes")
 }
 
 // ===========================================================================
@@ -1774,10 +1633,6 @@ impl ui::tilo_resource::Resource for SlidesDeck {
         Ok(())
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        deck_local_operations()
-    }
-
     fn bound_actions(state: &SlidesResourceCtx) -> Vec<ActionSpec> {
         deck_bound_document_actions(state)
     }
@@ -2239,60 +2094,6 @@ fn resource_rank_for_slot(ctx: &SlidesResourceCtx, at: usize) -> i64 {
     crate::doc::rank_for_insert(&ctx.ranks, at)
 }
 
-/// View and Effect operations published via [`SlidesDeck::local_operations`].
-fn deck_local_operations() -> Vec<ActionSpec> {
-    let mut specs = vec![
-        operation(
-            "editor",
-            "Show editor",
-            OperationKind::View,
-            SlidesOperation::ShowEditor,
-        ),
-        operation(
-            "overview",
-            "Show slide overview",
-            OperationKind::View,
-            SlidesOperation::ShowOverview,
-        ),
-        operation(
-            "present",
-            "Start presentation",
-            OperationKind::View,
-            SlidesOperation::StartPresentation,
-        ),
-        operation(
-            "present-largest-external",
-            "Present on largest external display",
-            OperationKind::View,
-            SlidesOperation::StartPresentationOn {
-                output: PresentationOutput::LargestExternal,
-            },
-        ),
-        operation(
-            "present-primary-external",
-            "Present on primary external display",
-            OperationKind::View,
-            SlidesOperation::StartPresentationOn {
-                output: PresentationOutput::PrimaryExternal,
-            },
-        ),
-        operation(
-            "end-presentation",
-            "End presentation",
-            OperationKind::View,
-            SlidesOperation::EndPresentation,
-        ),
-    ];
-    // System file picker with no document delta may stay an Effect.
-    specs.push(file_operation("open", "Open presentation", false));
-    specs.push(file_operation("save-as", "Save presentation", true));
-    specs.push(read_operation());
-    specs
-}
-
-/// Document ops whose payload needs the live deck: append a slide (rank after
-/// the last slide) and set the accent theme. Published through
-/// [`SlidesDeck::bound_actions`] so `tilo_resource::publish` owns them.
 /// What the deck's own edits answer their caller with: the deck's
 /// [outline](crate::outline) as they left it, so an agent sees the result
 /// without reading the deck again. Only the edits an agent composes a deck
@@ -2309,6 +2110,9 @@ fn returning_outline(mut spec: ActionSpec) -> ActionSpec {
     spec
 }
 
+/// Document ops whose payload needs the live deck: append a slide (rank after
+/// the last slide) and set the accent theme. Published through
+/// [`SlidesDeck::bound_actions`] so `tilo_resource::publish` owns them.
 fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
@@ -2364,14 +2168,12 @@ fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResource
             Layout::from_str(&sr.data.layout).label()
         ),
     )
-    .with_action(operation(
-        "open",
-        "Open slide",
-        OperationKind::View,
-        SlidesOperation::RevealSlide {
+    .with_action(
+        SlidesEffect::OpenSlide {
             slide: sr.data.id.clone(),
-        },
-    ))
+        }
+        .bound(),
+    )
     .with_action(immediate_spec(
         "duplicate",
         "Duplicate slide",
@@ -2429,16 +2231,13 @@ fn element_resource(sr: &SlideResource, er: &ElementResource, eager_text: bool) 
         "slides.element",
         element_label(er.kind, &er.text),
     )
-    .with_action(operation(
-        "open",
-        "Reveal element",
-        OperationKind::View,
-        SlidesOperation::RevealElement {
+    .with_action(
+        SlidesEffect::OpenElement {
             slide: sr.data.id.clone(),
             element: er.id.clone(),
-            edit_text: false,
-        },
-    ))
+        }
+        .bound(),
+    )
     .with_action(immediate_spec(
         "delete",
         "Delete element",
@@ -2478,16 +2277,13 @@ fn text_resource(sr: &SlideResource, er: &ElementResource) -> Resource {
         None,
         wrap,
     )
-    .with_action(operation(
-        "open",
-        "Edit text",
-        OperationKind::View,
-        SlidesOperation::RevealElement {
+    .with_action(
+        SlidesEffect::EditText {
             slide: sr.data.id.clone(),
             element: er.id.clone(),
-            edit_text: true,
-        },
-    ))
+        }
+        .bound(),
+    )
 }
 
 /// A slide's speaker notes: plain text of their own whose edits are the
@@ -2505,25 +2301,11 @@ fn notes_resource(sr: &SlideResource) -> Resource {
         Some(&sr.data.notes),
         wrap,
     )
-    .with_action(operation(
-        "open",
-        "Open speaker notes",
-        OperationKind::View,
-        SlidesOperation::RevealNotes {
+    .with_action(
+        SlidesEffect::OpenNotes {
             slide: sr.data.id.clone(),
-        },
-    ))
-}
-
-fn read_operation() -> ActionSpec {
-    operation(
-        "read",
-        "Read deck as text",
-        OperationKind::Effect,
-        SlidesOperation::Read,
-    )
-    .with_description(
-        "The deck as text: each slide's number, layout and {#id}, its title (# line), body and other elements each ending in its {#id}, then its speaker notes. add-slide, set-slide-text, move-slide and the element edits return this too",
+        }
+        .bound(),
     )
 }
 
@@ -2620,17 +2402,17 @@ mod tests {
         serde_json::json!({"slide": "2", "title": "Agenda", "body": "Goals\nTimeline"})
     }
 
-    /// `read` and every deck edit declare the outline, and the app answers
-    /// an edit with the deck it left, titled and with its handles.
+    /// The deck's edits declare the outline, and the app answers an edit
+    /// with the deck it left, titled and with its handles.
     #[test]
-    fn deck_edits_and_read_answer_with_the_outline() {
+    fn deck_edits_answer_with_the_outline() {
         let mut doc = seeded();
         let resources = published(&doc);
         let published = resources
             .iter()
             .find(|resource| resource.id.as_str() == "slides.deck")
             .expect("the deck is published");
-        for id in [SET_SLIDE_TEXT, ADD_ELEMENT, MOVE_SLIDE, "read"] {
+        for id in [SET_SLIDE_TEXT, ADD_ELEMENT, MOVE_SLIDE, ADD_SLIDE] {
             let action = published
                 .actions
                 .iter()
@@ -2644,14 +2426,6 @@ mod tests {
                 "{id}"
             );
         }
-        let readers: Vec<_> = published
-            .actions
-            .iter()
-            .filter(|action| action.contract.reads_document())
-            .map(|action| action.id.as_str())
-            .collect();
-        assert_eq!(readers, ["read"], "an open answers the deck through `read`");
-
         let encoded = through_door(&doc, SET_SLIDE_TEXT, set_text_args());
         let action: SlidesAction = serde_json::from_slice(&encoded.payload).expect("decodes");
         action.apply(&mut doc).expect("set-slide-text applies");
@@ -2666,7 +2440,7 @@ mod tests {
         seed: seeded(),
         registry: registry(),
         resources: |doc| published(doc),
-        palette: ["Add slide", "Delete slide", "Delete element", "Start presentation"],
+        palette: ["Add slide", "Delete slide", "Delete element"],
         replay: [
             set_background => |doc| encode(&set_slide_background_action(
                 1,
@@ -2749,11 +2523,6 @@ mod tests {
             let deck_actions: Vec<&str> = deck.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(deck_actions.contains(&"add-slide"), "{deck_actions:?}");
             assert!(deck_actions.contains(&"theme-emerald"), "{deck_actions:?}");
-            assert!(
-                deck_actions.contains(&"present-largest-external")
-                    && deck_actions.contains(&"present-primary-external"),
-                "presentation output policies must be available through the same resource surface: {deck_actions:?}"
-            );
 
             assert_eq!(
                 deck.children.len(),
@@ -2788,9 +2557,9 @@ mod tests {
             let open_slide = slide
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
+                .find(|action| action.id == "open-slide")
                 .unwrap();
-            assert_eq!(open_slide.kind, OperationKind::View);
+            assert_eq!(open_slide.kind, tilo_actions::OperationKind::View);
             assert_eq!(
                 open_slide_address(slide_id),
                 tilo_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
@@ -2810,12 +2579,15 @@ mod tests {
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("text address resolves through the published resource tree");
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(SlidesOperation::RevealElement {
+                encoded,
+                SlidesEffect::EditText {
                     slide: slide_id.to_string(),
                     element: element_id.to_string(),
-                    edit_text: true,
-                })
+                }
+                .bound()
+                .build_json(&serde_json::Map::new())
+                .unwrap(),
+                "the text resource reveals its words through the editor's effect"
             );
         }
     }

@@ -96,6 +96,7 @@ impl Resource for Camera {
                 title: recent.label.clone(),
                 text: "recent capture".into(),
                 action: None,
+                ..Default::default()
             });
         }
         for scan in &state.scans {
@@ -104,6 +105,7 @@ impl Resource for Camera {
                 title: scan.raw.clone(),
                 text: "scan".into(),
                 action: None,
+                ..Default::default()
             });
         }
         entries

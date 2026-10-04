@@ -138,14 +138,6 @@ pub trait Resource: Sized + 'static {
         true
     }
 
-    /// Whether `action` only annotates what the action before it in the
-    /// same event wrote (who wrote the text just typed): it joins that
-    /// step, and the next action continues the one it annotates.
-    fn annotates(action: &Self::Action) -> bool {
-        let _ = action;
-        false
-    }
-
     /// The least a participant must be allowed to do for `action` to apply:
     /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
     /// reply or a note someone who may only comment can still add. The
@@ -285,22 +277,31 @@ impl tilo_actions::Action for NoAction {
 /// A search index entry. `anchor` addresses what a hit opens (an item id);
 /// `action`, when set, is the published action a hit invokes, so choosing it
 /// goes through the same door, permissions and history as the palette.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// How a hit reads is the entry's too: the result group it is listed under
+/// (the resource's label unless `group` names another, such as "Timeline
+/// markers"), a dimmer `subtitle` line, a named `icon` (a lucide kebab name,
+/// `"star"`), and a `boost` that floats pinned or recent items over an equal
+/// match.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchEntry {
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
     pub action: Option<tilo_actions::ActionAddress>,
+    pub group: Option<String>,
+    pub subtitle: Option<String>,
+    pub icon: Option<String>,
+    pub boost: i32,
 }
 
 impl SearchEntry {
     /// An entry titled `title` whose body text is `text`.
     pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
         Self {
-            anchor: None,
             title: title.into(),
             text: text.into(),
-            action: None,
+            ..Self::default()
         }
     }
 
@@ -315,6 +316,35 @@ impl SearchEntry {
     #[must_use]
     pub fn invoking(mut self, action: tilo_actions::ActionAddress) -> Self {
         self.action = Some(action);
+        self
+    }
+
+    /// List hits under `group` rather than the resource's label.
+    #[must_use]
+    pub fn grouped(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    /// A secondary line under the title: where the item is, what it is.
+    #[must_use]
+    pub fn subtitled(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// The glyph a hit leads with, by its lucide kebab name (`"star"`).
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Rank the hit `boost` above an equal match: a nudge, never an
+    /// override of how well it matches.
+    #[must_use]
+    pub fn boosted(mut self, boost: i32) -> Self {
+        self.boost = boost;
         self
     }
 }
@@ -522,24 +552,36 @@ fn refused<R: Resource>(reason: &str) -> EncodedAction {
 
 /// The published spec of one declared or bound mutation: what the palette,
 /// agents and scripts invoke, building `R::Action` from their arguments.
+///
+/// The action is built when it is invoked, never when it is published: one
+/// that takes no arguments still mints its ids and reads the clock at the
+/// moment it is taken, so two invocations make two distinct actions.
 pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let mut spec = ActionSpec::typed(
-        decl.id,
-        decl.label.clone(),
-        decl.label.clone(),
-        ExecutionLocus::ClientLocal,
-        decl.params.clone(),
-        move |args| match build(args, origin_now_ms()) {
-            Ok(action) => {
-                encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
-            }
-            Err(reason) => refused::<R>(&reason),
-        },
-    )
-    .requiring(decl.permission)
-    // Every document action is undone by the host's undo.
-    .reversible();
+    let encoded =
+        move |args: &tilo_actions::ActionArgs| encode_built::<R>(build(args, origin_now_ms()));
+    let spec = if decl.params.is_empty() {
+        ActionSpec::deferred(
+            decl.id,
+            decl.label.clone(),
+            ExecutionLocus::ClientLocal,
+            R::ACTION_TYPE,
+            move || encoded(&tilo_actions::ActionArgs::none()),
+        )
+    } else {
+        ActionSpec::typed(
+            decl.id,
+            decl.label.clone(),
+            decl.label.clone(),
+            ExecutionLocus::ClientLocal,
+            decl.params.clone(),
+            encoded,
+        )
+    };
+    let mut spec = spec
+        .requiring(decl.permission)
+        // Every document action is undone by the host's undo.
+        .reversible();
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }

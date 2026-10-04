@@ -18,7 +18,9 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{InstallMode, InstallProfile, Source, sample_recent_sources, sample_source};
+use crate::model::{InstallMode, InstallProfile, Source};
+#[cfg(test)]
+use crate::model::{sample_recent_sources, sample_source};
 
 pub struct ImagerDoc;
 
@@ -47,12 +49,9 @@ impl ImagerDoc {
         }
     }
 
-    /// Seed a fully-populated **demo** document: a pre-selected Tilo image and
-    /// short recent-sources history. Device/release fixtures live in the local
-    /// app, never in this collaborative document. This is the single home of
-    /// the imager's sample content — used
-    /// only by `--shots`, the `--demo` flag, and tests, never by the live app
-    /// (which stays blank per [`Self::seed`]).
+    /// A sample document for tests: a pre-selected Tilo image and a short
+    /// recent-sources history.
+    #[cfg(test)]
     pub fn seed_demo(doc: &mut AutoCommit) {
         Self::seed(doc);
         Self::set_source(doc, Some(&sample_source()));

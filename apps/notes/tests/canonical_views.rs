@@ -388,8 +388,8 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
             let changes = snapshot.get_changes(&before.0);
             assert_eq!(
                 changes.len(),
-                2,
-                "the owned edit and who wrote it, one undo step"
+                1,
+                "the owned edit records who wrote it in the same change"
             );
             // History names the note's body and the edits it took.
             let labels = changes
@@ -402,7 +402,7 @@ fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action
                     context.action_label
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(labels, ["Splice text", "Set mark"]);
+            assert_eq!(labels, ["Splice text"]);
         })
         .unwrap();
     for _ in 0..3 {

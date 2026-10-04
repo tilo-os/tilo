@@ -1223,7 +1223,7 @@ impl BrowserWidget {
         };
         let settings_presentation = SettingsPresentation::from_settings(&settings);
         let search_index = crate::search_provider::BrowserSearchIndex::default();
-        search_index.sync_all(&history, &bookmarks, &downloads);
+        search_index.sync_all(&history, &downloads);
         Self {
             rect: Rect::ZERO,
             engine,
@@ -1364,7 +1364,6 @@ impl BrowserWidget {
     pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
         if state.bookmarks != self.bookmarks {
             self.bookmarks = state.bookmarks.clone();
-            self.search_index.invalidate();
             self.structure_dirty = true;
         }
         self.apply_preferences(state.preferences.clone());
@@ -4436,8 +4435,7 @@ impl BrowserWidget {
     }
 
     fn sync_search_and_suggestions(&mut self) {
-        self.search_index
-            .sync_all(&self.history, &self.bookmarks, &self.downloads);
+        self.search_index.sync_all(&self.history, &self.downloads);
         self.update_suggestions();
     }
 
@@ -10008,7 +10006,7 @@ mod tests {
                     .is_some_and(|action| action.contract.availability.is_available()),
                 "existing durable history remains clearable while recording is paused"
             );
-            w.search_index.sync(&w.history, &w.bookmarks);
+            w.search_index.sync(&w.history);
             assert!(
                 ui::search::SearchProvider::search(&w.search_index.provider(), "Sensitive")
                     .iter()

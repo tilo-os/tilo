@@ -126,22 +126,10 @@ impl Resource for VideoProject {
             .unwrap_or_default()
     }
 
+    /// Every marker, track, clip, effect and bin source, each hit revealing
+    /// it.
     fn search(project: &Project) -> Vec<SearchEntry> {
-        let clips = project.clips.iter().map(|clip| SearchEntry {
-            anchor: Some(crate::actions::clip_resource_id(clip.id)),
-            title: project
-                .media(clip.media)
-                .map_or_else(|| "Clip".to_owned(), |media| media.name.clone()),
-            text: format!("{} s", clip.start),
-            action: None,
-        });
-        let markers = project.markers.iter().map(|marker| SearchEntry {
-            anchor: Some(crate::actions::marker_resource_id(marker.id)),
-            title: marker.name.clone(),
-            text: marker.note.clone(),
-            action: None,
-        });
-        clips.chain(markers).collect()
+        crate::search::project_entries(project)
     }
 }
 

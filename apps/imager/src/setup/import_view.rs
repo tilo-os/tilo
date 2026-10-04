@@ -3102,13 +3102,6 @@ pub fn view(cx: &mut ViewCx<Imager>) -> Element {
     cx.surface(ImportApp::new())
 }
 
-#[must_use]
-pub fn app_root() -> Box<dyn Widget> {
-    let mut app = ImportApp::new();
-    app.open_live();
-    Box::new(app)
-}
-
 /// A fresh directory for disposable screenshot and test fixtures, in a place
 /// the source guard treats as user data.
 ///

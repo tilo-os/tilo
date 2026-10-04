@@ -5,26 +5,26 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use tilo_content::ContentStore;
 use ui::framework::{
-    Dispatcher, Fixture, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, Effected, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::ActionSpec;
-use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::effect::Answers;
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, register};
+use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, PhotosEffect, register};
 use crate::app::PhotosApp;
 use crate::doc::PhotosDoc;
-use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
+use crate::model::{LibraryPhoto, OpenImage, PhotoLibrary};
 
-/// Shared photograph library plus the open image (if any).
+/// The shared photograph library: every photograph, how it is filed and
+/// the edits it is shown with.
 #[derive(Clone, Debug, Default)]
 pub struct PhotosState {
     pub library: PhotoLibrary,
-    pub open: Option<OpenImage>,
-    pub edits: Edits,
 }
 
 /// The photos library resource.
@@ -45,46 +45,27 @@ impl Resource for Photos {
     fn read(doc: &Doc) -> Result<PhotosState, ModelError> {
         Ok(PhotosState {
             library: PhotosDoc::library(doc),
-            open: PhotosDoc::image(doc),
-            edits: PhotosDoc::edits(doc),
         })
     }
 
-    fn bound_actions(_state: &PhotosState) -> Vec<ActionSpec> {
-        crate::actions::library_document_actions()
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        crate::actions::library_declarations()
     }
 
     fn children(state: &PhotosState) -> Vec<tilo_actions::Resource> {
-        let mut children = Vec::new();
-        if let Some(image) = &state.open {
-            children.push(crate::actions::open_image_resource(image, &state.edits));
-        }
-        children.extend(crate::actions::library_children(&state.library));
-        children
+        crate::actions::library_children(&state.library)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::library_local_operations()
+    fn child(state: &PhotosState, id: &str) -> Option<tilo_actions::Resource> {
+        crate::actions::library_child(&state.library, id)
     }
 
+    /// Every photograph by its name and everything shared about it — the
+    /// people, tags, folder, place, capture date and analysed text — and the
+    /// timeline, its months and days, places, albums, folders and labels by
+    /// theirs. Choosing a hit opens it.
     fn search(state: &PhotosState) -> Vec<SearchEntry> {
-        state
-            .library
-            .photos
-            .iter()
-            .map(|photo| SearchEntry {
-                anchor: Some(photo.id.clone()),
-                title: photo.image.name.clone(),
-                text: photo
-                    .people
-                    .iter()
-                    .chain(photo.tags.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                action: None,
-            })
-            .collect()
+        crate::search::library_search_entries(&state.library)
     }
 }
 
@@ -103,12 +84,8 @@ impl ResourceApp for PhotosShell {
     fn view(cx: &mut ViewCx<Photos>) -> Element {
         let content = cx.content().unwrap_or_else(ContentStore::for_app);
         let app = if cx.mode().is_live() {
-            PhotosApp::new_persistent(content).launched_on(
-                cx.launch_arguments()
-                    .first()
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_dir()),
-            )
+            PhotosApp::new_persistent(content)
+                .launched_on(cx.launch_arguments().first().map(PathBuf::from))
         } else {
             PhotosApp::with_content(content)
         };
@@ -116,7 +93,7 @@ impl ResourceApp for PhotosShell {
     }
 
     /// A photograph handed to the launch is kept in the content store and
-    /// imported into the library; a folder is imported by the window
+    /// imported into the library; the window shows it, and imports a folder
     /// ([`PhotosApp::launched_on`]).
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Photos>> {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
@@ -146,13 +123,6 @@ impl ResourceApp for PhotosShell {
         .collect()
     }
 
-    fn label(state: &PhotosState) -> String {
-        match &state.open {
-            Some(image) if !image.name.is_empty() => image.name.clone(),
-            _ => "Photos".into(),
-        }
-    }
-
     fn scenarios() -> &'static [&'static str] {
         crate::sample::SCENARIOS
     }
@@ -175,7 +145,7 @@ impl ResourceApp for PhotosShell {
     }
 }
 
-impl ResourceSurface<Photos> for PhotosApp {
+impl ResourceSurface<Photos, PhotosEffect> for PhotosApp {
     fn present(&mut self, state: &Rc<PhotosState>) {
         self.adopt_resource_state(state);
     }
@@ -187,62 +157,40 @@ impl ResourceSurface<Photos> for PhotosApp {
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("opened"));
     }
-}
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Photos>>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
+    fn effect(&mut self, effect: PhotosEffect, cx: &mut EffectCx<Photos, Self>) -> EffectAnswer {
+        let job = PhotosEffect::declarations()
+            .iter()
+            .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
+        let invocation = cx.invocation().unwrap_or_default();
+        // A job's work reports under its invocation from the moment it
+        // starts, so its answer is kept before the work begins.
+        if job {
+            let reply = cx.reply();
+            self.register_reply(invocation, reply);
         }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Photos>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &PhotosAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        if let Err(error) = self.try_dispatch_with_context(doc, type_id, action, context) {
-            tracing::warn!(error = %error, type_id, "photos action dispatch failed");
+        let state = cx.live().get();
+        match self.answer_effect(effect, invocation, &state.library) {
+            Ok(Some(output)) if job => {
+                self.settle_now(invocation, Ok(output));
+                Ok(Effected::Pending)
+            }
+            Ok(Some(output)) => Ok(Effected::Done(output)),
+            Ok(None) if job => Ok(Effected::Pending),
+            Ok(None) => Ok(Effected::done()),
+            Err(error) => {
+                self.forget_reply(invocation);
+                Err(error)
+            }
         }
     }
 
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &PhotosAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => dispatcher.apply_now_with(doc, action, context),
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.search_status_row().into_iter().collect()
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.search_status_row().filter(|row| row.id() == id)
     }
 }
 
@@ -268,13 +216,23 @@ mod tests {
                 "empty" => assert!(state.library.photos.is_empty()),
                 "loading" | "error" | "opened" | "cropping" | "edited" => {
                     assert_eq!(state.library.photos.len(), 1, "{name}");
-                    assert!(state.open.is_some(), "{name} opens its photograph");
                 }
                 _ => assert!(state.library.photos.len() > 1, "{name} shows a library"),
             }
-            if matches!(name, "cropping" | "edited") {
-                assert!(!state.edits.is_identity(), "{name} shows an edit");
-            }
+            let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
+            assert_eq!(
+                opened,
+                crate::sample::opened(name),
+                "{name} opens its photograph"
+            );
+            let shown_edits = opened
+                .and_then(|id| state.library.photo(&id).map(|photo| photo.edits))
+                .unwrap_or_default();
+            assert_eq!(
+                !shown_edits.is_identity(),
+                matches!(name, "cropping" | "edited"),
+                "{name} shows an edit exactly when it stages one"
+            );
             let (in_library, has_image) = surface(&mut app, |photos| {
                 (photos.shows_library(), photos.has_image())
             });
@@ -302,10 +260,67 @@ mod tests {
             state.library.photos[0].image.content.as_deref(),
             Some(hash.as_str())
         );
-        assert_eq!(
-            state.open.map(|open| open.name).as_deref(),
-            Some("lake.png")
-        );
+        assert_eq!(state.library.photos[0].image.name, "lake.png");
+        let opened = surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned));
+        assert_eq!(opened.as_deref(), Some(state.library.photos[0].id.as_str()));
         assert!(surface(&mut app, |photos| photos.has_image()));
+    }
+
+    #[test]
+    fn effects_reach_the_window_from_the_library_and_from_its_photographs() {
+        use ui::tilo_actions::ActionAddress;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("lake.png");
+        let png = crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap();
+        std::fs::write(&path, &png).unwrap();
+        let mut app = TestApp::<PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.harness().relayout();
+        let photo = app.state().library.photos[0].clone();
+
+        app.effect(&PhotosEffect::ViewLibrary)
+            .expect("the library opens");
+        assert!(surface(&mut app, |photos| photos.shows_library()));
+
+        // A photograph's own row opens it, as the palette or an agent does.
+        let row = |id: &str, action: &str| ui::bound_dispatch::BoundActionAddress {
+            instance_id: 0,
+            address: ActionAddress::new(id, action),
+        };
+        let instance = app.harness().component_instance_id().unwrap();
+        let open = ui::bound_dispatch::BoundActionAddress {
+            instance_id: instance,
+            ..row(&photo.id, "open")
+        };
+        app.harness()
+            .invoke_bound_action(&open, &serde_json::Map::new())
+            .expect("the photograph opens from its row");
+        app.harness().relayout();
+        assert!(!surface(&mut app, |photos| photos.shows_library()));
+        assert_eq!(
+            surface(&mut app, |photos| photos.open_photo_id().map(str::to_owned)).as_deref(),
+            Some(photo.id.as_str())
+        );
+
+        // The edited pixels come out as content of their own.
+        app.invoke(
+            Invoke::apply(&PhotosAction::set(
+                &photo.id,
+                &crate::model::Edits::default().rotated_right(),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let export = ui::bound_dispatch::BoundActionAddress {
+            instance_id: instance,
+            ..row(&photo.id, crate::actions::EXPORT_EDITED_CONTENT_ACTION_ID)
+        };
+        let started = app
+            .harness()
+            .invoke_bound_action(&export, &serde_json::Map::new())
+            .expect("the photograph exports its edits");
+        let output = started.completed().expect("the export answers at once");
+        let produced = tilo_actions::content_hash(&output.resources[0]).expect("content");
+        assert_ne!(Some(produced), photo.image.content.as_deref());
     }
 }
