@@ -1197,14 +1197,17 @@ pub struct BooksApp {
     /// Framework-owned action dispatch: each on-page affordance dispatches
     /// its [`EbookAction`](crate::actions::EbookAction) through this so it
     /// replays byte-identically on peers, exactly as the Ctrl+K palette does.
-    actions: crate::resource::ActionSink,
+    dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
 }
 
 impl BooksApp {
     /// The live app: starts on an empty shelf and hydrates the reader's
     /// persisted library from the document on the first `sync`.
-    pub fn new(bundled_library: bool) -> Self {
-        let mut app = Self::with_library(Vec::new());
+    pub fn new(
+        dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
+        bundled_library: bool,
+    ) -> Self {
+        let mut app = Self::with_library(dispatch, Vec::new());
         app.library_loaded = false;
         app.view = View::Library;
         app.bundled_library = bundled_library;
@@ -1213,7 +1216,10 @@ impl BooksApp {
 }
 
 impl BooksApp {
-    pub(crate) fn with_library(library: Vec<Book>) -> Self {
+    pub(crate) fn with_library(
+        dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
+        library: Vec<Book>,
+    ) -> Self {
         // Open straight into the reader when there's a book; otherwise land
         // on the library so an empty shelf shows its guidance.
         let view = if library.is_empty() {
@@ -1233,7 +1239,7 @@ impl BooksApp {
             view,
             search_provider,
             search_revision: 1,
-            ..Self::blank_view_state()
+            ..Self::blank_view_state(dispatch)
         }
     }
 
@@ -1248,7 +1254,7 @@ impl BooksApp {
                   make it more readable and a struct literal can't be split without the \
                   inner literal setting every field itself"
     )]
-    fn blank_view_state() -> Self {
+    fn blank_view_state(dispatch: ui::framework::Dispatcher<crate::resource::Ebook>) -> Self {
         let (import_worker, import_worker_error) = match ImportWorker::new() {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(error)),
@@ -1384,7 +1390,7 @@ impl BooksApp {
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
-            actions: crate::resource::ActionSink::default(),
+            dispatch,
         }
     }
 
@@ -1644,7 +1650,7 @@ impl BooksApp {
             return;
         };
         let id = book.id.clone();
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_progress_action(
                 &id,
@@ -1800,10 +1806,7 @@ impl BooksApp {
                 .collect();
             for found in content::find_watched_books(&self.watched_folders) {
                 if !shelved.contains(&found.entry.id) {
-                    self.perform_action(
-                        doc,
-                        &crate::actions::shelve_found_book_action(&found.entry),
-                    );
+                    self.edit(doc, &crate::actions::shelve_found_book_action(&found.entry));
                 }
                 found_paths.insert(found.entry.id, found.path);
             }
@@ -1887,7 +1890,7 @@ impl BooksApp {
         self.chapter = p.chapter.min(nchap);
         self.page = p.page;
         p.opened = unix_now_ms();
-        self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
+        self.edit(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
         self.composing = None;
         self.note_composer.close();
@@ -2077,7 +2080,7 @@ impl BooksApp {
         match content::open_handed_book(&bytes, self.content.as_ref()) {
             Ok(handed) => {
                 let entry = content::handed_book_entry(&handed);
-                self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+                self.edit(doc, &crate::actions::restore_library_book_action(&entry));
                 let index = self.shelve_handed(handed);
                 self.load_error = None;
                 self.open_book_at(doc, index);
@@ -2182,7 +2185,7 @@ impl BooksApp {
             match completed.result {
                 Ok(book) => {
                     let (book, entry) = content::prepare_imported_book(&completed.path, book);
-                    self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+                    self.edit(doc, &crate::actions::restore_library_book_action(&entry));
                     let id = book.id.clone();
                     self.local_library.remember_book(&id, &completed.path);
                     self.local_library.save();
@@ -2276,7 +2279,7 @@ impl BooksApp {
     fn import_and_open_for_test(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let book = content::parse_path_detailed(path).expect("test EPUB parses");
         let (book, entry) = content::prepare_imported_book(path, book);
-        self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+        self.edit(doc, &crate::actions::restore_library_book_action(&entry));
         let id = book.id.clone();
         self.local_library.remember_book(&id, path);
         self.library_paths.insert(id.clone(), path.to_path_buf());
@@ -2550,7 +2553,7 @@ impl BooksApp {
         // "Highlight selection" dispatches — one source of truth.
         if let Some(sel) = self.sel.filter(|s| !s.is_empty()) {
             if let Some(plan) = self.resolve_highlight_plan(sel, c) {
-                self.perform_action(doc, &plan.into_action());
+                self.edit(doc, &plan.into_action());
             }
             self.clear_selection();
         }
@@ -2561,9 +2564,9 @@ impl BooksApp {
         // floats on-page near the passage rather than a separate screen.
         if let Some(draft) = self.selection_note_draft(String::new()) {
             let id = draft.id;
-            self.perform_action(doc, &draft.into_action());
+            self.edit(doc, &draft.into_action());
             self.composing = Some(id);
-            self.note_composer.open(id, self.actions.framework.as_ref());
+            self.note_composer.open(id, &self.dispatch);
         }
     }
 
@@ -2582,7 +2585,7 @@ impl BooksApp {
             .any(|a| a.id == id && a.kind == AnnoKind::Note)
         {
             self.composing = Some(id);
-            self.note_composer.open(id, self.actions.framework.as_ref());
+            self.note_composer.open(id, &self.dispatch);
             self.notes_flap.open();
             self.notes_scroll_to_annotation = Some(id);
         }
@@ -2604,7 +2607,7 @@ impl BooksApp {
             self.composing = None;
             self.note_composer.close();
         }
-        self.perform_action(doc, &crate::actions::delete_annotation_action(id));
+        self.edit(doc, &crate::actions::delete_annotation_action(id));
     }
 
     fn on_open_comments(&mut self, group: Uuid) {
@@ -2622,7 +2625,7 @@ impl BooksApp {
     }
 
     fn on_delete_highlight(&mut self, group: Uuid, doc: &mut AutoCommit) {
-        self.perform_action(doc, &crate::actions::delete_highlight_action(group));
+        self.edit(doc, &crate::actions::delete_highlight_action(group));
         if self.comment_overlay.group() == Some(group) {
             self.comment_overlay.close();
         }
@@ -2659,10 +2662,9 @@ impl BooksApp {
                 },
             }
             .into_action();
-            self.perform_action(doc, &action);
+            self.edit(doc, &action);
             self.comment_overlay.open(group);
-            self.comment_overlay
-                .begin_editing(id, self.actions.framework.as_ref());
+            self.comment_overlay.begin_editing(id, &self.dispatch);
         }
     }
 
@@ -2672,8 +2674,7 @@ impl BooksApp {
             .iter()
             .any(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
         {
-            self.comment_overlay
-                .begin_editing(id, self.actions.framework.as_ref());
+            self.comment_overlay.begin_editing(id, &self.dispatch);
         }
     }
 
@@ -2681,7 +2682,7 @@ impl BooksApp {
         if self.comment_overlay.editing_id() == Some(id) {
             self.comment_overlay.finish_editing();
         }
-        self.perform_action(doc, &crate::actions::delete_annotation_action(id));
+        self.edit(doc, &crate::actions::delete_annotation_action(id));
     }
 
     fn begin_share_book(&mut self, id: &str) -> Result<(), String> {
@@ -2737,7 +2738,7 @@ impl BooksApp {
             return;
         };
         let (book, entry) = content::prepare_imported_book(&pending.path, pending.book);
-        self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+        self.edit(doc, &crate::actions::restore_library_book_action(&entry));
         if book.id == pending.book_id {
             self.local_library
                 .remember_book(&pending.book_id, &pending.path);
@@ -2790,7 +2791,7 @@ impl BooksApp {
         self.local_library.forget_book(&removed.id);
         self.local_library.save();
         self.cover_cache.remove(&removed.id);
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::remove_library_book_action(&removed.id),
         );
@@ -2862,7 +2863,7 @@ impl BooksApp {
             None
         };
         if let Some(scheme) = changed {
-            self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+            self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
         }
         if now_disabled && self.settings.scheme_id == id {
             self.bump_setting(doc, |st| st.scheme_id = String::new());
@@ -2884,14 +2885,14 @@ impl BooksApp {
                 .position(|s| s.id == id)
                 .map_or(sc.len(), |p| p + 1);
             sc.insert(pos, dup.clone());
-            self.perform_action(doc, &crate::actions::upsert_color_scheme_action(dup));
+            self.edit(doc, &crate::actions::upsert_color_scheme_action(dup));
             self.editing_scheme = Some(new_id);
         }
     }
 
     fn on_delete_scheme(&mut self, id: &str, doc: &mut AutoCommit) {
         if self.schemes.iter().any(|s| s.id == id && !s.builtin) {
-            self.perform_action(doc, &crate::actions::delete_color_scheme_action(id));
+            self.edit(doc, &crate::actions::delete_color_scheme_action(id));
         }
         if self.editing_scheme.as_deref() == Some(id) {
             self.editing_scheme = None;
@@ -2955,24 +2956,24 @@ impl BooksApp {
     }
 
     fn on_set_default_font(&mut self, id: &str, doc: &mut AutoCommit) {
-        self.perform_action(doc, &crate::actions::set_default_font_action(id));
+        self.edit(doc, &crate::actions::set_default_font_action(id));
         self.default_font_menu = false;
     }
 
-    fn on_toggle_font_shown(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_toggle_font_shown(&self, id: &str, doc: &mut AutoCommit) {
         if let Some(mut font) = self.fonts.iter().find(|entry| entry.id == id).cloned() {
             font.shown = !font.shown;
-            self.perform_action(doc, &crate::actions::upsert_font_action(font));
+            self.edit(doc, &crate::actions::upsert_font_action(font));
         }
     }
 
     fn on_remove_font(&mut self, id: &str, doc: &mut AutoCommit) {
-        self.perform_action(doc, &crate::actions::delete_font_action(id));
+        self.edit(doc, &crate::actions::delete_font_action(id));
         if self.settings.font_id == id {
             self.bump_setting(doc, |s| s.font_id = String::new());
         }
         if self.default_font_id == id {
-            self.perform_action(doc, &crate::actions::set_default_font_action(""));
+            self.edit(doc, &crate::actions::set_default_font_action(""));
         }
     }
 
@@ -2990,7 +2991,7 @@ impl BooksApp {
             let ids: Vec<String> = f.iter().map(|e| e.id.clone()).collect();
             let id = Self::fresh_id("font", &ids);
             let font = FontEntry::new(&id, FontKind::Named(family.to_string()), family, 1.0, true);
-            self.perform_action(doc, &crate::actions::upsert_font_action(font));
+            self.edit(doc, &crate::actions::upsert_font_action(font));
         }
         self.font_picker = false;
     }
@@ -3017,7 +3018,7 @@ impl BooksApp {
         let mut p = before;
         p.sort = sort;
         self.library_prefs = p;
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_library_preferences_action(before, p),
         );
@@ -3029,7 +3030,7 @@ impl BooksApp {
         let mut p = before;
         p.hide_read = !p.hide_read;
         self.library_prefs = p;
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_library_preferences_action(before, p),
         );
@@ -3067,7 +3068,7 @@ impl BooksApp {
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
                 let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), edit.rgb);
-                self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+                self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 self.editing_scheme = Some(new_id.clone());
                 self.bump_setting(doc, |st| st.scheme_id = new_id);
             }
@@ -3076,7 +3077,7 @@ impl BooksApp {
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
                     s.set_slot(slot, edit.rgb);
                     let scheme = s.clone();
-                    self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+                    self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 }
             }
         }
@@ -3114,7 +3115,7 @@ impl BooksApp {
 
     /// Write a committed rename to the CRDT. A blank name is ignored (keeps the
     /// old one).
-    fn apply_rename(&mut self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
+    fn apply_rename(&self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
         let name = name.trim();
         if name.is_empty() {
             return;
@@ -3125,7 +3126,7 @@ impl BooksApp {
                 if let Some(e) = f.iter_mut().find(|e| e.id == id) {
                     e.name = name.to_string();
                     let font = e.clone();
-                    self.perform_action(doc, &crate::actions::upsert_font_action(font));
+                    self.edit(doc, &crate::actions::upsert_font_action(font));
                 }
             }
             RenameTarget::Scheme(id) => {
@@ -3133,7 +3134,7 @@ impl BooksApp {
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
                     s.name = name.to_string();
                     let scheme = s.clone();
-                    self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+                    self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 }
             }
         }
@@ -3242,7 +3243,7 @@ impl BooksApp {
         let before = BooksDoc::read_settings(doc);
         let mut s = before.clone();
         f(&mut s);
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_reading_settings_action(before, s.clone()),
         );
@@ -3397,7 +3398,7 @@ impl BooksApp {
     /// the mark's length (clamped to the target paragraph). Only a
     /// single-block highlight re-anchors — a multi-block one has no single
     /// paragraph to land on, so its marker opens comments instead.
-    fn reanchor_highlight(&mut self, group: Uuid, drop: Point, doc: &mut AutoCommit) -> bool {
+    fn reanchor_highlight(&self, group: Uuid, drop: Point, doc: &mut AutoCommit) -> bool {
         let Some(target) = self.hit_doc_pos(drop) else {
             return false;
         };
@@ -3423,7 +3424,7 @@ impl BooksApp {
         }
         let span = (piece.end.saturating_sub(piece.start)).clamp(1, tb.char_len);
         let excerpt: String = tb.text.chars().take(span.min(120)).collect();
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::move_annotation_action(
                 piece.id,
@@ -3465,13 +3466,13 @@ impl BooksApp {
             .map(|a| a.group)
     }
 
-    /// Dispatch one Books [`EbookAction`](crate::actions::EbookAction) — the
-    /// single mutation path shared with the Ctrl+K palette, via the
-    /// framework's [`ActionHost`](ui::ActionHost).
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
-        self.actions.dispatch_with_context(
+    /// Apply one Books [`EbookAction`](crate::actions::EbookAction) now,
+    /// through the library's dispatcher: the one door every control, the
+    /// palette and agents edit the library through. A refused edit changes
+    /// nothing, and the dispatcher says why.
+    fn edit(&self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
+        let _ = self.dispatch.apply_now_with(
             doc,
-            crate::actions::EBOOK_ACTION_TYPE,
             action,
             tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );
@@ -3526,7 +3527,6 @@ impl BooksApp {
         self.layout = None;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     /// Read what the host gives the reader: whether the window is live, the
     /// content store, the sample shelf of a screenshot, and this device's
     /// file grants and watched folders.
@@ -3539,29 +3539,6 @@ impl BooksApp {
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);
         }
-    }
-
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Ebook>,
-    ) {
-        self.note_composer.attach(&dispatcher);
-        self.comment_overlay.attach(&dispatcher);
-        self.actions.attach(dispatcher);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
     }
 
     /// Test-only: plant a non-empty text selection so hosted reading extras
@@ -3585,15 +3562,6 @@ impl BooksApp {
             },
         });
         self.selected_block = Some(start_block);
-    }
-
-    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
-    /// affordance dispatched: a control and its Ctrl+K entry must build the
-    /// identical action.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
     }
 
     /// The plain text covered by the current selection, across blocks (truncated
@@ -3939,9 +3907,9 @@ impl BooksApp {
         true
     }
 
-    fn toggle_bookmark(&mut self, doc: &mut AutoCommit) {
+    fn toggle_bookmark(&self, doc: &mut AutoCommit) {
         let block = self.page_top_block;
-        self.perform_action(doc, &self.bookmark_plan(block).into_action());
+        self.edit(doc, &self.bookmark_plan(block).into_action());
     }
 
     /// Resolve the bookmark's absolute post-action state at authoring time.
@@ -4005,7 +3973,7 @@ impl BooksApp {
         else {
             return false;
         };
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::finalize_annotation_action(id, created.max(unix_now_ms())),
         );
@@ -4526,7 +4494,6 @@ impl Continuable for BooksApp {
 impl Widget for BooksApp {
     ui::provides!(
         dyn ui::widget::Continuable,
-        dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
     );
@@ -5244,7 +5211,7 @@ impl Widget for BooksApp {
                         if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                             font.size_mult = value as f32;
                             let font = font.clone();
-                            self.perform_action(doc, &crate::actions::upsert_font_action(font));
+                            self.edit(doc, &crate::actions::upsert_font_action(font));
                         }
                     }
                 }
@@ -5381,56 +5348,13 @@ impl ui::search::capability::SearchSource for BooksApp {
     }
 }
 
-impl BooksApp {
-    fn overlay_open_book_actions(
-        resource: &mut tilo_actions::Resource,
-        book_id: &str,
-        ctx: &crate::actions::BookResourceCtx,
-    ) {
-        if resource.id.as_str() == book_id {
-            *resource = crate::actions::current_book_actions(resource.clone(), ctx);
-            return;
-        }
-        for child in &mut resource.children {
-            Self::overlay_open_book_actions(child, book_id, ctx);
-        }
-    }
-}
-
 impl ui::resources::PublishesResources for BooksApp {
-    /// Standalone / `--shots` / unit tests publish the library roots. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
-    /// library Document door — keep only the live reading-selection extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let overlay_open_book = |root: &mut tilo_actions::Resource| {
-            let Some(ctx) = self.current_book_resource_context() else {
-                return;
-            };
-            let book_id = format!("ebook.book:{}", ctx.book_id);
-            Self::overlay_open_book_actions(root, &book_id, &ctx);
-            root.children
-                .extend(crate::actions::live_reading_resources(&ctx));
-        };
-
-        if self.actions.is_hosted() {
-            // Hosted: framework owns the library door; surface only exports
-            // reading-selection extras. Open-book View overlays stay on
-            // `resource()` lookup so DFS can still resolve without republishing
-            // ebook.book beside ResourceRoot.
-            let Some(ctx) = self.current_book_resource_context() else {
-                return Vec::new();
-            };
-            return crate::actions::live_reading_resources(&ctx);
-        }
-        let state =
-            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Ebook>(
-            crate::resource::LIBRARY_RESOURCE_ID,
-            "Books library",
-            &state,
-        );
-        overlay_open_book(&mut root);
-        vec![root]
+    /// [`tilo_resource::publish`] owns the library's door; the reader adds
+    /// only where it is in the open book.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.current_book_resource_context()
+            .map(|ctx| crate::actions::live_reading_resources(&ctx))
+            .unwrap_or_default()
     }
     fn action_directory_resource_page(
         &self,
@@ -5443,24 +5367,6 @@ impl ui::resources::PublishesResources for BooksApp {
             [offset] => usize::from(*offset),
             _ => return None,
         };
-        if self.actions.is_hosted() {
-            let resources = self.resources(doc);
-            let total = resources.len();
-            if offset > total {
-                return None;
-            }
-            let take = max_results.min(total.saturating_sub(offset));
-            let next_offset = offset.saturating_add(take);
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources: resources.into_iter().skip(offset).take(take).collect(),
-                next_cursor: if next_offset < total {
-                    vec![next_offset as u8]
-                } else {
-                    Vec::new()
-                },
-                exhausted: next_offset >= total,
-            });
-        }
         let resources = self.resources(doc);
         let total = resources.len();
         if offset > total {
@@ -5483,18 +5389,10 @@ impl ui::resources::PublishesResources for BooksApp {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         // The framework root already owns the library door.
-        if self.is_hosted() && id == "ebook.library" {
+        if id == "ebook.library" {
             return None;
         }
         self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for BooksApp {
-    /// Hand the host the heads captured before an on-page affordance
-    /// dispatched its annotation action. Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
@@ -5696,7 +5594,7 @@ impl BooksApp {
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                         font.size_mult = value as f32;
                         let font = font.clone();
-                        self.perform_action(ctx.state, &crate::actions::upsert_font_action(font));
+                        self.edit(ctx.state, &crate::actions::upsert_font_action(font));
                     }
                 }
             }
