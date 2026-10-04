@@ -3,24 +3,26 @@
 //! and scanners are live rows the surface publishes.
 //!
 //! Document mutations (mode, lens, settings toggles) live on this resource via
-//! [`Resource::bound_actions`] / [`Resource::children`]. Screen reveals are
-//! Views ([`Resource::local_operations`]). Shutter, record, device chooser,
-//! code-scanner import and document-scanner Effects ride the surface's
+//! [`Resource::bound_actions`] / [`Resource::children`]. Everything else is
+//! the surface's [`CameraEffect`] vocabulary: the screen reveals are offered
+//! on the camera, while shutter, record, camera chooser, code-scanner import
+//! and document-scanner effects ride the surface's
 //! [`ResourceSurface::live_rows`].
 
 use std::rc::Rc;
 
 use automerge::ROOT;
 use ui::framework::{
-    Command, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    Command, EffectAnswer, EffectCx, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
+    SurfaceCx, ViewCx,
 };
 use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
 use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    CAMERA_ACTION_TYPE, CameraAction, bound_mode_facing_actions, capture_item_from_shared,
-    publish_document_children, screen_view_specs,
+    CAMERA_ACTION_TYPE, CameraAction, CameraEffect, bound_mode_facing_actions,
+    capture_item_from_shared, publish_document_children,
 };
 use crate::app::CameraApp;
 use crate::doc::{self, SharedCapture};
@@ -84,13 +86,6 @@ impl Resource for Camera {
     fn children(state: &CameraState) -> Vec<PublishedResource> {
         let recent = state.recent.as_ref().map(capture_item_from_shared);
         publish_document_children(&state.settings, recent.as_ref(), &state.scans)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        screen_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     fn search(state: &CameraState) -> Vec<SearchEntry> {
@@ -236,7 +231,7 @@ fn emit_photos(dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-impl ResourceSurface<Camera> for CameraApp {
+impl ResourceSurface<Camera, CameraEffect> for CameraApp {
     /// The surface reads the record in `sync`, from the document it is
     /// handed: the live one, or a past version in History.
     fn present(&mut self, _state: &Rc<CameraState>) {
@@ -256,29 +251,13 @@ impl ResourceSurface<Camera> for CameraApp {
         self.stage_scene(scenario);
     }
 
+    fn effect(&mut self, effect: CameraEffect, cx: &mut EffectCx<Camera, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
     fn live_rows(&self) -> Vec<LiveRow> {
-        crate::actions::live_effect_extras(&self.camera_resource_ctx())
-            .into_iter()
-            .map(live_row)
-            .collect()
+        crate::actions::live_rows(&self.camera_resource_ctx())
     }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_rows().into_iter().find(|row| row.id() == id)
-    }
-}
-
-/// A published effect root as a live row.
-fn live_row(resource: PublishedResource) -> LiveRow {
-    let row = resource.actions.into_iter().fold(
-        LiveRow::new(resource.id.0, resource.kind, resource.label),
-        LiveRow::operation,
-    );
-    resource
-        .children
-        .into_iter()
-        .map(live_row)
-        .fold(row, LiveRow::row)
 }
 
 #[cfg(test)]
@@ -300,13 +279,6 @@ mod tests {
                 "{id} must be on the framework resource"
             );
         }
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id.starts_with("open-")),
-            "screen reveal Views stay on the published door"
-        );
         let settings = published
             .children
             .iter()
