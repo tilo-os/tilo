@@ -22,11 +22,15 @@
 //! runtime's package repositories and nothing else.
 
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 
 use crate::network::Network;
 
@@ -99,6 +103,9 @@ pub enum SandboxError {
     /// The build's network could not be set up; the build did not run.
     #[error("the build's network could not be set up, so it did not run: {0}")]
     Egress(String),
+    /// This platform cannot enforce the requested gated network.
+    #[error("gated build networking is unsupported on this platform; the build did not run")]
+    UnsupportedGatedNetwork,
 }
 
 /// Captured result of one command inside the sandbox.
@@ -349,6 +356,9 @@ impl BuildSandbox {
     ) -> Result<Ran, SandboxError> {
         tracing::debug!(?argv, runtime = %self.runtime.display(), "build sandbox");
         let out = match network {
+            #[cfg(not(target_os = "linux"))]
+            Network::Gated { .. } => return Err(SandboxError::UnsupportedGatedNetwork),
+            #[cfg(target_os = "linux")]
             Network::Gated { policy, options } => self.run_gated(argv, policy, options, timeout),
             Network::Offline | Network::Host => {
                 // Name resolution for the caller's network; the mount point
@@ -392,6 +402,7 @@ impl BuildSandbox {
     /// namespace — stub, filter, then `pasta` — and only then is bwrap let
     /// go. Any failure before that kills bwrap: the program never runs
     /// with a network the policy didn't shape.
+    #[cfg(target_os = "linux")]
     fn run_gated(
         &self,
         argv: &[&str],
@@ -554,6 +565,7 @@ impl BuildSandbox {
 }
 
 /// A close-on-exec pipe: `(read, write)`.
+#[cfg(target_os = "linux")]
 fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds: [RawFd; 2] = [-1, -1];
     // SAFETY: `fds` is a two-element array, as pipe2 requires.
@@ -564,12 +576,14 @@ fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
 }
 
+#[cfg(target_os = "linux")]
 enum ChildPid {
     Exited(Result<bounded_command::Output, bounded_command::Error>),
     Failed(String),
 }
 
 /// Read `"child-pid": N` from bwrap's `--info-fd`, or what happened instead.
+#[cfg(target_os = "linux")]
 fn child_pid(info: &OwnedFd, child: &mut bounded_command::AsyncCommand) -> Result<u32, ChildPid> {
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(60))
@@ -604,6 +618,7 @@ fn child_pid(info: &OwnedFd, child: &mut bounded_command::AsyncCommand) -> Resul
 }
 
 /// bwrap's info is JSON: `{ "child-pid": 1234 }`.
+#[cfg(any(target_os = "linux", test))]
 fn parse_child_pid(info: &[u8]) -> Option<u32> {
     let text = std::str::from_utf8(info).ok()?;
     let rest = text.split_once("\"child-pid\"")?.1;
@@ -687,6 +702,45 @@ pub fn remove_tree(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn gated_builds_are_rejected_before_spawning_on_unsupported_platforms() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use tilo_egress::{EgressOptions, EgressPolicy};
+
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join("runtime");
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir_all(runtime.join("usr")).unwrap();
+        let bwrap = root.path().join("bwrap");
+        // Any attempted spawn, including a host-network fallback, leaves a marker.
+        std::fs::write(
+            &bwrap,
+            "#!/bin/sh\nprintf started > \"$0.started\"\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        for policy in [
+            EgressPolicy::none(),
+            EgressPolicy::from_grants(["packages.example.test"]),
+            EgressPolicy::Any,
+        ] {
+            let sandbox = BuildSandbox::create(&runtime, &scratch)
+                .unwrap()
+                .with_identity(Identity::CallerOnly)
+                .with_bwrap(bwrap.clone())
+                .with_network(Network::Gated {
+                    policy,
+                    options: EgressOptions::from_host(&runtime),
+                });
+            let error = sandbox.run(&["true"], Duration::from_secs(1)).unwrap_err();
+            assert!(matches!(error, SandboxError::UnsupportedGatedNetwork));
+            assert!(!root.path().join("bwrap.started").exists());
+            assert!(!scratch.join("resolv.conf").exists());
+        }
+    }
 
     #[test]
     fn the_child_pid_is_read_once_it_is_complete() {
