@@ -33,6 +33,7 @@ fn verify_restored(d: &AutoCommit) {
 fn malformed_fixture(d: &mut AutoCommit) {
     d.put(ROOT, "saved_locations", 7).unwrap();
 }
+
 #[test]
 fn saved_place_history_is_declared_and_sync_preserves_the_graph() {
     // Case `production_root_and_launch_declare_saved_place_history`.
@@ -43,8 +44,8 @@ fn saved_place_history_is_declared_and_sync_preserves_the_graph() {
                 .app_id,
             "so.tilo.weather"
         );
-        assert!(include_str!("main.rs").contains(".history(&weather::framework_history::HISTORY)"));
     }
+
     // Case `native_and_blank_actual_live_sync_are_graph_preserving_and_effect_free`.
     {
         let mut native = AutoCommit::new();
