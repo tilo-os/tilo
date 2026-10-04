@@ -380,6 +380,17 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
+    /// The person's workspace directory as one of their devices holds it:
+    /// a device-signed Automerge snapshot of which workspaces the person
+    /// has and which room carries each. Travels only on the person's own
+    /// topic; the receiver merges it only when the authenticated transport
+    /// certificate and the update's author are devices of
+    /// `user_public_key`. Appended to preserve every existing Postcard
+    /// discriminant.
+    PersonalWorkspaces {
+        user_public_key: [u8; 32],
+        update: Box<tilo_user_identity::DirectoryUpdate>,
+    },
 }
 
 #[cfg(test)]
@@ -663,6 +674,18 @@ mod tests {
                 },
             ),
             (
+                "personal workspaces",
+                NeighbourMsg::PersonalWorkspaces {
+                    user_public_key: [7; 32],
+                    update: Box::new(tilo_user_identity::DirectoryUpdate {
+                        author_device_public_key: [2; 32],
+                        authored_at_ns: 10,
+                        delta: vec![1, 2, 3],
+                        signature: [3; 64],
+                    }),
+                },
+            ),
+            (
                 "remote action",
                 NeighbourMsg::RemoteAction {
                     frame: b"{}".to_vec(),
@@ -775,10 +798,11 @@ mod tests {
             NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
         }
     }
 
-    const VARIANT_COUNT: usize = 25;
+    const VARIANT_COUNT: usize = 26;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -879,6 +903,16 @@ mod tests {
             concat!(
                 "1307070707070707070707070707070707070707070707070707070707070707",
                 "07ef9baf0503010203",
+            ),
+        ),
+        (
+            "personal workspaces",
+            concat!(
+                "1907070707070707070707070707070707070707070707070707070707070707",
+                "0702020202020202020202020202020202020202020202020202020202020202",
+                "020a030102034003030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303",
             ),
         ),
         ("remote action", "14027b7d"),
