@@ -81,6 +81,12 @@ pub enum NeighbourMsg {
         /// the authenticated transport identity to that invite's role.
         #[serde(default)]
         invite_id: Option<[u8; 32]>,
+        /// Fresh per request. Gossip transports deduplicate by content, so
+        /// without it a repeated anti-entropy request for unchanged heads
+        /// is discarded as already seen and a room that missed its first
+        /// answer never catches up.
+        #[serde(default)]
+        nonce: u64,
     },
     /// Response: a batch of opaque Automerge change blobs for `room`. The blobs
     /// carry the room identity too; the receiver checks the two agree before
@@ -501,6 +507,7 @@ mod tests {
                     since: vec![1, 2, 3],
                     room: ROOM.into(),
                     invite_id: Some([9; 32]),
+                    nonce: 7,
                 },
             ),
             (
@@ -781,7 +788,7 @@ mod tests {
             concat!(
                 "00030102032436623366396131302d303030302d343030302d383030302d3030",
                 "3030303030303030306301090909090909090909090909090909090909090909",
-                "0909090909090909090909",
+                "090909090909090909090907",
             ),
         ),
         (
