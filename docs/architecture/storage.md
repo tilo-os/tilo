@@ -179,6 +179,7 @@ format, metadata persistence and transfer engine underneath it.
 | **Residency** | Per file: `Placeholder`, `Partial`, `Resident`, `Pinned`, `Dirty`, `LocalOnly`. | Replaces explicit-only eviction ([§12](#12-caching-residency-and-prefetch)). |
 | **Lease** | A time-bounded, fenced single-writer grant on one record, issued by a lease authority. | New ([§11.2](#112-leases)). |
 | **Settings** | Person-, device- or person-in-room-scoped typed values (`Settings<T>`). They follow the person or the device, never the room's members. | Formalises the split in `rooms.md`, "Not all app state is a record". |
+| **Person room, person records** | The person's own room: its id is derived from their root key, its members are by that derivation exactly the devices the root certified, and it has no roster to invite anyone into. A person record is an app's record in it — data of the person's own (watch history, learned words) that follows them across their devices and never reaches a collaborator ([§13.9](#139-person-records)). | New. Replaces app state squeezed into personal settings sections. |
 
 **Content versus settings.** Content records are room-scoped, empty in a new
 room, shared with room members and versioned in full. Settings are
@@ -1607,7 +1608,10 @@ Framework views and surfaces get settings from their context
 them, and the app's files and secrets from the same place. A secret that
 belongs to a document item (a profile's password, a connection's passphrase)
 is `SecretStore::item(purpose, id)`: the document names the item, the secret
-stays in the device's store. PersonInRoom has no implementation yet.
+stays in the device's store. PersonInRoom has no implementation yet. State of
+the person's own that is data rather than a preference — it grows, has
+history, is undone — is not a setting but a person record
+([§13.9](#139-person-records)).
 
 **The records are the source.** Every reader — the compositor, the shell,
 apps — reads one document through `settings_store::load`, which a host can
@@ -1673,6 +1677,89 @@ are single-writer. Whether an app can opt into sharing is Q13. [R8]
   one document.
 
 ---
+
+### 13.9 Person records
+
+Some of an app's state is the person's own and is still data, not a
+preference: what they watched, the pages they visited, the words they taught
+the keyboard, where they stopped reading, their signature. It grows without a
+useful bound, it has history, and an edit to it is undone like any other.
+Settings are the wrong home for it — a personal section roams as one value of
+at most 64 KiB, last writer wins, with no history — and a shared room is the
+wrong home too: a collaborator must never see what someone watched. It is a
+record, in the **person's own room**.
+
+**The person's own room is a room with no roster.** Its id is derived from
+the person's root public key (`collab_types::person_room`, a version-8 uuid
+of a domain-separated SHA-256). Every device of the person derives the same
+id without asking anyone, and the room's members are, by that derivation,
+exactly the devices the root certified. Nobody can be invited into it,
+because there is no list to add them to. This is the "your own room is not
+special" of `rooms.md` taken literally: the same kind of room, whose one
+member is the person — with membership by derivation instead of by list, so
+that sharing it is not an operation that exists.
+
+**Each point that admits room traffic enforces it.**
+
+- *Broker.* A join naming the person room is admitted, as owner, only from a
+  device certified by the root the room is derived from
+  (`admit_verified_join_at`); a join naming anyone else's person room fails
+  like a join to a room the session does not host.
+- *Network.* A document of the local person's room is never published on a
+  room topic, to a workspace host or to a collaborator. It travels over the
+  personal fabric only, to the person's other devices on their authenticated
+  same-root routes (`PersonalFabricPayload::Document`), and an incoming one is
+  accepted only from such a route, signed by that device. A person-room
+  document arriving any other way is dropped, presence on it is never sent,
+  and the room can never become a workspace: an invite, an enrollment or a
+  continuation naming it is refused (`is_local_person_room`).
+- *History.* An artifact's scrollback is bound to the room its ops were
+  validated in, durably beside its log, and answered only on that room's own
+  topic — never for the person room, also for history stored by an earlier
+  session.
+
+**A person record is an ordinary record, opened beside the one a window
+shows.** One record per app and resource kind
+(`RecordId::derived(kind, room_default)`), the same on every device, created
+with the resource's genesis (`Resource::initialize`), so two devices that
+create it before they meet converge on one record. Its storage is one
+directory per app on the device, `<data home>/tilo-person/<package>`, which
+the launcher binds into the app's launches in every room at
+`/run/tilo/person` (`TILO_PERSON_DIR`): the same app open in two rooms reads
+one record. When another window of the app already holds the stored record,
+a window opens a replica that stores nothing and converges with it over the
+record's route. Without a root identity there is no person room; the records
+are kept on the device in a scope no route can name.
+
+**The framework opens it.** A view or surface asks for the person's record of
+a resource type — `cx.person::<WatchHistory>()` — and gets a
+`PersonRecord<P>`: its state, kept current when another window or device
+changes it, and `apply` / `invoke` of the resource's own actions through the
+replayable executor, attributed to the person, written into the record's
+history, an undo step of theirs for content (`undo` / `redo`), none for
+housekeeping or content from outside. The runtime syncs it as it syncs every
+record a window keeps: the root reports it from `Widget::record_owners`, and
+the record's route — `(app, person room, record)` — is joined, published to
+and merged from like any other, in whatever room the window is.
+
+**Devices that were apart catch up.** Each device publishes the record whole
+when it first opens it. A device that receives a whole record and is still
+ahead of it answers with its own, so two devices that meet converge in one
+round trip. When one of the person's devices reappears on an authenticated
+route, its peers ask their local windows holding person records to publish
+them whole, so what it missed while away reaches it.
+
+**Known limits.**
+
+- A device of the same root admitted with a foreign-device certificate is
+  admitted to the person room as owner, without the foreign-device role cap.
+- Durable workspace hosts do not hold person records: catch-up needs two of
+  the person's devices online at once. A person record is not yet one of the
+  records a person's always-on device or hosted server keeps for them.
+- Person records travel as whole personal-fabric frames (at most 4 MiB, with
+  short send timeouts): a record near that size should become a collection.
+- A process hosting several identities routes only its own root's person
+  room.
 
 ## 14. Permissions
 
