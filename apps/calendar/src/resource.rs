@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
+use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
@@ -18,8 +18,7 @@ use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
-    NoteOwner, ProjectData, TaskData,
+    CALENDAR_ACTION_TYPE, CalendarAction, EventData, NoteOwner, ProjectData, TaskData,
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
@@ -190,6 +189,36 @@ pub enum CalendarEffect {
         #[param("Whether its events are shown")]
         visible: bool,
     },
+    /// Show calendar view
+    #[effect(view, idempotent)]
+    ShowView {
+        #[param("Calendar view to show", choices = ["month", "week", "day", "agenda"])]
+        view: String,
+    },
+    /// Show all calendars
+    #[effect(view, idempotent)]
+    ShowAllCalendars,
+    /// Show month
+    #[effect(view, idempotent)]
+    ShowMonth,
+    /// Show week
+    #[effect(view, idempotent)]
+    ShowWeek,
+    /// Show day
+    #[effect(view, idempotent)]
+    ShowDay,
+    /// Show agenda
+    #[effect(view, idempotent)]
+    ShowAgenda,
+    /// Open
+    ///
+    /// Shows an event, one occurrence of it, a task, a project's tasks or
+    /// one calendar's events.
+    #[effect(view, row, idempotent)]
+    Open {
+        #[param("The event, occurrence, task, project or calendar's resource id")]
+        item: String,
+    },
 }
 
 /// Framework app: the calendar widget is the surface over [`Calendar`].
@@ -321,60 +350,6 @@ impl Resource for Calendar {
                 },
             ),
         ]
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        let mut ops = vec![
-            ActionSpec::typed_operation(
-                "show-view",
-                "Show calendar view",
-                "month / week / day / agenda",
-                OperationKind::View,
-                CALENDAR_OPERATION_TYPE,
-                vec![
-                    ActionParam::required("view", ParamType::Text, "Calendar view to show")
-                        .with_choices(["month", "week", "day", "agenda"]),
-                ],
-                |args| {
-                    let operation = match args.text("view").unwrap_or("month") {
-                        "week" => CalendarOperation::ShowWeek,
-                        "day" => CalendarOperation::ShowDay,
-                        "agenda" => CalendarOperation::ShowAgenda,
-                        _ => CalendarOperation::ShowMonth,
-                    };
-                    EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, &operation)
-                        .unwrap_or_else(|_| EncodedAction {
-                            type_id: CALENDAR_OPERATION_TYPE.to_string(),
-                            payload: Vec::new(),
-                        })
-                },
-            )
-            .retry_policy(RetryPolicy::Idempotent),
-        ];
-        for (id, label, operation) in [
-            (
-                "show-all-calendars",
-                "Show all calendars",
-                CalendarOperation::ShowAllCalendars,
-            ),
-            ("show-month", "Show month", CalendarOperation::ShowMonth),
-            ("show-week", "Show week", CalendarOperation::ShowWeek),
-            ("show-day", "Show day", CalendarOperation::ShowDay),
-            ("show-agenda", "Show agenda", CalendarOperation::ShowAgenda),
-        ] {
-            ops.push(
-                ActionSpec::operation(
-                    id,
-                    label,
-                    OperationKind::View,
-                    CALENDAR_OPERATION_TYPE,
-                    &operation,
-                )
-                .expect("CalendarOperation encodes")
-                .retry_policy(RetryPolicy::Idempotent),
-            );
-        }
-        ops
     }
 
     /// A page of the calendar's projects, events and tasks with every edit
@@ -900,10 +875,15 @@ mod host_undo_tests {
             "set-color",
             "calendar.collection",
             "set-visibility",
-            "show-week",
         ] {
             assert!(surface.contains(needle), "missing {needle} in {surface}");
         }
+        assert!(
+            <CalendarEffect as ui::tilo_resource::Effect>::specs()
+                .iter()
+                .any(|spec| spec.id == "show-week"),
+            "the views are the calendar's effects, offered beside its edits"
+        );
         let event = app.state().events[0].id;
         app.call_on(
             &crate::actions::event_resource_id(event),

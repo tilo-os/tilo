@@ -27,11 +27,12 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use tilo_document::RichTextAction;
+use ui::tilo_resource::Effect as _;
 use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, RetryPolicy,
+    ExecutionLocus,
 };
 
 use crate::doc::CalDoc;
@@ -42,7 +43,6 @@ use crate::model::{
 
 /// Registry `type_id` for every calendar action.
 pub const CALENDAR_ACTION_TYPE: &str = "calendar.action";
-pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
 
 /// A task delete action carries every child id it will tombstone, so cap that
 /// payload independently from directory paging. Larger child sets remain
@@ -112,83 +112,27 @@ pub fn open_calendar_address(id: &str) -> ActionAddress {
     ActionAddress::new(calendar_resource_id(id), "open")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CalendarOperation {
-    OpenEvent {
-        id: String,
-    },
-    OpenOccurrence {
-        event_id: String,
-        original_date: String,
-    },
-    OpenTask {
-        id: String,
-    },
-    OpenProject {
-        id: String,
-    },
-    OpenCalendar {
-        id: String,
-    },
-    ShowAllCalendars,
-    ShowMonth,
-    ShowWeek,
-    ShowDay,
-    ShowAgenda,
-}
-
-pub(crate) fn calendar_operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    operation: &CalendarOperation,
-) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, operation)
-        .unwrap_or_else(|_| {
-            ActionSpec::immediate_encoded(
-                id,
-                label,
-                ExecutionLocus::ClientLocal,
-                encode_operation(operation),
-            )
-        });
-    spec.retry_policy(RetryPolicy::Idempotent)
+/// Opening an item — an event, an occurrence, a task, a project or a
+/// calendar — as the item offers it.
+pub(crate) fn open_spec(item: String) -> ActionSpec {
+    crate::resource::CalendarEffect::Open { item }.bound()
 }
 
 /// A calendar collection as a live row: open it, show or hide it.
 pub(crate) fn calendar_collection_row(
     calendar: &CalendarCollectionResource,
 ) -> ui::framework::LiveRow {
-    let open = calendar_operation(
-        "open",
-        "Open calendar",
-        OperationKind::View,
-        &CalendarOperation::OpenCalendar {
-            id: calendar.id.clone(),
-        },
-    );
     ui::framework::LiveRow::new(
         calendar_resource_id(&calendar.id),
         "calendar.collection",
         calendar.label.clone(),
     )
-    .operation(open)
+    .effect(&crate::resource::CalendarEffect::Open {
+        item: calendar_resource_id(&calendar.id),
+    })
     .effect(&crate::resource::CalendarEffect::SetVisibility {
         id: calendar.id.clone(),
         visible: !calendar.visible,
-    })
-}
-
-/// Encode an app-local operation without allowing a serialization fault to
-/// crash a desktop application. The enum only contains strings and unit
-/// variants today, but the fallback keeps its failure mode explicit if that
-/// changes in the future.
-fn encode_operation(operation: &CalendarOperation) -> EncodedAction {
-    EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, operation).unwrap_or_else(|_| {
-        EncodedAction {
-            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-            payload: b"Calendar operation could not be encoded".to_vec(),
-        }
     })
 }
 
@@ -2048,7 +1992,7 @@ mod tests {
         // A search hit invokes the exact `open` view operation the item
         // publishes, through the same door as the palette.
         {
-            let (mut app, mut doc) = seeded();
+            let (mut app, doc) = seeded();
             let resources = published(&doc);
             let model = CalDoc::read_model(&doc);
             let entries =
@@ -2087,25 +2031,19 @@ mod tests {
                             .find(|action| action.id == address.action)
                     })
                     .expect("the hit's action is published");
-                assert_eq!(spec.kind, OperationKind::View);
+                assert_eq!(spec.kind, tilo_actions::OperationKind::View);
                 let encoded = spec
                     .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
                     .expect("open takes no arguments");
-                assert!(matches!(
-                    Widget::start_operation(
-                        &mut app,
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            OperationKind::View,
-                            &encoded.type_id,
-                            &encoded.payload,
-                        ),
-                        &mut doc,
-                        &ROOT
+                let crate::resource::CalendarEffect::Open { item } =
+                    <crate::resource::CalendarEffect as ui::tilo_resource::Effect>::from_payload(
+                        &encoded.payload,
                     )
-                    .expect("view operation succeeds"),
-                    Some(ui::widget::ResourceOperationStart::Completed(_))
-                ));
+                    .expect("the hit opens through the calendar's effects")
+                else {
+                    panic!("a hit opens its item");
+                };
+                app.open_item(&item).expect("view operation succeeds");
                 let id = address
                     .resource
                     .rsplit_once(':')
