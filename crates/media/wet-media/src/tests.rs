@@ -286,9 +286,11 @@ fn an_oil_fill_fades_out_where_its_field_is_clear() {
 }
 
 /// A blender drags wet paint across the meeting of two colours, so the
-/// step between them becomes a gradation; over dry paint it does nothing.
+/// step between them becomes a gradation. A passage laid dry elsewhere on
+/// the layer sets only the paint under it, so the blender still works the
+/// rest.
 #[test]
-fn a_blender_softens_wet_paint_and_leaves_dry_paint_alone() {
+fn a_blender_softens_wet_paint_however_much_is_laid_dry_elsewhere() {
     let marks = vec![
         Painted::new("dark", band("#203050", 0.0, 80.0, false)),
         Painted::new("light", band("#e0d0b0", 80.0, 160.0, true)),
@@ -317,15 +319,59 @@ fn a_blender_softens_wet_paint_and_leaves_dry_paint_alone() {
         "light paint dragged into the dark"
     );
 
-    let mut dried = marks;
-    dried.push(Painted::new("dry", band("#203050", 150.0, 159.0, false)));
-    let before = painter("oil", Texture::Linen).paint(&dried).to_vec();
-    dried.push(Painted::new(
-        "soften",
-        with(band("#000000", 0.0, 140.0, true), &[("blender", 1.0)]),
+    let mut elsewhere = marks;
+    elsewhere.push(Painted::new(
+        "elsewhere",
+        stroke(&[(10.0, 112.0), (150.0, 112.0)], 6.0, "#203050", false),
     ));
-    let after = painter("oil", Texture::Linen).paint(&dried).to_vec();
-    assert_eq!(before, after, "dry paint does not move");
+    let before = painter("oil", Texture::Linen).paint(&elsewhere).to_vec();
+    elsewhere.push(Painted::new(
+        "soften",
+        with(band("#000000", 0.0, 160.0, true), &[("blender", 1.0)]),
+    ));
+    let after = painter("oil", Texture::Linen).paint(&elsewhere).to_vec();
+    assert!(
+        step(&after) < step(&before) * 0.6,
+        "still workable: soft step {} hard step {}",
+        step(&after),
+        step(&before)
+    );
+}
+
+/// Paint laid over without `wet` covers what is beneath as over dry paint:
+/// a light stroke across a wet dark band stays light, where the same stroke
+/// laid wet picks the dark up.
+#[test]
+fn a_stroke_laid_dry_covers_and_one_laid_wet_mixes() {
+    let over = |wet: bool| {
+        let mut painter = painter("oil", Texture::Smooth);
+        painter
+            .paint(&[
+                Painted::new("dark", band("#202838", 10.0, 150.0, true)),
+                Painted::new(
+                    "light",
+                    with(
+                        stroke(&[(20.0, 60.0), (140.0, 60.0)], 20.0, "#e8e0d0", wet),
+                        &[("blend", 1.0)],
+                    ),
+                ),
+            ])
+            .to_vec()
+    };
+    let light = |pixels: &[u8]| {
+        (60..120)
+            .map(|x| {
+                rgb(pixels, x, 60)
+                    .iter()
+                    .map(|v| f32::from(*v))
+                    .sum::<f32>()
+            })
+            .sum::<f32>()
+    };
+    assert!(
+        light(&over(false)) > light(&over(true)),
+        "wet picks up the dark"
+    );
 }
 
 /// A glaze tints dry paint beneath it without hiding its modelling: dark
@@ -559,6 +605,41 @@ fn a_loaded_oil_brush_floods_the_weave_and_a_dry_one_breaks_on_it() {
     let dry = grain_over(&paint_over(0.12), 40..120, 52..68);
     assert!(loaded < 10.0, "a loaded stroke lies even: {loaded}");
     assert!(dry > loaded * 3.0, "a dry brush breaks: {dry} vs {loaded}");
+}
+
+/// A dry brush dragged over dark paint leaves broken light: some of the
+/// dark shows through all along the stroke rather than the bristles'
+/// overlapping touches building up to a solid patch.
+#[test]
+fn a_dry_brush_scumbles_broken_colour_instead_of_a_solid_patch() {
+    let pixels = painter("oil", Texture::Linen)
+        .paint(&[
+            Painted::new("dark", band("#202838", 10.0, 150.0, false)),
+            Painted::new(
+                "scumble",
+                with(
+                    stroke(&[(10.0, 60.0), (150.0, 60.0)], 30.0, "#e8e0d0", false),
+                    &[("load", 0.2)],
+                ),
+            ),
+        ])
+        .to_vec();
+    let lights: Vec<f32> = (54..66)
+        .flat_map(|y| (30..130).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            rgb(&pixels, x, y)
+                .iter()
+                .map(|v| f32::from(*v))
+                .sum::<f32>()
+                / 765.0
+        })
+        .collect();
+    let lit = lights.iter().filter(|value| **value > 0.5).count();
+    let share = float(lit) / float(lights.len());
+    assert!(
+        (0.1..0.8).contains(&share),
+        "a scumble covers some of the dark, not none or all: {share}"
+    );
 }
 
 /// Fresh oil stays workable however thinly it went on: a blender dragged

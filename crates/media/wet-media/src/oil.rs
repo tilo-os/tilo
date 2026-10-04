@@ -5,8 +5,11 @@
 //! each with its own load that runs out along the stroke, so a long stroke
 //! breaks into streaks and a dry brush catches only the high points of the
 //! weave. Laid into wet paint, a brush picks colour up and drags it, so
-//! strokes blend wet-in-wet; laid over dry paint, it covers. Thickness is
-//! lit from the upper left, so impasto shows its ridges.
+//! strokes blend wet-in-wet; laid without `wet`, it goes over the paint
+//! beneath as over dry paint and covers it. Paint stays wet until something
+//! is laid over it that way, so a blender can work any passage that has not
+//! been painted over. Thickness is lit from the upper left, so impasto shows
+//! its ridges.
 
 use std::sync::Arc;
 
@@ -83,7 +86,7 @@ impl Oil {
                 ParamSpec::new(
                     "blender",
                     "Blender",
-                    "A soft dry brush that lays no paint: it drags the wet paint beneath along its direction, softening edges and strokes; more is stronger. Blend across bands (angle 90) to melt them together.",
+                    "A soft dry brush that lays no paint: it drags the wet paint beneath along its direction, softening edges and strokes; more is stronger. Blend across bands (angle 90) to melt them together. Paint stays wet until something is laid over it without `wet`.",
                     (0.0, 1.0),
                     0.0,
                 ),
@@ -123,7 +126,7 @@ impl MediumEngine for Oil {
     }
 
     fn description(&self) -> &'static str {
-        "Opaque paint with body: bristle strokes that streak and run dry, blend into wet paint on the same layer, cover dry paint and stand in lit ridges. Lights go on thick, darks thin; a sky is laid in thin and blended."
+        "Opaque paint with body: bristle strokes that streak and run dry, blend into wet paint on the same layer, cover what they are laid over without `wet` and stand in lit ridges. Paint as a landscape painter does: block in the big masses first in a few clear values (sky lightest, distance pale, cool and low in contrast, foreground darkest and warmest), work wet into wet, and put the small lights and crisp accents on last. Lights go on thick, darks thin; a sky is laid in thin and blended. A low load (0.1-0.3) drags broken colour over what is beneath (a scumble); far edges are softened with feather or a blender, near ones left crisp."
     }
 
     fn parameters(&self) -> Arc<[ParamSpec]> {
@@ -144,9 +147,28 @@ impl MediumEngine for Oil {
             cover: vec![0.0; cells],
             thickness: vec![0.0; cells],
             wet: vec![0.0; cells],
-            wet_area: Area::EMPTY,
+            grit: grit(canvas.width, canvas.height),
         })
     }
+}
+
+/// The unevenness of the priming between the threads, per cell: grit and
+/// drips of size that catch a dry brush as much as the weave does.
+fn grit(width: usize, height: usize) -> Arc<[f32]> {
+    (0..height)
+        .into_par_iter()
+        .flat_map_iter(|y| (0..width).map(move |x| fbm(float(x) / 1.7, float(y) / 1.7, 0x6a17, 2)))
+        .collect::<Vec<f32>>()
+        .into()
+}
+
+/// How far apart a brush of `size` is pressed down along its path: close
+/// enough that each bristle's tip overlaps the last by half, and no
+/// closer, so a broad brush costs no more per cell than a narrow one.
+fn spacing(settings: &Settings, size: f32) -> f32 {
+    let bristles = settings.get("bristles").min(size * 0.9).max(3.0);
+    let tip = (size / bristles * 1.3).max(0.9);
+    (tip * 0.45).max(0.5)
 }
 
 #[derive(Clone)]
@@ -162,7 +184,8 @@ struct OilLayer {
     thickness: Vec<f32>,
     /// How wet the paint on top is, `0..=1`.
     wet: Vec<f32>,
-    wet_area: Area,
+    /// The priming's grit, shared by every copy of the layer.
+    grit: Arc<[f32]>,
 }
 
 /// One bristle of a brush as it travels a stroke.
@@ -190,7 +213,85 @@ struct Dab {
     spent: f32,
     picked: Rgb,
     picked_weight: f32,
+}
+
+/// The most paint one brush pass has laid on each cell it crossed. A pass
+/// covers a cell as far as its best-loaded bristle catches there, however
+/// often its bristles cross it, so a dry brush leaves broken, half-covering
+/// paint rather than building up to a solid patch.
+struct Laid {
     area: Area,
+    values: Vec<f32>,
+    /// How wet each cell's paint was when a bristle of the pass first
+    /// reached it; negative where none has yet.
+    wet_before: Vec<f32>,
+}
+
+impl Laid {
+    fn over(samples: &[Sample], size: f32, (width, height): (usize, usize)) -> Self {
+        let mut min = (f32::INFINITY, f32::INFINITY);
+        let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for sample in samples {
+            min = (min.0.min(sample.x), min.1.min(sample.y));
+            max = (max.0.max(sample.x), max.1.max(sample.y));
+        }
+        let area = Area::around(min, max, size + 4.0, width, height);
+        let cells = area.width().saturating_mul(area.height());
+        Self {
+            area,
+            values: vec![0.0; cells],
+            wet_before: vec![-1.0; cells],
+        }
+    }
+
+    fn local(&self, x: usize, y: usize) -> Option<usize> {
+        let area = self.area;
+        (x >= area.x0 && y >= area.y0 && x < area.x1 && y < area.y1).then(|| {
+            at(
+                area.width(),
+                x.saturating_sub(area.x0),
+                y.saturating_sub(area.y0),
+            )
+        })
+    }
+
+    /// How wet the paint under a cell was before this pass reached it,
+    /// with `wet` the cell's wetness now. Only that paint clings to the
+    /// bristles: what the pass itself has just laid is its own paint, not
+    /// paint to pick up. A pass over dry paint sets the cell as it first
+    /// reaches it.
+    fn wet_before(&mut self, (x, y): (usize, usize), wet: &mut f32, over_dry: bool) -> f32 {
+        let Some(slot) = self
+            .local(x, y)
+            .and_then(|local| self.wet_before.get_mut(local))
+        else {
+            return *wet;
+        };
+        if *slot < 0.0 {
+            if over_dry {
+                *wet = 0.0;
+            }
+            *slot = *wet;
+        }
+        *slot
+    }
+
+    /// The share of what is beneath a cell a fresh `deposit` there hides,
+    /// beyond what this pass already laid on it.
+    fn lay(&mut self, x: usize, y: usize, deposit: f32) -> f32 {
+        let Some(slot) = self
+            .local(x, y)
+            .and_then(|local| self.values.get_mut(local))
+        else {
+            return deposit;
+        };
+        if deposit <= *slot {
+            return 0.0;
+        }
+        let fresh = (deposit - *slot) / (1.0 - *slot).max(1e-3);
+        *slot = deposit;
+        fresh.clamp(0.0, 1.0)
+    }
 }
 
 /// One bristle's tip on the canvas at one sample of a stroke.
@@ -227,6 +328,9 @@ struct Pass<'a> {
     field: Option<(&'a ColourField, f32)>,
     /// How transparent the paint is, and what it lies over.
     glaze: Option<&'a Glaze>,
+    /// Whether the brush goes over the paint beneath as over dry paint,
+    /// setting it wherever a bristle reaches, rather than working into it.
+    over_dry: bool,
 }
 
 /// One brushstroke of a region's lay-in, before it is painted.
@@ -288,7 +392,7 @@ impl Glaze {
 /// and laid thick, darks are lean and lie thin.
 fn body_of(colour: Rgb) -> f32 {
     let luma = (0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b).max(0.0);
-    0.5 + 0.9 * luma.sqrt()
+    0.2 + 1.2 * luma.sqrt()
 }
 
 /// `under` seen through a coat of `paint`: a glaze filters the light, so it
@@ -336,20 +440,21 @@ impl OilLayer {
         self.canvas.width
     }
 
-    fn dry(&mut self) {
-        if self.wet_area.is_empty() {
-            return;
-        }
+    /// Let the paint under `coverage` set, as paint is that a later
+    /// passage goes over dry: it no longer mixes into what is laid on it or
+    /// moves under a blender. Paint elsewhere on the layer stays workable.
+    fn dry_under(&mut self, coverage: &Coverage) {
         let width = self.width();
-        let area = self.wet_area;
-        for y in area.y0..area.y1 {
-            for x in area.x0..area.x1 {
-                if let Some(value) = self.wet.get_mut(at(width, x, y)) {
-                    *value = 0.0;
-                }
+        let area = coverage.area;
+        for (local, inside) in coverage.values.iter().enumerate() {
+            if *inside <= 0.0 {
+                continue;
+            }
+            let (x, y) = area.position(local);
+            if let Some(value) = self.wet.get_mut(at(width, x, y)) {
+                *value = 0.0;
             }
         }
-        self.wet_area = Area::EMPTY;
     }
 
     /// The bristles of a fresh brushload.
@@ -427,7 +532,7 @@ impl OilLayer {
         let lanes = float(bristles.len()) * 0.35;
         // A short dab keeps most of its bristles however ragged the brush.
         let room = total * 0.3;
-        let mut touched = Area::EMPTY;
+        let mut laid = Laid::over(pass.samples, pass.size, (self.width(), self.canvas.height));
         let mut previous: Option<(f32, f32)> = None;
         let mut mixed: Option<Rgb> = None;
         for sample in pass.samples {
@@ -496,7 +601,7 @@ impl OilLayer {
                     heading: (sample.tx, sample.ty),
                     pile,
                 };
-                let dab = self.dab(bristle, &touch, body, pass);
+                let dab = self.dab(bristle, &touch, (body, &mut laid), pass);
                 // Wet paint beneath sticks to the bristle and travels with
                 // it, by how far the bristle dragged through it.
                 if dab.picked_weight > 0.0 {
@@ -509,14 +614,18 @@ impl OilLayer {
                 // rate it actually lays it: over dry ground it lays less.
                 let laying = (dab.spent / footprint).min(1.0);
                 bristle.load = (bristle.load - travelled * laying * bristle.spend).max(0.0);
-                touched = touched.union(dab.area);
             }
         }
-        self.wet_area = self.wet_area.union(touched);
     }
 
     /// One bristle's tip pressed on the canvas as `touch` says.
-    fn dab(&mut self, bristle: &Bristle, touch: &Touch, body: f32, pass: &Pass<'_>) -> Dab {
+    fn dab(
+        &mut self,
+        bristle: &Bristle,
+        touch: &Touch,
+        (body, laid): (f32, &mut Laid),
+        pass: &Pass<'_>,
+    ) -> Dab {
         let (width, height) = (self.width(), self.canvas.height);
         let (centre, tip) = (touch.centre, touch.tip);
         let dryness = 1.0 - smoothstep(0.2, 0.6, bristle.load);
@@ -535,7 +644,6 @@ impl OilLayer {
             spent: 0.0,
             picked: bristle.colour,
             picked_weight: 0.0,
-            area,
         };
         for y in area.y0..area.y1 {
             for x in area.x0..area.x1 {
@@ -545,6 +653,11 @@ impl OilLayer {
                 if reach_here <= 0.0 || clip <= 0.0 {
                     continue;
                 }
+                let index = at(width, x, y);
+                let wet_here = self
+                    .wet
+                    .get_mut(index)
+                    .map_or(0.0, |wet| laid.wet_before((x, y), wet, pass.over_dry));
                 // A loaded brush fills the weave; a dry one catches where the
                 // bristle presses and the threads stand high, and on the
                 // faces of the threads it drags against more than their lee,
@@ -554,38 +667,80 @@ impl OilLayer {
                 // crests and skips its grooves, and the weave it buries
                 // no longer shows.
                 let ground = &self.canvas.ground;
-                let buried = read(&self.thickness, width, x, y, 0.0).min(1.0);
-                let mut tooth =
-                    ground.at(x, y) * (1.0 - buried) + 0.5 * buried + self.crest(x, y) * 1.5;
+                // Even a thin coat fills the hollows of the weave: over
+                // paint, a dry brush finds the paint's own grain more than
+                // the threads.
+                let buried = (read(&self.thickness, width, x, y, 0.0) * 2.5).min(1.0);
+                // The priming is never even: grit and drips of size between
+                // the threads catch a dry brush as much as the weave does,
+                // so a scumble breaks irregularly rather than printing the
+                // threads as a grid.
+                let grit = read(&self.grit, width, x, y, 0.5);
+                let support = ground.at(x, y) * 0.45 + grit * 0.55;
+                let mut tooth = support * (1.0 - buried) + 0.5 * buried + self.crest(x, y) * 1.5;
                 if dryness > 0.0 {
-                    tooth += ground.rise(x, y, touch.heading) * 1.2 * dryness * (1.0 - buried);
+                    tooth += ground.rise(x, y, touch.heading) * 0.6 * dryness * (1.0 - buried);
                 }
                 // A loaded brush floods the weave; only as it runs dry does
                 // the tooth decide where it catches, so overlapping colours
                 // do not print the weave as a grid.
                 let grip = (tooth - 0.5) * 0.22 * (0.25 + 0.75 * dryness) + press + 0.11;
-                let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip);
+                let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip)
+                    // A dry brush's outer hairs carry least and skim, so a
+                    // scumble feathers out at its sides instead of stopping
+                    // at a clean edge.
+                    * (1.0 - dryness * 0.6 * smoothstep(0.4, 1.0, bristle.offset.abs()));
                 // A glaze is thinned to flow: it settles into the weave
                 // instead of catching on the threads, but its bristles still
                 // drag it out in streaks along the stroke.
                 let thinned = pass.glaze.map_or(0.0, |glaze| glaze.amount);
                 let catch = (catch + (1.0 - catch) * thinned)
                     * (1.0 - thinned * 0.4 * (1.0 - touch.contact));
-                let deposit =
-                    (reach_here.min(1.0) * clip * catch * bristle.load.min(1.0) * pass.opacity)
-                        .clamp(0.0, 1.0);
+                // The tip presses flat over most of its width and feathers
+                // only at its rim, so neighbouring bristles join.
+                // How little paint a bristle has decides where it catches,
+                // and only a little how thick it lies where it does: a
+                // scumble is broken, not a veil, and a bristle with paint to
+                // spare covers outright.
+                let deposit = (smoothstep(0.0, 0.5, reach_here)
+                    * clip
+                    * catch
+                    * (0.6 + 0.4 * (bristle.load / 0.6).min(1.0))
+                    * pass.opacity)
+                    .clamp(0.0, 1.0);
                 if deposit <= 0.0 {
                     continue;
                 }
-                let index = at(width, x, y);
-                let wet_here = read(&self.wet, width, x, y, 0.0);
                 let cover_here = read(&self.cover, width, x, y, 0.0);
                 let under = self.colour_at(x, y);
+                // Wet paint clings to every bristle dragged through it, and
+                // the bristle spends what it presses out; the cell takes
+                // only what this pass had not already laid there.
                 let sticky = wet_here * cover_here * deposit;
                 dab.picked = dab
                     .picked
                     .lerp(under, sticky / (dab.picked_weight + sticky).max(1e-6));
                 dab.picked_weight += sticky;
+                dab.spent += deposit;
+                let pressed = deposit;
+                let deposit = laid.lay(x, y, deposit);
+                // Every bristle dragged through the paint combs its own
+                // ridge into it, whether or not it adds cover there.
+                if let Some(value) = self.thickness.get_mut(index) {
+                    // The outer hairs push paint aside into a rim, and the
+                    // paint heaps where the brush lands and lifts.
+                    let rim = smoothstep(0.6, 1.0, bristle.offset.abs()) * 0.6 * pass.heap;
+                    let ridge = (0.15 + body)
+                        * (0.35 + 1.3 * bristle.ridge)
+                        * bristle.load.min(1.2)
+                        * body_of(bristle.colour)
+                        * (1.0 + rim + touch.pile * bristle.load.min(1.0));
+                    let body_share = 1.0 - pass.glaze.map_or(0.0, |glaze| glaze.amount);
+                    *value += (ridge - *value) * (pressed * 0.7 * body_share);
+                }
+                if deposit <= 0.0 {
+                    continue;
+                }
                 let (colour, cover) = coat(
                     (under, cover_here),
                     bristle.colour,
@@ -602,26 +757,11 @@ impl OilLayer {
                     cover
                 };
                 self.write(index, colour, cover);
-                // Each bristle leaves its own ridge; the light reads them as
-                // the stroke's direction. A glaze is too thin to leave one.
-                if let Some(value) = self.thickness.get_mut(index) {
-                    // The outer hairs push paint aside into a rim, and the
-                    // paint heaps where the brush lands and lifts.
-                    let rim = smoothstep(0.6, 1.0, bristle.offset.abs()) * 0.6 * pass.heap;
-                    let ridge = (0.15 + body)
-                        * (0.35 + 1.3 * bristle.ridge)
-                        * bristle.load.min(1.2)
-                        * body_of(bristle.colour)
-                        * (1.0 + rim + touch.pile * bristle.load.min(1.0));
-                    let body_share = 1.0 - pass.glaze.map_or(0.0, |glaze| glaze.amount);
-                    *value += (ridge - *value) * (deposit * 0.7 * body_share);
-                }
                 // Fresh oil stays workable however thinly it went on: any
                 // real touch of paint leaves the cell wet.
                 if let Some(value) = self.wet.get_mut(index) {
                     *value = value.max(smoothstep(0.0, 0.3, deposit));
                 }
-                dab.spent += deposit;
             }
         }
         dab
@@ -732,7 +872,6 @@ impl OilLayer {
                 }
             }
         }
-        self.wet_area = self.wet_area.union(area);
     }
 
     /// The brushwork laying in a region: parallel strokes along `angle`,
@@ -757,13 +896,16 @@ impl OilLayer {
                 .map(|(x, y)| self.state(x, y))
                 .collect()
         });
+        if !region.wet {
+            self.dry_under(&coverage);
+        }
         self.scrub((settings, glaze), region, &coverage, seed);
         let mut pieces = Self::pieces(region, coverage.area, settings.get("load"), seed);
         // A painter works a passage back and forth rather than row by row,
         // so later strokes cross earlier ones anywhere in it.
         pieces.sort_by(|a, b| hash01(a.seed, 47, 0).total_cmp(&hash01(b.seed, 47, 0)));
         for piece in pieces {
-            let samples = smooth(&piece.points, 0.6);
+            let samples = smooth(&piece.points, spacing(settings, piece.size));
             self.brush(
                 settings,
                 &Pass {
@@ -778,6 +920,8 @@ impl OilLayer {
                     heap: 0.1,
                     field: region.field.as_ref().map(|field| (field, piece.value)),
                     glaze,
+                    // The region was set under its outline before the lay-in.
+                    over_dry: false,
                 },
             );
         }
@@ -1025,13 +1169,19 @@ impl Directions {
 fn light((gx, gy): (f32, f32), relief: f32, thick: f32) -> (f32, f32) {
     // The light's direction, normalised: from the upper left, well above.
     const LIGHT: (f32, f32, f32) = (-0.48, -0.56, 0.675);
+    // The paint stands a fraction of a millimetre: even its steepest edge
+    // only half-turns from the light, so a dab's rim shades its side
+    // rather than outlining it.
     let steep = relief * 1.6;
     let (nx, ny) = (-gx * steep, -gy * steep);
     let length = (nx * nx + ny * ny + 1.0).sqrt();
     let facing = (nx * LIGHT.0 + ny * LIGHT.1 + LIGHT.2) / length;
-    let lit = (facing / LIGHT.2).clamp(0.55, 1.4);
-    let gloss = smoothstep(0.15, 0.8, thick) * relief;
-    let sheen = smoothstep(1.05, 1.3, lit) * gloss * 0.3;
+    let lit = (facing / LIGHT.2).clamp(0.65, 1.35);
+    // Only real impasto catches a highlight, and a small one: a varnished
+    // painting seen square-on shows its ridges by their shading, not as
+    // pale streaks over the darks.
+    let gloss = smoothstep(0.3, 0.9, thick) * relief;
+    let sheen = smoothstep(1.05, 1.3, lit) * gloss * 0.18;
     (lit, sheen)
 }
 
@@ -1135,7 +1285,6 @@ impl OilLayer {
                 }
             }
         }
-        self.wet_area = self.wet_area.union(area);
     }
 
     /// One cell of [`Self::soften`].
@@ -1309,13 +1458,10 @@ impl LayerSim for OilLayer {
             self.blend_mark(&settings, mark, seed);
             return;
         }
-        if !mark.wet() {
-            self.dry();
-        }
         match mark {
             Mark::Stroke(stroke) => {
-                let samples = smooth(&stroke.points, 0.5);
                 let size = stroke.size.max(0.5);
+                let samples = smooth(&stroke.points, spacing(&settings, size));
                 let opacity = stroke.opacity.clamp(0.0, 1.0) * stroke.paint.alpha;
                 let mut min = (f32::INFINITY, f32::INFINITY);
                 let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
@@ -1345,13 +1491,20 @@ impl LayerSim for OilLayer {
                         load: settings.get("load"),
                         seed,
                         clip: clip.as_ref(),
-                        ragged: 0.9,
+                        // A dab pressed on lands and lifts whole, a solid
+                        // blot; only a stroke dragged out several brush
+                        // widths frays at its ends.
+                        ragged: 0.9 * smoothstep(size * 0.5, size * 3.0, length(&samples)),
                         // A dab is pressed on, not dragged: only a stroke
                         // drawn out several brush widths ploughs up a rim
                         // and leaves a heap where it lifts.
                         heap: smoothstep(size, size * 4.0, length(&samples)),
                         field: None,
                         glaze: glaze.as_ref(),
+                        // Laid without `wet`, a stroke goes over the paint
+                        // beneath it as over dry paint, wherever its
+                        // bristles reach.
+                        over_dry: !stroke.wet,
                     },
                 );
             }
