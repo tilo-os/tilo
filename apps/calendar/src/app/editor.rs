@@ -14,6 +14,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
 use ui::LocalState;
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -43,9 +44,12 @@ pub(crate) struct Choice {
 }
 
 impl Choice {
-    pub(super) fn new(name: &str) -> Self {
+    /// A dropdown named `name` whose `icon` says what it chooses.
+    pub(super) fn new(name: &str, icon: Icon) -> Self {
         let state = LocalState::new(String::new());
-        let dropdown = Dropdown::from_state(Vec::new(), &state).with_accessible_name(name);
+        let dropdown = Dropdown::from_state(Vec::new(), &state)
+            .with_accessible_name(name)
+            .leading_icon(icon);
         Self {
             state,
             dropdown,
@@ -101,12 +105,12 @@ pub(crate) struct Choices {
 impl Choices {
     pub(super) fn new() -> Self {
         Self {
-            calendar: Choice::new("Calendar"),
-            repeat: Choice::new("Repeat"),
-            alert: Choice::new("Alert"),
-            timezone: Choice::new("Time zone"),
-            priority: Choice::new("Priority"),
-            project: Choice::new("Project"),
+            calendar: Choice::new("Calendar", Icon::Calendar),
+            repeat: Choice::new("Repeat", Icon::Repeat),
+            alert: Choice::new("Alert", Icon::Bell),
+            timezone: Choice::new("Time zone", Icon::Globe),
+            priority: Choice::new("Priority", Icon::Flag),
+            project: Choice::new("Project", Icon::Folder),
         }
     }
 
@@ -811,18 +815,15 @@ impl CalendarApp {
         f.swatches = Self::swatch_layout(f.colour, theme);
         flow.gap();
         f.invite = flow.row("Guests", row_h);
-        // A guest row's content lines up with the Guests field above it: the
-        // row reaches past the field by the row's own inset on both sides.
+        // A guest row's avatar lines up with the Guests field above it: the
+        // row reaches left past the field by the row's own inset. It ends
+        // at the body's edge, where the sheet clips, so its status reads
+        // whole.
         let row_inset = f64::from(sp.s3);
         for attendee in &event.attendees {
             let face = ListRowFace::new(&attendee.email).secondary(&attendee.email);
             let height = face.height(text, theme);
-            let rect = Rect::new(
-                flow.field_x - row_inset,
-                flow.y,
-                body.x1 + row_inset,
-                flow.y + height,
-            );
+            let rect = Rect::new(flow.field_x - row_inset, flow.y, body.x1, flow.y + height);
             f.guests.push(rect);
             flow.y = rect.y1;
         }
@@ -1208,7 +1209,7 @@ impl CalendarApp {
         };
         let side = f64::from(sheet.tokens.metrics.icon_md);
         let mid = rect.center().y;
-        ui::icons::Icon::TriangleAlert.draw(
+        Icon::TriangleAlert.draw(
             ctx.scene,
             ctx.transform,
             Rect::new(rect.x0, mid - side / 2.0, rect.x0 + side, mid + side / 2.0),

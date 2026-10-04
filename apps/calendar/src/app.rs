@@ -631,7 +631,9 @@ impl CalendarApp {
             sidebar_menu: Popover::new()
                 .with_items(["Export calendar", "Import calendar"])
                 .with_label("Calendar file"),
-            mini_month: DatePicker::new(today).with_accessible_name("Month"),
+            mini_month: DatePicker::new(today)
+                .navigator()
+                .with_accessible_name("Month"),
             search_opener: ui::search::SearchOpener::new(),
             shots_pending_new_event: false,
             shots_suppress_status: false,

@@ -19,7 +19,7 @@ use ui::Widget;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::widget::empty_state::{EmptyState, EmptyStateContent};
-use ui::widget::{Interaction, ListRowFace, RowAction, RowLeading, Scrollable};
+use ui::widget::{Interaction, ListRowFace, RowLeading, Scrollable};
 
 use crate::date;
 use crate::draw_util::text_in_band;
@@ -156,7 +156,7 @@ impl AgendaView {
                 }
                 Item::Event(event) => {
                     let time = event_time(event);
-                    let face = event_face(event, &time);
+                    let face = event_face(event, &time, theme);
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -177,8 +177,7 @@ impl AgendaView {
                     y = row.y1;
                 }
                 Item::Task(task) => {
-                    let actions = [task_action(task)];
-                    let face = task_face(task, &actions);
+                    let face = task_face(task);
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -217,8 +216,8 @@ impl AgendaView {
 }
 
 /// Paint one task row in `row`, clipped to `area`, and push its targets:
-/// the row opens the task; the leading mark and the hover action, pushed
-/// after it so they win, complete it.
+/// the row opens the task; the checkbox, pushed after it so it wins,
+/// completes it.
 fn paint_task_row(
     ctx: &mut PaintCtx<'_>,
     face: ListRowFace<'_>,
@@ -232,23 +231,13 @@ fn paint_task_row(
         hovered: row.contains(pointer),
         ..Interaction::default()
     });
-    let rects = face.action_rects(row, theme);
-    let face = face.hovered_action(rects.iter().position(|r| r.contains(pointer)));
     face.paint(ctx, row);
     if let Some(hit) = clamp_hit(row, area) {
         hits.push((hit, AgendaAction::OpenTask(task.id)));
     }
-    let side = f64::from(theme.tokens.metrics.min_pointer_target);
-    let lead = Rect::new(
-        row.x0,
-        row.center().y - side / 2.0,
-        row.x0 + side + f64::from(theme.tokens.spacing.s2),
-        row.center().y + side / 2.0,
-    );
-    for rect in rects.into_iter().chain([lead]) {
-        if let Some(hit) = clamp_hit(rect, area) {
-            hits.push((hit, AgendaAction::ToggleTask(task.id)));
-        }
+    let lead = face.leading_rect(row, ctx.text, theme);
+    if let Some(hit) = clamp_hit(lead, area) {
+        hits.push((hit, AgendaAction::ToggleTask(task.id)));
     }
 }
 
@@ -261,9 +250,10 @@ fn event_time(event: &Event) -> String {
     }
 }
 
-fn event_face<'a>(event: &'a Event, time: &'a str) -> ListRowFace<'a> {
+/// An event row: its calendar colour leads, its time is the meta.
+fn event_face<'a>(event: &'a Event, time: &'a str, theme: &Theme) -> ListRowFace<'a> {
     let face = ListRowFace::new(event.display_title())
-        .leading(RowLeading::Icon(Icon::Calendar))
+        .leading(RowLeading::Swatch(event.color.color(theme)))
         .meta(time);
     if event.location.is_empty() {
         face
@@ -272,28 +262,9 @@ fn event_face<'a>(event: &'a Event, time: &'a str) -> ListRowFace<'a> {
     }
 }
 
-fn task_action(task: &Task) -> RowAction<'static> {
-    if task.done {
-        RowAction {
-            icon: Icon::RotateCcw,
-            label: "Mark as not done",
-        }
-    } else {
-        RowAction {
-            icon: Icon::Check,
-            label: "Mark as done",
-        }
-    }
-}
-
-fn task_face<'a>(task: &'a Task, actions: &'a [RowAction<'a>]) -> ListRowFace<'a> {
-    let face = ListRowFace::new(&task.title)
-        .leading(RowLeading::Icon(if task.done {
-            Icon::Check
-        } else {
-            Icon::Square
-        }))
-        .actions(actions);
+/// A task row: its checkbox leads and completes it.
+fn task_face(task: &Task) -> ListRowFace<'_> {
+    let face = ListRowFace::new(&task.title).leading(RowLeading::Checkbox { checked: task.done });
     if task.done {
         face.meta("Done")
     } else if task.priority == Priority::None {
@@ -429,12 +400,9 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
             }
             Item::Event(event) => {
                 let time = event_time(event);
-                event_face(event, &time).height(text, theme)
+                event_face(event, &time, theme).height(text, theme)
             }
-            Item::Task(task) => {
-                let actions = [task_action(task)];
-                task_face(task, &actions).height(text, theme)
-            }
+            Item::Task(task) => task_face(task).height(text, theme),
         };
     }
     height
