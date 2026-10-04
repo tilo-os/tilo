@@ -16882,6 +16882,8 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-test-env",
+ "tilo-vm",
  "tilo-vm-protocol",
  "uuid",
  "workspace-hack",
