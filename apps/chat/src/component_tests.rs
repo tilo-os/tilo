@@ -142,10 +142,9 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     app.sync(&mut doc, &ROOT);
     let _ = app.update(&mut doc, &ROOT);
     app.mark_drawn();
-    app.media.latch_bound_for_test();
     assert!(
         !app.update(&mut doc, &ROOT),
-        "an already-bound media endpoint is not a change"
+        "an idle frame is not a change"
     );
     assert!(
         !app.needs_animation_frame(),
