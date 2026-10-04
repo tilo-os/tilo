@@ -105,7 +105,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, devices, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -657,6 +657,11 @@ pub enum VmCommand {
         after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
+    /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device shell --from sha:1a2b3c4             # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
+    )]
+    Add(AddArgs),
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {
@@ -742,6 +747,25 @@ pub enum VmCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, Args)]
+pub struct AddArgs {
+    /// The name to register the device under.
+    pub name: String,
+    /// `<user>@<host>[:<port>]`. Commands run as root: directly as root@, or
+    /// through `sudo -n` as any other user.
+    #[arg(long)]
+    pub ssh: String,
+    /// The SSH identity of a non-root user (default: ssh's own, from ~/.ssh
+    /// or the agent). As root@, vm add makes the device's own key instead.
+    #[arg(long)]
+    pub key: Option<PathBuf>,
+    /// Let the --ssh user run commands as root without a password
+    /// (/etc/sudoers.d/tilo-vm-<user> on the device, checked by visudo); sudo
+    /// asks for that user's password once, on this terminal.
+    #[arg(long)]
+    pub grant_sudo: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1258,6 +1282,33 @@ mod tests {
                 "{help}"
             );
             assert!(help.contains("dev-overrides"), "{help}");
+        }
+
+        // Phase: vm_add_takes_a_name_and_an_address.
+        {
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "vm", "add", "opi", "--ssh", "root@10.0.0.108"])
+                    .unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref name, ref ssh, key: None, grant_sudo: false }))) if name == "opi" && ssh == "root@10.0.0.108")
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "add", "opi"]).is_err());
+            assert!(writes_receipt(cli.command.as_ref()));
+            let owner = Cli::try_parse_from([
+                "tilo-vm",
+                "vm",
+                "add",
+                "yoga",
+                "--ssh",
+                "me@10.0.0.223",
+                "--key",
+                "/k/yoga",
+                "--grant-sudo",
+            ])
+            .unwrap();
+            assert!(
+                matches!(owner.command, Some(Command::Vm(VmCommand::Add(AddArgs { ref key, grant_sudo: true, .. }))) if key.as_deref() == Some(std::path::Path::new("/k/yoga")))
+            );
         }
 
         // Phase: swap_takes_an_optional_slot.

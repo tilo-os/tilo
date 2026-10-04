@@ -128,6 +128,7 @@ impl BlockingClient {
                 cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
                 runtime: manifest.package.runtime.unwrap_or_default(),
                 source: String::new(),
+                held: false,
                 system: !entry.get_user_managed(),
             });
         }

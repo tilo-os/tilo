@@ -61,6 +61,18 @@ pub struct WorkspaceSettingsModel<'a> {
     /// Whether policy controls are live rather than painted disabled.
     pub owner_controls: bool,
     pub apps: &'a dyn AppDirectory,
+    /// The person's devices and whether this workspace shows on each.
+    /// Empty for a workspace that is not the person's own.
+    pub devices: &'a [WorkspaceDevice],
+}
+
+/// One of the person's devices as the General tab offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceDevice {
+    pub label: String,
+    pub shown: bool,
+    /// The device this lens runs on.
+    pub here: bool,
 }
 
 /// The Permissions tab's grant-composer controls, as painted.
@@ -103,6 +115,11 @@ pub enum EventOutcome {
     CreateInvite,
     EditName,
     CommitName,
+    /// Show the workspace on the `n`th listed device, or keep it off.
+    ToggleDevice(usize),
+    /// Move the workspace one place earlier (`-1`) or later (`1`).
+    MoveWorkspace(i32),
+    DeleteWorkspace,
 }
 
 /// Keyboard operations understood by the focused member-permission sheet.
@@ -159,6 +176,13 @@ pub struct WorkspaceSettingsOverlay {
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
+    /// The General tab's devices card: one toggle per device, the two move
+    /// buttons and Delete, as painted (scroll applied).
+    device_toggle_rects: Vec<Rect>,
+    move_rects: [Rect; 2],
+    delete_rect: Rect,
+    /// Rows the devices card had when last painted, for the scroll range.
+    device_rows: usize,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -180,6 +204,10 @@ impl Default for WorkspaceSettingsOverlay {
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
+            device_toggle_rects: Vec::new(),
+            move_rects: [Rect::ZERO; 2],
+            delete_rect: Rect::ZERO,
+            device_rows: 0,
         }
     }
 }
@@ -322,10 +350,58 @@ impl WorkspaceSettingsOverlay {
         if !delta.is_finite() || self.member_sheet.is_some() {
             return false;
         }
-        let max = (382.0 * self.general_text_scale - self.general_body_rect().height()).max(0.0);
+        let content = 382.0 + Self::devices_card_height(self.device_rows) + 16.0;
+        let max = (content * self.general_text_scale - self.general_body_rect().height()).max(0.0);
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
         (old - self.general_scroll_y).abs() > f64::EPSILON
+    }
+
+    /// Unscaled height of the devices card for `rows` devices.
+    fn devices_card_height(rows: usize) -> f64 {
+        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
+        48.0 + rows * 40.0 + 56.0
+    }
+
+    /// The devices card under "At a glance": where this workspace shows,
+    /// its place in the list, and Delete. Scroll applied.
+    pub fn devices_card_rect(&self) -> Rect {
+        let body = self.general_body_rect();
+        let scale = self.general_text_scale;
+        let top = body.y0 + 390.0 * scale - self.general_scroll_y;
+        Rect::new(
+            body.x0,
+            top,
+            body.x1,
+            top + Self::devices_card_height(self.device_rows) * scale,
+        )
+    }
+
+    /// The devices card's control under `point`, if any.
+    fn devices_card_hit(&self, point: Point) -> Option<EventOutcome> {
+        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
+        if let Some(index) = self.device_toggle_rects.iter().position(hit) {
+            return Some(EventOutcome::ToggleDevice(index));
+        }
+        if hit(&self.move_rects[0]) {
+            return Some(EventOutcome::MoveWorkspace(-1));
+        }
+        if hit(&self.move_rects[1]) {
+            return Some(EventOutcome::MoveWorkspace(1));
+        }
+        hit(&self.delete_rect).then_some(EventOutcome::DeleteWorkspace)
+    }
+
+    pub fn device_toggle_rects(&self) -> &[Rect] {
+        &self.device_toggle_rects
+    }
+
+    pub fn move_workspace_rects(&self) -> [Rect; 2] {
+        self.move_rects
+    }
+
+    pub fn delete_workspace_rect(&self) -> Rect {
+        self.delete_rect
     }
 
     pub fn name_rect(&self) -> Rect {
@@ -723,6 +799,11 @@ impl WorkspaceSettingsOverlay {
         if matches!(active_tab, WsTab::General) && !self.general_body_rect().contains(point) {
             return EventOutcome::CommitName;
         }
+        if matches!(active_tab, WsTab::General)
+            && let Some(outcome) = self.devices_card_hit(point)
+        {
+            return outcome;
+        }
         if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
             return EventOutcome::CreateInvite;
         }
@@ -826,6 +907,7 @@ impl WorkspaceSettingsOverlay {
             model,
             collab_y,
         );
+        self.draw_ws_settings_devices(scene, transform, text_renderer, theme, model);
 
         scene.pop_layer();
 
@@ -1983,6 +2065,199 @@ impl WorkspaceSettingsOverlay {
         sharing_card
     }
 
+    /// Paint the devices card and record its controls' rects. A workspace
+    /// that is not the person's own lists no devices but still offers its
+    /// place in the list and Delete.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one card painted top to bottom from shared running offsets, recording each control's rect as it goes"
+    )]
+    fn draw_ws_settings_devices(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &WorkspaceSettingsModel<'_>,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        self.device_rows = model.devices.len();
+        let card = self.devices_card_rect();
+        ui::surface::card(
+            scene,
+            transform,
+            card,
+            f64::from(tokens.radii.lg),
+            colors.surfaces.raised,
+        );
+        let size = tokens.typography.scale.sm;
+        let text = |text_renderer: &mut TextRenderer,
+                    scene: &mut Scene,
+                    label: &str,
+                    color,
+                    x: f64,
+                    y: f64| {
+            text_renderer.draw_text(
+                scene,
+                label,
+                size,
+                color,
+                transform.pre_translate((x, y).into()),
+                None,
+            );
+        };
+        text(
+            text_renderer,
+            scene,
+            &t("workspace-settings-devices-title"),
+            colors.text_primary,
+            card.x0 + 16.0,
+            card.y0 + 16.0 * scale,
+        );
+        let button = |scene: &mut Scene,
+                      text_renderer: &mut TextRenderer,
+                      rect: Rect,
+                      label: &str,
+                      fill,
+                      ink| {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(
+                    rect,
+                    ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
+                ),
+            );
+            let (width, _) = text_renderer.measure(label, size, None);
+            text_renderer.draw_text(
+                scene,
+                label,
+                size,
+                ink,
+                transform.pre_translate(
+                    (
+                        rect.x0 + (rect.width() - f64::from(width)) / 2.0,
+                        rect.y0 + 9.0 * scale,
+                    )
+                        .into(),
+                ),
+                None,
+            );
+        };
+        self.device_toggle_rects.clear();
+        let mut y = card.y0 + 48.0 * scale;
+        for device in model.devices {
+            let label = if device.here {
+                t_args(
+                    "workspace-settings-device-here",
+                    &[("device", device.label.clone().into())],
+                )
+            } else {
+                device.label.clone()
+            };
+            text(
+                text_renderer,
+                scene,
+                &label,
+                colors.text_primary,
+                card.x0 + 16.0,
+                y + 10.0 * scale,
+            );
+            let toggle = Rect::new(
+                card.x1 - 16.0 - 96.0 * scale,
+                y,
+                card.x1 - 16.0,
+                y + 32.0 * scale,
+            );
+            button(
+                scene,
+                text_renderer,
+                toggle,
+                &t(if device.shown {
+                    "workspace-settings-device-shown"
+                } else {
+                    "workspace-settings-device-hidden"
+                }),
+                if device.shown {
+                    colors.accent[5]
+                } else {
+                    colors.surfaces.base
+                },
+                colors.text_primary,
+            );
+            self.device_toggle_rects.push(toggle);
+            y += 40.0 * scale;
+        }
+        let row = y + 8.0 * scale;
+        let first = model
+            .desktop
+            .workspaces
+            .first()
+            .is_some_and(|workspace| workspace.id == model.desktop.active);
+        let last = model
+            .desktop
+            .workspaces
+            .last()
+            .is_some_and(|workspace| workspace.id == model.desktop.active);
+        let earlier = Rect::new(
+            card.x0 + 16.0,
+            row,
+            card.x0 + 16.0 + 96.0 * scale,
+            row + 32.0 * scale,
+        );
+        let later = Rect::new(
+            earlier.x1 + 8.0,
+            row,
+            earlier.x1 + 8.0 + 96.0 * scale,
+            row + 32.0 * scale,
+        );
+        for (rect, key, enabled) in [
+            (earlier, "workspace-settings-move-earlier", !first),
+            (later, "workspace-settings-move-later", !last),
+        ] {
+            button(
+                scene,
+                text_renderer,
+                rect,
+                &t(key),
+                colors.surfaces.base,
+                if enabled {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                },
+            );
+        }
+        self.move_rects = [
+            if first { Rect::ZERO } else { earlier },
+            if last { Rect::ZERO } else { later },
+        ];
+        let deletable = model.desktop.workspaces.len() > 1;
+        let delete = Rect::new(
+            card.x1 - 16.0 - 120.0 * scale,
+            row,
+            card.x1 - 16.0,
+            row + 32.0 * scale,
+        );
+        button(
+            scene,
+            text_renderer,
+            delete,
+            &t("workspace-settings-delete"),
+            colors.surfaces.base,
+            if deletable {
+                colors.semantic.danger
+            } else {
+                colors.text_dim
+            },
+        );
+        self.delete_rect = if deletable { delete } else { Rect::ZERO };
+    }
+
     /// Live workspace summary. Detailed member management belongs to the
     /// Members tab; General stays an honest overview rather than inventing
     /// a placeholder collaborator.
@@ -2641,5 +2916,50 @@ mod general_scroll_tests {
         );
         assert!(overlay.scroll_general(-1000.0));
         assert_eq!(overlay.name_rect(), name);
+    }
+    /// The devices card scrolls fully into view and its controls answer as
+    /// the device toggles, the moves and Delete.
+    #[test]
+    fn the_devices_card_scrolls_into_view_and_its_controls_answer() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
+        overlay.device_rows = 3;
+        overlay.scroll_general(10_000.0);
+        let card = overlay.devices_card_rect();
+        assert!(card.y1 <= overlay.general_body_rect().y1 + 0.5);
+        let toggle = Rect::new(
+            card.x1 - 112.0,
+            card.y0 + 48.0,
+            card.x1 - 16.0,
+            card.y0 + 80.0,
+        );
+        overlay.device_toggle_rects = vec![toggle];
+        overlay.move_rects = [
+            Rect::new(
+                card.x0 + 16.0,
+                card.y1 - 48.0,
+                card.x0 + 112.0,
+                card.y1 - 16.0,
+            ),
+            Rect::ZERO,
+        ];
+        overlay.delete_rect = Rect::new(
+            card.x1 - 136.0,
+            card.y1 - 48.0,
+            card.x1 - 16.0,
+            card.y1 - 16.0,
+        );
+        assert_eq!(
+            overlay.hit_test(toggle.center(), WsTab::General),
+            EventOutcome::ToggleDevice(0)
+        );
+        assert_eq!(
+            overlay.hit_test(overlay.move_rects[0].center(), WsTab::General),
+            EventOutcome::MoveWorkspace(-1)
+        );
+        assert_eq!(
+            overlay.hit_test(overlay.delete_rect.center(), WsTab::General),
+            EventOutcome::DeleteWorkspace
+        );
     }
 }

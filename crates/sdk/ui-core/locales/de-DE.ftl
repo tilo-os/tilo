@@ -250,6 +250,8 @@ terminal-target-host = Dieses Gerät (ohne Sandbox)
 terminal-target-default = Standardumgebung
 terminal-target-legacy = Legacy-VM
 terminal-target-manage = Umgebungen verwalten…
+terminal-run-on = Ausführen auf:
+terminal-run-on-this-device = Diesem Gerät
 terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
 terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
 terminal-env-title = Umgebungen
@@ -297,6 +299,10 @@ tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
 tree-move-indent = In das Element darüber verschieben
 tree-move-outdent = Aus dem übergeordneten Element verschieben
+
+# The show/hide control inside every password field.
+text-input-show-password = Passwort anzeigen
+text-input-hide-password = Passwort verbergen
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Willkommen zurück bei Tilo

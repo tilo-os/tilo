@@ -184,7 +184,157 @@ fn start(cert: &DeviceCert, surface: u64) -> NeighbourMsg {
         hdr_static_metadata: None,
         bit_depth: 0,
         app_id: "org.chromium.Chromium".into(),
+        tab: 0,
     }
+}
+
+#[tokio::test]
+async fn live_observation_preserves_grants_issued_after_its_snapshot() {
+    use std::future::{Future as _, poll_fn};
+    use std::task::Poll;
+    use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority as _};
+
+    let root = SigningKey::from_bytes(&[71; 32]);
+    let (host_key, host) = device(&root, 72, DeviceCapabilities::host());
+    let (key, cert) = device(&root, 73, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let (relay, sessions) = {
+        let relay = Relay::start_with_relay_mode(
+            RelayConfig {
+                state_root: state.path().into(),
+                ..Default::default()
+            },
+            crate::daemon::RelayIdentity {
+                user_public_key: host.user_public_key,
+                device_signing_key: host_key,
+                device_cert: host,
+                revocations: RevocationList::new(),
+            },
+            iroh::RelayMode::Disabled,
+        )
+        .await
+        .unwrap();
+        for id in [71, 72] {
+            relay
+                .set_workspace_membership(
+                    id,
+                    true,
+                    vec![cert.device_public_key],
+                    state.path().into(),
+                )
+                .await
+                .unwrap();
+        }
+        let sessions = Sessions::new(relay.web_context().clone());
+        (relay, sessions)
+    };
+    let challenge = sessions
+        .hello(&crate::auth::Hello {
+            cert: cert.clone(),
+            client_nonce: [74; 32],
+        })
+        .unwrap();
+    let session = sessions
+        .finish(
+            &challenge.handshake,
+            &crate::auth::HelloAck2 {
+                sig_over_server_nonce: key
+                    .sign(&crate::auth::challenge_digest(&challenge.ack.server_nonce))
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+    let grants = live::LiveGrants::new();
+    let authority = live::Authority(grants.clone());
+    let issue = |id| {
+        grants.issue(
+            &sessions,
+            session.token,
+            cert.device_public_key,
+            cert.user_public_key,
+            id,
+            None,
+        )
+    };
+    assert!(issue(73).await.is_none());
+    let first = issue(71).await.unwrap();
+    let first_live = authority.try_admit(&first.token).unwrap();
+    let (second, second_live) = {
+        let workspace = sessions.context().relay.workspaces.lock().await[&71].clone();
+        let held = workspace.lock().await;
+        let observation = grants.observe(&sessions);
+        tokio::pin!(observation);
+        // The only grant in the snapshot is now waiting for this workspace.
+        assert!(
+            poll_fn(|cx| Poll::Ready(observation.as_mut().poll(cx)))
+                .await
+                .is_pending()
+        );
+        let second = issue(72).await.unwrap();
+        let second_live = authority.try_admit(&second.token).unwrap();
+        assert!(
+            matches!(second_live.status(), AuthorizationStatus::Current),
+            "second_live must remain Current"
+        );
+        drop(held);
+        drop(workspace);
+        observation.await;
+        (second, second_live)
+    };
+    assert!(
+        matches!(first_live.status(), AuthorizationStatus::Current),
+        "first_live must remain Current"
+    );
+    assert!(
+        matches!(second_live.status(), AuthorizationStatus::Current),
+        "second_live must remain Current"
+    );
+    assert!(authority.try_admit(&second.token).is_ok());
+
+    // A later observation must still replace a previously allowed decision.
+    relay
+        .set_workspace_membership(72, true, vec![], state.path().into())
+        .await
+        .unwrap();
+    grants.observe(&sessions).await;
+    assert!(
+        matches!(second_live.status(), AuthorizationStatus::Denied),
+        "second_live must remain Denied"
+    );
+    assert!(matches!(
+        authority.try_admit(&second.token),
+        Err(Admission::Denied)
+    ));
+    assert!(issue(72).await.is_none());
+    assert!(
+        matches!(first_live.status(), AuthorizationStatus::Current),
+        "first_live must remain Current"
+    );
+    let mut revoked = tilo_user_identity::RevocationEntry {
+        user_public_key: cert.user_public_key,
+        revoked_device_public_key: cert.device_public_key,
+        revoked_at_ns: tilo_clock::unix_now_ns(),
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+    sessions
+        .context()
+        .relay
+        .revocations
+        .write()
+        .unwrap()
+        .insert(revoked)
+        .unwrap();
+    grants.observe(&sessions).await;
+    assert!(matches!(first_live.status(), AuthorizationStatus::Denied));
+    assert!(matches!(
+        authority.try_admit(&first.token),
+        Err(Admission::Denied)
+    ));
+    assert!(issue(71).await.is_none());
+    drop(sessions);
+    crate::daemon::Relay::shutdown(relay).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

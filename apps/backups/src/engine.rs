@@ -8,12 +8,15 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use ui::time::UNIX_EPOCH;
 use walkdir::WalkDir;
+
+use crate::model::RetentionPolicy;
 
 const REPOSITORY_DIR: &str = ".tilo-backups";
 const SNAPSHOTS_DIR: &str = "snapshots";
@@ -297,6 +300,97 @@ pub fn list_snapshots(destination: &Path) -> Result<Vec<BackupManifest>> {
     }
     manifests.sort_by_key(|manifest| std::cmp::Reverse(manifest.created_unix_seconds));
     Ok(manifests)
+}
+
+/// The bucket of one retention class a snapshot time falls in.
+type Period = fn(u64) -> i64;
+
+/// The snapshots `policy` keeps, by id: for each of the last `hourly` hours,
+/// `daily` days, `weekly` weeks (Monday to Sunday) and `monthly` months that
+/// hold a snapshot, the newest one in it (UTC), and always the newest
+/// snapshot of all, so a policy of zeros never empties the repository.
+pub fn retained(manifests: &[BackupManifest], policy: &RetentionPolicy) -> BTreeSet<String> {
+    let mut newest_first: Vec<&BackupManifest> = manifests.iter().collect();
+    // Two snapshots of one second are told apart by their id's suffix, the
+    // later one longer or greater.
+    newest_first.sort_by_key(|manifest| {
+        std::cmp::Reverse((
+            manifest.created_unix_seconds,
+            manifest.id.len(),
+            manifest.id.clone(),
+        ))
+    });
+    let mut keep = BTreeSet::new();
+    if let Some(newest) = newest_first.first() {
+        keep.insert(newest.id.clone());
+    }
+    let periods: [(u32, Period); 4] = [
+        (policy.hourly, |secs| (secs / 3_600) as i64),
+        (policy.daily, |secs| (secs / 86_400) as i64),
+        // 1970-01-01 was a Thursday: shifting by three days starts each
+        // week on a Monday.
+        (policy.weekly, |secs| ((secs / 86_400 + 3) / 7) as i64),
+        (policy.monthly, |secs| month_of(secs / 86_400)),
+    ];
+    for (count, period) in periods {
+        let mut seen = BTreeSet::new();
+        for manifest in &newest_first {
+            if seen.len() >= count as usize {
+                break;
+            }
+            if seen.insert(period(manifest.created_unix_seconds)) {
+                keep.insert(manifest.id.clone());
+            }
+        }
+    }
+    keep
+}
+
+/// The month (`year * 12 + month`) of a day counted from 1970-01-01, in the
+/// proleptic Gregorian calendar.
+fn month_of(days: u64) -> i64 {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    year * 12 + month
+}
+
+/// Delete the stored snapshots `policy` no longer keeps ([`retained`]) and
+/// answer their ids, oldest last. A snapshot leaves the listing before its
+/// data is removed, so an interrupted prune never shows a half-deleted one.
+///
+/// # Errors
+///
+/// Returns an error when the repository cannot be listed or a snapshot
+/// cannot be removed; the ones removed before it stay removed.
+pub fn prune_snapshots(destination: &Path, policy: &RetentionPolicy) -> Result<Vec<String>> {
+    let manifests = list_snapshots(destination)?;
+    let keep = retained(&manifests, policy);
+    let root = repository_path(destination).join(SNAPSHOTS_DIR);
+    let mut removed = Vec::new();
+    for manifest in manifests
+        .iter()
+        .filter(|manifest| !keep.contains(&manifest.id))
+    {
+        validate_id(&manifest.id)?;
+        let path = root.join(&manifest.id);
+        reject_symlink(&path, "Snapshot")?;
+        let doomed = root.join(format!(".pruning-{}", manifest.id));
+        fs::rename(&path, &doomed)?;
+        fs::remove_dir_all(&doomed)?;
+        removed.push(manifest.id.clone());
+    }
+    Ok(removed)
 }
 
 /// Verify the metadata, structure, sizes, and checksums of a stored snapshot.
@@ -731,6 +825,99 @@ mod tests {
         let parsed: BackupEntry =
             serde_json::from_str(&format!("{entry},\"mode\":null}}")).unwrap();
         assert_eq!(parsed.mode, None);
+    }
+
+    fn manifest_at(id: &str, created_unix_seconds: u64) -> BackupManifest {
+        BackupManifest {
+            version: 1,
+            id: id.into(),
+            created_unix_seconds,
+            source_name: "source".into(),
+            files: 0,
+            bytes: 0,
+            entries: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn retention_keeps_the_newest_snapshot_of_each_recent_period() {
+        const HOUR: u64 = 3_600;
+        const DAY: u64 = 24 * HOUR;
+        // Monday 2024-01-01 00:00 UTC.
+        let monday = 1_704_067_200;
+        let manifests = [
+            manifest_at("now", monday + 2 * DAY + 10 * HOUR + 1_800),
+            manifest_at("same-hour", monday + 2 * DAY + 10 * HOUR + 300),
+            manifest_at("earlier-today", monday + 2 * DAY + 3 * HOUR),
+            manifest_at("yesterday", monday + DAY + 5 * HOUR),
+            manifest_at("last-week", monday - 2 * DAY),
+            manifest_at("last-month", monday - 20 * DAY),
+            manifest_at("last-year", monday - 200 * DAY),
+        ];
+        let ids = |policy: RetentionPolicy| -> Vec<String> {
+            retained(&manifests, &policy).into_iter().collect()
+        };
+        let none = RetentionPolicy {
+            hourly: 0,
+            daily: 0,
+            weekly: 0,
+            monthly: 0,
+        };
+
+        // Nothing kept by policy still keeps the newest snapshot.
+        assert_eq!(ids(none), ["now"]);
+        // Two hours: the newest of this hour and of the previous hour that
+        // holds one; the older snapshot within the same hour goes.
+        assert_eq!(
+            ids(RetentionPolicy { hourly: 2, ..none }),
+            ["earlier-today", "now"]
+        );
+        assert_eq!(
+            ids(RetentionPolicy { daily: 2, ..none }),
+            ["now", "yesterday"]
+        );
+        // This week (from Monday) and the week before.
+        assert_eq!(
+            ids(RetentionPolicy { weekly: 2, ..none }),
+            ["last-week", "now"]
+        );
+        // January, then December (both "last-week" and "last-month" fall in
+        // December; the newer one is kept), then June.
+        assert_eq!(
+            ids(RetentionPolicy { monthly: 3, ..none }),
+            ["last-week", "last-year", "now"]
+        );
+        assert_eq!(month_of(0), 1970 * 12 + 1);
+        assert_eq!(month_of(monday / DAY), 2024 * 12 + 1);
+        assert_eq!(month_of(monday / DAY - 1), 2023 * 12 + 12);
+    }
+
+    #[test]
+    fn pruning_removes_only_what_the_policy_drops() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("destination");
+        let root = repository_path(&destination).join(SNAPSHOTS_DIR);
+        for manifest in [manifest_at("200", 200), manifest_at("100", 100)] {
+            let dir = root.join(&manifest.id);
+            fs::create_dir_all(dir.join("data")).unwrap();
+            fs::write(dir.join(MANIFEST), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
+        let keep_one = RetentionPolicy {
+            hourly: 1,
+            daily: 0,
+            weekly: 0,
+            monthly: 0,
+        };
+        // Both fall in the same hour: only the newer one stays.
+        assert_eq!(prune_snapshots(&destination, &keep_one).unwrap(), ["100"]);
+        let left: Vec<String> = list_snapshots(&destination)
+            .unwrap()
+            .into_iter()
+            .map(|manifest| manifest.id)
+            .collect();
+        assert_eq!(left, ["200"]);
+        assert!(!root.join("100").exists() && !root.join(".pruning-100").exists());
+        assert!(prune_snapshots(&destination, &keep_one).unwrap().is_empty());
     }
 
     #[test]

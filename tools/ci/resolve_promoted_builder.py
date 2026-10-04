@@ -10,10 +10,13 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REPOSITORY = "registry.tilo.so/tilo/tilo-builder"
 RESOLVER_SPEC = importlib.util.spec_from_file_location("builder_resolver", Path(__file__).with_name("resolve_builder.py"))
 resolver = importlib.util.module_from_spec(RESOLVER_SPEC)
 RESOLVER_SPEC.loader.exec_module(resolver)
+REPOSITORY = resolver.IMAGE
+LABELS_SPEC = importlib.util.spec_from_file_location("runner_labels", Path(__file__).with_name("runner_labels.py"))
+runner_labels = importlib.util.module_from_spec(LABELS_SPEC)
+LABELS_SPEC.loader.exec_module(runner_labels)
 PROMOTION_SPEC = importlib.util.spec_from_file_location("native_index", ROOT / "os/dev/promote-native-index.py")
 promotion = importlib.util.module_from_spec(PROMOTION_SPEC)
 PROMOTION_SPEC.loader.exec_module(promotion)
@@ -47,7 +50,7 @@ def resolve(run=command, fetch=resolver.fetch_manifest):
     for digest in children.values():
         run("cosign", "verify", "--key", "keys/cosign.pub", f"{REPOSITORY}@{digest}")
     return {"include": [dict(arch=arch,
-                             runner="runner-arm64" if arch == "aarch64" else "runner",
+                             runner=runner_labels.NATIVE[arch],
                              image=f"{REPOSITORY}@{children[arch]}")
                         for arch in sorted(children)]}
 

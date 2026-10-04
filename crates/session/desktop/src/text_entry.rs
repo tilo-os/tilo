@@ -1,7 +1,7 @@
 //! Keyboard editing for the chrome's inline text fields.
 //!
-//! The compositor's own surfaces — the workspace-name inline edit, the
-//! Wi-Fi password prompt — are painted immediate-mode rather than as
+//! Some of the compositor's own surfaces — the workspace-name inline edit,
+//! the presence status editor — are painted immediate-mode rather than as
 //! retained `ui` widgets, because they live inside popovers the chrome
 //! lays out by hand. What they must not do is each grow their own idea
 //! of what Backspace, Ctrl+A, Home or a paste means: that is how one
@@ -202,12 +202,6 @@ fn apply_plain_char(s: &str, buf: &mut String, sel: &mut Selection) -> Edit {
     buf.replace_range(r.clone(), &filtered);
     *sel = Selection::collapsed(r.start.saturating_add(filtered.len()));
     Edit::Changed
-}
-
-/// One bullet per character. Bullets over asterisks: `•` is round and even
-/// at the chrome's text size, where `*` sits high like a footnote marker.
-pub fn masked(buf: &str) -> String {
-    "•".repeat(buf.chars().count())
 }
 
 #[cfg(test)]
@@ -434,16 +428,5 @@ mod tests {
             );
             assert_eq!(apply(&ch("q"), ctrl(), &mut buf, &mut sel), Edit::Ignored);
         }
-    }
-
-    #[test]
-    fn masking_is_one_bullet_per_character_not_per_byte() {
-        assert_eq!(masked(""), "");
-        assert_eq!(masked("abc"), "•••");
-        assert_eq!(
-            masked("é漢"),
-            "••",
-            "a masked field must not leak a password's byte length"
-        );
     }
 }
