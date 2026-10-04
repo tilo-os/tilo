@@ -128,17 +128,6 @@ struct RowView {
 }
 
 impl ThemeRow {
-    pub(crate) fn draw_snapshot(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        self.rect = rect;
-        self.paint(scene, t, tr, theme);
-    }
     fn paint(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let radius = theme.radius_standard.min(12.0);
         // Row background: the raised card surface, hover a step up. The

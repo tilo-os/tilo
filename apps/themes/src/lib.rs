@@ -2,8 +2,9 @@
 //! toolkit). Browse preset themes, customise the OS token set live, and
 //! create / duplicate / export your own.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! winit event loop and the `--shots` offscreen renderer.
+//! [`ThemesShell`] is the app: every host mounts it through [`definition`],
+//! and the binary runs it with every standard launch mode, `--shots`
+//! included.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -46,45 +47,9 @@ pub mod store;
 pub mod widgets;
 
 pub use app::ThemesApp;
+pub use resource::{Themes, ThemesEffect, ThemesShell};
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(ThemesApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.themes", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .as_definition("Theme Studio")
+    ui::framework::definition::<ThemesShell>()
 }
-
-/// Build the root widget tree for a headless `--shots` capture at the given
-/// viewport width. The single-frame renderer has no live first frame to settle
-/// the responsive layout, so the layout class (docked vs. overlay) is seeded
-/// from `width` here and the gallery flap is snapped to its endpoint. A narrow
-/// width therefore captures the collapsed gallery floating over its scrim.
-pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
-    // Optional scenario for the capture (sidebar menu, narrow scroll, font
-    // change), selected via the `TILO_THEMES_SHOT` env var so a single binary
-    // renders every review still. `live` captures the presets-only catalog;
-    // every other scenario uses the seeded demo catalog.
-    let scenario = std::env::var("TILO_THEMES_SHOT").unwrap_or_default();
-    let mut app = if scenario == "live" {
-        ThemesApp::new()
-    } else {
-        ThemesApp::new_demo()
-    };
-    app.seed_shot(f64::from(width), &scenario);
-    Box::new(app)
-}
-
-pub use resource::{Themes, ThemesShell};
-
-pub mod framework_history;
-
-#[cfg(test)]
-mod framework_history_tests;
