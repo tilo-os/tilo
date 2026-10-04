@@ -38,15 +38,15 @@ use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, RetryPolicy,
+    ExecutionLocus, Resource,
 };
+use ui::tilo_resource::Effect as _;
 
 use crate::doc::FeedsDoc;
 use crate::model::{Article, Feed, FeedKind, Folder, Id, ReadSettings};
 
 /// Registry `type_id` for every Feeds action.
 pub const FEEDS_ACTION_TYPE: &str = "feeds.action";
-pub const FEEDS_OPERATION_TYPE: &str = "feeds.operation";
 /// Contextual Ctrl+K snapshots stay small even for an archival-scale reader.
 /// Search retains the complete catalogue and omitted stable ids resolve via
 /// [`resolve_child`].
@@ -88,27 +88,6 @@ pub fn open_feed_address(id: Id) -> ActionAddress {
 
 pub fn open_article_address(id: Id) -> ActionAddress {
     ActionAddress::new(article_resource_id(id), "open")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FeedsOperation {
-    RevealFeed { id: String },
-    RevealArticle { id: String },
-    RevealTag { tag: String },
-}
-
-/// Decode a Feeds-local view/effect operation, declining foreign type ids.
-///
-/// # Errors
-///
-/// Returns a message when a Feeds operation payload is malformed.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<FeedsOperation>, String> {
-    if type_id != FEEDS_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
 }
 
 /// Guess a feed's kind from its URL scheme — the same rule the fetch worker
@@ -525,16 +504,10 @@ fn immediate_spec(id: &str, label: &str, action: &FeedsAction) -> ActionSpec {
         })
 }
 
-fn view_spec(id: &str, label: &str, operation: &FeedsOperation) -> Option<ActionSpec> {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        FEEDS_OPERATION_TYPE,
-        operation,
-    )
-    .ok()
-    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
+/// Showing `item` (a feed, an article or a tag, by its resource id), as the
+/// item offers it.
+fn open_spec(item: String) -> ActionSpec {
+    crate::resource::FeedsEffect::Open { item }.bound()
 }
 
 /// A one-line label for a feed, defaulting to a placeholder when untitled.
@@ -637,18 +610,8 @@ fn folder_resource(folder: &FolderRef) -> Resource {
 }
 
 fn tag_resource(tag: &TagRef) -> Resource {
-    let operation = FeedsOperation::RevealTag {
-        tag: tag.name.clone(),
-    };
-    let mut resource = Resource::new(
-        tag_resource_id(&tag.name),
-        "feeds.tag",
-        format!("#{}", tag.name),
-    );
-    if let Some(open) = view_spec("open", "Open tagged articles", &operation) {
-        resource = resource.with_action(open);
-    }
-    resource
+    let id = tag_resource_id(&tag.name);
+    Resource::new(id.clone(), "feeds.tag", format!("#{}", tag.name)).with_action(open_spec(id))
 }
 
 fn article_resource(article: &ArticleRef) -> Resource {
@@ -658,17 +621,8 @@ fn article_resource(article: &ArticleRef) -> Resource {
     } else {
         article.title.clone()
     };
-    let mut article_node = Resource::new(article_resource_id(article_id), "feeds.article", title);
-    if let Some(open) = view_spec(
-        "open",
-        "Open article",
-        &FeedsOperation::RevealArticle {
-            id: article_id.to_string(),
-        },
-    ) {
-        article_node = article_node.with_action(open);
-    }
-    article_node
+    Resource::new(article_resource_id(article_id), "feeds.article", title)
+        .with_action(open_spec(article_resource_id(article_id)))
         .with_action(immediate_spec(
             "read",
             if article.read {
@@ -707,13 +661,7 @@ fn feed_resource(
 ) -> Resource {
     let id = feed.id;
     let mut child = Resource::new(feed_resource_id(id), "feeds.subscription", feed_label(feed));
-    if let Some(open) = view_spec(
-        "open",
-        "Open feed",
-        &FeedsOperation::RevealFeed { id: id.to_string() },
-    ) {
-        child = child.with_action(open);
-    }
+    child = child.with_action(open_spec(feed_resource_id(id)));
     child = child.with_action(ActionSpec::prompted(
         "rename",
         "Rename feed",
@@ -968,6 +916,7 @@ mod tests {
     use crate::model::{Filter, Store};
     use crate::resource::{Feeds, FeedsState, READER_RESOURCE_ID};
     use automerge::AutoCommit;
+    use tilo_actions::OperationKind;
     use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
 
@@ -1152,7 +1101,9 @@ mod tests {
     fn the_published_library_offers_every_item_its_actions() {
         let doc = seeded();
         let resources = published(&doc);
-        let handlers = std::collections::HashSet::from([FEEDS_OPERATION_TYPE.to_string()]);
+        let handlers = std::collections::HashSet::from([
+            <crate::resource::FeedsEffect as ui::tilo_resource::Effect>::OPERATION.to_string(),
+        ]);
         let violations = tilo_actions::validate_surface(&resources, &registry(), &handlers);
         assert!(violations.is_empty(), "{violations:?}");
         let reader = &resources[0];
