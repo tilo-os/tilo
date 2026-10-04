@@ -1217,22 +1217,21 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                     },
                 ];
                 let mut p = WifiPasswordPrompt::new("Cafe WiFi");
-                match preset {
-                    "typed" => {
-                        p.password = "hunter2pass".into();
-                        p.selection = ui::text_selection::Selection::collapsed(p.password.len());
-                    }
-                    "rejected" => {
-                        p.password = "wrongpass".into();
-                        p.selection.anchor = 0;
-                        p.selection.cursor = p.password.len();
-                        p.error = Some("Couldn't join. Check the password.".into());
-                    }
-                    _ => {}
+                if preset == "rejected" {
+                    p.error = Some("Couldn't join. Check the password.".into());
                 }
                 st.quick_settings.wifi_password = Some(p);
                 st.bump();
             });
+            match preset {
+                "typed" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("hunter2pass", false),
+                "rejected" => driver
+                    .host_mut()
+                    .seed_wifi_password_for_tests("wrongpass", true),
+                _ => {}
+            }
         }
         Action::SelectGroup(idx) => {
             let idx = *idx;
