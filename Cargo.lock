@@ -1554,11 +1554,13 @@ dependencies = [
  "tilo-content",
  "tilo-files",
  "tilo-paths",
+ "tilo-test-env",
  "tilo-wet-media",
  "tracing",
  "usvg",
  "uuid",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]
@@ -5094,11 +5096,14 @@ name = "greeter"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "chrono",
  "console-control",
  "greetd-client",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-automerge-fork",
+ "tilo-power-mgmt",
  "tilo-startup-metrics",
  "tilo-ui",
  "tilo-vello",
@@ -8941,6 +8946,7 @@ dependencies = [
  "base64",
  "blake3",
  "chrono",
+ "image",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -13711,6 +13717,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spellbook"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d204abcbdf8e88729306a8d0ca01a79d8a49969fe1f84696909d6dbc4321c1a"
+dependencies = [
+ "foldhash 0.2.0",
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "spez"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14080,7 +14096,7 @@ version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c2499c2d826531388872b2268718aed907a39bd785ab0dcfe57fab26283f92e"
 dependencies = [
- "skrifa 0.42.1",
+ "skrifa 0.44.0",
  "yazi",
  "zeno",
 ]
@@ -16039,6 +16055,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-paint-stream"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "serde_json",
+ "usvg",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
@@ -16567,6 +16594,9 @@ dependencies = [
 name = "tilo-spellcheck"
 version = "0.1.0"
 dependencies = [
+ "encoding_rs",
+ "spellbook",
+ "tempfile",
  "tilo-xdg-paths",
  "workspace-hack",
 ]
@@ -16711,6 +16741,7 @@ dependencies = [
  "tilo-host-search",
  "tilo-image-codec",
  "tilo-media",
+ "tilo-paint-stream",
  "tilo-paths",
  "tilo-process",
  "tilo-resource",
