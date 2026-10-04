@@ -316,6 +316,18 @@ impl<R: Resource> SurfaceCx<R> {
         &self.run.launched.arguments
     }
 
+    /// The value of the app's own option `name` the window's launch named,
+    /// as [`ViewCx::launch_option`](super::ViewCx::launch_option).
+    pub fn launch_option(&self, name: &str) -> Option<&str> {
+        super::launch::option(&self.run.launched.options, name)
+    }
+
+    /// Whether the window's launch named the app's switch `name`, as
+    /// [`ViewCx::launch_flag`](super::ViewCx::launch_flag).
+    pub fn launch_flag(&self, name: &str) -> bool {
+        super::launch::flag(&self.run.launched.options, name)
+    }
+
     /// The id of the app the surface is part of, which its presence keys
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {
