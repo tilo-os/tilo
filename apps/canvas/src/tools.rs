@@ -250,8 +250,8 @@ pub enum FileRequest {
 pub struct Live {
     /// The control's value, as it moves.
     pub state: LocalState<f64>,
-    /// Its value when it was built: what the artwork already shows.
-    pub committed: f64,
+    /// The value the artwork has, followed as it changes.
+    pub committed: LocalState<f64>,
     /// The value onto the artwork as shown.
     pub apply: Onto,
 }
@@ -263,7 +263,8 @@ impl Live {
     /// The value while it differs from what the artwork has.
     pub fn moved(&self) -> Option<f64> {
         let value = self.state.with(|value| *value);
-        ((value - self.committed).abs() > 1e-9).then_some(value)
+        let committed = self.committed.with(|value| *value);
+        ((value - committed).abs() > 1e-9).then_some(value)
     }
 }
 
@@ -350,7 +351,9 @@ impl Default for Tools {
             erasing: LocalState::new(Erasing::Paint),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
-            renderer: Rc::default(),
+            // The canvas and the thumbnails never wait for a picture to
+            // decode; a look or export asks the renderer to.
+            renderer: Rc::new(RefCell::new(Renderer::impatient())),
             sheet: LocalState::new(None),
             files: LocalState::new(None),
             file: LocalState::new(None),
