@@ -18,6 +18,8 @@ mod e2e_smoke;
 mod framework_body;
 #[path = "framework_new_note.rs"]
 mod framework_new_note;
+#[path = "framework_save_status.rs"]
+mod framework_save_status;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
