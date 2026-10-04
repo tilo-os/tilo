@@ -137,6 +137,7 @@ policies! {
         "tilo.default_apps.handlers",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
+        "tilo.text_assistance.spelling_language",
         // Hosted providers name no device: an endpoint on the internet and a
         // reference to the key, never the key itself.
         "tilo.agent_providers.hosted",

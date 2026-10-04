@@ -765,3 +765,41 @@ fn a_file_saved_here_is_not_read_again() {
     assert_eq!(paragraphs(&app), ["Edited: First draft"]);
     assert_eq!(app.versions().len(), versions, "nothing was read back in");
 }
+
+/// The panels a person opens follow them to their next window, and the
+/// language their shared spelling preferences name is the one words are
+/// checked in.
+#[test]
+fn layout_and_spelling_language_follow_the_person() {
+    use word_processor::effects::WordProcessorEffect;
+    use word_processor::{WordProcessorWidget, WriterLayout};
+    let mut app = open();
+    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.panels_shown());
+    assert_eq!(shown, Some((true, false, false)), "the default layout");
+    app.effect(&WordProcessorEffect::Styles).unwrap();
+    app.effect(&WordProcessorEffect::Ruler).unwrap();
+    app.harness().relayout();
+    assert_eq!(
+        app.settings::<WriterLayout>().get(),
+        WriterLayout {
+            show_ruler: false,
+            show_styles_panel: true,
+            show_outline: false,
+        },
+        "the layout is kept with the person's settings"
+    );
+
+    app.settings::<ui::text_assistance::TextAssistancePrefs>()
+        .update(|prefs| prefs.spelling_language = "de_DE".into())
+        .unwrap();
+    let mut app = app.reopen().unwrap();
+    let shown = app.with_surface(|editor: &mut WordProcessorWidget| editor.panels_shown());
+    assert_eq!(
+        shown,
+        Some((false, true, false)),
+        "a new window opens as left"
+    );
+    let language =
+        app.with_surface(|editor: &mut WordProcessorWidget| editor.spell_language().to_owned());
+    assert_eq!(language.as_deref(), Some("de_DE"));
+}
