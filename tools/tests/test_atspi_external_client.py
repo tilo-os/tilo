@@ -18,6 +18,30 @@ sys.modules[SPEC.name] = CLIENT
 SPEC.loader.exec_module(CLIENT)
 
 
+class SettingsNetworkTests(unittest.TestCase):
+    DEVICES = "ethernet:connected:Wired connection 1\nwifi:connected:caf\\:e\nloopback:connected (externally):lo\n"
+
+    def test_nmcli_rows_become_what_settings_must_show(self):
+        expected = CLIENT.network_expectation(self.DEVICES, "full\n")
+        self.assertEqual(expected.connectivity, "Connected to the internet")
+        self.assertEqual(expected.wifi, "Connected to caf:e")
+        self.assertTrue(expected.wired)
+        with self.assertRaisesRegex(CLIENT.GateError, "no connected Wi-Fi or wired link"):
+            CLIENT.network_expectation("wifi:disconnected:--\n", "none")
+        with self.assertRaisesRegex(CLIENT.GateError, "unknown connectivity"):
+            CLIENT.network_expectation(self.DEVICES, "sideways")
+
+    def test_a_pane_showing_a_false_state_or_an_error_fails(self):
+        expected = CLIENT.network_expectation(self.DEVICES, "full")
+        good = ["('Connected to caf:e',)", "('Connected · 1000 Mb/s',)", "('Connected to the internet',)"]
+        self.assertEqual(CLIENT.network_mismatches(good, expected), [])
+        stale = ["('Not connected',)", "('Connectivity not checked',)"]
+        problems = CLIENT.network_mismatches(stale, expected)
+        self.assertEqual(len(problems), 3, problems)
+        failed = good + ["('Can\u2019t read network status: nmcli not installed',)", "(\"Can't check connectivity: x\",)"]
+        self.assertTrue(CLIENT.network_mismatches(failed, expected))
+
+
 class ManifestScenarioTests(unittest.TestCase):
     def test_package_store_metadata_and_payload_are_separate(self):
         with tempfile.TemporaryDirectory() as work:
