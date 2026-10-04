@@ -1,20 +1,35 @@
 //! Device-local EPUB capability registry.
 //!
 //! A source path is a local portal grant, not collaborative content. Keep it
-//! in Tilo' private settings store so reopening a book or watching a folder
-//! survives restart without putting a path into the Automerge document.
+//! in the app's device-local settings so reopening a book or watching a
+//! folder survives restart without putting a path into the Automerge
+//! document.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-const SECTION: &str = "ebook_local_library";
+const APP_ID: &str = "so.tilo.ebook";
 const BOOKS: &str = "books";
 const WATCHED: &str = "watched_folders";
 const SHORTCUTS: &str = "shortcuts";
 const MAX_ENTRIES: usize = 200;
 const MAX_PATH_BYTES: usize = 4096;
+
+/// The library as stored: the app's device-local settings, kept as the raw
+/// keys [`LocalLibrary::from_section`] validates one by one.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+struct Stored(Map<String, Value>);
+
+impl ui::storage::SettingsSchema for Stored {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+fn settings() -> ui::storage::Settings<Stored> {
+    ui::storage::Settings::for_app(APP_ID)
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocalLibrary {
@@ -27,7 +42,7 @@ pub(crate) struct LocalLibrary {
 
 impl LocalLibrary {
     pub(crate) fn load() -> Self {
-        Self::from_section(&ui::storage::SettingsSection::named(SECTION).load())
+        Self::from_section(&settings().get().0)
     }
 
     pub(crate) fn remember_book(&mut self, id: &str, path: &Path) {
@@ -80,7 +95,7 @@ impl LocalLibrary {
     }
 
     pub(crate) fn save(&self) {
-        if let Err(error) = ui::storage::SettingsSection::named(SECTION).update(self.section()) {
+        if let Err(error) = settings().set(&Stored(self.section())) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }
@@ -163,18 +178,12 @@ impl LocalLibrary {
 
     #[cfg(test)]
     fn from_path(path: &Path) -> Self {
-        Self::from_section(
-            &ui::storage::SettingsSection::named(SECTION)
-                .in_file(path)
-                .load(),
-        )
+        Self::from_section(&settings().in_file(path).get().0)
     }
 
     #[cfg(test)]
     fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        ui::storage::SettingsSection::named(SECTION)
-            .in_file(path)
-            .update(self.section())
+        settings().in_file(path).set(&Stored(self.section()))
     }
 }
 
@@ -232,7 +241,12 @@ mod tests {
             assert_eq!(registry.books.len(), 1);
             registry.save_at(&path).unwrap();
 
-            assert!(ui::storage::settings_at(&path).contains_key(SECTION));
+            assert!(
+                ui::storage::settings_at(&path)["app_device_local"][APP_ID]
+                    .get(BOOKS)
+                    .is_some(),
+                "the paths are the device's own"
+            );
 
             let restored = LocalLibrary::from_path(&path);
             assert_eq!(
