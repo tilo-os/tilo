@@ -20,6 +20,10 @@ pub(super) struct LocalCaller {
     time: crate::peer_actions::PolicyTime,
 }
 impl LocalCaller {
+    /// The room it acts in and who the host admitted on it.
+    pub(super) fn admitted_in(&self) -> (String, AdmittedJoinIdentity) {
+        (self.route.cluster_id.clone(), self.admitted.clone())
+    }
     fn capture(channel: &CapnpChannelHandle) -> Result<Self, String> {
         let time = channel
             .state

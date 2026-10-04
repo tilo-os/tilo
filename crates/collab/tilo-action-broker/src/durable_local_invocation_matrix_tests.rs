@@ -423,6 +423,134 @@ mod durable_local_matrix {
             .await;
     }
 
+    /// An edit a durable, certified invocation's effect submits is admitted
+    /// as that invocation's caller: under their grants, and refused beyond
+    /// them; a certified caller whose certificate no longer verifies
+    /// continues nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                use tilo_actions::remote::{
+                    InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+                };
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let room = env.route.cluster_id.clone();
+                for cap in [
+                    CapOverride::membership(Subject::agent("scribe"), room.clone(), Verb::Write),
+                    CapOverride::grant(
+                        Subject::agent("scribe"),
+                        collab_types::Scope::App(env.route.app_id.clone()),
+                        Verb::Write,
+                    ),
+                    CapOverride::new(
+                        Subject::agent("scribe"),
+                        collab_types::Scope::Action {
+                            app: env.route.app_id.clone(),
+                            action: "erase".into(),
+                        },
+                        collab_types::Effect::Restrict,
+                        Verb::Read,
+                    ),
+                ] {
+                    env.membership.write().workspaces[0].grant_capability(cap);
+                }
+                let agent = rig.caller(&env, 905, Some("scribe")).await;
+                let invocation = id(0xc001);
+                invoke(&agent.handle, &rig.binding, invocation)
+                    .await
+                    .unwrap();
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                assert_eq!(delivered.actor, "agent:scribe");
+
+                // The running invocation keeps its certified caller.
+                let continued = rig
+                    .state
+                    .continuing_caller(903, invocation)
+                    .expect("the durable invocation's caller");
+                assert_eq!(
+                    continued,
+                    tilo_actions::remote::Caller::local_agent("scribe").in_room(room.clone())
+                );
+                assert!(rig.state.continuing_caller(904, invocation).is_none());
+
+                // Its edits are admitted as the agent: what the grants allow,
+                // and not what one denies.
+                let action = |action: &str| PublishedAction {
+                    resource: "document-1:body".into(),
+                    action: action.into(),
+                    resource_kind: "document".into(),
+                    resource_label: "Document".into(),
+                    action_label: action.into(),
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::Effect,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract::default(),
+                    input: PublishedInput::None,
+                    view: None,
+                };
+                rig.state
+                    .replace_published_surfaces_for_test(vec![PublishedSurface {
+                        peer_id: 903,
+                        app_id: env.route.app_id.clone(),
+                        route: env.route.clone(),
+                        actions: vec![action("edit"), action("erase")],
+                        live: true,
+                    }]);
+                let mut app = rig.state.capture_invocations_for_test(903);
+                let edit = |action: &str| InvokeRequest {
+                    on_behalf_of: Some(invocation),
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                        address: tilo_actions::ActionAddress::new("document-1:body", action),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                };
+                assert!(matches!(
+                    rig.state
+                        .action_invoke(&continued, Some(903), None, &edit("edit"))
+                        .poll_ready(),
+                    PendingPoll::Ready(Ok(_))
+                ));
+                assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
+                assert!(!matches!(
+                    rig.state
+                        .action_invoke(&continued, Some(903), None, &edit("erase"))
+                        .poll_ready(),
+                    PendingPoll::Ready(Ok(_))
+                ));
+                assert!(app.try_recv().is_err(), "the denied edit reaches no app");
+
+                // A remote device's certified caller is checked again each
+                // time: revoked, it continues nothing.
+                let certified = rig
+                    .state
+                    .verify_action_caller(&room, &presentation(&room, &env.cert, &env.key))
+                    .unwrap();
+                let certified =
+                    crate::collab_broker_capnp::ContinuingCaller::Certified(Box::new(certified));
+                assert_eq!(
+                    certified.current(&rig.state),
+                    Some(
+                        tilo_actions::remote::Caller::local_person(principal_id_for_root(
+                            env.cert.user_public_key
+                        ))
+                        .in_room(room.clone())
+                    )
+                );
+                *env.authority.certificate.lock().unwrap() = None;
+                assert!(certified.current(&rig.state).is_none());
+                drop(agent);
+                rig.stop().await;
+            })
+            .await;
+    }
+
     #[derive(Clone, Default)]
     struct ReadGate(
         Arc<(
