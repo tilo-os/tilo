@@ -14,7 +14,7 @@
 //! placeholder — never a fabricated picture — until then.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
 use ui::floating_surface::{Material, paint_material};
@@ -45,12 +45,6 @@ struct Participant {
     muted: bool,
     audio_only: bool,
     sharing: bool,
-}
-
-/// The huddle's chrome under its video: the stream status and the controls
-/// row, plus the participant chips as they reveal.
-fn huddle_lower_chrome_for_reveal(reveal: f32) -> f64 {
-    76.0 + 80.0 * f64::from(reveal.clamp(0.0, 1.0))
 }
 
 /// How the expanded call overlay tiles the surface. A plain call packs every
@@ -87,8 +81,8 @@ const CALL_CONTROL_KEYS: [&str; 7] = [
 /// the host `VideoPlayer` tile from it and the pointer path hit-tests against
 /// it — so the measurement happens once per paint, in the `&mut self` pass
 /// that precedes drawing, and is cached here. Before the first paint the
-/// authored 1× rules stand in (`Default`), which is also what the geometry
-/// tests exercise.
+/// theme's unmeasured values stand in (`Default`), which is also what the
+/// geometry tests exercise.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CallOverlayMetrics {
     /// `(label, width)` for every control the bar may show: the button's own
@@ -109,39 +103,73 @@ pub(crate) struct CallOverlayMetrics {
     /// Space above (`s6`) and below (`s4`) the title.
     pub header_pad_top: f64,
     pub header_pad_bottom: f64,
-}
-
-impl Default for CallOverlayMetrics {
-    fn default() -> Self {
-        Self {
-            button_w: Vec::new(),
-            button_h: 32.0,
-            gap: 8.0,
-            inner_pad: 8.0,
-            side_pad: 24.0,
-            bottom_pad: 16.0,
-            // The 1× line box of the Title role (20 px at 1.25).
-            title_h: 25.0,
-            header_pad_top: 24.0,
-            header_pad_bottom: 16.0,
-        }
-    }
+    /// What an unmeasured label's button adds to the label: its icon, the
+    /// gap after it and the side padding.
+    pub button_chrome_w: f64,
+    /// The size of a control label, for estimating an unmeasured one.
+    pub label_size: f64,
+    /// Gap between participant tiles (`s3`).
+    pub tile_gap: f64,
+    /// The shortest the screen-share filmstrip gets: one tile's disc,
+    /// caption and name plate with the air between them.
+    pub strip_min_h: f64,
 }
 
 impl CallOverlayMetrics {
+    /// The overlay's sizes in `theme` before anything is measured: the
+    /// spacing steps, the control height and the title's line box.
+    pub(crate) fn of(theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        Self {
+            button_w: Vec::new(),
+            button_h: ButtonFace::height(ControlSize::Regular, theme),
+            gap: f64::from(sp.s2),
+            inner_pad: f64::from(sp.s2),
+            side_pad: f64::from(sp.s6),
+            bottom_pad: f64::from(sp.s4),
+            title_h: f64::from(theme.text(TextRole::Title).line_height_px()),
+            header_pad_top: f64::from(sp.s6),
+            header_pad_bottom: f64::from(sp.s4),
+            button_chrome_w: f64::from(metrics.icon_md)
+                + f64::from(metrics.icon_label_gap)
+                + 2.0 * f64::from(sp.s3),
+            label_size: f64::from(theme.text(TextRole::Label).size),
+            tile_gap: f64::from(sp.s3),
+            strip_min_h: ui::widget::AvatarSize::Regular.side(theme)
+                + f64::from(theme.text(TextRole::Caption).line_height_px())
+                + plate_height(theme)
+                + 4.0 * f64::from(sp.s2),
+        }
+    }
+
     /// Width of the control labelled `label`: its measured width when this
-    /// frame measured it, else the fixed-length estimate the 1× layout used
-    /// (so the geometry tests, which never paint, still resolve).
+    /// frame measured it, else an estimate from the label's length (so the
+    /// geometry tests, which never paint, still resolve).
     fn button_width(&self, label: &str) -> f64 {
         self.button_w
             .iter()
             .find(|(l, _)| l.as_str() == label)
-            .map_or_else(|| overlay_button_width(label), |(_, w)| *w)
+            .map_or_else(|| self.estimated_button_width(label), |(_, w)| *w)
+    }
+
+    /// A measurement-free width for a control: about half an em per
+    /// character of the label, plus the button's icon and padding.
+    fn estimated_button_width(&self, label: &str) -> f64 {
+        label.chars().count() as f64 * self.label_size / 2.0 + self.button_chrome_w
     }
 
     /// Height of the title block above the tile band.
     pub(crate) fn header_h(&self) -> f64 {
         self.header_pad_top + self.title_h + self.header_pad_bottom
+    }
+}
+
+impl Default for CallOverlayMetrics {
+    /// The dark theme's sizes at the reference text size, before the first
+    /// paint.
+    fn default() -> Self {
+        Self::of(&Theme::dark())
     }
 }
 
@@ -173,7 +201,6 @@ impl ChatApp {
             return;
         }
         self.call_overlay_metrics_key = Some(key);
-        let sp = &theme.tokens.spacing;
         // Every label the bar can show — both halves of each toggle pair —
         // is measured, so a Mute → Unmute flip between paints resolves to a
         // measured width and the hit rects never fall back to the estimate.
@@ -189,14 +216,8 @@ impl ChatApp {
             .collect();
         let measured = CallOverlayMetrics {
             button_w,
-            button_h: ButtonFace::height(ControlSize::Regular, theme),
-            gap: f64::from(sp.s2),
-            inner_pad: f64::from(sp.s2),
-            side_pad: f64::from(sp.s6),
-            bottom_pad: f64::from(sp.s4),
             title_h: line_of(tr, &theme.text(TextRole::Title)),
-            header_pad_top: f64::from(sp.s6),
-            header_pad_bottom: f64::from(sp.s4),
+            ..CallOverlayMetrics::of(theme)
         };
         if self.call_overlay_metrics != measured {
             self.call_overlay_metrics = measured;
@@ -243,21 +264,70 @@ impl ChatApp {
     /// Sample the participant reveal once per frame. Every geometry consumer
     /// subsequently reads the cached value, avoiding tiny wall-clock skew
     /// between the soft body, its controls, hit regions and native bounds.
-    pub(crate) fn reconcile_huddle_motion(&mut self, theme: &Theme) {
+    pub(crate) fn reconcile_huddle_motion(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         if !self.call.active {
             self.call_chrome_motion.reset();
+            self.huddle_chip_rows = 0;
             return;
         }
         // The participant strip opens only when there is someone beside you
         // to show in it.
-        let participant_count = self.call_participants().len();
-        let open = participant_count > 1 && self.participants_should_show(participant_count);
+        let parts = self.call_participants();
+        let open = parts.len() > 1 && self.participants_should_show(parts.len());
         self.call_chrome_motion.reconcile(open, theme);
         if !self.call.expanded {
-            let lower_chrome = self.huddle_lower_chrome();
+            // The chips wrap inside the video's width; the window grows by
+            // as many rows as they take.
+            let widths: Vec<f64> = parts
+                .iter()
+                .skip(1)
+                .map(|p| {
+                    let name = self.user_name(&p.user);
+                    ChipFace::intrinsic_width(&name, Self::chip_lead(p), false, tr, theme)
+                })
+                .collect();
+            self.huddle_chip_rows = if widths.is_empty() {
+                0
+            } else {
+                let room = self.huddle_video().width();
+                pack_rows(&widths, self.chrome.call_gap, room).len()
+            };
             self.call
                 .placement
-                .set_attached_chrome([12.0, 40.0, 12.0, lower_chrome]);
+                .set_attached_chrome(self.huddle_attached_chrome());
+        }
+    }
+
+    /// The call window's frame around its video, `[left, top, right,
+    /// bottom]`: the title bar above, the inset beside, and the connection
+    /// line, the participant chips (as they reveal) and the controls below.
+    fn huddle_frame(&self) -> [f64; 4] {
+        let c = &self.chrome;
+        let reveal = f64::from(self.call_chrome_motion.sampled.clamp(0.0, 1.0));
+        let chips = self.huddle_chip_rows as f64 * (c.call_chip_h + c.call_gap);
+        let bottom = c.call_gap
+            + c.call_status_h
+            + reveal * chips
+            + c.call_gap
+            + c.call_controls_h
+            + c.call_inset;
+        [c.call_inset, c.call_title_h, c.call_inset, bottom]
+    }
+
+    /// What the attached call window keeps clear around its video: its own
+    /// frame, and the window's header row above it, so the window never
+    /// rests over the header's controls.
+    pub(crate) fn huddle_attached_chrome(&self) -> [f64; 4] {
+        let [left, top, right, bottom] = self.huddle_frame();
+        [left, self.chrome.header_h + top, right, bottom]
+    }
+
+    /// A participant chip's lead: a muted microphone while they are muted.
+    fn chip_lead(p: &Participant) -> ChipLead {
+        if p.muted {
+            ChipLead::Glyph(Icon::MicOff)
+        } else {
+            ChipLead::None
         }
     }
 
@@ -324,43 +394,42 @@ impl ChatApp {
         let style = theme.text(TextRole::Caption);
         let caption_h = line_of(tr, &style);
         let s2 = f64::from(theme.tokens.spacing.s2);
-        // The disc follows the tile, never smaller than a regular avatar.
+        // The disc follows the tile, from a regular avatar up to three.
         let regular = ui::widget::AvatarSize::Regular.side(theme);
-        let side = (rect.height() * 0.4).clamp(regular, 3.0 * regular);
-        let (cy, caption_y) =
-            avatar_caption_block(rect, side / 2.0, caption_h, plate_height(theme), s2);
+        let sides = AvatarSides {
+            wanted: (rect.height() * 0.4).clamp(regular, 3.0 * regular),
+            least: ui::widget::AvatarSize::Small.side(theme),
+        };
+        let Some(block) = viewfinder_block(rect, sides, caption_h, plate_height(theme), s2) else {
+            // Too short for even a small disc: the name plate names them.
+            return;
+        };
         let cx = rect.center().x;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         self.paint_avatar(
             &mut ctx,
-            Rect::from_center_size(Point::new(cx, cy), (side, side)),
+            Rect::from_center_size(Point::new(cx, block.disc_cy), (block.side, block.side)),
             user,
         );
-        let w = width_of(ctx.text, caption, &style);
-        text(
-            &mut ctx,
-            caption,
-            &style,
-            media.ink_dim,
-            Point::new(cx - w / 2.0, caption_y),
-            None,
-        );
+        if let Some(caption_y) = block.caption_y {
+            let w = width_of(ctx.text, caption, &style);
+            text(
+                &mut ctx,
+                caption,
+                &style,
+                media.ink_dim,
+                Point::new(cx - w / 2.0, caption_y),
+                None,
+            );
+        }
     }
 
+    /// The call window: its video inside its frame. It grows continuously
+    /// with the participant reveal rather than stepping between two heights.
     pub(crate) fn huddle_panel(&self) -> Rect {
         let v = self.huddle_video();
-        // Panel grows continuously with the participant reveal rather than
-        // stepping between two native-window heights.
-        let extra = self.huddle_lower_chrome() - 96.0;
-        Rect::new(v.x0 - 12.0, v.y0 - 40.0, v.x1 + 12.0, v.y1 + 96.0 + extra)
-    }
-
-    pub(crate) fn huddle_attached_lower_chrome(&self) -> f64 {
-        self.huddle_lower_chrome()
-    }
-
-    fn huddle_lower_chrome(&self) -> f64 {
-        huddle_lower_chrome_for_reveal(self.call_chrome_motion.sampled)
+        let [left, top, right, bottom] = self.huddle_frame();
+        Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
     // --------------------------------------------------------- huddle (PiP)
@@ -374,33 +443,22 @@ impl ChatApp {
     ) {
         let panel = self.huddle_panel();
         let local = theme.on_ground(ui::chrome::panel_ground(theme));
-        // A floating panel: the floating shadow, the material, and the panel
-        // edge, all on one organic silhouette so they cannot drift apart.
-        ui::surface::shadow(
-            scene,
-            tf,
-            panel,
-            f64::from(theme.tokens.radii.panel),
-            &theme.tokens.elevation.floating,
-        );
-        let body = ui::surface::soft_outline(panel);
-        paint_material(scene, tf, &body, Material::Floating, theme);
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            ui::chrome::panel_border(theme),
-            None,
-            &body,
-        );
+        // A floating Panel: its shadow, material and edge.
+        ui::widget::floating_surface::paint(scene, tf, panel, theme);
 
         // The title bar doubles as the drag handle.
-        let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
+        let title_bar = Rect::new(
+            panel.x0,
+            panel.y0,
+            panel.x1,
+            panel.y0 + self.chrome.call_title_h,
+        );
         let name = self
             .channel(&self.call.channel)
             .map_or_else(|| "Call".into(), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        let n = self.voice_in(&self.call.channel).len().max(1);
+        let n = self.call_participants().len();
         let count = format!("{n} in call");
         let count_style = local.text(TextRole::Caption).numeric();
         let count_w = width_of(tr, &count, &count_style);
@@ -457,45 +515,46 @@ impl ChatApp {
 
         let parts = self.call_participants();
         let others = parts.len().saturating_sub(1);
-        let strip_y = v.y1 + 10.0;
-        self.draw_huddle_strip_header(
-            PaintCtx::new(scene, tf, tr, &local),
-            panel,
-            strip_y,
-            &parts,
-            hits,
+        let c = &self.chrome;
+        let status = Rect::new(
+            panel.x0 + c.call_inset,
+            v.y1 + c.call_gap,
+            panel.x1 - c.call_inset,
+            v.y1 + c.call_gap + c.call_status_h,
         );
+        self.draw_huddle_strip_header(PaintCtx::new(scene, tf, tr, &local), status, &parts, hits);
 
         // Participant chips, shown when expanded and wrapping to the panel
         // width so the strip adapts to the headcount.
         let reveal = self.call_chrome_motion.sampled.clamp(0.0, 1.0);
-        if reveal > 0.001 && others > 0 {
+        if reveal > 0.0 && others > 0 {
             // Fade and progressively reveal the chip strip inside the same
             // animated panel bounds. Chips never pop out before the surface
             // has made room for them, and collapse cannot paint through the
             // rising controls row.
+            let controls_top = panel.y1 - c.call_inset - c.call_controls_h;
             let clip = Rect::new(
-                panel.x0 + 8.0,
-                strip_y + 20.0,
-                panel.x1 - 8.0,
-                (panel.y1 - 48.0).max(strip_y + 20.0),
+                panel.x0,
+                status.y1,
+                panel.x1,
+                (controls_top - c.call_gap).max(status.y1),
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            self.draw_huddle_chips(PaintCtx::new(scene, tf, tr, &local), panel, strip_y, &parts);
+            self.draw_huddle_chips(PaintCtx::new(scene, tf, tr, &local), status, &parts);
             scene.pop_layer();
         }
 
         self.draw_huddle_controls(scene, tf, tr, &local, panel, hits);
     }
 
-    /// Participant strip header: the stream status, and the expand/collapse
-    /// toggle's hit region.
+    /// The connection line under the video: how the call is connected and,
+    /// once someone else is in it, the toggle that shows or hides their
+    /// chips.
     fn draw_huddle_strip_header(
         &self,
         paint: PaintCtx<'_>,
-        panel: Rect,
-        strip_y: f64,
+        band: Rect,
         parts: &[Participant],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
@@ -505,56 +564,36 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let band = Rect::new(
-            panel.x0 + 12.0,
-            strip_y - 2.0,
-            panel.x1 - 12.0,
-            strip_y + 20.0,
-        );
-        let icon_side = f64::from(theme.tokens.metrics.icon_sm);
-        let chevron = if self.participants_should_show(parts.len()) {
-            Icon::ChevronDown
-        } else {
-            Icon::ChevronRight
-        };
-        chevron.draw(
-            scene,
-            tf,
-            Rect::new(
-                band.x0,
-                band.center().y - icon_side / 2.0,
-                band.x0 + icon_side,
-                band.center().y + icon_side / 2.0,
-            ),
-            theme.text_dim,
-        );
-        // Verified publication inventory is a stream list, not a person or
-        // listener roster.
-        let status = crate::i18n::t_args(
-            "chat-call-stream-status",
-            &[
-                (
-                    "count",
-                    (self.native_voice.snapshot.publishers.len()
-                        + usize::from(self.native_voice.snapshot.publication.is_some()))
-                    .to_string()
-                    .into(),
+        let mut x = band.x0;
+        let others = parts.len() > 1;
+        if others {
+            let icon_side = f64::from(theme.tokens.metrics.icon_sm);
+            let chevron = if self.participants_should_show(parts.len()) {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            };
+            chevron.draw(
+                scene,
+                tf,
+                Rect::new(
+                    x,
+                    band.center().y - icon_side / 2.0,
+                    x + icon_side,
+                    band.center().y + icon_side / 2.0,
                 ),
-                (
-                    "status",
-                    crate::i18n::t(match self.native_voice.snapshot.state {
-                        ui::native_media::State::Live => "chat-call-connected",
-                        ui::native_media::State::Reconnecting => "chat-call-reconnecting",
-                        ui::native_media::State::Preparing | ui::native_media::State::Joining => {
-                            "chat-call-joining"
-                        }
-                        _ => "chat-call-unavailable",
-                    })
-                    .into(),
-                ),
-            ],
-        );
-        let x = band.x0 + icon_side + f64::from(theme.tokens.spacing.s1);
+                theme.text_dim,
+            );
+            x += icon_side + f64::from(theme.tokens.metrics.icon_label_gap);
+        }
+        let status = crate::i18n::t(match self.native_voice.snapshot.state {
+            ui::native_media::State::Live => "chat-call-connected",
+            ui::native_media::State::Reconnecting => "chat-call-reconnecting",
+            ui::native_media::State::Preparing | ui::native_media::State::Joining => {
+                "chat-call-joining"
+            }
+            _ => "chat-call-unavailable",
+        });
         line_in(
             &mut PaintCtx::new(scene, tf, tr, theme),
             &status,
@@ -564,39 +603,31 @@ impl ChatApp {
             band,
             band.x1 - x,
         );
-        ChatApp::push_hit(hits, band, Hit::CallParticipantsToggle);
+        if others {
+            ChatApp::push_hit(hits, band, Hit::CallParticipantsToggle);
+        }
     }
 
     /// One chip per person beside the host, in their presence colour, with
-    /// a muted microphone when they are muted; wrapping to the panel width.
-    fn draw_huddle_chips(
-        &self,
-        paint: PaintCtx<'_>,
-        panel: Rect,
-        strip_y: f64,
-        parts: &[Participant],
-    ) {
+    /// a muted microphone when they are muted; wrapping to the panel width
+    /// in rows under the connection line.
+    fn draw_huddle_chips(&self, paint: PaintCtx<'_>, status: Rect, parts: &[Participant]) {
         let PaintCtx {
             scene,
             transform: tf,
             text: tr,
             theme,
         } = paint;
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let h = ChipFace::height(theme);
-        let x0 = panel.x0 + 14.0;
+        let gap = self.chrome.call_gap;
+        let h = self.chrome.call_chip_h;
+        let (x0, x1) = (status.x0, status.x1);
         let mut x = x0;
-        let mut y = strip_y + 26.0;
+        let mut y = status.y1 + gap;
         for p in parts.iter().skip(1) {
             let name = self.user_name(&p.user);
-            let lead = if p.muted {
-                ChipLead::Glyph(Icon::MicOff)
-            } else {
-                ChipLead::None
-            };
-            let w =
-                ChipFace::intrinsic_width(&name, lead, false, tr, theme).min(panel.x1 - 14.0 - x0);
-            if x + w > panel.x1 - 14.0 && x > x0 {
+            let lead = Self::chip_lead(p);
+            let w = ChipFace::intrinsic_width(&name, lead, false, tr, theme).min(x1 - x0);
+            if x + w > x1 && x > x0 {
                 x = x0;
                 y += h + gap;
             }
@@ -627,9 +658,9 @@ impl ChatApp {
         panel: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let bh = ButtonFace::height(ControlSize::Small, theme);
-        let cy = panel.y1 - 34.0;
-        let pad = 12.0;
+        let bh = self.chrome.call_controls_h;
+        let pad = self.chrome.call_inset;
+        let cy = panel.y1 - pad - bh;
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
@@ -648,11 +679,16 @@ impl ChatApp {
             ),
             ("Leave", Icon::X, ButtonRole::Destructive, Hit::CallLeave),
         ];
-        if panel.width() < 300.0 {
-            ctrls.remove(1); // trim Expand on a cramped panel
+        let share = |n: usize| {
+            let n = n as f64;
+            ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(0.0)
+        };
+        // Too cramped for even three icons: trim Expand (the header's call
+        // button also opens the call).
+        if share(ctrls.len()) < bh {
+            ctrls.remove(1);
         }
-        let n = ctrls.len() as f64;
-        let cw = ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(24.0);
+        let cw = share(ctrls.len());
         let fits = ctrls.iter().all(|(label, icon, ..)| {
             ButtonFace::new(Rect::ZERO, label)
                 .icon(*icon)
@@ -902,7 +938,11 @@ impl ChatApp {
     /// a single tile spanning the full region.
     pub(crate) fn overlay_tiles(&self) -> Vec<Rect> {
         let n = self.call_participants().len().max(1);
-        grid_rects(self.overlay_content_region(), n)
+        grid_rects(
+            self.overlay_content_region(),
+            n,
+            self.call_overlay_metrics.tile_gap,
+        )
     }
 
     /// The user id of whoever is sharing their screen into the current call, if
@@ -928,20 +968,21 @@ impl ChatApp {
         let region = self.overlay_content_region();
         let n = self.call_participants().len().max(1);
         if self.screen_sharer().is_some() {
-            let gap = 14.0;
-            // The screen dominates; participants ride a strip beneath it whose
-            // height eases up a little with the headcount but stays a minority
-            // of the surface. Clamped so a short window still leaves a usable
-            // strip and a tall one doesn't over-grow it.
+            let m = &self.call_overlay_metrics;
+            let gap = m.tile_gap;
+            // The screen dominates; participants ride a strip beneath it that
+            // stays a minority of the surface. Clamped so a short window still
+            // leaves a strip that holds a participant's disc, caption and name
+            // plate, and a tall one doesn't over-grow it.
             let strip_h = (region.height() * 0.24)
-                .clamp(88.0, 190.0)
+                .clamp(m.strip_min_h, 2.0 * m.strip_min_h)
                 .min(region.height() * 0.4);
             let screen_bottom = (region.y1 - strip_h - gap).max(region.y0 + 1.0);
             let screen = Rect::new(region.x0, region.y0, region.x1, screen_bottom);
             let strip_region = Rect::new(region.x0, screen.y1 + gap, region.x1, region.y1);
             CallStage::Share {
                 screen,
-                strip: filmstrip_rects(strip_region, n),
+                strip: filmstrip_rects(strip_region, n, gap),
             }
         } else {
             CallStage::Grid(self.overlay_tiles())
@@ -999,7 +1040,7 @@ impl ChatApp {
         let gap = m.gap;
         let bh = m.button_h;
         let inner_pad = m.inner_pad;
-        let max_row_w = (self.rect.width() - 2.0 * m.side_pad).max(120.0);
+        let max_row_w = (self.rect.width() - 2.0 * m.side_pad).max(bh);
         let widths: Vec<f64> = specs.iter().map(|s| m.button_width(&s.0)).collect();
         let rows = pack_rows(&widths, gap, max_row_w);
 
@@ -1534,24 +1575,53 @@ fn plate_height(theme: &Theme) -> f64 {
     ChipFace::height(theme)
 }
 
-/// Where a tile's avatar disc and its caption land: `(disc_cy, caption_y)`.
-/// The disc (radius `radius`) and the `caption_h`-tall caption are one
-/// block, `gap` apart, centred in the band between the tile's top inset and
-/// the name plate's reserve (`plate_h` plus its `gap` inset plus `gap` of
-/// air above it). When the band is too short for the block, the block reads
-/// from the band's top.
-fn avatar_caption_block(
+/// How large a viewfinder's avatar disc may be: the side the tile asks for,
+/// and the smallest it may shrink to before it is left out.
+#[derive(Clone, Copy, Debug)]
+struct AvatarSides {
+    wanted: f64,
+    least: f64,
+}
+
+/// Where a viewfinder's avatar disc and caption land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewfinderBlock {
+    disc_cy: f64,
+    side: f64,
+    /// The caption's top, or `None` when the tile has no room for it.
+    caption_y: Option<f64>,
+}
+
+/// Lay out a viewfinder's disc and caption as one block, `gap` apart and
+/// centred in the band between the tile's top inset and the name plate's
+/// reserve (`plate_h` plus its `gap` inset plus `gap` of air above it). A
+/// short tile shrinks the disc first, then drops the caption, then the disc,
+/// so nothing ever touches the plate.
+fn viewfinder_block(
     tile: Rect,
-    radius: f64,
+    sides: AvatarSides,
     caption_h: f64,
     plate_h: f64,
     gap: f64,
-) -> (f64, f64) {
+) -> Option<ViewfinderBlock> {
     let band_top = tile.y0 + gap;
     let band_bottom = tile.y1 - gap - plate_h - gap;
-    let block_h = 2.0 * radius + gap + caption_h;
-    let top = (band_top + (band_bottom - band_top - block_h) / 2.0).max(band_top);
-    (top + radius, top + 2.0 * radius + gap)
+    let room = band_bottom - band_top;
+    let with_caption = (room - gap - caption_h).min(sides.wanted);
+    let (side, caption) = if with_caption >= sides.least {
+        (with_caption, true)
+    } else if room >= sides.least {
+        (room.min(sides.wanted), false)
+    } else {
+        return None;
+    };
+    let block_h = side + if caption { gap + caption_h } else { 0.0 };
+    let top = band_top + (room - block_h) / 2.0;
+    Some(ViewfinderBlock {
+        disc_cy: top + side / 2.0,
+        side,
+        caption_y: caption.then_some(top + side + gap),
+    })
 }
 
 /// The honest one-line caption shown under a remote participant's avatar in
@@ -1567,24 +1637,15 @@ fn member_tile_caption(p: &Participant) -> &'static str {
     }
 }
 
-/// A measurement-free width for an expanded-overlay control button: the
-/// label's length at the 1× label size, an icon and the button's padding.
-/// Deterministic so the controls bar (and the tile band bounded above it)
-/// lays out identically without a [`TextRenderer`].
-fn overlay_button_width(label: &str) -> f64 {
-    label.chars().count() as f64 * 8.0 + 46.0
-}
-
 /// Lay `n` participant tiles into a single centred row filling `region`'s
 /// height — the presentation-stage filmstrip beneath the featured screen. Each
 /// tile is landscape-ish (capped at an equal share of the row width) and every
 /// returned rect stays inside `region`, so the strip never spills past the
 /// window at any headcount.
-fn filmstrip_rects(region: Rect, n: usize) -> Vec<Rect> {
+fn filmstrip_rects(region: Rect, n: usize, gap: f64) -> Vec<Rect> {
     if n == 0 || region.width() <= 1.0 || region.height() <= 1.0 {
         return vec![];
     }
-    let gap = 12.0;
     let h = region.height();
     // An equal share of the row is the ceiling; prefer a landscape tile but
     // never wider than that share, so the row always fits.
@@ -1604,11 +1665,10 @@ fn filmstrip_rects(region: Rect, n: usize) -> Vec<Rect> {
 /// the largest, most camera-shaped uniform tiles. Every returned rect is
 /// contained within `region`, so the grid can never spill past the window at
 /// any width or headcount. A partly-filled last row is centred.
-fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
+fn grid_rects(region: Rect, n: usize, gap: f64) -> Vec<Rect> {
     if n == 0 || region.width() <= 1.0 || region.height() <= 1.0 {
         return vec![];
     }
-    let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
 
     // Try every column count and keep the one that maximises usable tile size,
     // lightly penalising extreme aspect ratios so tiles stay landscape-ish.
@@ -1663,22 +1723,26 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallOverlayMetrics, Participant, avatar_caption_block, filmstrip_rects, grid_rects,
-        huddle_lower_chrome_for_reveal, member_tile_caption, overlay_button_width, pack_rows,
+        AvatarSides, CallOverlayMetrics, Participant, filmstrip_rects, grid_rects,
+        member_tile_caption, pack_rows, viewfinder_block,
     };
     use vello::kurbo::Rect;
 
     #[test]
     fn overlay_metrics_size_header_buttons_and_lower_chrome() {
-        // Phase: overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint.
+        // Phase: overlay_metrics_fall_back_to_the_theme_before_the_first_paint.
         {
             let m = CallOverlayMetrics::default();
-            // The 1× header: `s6` + a Title line + `s4`.
-            assert!((m.header_h() - 65.0).abs() < 1e-6);
-            assert_eq!(m.button_h, 32.0);
-            // An unmeasured label keeps the fixed-length estimate the 1× layout
-            // used, so the geometry tests (which never paint) still resolve.
-            assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+            // The header: `s6` + a Title line + `s4`.
+            assert!(
+                (m.header_h() - (m.header_pad_top + m.title_h + m.header_pad_bottom)).abs() < 1e-6
+            );
+            assert!(m.title_h > 0.0 && m.button_h > 0.0);
+            // An unmeasured label is estimated from its length, so the
+            // geometry tests (which never paint) still resolve, and a longer
+            // label is estimated wider.
+            assert!(m.button_width("Unmute") > m.button_width("Mute"));
+            assert!(m.button_width("Mute") > m.button_chrome_w);
         }
         // Phase: measured_button_widths_replace_the_estimate_label_by_label.
         {
@@ -1690,24 +1754,20 @@ mod tests {
             assert_eq!(m.button_width("Leave"), 80.5);
             // A label that toggled since the measurement (Mute → Unmute) falls
             // back rather than borrowing another label's width.
-            assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
+            assert_eq!(
+                m.button_width("Unmute"),
+                CallOverlayMetrics::default().button_width("Unmute")
+            );
         }
         // Phase: a_scaled_title_pushes_the_tile_band_down_by_its_extra_height.
         {
+            let base = CallOverlayMetrics::default();
             let m = CallOverlayMetrics {
-                title_h: 50.0,
+                title_h: base.title_h * 2.0,
                 ..CallOverlayMetrics::default()
             };
-            let grew = m.header_h() - CallOverlayMetrics::default().header_h();
-            assert!((grew - 25.0).abs() < 1e-9, "grew {grew}");
-        }
-        // Phase: participant_reveal_morphs_the_complete_lower_chrome_monotonically.
-        {
-            let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
-            assert_eq!(samples[0], 76.0);
-            assert_eq!(samples[2], 116.0);
-            assert_eq!(samples[4], 156.0);
-            assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+            let grew = m.header_h() - base.header_h();
+            assert!((grew - base.title_h).abs() < 1e-9, "grew {grew}");
         }
         // Phase: controls_pack_into_rows_that_fit.
         {
@@ -1725,37 +1785,56 @@ mod tests {
 
     #[test]
     fn member_tile_centres_an_honest_caption_clear_of_the_name_plate() {
-        // Phase: avatar_caption_block_clears_the_name_plate_by_the_token_gap.
-        // The presentation-stage filmstrip must lay every participant in a single
-        // centred row that stays inside its region, at any headcount — the
-        // invariant the screen-share stage leans on so the strip never spills.
+        // Phase: the_block_centres_clear_of_the_name_plate_by_the_token_gap.
         {
-            // A 1× filmstrip tile: 232×152, the disc radius the member tile
-            // derives from that height, a 14.4 px caption and a 23 px plate. The
+            // A filmstrip tile, a disc that fits, a caption and a plate. The
             // caption's bottom stays a full `s2` above the plate's reserve.
             let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
-            let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
-            let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
+            let sides = AvatarSides {
+                wanted: 60.0,
+                least: 24.0,
+            };
+            let (caption_h, plate_h, gap) = (16.0, 28.0, 8.0);
+            let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
+            assert_eq!(block.side, 60.0);
+            let caption_y = block.caption_y.unwrap();
             let plate_top = tile.y1 - gap - plate_h;
-            assert!(
-                caption_y + caption_h <= plate_top - gap + 1e-9,
-                "caption bottom {} vs plate top {plate_top}",
-                caption_y + caption_h
-            );
-            assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
-            // Centred: equal air above the disc and below the caption, inside the band.
-            let above = (cy - radius) - (tile.y0 + gap);
+            assert!(caption_y + caption_h <= plate_top - gap + 1e-9);
+            assert!(block.disc_cy - block.side / 2.0 >= tile.y0 + gap);
+            // Centred: equal air above the disc and below the caption.
+            let above = (block.disc_cy - block.side / 2.0) - (tile.y0 + gap);
             let below = (plate_top - gap) - (caption_y + caption_h);
             assert!((above - below).abs() < 1e-9, "above {above} below {below}");
         }
-        // Phase: a_short_tile_reads_the_block_from_the_band_top.
+        // Phase: a_short_tile_shrinks_the_disc_then_drops_the_caption_then_the_disc.
         {
-            // Too short for the block: it starts at the band's top instead of
-            // poking above the tile.
+            let sides = AvatarSides {
+                wanted: 60.0,
+                least: 24.0,
+            };
+            let (caption_h, plate_h, gap) = (16.0, 28.0, 8.0);
+            let fits_all = |tile: Rect, block: super::ViewfinderBlock| {
+                let plate_top = tile.y1 - gap - plate_h;
+                let bottom = block
+                    .caption_y
+                    .map_or(block.disc_cy + block.side / 2.0, |y| y + caption_h);
+                block.disc_cy - block.side / 2.0 >= tile.y0 + gap - 1e-9
+                    && bottom <= plate_top - gap + 1e-9
+            };
+            // Room for a smaller disc and the caption.
+            let tile = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
+            assert!(block.side < sides.wanted && block.side >= sides.least);
+            assert!(block.caption_y.is_some());
+            assert!(fits_all(tile, block));
+            // Room for a disc only.
             let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
-            let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
-            assert!((cy - 33.44 - 8.0).abs() < 1e-9);
-            assert!(caption_y > cy);
+            let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
+            assert!(block.caption_y.is_none());
+            assert!(fits_all(tile, block));
+            // No room for a disc: the plate alone names them.
+            let tile = Rect::new(0.0, 0.0, 200.0, 60.0);
+            assert!(viewfinder_block(tile, sides, caption_h, plate_h, gap).is_none());
         }
         // Phase: remote_tile_caption_is_honest_never_a_fabricated_feed.
         // Defect regression: remote tiles must be honest — never present a
@@ -1781,7 +1860,7 @@ mod tests {
             for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
                 let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
                 for n in 1..=8 {
-                    let tiles = filmstrip_rects(region, n);
+                    let tiles = filmstrip_rects(region, n, 12.0);
                     assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
                     for t in &tiles {
                         assert!(
@@ -1807,7 +1886,7 @@ mod tests {
         }
         // Phase: filmstrip_is_empty_for_no_participants.
         {
-            assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+            assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0, 12.0).is_empty());
         }
     }
 
@@ -1832,7 +1911,7 @@ mod tests {
                 // what the overlay now hands the packer (host + remotes together).
                 let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
                 for n in 1..=9 {
-                    let rects = grid_rects(region, n);
+                    let rects = grid_rects(region, n, 12.0);
                     assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
                     for r in &rects {
                         assert!(
@@ -1861,7 +1940,7 @@ mod tests {
         }
         // Phase: grid_is_empty_for_no_remotes.
         {
-            assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
+            assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0, 12.0).is_empty());
         }
         // Phase: grid_fills_the_region_leaving_no_void.
         // The narrow-width void regression: with the host as the first cell of a
@@ -1876,7 +1955,8 @@ mod tests {
                 let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
                 // A host + three remotes: the demo huddle, the exact case that
                 // exposed the void.
-                let tiles = grid_rects(region, 4);
+                let gap = 12.0;
+                let tiles = grid_rects(region, 4, gap);
                 let bbox =
                     tiles
                         .iter()
@@ -1890,7 +1970,6 @@ mod tests {
                         });
                 // One inter-tile gap is the largest legitimate slack (a centred row
                 // or column can sit a gap in from an edge).
-                let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
                 let slack = gap + 1.0;
                 assert!(
                     bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,

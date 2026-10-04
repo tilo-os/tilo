@@ -3475,6 +3475,31 @@ mod tests {
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
+    #[test]
+    fn the_attached_call_window_rests_below_the_header_row() {
+        for (w, h) in [(1280.0, 800.0), (800.0, 600.0)] {
+            let (mut app, _doc) = app_with_doc();
+            app.thread_open = Some("m_concept".into());
+            app.right_flap.open();
+            app.call.join("c_huddle");
+            render_frame(&mut app, w, h);
+            render_frame(&mut app, w, h);
+            let panel = app.huddle_panel();
+            let header = app.rect.y0 + app.chrome.header_h;
+            assert!(
+                panel.y0 >= header,
+                "{w}x{h}: the call window ({:.1}) covers the header row ({header:.1})",
+                panel.y0
+            );
+            assert!(
+                !app.hits.iter().any(|(rect, hit)| {
+                    matches!(hit, Hit::StartCall | Hit::Search) && rect.overlaps(panel)
+                }),
+                "{w}x{h}: the call window covers a header control"
+            );
+        }
+    }
+
     fn count_hits(app: &ChatApp, pred: impl Fn(&Hit) -> bool) -> usize {
         app.hits.iter().filter(|(_, h)| pred(h)).count()
     }
