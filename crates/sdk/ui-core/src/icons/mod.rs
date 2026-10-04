@@ -192,6 +192,10 @@ pub enum Icon {
     SquaresIntersect,
     /// Where either shape is, but not both. Lucide `squares-exclude`.
     SquaresExclude,
+    /// Something went wrong and needs attention. Lucide `circle-alert`.
+    CircleAlert,
+    /// Sign in with a fingerprint reader. Lucide `fingerprint`.
+    Fingerprint,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -942,6 +946,25 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         .into_iter()
         .map(path_from_d)
         .collect(),
+        Icon::CircleAlert => vec![
+            circle_path(12.0, 12.0, 10.0),
+            line_path(12.0, 8.0, 12.0, 12.0),
+            line_path(12.0, 16.0, 12.01, 16.0),
+        ],
+        Icon::Fingerprint => [
+            "M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4",
+            "M14 13.12c0 2.38 0 6.38-1 8.88",
+            "M17.29 21.02c.12-.6.43-2.3.5-3.02",
+            "M2 12a10 10 0 0 1 18-6",
+            "M2 16h.01",
+            "M21.8 16c.2-2 .131-5.354 0-6",
+            "M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2",
+            "M8.65 22c.21-.66.45-1.32.57-2",
+            "M9 6.8a6 6 0 0 1 9 5.2v2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
     }
 }
 
@@ -1531,6 +1554,8 @@ mod tests {
                 Icon::SquaresSubtract,
                 Icon::SquaresIntersect,
                 Icon::SquaresExclude,
+                Icon::CircleAlert,
+                Icon::Fingerprint,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

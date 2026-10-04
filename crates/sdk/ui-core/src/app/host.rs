@@ -12,7 +12,10 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
 /// Draws the root widget, its overlay, the action palette, and any visible
 /// tooltip into `scene`. Returns the transform and logical window rect the
 /// rest of the frame (legacy cursors, remote presence, debug outlines, HUD)
-/// draws with, plus the draw-pass duration for the perf log line.
+/// draws with, the draw-pass duration for the perf log line, and whether
+/// anything was painted outside the widgets' layout boxes (an overlay,
+/// history chrome, a dialog, the palette or a tooltip), which their damage
+/// does not cover.
 #[allow(
     clippy::too_many_lines,
     reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
@@ -25,7 +28,7 @@ fn draw_frame_content(
     height: u32,
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
-) -> (Affine, KurboRect, u128) {
+) -> (Affine, KurboRect, u128, bool) {
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
     if let Some(p) = app.profiler.as_mut() {
@@ -70,6 +73,9 @@ fn draw_frame_content(
         );
     }
     app.presence_ctx.pop_viewport(prev_vp);
+    // Everything from here on paints outside the widgets' layout boxes, where
+    // their damage cannot describe it.
+    let layer_start = scene.encoding().draw_tags.len();
     // Widgets whose visual extent escapes their layout box (an open
     // `Dropdown`, a popover) composite above every later-drawn sibling here.
     // No-op by default.
@@ -148,12 +154,18 @@ fn draw_frame_content(
         );
     }
     draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
+    let top_layer = scene.encoding().draw_tags.len() != layer_start;
 
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
-    (transform, window_rect, t_draw_us)
+    (
+        transform,
+        window_rect,
+        t_draw_us,
+        top_layer || app.history.is_some(),
+    )
 }
 
 #[cfg(feature = "native")]
@@ -252,6 +264,15 @@ fn run_layout_pass(
     if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
+    // A relayout that moves nothing leaves every pixel outside the dirty
+    // widgets as it was, so their damage is the whole change. Typing into a
+    // fixed-size field relayouts on every key; repainting the whole window
+    // for it made per-key work scale with the display instead of the field.
+    let geometry_before = (!structure_rebuilt
+        && !app.layout.structure_dirty
+        && app.history.is_none()
+        && app.history_layout.is_none())
+    .then(|| widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
@@ -407,7 +428,22 @@ fn run_layout_pass(
     // as input. Publish only after the retained control tree has settled;
     // the publisher diffs the surface and checks broker connectivity.
     app.publish_action_surface();
-    Some((true, t_compute_us, t_apply_us))
+    let geometry_changed = recomposed
+        || viewport_changed
+        || geometry_before.is_none_or(|before| before != widget_geometry(app.root_widget.as_ref()));
+    Some((geometry_changed, t_compute_us, t_apply_us))
+}
+
+/// Every widget's layout box in tree order. Two snapshots of one unchanged
+/// tree are equal exactly when no widget moved or resized.
+fn widget_geometry(root: &dyn crate::widget::Widget) -> Vec<KurboRect> {
+    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<KurboRect>) {
+        out.push(widget.get_rect());
+        widget.for_each_child(&mut |child| walk(child, out));
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
 }
 
 #[cfg(test)]

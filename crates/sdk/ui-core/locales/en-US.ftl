@@ -305,9 +305,6 @@ tree-move-indent = Move into the item above
 tree-move-outdent = Move out of the parent item
 
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Welcome back to Tilo
-greeter-sign-in = Sign in to continue
-greeter-passcode-intro = Enter your passcode to open your desktop.
 lock-welcome-back = Welcome back
 
 # Now playing: Quick Settings and the lock screen.

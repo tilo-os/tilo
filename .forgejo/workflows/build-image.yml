@@ -2625,6 +2625,14 @@ jobs:
           # greetd removes once the session has started.
           ./os/dev/vm.sh ssh 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 /usr/libexec/tilo/boot-performance-gate.sh'
 
+          # The sign-in screen as a person meets it, judged from the frames
+          # QEMU scans out: whole before any input and while the pointer
+          # moves, each keystroke on screen within the latency bound and
+          # repainting only the field, and a wrong passcode answered with a
+          # plain sentence on a steady frame. Captures and timings land in
+          # the uploaded artifacts.
+          ./os/dev/vm.sh greeter-acceptance "$TILO_RUN/greeter"
+
           # The disk holds one account, so the greeter shows its personal
           # form: the account is chosen and the passcode field has focus.
           ./os/dev/vm.sh login --passcode-only "$TILO_PASS"
@@ -2651,6 +2659,8 @@ jobs:
             sleep 1
           done
           sleep 2
+          # The session that sign-in started is on screen, fully painted.
+          ./os/dev/vm.sh check-frame 05-after-login "$TILO_RUN/greeter"
           # Unit/native audits prove the AccessKit shape in-process. This is
           # the release gate that proves the compositor-owned first-use UI is
           # visible to an external AT-SPI consumer on the installed
@@ -2742,6 +2752,8 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/serial.log
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/greeter/*.png
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/greeter/*.json
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
           if-no-files-found: ignore
 

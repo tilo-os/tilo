@@ -562,7 +562,7 @@ pub fn run() -> std::process::ExitCode {
     // in, and before the compositor's first read.
     install_session_settings();
 
-    let enable_peer_sync = compositor::peer_sync_enabled_from_env_or_marker();
+    let enable_peer_sync = compositor::parse_peer_sync_from_args();
     let enable_portals = compositor::parse_portals_from_args();
     match compositor::parse_mode_from_args() {
         Mode::Hosted => compositor::hosted::run_with_full_options(HostedOptions {

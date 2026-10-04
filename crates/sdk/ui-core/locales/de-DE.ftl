@@ -299,9 +299,6 @@ tree-move-indent = In das Element darüber verschieben
 tree-move-outdent = Aus dem übergeordneten Element verschieben
 
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Willkommen zurück bei Tilo
-greeter-sign-in = Zum Fortfahren anmelden
-greeter-passcode-intro = Gib deinen Code ein, um deinen Desktop zu öffnen.
 lock-welcome-back = Willkommen zurück
 
 # Now playing: Quick Settings and the lock screen.

@@ -7057,7 +7057,7 @@ pub fn run() {
         (0, 0) => (1600, 900),
         size => size,
     };
-    let peer_sync_requested = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let peer_sync_requested = crate::compositor::parse_peer_sync_from_args();
     let identity_store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => {

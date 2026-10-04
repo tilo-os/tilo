@@ -13,9 +13,12 @@
 //     snapshot for CI / visual inspection (identical output to the live
 //     binary). Scenarios: `form`, `hint`, `error`, `authenticating`,
 //     `fingerprint`, `starting`, `caps`, `longname`, `personal`, and
-//     `personal-no-fingerprint`, and personal-device transient variants.
-//     Defaults to `form`. `--time <seconds>` freezes the decorative backdrop;
-//     `TILO_SHOTS_THEME=light|dark|high-contrast` selects the review palette.
+//     `personal-no-fingerprint`, personal-device transient variants, and the
+//     personal-device errors `personal-locked`, `personal-session-failed`,
+//     `personal-service-down` and `personal-passcode-expired`, and
+//     `personal-sessions` with a second session installed. Defaults to
+//     `form`. `TILO_SHOTS_THEME=light|dark|high-contrast` selects the review
+//     palette.
 
 #![cfg_attr(
     test,
@@ -58,7 +61,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
         let mut widget = GreeterApp::for_shot(scenario);
-        widget.set_shot_time(parse_time_arg(&args).unwrap_or(0.0));
         let credentials = shot_credentials(scenario);
         if let Some((_, password)) = credentials {
             widget.seed_shot_password(password);
@@ -148,22 +150,6 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
     (viewport.0 > 0 && viewport.1 > 0).then_some(viewport)
 }
 
-/// A deterministic animation phase used only by the offscreen renderer.
-fn parse_time_arg(args: &[String]) -> Option<f64> {
-    let mut iter = args.iter().skip(1);
-    let raw = loop {
-        let arg = iter.next()?;
-        if arg == "--time" {
-            break iter.next()?.as_str();
-        }
-        if let Some(rest) = arg.strip_prefix("--time=") {
-            break rest;
-        }
-    };
-    let seconds: f64 = raw.parse().ok()?;
-    (seconds.is_finite() && seconds >= 0.0).then_some(seconds)
-}
-
 fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
     let mut iter = args.iter().skip(1);
     let raw = loop {
@@ -225,6 +211,11 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
         "personal-no-fingerprint" | "personal-passcode" => {
             Some(AuthScenario::PersonalNoFingerprint)
         }
+        "personal-locked" => Some(AuthScenario::PersonalLocked),
+        "personal-session-failed" => Some(AuthScenario::PersonalSessionFailed),
+        "personal-service-down" => Some(AuthScenario::PersonalServiceDown),
+        "personal-passcode-expired" => Some(AuthScenario::PersonalPasscodeExpired),
+        "personal-sessions" => Some(AuthScenario::PersonalSessions),
         _ => None,
     }
 }
@@ -248,6 +239,10 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         | AuthScenario::Error
         | AuthScenario::PersonalHint
         | AuthScenario::PersonalError
+        | AuthScenario::PersonalLocked
+        | AuthScenario::PersonalSessionFailed
+        | AuthScenario::PersonalServiceDown
+        | AuthScenario::PersonalPasscodeExpired
         | AuthScenario::Authenticating
         | AuthScenario::Fingerprint
         | AuthScenario::Starting
@@ -256,6 +251,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
+        AuthScenario::PersonalSessions => None,
         _ => Some(("quinten", "hunter2")),
     }
 }
@@ -358,39 +354,19 @@ mod tests {
     }
 
     #[test]
-    fn shot_rendering_is_finite_and_retains_no_passcodes() {
-        // Phase `animation_phase_is_finite_and_nonnegative`.
-        {
+    fn busy_shots_do_not_retain_representative_passcodes() {
+        for scenario in [
+            AuthScenario::Authenticating,
+            AuthScenario::Fingerprint,
+            AuthScenario::Starting,
+            AuthScenario::PersonalAuthenticating,
+            AuthScenario::PersonalStarting,
+        ] {
             assert_eq!(
-                parse_time_arg(&args(&["tilo-greeter", "--time=8"])),
-                Some(8.0)
+                shot_credentials(scenario).map(|(_, passcode)| passcode),
+                Some(""),
+                "{scenario:?} must mirror the live path after secret handoff"
             );
-            assert_eq!(
-                parse_time_arg(&args(&["tilo-greeter", "--time", "1.5"])),
-                Some(1.5)
-            );
-            for value in ["NaN", "inf", "-1", "not-a-number"] {
-                assert_eq!(
-                    parse_time_arg(&args(&["tilo-greeter", "--time", value])),
-                    None
-                );
-            }
-        }
-        // Phase `busy_shots_do_not_retain_representative_passcodes`.
-        {
-            for scenario in [
-                AuthScenario::Authenticating,
-                AuthScenario::Fingerprint,
-                AuthScenario::Starting,
-                AuthScenario::PersonalAuthenticating,
-                AuthScenario::PersonalStarting,
-            ] {
-                assert_eq!(
-                    shot_credentials(scenario).map(|(_, passcode)| passcode),
-                    Some(""),
-                    "{scenario:?} must mirror the live path after secret handoff"
-                );
-            }
         }
     }
 }
