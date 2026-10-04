@@ -246,3 +246,12 @@ impl PersonState {
         self.owners.borrow().clone()
     }
 }
+
+impl Drop for PersonState {
+    /// The window closes: what the person did is stored before it goes.
+    fn drop(&mut self) {
+        if let Err(error) = self.records.flush() {
+            tracing::warn!(%error, "the person's records could not be stored");
+        }
+    }
+}

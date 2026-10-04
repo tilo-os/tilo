@@ -33,6 +33,8 @@ pub mod live_rows;
 pub mod model_contract;
 #[path = "participant.rs"]
 pub mod participant;
+#[path = "person_records.rs"]
+pub mod person_records;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "scenarios.rs"]

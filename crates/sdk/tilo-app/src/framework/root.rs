@@ -184,6 +184,11 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
+    /// The person's own record of `P`, as the views open it.
+    pub(crate) fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
+    }
+
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
         self.past = Some(past);
         self
