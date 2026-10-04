@@ -14999,6 +14999,7 @@ dependencies = [
  "tempfile",
  "test-http",
  "thiserror 2.0.18",
+ "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
