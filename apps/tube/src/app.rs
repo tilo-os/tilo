@@ -688,10 +688,6 @@ impl TubeApp {
     #[must_use]
     pub fn online(mut self) -> Self {
         self.online = true;
-        #[cfg(feature = "grayjay-sync")]
-        {
-            self.device_sync = crate::sync::DeviceSync::production("Tilo Tube");
-        }
         // The online app starts with an empty catalogue and populates it from
         // live results. The bundled `sample` catalogue is reserved for the
         // hermetic `--shots`/demo path; Home shows a loading skeleton first.
@@ -733,6 +729,17 @@ impl TubeApp {
         self.model.comment_likes.clone_from(&state.comment_likes);
         self.model.settings.clone_from(&state.settings);
         self.structure_dirty = true;
+    }
+
+    /// Start Grayjay device sync over the app's secret store, which holds
+    /// this device's key seed, and the devices paired on this device.
+    #[cfg(feature = "grayjay-sync")]
+    pub(crate) fn start_device_sync(
+        &mut self,
+        secrets: &ui::secrets::SecretStore,
+        paired: ui::storage::Settings<crate::sync::PairedDevices>,
+    ) {
+        self.device_sync = crate::sync::DeviceSync::production("Tilo Tube", secrets, paired);
     }
 
     /// Attach the framework's door for the resource and, in a live window,
