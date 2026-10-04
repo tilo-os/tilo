@@ -2595,6 +2595,7 @@ impl Widget for TerminalWidget {
         if self.sessions.is_live() {
             self.ensure_session(state, root);
         }
+        self.poll_folder_picker();
         self.reset_stale_local_session(state, root);
         self.find_input.sync(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
@@ -2670,7 +2671,7 @@ impl Widget for TerminalWidget {
             .or_else(|| self.output_rx.try_recv().ok());
         let queued = pending.is_some();
         self.deferred_output.set(pending);
-        queued
+        queued || self.folder_picker_pending()
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing

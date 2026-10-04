@@ -282,6 +282,23 @@ impl Sessions {
         Ok(())
     }
 
+    /// Grant the environment `record` a folder, read-write or read-only.
+    ///
+    /// # Errors
+    /// Returns the supervisor's reason.
+    pub fn grant_folder(&mut self, record: &str, path: &str, writable: bool) -> Result<(), String> {
+        if !tilo_environment::is_record_key(record) {
+            return Err("not an environment record".into());
+        }
+        self.environments = self.directory_request(&serde_json::json!({
+            "op": "environment-action",
+            "record": record,
+            "action": "grant-dir",
+            "args": {"path": path, "write": writable},
+        }))?;
+        Ok(())
+    }
+
     fn directory_request(
         &self,
         request: &serde_json::Value,

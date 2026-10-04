@@ -3,13 +3,11 @@
 //! The shell runtime (`ush`) refuses the Host target until the person has
 //! allowed it on this device. A shell-hosted Terminal tab that hits that
 //! refusal raises [`ui::widget::AppHostIntent::AllowHostShell`]; the shell
-//! puts its ordinary permission prompt in front of the person and records
-//! the answer as a `CapOverride` on `Scope::Device("host-shell")` in the
-//! runtime's own store, where the supervisor reads it on the next request.
-//!
-//! "Always" records it for good. "Allow" and "This session" let the shell
-//! being opened right now through: the grant they write expires within a
-//! minute, long before anyone could reuse it.
+//! puts its ordinary permission prompt in front of the person and hands the
+//! answer to the supervisor as a `CapOverride` on `Scope::Device("host-shell")`
+//! with the prompt's lifetime: "Always" (`Expiry::Never`) is kept on disk,
+//! "This session" (`Expiry::EndOfSession`) and "Allow" (`Expiry::AfterUse`,
+//! spent by the shell it opens) live in the supervisor until logout.
 
 use std::cell::RefCell;
 use std::rc::Weak;
@@ -18,10 +16,6 @@ use tilo_desktop_model::capability::{Capability, GRANT_ALWAYS};
 use ui::widget::HostShellAllow;
 
 use crate::portal::PromptOutcome;
-
-/// How long a one-time allow stays valid: enough for the retry that follows
-/// the answer, not enough to matter later.
-const ONE_TIME_SECONDS: u64 = 60;
 
 /// One prompt the shell is waiting on, and the tab waiting for its answer.
 pub struct PendingHostShellAllow {
@@ -70,47 +64,55 @@ impl PendingHostShellAllow {
     }
 }
 
-/// Record the person's answer where the shell runtime reads it. Returns
-/// whether the Host target is now allowed.
+/// The lifetime the person chose, in the shared vocabulary; `None` for a
+/// refusal.
+pub fn lifetime(outcome: PromptOutcome) -> Option<collab_types::caps::Expiry> {
+    match outcome {
+        PromptOutcome::Deny => None,
+        PromptOutcome::AllowAlways => Some(collab_types::caps::Expiry::Never),
+        PromptOutcome::AllowSession => Some(collab_types::caps::Expiry::EndOfSession),
+        PromptOutcome::AllowOnce => Some(collab_types::caps::Expiry::AfterUse),
+    }
+}
+
+/// Hand the person's answer to the shell runtime. Returns whether the Host
+/// target is now allowed.
 pub fn record(outcome: PromptOutcome) -> bool {
-    let expiry = match outcome {
-        PromptOutcome::Deny => return false,
-        PromptOutcome::AllowAlways => collab_types::caps::Expiry::Never,
-        PromptOutcome::AllowOnce | PromptOutcome::AllowSession => {
-            collab_types::caps::Expiry::AtUnix(
-                tilo_clock::unix_now().saturating_add(ONE_TIME_SECONDS),
-            )
-        }
-    };
-    write_allow(expiry)
+    lifetime(outcome).is_some_and(tell_supervisor)
 }
 
 #[cfg(target_os = "linux")]
-fn write_allow(expiry: collab_types::caps::Expiry) -> bool {
-    write_allow_at(
-        &ush::host::HostPolicy::path(&ush::Store::discover()),
-        expiry,
-    )
+fn tell_supervisor(expiry: collab_types::caps::Expiry) -> bool {
+    tell_supervisor_at(&launcher::services::socket_for("ush"), expiry)
 }
 
+/// One `allow-host` request on a fresh connection. The shell connects from
+/// outside every app sandbox, which is what lets the supervisor accept it.
 #[cfg(target_os = "linux")]
-fn write_allow_at(path: &std::path::Path, expiry: collab_types::caps::Expiry) -> bool {
-    let mut policy = ush::host::HostPolicy::load(path);
-    let id = policy.allow_host_shell(TERMINAL_APP_ID);
-    if let Some(cap) = policy.capabilities.iter_mut().find(|cap| cap.id == id) {
-        cap.expiry = expiry;
-    }
-    match policy.save(path) {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::warn!(%error, "the allow for the device's own shell could not be recorded");
-            false
-        }
-    }
+fn tell_supervisor_at(socket: &std::path::Path, expiry: collab_types::caps::Expiry) -> bool {
+    use std::io::{BufRead, Write};
+    let result = (|| -> std::io::Result<bool> {
+        let stream = std::os::unix::net::UnixStream::connect(socket)?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        let mut line = serde_json::to_vec(&ush::supervisor::ServeRequest::AllowHost { expiry })
+            .map_err(std::io::Error::other)?;
+        line.push(b'\n');
+        (&stream).write_all(&line)?;
+        let mut reply = String::new();
+        std::io::BufReader::new(&stream).read_line(&mut reply)?;
+        Ok(matches!(
+            serde_json::from_str(reply.trim()),
+            Ok(ush::supervisor::ServeResponse::Allowed)
+        ))
+    })();
+    result.unwrap_or_else(|error| {
+        tracing::warn!(%error, "the allow for the device's own shell could not be recorded");
+        false
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
-fn write_allow(_expiry: collab_types::caps::Expiry) -> bool {
+fn tell_supervisor(_expiry: collab_types::caps::Expiry) -> bool {
     false
 }
 
@@ -119,30 +121,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_answer_reaches_the_tab_and_only_an_allow_reaches_the_runtime() {
+    fn the_prompts_answers_are_the_shared_lifetimes_and_reach_the_supervisor() {
+        use collab_types::caps::Expiry;
+        assert_eq!(lifetime(PromptOutcome::AllowAlways), Some(Expiry::Never));
+        assert_eq!(
+            lifetime(PromptOutcome::AllowSession),
+            Some(Expiry::EndOfSession)
+        );
+        assert_eq!(lifetime(PromptOutcome::AllowOnce), Some(Expiry::AfterUse));
+        assert_eq!(lifetime(PromptOutcome::Deny), None);
+
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("policy.json");
-        let now = tilo_clock::unix_now();
-
-        assert!(write_allow_at(&path, collab_types::caps::Expiry::Never));
-        let policy = ush::host::HostPolicy::load(&path);
-        assert!(policy.allows_host_shell(TERMINAL_APP_ID, Some(now)));
+        let socket = dir.path().join("ush.sock");
+        let store = ush::Store::at(dir.path().join("store"));
+        store.ensure().unwrap();
+        let serve_socket = socket.clone();
+        let serve_store = store.clone();
+        std::thread::spawn(move || {
+            let _ = ush::supervisor::serve(&serve_socket, &serve_store, std::path::Path::new("/"));
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !socket.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(tell_supervisor_at(&socket, Expiry::Never));
         assert!(
-            !policy.allows_host_shell("so.tilo.notes", Some(now)),
-            "the allow names Terminal and nobody else"
+            ush::host::HostPolicy::load(&ush::host::HostPolicy::path(&store))
+                .allows_host_shell(TERMINAL_APP_ID, None),
+            "\"Always\" is kept where the supervisor reads it"
         );
-
-        let once = dir.path().join("once.json");
-        assert!(write_allow_at(
-            &once,
-            collab_types::caps::Expiry::AtUnix(now + ONE_TIME_SECONDS)
+        assert!(!tell_supervisor_at(
+            &dir.path().join("absent.sock"),
+            Expiry::Never
         ));
-        let policy = ush::host::HostPolicy::load(&once);
-        assert!(policy.allows_host_shell(TERMINAL_APP_ID, Some(now)));
-        assert!(
-            !policy.allows_host_shell(TERMINAL_APP_ID, Some(now + ONE_TIME_SECONDS + 1)),
-            "a one-time allow is gone after the shell it was for"
-        );
 
         let reply = std::rc::Rc::new(RefCell::new(HostShellAllow::default()));
         let (pending_prompt, mut pending) = prompt(std::rc::Rc::downgrade(&reply));
