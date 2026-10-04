@@ -2000,6 +2000,68 @@ mod retained_damage_tests {
         );
     }
 
+    /// A frame whose bump counters report no overflow drew everything. The
+    /// segments reservation is separate from seg_counts and had no overflow
+    /// check: a frame could outgrow it, report `failed=0`, and be presented
+    /// with geometry missing, which the overflow repaint then never fixed.
+    #[test]
+    fn a_frame_reported_complete_is_complete() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let base_color = Color::from_rgb8(10, 10, 12);
+        let scene = marching_ants();
+        let mut renderer = Renderer::new(
+            device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        let (texture, view) = target(device);
+        let mut cache = DamageCache::default();
+        let mut render = |renderer: &mut Renderer| {
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &texture,
+                    view: &view,
+                },
+                renderer,
+                &mut cache,
+                &content(&scene, base_color, &[], true),
+            )
+            .unwrap();
+            renderer.settle_bump_budget(device)
+        };
+        let mut overflows = 0;
+        while render(&mut renderer) {
+            overflows += 1;
+            assert!(overflows <= 8, "the reservation must converge");
+        }
+        assert!(
+            overflows > 0,
+            "the scene must overflow a fresh reservation, or this test proves nothing"
+        );
+        let reported_complete = read(device, queue, &texture);
+        assert!(
+            !render(&mut renderer),
+            "a converged reservation keeps fitting"
+        );
+        let again = read(device, queue, &texture);
+        let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &reported_complete,
+            &again,
+        );
+        assert_eq!(
+            differing, 0,
+            "a frame reported complete after {overflows} overflow(s) lacked {differing} pixels"
+        );
+    }
+
     #[test]
     fn every_presented_frame_equals_a_full_render() {
         let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
