@@ -7015,6 +7015,7 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::RadioButton => "radio_button",
         Role::Switch => "switch",
         Role::Slider => "slider",
+        Role::Separator => "separator",
         Role::SpinButton => "spin_button",
         Role::ComboBox => "combo_box",
         Role::TextInput => "text_input",
@@ -7213,6 +7214,7 @@ fn collect_effect_access_nodes(
                 | Role::Switch
                 | Role::ComboBox
                 | Role::Slider
+                | Role::Separator
                 | Role::SpinButton
                 | Role::TextInput
                 | Role::MultilineTextInput

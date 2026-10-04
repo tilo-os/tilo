@@ -19,13 +19,31 @@ pub struct Spacing {
     /// The scale named by relationship: how far apart two things are
     /// follows from how they relate, so one relationship never carries two
     /// different gaps.
-    pub rhythm: Rhythm,
+    pub rhythm: RhythmScale,
 }
 
-/// Gaps named by the relationship between two neighbours (HIG §7b), each a
-/// step of the [`Spacing`] scale and scaled with it.
+/// How two neighbours relate, which decides how far apart they sit
+/// (HIG §7b). Layout containers take one (`Column::with_rhythm`,
+/// `Row::with_rhythm`) and resolve it against the theme they are laid out
+/// with, so the gap follows density, `ui_scale` and a custom spacing scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Rhythm {
+    /// The smallest gap two neighbours may have: a label and its caption.
+    Tight,
+    /// Controls inside one cluster.
+    Related,
+    /// Siblings of equal weight: rows, cards, clusters on a bar.
+    Sibling,
+    /// Between two sections; padding inside a panel body.
+    Section,
+    /// Between groups of sections; the content gutter.
+    Group,
+}
+
+/// The gaps of each [`Rhythm`], each a step of the [`Spacing`] scale and
+/// scaled with it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rhythm {
+pub struct RhythmScale {
     /// The smallest gap two neighbours may have; a control's face inset.
     pub tight: f32,
     /// Controls inside one cluster (a bar's tool buttons, a field and its
@@ -40,7 +58,7 @@ pub struct Rhythm {
     pub group: f32,
 }
 
-impl Rhythm {
+impl RhythmScale {
     /// The rhythm on the unscaled scale: 4 / 8 / 12 / 16 / 24.
     pub const BASE: Self = Self {
         tight: 4.0,
@@ -49,6 +67,18 @@ impl Rhythm {
         section: 16.0,
         group: 24.0,
     };
+
+    /// The gap for `step` on this (possibly scaled) scale.
+    #[must_use]
+    pub fn get(&self, step: Rhythm) -> f32 {
+        match step {
+            Rhythm::Tight => self.tight,
+            Rhythm::Related => self.related,
+            Rhythm::Sibling => self.sibling,
+            Rhythm::Section => self.section,
+            Rhythm::Group => self.group,
+        }
+    }
 
     #[must_use]
     fn scaled(&self, factor: f32) -> Self {
@@ -77,7 +107,7 @@ impl Spacing {
         s8: 32.0,
         s12: 48.0,
         s16: 64.0,
-        rhythm: Rhythm::BASE,
+        rhythm: RhythmScale::BASE,
     };
 
     /// The step's value on this (possibly scaled) scale.
@@ -155,5 +185,19 @@ mod tests {
         assert!((scaled.rhythm.tight - scaled.s1).abs() < 1e-4);
         let dense = crate::Theme::dark().with_ui_scale(2.0);
         assert!((dense.tokens.spacing.rhythm.sibling - 24.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn each_relationship_names_its_scale_step() {
+        let r = Spacing::BASE.scaled(1.25).rhythm;
+        for (step, value) in [
+            (Rhythm::Tight, r.tight),
+            (Rhythm::Related, r.related),
+            (Rhythm::Sibling, r.sibling),
+            (Rhythm::Section, r.section),
+            (Rhythm::Group, r.group),
+        ] {
+            assert!((r.get(step) - value).abs() < f32::EPSILON, "{step:?}");
+        }
     }
 }

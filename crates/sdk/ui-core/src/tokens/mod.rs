@@ -12,15 +12,15 @@ pub mod typography;
 
 pub use colors::{
     ColorRamp, Colors, Intents, MediaColors, NON_TEXT_MIN_CONTRAST, OnSurface, OverlayTiers,
-    PresenceHue, PresencePalette, SemanticColors, Surfaces, TintedChip, dark_overlays,
-    light_overlays,
+    PresenceHue, PresencePalette, SemanticColors, Surfaces, TintedChip, Wash, WashStrength,
+    dark_overlays, light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
 pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
 pub use palette::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
 pub use radii::Radii;
-pub use spacing::{Rhythm, Spacing, SpacingStep};
+pub use spacing::{Rhythm, RhythmScale, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
 pub use typography::{FontFamily, REFERENCE_BODY_PX, TextRole, Typography, UiFace};

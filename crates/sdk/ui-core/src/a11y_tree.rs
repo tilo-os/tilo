@@ -671,7 +671,7 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
         });
     }
     match access.role {
-        Role::Slider | Role::SpinButton if !s.disabled => {
+        Role::Slider | Role::Separator | Role::SpinButton if !s.disabled => {
             out.push(SemanticAction {
                 name: "increment".into(),
                 label: "Increment".into(),

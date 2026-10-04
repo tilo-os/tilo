@@ -951,8 +951,17 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // widgets join the host's keyboard focus order (and the focus
         // trap), even though `relayout` places it separately.
         let content_node = self.content.build_layout(taffy, theme, node_map);
+        // Out of the flow: the dialog covers its parent without taking room
+        // (or a gap) among the parent's children.
         let node = taffy.parent_node(
             Style {
+                position: taffy::Position::Absolute,
+                inset: taffy::Rect {
+                    left: taffy::LengthPercentageAuto::length(0.0),
+                    right: taffy::LengthPercentageAuto::length(0.0),
+                    top: taffy::LengthPercentageAuto::length(0.0),
+                    bottom: taffy::LengthPercentageAuto::length(0.0),
+                },
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),

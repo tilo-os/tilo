@@ -41,6 +41,9 @@ pub struct Embedded<W: Widget> {
     /// The rectangle last laid out and the height it came to, reused while
     /// nothing about the child changed (a thumbnail redrawn every frame).
     laid: Option<(Rect, f64)>,
+    /// A press inside the child asked for keyboard focus since the owner
+    /// last looked ([`Embedded::take_focus_request`]).
+    focus_request: bool,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -56,6 +59,7 @@ impl<W: Widget + 'static> Embedded<W> {
             transform: Affine::IDENTITY,
             text_color: None,
             laid: None,
+            focus_request: false,
         }
     }
 
@@ -243,6 +247,19 @@ impl<W: Widget + 'static> Embedded<W> {
                 taffy: &self.tree,
             },
         );
+        // The owner holds the window's focus for its embedded child: a press
+        // that focused something inside is the owner's cue to take it.
+        if focus.is_some() {
+            self.focus_request = true;
+        }
+    }
+
+    /// Whether the child asked for keyboard focus (a press on a field)
+    /// since the last call. The owner takes the host's focus in response
+    /// (`*ctx.focus_target = Some(ctx.node_id)`) and keeps routing keys and
+    /// the input method to the child.
+    pub fn take_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.focus_request)
     }
 
     /// Bring the widget up to date with the document.
@@ -309,6 +326,11 @@ mod tests {
             Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
         );
         assert!(host.widget().is_focused(), "the click reached the box");
+        assert!(
+            host.take_focus_request(),
+            "the owner is asked to take focus"
+        );
+        assert!(!host.take_focus_request(), "once");
         let caret = host.ime_cursor_rect().expect("a focused line has a caret");
         assert!(
             drawn.inflate(1.0, 1.0).contains(caret.center()),

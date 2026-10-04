@@ -2,6 +2,7 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::Rhythm;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -39,7 +40,13 @@ pub struct Column {
     horizontal_padding_override: Option<(f32, f32)>,
     /// See [`Column::with_gap`].
     gap_override: Option<f32>,
+    /// See [`Column::with_rhythm`].
+    rhythm: Option<Rhythm>,
+    /// See [`Column::with_padding_rhythm`]: horizontal, vertical.
+    padding_rhythm: Option<(Option<Rhythm>, Option<Rhythm>)>,
     intrinsic_height: bool,
+    /// See [`Column::with_intrinsic_width`].
+    intrinsic_width: bool,
     /// See [`Column::with_fill_remaining_height`].
     fill_remaining_height: bool,
     /// Composition of every descendant's own cached scene, recorded once and
@@ -81,7 +88,10 @@ impl Column {
             vertical_padding_override: None,
             horizontal_padding_override: None,
             gap_override: None,
+            rhythm: None,
+            padding_rhythm: None,
             intrinsic_height: false,
+            intrinsic_width: false,
             fill_remaining_height: false,
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
@@ -98,6 +108,40 @@ impl Column {
     #[must_use]
     pub fn with_intrinsic_height(mut self) -> Self {
         self.intrinsic_height = true;
+        self
+    }
+
+    /// Size the column's width from its widest child instead of filling the
+    /// parent: a column of buttons or labels beside other content in a
+    /// row, a popover body. Children still align to its leading edge.
+    #[must_use]
+    pub fn with_intrinsic_width(mut self) -> Self {
+        self.intrinsic_width = true;
+        self
+    }
+
+    /// Space the children by how they relate (HIG §7b): `Rhythm::Tight`
+    /// for a label and its caption, `Related` for one cluster, `Sibling`
+    /// for rows of equal weight, `Section` between sections, `Group`
+    /// between groups of sections. Resolved from the theme at layout time,
+    /// so it follows density, `ui_scale` and a custom spacing scale.
+    /// Replaces [`Column::with_gap`] with a pixel value.
+    #[must_use]
+    pub fn with_rhythm(mut self, rhythm: Rhythm) -> Self {
+        self.rhythm = Some(rhythm);
+        self.gap_override = None;
+        self
+    }
+
+    /// Inset the children by a rhythm step on each axis (`None` is no
+    /// inset on that axis) instead of the default `spacing.s6` gutter.
+    #[must_use]
+    pub fn with_padding_rhythm(
+        mut self,
+        horizontal: impl Into<Option<Rhythm>>,
+        vertical: impl Into<Option<Rhythm>>,
+    ) -> Self {
+        self.padding_rhythm = Some((horizontal.into(), vertical.into()));
         self
     }
 
@@ -214,12 +258,20 @@ impl Column {
     #[must_use]
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px);
+        self.rhythm = None;
         self
     }
 
     /// Update the inter-child gap before the next layout pass.
     pub fn set_gap(&mut self, px: f32) {
         self.gap_override = Some(px);
+        self.rhythm = None;
+    }
+
+    /// Update the inter-child rhythm before the next layout pass.
+    pub fn set_rhythm(&mut self, rhythm: Rhythm) {
+        self.rhythm = Some(rhythm);
+        self.gap_override = None;
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.
@@ -296,7 +348,11 @@ impl Widget for Column {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
-        let resolved_gap = self.gap_override.unwrap_or(theme.gap_standard);
+        let rhythm = theme.tokens.spacing.rhythm;
+        let resolved_gap = self
+            .gap_override
+            .or_else(|| self.rhythm.map(|step| rhythm.get(step)))
+            .unwrap_or(theme.gap_standard);
 
         let node = taffy.parent_node(
             Style {
@@ -331,15 +387,18 @@ impl Widget for Column {
                     // theme that overrides the legacy `padding_standard`
                     // alias alone (`Theme::with_component_scales` preserves
                     // such aliases) no longer moves this gutter.
-                    let base = if self.no_padding {
-                        0.0
+                    let (base_x, base_y) = if self.no_padding {
+                        (0.0, 0.0)
+                    } else if let Some((x, y)) = self.padding_rhythm {
+                        let at = |step: Option<Rhythm>| step.map_or(0.0, |s| rhythm.get(s));
+                        (at(x), at(y))
                     } else {
-                        theme.tokens.spacing.s6
+                        (theme.tokens.spacing.s6, theme.tokens.spacing.s6)
                     };
-                    let vert = self.vertical_padding_override.unwrap_or(base);
+                    let vert = self.vertical_padding_override.unwrap_or(base_y);
                     let (left, right) = self
                         .horizontal_padding_override
-                        .unwrap_or((base + self.extra_left_padding, base));
+                        .unwrap_or((base_x + self.extra_left_padding, base_x));
                     super::layout::insets(
                         vert + self.extra_top_padding,
                         right,
@@ -348,7 +407,11 @@ impl Widget for Column {
                     )
                 },
                 size: taffy::Size {
-                    width: percent(1.0_f32),
+                    width: if self.intrinsic_width {
+                        taffy::Dimension::auto()
+                    } else {
+                        percent(1.0_f32)
+                    },
                     height: if self.intrinsic_height || self.fill_remaining_height {
                         taffy::Dimension::auto()
                     } else {
@@ -730,6 +793,60 @@ mod tests {
             .iter()
             .filter(|t| matches!(**t, DrawTag::IMAGE) || **t == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn rhythm_gaps_and_insets_resolve_from_the_theme_scale() {
+        use crate::widget::Spacer;
+        for scale in [1.0_f32, 1.5] {
+            let theme = Theme::dark().with_ui_scale(scale);
+            let r = theme.tokens.spacing.rhythm;
+            let mut column = Column::new()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Section)
+                .with_padding_rhythm(Rhythm::Group, Rhythm::Related)
+                .push(Box::new(Spacer::fixed(10.0)))
+                .push(Box::new(Spacer::fixed(10.0)));
+            let mut taffy = TaffyTree::<()>::new();
+            let mut map = HashMap::new();
+            let node = column.build_layout(&mut taffy, &theme, &mut map);
+            let style = taffy.style(node).unwrap();
+            assert_eq!(style.gap.height, length(r.section));
+            assert_eq!(style.padding.left, length(r.group));
+            assert_eq!(style.padding.top, length(r.related));
+
+            let mut row = Row::new()
+                .with_rhythm(Rhythm::Related)
+                .with_padding_rhythm(None, Rhythm::Tight);
+            let node = row.build_layout(&mut taffy, &theme, &mut map);
+            let style = taffy.style(node).unwrap();
+            assert_eq!(style.gap.width, length(r.related));
+            assert_eq!(style.padding.left, length(0.0_f32));
+            assert_eq!(style.padding.top, length(r.tight));
+        }
+        // A later pixel gap replaces the rhythm, and the other way round.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map = HashMap::new();
+        let mut column = Column::new().with_rhythm(Rhythm::Group).with_gap(3.0);
+        let node = column.build_layout(&mut taffy, &theme, &mut map);
+        assert_eq!(taffy.style(node).unwrap().gap.height, length(3.0_f32));
+    }
+
+    #[test]
+    fn an_intrinsic_width_column_hugs_its_widest_child() {
+        use crate::widget::Spacer;
+        let mut row = Row::new().no_wrap().push(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_intrinsic_width()
+                .push(Box::new(Spacer::fixed(40.0)))
+                .push(Box::new(Spacer::fixed(90.0))),
+        ));
+        lay_out(&mut row);
+        let column = row.children()[0].get_rect();
+        assert!((column.width() - 90.0).abs() < 0.5, "{column:?}");
     }
 
     #[test]
