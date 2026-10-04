@@ -753,6 +753,9 @@ pub struct PdfApp {
     /// Opens another document in this window, on that document's own
     /// markup record, in place of the one shown. Absent outside a host.
     open_here: Option<ui::framework::OpenHere>,
+    /// The document asked to open in this window's place, until the host
+    /// answers.
+    pending_reopen: Option<(std::path::PathBuf, ui::application::ReplacementOutcome)>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -1204,6 +1207,7 @@ impl PdfApp {
             portal_rx: None,
             portal_contents_rx: None,
             open_here: None,
+            pending_reopen: None,
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
@@ -4339,14 +4343,38 @@ impl PdfApp {
             self.finish_portal_action(true, None);
             return;
         }
-        match open_here.open(&[path.display().to_string()]) {
-            Ok(()) => {
-                self.status_note = Some("Opening PDF…".to_string());
-                self.finish_portal_action(true, None);
-            }
-            Err(error) => {
-                let error = format!("Could not open {}: {error}", path.display());
-                self.status_note = Some(error.clone());
+        // The operation that asked is answered with the host's answer
+        // ([`Self::follow_reopen`]).
+        let outcome = open_here.open(&[path.display().to_string()]);
+        self.pending_reopen = Some((path.to_path_buf(), outcome));
+        self.status_note = Some("Opening PDF…".to_string());
+        self.dirty = true;
+    }
+
+    /// Answer the open this window asked of its host: shown (this reader
+    /// closes next), or refused, which the person is told and the
+    /// operation that asked fails with.
+    fn follow_reopen(&mut self) {
+        let Some(answer) = self
+            .pending_reopen
+            .as_ref()
+            .and_then(|(_, outcome)| outcome.get())
+        else {
+            return;
+        };
+        let Some((path, _)) = self.pending_reopen.take() else {
+            return;
+        };
+        match answer {
+            Ok(()) => self.finish_portal_action(true, None),
+            Err(reason) => {
+                let error = format!("Could not open {}: {reason}", path.display());
+                if self.has_document {
+                    self.status_note = Some(error.clone());
+                } else {
+                    self.status_note = None;
+                    self.load_error = Some(error.clone());
+                }
                 self.finish_portal_action(false, Some(error));
             }
         }
@@ -5016,6 +5044,7 @@ impl Widget for PdfApp {
                 message: Some("file operation cancelled".into()),
             });
         }
+        self.follow_reopen();
         if self
             .completed_portal_action
             .as_ref()
@@ -5032,6 +5061,7 @@ impl Widget for PdfApp {
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        self.follow_reopen();
         self.follow_signature();
         self.reopen_pinned_source();
         // Pull in any file the host portal picker returned since the last
@@ -5848,6 +5878,7 @@ impl Widget for PdfApp {
         // leaving a button arrives as a real event, which repaints and clears
         // the popover on its own.
         let owner_busy = self.portal_contents_rx.is_some()
+            || self.pending_reopen.is_some()
             || self
                 .raster_handle
                 .as_ref()
@@ -5995,6 +6026,9 @@ impl PdfApp {
                 }
                 self.portal_action = Some((invocation, PortalActionKind::Open));
                 self.open_chosen(std::path::Path::new(&file), doc);
+                if self.pending_reopen.is_some() {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
                 if self.portal_action.is_none() {
                     // Handed to a window of its own: answered here.
                     self.completed_portal_action = None;
@@ -6216,6 +6250,28 @@ mod tests {
             app.harness().relayout();
             assert_eq!(app.record(), &a_record);
             assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
+
+            // A document that cannot be opened leaves the window as it is:
+            // the person is told why, and the operation fails with it.
+            let missing = a.with_file_name("gone.pdf");
+            app.invoke_confirmed(OPEN.with(Some(missing.display().to_string())))
+                .expect("the open is accepted");
+            app.harness().relayout();
+            app.harness().relayout();
+            assert_eq!(app.record(), &a_record, "the window keeps its record");
+            let note = app
+                .with_surface::<PdfApp, _>(|pdf| pdf.status_note.clone())
+                .flatten()
+                .expect("the person is told");
+            assert!(note.contains("gone.pdf"), "{note}");
+            assert!(
+                app.harness()
+                    .control_failures()
+                    .iter()
+                    .any(|failure| failure.contains("gone.pdf")),
+                "the operation fails with the reason: {:?}",
+                app.harness().control_failures()
+            );
 
             // A bare window opening a file marks it up on the file's own
             // record, the one a launch on the file opens.

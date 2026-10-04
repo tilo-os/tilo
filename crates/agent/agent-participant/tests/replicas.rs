@@ -1,4 +1,4 @@
-//! Two mounts of one record — a person's and an agent's — converge through
+//! Two replicas of one record — a person's and an agent's — converge through
 //! the changes each takes and the other applies, with no transport between
 //! them.
 
@@ -13,11 +13,11 @@ mod common;
 use collab_types::DocumentMutation;
 use common::catalogue;
 use tilo_actions::door::ActionAddress;
-use tilo_agent_participant::{HostedApp, Seed};
+use tilo_agent_participant::{Replica, Seed};
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-fn body(app: &HostedApp) -> String {
+fn body(app: &Replica) -> String {
     app.read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap()
 }
@@ -32,12 +32,12 @@ fn bytes(mutation: DocumentMutation) -> Vec<u8> {
 fn an_agent_mount_and_a_person_mount_converge() {
     let catalogue = catalogue();
     let app = "so.tilo.scratchpad";
-    let mut page = HostedApp::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+    let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
     let snapshot = page
         .take_mutation()
         .expect("a new record is published whole");
     assert!(matches!(snapshot, DocumentMutation::Snapshot(_)));
-    let mut agent = HostedApp::open(
+    let mut agent = Replica::open(
         &catalogue,
         app,
         ROOM,
@@ -88,13 +88,11 @@ fn an_agent_mount_and_a_person_mount_converge() {
         agent.take_mutation().is_none(),
         "a received change is not the agent's"
     );
-    agent.close();
-    page.close();
 }
 
 /// The record's identity alone, as a participant holds it before the
 /// creator's content arrives.
-fn identity_only(page: &HostedApp) -> Vec<u8> {
+fn identity_only(page: &Replica) -> Vec<u8> {
     use automerge::transaction::Transactable as _;
     use automerge::{ObjType, ROOT, ReadDoc as _};
     let (identity, version) = page
@@ -123,10 +121,10 @@ fn identity_only(page: &HostedApp) -> Vec<u8> {
 
 fn joined(
     catalogue: &tilo_agent_participant::AppCatalogue,
-    page: &HostedApp,
+    page: &Replica,
     changes: Vec<u8>,
-) -> Option<HostedApp> {
-    HostedApp::open(
+) -> Option<Replica> {
+    Replica::open(
         catalogue,
         page.app_id(),
         ROOM,
@@ -141,7 +139,7 @@ fn joined(
 }
 
 /// Every app's content, without the record identity both sides write.
-fn content(app: &HostedApp) -> serde_json::Value {
+fn content(app: &Replica) -> serde_json::Value {
     let mut body: serde_json::Value = serde_json::from_str(&body(app)).unwrap();
     body.as_object_mut().unwrap().remove("tilo:record");
     body
@@ -160,7 +158,7 @@ fn only_the_creator_seeds_a_record() {
         .filter(|definition| !definition.keeps_room_record())
     {
         let app = definition.app_id;
-        let mut page = HostedApp::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
+        let mut page = Replica::open(&catalogue, app, ROOM, "ada", false, Seed::New).unwrap();
         let snapshot = page.take_mutation().expect("a new record is published");
         let created = content(&page);
 
@@ -175,13 +173,11 @@ fn only_the_creator_seeds_a_record() {
                 body(&page)
             ));
         }
-        after.close();
 
         // Joined before it: the identity alone, then the creator's document.
         // An app may also refuse to launch until the record is initialized
         // (Notes validates it): that writes nothing either.
         let Some(mut early) = joined(&catalogue, &page, identity_only(&page)) else {
-            page.close();
             continue;
         };
         let whole = page.read(|doc| doc.clone().save()).unwrap();
@@ -202,8 +198,6 @@ fn only_the_creator_seeds_a_record() {
                 body(&page)
             ));
         }
-        early.close();
-        page.close();
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

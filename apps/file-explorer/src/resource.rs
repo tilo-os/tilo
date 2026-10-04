@@ -226,9 +226,20 @@ impl ResourceApp for FileExplorerShell {
     });
 
     fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
-        let widget = match cx.fixture::<crate::scenarios::Scene>() {
-            Some(scene) => FileExplorerWidget::for_scene(&scene),
-            None => FileExplorerWidget::new(),
+        // Mounted in the shell, Files starts where the shell says and opens
+        // documents through the shell's services; in its own process, at
+        // the person's home.
+        let lent = cx.take_lent::<crate::StartupInputs>();
+        let services = cx.take_lent::<crate::files_app::HostedFileServices>();
+        let widget = match (cx.fixture::<crate::scenarios::Scene>(), lent) {
+            (Some(scene), _) => FileExplorerWidget::for_scene(&scene),
+            (None, Some(inputs)) => match services {
+                Some(services) => {
+                    FileExplorerWidget::with_startup_inputs_and_services(inputs, services)
+                }
+                None => FileExplorerWidget::with_startup_inputs(inputs),
+            },
+            (None, None) => FileExplorerWidget::new(),
         };
         cx.surface(widget)
     }

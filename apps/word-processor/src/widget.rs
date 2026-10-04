@@ -1271,13 +1271,6 @@ struct StagedOverlays {
     toolbar_overflow: bool,
 }
 
-#[cfg_attr(
-    test,
-    expect(
-        clippy::struct_excessive_bools,
-        reason = "independent per-window UI flags; grouping them would not form a state machine"
-    )
-)]
 pub struct WordProcessorWidget {
     inner: WordProcessor,
     rect: Rect,
@@ -1495,16 +1488,27 @@ pub struct WordProcessorWidget {
     /// serves: bounded, idle-expiring, rebased on every change, and never
     /// written into the document. The local window's view is `inner`.
     participants: participants::ParticipantViews,
-    /// Set by a headless host worker (no local person): `resources` then
-    /// publishes the participant-independent catalogue schema.
-    participant_host: bool,
     /// A screenshot scenario to stage in the next sync, which has the
     /// document its actions wrote.
     staged_scenario: Option<String>,
+    /// The edits bound to this window's caret and selection, and to each
+    /// participant's, as the document they were resolved against last
+    /// placed them: what [`ResourceSurface::bound_declarations`] publishes.
+    bound: BoundEdits,
     /// The last action the editor's own affordances dispatched, so a test can
     /// compare it with what the matching published operation builds.
     #[cfg(test)]
     last_dispatched: Option<tilo_actions::EncodedAction>,
+}
+
+/// The edits bound to the views a window serves, resolved at its last sync.
+#[derive(Default)]
+struct BoundEdits {
+    local: Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
+    participants: HashMap<
+        tilo_actions::ParticipantId,
+        Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>>,
+    >,
 }
 
 /// One process-wide built-in dictionary, shared across every word-processor
@@ -1651,8 +1655,8 @@ impl WordProcessorWidget {
             ime_rect: None,
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
-            participant_host: false,
             staged_scenario: None,
+            bound: BoundEdits::default(),
             #[cfg(test)]
             last_dispatched: None,
         }
@@ -1688,6 +1692,61 @@ impl WordProcessorWidget {
     #[cfg(test)]
     pub(crate) fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.last_dispatched.as_ref()
+    }
+
+    /// Resolve the edits bound to this window's view and to each
+    /// participant's against `doc` as it is now. A participant's edit noted
+    /// against this version adopts its next view once the edit applied.
+    fn resolve_bound_edits(&mut self, doc: &AutoCommit) {
+        if self.read_only() {
+            self.bound = BoundEdits::default();
+            return;
+        }
+        let body = self.kept_body();
+        let edits = |ctx: &crate::actions::WpResourceCtx| {
+            crate::actions::bound::declarations(&crate::actions::live_presentation_resources(
+                ctx,
+                doc,
+                body.as_deref(),
+            ))
+        };
+        let local = self
+            .wp_resource_ctx(doc)
+            .map(|ctx| edits(&ctx))
+            .unwrap_or_default();
+        let mut participants = HashMap::new();
+        let known: Vec<_> = self.participants.participants().cloned().collect();
+        for participant in known {
+            let Some(mut ctx) = self
+                .participant_view_or_default(&participant, doc)
+                .and_then(|view| view.ctx(doc))
+            else {
+                continue;
+            };
+            ctx.content = self.inner.content_store().clone();
+            self.participants.note_resolution(&participant, doc);
+            participants.insert(participant, edits(&ctx));
+        }
+        self.bound = BoundEdits {
+            local,
+            participants,
+        };
+    }
+
+    /// The edits bound to the view of whoever is invoking: a participant's
+    /// own, else this window's.
+    pub(crate) fn bound_edits(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::framework::Document>> {
+        match ui::invocation_scope::current_participant() {
+            Some(participant) => self
+                .bound
+                .participants
+                .get(&participant)
+                .cloned()
+                .unwrap_or_default(),
+            None => self.bound.local.clone(),
+        }
     }
 
     /// Bring the kept state up to date with `state`. Returns whether it
@@ -1742,18 +1801,6 @@ impl WordProcessorWidget {
         self.dispatch
             .as_ref()
             .is_none_or(ui::framework::Dispatcher::read_only)
-    }
-
-    /// The resource tree from the kept document state, once there is one.
-    pub(crate) fn listed_resources(
-        &self,
-        ctx: &crate::actions::WpResourceCtx,
-        doc: &AutoCommit,
-        file: &crate::actions::continuation::FileContext,
-    ) -> Option<Vec<tilo_actions::Resource>> {
-        self.with_live(|state| {
-            crate::actions::provide_resources_listed(ctx, doc, Some(file), state)
-        })
     }
 
     // ---- Tilo action dispatch ------------------------------------------------
@@ -1984,6 +2031,7 @@ impl WordProcessorWidget {
         let (_, next) = crate::actions::view_ops::apply(&view, state, operation)
             .map_err(|error| error.to_string())?;
         self.adopt_local_view(&next, state);
+        self.resolve_bound_edits(state);
         Ok(())
     }
 
@@ -2394,13 +2442,6 @@ impl WordProcessorWidget {
         self.inner.clear_anchor();
     }
 
-    pub(crate) fn file_continuation_context(&self) -> crate::actions::continuation::FileContext {
-        crate::actions::continuation::FileContext {
-            path: self.path.clone(),
-            format: self.format,
-        }
-    }
-
     /// The context Ctrl+K needs to build the document's resource tree: the caret
     /// anchor for structural inserts and the blocks a block-level format targets.
     /// `None` until the document is bound (a fresh, unsynced widget).
@@ -2524,6 +2565,7 @@ impl WordProcessorWidget {
     ) {
         self.participants
             .set(participant, view, doc, ui::time::now());
+        self.resolve_bound_edits(doc);
         self.lifecycle.dirty = true;
     }
 
@@ -2551,9 +2593,8 @@ impl WordProcessorWidget {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
         let Some(participant) = participant else {
-            return Self::publish_resources(self, doc);
+            return self.own_resources(doc);
         };
-        self.participants.note_resolution(participant, doc);
         let Some(mut ctx) = self
             .participant_view_or_default(participant, doc)
             .and_then(|view| view.ctx(doc))
@@ -2561,7 +2602,9 @@ impl WordProcessorWidget {
             return Vec::new();
         };
         ctx.content = self.inner.content_store().clone();
-        crate::actions::provide_resources(&ctx, doc)
+        crate::actions::bound::view_only(crate::actions::live_presentation_resources(
+            &ctx, doc, None,
+        ))
     }
 
     /// Apply one participant's edit — the envelopes and next view an
@@ -10344,6 +10387,7 @@ impl Widget for WordProcessorWidget {
         self.participants.adopt_outcomes(state, now);
         self.participants.rebase(state);
         self.participants.expire(now);
+        self.resolve_bound_edits(state);
         // Reload the stylesheet from the doc unless a live, not-yet-persisted
         // local edit is in progress (a guide drag, a numeric scrub, or typing
         // into a panel field) — reloading would discard the live preview.
@@ -10586,253 +10630,11 @@ impl Widget for WordProcessorWidget {
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
-    )]
+    // Where the caret and selection end up is what the edits bound to them
+    // are built from.
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let shift = ctx.modifiers.state().shift_key();
-        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-        // An open menu owns input until selection or dismissal. Forward
-        // movement as well as presses so the shared menu can paint its hover;
-        // keep navigation/typing from editing the document behind the popup.
-        if self.template_picker.is_open()
-            || self.context_menu.is_open()
-            || self.style_menu.is_open()
-        {
-            if let WindowEvent::CursorMoved { position, .. } = event {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
-            let menu = if self.template_picker.is_open() {
-                self.template_picker.menu_mut()
-            } else if self.style_menu.is_open() {
-                self.style_menu.menu_mut()
-            } else {
-                &mut self.context_menu
-            };
-            menu.handle_event(event, ctx);
-            if let Some(template) = self.template_picker.take_selection() {
-                self.request_template(ctx.state, template);
-            }
-            if let Some(action) = self.style_menu.take_selection() {
-                self.dispatch_style_menu(action, ctx.state);
-            }
-            if let Some(index) = self.context_menu.take_selection() {
-                self.dispatch_context_action(index, ctx.state);
-            }
-            if matches!(
-                event,
-                WindowEvent::CursorMoved { .. }
-                    | WindowEvent::MouseInput { .. }
-                    | WindowEvent::MouseWheel { .. }
-                    | WindowEvent::PinchGesture { .. }
-                    | WindowEvent::KeyboardInput { .. }
-                    | WindowEvent::Ime(_)
-            ) {
-                self.lifecycle.dirty = true;
-                *ctx.handled = true;
-                return;
-            }
-        }
-        if self.pump_compact_swatch_palette(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-        ) {
-            return;
-        }
-        // While the colour-picker popover is open it captures input (modal-ish):
-        // route drags to it, apply committed colours, and let an outside-click /
-        // Escape dismiss it before any page/panel hit-testing.
-        if self.color_picker.is_open()
-            && self.pump_color_picker(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                ctx.state,
-                ctx.path,
-                ctx.handled,
-            )
-        {
-            return;
-        }
-        // The expanded comment thread owns its reply field and modal-like
-        // button surface. Keep it ahead of the editor and Find bar so typing
-        // never leaks into the document beneath it.
-        let comment_thread_handled = self.handle_comment_thread_event(
-            event,
-            &mut EditorEventCtx {
-                scale_factor: ctx.scale_factor,
-                modifiers: *ctx.modifiers,
-                state: ctx.state,
-                path: ctx.path,
-                handled: ctx.handled,
-            },
-        );
-        if comment_thread_handled {
-            return;
-        }
-        // The toolbar may have wrapped to several rows; hit-test against its
-        // actual bottom (`tb_h`), matching `draw`.
-        let tb_h = self.toolbar_height(self.rect.width());
-
-        // Find/replace embeds the shared TextInput rather than maintaining a
-        // second text editor. Feed it raw events first so IME, selection and
-        // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
-        // deliberately left for the editor-level toggle below.
-        if self.lifecycle.focused && self.find.is_open() {
-            let mut find_handled = false;
-            let effect = self.find.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    handled: &mut find_handled,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-                &self.blocks,
-            );
-            self.apply_find_effect_mut(ctx.state, effect);
-            if find_handled {
-                self.lifecycle.dirty = true;
-                *ctx.handled = true;
-                // Cursor movement still feeds the editor below so its shared
-                // pointer coordinate remains current for subsequent clicks.
-                if !matches!(event, WindowEvent::CursorMoved { .. }) {
-                    return;
-                }
-            }
-        }
-        match event {
-            // Drag-and-drop a file onto the window inserts it as an image at the
-            // drop point (see `handle_dropped_file`).
-            WindowEvent::DroppedFile(path) => {
-                self.handle_dropped_file(ctx.state, path, ctx.handled);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // Window groups offer unclaimed events to visible apps in
-                // presentation order. Ctrl+wheel represents a browser
-                // trackpad pinch, so an unfocused Writer must leave it for
-                // the host-selected app rather than zoom in the background.
-                if self.lifecycle.focused || !ctrl {
-                    self.handle_mouse_wheel(delta, ctx.scale_factor, ctrl, ctx.handled);
-                }
-            }
-            WindowEvent::PinchGesture { delta, phase, .. } => {
-                // Native pinch follows the same host-ownership rule as the
-                // browser's Ctrl+wheel form above. Pointer geometry still
-                // determines where a focused Writer zooms.
-                if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
-                    *ctx.handled = true;
-                    if delta.is_finite()
-                        && *delta != 0.0
-                        && *phase != winit::event::TouchPhase::Cancelled
-                        && !self.color_picker.is_open()
-                        && !self.compact_swatch_palette.is_open()
-                        && !(self.styles_panel_overlay() && self.panel_rect.contains(self.pointer))
-                    {
-                        let before = self.zoom.factor();
-                        let after = (before * (1.0 + delta).max(0.01)).clamp(ZOOM_MIN, ZOOM_MAX);
-                        if self.set_zoom(after) {
-                            // Keep the document row beneath the gesture steady.
-                            // Horizontal alignment remains the centered-page convention.
-                            let pointer_y = self.pointer.y - self.zoom.anchor().y;
-                            self.scroll_y =
-                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
-                        }
-                    }
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(
-                    position.x,
-                    position.y,
-                    ctx.scale_factor,
-                    tb_h,
-                    ctx.handled,
-                );
-            }
-            // Right (secondary) press opens the editing / spell-check context
-            // menu on the page body. Toolbar / panel / status-bar chrome ignore
-            // it (they have their own hit-testing on the left button).
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => {
-                let was_handled = *ctx.handled;
-                self.handle_right_press(ctx.state, tb_h, ctx.handled);
-                if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let was_handled = *ctx.handled;
-                self.handle_left_press(ctx.state, tb_h, shift, ctrl, ctx.handled);
-                if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.handle_left_release(ctx.state, ctx.handled),
-            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                self.inner.clear_preedit();
-                self.handle_key_press(
-                    ctx.state,
-                    &Key::Character(text.as_str().into()),
-                    Some(text),
-                    false,
-                    false,
-                    ctx.handled,
-                );
-            }
-            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
-                if text.is_empty() {
-                    self.inner.clear_preedit();
-                } else {
-                    self.inner.set_preedit(text, *cursor);
-                }
-                self.lifecycle.dirty = true;
-                *ctx.handled = true;
-            }
-            WindowEvent::Ime(winit::event::Ime::Disabled) => {
-                self.inner.clear_preedit();
-                self.lifecycle.dirty = true;
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key,
-                        text,
-                        ..
-                    },
-                ..
-            } => {
-                if self.handle_modified_navigation(ctx.state, logical_key, *ctx.modifiers) {
-                    *ctx.handled = true;
-                } else {
-                    self.handle_key_press(
-                        ctx.state,
-                        logical_key,
-                        text.as_deref(),
-                        shift,
-                        ctrl,
-                        ctx.handled,
-                    );
-                }
-            }
-            _ => {}
-        }
+        self.route_event(event, ctx);
+        self.resolve_bound_edits(ctx.state);
     }
 
     /// Top-layer pass: paint the right-click context menu (when open) so it
@@ -11126,7 +10928,11 @@ impl WordProcessorWidget {
             return Vec::new();
         };
         let body = self.kept_body();
-        crate::actions::live_presentation_resources(&ctx, doc, body.as_deref())
+        crate::actions::bound::view_only(crate::actions::live_presentation_resources(
+            &ctx,
+            doc,
+            body.as_deref(),
+        ))
     }
 }
 
@@ -11151,11 +10957,6 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
                 None => self.own_resources(doc),
             };
         }
-        // Publication on a headless host worker (no local person): the
-        // participant-independent schema, not the worker caret's snapshot.
-        if self.participant_host {
-            return Self::publish_catalogue_schema(self, doc);
-        }
         self.own_resources(doc)
     }
 
@@ -11177,9 +10978,6 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
                 None => self.own_resources(doc),
             };
             return find(&tree, id);
-        }
-        if self.participant_host {
-            return find(&Self::publish_catalogue_schema(self, doc), id);
         }
         find(&self.own_resources(doc), id)
     }
@@ -11292,9 +11090,6 @@ impl ui::collaboration::participants::Participants for WordProcessorWidget {
     }
     fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
         WordProcessorWidget::participant_presence(self, doc)
-    }
-    fn set_participant_host(&mut self, host: bool) {
-        self.participant_host = host;
     }
 }
 
@@ -13549,6 +13344,257 @@ impl WordProcessorWidget {
             .find(|m| m.name == "color" && pos >= m.start && pos < m.end)
             .and_then(|m| m.value.as_str())
             .and_then(parse_hex_rgb)
+    }
+}
+
+impl WordProcessorWidget {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
+    )]
+    fn route_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let shift = ctx.modifiers.state().shift_key();
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+        // An open menu owns input until selection or dismissal. Forward
+        // movement as well as presses so the shared menu can paint its hover;
+        // keep navigation/typing from editing the document behind the popup.
+        if self.template_picker.is_open()
+            || self.context_menu.is_open()
+            || self.style_menu.is_open()
+        {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            let menu = if self.template_picker.is_open() {
+                self.template_picker.menu_mut()
+            } else if self.style_menu.is_open() {
+                self.style_menu.menu_mut()
+            } else {
+                &mut self.context_menu
+            };
+            menu.handle_event(event, ctx);
+            if let Some(template) = self.template_picker.take_selection() {
+                self.request_template(ctx.state, template);
+            }
+            if let Some(action) = self.style_menu.take_selection() {
+                self.dispatch_style_menu(action, ctx.state);
+            }
+            if let Some(index) = self.context_menu.take_selection() {
+                self.dispatch_context_action(index, ctx.state);
+            }
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::PinchGesture { .. }
+                    | WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+            ) {
+                self.lifecycle.dirty = true;
+                *ctx.handled = true;
+                return;
+            }
+        }
+        if self.pump_compact_swatch_palette(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+        ) {
+            return;
+        }
+        // While the colour-picker popover is open it captures input (modal-ish):
+        // route drags to it, apply committed colours, and let an outside-click /
+        // Escape dismiss it before any page/panel hit-testing.
+        if self.color_picker.is_open()
+            && self.pump_color_picker(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            )
+        {
+            return;
+        }
+        // The expanded comment thread owns its reply field and modal-like
+        // button surface. Keep it ahead of the editor and Find bar so typing
+        // never leaks into the document beneath it.
+        let comment_thread_handled = self.handle_comment_thread_event(
+            event,
+            &mut EditorEventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: *ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
+                handled: ctx.handled,
+            },
+        );
+        if comment_thread_handled {
+            return;
+        }
+        // The toolbar may have wrapped to several rows; hit-test against its
+        // actual bottom (`tb_h`), matching `draw`.
+        let tb_h = self.toolbar_height(self.rect.width());
+
+        // Find/replace embeds the shared TextInput rather than maintaining a
+        // second text editor. Feed it raw events first so IME, selection and
+        // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
+        // deliberately left for the editor-level toggle below.
+        if self.lifecycle.focused && self.find.is_open() {
+            let mut find_handled = false;
+            let effect = self.find.handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    handled: &mut find_handled,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
+                &self.blocks,
+            );
+            self.apply_find_effect_mut(ctx.state, effect);
+            if find_handled {
+                self.lifecycle.dirty = true;
+                *ctx.handled = true;
+                // Cursor movement still feeds the editor below so its shared
+                // pointer coordinate remains current for subsequent clicks.
+                if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                    return;
+                }
+            }
+        }
+        match event {
+            // Drag-and-drop a file onto the window inserts it as an image at the
+            // drop point (see `handle_dropped_file`).
+            WindowEvent::DroppedFile(path) => {
+                self.handle_dropped_file(ctx.state, path, ctx.handled);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Window groups offer unclaimed events to visible apps in
+                // presentation order. Ctrl+wheel represents a browser
+                // trackpad pinch, so an unfocused Writer must leave it for
+                // the host-selected app rather than zoom in the background.
+                if self.lifecycle.focused || !ctrl {
+                    self.handle_mouse_wheel(delta, ctx.scale_factor, ctrl, ctx.handled);
+                }
+            }
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                // Native pinch follows the same host-ownership rule as the
+                // browser's Ctrl+wheel form above. Pointer geometry still
+                // determines where a focused Writer zooms.
+                if self.lifecycle.focused && self.zoom_viewport.contains(self.pointer) {
+                    *ctx.handled = true;
+                    if delta.is_finite()
+                        && *delta != 0.0
+                        && *phase != winit::event::TouchPhase::Cancelled
+                        && !self.color_picker.is_open()
+                        && !self.compact_swatch_palette.is_open()
+                        && !(self.styles_panel_overlay() && self.panel_rect.contains(self.pointer))
+                    {
+                        let before = self.zoom.factor();
+                        let after = (before * (1.0 + delta).max(0.01)).clamp(ZOOM_MIN, ZOOM_MAX);
+                        if self.set_zoom(after) {
+                            // Keep the document row beneath the gesture steady.
+                            // Horizontal alignment remains the centered-page convention.
+                            let pointer_y = self.pointer.y - self.zoom.anchor().y;
+                            self.scroll_y =
+                                (self.scroll_y + pointer_y / before - pointer_y / after).max(0.0);
+                        }
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(
+                    position.x,
+                    position.y,
+                    ctx.scale_factor,
+                    tb_h,
+                    ctx.handled,
+                );
+            }
+            // Right (secondary) press opens the editing / spell-check context
+            // menu on the page body. Toolbar / panel / status-bar chrome ignore
+            // it (they have their own hit-testing on the left button).
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                let was_handled = *ctx.handled;
+                self.handle_right_press(ctx.state, tb_h, ctx.handled);
+                if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let was_handled = *ctx.handled;
+                self.handle_left_press(ctx.state, tb_h, shift, ctrl, ctx.handled);
+                if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.handle_left_release(ctx.state, ctx.handled),
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.inner.clear_preedit();
+                self.handle_key_press(
+                    ctx.state,
+                    &Key::Character(text.as_str().into()),
+                    Some(text),
+                    false,
+                    false,
+                    ctx.handled,
+                );
+            }
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if text.is_empty() {
+                    self.inner.clear_preedit();
+                } else {
+                    self.inner.set_preedit(text, *cursor);
+                }
+                self.lifecycle.dirty = true;
+                *ctx.handled = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                self.inner.clear_preedit();
+                self.lifecycle.dirty = true;
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        text,
+                        ..
+                    },
+                ..
+            } => {
+                if self.handle_modified_navigation(ctx.state, logical_key, *ctx.modifiers) {
+                    *ctx.handled = true;
+                } else {
+                    self.handle_key_press(
+                        ctx.state,
+                        logical_key,
+                        text.as_deref(),
+                        shift,
+                        ctrl,
+                        ctx.handled,
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 }
 

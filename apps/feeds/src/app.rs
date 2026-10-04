@@ -4315,10 +4315,6 @@ fn chrono_date(published: i64, now: i64) -> String {
 impl Widget for FeedsApp {
     ui::provides!(dyn ui::undo::LocalUndo);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::FEEDS_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
@@ -4333,27 +4329,6 @@ impl Widget for FeedsApp {
         self.drain_import();
         self.drain_export();
         self.drain_open_link();
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .reveal(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
     }
 
     #[allow(
@@ -5134,27 +5109,25 @@ impl FeedsApp {
     /// # Errors
     /// The operation is malformed or names something the library no longer
     /// has.
-    fn reveal(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::View {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+    pub(crate) fn reveal(&mut self, item: &str) -> Result<(), String> {
+        let operation = if let Some(id) = item.strip_prefix("feeds.subscription:") {
+            Reveal::Feed(id.to_string())
+        } else if let Some(id) = item.strip_prefix("feeds.article:") {
+            Reveal::Article(id.to_string())
+        } else if let Some(tag) = crate::actions::tag_from_resource_id(item) {
+            Reveal::Tag(tag)
+        } else {
+            return Err(format!("`{item}` is no feed, article or tag"));
         };
         match operation {
-            crate::actions::FeedsOperation::RevealFeed { id } => {
+            Reveal::Feed(id) => {
                 let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
                 if self.store.feed(id).is_none() {
                     return Err("feed no longer exists".into());
                 }
                 self.set_filter(Filter::Feed(id));
             }
-            crate::actions::FeedsOperation::RevealArticle { id } => {
+            Reveal::Article(id) => {
                 let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
                 let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
                     return Err("article no longer exists".into());
@@ -5162,7 +5135,7 @@ impl FeedsApp {
                 self.set_filter(Filter::Feed(feed_id));
                 self.select_article(id);
             }
-            crate::actions::FeedsOperation::RevealTag { tag } => {
+            Reveal::Tag(tag) => {
                 let tag = actions::normalize_tags([tag.as_str()])
                     .into_iter()
                     .next()
@@ -5173,8 +5146,15 @@ impl FeedsApp {
                 self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
             }
         }
-        Ok(true)
+        Ok(())
     }
+}
+
+/// What a library item's `open` shows.
+enum Reveal {
+    Feed(String),
+    Article(String),
+    Tag(String),
 }
 
 impl FeedsApp {

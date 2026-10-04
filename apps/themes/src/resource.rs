@@ -170,7 +170,9 @@ impl ResourceApp for ThemesShell {
     /// (imported with its definition when it is a custom theme), else the
     /// first preset.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Themes>> {
-        let applied = store::applied(cx.host().storage().settings_document());
+        let applied = cx
+            .host()
+            .and_then(|host| store::applied(host.storage().settings_document()));
         let mut actions = Vec::new();
         let active = match applied {
             Some(spec) if !spec.builtin => {

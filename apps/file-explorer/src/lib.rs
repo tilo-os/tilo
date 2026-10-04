@@ -71,3 +71,8 @@ pub use files_app::{FileExplorerWidget, StartupInputs};
 #[cfg(all(test, windows))]
 mod unavailable_projection_tests;
 pub use resource::{FileExplorer, FileExplorerShell};
+
+/// The Files application definition: the one every host mounts.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<FileExplorerShell>()
+}

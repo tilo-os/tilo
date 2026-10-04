@@ -875,13 +875,18 @@ impl FrameHarness {
             || std::sync::Arc::new(|| {}) as std::sync::Arc<dyn Fn() + Send + Sync>,
             |wake| std::sync::Arc::clone(&wake.notify),
         );
-        let (root, wake, history) = match Self::mount_component(replacement.component, notify) {
+        let (component, outcome) = replacement.into_parts();
+        let (root, wake, history) = match Self::mount_component(component, notify) {
             Ok(mounted) => mounted,
             Err(error) => {
-                tracing::warn!(%error, "the record asked for could not be shown");
+                outcome.answer(Err(error.to_string()));
                 return;
             }
         };
+        // The asking component answers the operation that asked before it
+        // closes.
+        outcome.answer(Ok(()));
+        self.poll_control_invocations();
         let reports = {
             self.close_components();
             self.take_component_close_reports()
@@ -4258,7 +4263,21 @@ impl FrameHarness {
     }
 
     fn expect_now(&self, expected: &SemanticExpectation) -> Result<(), String> {
-        let node = self.access_node_named(&expected.target, expected.semantic_target.as_deref())?;
+        // A control a widget paints and publishes as a semantic child is
+        // named by its own target, as performing it is.
+        let owner = if expected.semantic_target.is_none()
+            && !self.named_target_nodes().contains_key(&expected.target)
+        {
+            self.semantic_target_owner(&expected.target)?
+        } else {
+            None
+        };
+        let node = match &owner {
+            Some(owner) => self.access_node_named(owner, Some(&expected.target))?,
+            None => {
+                self.access_node_named(&expected.target, expected.semantic_target.as_deref())?
+            }
+        };
         let mut mismatches = Vec::new();
         let actual_role = role_name(node.role);
         if let Some(role) = expected.role.as_deref()
@@ -5282,6 +5301,12 @@ impl FrameHarness {
     }
 
     /// Every update the job `invocation` reported so far, oldest first.
+    /// Why the operations driven through this harness that ended refused,
+    /// failed or cancelled after they started did, oldest first.
+    pub fn control_failures(&self) -> &[String] {
+        &self.control_failures
+    }
+
     pub fn job_updates(
         &self,
         invocation: tilo_actions::InvocationId,

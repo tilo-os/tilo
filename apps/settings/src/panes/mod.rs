@@ -63,11 +63,6 @@ fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
     }
 }
 
-/// The "Sound" category renders the audio pane.
-pub mod sound {
-    pub use super::audio::build;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

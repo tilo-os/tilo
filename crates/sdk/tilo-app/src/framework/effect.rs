@@ -407,6 +407,25 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         })
     }
 
+    /// [`Self::choose_file`] for a request that lets the person choose
+    /// several files ([`PickRequest::open_multiple`]): `then` receives every
+    /// chosen file, none when they cancelled.
+    pub fn choose_files(
+        &mut self,
+        request: PickRequest,
+        then: impl FnOnce(&mut H, Vec<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        let chosen = request.send_contents();
+        self.wait_for(chosen, move |host, outcome, cx| match outcome {
+            Some(ContentsOutcome::Picked(files)) => {
+                then(host, files.into_iter().map(ChosenFile::from).collect(), cx)
+            }
+            Some(ContentsOutcome::Cancelled) => then(host, Vec::new(), cx),
+            Some(ContentsOutcome::Failed(reason)) => Err(reason),
+            None => Err(CHOOSER_GONE.into()),
+        })
+    }
+
     /// Ask the person to choose a file with the host's chooser and run
     /// `then` on the UI thread with its path on this device, or `None` when
     /// they cancelled: for a file the app reads in place rather than into

@@ -194,7 +194,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
         .or_else(|| b.first())
         .map(|block| block.id.clone())
         .unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: anchor.clone(),
             caret_offset: 0,
@@ -214,7 +214,7 @@ fn publish_word_processor_actions(peer: &mut UnixStream, doc: &AutoCommit) {
     let exported = typed_peer::exported_actions(&resources);
     assert!(
         exported.iter().any(|action| {
-            action.resource == "word-processor.document" && action.action == "insert-table"
+            action.resource == "tilo.rich-text" && action.action == "insert-table"
         }),
         "the production Word Processor surface must export insert-table"
     );

@@ -462,6 +462,14 @@ pub struct ActionDecl<R: Resource> {
     /// What the action answers its caller with, beside the change: the state
     /// it left, as the declaring resource's surface reports it.
     pub result: Option<tilo_actions::ResultSpec>,
+    /// Contract tags its callers read: a precondition on the invoker's view
+    /// (`ContextRequirement`), a text that may arrive in parts.
+    pub tags: Vec<String>,
+    /// The prompt of an action whose one input is content another action
+    /// produced (an image to place), carried by its callers rather than
+    /// typed: the build reads its content hash as the
+    /// [`PROMPTED_PARAM`](tilo_actions::PROMPTED_PARAM) argument.
+    pub content: Option<String>,
     pub build: BuildAction<R>,
 }
 
@@ -475,6 +483,8 @@ impl<R: Resource> Clone for ActionDecl<R> {
             permission: self.permission,
             destructive: self.destructive,
             result: self.result.clone(),
+            tags: self.tags.clone(),
+            content: self.content.clone(),
             build: Arc::clone(&self.build),
         }
     }
@@ -495,8 +505,29 @@ impl<R: Resource> ActionDecl<R> {
             permission: PermissionRequirement::Write,
             destructive: false,
             result: None,
+            tags: Vec::new(),
+            content: None,
             build: Arc::new(build),
         }
+    }
+
+    /// Tag the action's contract (`ContextRequirement::Caret.tag()`, an
+    /// incremental-text declaration) for the callers that read it.
+    #[must_use]
+    pub fn tagged(mut self, tag: impl Into<String>) -> Self {
+        let tag = tag.into();
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+        self
+    }
+
+    /// Take content another action produced as the one input, described by
+    /// `prompt`; see [`Self::content`].
+    #[must_use]
+    pub fn collecting_content(mut self, prompt: impl Into<String>) -> Self {
+        self.content = Some(prompt.into());
+        self
     }
 
     #[must_use]
@@ -656,7 +687,30 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
     let encoded =
         move |args: &tilo_actions::ActionArgs| encode_built::<R>(build(args, origin_now_ms()));
-    let spec = if decl.params.is_empty() {
+    let spec = if let Some(prompt) = &decl.content {
+        let param = ActionParam::required_owned(
+            tilo_actions::PROMPTED_PARAM,
+            ParamType::Text,
+            prompt.clone(),
+        );
+        ActionSpec::prompted_content(
+            decl.id,
+            decl.label.clone(),
+            prompt.clone(),
+            "content hash",
+            ExecutionLocus::ClientLocal,
+            move |hash| {
+                let supplied = [(
+                    tilo_actions::PROMPTED_PARAM.to_owned(),
+                    tilo_actions::ArgValue::Text(hash.to_owned()),
+                )];
+                match ActionArgs::bind(std::slice::from_ref(&param), supplied) {
+                    Ok(args) => encoded(&args),
+                    Err(error) => refused::<R>(&error.to_string()),
+                }
+            },
+        )
+    } else if decl.params.is_empty() {
         ActionSpec::deferred(
             decl.id,
             decl.label.clone(),
@@ -686,6 +740,11 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     }
     if let Some(result) = &decl.result {
         spec.contract.result = result.clone();
+    }
+    for tag in &decl.tags {
+        if !spec.contract.tags.contains(tag) {
+            spec.contract.tags.push(tag.clone());
+        }
     }
     spec
 }

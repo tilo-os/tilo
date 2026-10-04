@@ -170,6 +170,12 @@ pub enum FeedsEffect {
     /// Export OPML…
     #[effect(permission = "read", device_only)]
     ExportOpml,
+    /// Open.
+    #[effect(view, row, idempotent)]
+    Open {
+        #[param("The feed, article or tag's resource id")]
+        item: String,
+    },
 }
 
 /// The reader's messages, in every host that mounts it.
@@ -324,6 +330,10 @@ impl ResourceSurface<Feeds, FeedsEffect> for FeedsApp {
             }
             FeedsEffect::ExportOpml => {
                 self.export_opml();
+                Ok(Effected::done())
+            }
+            FeedsEffect::Open { item } => {
+                self.reveal(&item)?;
                 Ok(Effected::done())
             }
         }

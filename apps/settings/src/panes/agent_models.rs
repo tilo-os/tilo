@@ -32,11 +32,35 @@ use crate::widgets::{
     El, StatusTone, caption, card, card_with_action, hgap, rows, semantic_status_pill, value_row,
 };
 
-/// The person's agent providers, as their settings hold them.
+/// The person's agent providers, as their settings hold them: the hosted
+/// ones roam with the person, those on this device or its network stay.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredProviders", into = "StoredProviders")]
 pub struct AgentProviders {
-    #[serde(default)]
     pub config: ProviderConfig,
+}
+
+/// [`AgentProviders`] as the settings section stores them.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct StoredProviders {
+    config: ProviderConfig,
+    hosted: agent_provider_config::HostedProfiles,
+}
+
+impl From<StoredProviders> for AgentProviders {
+    fn from(stored: StoredProviders) -> Self {
+        Self {
+            config: ProviderConfig::from_stored(stored.config, stored.hosted),
+        }
+    }
+}
+
+impl From<AgentProviders> for StoredProviders {
+    fn from(providers: AgentProviders) -> Self {
+        let (config, hosted) = providers.config.stored();
+        Self { config, hosted }
+    }
 }
 
 impl ui::storage::SettingsSchema for AgentProviders {

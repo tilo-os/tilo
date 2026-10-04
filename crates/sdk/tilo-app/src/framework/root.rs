@@ -269,7 +269,10 @@ impl<R: Resource> ResourceRoot<R> {
 
     /// Open what a launch naming `arguments` opens in this window
     /// ([`ViewCx::open_here`](super::ViewCx::open_here)).
-    pub(crate) fn open_here(&self, arguments: &[String]) -> Result<(), String> {
+    pub(crate) fn open_here(
+        &self,
+        arguments: &[String],
+    ) -> Result<ui_core::application::ReplacementOutcome, String> {
         self.run.open_here(arguments)
     }
 

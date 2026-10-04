@@ -1,11 +1,13 @@
-//! Bounded, canonical global search for Books.
+//! What the Books search finds: books, chapters, annotations and remote
+//! library entries, as the search entries the reader surface contributes to
+//! the app's one search source, each invoking the canonical action that
+//! opens it.
 //!
-//! Books, chapters, annotations and remote library entries are records of
-//! one shared [`SearchCatalog`], found and ranked by their weighted fields.
-//! Each chapter's prose is a catalogue [`SearchBody`]: the reader stays the
-//! sole owner of EPUB text, the catalogue keeps only the chapter's grams, and
-//! a match reports the exact block it ends in. Rebuilds after an annotation
-//! or library edit reuse the body index of every book they keep.
+//! Each chapter's prose is an entry's [`SearchBody`]: the reader stays the
+//! sole owner of EPUB text, the index reads it in place, and a match reports
+//! the exact block it is in. Rebuilds after an annotation or library edit
+//! hand back the same bodies for every book they keep, so the prose of a
+//! kept book is not read again.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -15,10 +17,8 @@ use tilo_actions::{
     Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::icons::Icon;
-use ui::search::{
-    BodyPiece, CatalogSearchProvider, FieldWeight, SearchBody, SearchBodySource, SearchCatalog,
-    SearchCatalogStats, SearchRecord, SearchResult,
-};
+use ui::search::SearchResult;
+use ui::tilo_resource::{SearchBody, SearchPiece, SearchText};
 
 use crate::actions::{
     CommentDraft, EBOOK_OPERATION_TYPE, EbookOperation, NoteDraft, change_color_action,
@@ -59,7 +59,7 @@ impl ChapterBody {
     }
 }
 
-impl SearchBodySource for ChapterBody {
+impl SearchText for ChapterBody {
     fn segment_count(&self) -> usize {
         self.blocks().len()
     }
@@ -72,16 +72,16 @@ impl SearchBodySource for ChapterBody {
         }
     }
 
-    fn piece(&self, segment: usize, piece: usize) -> Option<BodyPiece<'_>> {
+    fn piece(&self, segment: usize, piece: usize) -> Option<SearchPiece<'_>> {
         match self.blocks().get(segment)? {
-            crate::model::Block::Math { source, .. } => (piece == 0).then_some(BodyPiece {
+            crate::model::Block::Math { source, .. } => (piece == 0).then_some(SearchPiece {
                 text: source,
                 space_before: segment > 0,
             }),
             crate::model::Block::Separator => None,
             block => {
                 let span = block.spans().get(piece)?;
-                Some(BodyPiece {
+                Some(SearchPiece {
                     text: &span.text,
                     space_before: if piece == 0 {
                         segment > 0
@@ -93,24 +93,30 @@ impl SearchBodySource for ChapterBody {
         }
     }
 
+    fn locates(&self, segment: usize) -> bool {
+        segment < self.blocks().len()
+    }
+
     /// One canonical, block-level full-text hit. It retains no excerpt; the
     /// stable resource is resolved lazily on activation against the same
     /// immutable book snapshot.
-    fn location(&self, segment: usize) -> Option<SearchResult> {
+    fn location(&self, segment: usize) -> Option<ui::tilo_resource::SearchEntry> {
         let chapter = self.book.chapters.get(self.chapter)?;
         chapter.blocks.get(segment)?;
         let chapter_title = chapter_label(chapter, self.chapter);
         Some(
-            SearchResult::for_action(
-                LOCATION_KIND,
-                format!("Match in {chapter_title}"),
-                BookSearchProvider::location_address(&self.book.id, self.chapter, segment),
-            )
-            .with_subtitle(format!(
-                "{} · {chapter_title}",
-                BookSearchProvider::book_title(&self.book)
-            ))
-            .with_icon(Icon::FileText),
+            ui::tilo_resource::SearchEntry::new(format!("Match in {chapter_title}"), "")
+                .invoking(BookSearch::location_address(
+                    &self.book.id,
+                    self.chapter,
+                    segment,
+                ))
+                .grouped(LOCATION_KIND)
+                .subtitled(format!(
+                    "{} · {chapter_title}",
+                    BookSearch::book_title(&self.book)
+                ))
+                .with_icon(Icon::FileText.name()),
         )
     }
 }
@@ -144,7 +150,9 @@ struct SearchEntry {
 }
 
 #[derive(Clone)]
-pub struct BookSearchProvider {
+pub struct BookSearch {
+    /// What the search finds, built with the rest of this projection.
+    search: Arc<Vec<ui::tilo_resource::SearchEntry>>,
     // The live app and each palette session share these Arcs. No EPUB body is
     // cloned solely for searching.
     books: Arc<Vec<Arc<Book>>>,
@@ -155,11 +163,10 @@ pub struct BookSearchProvider {
     /// Indexed chapter bodies per book allocation, reused by every rebuild
     /// that keeps the book.
     bodies: Arc<HashMap<usize, Arc<[SearchBody]>>>,
-    catalog: SearchCatalog,
     available: bool,
 }
 
-impl BookSearchProvider {
+impl BookSearch {
     /// Compatibility constructor for small callers and tests. The live app
     /// uses `Self::new_shared` so its content cache is not copied.
     pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
@@ -222,8 +229,7 @@ impl BookSearchProvider {
     ) -> Self {
         let mut entries = Vec::new();
         let mut resource_rows = BTreeMap::new();
-        let mut records = Vec::new();
-        let catalog = SearchCatalog::new(BOOK_KIND);
+        let mut search = Vec::new();
         let mut bodies = HashMap::<usize, Arc<[SearchBody]>>::new();
         let hydrated: HashSet<&str> = books.iter().map(|book| book.id.as_str()).collect();
         let mut book_metadata = HashMap::<String, (String, String)>::new();
@@ -257,9 +263,11 @@ impl BookSearchProvider {
             .map(|annotation| (annotation.doc_id.clone(), annotation.group))
             .collect();
 
+        // `fields` beyond the title and subtitle (an author, a subject, a
+        // note) are what else the entry is found by.
         let mut add = |result: SearchResult,
                        target: SearchTarget,
-                       fields: &[(&str, FieldWeight)],
+                       fields: &[&str],
                        body: Option<SearchBody>|
          -> bool {
             let Some(address) = result.action_address() else {
@@ -271,14 +279,27 @@ impl BookSearchProvider {
             {
                 return false;
             }
-            let mut record = SearchRecord::new(address.resource, result.clone());
-            for (text, weight) in fields {
-                record = record.field(*text, *weight);
+            let mut entry = ui::tilo_resource::SearchEntry::new(
+                result.title.clone(),
+                fields
+                    .iter()
+                    .filter(|field| !field.trim().is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+            .invoking(address)
+            .grouped(result.kind.clone());
+            if let Some(subtitle) = &result.subtitle {
+                entry = entry.subtitled(subtitle.clone());
+            }
+            if let Some(icon) = result.icon {
+                entry = entry.with_icon(icon.name());
             }
             if let Some(body) = body {
-                record = record.body(body);
+                entry = entry.with_body(body);
             }
-            records.push(record);
+            search.push(entry);
             entries.push(SearchEntry { result, target });
             true
         };
@@ -291,15 +312,7 @@ impl BookSearchProvider {
             if !book.author.trim().is_empty() {
                 result = result.with_subtitle(book.author.clone());
             }
-            if !add(
-                result,
-                SearchTarget::Book(book_index),
-                &[
-                    (&title, FieldWeight::TITLE),
-                    (&book.author, FieldWeight::SUBTITLE),
-                ],
-                None,
-            ) {
+            if !add(result, SearchTarget::Book(book_index), &[], None) {
                 return Self::unavailable(books, annotations, registry);
             }
             let chapter_bodies = prior
@@ -333,11 +346,7 @@ impl BookSearchProvider {
                         book: book_index,
                         chapter: chapter_index,
                     },
-                    &[
-                        (&chapter_title, FieldWeight::TITLE),
-                        (&title, FieldWeight::SUBTITLE),
-                        (&book.author, FieldWeight::METADATA),
-                    ],
+                    &[&book.author],
                     chapter_bodies.get(chapter_index).cloned(),
                 ) {
                     return Self::unavailable(books, annotations, registry);
@@ -363,11 +372,7 @@ impl BookSearchProvider {
             if !add(
                 result,
                 SearchTarget::RemoteBook(registry_index),
-                &[
-                    (&title, FieldWeight::TITLE),
-                    (&entry.author, FieldWeight::SUBTITLE),
-                    (&entry.subject, FieldWeight::METADATA),
-                ],
+                &[&entry.subject],
                 None,
             ) {
                 return Self::unavailable(books, annotations, registry);
@@ -415,34 +420,23 @@ impl BookSearchProvider {
                     hydrated: hydrated.contains(annotation.doc_id.as_str()),
                     comment,
                 },
-                &[
-                    (&annotation.note, FieldWeight::TITLE),
-                    (&annotation.excerpt, FieldWeight::TITLE),
-                    (&title, FieldWeight::SUBTITLE),
-                    (&author, FieldWeight::METADATA),
-                    (&kind, FieldWeight::METADATA),
-                ],
+                &[&annotation.note, &annotation.excerpt, &author, &kind],
                 None,
             ) {
                 return Self::unavailable(books, annotations, registry);
             }
         }
-        let Some(predecessor) = generation.checked_sub(1) else {
-            return Self::unavailable(books, annotations, registry);
-        };
-        if catalog.replace_all_records(records).is_err()
-            || catalog.advance_after(predecessor).is_err()
-        {
+        if generation == 0 {
             return Self::unavailable(books, annotations, registry);
         }
         Self {
+            search: Arc::new(search),
             books,
             annotations,
             registry,
             entries: Arc::new(entries),
             resource_rows: Arc::new(resource_rows),
             bodies: Arc::new(bodies),
-            catalog,
             available: true,
         }
     }
@@ -453,24 +447,26 @@ impl BookSearchProvider {
         registry: Arc<Vec<LibraryEntry>>,
     ) -> Self {
         Self {
+            search: Arc::new(Vec::new()),
             books,
             annotations,
             registry,
             entries: Arc::new(Vec::new()),
             resource_rows: Arc::new(BTreeMap::new()),
             bodies: Arc::new(HashMap::new()),
-            catalog: SearchCatalog::new(BOOK_KIND),
             available: false,
         }
     }
 
+    /// What the search finds in this projection; empty while it is
+    /// withdrawn.
     #[must_use]
-    pub fn stats(&self) -> SearchCatalogStats {
-        self.catalog.stats()
+    pub fn entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search.as_ref().clone()
     }
 
     #[cfg(test)]
-    fn shares_prose_index_with(&self, other: &Self) -> bool {
+    pub(crate) fn shares_prose_index_with(&self, other: &Self) -> bool {
         self.books.iter().all(|book| {
             match (
                 self.bodies.get(&book_key(book)),
@@ -816,16 +812,10 @@ impl BookSearchProvider {
     }
 }
 
-impl CatalogSearchProvider for BookSearchProvider {
-    fn provider_name(&self) -> &str {
-        BOOK_KIND
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        self.available.then(|| self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
+impl BookSearch {
+    /// The exact resource a hit's address names: a book, a chapter, an
+    /// annotation, a remote book or a reading location.
+    pub(crate) fn resolve(&self, address: &ActionAddress) -> Option<Resource> {
         if !self.available {
             return None;
         }
@@ -840,6 +830,118 @@ impl CatalogSearchProvider for BookSearchProvider {
             .iter()
             .any(|action| action.id == address.action)
             .then_some(resource)
+    }
+}
+
+/// The search source the framework builds over a projection, resolving
+/// its hits' addresses the way the reader surface does: what the tests of
+/// what Books finds search and open.
+#[cfg(test)]
+pub(crate) struct BookSearchProvider {
+    books: BookSearch,
+    source: Box<dyn ui::search::SearchProvider>,
+}
+
+#[cfg(test)]
+impl BookSearchProvider {
+    fn over(books: BookSearch) -> Self {
+        let source = Box::new(ui::framework::testing::search_source::<
+            crate::resource::Ebook,
+        >(books.entries()));
+        Self { books, source }
+    }
+
+    pub fn new(books: &[Book], annotations: &[Annotation]) -> Self {
+        Self::over(BookSearch::new(books, annotations))
+    }
+
+    pub fn new_with_registry(
+        books: &[Book],
+        annotations: &[Annotation],
+        registry: &[LibraryEntry],
+    ) -> Self {
+        Self::over(BookSearch::new_with_registry(books, annotations, registry))
+    }
+
+    pub(crate) fn new_shared(
+        books: Arc<Vec<Arc<Book>>>,
+        annotations: Arc<Vec<Annotation>>,
+        registry: Arc<Vec<LibraryEntry>>,
+        generation: u64,
+    ) -> Self {
+        Self::over(BookSearch::new_shared(
+            books,
+            annotations,
+            registry,
+            generation,
+        ))
+    }
+
+    pub(crate) fn new_shared_after(
+        prior: &Self,
+        books: Arc<Vec<Arc<Book>>>,
+        annotations: Arc<Vec<Annotation>>,
+        registry: Arc<Vec<LibraryEntry>>,
+        generation: u64,
+    ) -> Self {
+        Self::over(BookSearch::new_shared_after(
+            &prior.books,
+            books,
+            annotations,
+            registry,
+            generation,
+        ))
+    }
+
+    /// How many entries are found by prose read in place.
+    pub(crate) fn body_entries(&self) -> usize {
+        self.books
+            .entries()
+            .iter()
+            .filter(|entry| entry.body.is_some())
+            .count()
+    }
+
+    pub(crate) fn shares_prose_index_with(&self, other: &Self) -> bool {
+        self.books.shares_prose_index_with(&other.books)
+    }
+}
+
+#[cfg(test)]
+impl ui::search::SearchProvider for BookSearchProvider {
+    fn name(&self) -> &str {
+        self.source.name()
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.source.search(query)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.source.search_limited(query, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&ui::search::SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> ui::search::SearchPage {
+        self.source
+            .search_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        self.source.action_directory_generation()
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &ui::search::SearchCursor) -> bool {
+        self.source.action_directory_cursor_is_current(cursor)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.books.resolve(address)
     }
 }
 
@@ -904,8 +1006,8 @@ mod tests {
                     .iter()
                     .any(|hit| hit.kind == LOCATION_KIND)
             );
-            assert!(provider.stats().body_records > 0);
-            assert!(Arc::ptr_eq(&books, &provider.books));
+            assert!(provider.body_entries() > 0);
+            assert!(Arc::ptr_eq(&books, &provider.books.books));
         }
 
         // --- phase: full_text_hits_resolve_to_the_exact_canonical_block_location ---
@@ -1180,7 +1282,7 @@ mod tests {
                 Arc::new(Vec::new()),
                 1,
             );
-            assert!(first.stats().body_records > 0);
+            assert!(first.body_entries() > 0);
             assert!(first.shares_prose_index_with(&first));
             let mut annotation = Annotation::new(&books[0].id, AnnoKind::Note, 0, 0);
             annotation.note = "a fresh note".into();
@@ -1373,32 +1475,6 @@ mod tests {
     /// Continuations from an earlier projection and duplicate rows fail closed.
     #[test]
     fn hostile_or_stale_cursors_and_rows_fail_closed() {
-        // --- phase: continuations_from_an_earlier_projection_are_not_current ---
-        {
-            let books: Arc<Vec<Arc<Book>>> =
-                Arc::new(sample_books().into_iter().map(Arc::new).collect());
-            let first = BookSearchProvider::new_shared(
-                Arc::clone(&books),
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
-                1,
-            );
-            let cursor = first
-                .search_page("the", None, 1, 1)
-                .next
-                .expect("a broad query continues");
-            assert!(first.action_directory_cursor_is_current(&cursor));
-            let next = BookSearchProvider::new_shared_after(
-                &first,
-                books,
-                Arc::new(Vec::new()),
-                Arc::new(Vec::new()),
-                2,
-            );
-            assert_eq!(next.action_directory_generation(), Some(2));
-            assert!(!next.action_directory_cursor_is_current(&cursor));
-        }
-
         // --- phase: duplicate_rows_fail_closed ---
         {
             let book = Book {
@@ -1406,8 +1482,13 @@ mod tests {
                 ..Book::default()
             };
             let provider = BookSearchProvider::new(&[book.clone(), book], &[]);
-            assert_eq!(provider.action_directory_generation(), None);
             assert!(provider.search("duplicate").is_empty());
+            assert!(
+                provider
+                    .resolve_action_resource(&BookSearch::book_address("duplicate"))
+                    .is_none(),
+                "an ambiguous projection publishes no row"
+            );
         }
     }
 
