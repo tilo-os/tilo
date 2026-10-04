@@ -235,7 +235,26 @@ impl ReplacementOutcome {
     pub fn answer(&self, result: Result<(), String>) {
         *self.0.borrow_mut() = Some(result);
     }
+
+    /// Withdraw a request the host has not taken yet (the operation that
+    /// asked was cancelled): the host then neither builds nor shows the
+    /// record. Whether it was withdrawn in time.
+    pub fn withdraw(&self) -> bool {
+        let mut answer = self.0.borrow_mut();
+        if answer.is_some() {
+            return false;
+        }
+        *answer = Some(Err(WITHDRAWN.into()));
+        true
+    }
+
+    fn withdrawn(&self) -> bool {
+        matches!(self.0.borrow().as_ref(), Some(Err(reason)) if reason == WITHDRAWN)
+    }
 }
+
+/// The answer of a request its asker withdrew.
+const WITHDRAWN: &str = "the open was cancelled";
 
 /// A replacement asked for, built now or when the host takes it.
 enum PendingReplacement {
@@ -252,7 +271,13 @@ enum PendingReplacement {
 impl PendingReplacement {
     fn take(self) -> Option<ComponentReplacement> {
         match self {
+            Self::Built(replacement) if replacement.outcome.withdrawn() => {
+                let (mut component, _) = replacement.into_parts();
+                let _ = component.close();
+                None
+            }
             Self::Built(replacement) => Some(replacement),
+            Self::Deferred(_, outcome) if outcome.withdrawn() => None,
             Self::Deferred(build, outcome) => match build() {
                 Ok(mut replacement) => {
                     replacement.outcome = outcome;
