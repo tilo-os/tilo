@@ -25,12 +25,12 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Dispatcher, Setting};
+use ui::framework::{Dispatcher, PersonRecord};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::ActionDecl;
+use ui::tilo_resource::{ActionDecl, Invoke};
 use ui::widget::{AuthoredExtent, FullscreenProvider, NavSplit, SplitMode, VideoPlayer, Widget};
 
 use crate::action::{self, Action, ActionBus};
@@ -89,9 +89,12 @@ pub struct TubeApp {
     /// resource. `None` until the framework attaches the surface; a bare
     /// widget shows a library it cannot change.
     dispatcher: Option<Dispatcher<Tube>>,
-    /// The person's watch history as their settings hold it, in a live
-    /// window. A capture keeps its sample history in the model alone.
-    history: Option<Setting<WatchHistory>>,
+    /// The person's watch history, a record in their own room, in a live
+    /// window.
+    history: Option<PersonRecord<WatchHistory>>,
+    /// The history a window without the person's record edits instead: a
+    /// capture's sample, or a bare widget's. Kept in memory only.
+    local_history: Option<ui::tilo_resource::Replica<WatchHistory>>,
     bus: ActionBus,
     worker: Option<Worker>,
     #[cfg(feature = "grayjay-sync")]
@@ -237,6 +240,7 @@ impl TubeApp {
             model: crate::sample::model(),
             dispatcher: None,
             history: None,
+            local_history: None,
             bus: action::new_bus(),
             worker: None,
             #[cfg(feature = "grayjay-sync")]
@@ -337,13 +341,13 @@ impl TubeApp {
             }
             TubeEffect::MarkWatched { video } => {
                 let at_ms = history_now_ms();
-                self.change_history(|history| history.record(&video, at_ms));
+                self.edit_history(&WatchHistory::RECORD.with((video, at_ms)));
             }
             TubeEffect::ForgetWatched { video } => {
-                self.change_history(|history| history.forget(&video));
+                self.edit_history(&WatchHistory::FORGET.with(video));
             }
             TubeEffect::ClearHistory => {
-                if self.change_history(WatchHistory::clear) {
+                if self.edit_history(&WatchHistory::CLEAR.invoke()) {
                     self.model.push_notice("Watch history cleared");
                 }
             }
@@ -401,24 +405,44 @@ impl TubeApp {
         }
     }
 
-    /// Change the watch history and show the result. In a live window the
-    /// change is stored in the person's settings, which carry it to their
-    /// other devices; returns false (and says so) when it cannot be stored.
-    fn change_history(&mut self, change: impl FnOnce(&mut WatchHistory)) -> bool {
-        let Some(history) = &self.history else {
-            let mut shown = WatchHistory::default();
-            for video in self.model.history.iter().rev() {
-                shown.record(video, 0);
-            }
-            change(&mut shown);
-            self.model.history = shown.videos();
-            self.structure_dirty = true;
-            return true;
+    /// Edit the watch history and show the result. In a live window the
+    /// edit is an action on the person's own record, which carries it to
+    /// their other devices; returns false (and says so) when it cannot be
+    /// stored.
+    fn edit_history(&mut self, edit: &Invoke<WatchHistory>) -> bool {
+        let edited = if let Some(record) = &self.history {
+            record
+                .invoke(edit)
+                .map(|()| record.with(WatchHistory::videos))
+                .map_err(|error| error.to_string())
+        } else {
+            let shown = &self.model.history;
+            let replica = self.local_history.get_or_insert_with(|| {
+                let mut replica = ui::tilo_resource::Replica::<WatchHistory>::new();
+                let count = shown.len();
+                let watched = shown
+                    .iter()
+                    .enumerate()
+                    .map(|(at, video)| (video.clone(), u64::try_from(count - at).unwrap_or(0)))
+                    .collect();
+                let _ = replica.apply(WatchHistory::IMPORT.with(watched));
+                replica
+            });
+            let applied = replica
+                .apply(edit.clone())
+                .map(|_| ())
+                .map_err(|error| error.to_string());
+            applied.and_then(|()| {
+                replica
+                    .state()
+                    .map(|state| state.videos())
+                    .map_err(|error| error.to_string())
+            })
         };
-        match history.update(change) {
-            Ok(()) => {
+        match edited {
+            Ok(videos) => {
                 self.model.history_notice = None;
-                self.model.history = history.get().videos();
+                self.model.history = videos;
                 self.structure_dirty = true;
                 true
             }
@@ -437,7 +461,7 @@ impl TubeApp {
         let Some(history) = &self.history else {
             return false;
         };
-        let stored = history.get().videos();
+        let stored = history.with(WatchHistory::videos);
         if stored == self.model.history {
             return false;
         }
@@ -565,12 +589,8 @@ impl TubeApp {
                 })
             })
             .collect();
-        let history_changed = !pulled.is_empty()
-            && self.change_history(|history| {
-                for (video, at_ms) in &pulled {
-                    history.import(video, *at_ms);
-                }
-            });
+        let history_changed =
+            !pulled.is_empty() && self.edit_history(&WatchHistory::IMPORT.with(pulled));
 
         let library_changed = !edits.is_empty();
         if let Some(dispatcher) = &self.dispatcher {
@@ -722,7 +742,7 @@ impl TubeApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: Dispatcher<Tube>,
-        history: Option<Setting<WatchHistory>>,
+        history: Option<PersonRecord<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.history = history;
@@ -1534,7 +1554,7 @@ impl TubeApp {
     /// in lockstep.
     fn open_video(&mut self, id: String) {
         let watched_at_ms = history_now_ms();
-        self.change_history(|history| history.record(&id, watched_at_ms));
+        self.edit_history(&WatchHistory::RECORD.with((id.clone(), watched_at_ms)));
         self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
         self.model.playing = true;
