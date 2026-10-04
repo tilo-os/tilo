@@ -20,7 +20,7 @@
 //! live app after each change, on every participant's device.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::{Rc, Weak};
@@ -576,14 +576,18 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        if request.kind != tilo_actions::OperationKind::Effect || request.type_id != E::OPERATION {
+        if request.type_id != E::OPERATION {
             return Ok(None);
         }
         let effect = E::from_payload(request.payload)?;
         let id = effect.id();
-        let job = E::declarations()
-            .iter()
-            .any(|decl| decl.id == id && decl.is_job());
+        let declaration = E::declarations().into_iter().find(|decl| decl.id == id);
+        // A view only changes what its caller sees and is admitted as one;
+        // an effect invoked as a view would skip the checks an effect gets.
+        if declaration.as_ref().map(|decl| decl.kind) != Some(request.kind) {
+            return Err(format!("`{id}` was invoked as another kind of operation"));
+        }
+        let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
         let answer = handle(host, effect, &mut cx);
         let started = cx.started.take();
@@ -704,12 +708,46 @@ impl<R: Resource, E: Effect> ViewHandler<R> for Handler<R, E> {
     }
 }
 
+/// A registered projection drain ([`ViewCx::drain`](super::ViewCx::drain)),
+/// as the view or surface that registered it holds it.
+///
+/// A drain looks at the document after every change. When what it compares
+/// the document against lives outside — the configuration a service reports
+/// back — tell it that changed with [`Self::outside_changed`], and on the
+/// next frame it carries out again every entry it still lists.
+#[derive(Clone, Default)]
+pub struct Projection {
+    /// `None` where drains never run: History, a capture.
+    outside_changed: Option<Rc<Cell<bool>>>,
+}
+
+impl Projection {
+    /// The outside world the drain compares the document against changed:
+    /// carry out what is still pending on the next frame, even what was
+    /// carried out at this revision already.
+    pub fn outside_changed(&self) {
+        if let Some(flag) = &self.outside_changed {
+            flag.set(true);
+        }
+    }
+}
+
+impl std::fmt::Debug for Projection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Projection")
+            .field("runs", &self.outside_changed.is_some())
+            .finish()
+    }
+}
+
 /// A projection drain, type-erased for the root.
 trait Drainer<R: Resource> {
     /// Start what is pending in `state` and not running or just settled.
     fn run(&mut self, state: &R::State, revision: u64);
     /// Settle finished jobs at `revision`; whether any did.
     fn poll(&mut self, revision: u64) -> bool;
+    /// Forget which entries finished, so those still pending run again.
+    fn forget_settled(&mut self);
 }
 
 type Pending<R, K, T> = Box<dyn Fn(&<R as Resource>::State) -> Vec<(K, T)>>;
@@ -769,6 +807,10 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer<R> for Dra
         }
         settled
     }
+
+    fn forget_settled(&mut self) {
+        self.settled.clear();
+    }
 }
 
 struct Registered<R: Resource> {
@@ -788,6 +830,9 @@ struct Inner<R: Resource> {
     drains: Vec<Drains<R>>,
     /// The revision drains last ran at.
     drained: Option<u64>,
+    /// Set when the outside world a drain compares against changed, so the
+    /// drains look again although the document did not move.
+    outside_changed: Rc<Cell<bool>>,
 }
 
 /// Every effect handler and projection drain of one live resource root, and
@@ -813,6 +858,7 @@ impl<R: Resource> Default for Inner<R> {
             handlers: Vec::new(),
             drains: Vec::new(),
             drained: None,
+            outside_changed: Rc::default(),
         }
     }
 }
@@ -880,9 +926,9 @@ impl<R: Resource> Effects<R> {
         alive: Weak<()>,
         pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
         run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) {
+    ) -> Projection {
         let Some(env) = self.env.clone() else {
-            return;
+            return Projection::default();
         };
         let mut inner = self.inner.borrow_mut();
         inner.drains.push(Drains {
@@ -897,6 +943,9 @@ impl<R: Resource> Effects<R> {
         });
         // A new drain looks at the document as it stands.
         inner.drained = None;
+        Projection {
+            outside_changed: Some(Rc::clone(&inner.outside_changed)),
+        }
     }
 
     fn prune(inner: &mut Inner<R>) {
@@ -970,11 +1019,15 @@ impl<R: Resource> Effects<R> {
         for entry in &mut inner.drains {
             settled |= entry.drain.poll(revision);
         }
-        if !settled && inner.drained == Some(revision) {
+        let outside_changed = inner.outside_changed.replace(false);
+        if !settled && !outside_changed && inner.drained == Some(revision) {
             return;
         }
         inner.drained = Some(revision);
         for entry in &mut inner.drains {
+            if outside_changed {
+                entry.drain.forget_settled();
+            }
             entry.drain.run(state, revision);
         }
     }

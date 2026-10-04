@@ -15,6 +15,9 @@ tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
 tab-closed-undo-hint = Select to undo, or press { $chord } later
 tab-closed-undo-hint-unbound = Select to undo
+workspace-deleted-toast = Deleted { $name }
+workspace-deleted-toast-hint = Select to undo
+workspace-deleted-undo = Undo
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
@@ -1602,12 +1605,15 @@ search-continuity-call-decline = Decline handoff for { $room }
 search-continuity-call-consent-subtitle = Resolve this exact call handoff consent
 
 # First-login identity setup: what the identity is
-onboarding-intro-title = Create your local Tilo identity
-onboarding-intro-body = Tilo will create a cryptographic identity that belongs to you, then certify a separate key for this device. Tilo uses that chain for collaboration and peer invitations. Individual app edits are not all cryptographically signed yet.
-onboarding-intro-point-collaboration = It gives collaboration a stable identity for you and certifies this device to peers.
-onboarding-intro-point-local = It is created here, on this machine. Nothing is uploaded and no server holds a copy.
-onboarding-intro-point-not-account = It is not an account and has no password — there is nothing to log in to.
-onboarding-intro-card-title = What it is for
+onboarding-intro-title = Set up your Tilo identity
+onboarding-intro-body = Tilo creates a cryptographic identity that belongs to you, then certifies a separate key for this device. Collaboration and peer invitations rely on it. Individual app edits are not all cryptographically signed yet.
+onboarding-intro-point-collaboration = Collaborators see one stable identity for you, and it certifies each of your devices.
+onboarding-intro-point-local = It is created on this computer. Nothing is uploaded and no server keeps a copy.
+onboarding-intro-point-not-account = It is not an account and has no password. There is nothing to sign in to.
+onboarding-choice-create = Create a new identity
+onboarding-choice-create-detail = Start fresh on this computer
+onboarding-choice-existing = Use my existing Tilo identity
+onboarding-choice-existing-detail = Bring it over from another device or a backup
 onboarding-host-intro-title = Set up your Tilo identity
 onboarding-host-intro-body = You are already signed in to this computer. Before the Tilo Desktop opens, it needs a local cryptographic identity for collaboration and peer invitations. This does not replace your Linux login or create an online account. Individual app edits are not all cryptographically signed yet.
 
@@ -1624,10 +1630,11 @@ onboarding-create-failed-message = Nothing was written and the desktop is still 
 
 # First-login identity setup: progress header
 onboarding-progress-eyebrow = Tilo identity setup
-onboarding-progress-stage = Step { $step } of { $total }  ·  { $stage }
+onboarding-progress-stage = Step { $step } of { $total }
 onboarding-progress-a11y = Identity setup, step { $step } of { $total }: { $stage }
 onboarding-stage-choose = Choose
 onboarding-stage-restore = Restore
+onboarding-stage-connect = Connect
 onboarding-stage-protect = Protect
 onboarding-stage-media = Media
 onboarding-stage-ready = Ready
@@ -1645,48 +1652,57 @@ onboarding-back = Back
 onboarding-cancel = Cancel
 onboarding-continue = Continue
 onboarding-done = Done
-onboarding-use-existing = Use existing
-onboarding-create-identity = Create identity
 onboarding-create-local-identity = Create local identity
-onboarding-restore-backup = Restore selected backup
+onboarding-restore-backup = Restore identity
+onboarding-existing-title = Use your existing identity
+onboarding-existing-body = Choose how to bring the identity you already use to this computer.
+onboarding-choice-nearby = Connect a nearby device
+onboarding-choice-nearby-detail = Approve this computer from a device that already has your identity
+onboarding-choice-restore = Restore from a backup
+onboarding-choice-restore-detail = Open an encrypted identity backup file
+onboarding-restore-title = Restore from a backup
+onboarding-restore-body = Choose the encrypted backup you saved from Tilo and enter its passphrase.
+onboarding-restore-file-label = Backup file
 
 # First-login identity setup: connecting an existing identity
-onboarding-connect-title = Connect an existing identity
 onboarding-connect-recovery-title = Your existing identity needs recovery
 onboarding-connect-recovery-message = Tilo could not verify your existing identity chain. Unlock the desktop keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.
 onboarding-connect-failed = That identity could not be connected
-onboarding-connect-nearby = Connect a nearby device
-onboarding-connect-nearby-instructions = On the other device, open Settings → Devices & Sync → Add a personal device, then compare the six-digit code shown on both screens.
 onboarding-connect-retry-keyring = Retry keyring
-onboarding-connect-browse = Browse…
+onboarding-connect-browse = Browse
 onboarding-connect-file = Identity backup file
 onboarding-connect-file-placeholder = Choose an encrypted backup or legacy identity JSON
 onboarding-connect-passphrase = Backup passphrase
 onboarding-connect-passphrase-placeholder = Passphrase (leave empty for legacy JSON)
-onboarding-connect-nearby-card = Nearby trusted device
-onboarding-connect-backup-card = Encrypted backup
 onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
 onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
 onboarding-picker-import-title = Choose a Tilo identity
 onboarding-picker-import-filter = Tilo identity
+onboarding-nearby-title = Connect a nearby device
+onboarding-nearby-body = This computer is waiting for your other device to approve it. Keep both devices close together.
+onboarding-nearby-step-open = On your other device, open Settings and go to Devices & Sync.
+onboarding-nearby-step-add = Under Add a personal device, choose Add device.
+onboarding-nearby-step-compare = Compare the six-digit code on both screens, then approve it on your other device.
+onboarding-nearby-waiting = Waiting for your other device.
+onboarding-nearby-code-label = Verification code
+onboarding-nearby-try-again = Try again
 
 # First-login identity setup: pairing with a nearby device
-onboarding-nearby-searching = Looking for a trusted device nearby…
 onboarding-nearby-start-failed = Could not start nearby setup: { $error }
 onboarding-nearby-unavailable = Nearby setup is unavailable in this session
-onboarding-nearby-cancelled = Nearby setup cancelled. Choose Connect nearby to try again.
-onboarding-nearby-code = Code { $code } · waiting for approval on your trusted device
+onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
+onboarding-nearby-code = Check that your other device shows the same code, then approve it there.
 onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
-onboarding-nearby-invalid-identity = The trusted device returned an invalid identity. Choose Connect nearby to retry.
-onboarding-nearby-failed = Nearby setup did not finish: the pairing window closed or approval was cancelled. Choose Connect nearby to retry.
-onboarding-nearby-failed-detail = Nearby setup did not finish: { $detail }. Choose Connect nearby to retry.
+onboarding-nearby-invalid-identity = Your other device returned an invalid identity. Choose Try again.
+onboarding-nearby-failed = Pairing did not finish: the pairing window closed or approval was cancelled. Choose Try again.
+onboarding-nearby-failed-detail = Pairing did not finish: { $detail }. Choose Try again.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
 onboarding-backup-identity-created = Your local identity was created
 onboarding-backup-explanation = Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.
 onboarding-backup-passphrase = New backup passphrase
-onboarding-backup-passphrase-placeholder = Long, unique passphrase — 12+ characters
+onboarding-backup-passphrase-placeholder = At least 12 characters, long and unique
 onboarding-backup-confirmation = Confirm new backup passphrase
 onboarding-backup-confirmation-placeholder = Confirm passphrase
 onboarding-backup-save = Choose location and save backup…
@@ -1751,8 +1767,8 @@ onboarding-codecs-retry = Try again
 onboarding-codecs-install = Install media codecs
 
 # Desktop tour
-onboarding-tour-eyebrow = Tilo  •  DESKTOP TOUR
-onboarding-tour-stage = { $stage }  ·  { $step } of 4
+onboarding-tour-eyebrow = Desktop tour
+onboarding-tour-stage = Step { $step } of 4
 onboarding-tour-progress-a11y = Desktop tour, step { $step } of 4: { $stage }
 onboarding-tour-stage-move = Move
 onboarding-tour-stage-arrange = Arrange
@@ -1762,12 +1778,16 @@ onboarding-tour-skip = Skip tour
 onboarding-tour-enter = Enter Tilo
 onboarding-tour-navigate-title = Everything is close at hand
 onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for something. Every gesture here has a keyboard route too.
-onboarding-tour-search-title = Search  ·  Super+K or Super+Space
-onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
+onboarding-tour-search-title = Search
+onboarding-tour-search-title-mac = Search
+onboarding-tour-search-keys = Super+K or Super+Space
+onboarding-tour-search-keys-mac = Command+K or Option+Space
 onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
-onboarding-tour-overview-title = Overview  ·  Super+Tab or pinch
+onboarding-tour-overview-title = Overview
+onboarding-tour-overview-keys = Super+Tab or pinch
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
-onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
+onboarding-tour-move-title = Move
+onboarding-tour-move-keys = Super+arrow keys or three-finger swipe
 onboarding-tour-move-body = Left and right step between tiled windows along the current strip. Up and down go to the strip above or below; Super+Page Up and Page Down, or a four-finger swipe, switch workspaces.
 onboarding-tour-organise-title = A place for each kind of work
 onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
@@ -1789,13 +1809,13 @@ onboarding-tour-system-features-title = Undo and permissions are system features
 onboarding-tour-system-features-body = History follows authorship, and apps ask Tilo for capabilities instead of receiving ambient access.
 onboarding-tour-start-title = Your first five minutes
 onboarding-tour-start-intro = Start with one outcome, then let the workspace grow with the project. Find this again from Search as Desktop tour.
-onboarding-tour-name-title = 1  Name the workspace
+onboarding-tour-name-title = Name the workspace
 onboarding-tour-name-body = Open Workspace Settings from the title and choose a recognisable project name.
-onboarding-tour-open-title = 2  Open a shared starting point
+onboarding-tour-open-title = Open a shared starting point
 onboarding-tour-open-body = Choose Notes, Calendar, or Chat, then add other apps beside it.
-onboarding-tour-invite-title = 3  Invite the right people
+onboarding-tour-invite-title = Invite the right people
 onboarding-tour-invite-body = Choose Invite people in Workspace Settings and review each role before sharing.
-onboarding-tour-check-title = 4  Check work and recover mistakes
+onboarding-tour-check-title = Check work and recover mistakes
 onboarding-tour-check-body = Open Activity to catch up, compare versions, or undo only the change that went wrong.
 
 # Workspace invite card: inviting someone, joining with an invite, pending invites

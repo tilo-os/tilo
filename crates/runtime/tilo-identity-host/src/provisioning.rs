@@ -1169,6 +1169,27 @@ pub fn verify_collaboration_identity(
             ));
         }
     }
+    // A joined device holds no share of the identity's key: its record only
+    // names the identity, and its certificate binds this device's key to it.
+    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pre-enrolled device identity is not usable: {error}"),
+        )
+    })?;
+    if joined {
+        let metadata = runtime_identity::load_metadata_from_path(&primary_path)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        let root_public = persist::read_public_key(&paths.user_pubkey)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if metadata.group_public_key != root_public {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "personal identity and persisted certification root do not match",
+            ));
+        }
+        return Ok(());
+    }
     let identity = runtime_identity::load_from_path(primary_path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     if !identity.is_single_device() {
@@ -1289,6 +1310,54 @@ mod tests {
         assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
         assert!(!paths.user_privkey.exists());
         assert!(persist::joined_device_is_ready(&paths, now_ns_u64()).unwrap());
+    }
+
+    /// A device approved from a nearby device: a public-only record selected
+    /// as the account's identity and an ordinary member certificate.
+    #[cfg(unix)]
+    #[test]
+    fn a_nearby_paired_member_verifies_through_its_certificate() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let dir = tempfile::tempdir().unwrap();
+        let identity_dir = dir.path().join("identity");
+        let paths = IdentityPaths::under(dir.path().join("system"));
+        let (device, _) = persist::load_or_create_device_key(&paths).unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::install_device_cert(&paths, &cert, 2_000).unwrap();
+        prepare_identity_directory(&identity_dir).unwrap();
+        let write_record = |root_public: [u8; 32]| {
+            let record = identity_dir.join("identity-joined.json");
+            fs::write(
+                &record,
+                runtime_identity::public_member_record("Member", [1, 2, 3], root_public).unwrap(),
+            )
+            .unwrap();
+            fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
+            let active = identity_dir.join("active");
+            fs::write(&active, "identity-joined").unwrap();
+            fs::set_permissions(&active, fs::Permissions::from_mode(0o600)).unwrap();
+        };
+
+        write_record(root.verifying_key().to_bytes());
+        verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap();
+        assert_eq!(
+            ensure_collaboration_identity(&identity_dir, &paths).unwrap(),
+            ProvisionOutcome::Existing
+        );
+
+        // A record naming another identity is not this device's.
+        write_record([7; 32]);
+        let error = verify_collaboration_identity(&identity_dir, &paths, 2_000).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

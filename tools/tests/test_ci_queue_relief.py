@@ -58,20 +58,23 @@ class QueueReliefTests(unittest.TestCase):
             self.assertNotRegex(events, r"(?m)^  schedule:")
             self.assertRegex(events, r"(?m)^  workflow_dispatch:")
             self.assertRegex(events, r"(?m)^  push:")
-        with self.subTest(phase='app and desktop prs keep preflight without packaging'):
-            for name, plan, build in (("release-apps", "plan", "build"),
-                                      ("release-desktop", "validate", "package")):
-                with self.subTest(workflow=name):
-                    text = workflow(name)
-                    self.assertRegex(section(text, "on"), r"(?m)^  pull_request:")
-                    self.assertIn("steps:", section(text, plan, 2))
-                    self.assertRegex(section(text, build, 2),
-                                     r"if: .*github.event_name != 'pull_request'")
+        with self.subTest(phase='desktop prs keep preflight without packaging'):
+            text = workflow("release-desktop")
+            self.assertRegex(section(text, "on"), r"(?m)^  pull_request:")
+            self.assertIn("steps:", section(text, "validate", 2))
+            self.assertRegex(section(text, "package", 2),
+                             r"if: .*github.event_name != 'pull_request'")
+        with self.subTest(phase='app prs start no release jobs and never package'):
+            text = workflow("release-apps")
+            self.assertNotRegex(section(text, "on"), r"(?m)^  pull_request(?:_target)?:")
+            self.assertRegex(section(text, "build", 2),
+                             r"if: .*github.event_name != 'pull_request'")
         with self.subTest(phase='specialized contract checks keep pr and periodic coverage'):
             for name in ("ci-legacy-apps", "ci-filesystem"):
                 with self.subTest(workflow=name):
                     events = section(workflow(name), "on")
-                    self.assertNotRegex(events, r"(?m)^  push:")
+                    if name == "ci-legacy-apps":
+                        self.assertNotRegex(events, r"(?m)^  push:")
                     for event in ("pull_request", "schedule", "workflow_dispatch"):
                         self.assertRegex(events, rf"(?m)^  {event}:")
                     self.assertTrue(section(workflow(name), "jobs"))
@@ -117,24 +120,24 @@ class QueueReliefTests(unittest.TestCase):
             group = re.search(r"(?m)^  group: (.+)$", concurrency).group(1)
             cancel = re.search(r"(?m)^  cancel-in-progress: (.+)$", concurrency).group(1)
             self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
-            self.assertNotIn("github.sha", group)
 
-            def render(event, ref, number=""):
-                context = {"github.event_name": event, "github.ref": ref,
+            def render(event, sha, number=""):
+                context = {"github.event_name": event, "github.sha": sha,
                            "github.event.pull_request.number": number}
                 def expression(match):
                     values = [context[key.strip()] for key in match.group(1).split("||")]
                     return next(value for value in values if value)
                 return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, group)
 
-            first = render("pull_request", "refs/pull/172/head", "172")
-            # A new head/ref spelling on this PR must supersede the old native run.
-            self.assertEqual(first, render("pull_request", "refs/pull/172/merge", "172"))
-            others = [render("pull_request", "refs/pull/173/head", "173"),
-                      render("workflow_dispatch", "refs/heads/main"),
-                      render("schedule", "refs/heads/main"),
-                      render("push", "refs/heads/main"),
-                      render("workflow_dispatch", "refs/heads/hardware-bringup")]
+            first = render("pull_request", "a" * 40, "172")
+            # A new head of this PR must supersede the old native run.
+            self.assertEqual(first, render("pull_request", "b" * 40, "172"))
+            # Every other run, pushes to main included, keeps one run per commit.
+            others = [render("pull_request", "a" * 40, "173"),
+                      render("workflow_dispatch", "a" * 40),
+                      render("schedule", "a" * 40),
+                      render("push", "a" * 40),
+                      render("push", "b" * 40)]
             self.assertEqual(len({first, *others}), 6)
 
 
