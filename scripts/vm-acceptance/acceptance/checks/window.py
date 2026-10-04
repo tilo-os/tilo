@@ -368,6 +368,49 @@ def on_screen_keyboard(ctx, res):
                    "the on-screen keyboard hidden after typing on the physical keyboard")
 
 
+def _keyboard(st) -> dict:
+    return st["chrome"].get("on_screen_keyboard") or {}
+
+
+@check("W20", AREA, "On-screen keyboard in the shell: tapping the search field shows it, and its keys "
+                    "type into the shell's own field")
+def on_screen_keyboard_in_the_shell(ctx, res):
+    ctx.reset()
+    d0 = core.display_rects(ctx.state())[0]
+    # The first touch plugs the touchscreen in; with one present the keyboard
+    # service runs in the default automatic mode.
+    ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] * 0.6)), str(int(d0[1] + d0[3] * 0.6)))
+    ctx.wait_state(lambda s: _keyboard(s).get("connected"), 40,
+                   "the on-screen keyboard service connected once a touchscreen is present")
+    ctx.vm.key("super+space")
+    ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    t = core.target_map(ctx.vm.targets())
+    fields = sorted((r for n, r in t.items() if "SearchField" in n), key=lambda r: r[2] * r[3])
+    if not fields:
+        raise Unobservable(f"no SearchField among the targets while search is open ({len(t)} targets)")
+    f = fields[-1]
+    ctx.vm.input("touch", "tap", str(int(f[0] + f[2] / 2)), str(int(f[1] + f[3] / 2)))
+    st = ctx.wait_state(lambda s: _keyboard(s).get("shown"), 15,
+                        "the on-screen keyboard shown for the search field")
+    kb = _keyboard(st)
+    expect(kb.get("serves_shell_field"), f"the keyboard serves the shell's own field ({kb})")
+    res.metrics["keyboard"] = kb["shown"]
+    ctx.shot("W20-keyboard-over-search")
+    k = kb["shown"]
+    before = kb.get("commits", 0)
+    for fx in (0.2, 0.45, 0.7):
+        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] * fx)), str(int(k["y"] + k["h"] * 0.55)))
+        ctx.settle(0.4)
+    st = ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("query"), 10,
+                        "the keyboard's keys typed into the search field")
+    res.metrics["query"] = st["chrome"]["palette"]["query"]
+    res.metrics["commits"] = _keyboard(st).get("commits", 0) - before
+    expect((st["chrome"].get("palette") or {}).get("visible"),
+           "tapping the keyboard kept search open")
+    ctx.shot("W20-typed")
+    ctx.vm.key("Escape")
+
+
 def _strip_scroll(st, sid):
     return next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == sid)
 

@@ -64,6 +64,9 @@ def build_environment(args, work):
     env = dict(os.environ)
     env.update(CARGO=str(shim), CARGO_NET_OFFLINE='true', RUSTUP_AUTO_INSTALL='0', MACOSX_DEPLOYMENT_TARGET='13.0',
                RUSTC_WRAPPER=str(guard.resolve()), CARGO_BUILD_JOBS='1', CLOUD_RUSTC_JOBS='2')
+    # Rust #157750: stripping proc-macros can misalign LINKEDIT, rejected by
+    # macOS 27 dyld. Keep build-time tools unstripped; app release flags stay.
+    env['CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP'] = 'none'
     # Share the guard's default lock namespace; never invent another budget.
     env.pop('CLOUD_RUSTC_LOCK_DIR', None)
     return env
@@ -107,6 +110,7 @@ def build(args, plan, work):
     if shim.exists():
         shim.unlink()
     return {'apps': facts, 'origin': 'existing SDK outputs' if args.reuse_bundles else 'SDK build',
+            'host_dependency_strip': 'none' if environment else None,
             'notarized': False}
 
 

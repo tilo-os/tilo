@@ -3846,6 +3846,7 @@ impl BrowserWidget {
                 event => event,
             };
             match event {
+                WebViewEvent::PaintSnapshot { .. } | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
                     crate::credentials::Credentials::send(&self.engine, requests);

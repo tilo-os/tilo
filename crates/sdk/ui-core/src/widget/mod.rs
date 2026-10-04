@@ -1456,6 +1456,16 @@ pub trait Widget {
         false
     }
 
+    /// One-shot (reading MUST clear it) request to change the window's
+    /// accessibility preferences, raised by a control the person used. The
+    /// host applies it before the next frame. Default forwards the first
+    /// request found among the children.
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        self.children_mut()
+            .into_iter()
+            .find_map(|child| child.take_accessibility_request())
+    }
+
     /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
     ///
     /// Dev reload writes this beside the document so the same screen is showing

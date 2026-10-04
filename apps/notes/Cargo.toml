@@ -49,6 +49,9 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 tracing.workspace = true
+# A pasted or dropped image larger than a notebook asset is re-encoded smaller.
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+tempfile.workspace = true
 url.workspace = true
 vello.workspace = true
 winit.workspace = true
