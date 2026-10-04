@@ -865,7 +865,7 @@ impl BooksApp {
             return Err("the passage ends before it starts".into());
         }
         // The position is explicit: `persist_progress` records it, where a
-        // cleared `last_persisted` would re-adopt the stored chapter instead.
+        // pending `adopt_position` would take up the stored chapter instead.
         if self.book_idx != index || self.chapter != chapter {
             self.book_idx = index;
             self.chapter = chapter;
@@ -1158,6 +1158,9 @@ pub struct BooksApp {
     /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
     last_persisted: Option<(usize, usize, u16)>,
+    /// The open book's stored position is still to be taken up: set when a
+    /// book opens, cleared once the reader shows it there.
+    adopt_position: bool,
     reading_progress: f32,
     progress_slider_track: Rect,
     progress_dragging: bool,
@@ -1359,6 +1362,7 @@ impl BooksApp {
             shelf_annos: HashMap::new(),
             shelf_opened: HashMap::new(),
             last_persisted: None,
+            adopt_position: true,
             reading_progress: 0.0,
             progress_slider_track: Rect::ZERO,
             progress_dragging: false,
@@ -1613,8 +1617,24 @@ impl BooksApp {
     /// Persist the live reading position for the open book (deduped so we don't
     /// churn the document when nothing moved).
     fn persist_progress(&mut self, doc: &mut AutoCommit) {
+        if let Some(action) = self.progress_to_record() {
+            self.edit(doc, &action);
+        }
+    }
+
+    /// Record where the reader is, from an effect that moved it: through the
+    /// dispatcher, which the host applies like any invocation.
+    fn record_progress(&mut self) {
+        if let Some(action) = self.progress_to_record() {
+            self.dispatch.apply(&action);
+        }
+    }
+
+    /// The progress action for where the reader is now, when it moved since
+    /// it was last recorded.
+    fn progress_to_record(&mut self) -> Option<crate::actions::EbookAction> {
         if self.view != View::Reader {
-            return;
+            return None;
         }
         let fraction = self.current_progress_fraction();
         let key = (
@@ -1623,26 +1643,20 @@ impl BooksApp {
             (fraction * 10_000.0).round() as u16,
         );
         if self.last_persisted == Some(key) {
-            return;
+            return None;
         }
-        let Some(book) = self.library.get(self.book_idx) else {
-            return;
-        };
-        let id = book.id.clone();
-        self.edit(
-            doc,
-            &crate::actions::set_progress_action(
-                &id,
-                Progress {
-                    chapter: self.chapter,
-                    page: self.page,
-                    fraction,
-                    // 0 ⇒ the action preserves the recorded open time.
-                    opened: 0,
-                },
-            ),
-        );
+        let id = self.library.get(self.book_idx)?.id.clone();
         self.last_persisted = Some(key);
+        Some(crate::actions::set_progress_action(
+            &id,
+            Progress {
+                chapter: self.chapter,
+                page: self.page,
+                fraction,
+                // 0 ⇒ the action preserves the recorded open time.
+                opened: 0,
+            },
+        ))
     }
 
     fn current_progress_fraction(&self) -> f32 {
@@ -1771,26 +1785,13 @@ impl BooksApp {
     /// Hydrate the reader's persisted library from the document on first
     /// sync, shelving any new book in a watched folder first. The shelf is
     /// home; a bundled library opens on the book last read.
-    fn ensure_library_loaded(&mut self, doc: &mut AutoCommit) {
+    fn ensure_library_loaded(&mut self, doc: &AutoCommit) {
         if self.library_loaded {
             return;
         }
         self.library_loaded = true;
 
-        let mut found_paths = HashMap::new();
-        if self.live {
-            let shelved: std::collections::HashSet<String> = BooksDoc::read_library_entries(doc)
-                .into_iter()
-                .map(|entry| entry.id)
-                .collect();
-            for found in content::find_watched_books(&self.watched_folders) {
-                if !shelved.contains(&found.entry.id) {
-                    self.edit(doc, &crate::actions::shelve_found_book_action(&found.entry));
-                }
-                found_paths.insert(found.entry.id, found.path);
-            }
-        }
-
+        let found_paths = HashMap::new();
         Arc::make_mut(&mut self.library).clear();
         self.library_paths.clear();
         self.hydrated.clear();
@@ -1876,6 +1877,7 @@ impl BooksApp {
         self.comment_overlay.close();
         self.layout = None;
         self.last_persisted = None;
+        self.adopt_position = true;
         self.toc_scroll_to_active = true;
         self.notes_scroll_to_annotation = None;
     }
@@ -3436,7 +3438,51 @@ impl BooksApp {
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);
+            self.scan_watched_folders(&cx.jobs());
         }
+    }
+
+    /// Look through the watched folders off the UI thread, and put the books
+    /// found there that the shelf does not hold yet on it, through the
+    /// library's actions like an import. Their files are this device's
+    /// grants, which open them.
+    fn scan_watched_folders(&self, jobs: &ui::framework::Jobs<crate::resource::Ebook>) {
+        if self.watched_folders.is_empty() {
+            return;
+        }
+        let folders = self.watched_folders.clone();
+        jobs.start(
+            "watched-folders",
+            move |cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>| {
+                Ok(cx.thread(
+                    move |_| content::find_watched_books(&folders),
+                    |app: &mut Self, found: Vec<content::FoundBook>, cx| {
+                        app.shelve_found(found, cx);
+                        Ok(ui::framework::Effected::done())
+                    },
+                ))
+            },
+        );
+    }
+
+    /// Put `found` books the shelf does not hold yet on it, remembering
+    /// where each one's file is.
+    fn shelve_found<H: 'static>(
+        &mut self,
+        found: Vec<content::FoundBook>,
+        cx: &ui::framework::EffectCx<crate::resource::Ebook, H>,
+    ) {
+        let shelved: std::collections::HashSet<String> = cx
+            .live()
+            .with(|state| state.entries.iter().map(|entry| entry.id.clone()).collect());
+        for book in found {
+            self.local_library.remember_book(&book.entry.id, &book.path);
+            if !shelved.contains(&book.entry.id) {
+                cx.apply(&crate::actions::shelve_found_book_action(&book.entry));
+            }
+        }
+        self.local_library.save();
+        self.dirty = true;
     }
 
     /// Test-only: plant a non-empty text selection so hosted reading extras
@@ -4408,8 +4454,9 @@ impl Widget for BooksApp {
         self.commit_pending_share(doc);
         self.open_pending_book(doc);
         self.deliver_effect_replies();
-        // On the very first sync, adopt any persisted position for the open book.
-        if self.last_persisted.is_none() && self.view == View::Reader {
+        // Once a book opens, take up its stored position.
+        if self.adopt_position && self.view == View::Reader {
+            self.adopt_position = false;
             let id = self.book_id();
             let p = BooksDoc::read_progress(doc, &id);
             let nchap = self.num_chapters().saturating_sub(1);
@@ -4417,7 +4464,6 @@ impl Widget for BooksApp {
             self.page = p.page;
         }
         self.refresh_from_doc(doc);
-        self.persist_progress(doc);
         let registry = BooksDoc::read_library_entries(doc);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for book in self.library.iter() {
@@ -5154,6 +5200,7 @@ impl BooksApp {
                 return Err("opening a book is the surface's".into());
             }
         }
+        self.record_progress();
         Ok(ui::framework::Effected::done())
     }
 
