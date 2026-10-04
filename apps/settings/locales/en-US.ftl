@@ -1006,6 +1006,7 @@ agent-key-removed = API key removed from the Tilo vault.
 agent-key-remove-err = API key was not removed: { $error }
 agent-key-stored = API key is stored in the Tilo vault.
 agent-key-none = No API key stored.
+agent-key-needed = Needs a key on this device
 agent-default-current = Default for new tasks
 agent-use-default = Use by default
 agent-config-issue = Provider configuration: { $message }
