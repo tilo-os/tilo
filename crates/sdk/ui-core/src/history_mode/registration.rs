@@ -147,9 +147,10 @@ pub enum HistoryRegistrationError {
     ForeignSource,
 }
 impl HistoryRegistration {
-    /// Called only by the runner that installed an explicitly app-global opener.
-    /// A persistence path identifies storage; it is not a user-file write target.
-    #[cfg(feature = "native")]
+    /// A registration over an app-global state document, for tests of
+    /// History's presentation. A persistence path identifies storage; it is
+    /// not a user-file write target.
+    #[cfg(all(test, feature = "native"))]
     pub(crate) fn installed_app_state(
         definition: &'static HistoryDefinition,
         autosave: Option<&crate::persist::DocWriter>,

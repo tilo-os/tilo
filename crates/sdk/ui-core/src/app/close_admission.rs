@@ -101,16 +101,7 @@ impl App {
     pub(super) fn checkpoint_before_close(&mut self) -> Vec<String> {
         let _entry = self.enter_wake_scope();
         let mut errors = Vec::new();
-        if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            if let Err(error) =
-                crate::component_lifecycle::try_flush_owned_persistence(self.root_widget.as_mut())
-                    .unwrap_or_else(|| {
-                        Err("widget-owned persistence requires a checked flush hook".into())
-                    })
-            {
-                errors.push(error);
-            }
-        } else if let Some(records) = self.persistence.records.as_mut() {
+        if let Some(records) = self.persistence.records.as_mut() {
             if let Err(error) = records.try_flush(&mut self.state.doc) {
                 errors.push(error);
             }
@@ -573,13 +564,13 @@ mod tests {
                 Vec::new()
             }
         }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        fn checkpoint_components(&mut self) -> Vec<String> {
             self.flushes.set(self.flushes.get() + 1);
-            Some(if self.fail.get() {
-                Err("fixture owned writer refused".into())
+            if self.fail.get() {
+                vec!["fixture owned writer refused".into()]
             } else {
-                Ok(())
-            })
+                Vec::new()
+            }
         }
     }
 
@@ -607,11 +598,7 @@ mod tests {
                 document: None,
                 save_allowed: false,
             };
-            let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-                .with_autosave(crate::persist::DocWriter::disabled(
-                    "fixture root owns persistence",
-                ))
-                .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
+            let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
             assert!(!app.request_close());
             assert!(!app.close_admission.admitted);
             assert!(app.close_admission.dialog.is_some());
@@ -656,7 +643,7 @@ mod tests {
             assert!(app.close_admission.ready);
         }
 
-        // Case `disabled_host_and_missing_owned_hook_still_refuse_close`.
+        // Case `disabled_host_writer_still_refuses_close`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -668,11 +655,6 @@ mod tests {
             assert!(
                 !app.request_close(),
                 "ordinary unavailable host writer cannot be skipped"
-            );
-            app.legacy_persistence = crate::launch::LegacyPersistencePolicy::WidgetOwned;
-            assert!(
-                !app.request_close(),
-                "owned policy requires an actual checked root hook"
             );
             assert!(!app.close_admission.admitted);
         }
@@ -763,11 +745,7 @@ mod tests {
             document: Some(dirty.clone()),
             save_allowed,
         };
-        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::DocWriter::disabled(
-                "fixture owns persistence",
-            ))
-            .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
+        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
         app.state
             .doc
             .put(automerge::ROOT, "draft", "pending edit")

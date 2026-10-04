@@ -137,8 +137,6 @@ pub(crate) const SCROLL_DEMO: &str = "= Horizontal scroll\n\n#let note = \"This 
 /// per-frame button rectangles.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TbAction {
-    PrevDoc,
-    NextDoc,
     Compile,
     Save,
     Open,
@@ -156,13 +154,7 @@ enum TbAction {
 }
 
 // Native accessibility invokes the same logical operations as the painted toolbar.
-const TOOLBAR_ACTIONS: [(TbAction, &str, &str); 13] = [
-    (
-        TbAction::PrevDoc,
-        "typst.previous-document",
-        "Previous document",
-    ),
-    (TbAction::NextDoc, "typst.next-document", "Next document"),
+const TOOLBAR_ACTIONS: [(TbAction, &str, &str); 11] = [
     (TbAction::Compile, "typst.compile", "Compile"),
     (TbAction::Save, "typst.save", "Save"),
     (TbAction::Open, "typst.open", "Open"),
@@ -441,13 +433,6 @@ impl TypstApp {
         self.files.files.iter().find(|file| file.id == id)
     }
 
-    /// Where the file shown is in the workspace.
-    fn current_index(&self) -> Option<usize> {
-        let current = self.current.borrow();
-        let id = current.as_deref()?;
-        self.files.files.iter().position(|file| file.id == id)
-    }
-
     /// Submit the editor's edits to the file shown.
     fn follow_current(&mut self) {
         let (Some(actions), Some(id)) = (&self.actions, self.current.borrow().clone()) else {
@@ -714,15 +699,12 @@ impl TypstApp {
             }
         };
         let path = path.to_string_lossy().into_owned();
-        let known = self
-            .files
-            .files
-            .iter()
-            .find(|file| file.path.as_deref() == Some(path.as_str()))
-            .map(|file| file.id.clone());
-        if let Some(id) = known {
-            self.open_file(&id);
+        // A window edits one document: the file opened replaces the one shown.
+        if let Some(id) = self.current_file().map(|file| file.id.clone()) {
             self.replace_source(&src);
+            self.apply(&crate::resource::TypstAction::SetPath { file: id, path });
+            self.editor.reset_cursor();
+            self.preview.fit_width();
             return Ok(());
         }
         let action =
@@ -767,28 +749,12 @@ impl TypstApp {
         }
     }
 
-    /// Show the next file of the workspace (`step` 1) or the previous one
-    /// (`step` -1), wrapping around.
-    fn step_file(&mut self, step: isize) {
-        let count = self.files.files.len();
-        if count == 0 {
-            return;
-        }
-        let at = self.current_index().unwrap_or(0);
-        let next = (at as isize + step).rem_euclid(count as isize) as usize;
-        if let Some(id) = self.files.files.get(next).map(|file| file.id.clone()) {
-            self.open_file(&id);
-        }
-    }
-
     fn do_action(&mut self, action: TbAction) {
         // Any menu item closes the overflow menu once actioned.
         if !matches!(action, TbAction::ToggleMenu) {
             self.menu_open = false;
         }
         match action {
-            TbAction::PrevDoc => self.step_file(-1),
-            TbAction::NextDoc => self.step_file(1),
             TbAction::Compile => {
                 self.perform_resource_operation(crate::actions::TypstEffect::Compile);
             }
@@ -1055,9 +1021,7 @@ impl TypstApp {
             TbAction::ToggleProblems => self.show_diagnostics,
             TbAction::ShowEditor => matches!(self.compact_view, CompactPane::Editor),
             TbAction::ShowPreview => !matches!(self.compact_view, CompactPane::Editor),
-            TbAction::PrevDoc
-            | TbAction::NextDoc
-            | TbAction::Compile
+            TbAction::Compile
             | TbAction::Save
             | TbAction::Open
             | TbAction::ExportPdf
@@ -1142,17 +1106,11 @@ impl TypstApp {
         y: f64,
     ) {
         let tb = self.toolbar_rect;
-        // Width breakpoints were designed at 1×; judge them in 1× space so a
-        // 200 % bar folds exactly like a half-width 1× bar would.
-        let w1x = tb.width() / self.text_k.max(f64::from(f32::EPSILON));
-        // Show the "n/m" index only when there's plenty of room.
-        let with_index = w1x >= 1000.0;
-        let switcher_cap = 220.0 * self.text_k;
-        let mut x = self.draw_doc_switcher(
+        let name_cap = 220.0 * self.text_k;
+        let mut x = self.draw_doc_name(
             &mut PaintCtx::new(scene, t, tr, theme),
             Point::new(tb.x0 + 12.0, y),
-            switcher_cap,
-            with_index,
+            name_cap,
         );
         x += 10.0;
 
@@ -1282,29 +1240,21 @@ impl TypstApp {
             rx -= 10.0;
         }
 
-        // Left cluster first. The name chip is capped so the whole `‹ name ›`
-        // group leaves room for the view switch plus an `s3` on either side —
-        // the arrows are part of the group and must not be forgotten, or the
-        // `›` lands under the switch at phone widths.
+        // Left cluster first. The name chip is capped so it leaves room for
+        // the view switch plus an `s3` on either side.
         let gap = f64::from(theme.tokens.spacing.s3);
         let left_x = tb.x0 + 12.0;
         let switch_w = Self::view_switch_width(tr);
-        let arrows = if self.files.files.len() > 1 {
-            Self::pill_width(tr, "‹") + 6.0 + 6.0 + Self::pill_width(tr, "›")
-        } else {
-            0.0
-        };
         // The chip may elide all the way down to a lone ellipsis before the
         // switch is allowed to give ground; a fixed 64 px floor left the two
-        // colliding on a 360 px bar with two documents and a problems badge.
+        // colliding on a 360 px bar with a long name and a problems badge.
         let (ell_w, _) = tr.measure_weighted("…", PILL_FONT, None, TextWeight::Semibold);
         let min_chip = f64::from(ell_w) + 24.0;
-        let max_chip = (rx - gap - switch_w - gap - left_x - arrows).max(min_chip);
-        let cluster_end = self.draw_doc_switcher(
+        let max_chip = (rx - gap - switch_w - gap - left_x).max(min_chip);
+        let cluster_end = self.draw_doc_name(
             &mut PaintCtx::new(scene, t, tr, theme),
             Point::new(left_x, y),
             max_chip,
-            false,
         );
 
         // Segmented Edit / Preview switch: centred in the toolbar when that
@@ -1313,44 +1263,15 @@ impl TypstApp {
         let _ = self.draw_view_switch(scene, t, tr, theme, y, cluster_end + gap, rx - gap);
     }
 
-    /// Draw the `‹ [name] ›` document switcher starting at `origin`. `max_chip` caps
-    /// the name chip width (the name is elided to fit). Returns the x just past
-    /// the group.
-    fn draw_doc_switcher(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        origin: Point,
-        max_chip: f64,
-        with_index: bool,
-    ) -> f64 {
+    /// Draw the document's name chip starting at `origin`. `max_chip` caps the
+    /// chip width (the name is elided to fit). Returns the x just past it.
+    fn draw_doc_name(&self, ctx: &mut PaintCtx<'_>, origin: Point, max_chip: f64) -> f64 {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let Point { mut x, y } = origin;
-        let multi = self.files.files.len() > 1;
-
-        let prev_w = Self::pill_width(ctx.text, "‹");
-        if multi {
-            self.paint_pill(
-                ctx,
-                Rect::new(x, y, x + prev_w, y + self.pill_h),
-                "‹",
-                TbAction::PrevDoc,
-            );
-            x += prev_w + 6.0;
-        }
-
-        let name = self
+        let base = self
             .current_file()
             .map_or_else(|| "untitled".into(), |file| file.name.clone());
-        let base = if with_index && multi {
-            format!(
-                "{name}   {}/{}",
-                self.current_index().unwrap_or(0) + 1,
-                self.files.files.len()
-            )
-        } else {
-            name
-        };
         // Elide to fit the cap.
         let label = ctx.text.elide_to_width_weighted(
             &base,
@@ -1373,18 +1294,7 @@ impl TypstApp {
             None,
             TextWeight::Semibold,
         );
-        x += chip_w + 6.0;
-
-        if multi {
-            let next_w = Self::pill_width(ctx.text, "›");
-            self.paint_pill(
-                ctx,
-                Rect::new(x, y, x + next_w, y + self.pill_h),
-                "›",
-                TbAction::NextDoc,
-            );
-            x += next_w;
-        }
+        x += chip_w;
         x
     }
 
@@ -2261,16 +2171,6 @@ impl TypstApp {
                         *handled = true;
                         return;
                     }
-                    "]" => {
-                        self.step_file(1);
-                        *handled = true;
-                        return;
-                    }
-                    "[" => {
-                        self.step_file(-1);
-                        *handled = true;
-                        return;
-                    }
                     "j" => {
                         self.show_diagnostics = !self.show_diagnostics;
                         *handled = true;
@@ -2504,17 +2404,6 @@ impl TypstApp {
 }
 
 /// A text file a chooser or the command line named.
-/// The user's Typst library on this device: `TILO_TYPST_LIBRARY_DIR`, else
-/// `typst_editor` in their documents (or data) directory.
-pub(crate) fn library_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("TILO_TYPST_LIBRARY_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    tilo_paths::document_dir()
-        .or_else(tilo_paths::data_dir)
-        .map(|d| d.join("typst_editor"))
-}
-
 pub(crate) fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     String::from_utf8(tilo_files::blocking::read(&dir, &name)?)
@@ -2665,7 +2554,7 @@ mod tests {
     }
 
     #[test]
-    fn source_sync_and_switching_files() {
+    fn source_sync_and_one_document_per_window() {
         // Case `first_sync_shows_the_first_file_and_compiles`.
         {
             let (app, doc) = fresh();
@@ -2676,38 +2565,26 @@ mod tests {
             assert!(app.preview.page_count() >= 1, "rendered a page");
             assert_eq!(app.err_count, 0, "welcome demo has no errors");
         }
-        // Case `switching_files_shows_the_next_without_writing`:
-        // Each file keeps its own text; showing another one changes neither.
+        // Case `there_is_no_document_switcher`: Ctrl+] and Ctrl+[ switch
+        // nothing — a window edits one document — and write nothing.
         {
             let (mut app, mut doc) = fresh();
             doc.commit();
             let heads = doc.get_heads();
-            let first = shown_source(&app, &doc);
-            app.step_file(1);
+            let before = shown_source(&app, &doc);
+            for key in ["]", "["] {
+                let mut handled = false;
+                app.handle_keyboard_shortcut(
+                    &Key::Character(key.into()),
+                    &char_press(key),
+                    Modifiers::from(ModifiersState::CONTROL),
+                    &mut doc,
+                    &mut handled,
+                );
+            }
             app.sync(&mut doc, &ROOT);
-            let second = shown_source(&app, &doc);
-            assert_ne!(first, second, "the next file is shown");
-            assert_eq!(app.editor.text(), second);
-            assert_eq!(app.current_index(), Some(1));
-            assert_eq!(doc.get_heads(), heads, "switching files writes nothing");
-            app.step_file(-1);
-            app.step_file(-1);
-            assert_eq!(
-                app.current_index(),
-                Some(app.files.files.len() - 1),
-                "stepping back wraps around"
-            );
-        }
-        // Case `a_closed_file_gives_way_to_the_first`.
-        {
-            let (mut app, mut doc) = fresh();
-            app.step_file(1);
-            let shown = app.current_file().unwrap().id.clone();
-            crate::resource::TypstAction::CloseFile { file: shown }
-                .apply(&mut doc)
-                .unwrap();
-            present(&mut app, &doc);
-            assert_eq!(app.current_index(), Some(0));
+            assert_eq!(shown_source(&app, &doc), before);
+            assert_eq!(doc.get_heads(), heads, "no switch, no write");
         }
         // Case `caret_line_col_tracks_newlines`.
         {
@@ -2894,14 +2771,13 @@ mod tests {
             assert!(app.preview_rect.area() > 0.0);
         }
         // Case `compact_toolbar_controls_never_overlap_at_phone_width`:
-        // Rule 1 of the 1× bar on the compact toolbar: with several documents
+        // Rule 1 of the 1× bar on the compact toolbar: with a document name
         // *and* a problems badge, no two toolbar hit rects overlap at the phone
         // viewport or wider — the document chip elides and the switch squeezes
         // before anything is painted over a neighbouring control.
         {
             for w in [390.0, 480.0, 560.0] {
                 let (mut app, _doc) = fresh();
-                assert!(app.files.files.len() > 1, "demo carries several documents");
                 app.warn_count = 1;
                 app.layout_in(Rect::new(0.0, 0.0, w, 720.0));
                 assert!(app.compact);
@@ -3030,49 +2906,6 @@ mod tests {
                     && row.y0 >= app.rect.y0
                     && row.y1 <= app.rect.y1
             }));
-        }
-    }
-
-    #[test]
-    fn a_new_workspace_starts_with_the_library_or_an_empty_file() {
-        let names = |actions: Vec<crate::resource::TypstAction>| {
-            actions
-                .into_iter()
-                .map(|action| match action {
-                    crate::resource::TypstAction::AddFile {
-                        name, path, source, ..
-                    } => (name, path.is_some(), source),
-                    other => panic!("a new workspace only adds files: {other:?}"),
-                })
-                .collect::<Vec<_>>()
-        };
-        // Case `the_library_is_read_from_disk`.
-        {
-            let dir = unique_dir("library");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("beta.typ"), "= Beta").unwrap();
-            std::fs::write(dir.join("alpha.typ"), "= Alpha").unwrap();
-            std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
-            assert_eq!(
-                names(crate::resource::starting_files(Some(&dir))),
-                [
-                    ("alpha.typ".to_owned(), true, "= Alpha".to_owned()),
-                    ("beta.typ".to_owned(), true, "= Beta".to_owned()),
-                ],
-                "sorted, .txt ignored, each saved where it was found"
-            );
-            std::fs::remove_dir_all(&dir).ok();
-        }
-        // Case `an_empty_library_starts_one_empty_file`.
-        {
-            let dir = unique_dir("empty-library");
-            std::fs::create_dir_all(&dir).unwrap();
-            assert_eq!(
-                names(crate::resource::starting_files(Some(&dir))),
-                [("untitled.typ".to_owned(), false, String::new())],
-                "a new workspace never contains sample text"
-            );
-            std::fs::remove_dir_all(&dir).ok();
         }
     }
 

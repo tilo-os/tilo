@@ -38,7 +38,7 @@ Unchecked entries need implementation or caller-level qualification.
 | P0 | Selection / multiselect | Cross-block text selection, subtree-aware indent/duplicate/move batches | Dedicated whole-block selection mode and delete/convert commands |
 | P1 | Move / drag and drop | Shared atomic selected sibling batches, per-ID group movement and semantic controls (increment 3) | Pointer batch dragging and browser qualification |
 | P1 | Duplicate / delete / convert | Shared duplication of focused/selected blocks and subtrees (increment 2); canonical insert/delete/style actions | Whole-block delete/convert batches and pointer menu |
-| P0 | Plain / rich / Markdown paste | Text clipboard, canonical paste vocabulary; cuts wait for accepted clipboard writes | Rich MIME negotiation, formatting/literal modes; atomic image replacement |
+| P0 | Plain / rich / Markdown paste | Text clipboard, accepted-write cuts, atomic native image replacement | Browser image transport, rich MIME negotiation, formatting/literal modes |
 | P0 | Markdown import/export | Notes `markdown`, canonical page projection | Nested/inline/code/table round trips; document extension limits |
 | P0 | Undo / redo | Canonical Notes actions; indent and duplicate atomicity/concurrency caller tests | Independent first-type undo-to-empty failure; remaining command qualification |
 | P0 | IME / Unicode / caret | Shared line/table composition guards, Unicode joins, safe copy selection | Browser/OS input-method qualification |
@@ -241,3 +241,37 @@ Successful cuts retain their existing single canonical undo boundary.
 - Strict all-target Clippy passes again after that integration. The mandatory
   shell check reproduces the same 22 Darwin errors; both failing compositor
   modules are unchanged between the proven base and integrated main.
+
+### Independent increment: atomic image replacement
+
+Clipboard images now carry a stable selection intent to the shared rich-text
+surface. Notes validates the image and dispatches asset storage plus canonical
+replacement as one existing action. Undo restores both text and marks in one
+step; redo restores the image. No History implementation or schema changes.
+
+- The original Notes context-menu replacement failure and unavailable-clipboard
+  preview selection failure were reproduced before repair. Fourteen mounted
+  Notes clipboard tests now pass, covering keyboard/menu paste, rejected bytes,
+  retry, marked Unicode ranges, empty notes/rows, separator-only selections,
+  column-zero endpoint identity, peer text through undo, viewer and IME refusal.
+  Three existing image paste/drop/large-screenshot caller tests also pass.
+- Selection planning validates stable IDs, current source and compatible kinds
+  before mutation; unsupported child trees/attributes and peer-interleaved
+  ranges are refused. Prefix/suffix fragments retain all canonical marks,
+  including links and metadata not painted by the editor.
+- All 60 shared block-editor tests, four text-selection helper tests and 37
+  rich-text tests pass. Strict all-target Notes/SDK Clippy passes. Empty clipboard
+  strings are unavailable; whitespace remains pasteable. Image-preview paste
+  reads usable content before exposing its hidden source as a selection.
+- The standard offline WASM bundle builds. Browser image transport remains
+  unsupported: image-only ClipboardEvents are explicitly refused by the existing
+  browser host. This increment does not claim functional browser image paste.
+- Independent review found no remaining issues. Legacy fixture file storage
+  validates the target before writing; live notes retain canonical asset storage.
+- Four disposable Chrome checks pass: image-only refusal over selected text and
+  an image preview, refused cuts with accepted retry, and atomic cut undo. No
+  browser errors were recorded. Final WASM SHA-256:
+  `602825102932ac61a2192ee7db55a3e18873a2a0b8126c8e67522ba333ddc35a`.
+- Required shell test compilation reproduces the same 22 Darwin-only unresolved
+  compositor imports documented and proven at the clipboard-safety base. The
+  affected compositor modules are unchanged in this increment.
