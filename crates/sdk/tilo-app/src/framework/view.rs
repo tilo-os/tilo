@@ -251,6 +251,13 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.run.content()
     }
 
+    /// What the window's launch named (paths, URLs), for a view that acts
+    /// on them beyond the actions the launch took: the file a save writes
+    /// back to. Empty for a plain start, a past version and a capture.
+    pub fn launch_arguments(&self) -> &[String] {
+        &self.run.arguments
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
