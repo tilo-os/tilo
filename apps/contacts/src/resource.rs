@@ -14,6 +14,7 @@ use ui::tilo_actions::{
     ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
     Resource as PublishedResource,
 };
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -122,14 +123,54 @@ impl ResourceApp for ContactsShell {
     const ID: &'static str = "so.tilo.contacts";
     const TITLE: &'static str = "Contacts";
     const ICON: Option<&'static str> = Some("contacts");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        // The selected person at the front of a phone-sized window.
+        if scenario == Some("detail") {
+            (480, 800)
+        } else {
+            (1280, 800)
+        }
     }
 
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         cx.surface(ContactsApp::new())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        SHOT_SCENARIOS
+    }
+
+    /// A capture shows the varied sample book, created through the same
+    /// action as a person's new contact, except for the empty book.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Contacts>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
+        crate::model::sample_contacts()
+            .iter()
+            .map(create_contact_action)
+            .filter_map(|action| Invoke::apply(&action).ok())
+            .collect()
+    }
 }
+
+/// Every state a capture can stage.
+pub const SHOT_SCENARIOS: &[&str] = &[
+    "new",
+    "edit",
+    "calendar",
+    "export",
+    "unsaved",
+    "groups",
+    "favorites",
+    "context",
+    "more",
+    "confirm",
+    "import-conflict",
+    "duplicate-review",
+    "empty",
+    "detail",
+];
 
 impl ResourceSurface<Contacts> for ContactsApp {
     fn present(&mut self, state: &std::rc::Rc<ContactsState>) {
@@ -140,6 +181,10 @@ impl ResourceSurface<Contacts> for ContactsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_capture(scenario);
     }
 
     // Edits bound to where the user is publish as hand-built rows of the
