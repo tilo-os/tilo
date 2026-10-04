@@ -2690,6 +2690,12 @@ impl RecordStore {
     }
     /// The package and home workspace (room) this store's records belong
     /// to, which name their replication route.
+    /// The durable store this set's records live in, when it has one.
+    pub(crate) fn backend(&self) -> Option<Rc<dyn DurableStore>> {
+        let set = self.0.borrow();
+        set.backend.clone().or_else(|| set.documents.clone())
+    }
+
     pub fn package_and_home(&self) -> (String, String) {
         let set = self.0.borrow();
         (set.package_id.clone(), set.home.clone())

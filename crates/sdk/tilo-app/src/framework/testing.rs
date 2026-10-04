@@ -177,14 +177,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// The person's record of `P` that the app `owner` keeps, as the app's
-    /// views open it.
-    pub fn person_of<P: Resource>(
+    /// The person's shared record `P`, as the app's views open it.
+    pub fn shared_person<P: tilo_resource::SharedRecord>(
         &mut self,
-        owner: &'static str,
     ) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.person_of::<P>(owner))
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.shared_person::<P>())
             .flatten()
     }
 

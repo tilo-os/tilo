@@ -1173,3 +1173,22 @@ fn same_shape(bound: &ActionSpec, declared: &ActionSpec) -> bool {
         && bound.contract.permission == declared.contract.permission
         && bound.contract.risk == declared.contract.risk
 }
+
+/// A resource of the person's own that one app keeps for every app of
+/// theirs: their accounts, which Settings keeps and Mail signs in to. Each
+/// app holds its copy in its own store; the copies are one record, the same
+/// on every device, and converge over the person's own room. Only the
+/// [`OWNER`](Self::OWNER) and the [`EDITORS`](Self::EDITORS) change it; every
+/// other app reads it (`ViewCx::shared_person` in `tilo-app`).
+pub trait SharedRecord: Resource {
+    /// The app that keeps the record.
+    const OWNER: &'static str;
+    /// The other apps whose edits the record takes.
+    const EDITORS: &'static [&'static str] = &[];
+
+    /// Whether the app `app_id` changes the record.
+    #[must_use]
+    fn edited_by(app_id: &str) -> bool {
+        app_id == Self::OWNER || Self::EDITORS.contains(&app_id)
+    }
+}

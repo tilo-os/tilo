@@ -240,6 +240,26 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
     );
 }
 
+/// The queue app keeps the person's watch history for all of their apps;
+/// the editor app adds to it too.
+impl tilo_app::tilo_resource::SharedRecord for Watched {
+    const OWNER: &'static str = QueueApp::ID;
+    const EDITORS: &'static [&'static str] = &[EditorApp::ID];
+}
+
+/// Another app, adding to the history the queue app keeps.
+struct EditorApp;
+
+impl ResourceApp for EditorApp {
+    type Resource = Queue;
+    const ID: &'static str = "so.tilo.test-editor";
+    const TITLE: &'static str = "Editor";
+
+    fn view(_cx: &mut ViewCx<Queue>) -> Element {
+        Box::new(Column::new())
+    }
+}
+
 /// Another app, reading the history the queue app keeps.
 struct ReaderApp;
 
@@ -254,37 +274,48 @@ impl ResourceApp for ReaderApp {
 }
 
 #[test]
-fn another_apps_record_of_the_persons_is_read_on_its_route_and_edited_only_by_its_owner() {
+fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_editors() {
     let mut owner_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+    let mut editor_app = TestApp::<EditorApp>::for_person(&ada()).unwrap();
     let mut reader_app = TestApp::<ReaderApp>::for_person(&ada()).unwrap();
-    let owned = owner_app.person::<Watched>().unwrap();
-    let read = reader_app.person_of::<Watched>(QueueApp::ID).unwrap();
-    assert!(owned.editable());
+    let owned = owner_app.shared_person::<Watched>().unwrap();
+    let edited = editor_app.shared_person::<Watched>().unwrap();
+    let read = reader_app.shared_person::<Watched>().unwrap();
+    assert!(owned.editable() && edited.editable());
     assert!(!read.editable());
-    assert_eq!(
-        read.record().route().unwrap(),
-        owned.record().route().unwrap(),
-        "the reader follows the owner's record, not one of its own"
-    );
+    for copy in [&edited, &read] {
+        assert_eq!(
+            copy.record().route().unwrap(),
+            owned.record().route().unwrap(),
+            "every app's copy is the owner's record"
+        );
+    }
 
     owned
         .invoke(&Watched::WATCH.with("kept-by-the-owner".into()))
         .unwrap();
+    edited
+        .invoke(&Watched::WATCH.with("added-by-the-editor".into()))
+        .unwrap();
+    owned
+        .record()
+        .merge_peer_document(edited.record().document().unwrap())
+        .unwrap();
     read.record()
         .merge_peer_document(owned.record().document().unwrap())
         .unwrap();
-    assert_eq!(videos(&read), ["kept-by-the-owner"]);
+    assert_eq!(videos(&read), ["added-by-the-editor", "kept-by-the-owner"]);
 
     assert!(
         read.invoke(&Watched::WATCH.with("from-the-reader".into()))
             .is_err(),
-        "only the owner edits it"
+        "a reader does not change it"
     );
-    assert_eq!(videos(&read), ["kept-by-the-owner"]);
-    // The reader's own record of the kind is a different one.
-    let own = reader_app.person::<Watched>().unwrap();
-    assert_ne!(
-        own.record().route().unwrap(),
-        owned.record().route().unwrap()
-    );
+    assert_eq!(videos(&read), ["added-by-the-editor", "kept-by-the-owner"]);
+
+    // The editor's copy is kept in its own store across launches.
+    drop(edited);
+    let mut editor_app = editor_app.reopen().unwrap();
+    let kept = editor_app.shared_person::<Watched>().unwrap();
+    assert_eq!(videos(&kept), ["added-by-the-editor"]);
 }

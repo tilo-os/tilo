@@ -352,14 +352,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.storage.person::<P>()
     }
 
-    /// The person's record of `P` that another app, `owner`, keeps — their
-    /// accounts, which Settings keeps: read here, edited only in `owner`
-    /// ([`PersonRecord::editable`](super::PersonRecord::editable)). It is
-    /// the same record on every device, and follows the owner's edits over
-    /// the person's own room; for `owner` this app it is
-    /// [`Self::person`].
-    pub fn person_of<P: Resource>(&self, owner: &'static str) -> Option<super::PersonRecord<P>> {
-        self.storage.person_of::<P>(owner)
+    /// The person's record `P` that one app keeps for all of theirs — their
+    /// accounts, which Settings keeps: the same record on every device, held
+    /// here too and converging with the keeper's over the person's own room.
+    /// Changed only by its owner and editors
+    /// ([`SharedRecord`](tilo_resource::SharedRecord),
+    /// [`PersonRecord::editable`](super::PersonRecord::editable)); for its
+    /// owner it is [`Self::person`].
+    pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.shared_person::<P>()
     }
 
     /// The app's files, secrets and settings documents, as its host gave
