@@ -21,12 +21,14 @@ use crate::browsing_mode::BrowsingMode;
 use crate::library::{Bookmark, Bookmarks};
 use crate::settings::Settings;
 
-/// Document projection: collaborative bookmarks and the preferences that
-/// follow the person to every browser window.
+/// Document projection: collaborative bookmarks, the preferences that
+/// follow the person to every browser window, and the origins tracker
+/// protection is off for.
 #[derive(Clone, Debug, Default)]
 pub struct BrowserState {
     pub bookmarks: Bookmarks,
     pub preferences: Settings,
+    pub site_exceptions: std::collections::BTreeSet<String>,
 }
 
 /// The preferences `doc` holds; each one it never set reads its default.
@@ -73,6 +75,7 @@ impl Resource for Browser {
         Ok(BrowserState {
             bookmarks: bookmarks_from_doc(doc).unwrap_or_default(),
             preferences: preferences_from_doc(doc),
+            site_exceptions: crate::actions::site_exceptions_from_doc(doc),
         })
     }
 
@@ -214,6 +217,30 @@ fn settings_child() -> tilo_actions::Resource {
             "template",
             |template| BrowserAction::SetSearchEngine { template },
         ))
+        .with_action(declaration_spec(&ActionDecl::<Browser>::new(
+            "set-site-protection",
+            "Set tracker protection for a site",
+            vec![
+                ActionParam::required_owned(
+                    "origin",
+                    ParamType::Text,
+                    "The site's exact origin, such as https://example.org",
+                ),
+                ActionParam::required_owned(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Whether tracker protection is on for the site",
+                ),
+            ],
+            |args, _| {
+                let origin = args.text("origin").unwrap_or_default();
+                Ok(BrowserAction::SetSiteProtection {
+                    origin: crate::site_controls::origin(origin)
+                        .unwrap_or_else(|| origin.to_owned()),
+                    enabled: args.boolean("enabled").unwrap_or(true),
+                })
+            },
+        )))
 }
 
 /// The screenshot scenarios: the page, the chrome's states, the library's
@@ -364,6 +391,19 @@ impl ResourceSurface<Browser> for BrowserTabs {
     fn attach(&mut self, cx: SurfaceCx<Browser>) {
         self.attach_dispatcher(&cx.dispatcher());
         if cx.mode().is_live() {
+            // Visits and addresses are the person's own: they follow them to
+            // their other devices and never reach a collaborator. A private
+            // window keeps none.
+            if !cx.is_private()
+                && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
+            {
+                self.attach_history(&history);
+            }
+            if !cx.is_private()
+                && let Some(book) = cx.person::<crate::autofill::AddressBook>()
+            {
+                self.attach_address_book(&book);
+            }
             // The engine publishes frames and navigation from its own
             // threads; each wakes the window so pages paint and finish
             // loading without waiting for input.
@@ -488,6 +528,27 @@ mod tests {
         assert!(!preferences.adblock_enabled);
         assert!(app.undo(), "a preference is an undo step");
         assert!(app.state().preferences.adblock_enabled);
+
+        app.call_on(
+            "browser.settings",
+            "set-site-protection",
+            serde_json::json!({"origin": "https://Tracker.example/page", "enabled": false}),
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(
+            app.state().site_exceptions.into_iter().collect::<Vec<_>>(),
+            vec!["https://tracker.example".to_string()],
+            "a site exception is kept by its exact origin"
+        );
+        app.call_on(
+            "browser.settings",
+            "set-site-protection",
+            serde_json::json!({"origin": "https://tracker.example", "enabled": true}),
+        )
+        .unwrap();
+        app.settle();
+        assert!(app.state().site_exceptions.is_empty());
     }
 
     #[test]
