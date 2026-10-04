@@ -946,6 +946,7 @@ mod tests {
             os_release: Ok(OsRelease {
                 id: "fedora".into(),
                 version_id: Some("44".into()),
+                name: Some("Fedora Linux".into()),
             }),
             architecture: Ok("aarch64".into()),
             package_manager: Ok(PackageManager::Dnf),

@@ -13,6 +13,7 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::Politeness;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -20,14 +21,14 @@ use ui::tokens::typography::TextRole;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use ui::widget::NumberInput;
 use ui::widget::{
-    Button, Card, Column, Container, Row, Scrollable, Spacer, Text, TextInput, Widget,
+    Button, ButtonRole, Column, Container, ControlSize, ListRow, Row, Section, SectionHeader,
+    Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use super::controller::{FolderDestination, SetupController, SetupPage};
+use super::controller::{SetupController, SetupPage};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
@@ -43,15 +44,14 @@ use super::model::{Capabilities, Experience, FolderMode, HostOs};
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::staging::helper::Action as HelperAction;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use super::{page, stack};
-use crate::rhythm::px::{FOOTER_INSET, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
+use crate::page::{self, Frame, stack};
 
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 type ImportLauncher = fn() -> ImportApp;
 
-const FULL_OS_UNAVAILABLE: &str = "Full Tilo installation is not available in this build yet.";
+const FULL_OS_UNAVAILABLE: &str = "Full Tilo is not available on this computer yet.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetupCapabilities {
@@ -334,10 +334,10 @@ impl SetupApp {
                 "setup-experience-failed" => DesktopFlowState::Failed {
                     selection: None,
                     kind: DesktopFailureKind::WorkerLost,
-                    message: "The host check worker stopped before reporting readiness.".into(),
+                    message: "The check stopped before it finished.".into(),
                 },
                 _ => DesktopFlowState::Unavailable {
-                    host: "fedora 44 (aarch64)".into(),
+                    host: "Fedora Linux 44 (ARM64)".into(),
                     reasons: vec![
                         "No authenticated Desktop release matches this exact host.".into(),
                     ],
@@ -568,7 +568,7 @@ impl SetupApp {
                 }
                 let mode = super::actions::parse_mode(&mode)?;
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    return Err("Folder syncing is not available in this build yet.".into());
+                    return Err("Connected folders are not available on this computer.".into());
                 }
                 SetupCommand::SetMode(mode)
             }
@@ -582,7 +582,7 @@ impl SetupApp {
                 }
                 let mode = super::actions::parse_mode(&mode)?;
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    return Err("Folder syncing is not available in this build yet.".into());
+                    return Err("Connected folders are not available on this computer.".into());
                 }
                 SetupCommand::SetFolderMode(index, mode)
             }
@@ -714,7 +714,7 @@ impl SetupApp {
             }
             SetupCommand::SetMode(mode) => {
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    self.status = "Folder syncing is not available in this build yet.".into();
+                    self.status = "Connected folders are not available on this computer.".into();
                     self.status_is_error = true;
                 } else {
                     self.controller.borrow_mut().set_mode(mode);
@@ -723,7 +723,7 @@ impl SetupApp {
             }
             SetupCommand::SetFolderMode(index, mode) => {
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    self.status = "Folder syncing is not available in this build yet.".into();
+                    self.status = "Connected folders are not available on this computer.".into();
                     self.status_is_error = true;
                 } else if self.controller.borrow_mut().set_folder_mode(index, mode) {
                     self.status = format!("Folder policy changed to {}.", mode_label(mode));
@@ -1156,673 +1156,609 @@ impl SetupApp {
 
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label, None)
-            .fit_content(40.0)
-            .on_effect(move || sink.borrow_mut().push(command))
+        Button::new(id, label, None).on_effect(move || sink.borrow_mut().push(command))
     }
 
-    fn desktop_experience_status(&self) -> (String, bool) {
+    /// Why Tilo Desktop is not on offer, or that it is still being checked,
+    /// as one sentence; and whether checking again can help.
+    fn desktop_unavailable(&self) -> (String, bool) {
+        if self.capabilities.platform.host != HostOs::Linux {
+            return (
+                experience_unavailable_reason(self.capabilities.platform, Experience::Desktop),
+                false,
+            );
+        }
         match self.desktop_flow.state() {
             DesktopFlowState::Checking => (
-                "Checking this host and the authenticated Tilo Desktop catalog…".into(),
+                "Checking whether it is available for this computer…".into(),
                 false,
             ),
-            DesktopFlowState::Unavailable { host, reasons } => {
-                (format!("Host: {host}\n{}", reasons.join("\n")), true)
+            DesktopFlowState::Unavailable { host, .. } => {
+                (format!("Not available for {host} yet."), true)
             }
-            DesktopFlowState::Ready(selection) => (
-                format!(
-                    "Tilo Desktop {} is available for {}.",
-                    selection.release.version, selection.host
-                ),
+            DesktopFlowState::Failed { message, .. } => (
+                format!("Couldn't check whether it is available. {message}"),
+                true,
+            ),
+            _ => (
+                experience_unavailable_reason(self.capabilities.platform, Experience::Desktop),
                 false,
             ),
-            DesktopFlowState::Downloading(selection) => (
-                format!(
-                    "Downloading Tilo Desktop {} for {}.",
-                    selection.release.version, selection.host
-                ),
-                false,
-            ),
-            DesktopFlowState::Authorizing(selection)
-            | DesktopFlowState::Preparing(selection)
-            | DesktopFlowState::Installing(selection)
-            | DesktopFlowState::Verifying(selection) => (
-                format!(
-                    "Installing Tilo Desktop {} for {}.",
-                    selection.release.version, selection.host
-                ),
-                false,
-            ),
-            DesktopFlowState::Installed { selection, result } => (
-                format!(
-                    "Tilo Desktop {} is installed and verified on {}.",
-                    result.version, selection.host
-                ),
-                false,
-            ),
-            DesktopFlowState::Failed { message, .. } => {
-                (format!("Desktop check failed: {message}"), true)
-            }
         }
     }
 
-    fn experience_body(&self) -> Box<dyn Widget> {
-        let header = stack()
-            .with_gap(RELATED)
-            .push(Box::new(
-                Text::new("Choose your Tilo experience")
-                    .with_role(TextRole::Title)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(Text::new(
-                "Setup keeps your current operating system. Options that are not ready in this build stay unavailable.",
-            ).dimmed()));
-        let mut body = stack();
+    /// One experience as a choice: what it is and what it does.
+    fn experience_row(&self, experience: Experience) -> ListRow {
+        let sink = Rc::clone(&self.commands);
+        let (id, secondary) = match experience {
+            Experience::Desktop => (
+                "setup.experience.desktop",
+                "Adds the Tilo session to this Linux installation.",
+            ),
+            Experience::FullOs => (
+                "setup.experience.full",
+                "Installs Tilo next to your current system, which stays the startup default.",
+            ),
+        };
+        ListRow::new(id, experience_label(experience))
+            .icon(match experience {
+                Experience::Desktop => Icon::Monitor,
+                Experience::FullOs => Icon::HardDrive,
+            })
+            .secondary(secondary)
+            .selected(self.chosen_experience == Some(experience))
+            .on_activate(move || {
+                sink.borrow_mut()
+                    .push(SetupCommand::ChooseExperience(experience));
+            })
+    }
+
+    fn experience_body(&self) -> Column {
+        let mut body = page::body("Choose your Tilo experience");
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if let Some(resume) = self.internal_resume_card() {
             body = body.push(Box::new(resume));
         }
-
-        for experience in [Experience::Desktop, Experience::FullOs] {
-            let supported = self.capabilities.platform.supports(experience);
-            let selected = self.chosen_experience == Some(experience);
-            let description = match experience {
-                Experience::Desktop => {
-                    "Add the Tilo desktop session to a supported Linux installation."
-                }
-                Experience::FullOs => {
-                    "Install Tilo alongside your current operating system and keep the current OS as the startup default."
-                }
-            };
-            let mut choose = self
-                .button(
-                    match experience {
-                        Experience::Desktop => "setup.experience.desktop",
-                        Experience::FullOs => "setup.experience.full",
-                    },
-                    if selected { "Selected" } else { "Choose" },
-                    SetupCommand::ChooseExperience(experience),
-                )
-                .with_enabled(supported);
-            if selected {
-                choose = choose.primary();
-            }
-            let mut card_body = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(Text::new(description)));
-            // The card's commands form one action row (recheck before choose,
-            // matching the keyboard order) rather than a stack of one-button
-            // lines, so they read as a group beneath the status.
-            let mut actions = Row::new();
-            if experience == Experience::Desktop {
-                let (status, can_recheck) = self.desktop_experience_status();
-                card_body = card_body.push(Box::new(
-                    Text::new(&status)
-                        .with_id("setup.desktop.live")
-                        .with_live(Politeness::Polite),
-                ));
-                if can_recheck {
-                    actions = actions.push(Box::new(self.button(
-                        "setup.desktop.recheck",
-                        "Recheck Desktop support",
-                        SetupCommand::RetryDesktop,
-                    )));
-                }
-            }
-            card_body = card_body.push(Box::new(actions.push(Box::new(choose))));
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-            if experience == Experience::FullOs && self.internal_install.gate() {
-                card_body = card_body.push(Box::new(
-                    Text::new(&self.internal_readiness_text())
-                        .with_id("setup.internal.readiness")
-                        .with_live(Politeness::Polite),
-                ));
-                body = body.push(Box::new(Card::titled(
-                    experience_label(experience),
-                    Box::new(card_body),
-                )));
-                continue;
-            }
-            if !supported && experience != Experience::Desktop {
-                card_body = card_body.push(Box::new(
-                    Text::new(&experience_unavailable_reason(
-                        self.capabilities.platform,
-                        experience,
-                    ))
-                    .dimmed(),
-                ));
-            }
-            body = body.push(Box::new(Card::titled(
-                experience_label(experience),
-                Box::new(card_body),
-            )));
+        let offered: Vec<Box<dyn Widget>> = [Experience::Desktop, Experience::FullOs]
+            .into_iter()
+            .filter(|experience| self.capabilities.platform.supports(*experience))
+            .map(|experience| Box::new(self.experience_row(experience)) as Box<dyn Widget>)
+            .collect();
+        if !offered.is_empty() {
+            body = body.push(Box::new(Section::new(offered)));
         }
-        Box::new(page(header).push(Box::new(body)))
-    }
-
-    fn mode_card(&self, mode: FolderMode, title: &str, explanation: &str) -> Card {
-        let selected = self.controller().default_mode() == mode;
-        let enabled = mode != FolderMode::Connected || self.capabilities.connected_folders;
-        let mut button = self
-            .button(
-                match mode {
-                    FolderMode::Copy => "setup.mode.copy",
-                    FolderMode::Connected => "setup.mode.connected",
-                    FolderMode::Later => "setup.mode.later",
-                },
-                if selected { "Selected" } else { "Choose" },
-                SetupCommand::SetMode(mode),
-            )
-            .with_enabled(enabled);
-        if selected {
-            button = button.primary();
-        }
-        let detail = if mode == FolderMode::Connected && !enabled {
-            format!("{explanation} Folder syncing is not available in this build yet.")
-        } else {
-            explanation.to_string()
-        };
-        Card::new(Box::new(
-            Row::new()
+        // What is not on offer here, under its name: one sentence each, and
+        // the one way to find out again.
+        if !self.capabilities.platform.supports(Experience::Desktop) {
+            let (sentence, can_recheck) = self.desktop_unavailable();
+            let mut line = Row::new()
+                .with_align_items(taffy::AlignItems::Center)
                 .push(Box::new(
                     Container::new()
                         .with_no_padding()
                         .with_flex_grow()
                         .with_child(Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .with_gap(RELATED)
-                                .push(Box::new(Text::new(title).with_role(TextRole::Heading)))
-                                .push(Box::new(Text::new(&detail).dimmed())),
+                            Text::new(&sentence)
+                                .dimmed()
+                                .with_id("setup.desktop.live")
+                                .with_live(Politeness::Polite),
                         )),
-                ))
-                .push(Box::new(button)),
-        ))
+                ));
+            if can_recheck {
+                line = line.push(Box::new(self.button(
+                    "setup.desktop.recheck",
+                    "Check again",
+                    SetupCommand::RetryDesktop,
+                )));
+            }
+            body = body.push(Box::new(Section::new(vec![Box::new(line)]).with_header(
+                SectionHeader::group(experience_label(Experience::Desktop)),
+            )));
+        }
+        if !self.capabilities.platform.supports(Experience::FullOs) {
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            let sentence = if self.internal_install.gate() {
+                self.internal_readiness_text()
+            } else {
+                "Not available on this computer yet.".to_string()
+            };
+            #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+            let sentence = "Not available on this computer yet.".to_string();
+            body = body.push(Box::new(
+                Section::new(vec![Box::new(
+                    Text::new(&sentence)
+                        .dimmed()
+                        .with_id("setup.internal.readiness")
+                        .with_live(Politeness::Polite),
+                )])
+                .with_header(SectionHeader::group(experience_label(Experience::FullOs))),
+            ));
+        }
+        body
     }
 
-    fn known_folder_card(&self, index: usize, known: &KnownFolder) -> Card {
-        let (detail, enabled) = known.path.as_ref().map_or_else(
-            || {
-                (
-                    known
-                        .unavailable_reason
-                        .clone()
-                        .unwrap_or_else(|| "Unavailable".into()),
-                    false,
-                )
-            },
-            |path| (path.display().to_string(), true),
-        );
-        let add = self
-            .button(
-                &format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
-                if enabled { "Add" } else { "Unavailable" },
-                SetupCommand::AddSuggested(index),
-            )
-            .with_enabled(enabled && self.folder_selection_settled());
-        Card::titled(
-            known.kind.label(),
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&detail).dimmed()))
-                    .push(Box::new(add)),
+    /// One way of bringing folders over, as a choice.
+    fn mode_row(&self, mode: FolderMode) -> ListRow {
+        let sink = Rc::clone(&self.commands);
+        let (id, title, secondary) = match mode {
+            FolderMode::Copy => (
+                "setup.mode.copy",
+                "Copy selected folders",
+                "Recommended. Your originals stay where they are, and later changes don't carry over.",
             ),
-        )
+            FolderMode::Connected => (
+                "setup.mode.connected",
+                "Keep selected folders connected",
+                "Keeps a copy in Tilo and carries changes over while both systems are in use.",
+            ),
+            FolderMode::Later => (
+                "setup.mode.later",
+                "Decide later",
+                "Start empty and add folders any time.",
+            ),
+        };
+        ListRow::new(id, title)
+            .secondary(secondary)
+            .selected(self.controller().default_mode() == mode)
+            .on_activate(move || sink.borrow_mut().push(SetupCommand::SetMode(mode)))
     }
 
-    fn selected_folder_card(&self, index: usize, folder: &super::controller::FolderChoice) -> Card {
+    /// The ways a folder can come over on this computer.
+    fn offered_modes(&self) -> Vec<FolderMode> {
+        [FolderMode::Copy, FolderMode::Connected, FolderMode::Later]
+            .into_iter()
+            .filter(|mode| *mode != FolderMode::Connected || self.capabilities.connected_folders)
+            .collect()
+    }
+
+    /// One selected folder: what it holds, how it comes over, and removing it.
+    fn selected_folder(&self, index: usize, folder: &super::controller::FolderChoice) -> Column {
         let source = folder.scan.source.display().to_string();
-        let details = format!(
-            "{} files · {} · source: {source}",
+        let mut facts = format!(
+            "{} {}, {}",
             folder.scan.file_count,
+            if folder.scan.file_count == 1 {
+                "file"
+            } else {
+                "files"
+            },
             ui::format::bytes_si(folder.scan.bytes)
         );
-        let destination = match &folder.destination {
-            FolderDestination::Resolved(path) => path.display().to_string(),
-            FolderDestination::Unresolved => {
-                "Pending — choose and review a Tilo-managed destination after login".into()
+        if folder.scan.skipped_count > 0 {
+            let _ = write!(
+                facts,
+                ", {} skipped",
+                items_phrase(folder.scan.skipped_count)
+            );
+        }
+        let remove = Rc::clone(&self.commands);
+        let mut row = ListRow::new(format!("setup.folder.{index}"), &source)
+            .icon(Icon::Folder)
+            .secondary(facts)
+            .action(Icon::X, "Remove", move || {
+                remove.borrow_mut().push(SetupCommand::RemoveFolder(index));
+            });
+        if folder.scan.skipped_count > 0 {
+            row = row.warning();
+        }
+        let modes = self.offered_modes();
+        let sink = Rc::clone(&self.commands);
+        let choices = modes.clone();
+        let choice = ToggleGroup::new(
+            modes
+                .iter()
+                .map(|mode| Segment::new(mode_label(*mode)))
+                .collect(),
+            modes
+                .iter()
+                .position(|mode| *mode == folder.mode)
+                .unwrap_or(0),
+        )
+        .with_id(format!("setup.folder.{index}.mode"))
+        .control_size(ControlSize::Small)
+        .on_change(move |chosen| {
+            if let Some(mode) = choices.get(chosen) {
+                sink.borrow_mut()
+                    .push(SetupCommand::SetFolderMode(index, *mode));
             }
-        };
-        let destination_field = TextInput::local()
-            .with_initial_value(&destination)
-            .with_accessible_name(format!("Destination for {source}"))
-            .disabled(true);
-        let mode_button_label = |mode: FolderMode, label: &str| {
-            if folder.mode == mode {
-                if folder.mode_overridden {
-                    format!("Selected: {label}")
-                } else {
-                    format!("Common: {label}")
-                }
-            } else {
-                label.to_string()
-            }
-        };
-        let mut copy = self
-            .button(
-                &format!("setup.folder.{index}.copy"),
-                &mode_button_label(FolderMode::Copy, "Copy"),
-                SetupCommand::SetFolderMode(index, FolderMode::Copy),
-            )
-            .with_enabled(true);
-        if folder.mode == FolderMode::Copy {
-            copy = copy.primary();
+        });
+        // How the folder comes over sits under it, on the page's edge with
+        // the other controls, so a long path is never cut short.
+        let mut controls = Row::new()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(choice));
+        if folder.mode_overridden {
+            controls = controls.push(Box::new(
+                self.button(
+                    &format!("setup.folder.{index}.follow"),
+                    "Use the default",
+                    SetupCommand::ClearFolderMode(index),
+                )
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small),
+            ));
         }
-        let mut connected = self
-            .button(
-                &format!("setup.folder.{index}.connected"),
-                &mode_button_label(FolderMode::Connected, "Connected"),
-                SetupCommand::SetFolderMode(index, FolderMode::Connected),
-            )
-            .with_enabled(self.capabilities.connected_folders);
-        if folder.mode == FolderMode::Connected {
-            connected = connected.primary();
-        }
-        let mut later = self.button(
-            &format!("setup.folder.{index}.later"),
-            &mode_button_label(FolderMode::Later, "Later"),
-            SetupCommand::SetFolderMode(index, FolderMode::Later),
-        );
-        if folder.mode == FolderMode::Later {
-            later = later.primary();
-        }
-        let follow = self
-            .button(
-                &format!("setup.folder.{index}.follow"),
-                if folder.mode_overridden {
-                    "Use common choice"
-                } else {
-                    "Using common choice"
-                },
-                SetupCommand::ClearFolderMode(index),
-            )
-            .with_enabled(folder.mode_overridden);
-        let remove = self.button(
-            &format!("setup.folder.{index}.remove"),
-            "Remove",
-            SetupCommand::RemoveFolder(index),
-        );
-        let mut card_body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(&details).dimmed()));
+        let mut block = page::related().push(Box::new(row)).push(Box::new(controls));
         if let Some(warning) = scan_warning(&folder.scan) {
-            card_body = card_body.push(Box::new(
+            block = block.push(Box::new(
                 Text::new(&warning)
-                    .with_id(format!("setup.folder.{index}.warnings"))
-                    .with_live(Politeness::Polite),
+                    .with_role(TextRole::Caption)
+                    .dimmed()
+                    .with_id(format!("setup.folder.{index}.warnings")),
             ));
         }
-        card_body = card_body
-            .push(Box::new(
-                Text::new("Destination").with_role(TextRole::Label),
-            ))
-            .push(Box::new(destination_field))
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(copy))
-                    .push(Box::new(connected))
-                    .push(Box::new(later)),
-            ))
-            .push(Box::new(
-                Row::new().push(Box::new(follow)).push(Box::new(remove)),
-            ));
-        Card::titled(source, Box::new(card_body))
+        block
     }
 
-    fn folders_body(&self) -> Box<dyn Widget> {
-        let header = stack()
-            .with_gap(RELATED)
-            .push(Box::new(
-                Text::new("Bring your files into Tilo")
-                    .with_role(TextRole::Title)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(Text::new(
-                "Choose a common behavior. Suggestions are never selected automatically, shared, or uploaded.",
-            ).dimmed()));
-        let mut modes = stack()
-            .push(Box::new(self.mode_card(
-                FolderMode::Copy,
-                "Copy selected folders — recommended",
-                "Your originals stay where they are; later changes do not carry between systems.",
-            )))
-            .push(Box::new(self.mode_card(
-                FolderMode::Connected,
-                "Keep selected folders connected",
-                "Keep a local Tilo copy and carry changes over when synchronization runs.",
-            )))
-            .push(Box::new(self.mode_card(
-                FolderMode::Later,
-                "Decide later",
-                "Start empty and add folders anytime.",
-            )))
-            .push(Box::new(self.button(
+    fn folders_body(&self) -> Column {
+        let help = self
+            .button(
                 "setup.help",
                 if self.show_help {
-                    "Hide guidance"
+                    "Hide help"
                 } else {
                     "Help me choose"
                 },
                 SetupCommand::ToggleHelp,
-            )));
+            )
+            .role(ButtonRole::Plain);
+        let modes = self
+            .offered_modes()
+            .into_iter()
+            .map(|mode| Box::new(self.mode_row(mode)) as Box<dyn Widget>)
+            .collect();
+        let mut body =
+            page::body("Bring your files into Tilo")
+                .push(Box::new(Section::new(modes).with_header(
+                    SectionHeader::heading("Every folder").action(help),
+                )));
         if self.show_help {
-            modes = modes.push(Box::new(Card::titled(
-                "Help me choose",
-                Box::new(Text::new(
-                    "If you are trying Tilo or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
-                )),
+            body = body.push(Box::new(Text::new(
+                if self.capabilities.connected_folders {
+                    "If you are trying Tilo, or are unsure, choose Copy. If you keep working in both systems, Connected keeps them in step. You can always decide later."
+                } else {
+                    "If you are trying Tilo, or are unsure, choose Copy. Your originals are never changed, and you can always decide later."
+                },
             )));
         }
-        // Each heading opens its own section, a `GROUP` after the previous
-        // one; the cards inside keep the sibling step.
-        let mut suggested = stack().push(Box::new(
-            Text::new("Suggested folders")
-                .with_role(TextRole::Heading)
-                .with_heading_level(2),
-        ));
-        for (index, known) in self.known_folders.iter().enumerate() {
-            suggested = suggested.push(Box::new(self.known_folder_card(index, known)));
-        }
-        suggested = suggested.push(Box::new(
-            self.button("setup.add-folder", "Add folder…", SetupCommand::AddFolder)
-                .with_enabled(self.folder_selection_settled()),
-        ));
-        let mut body = page(header).push(Box::new(modes)).push(Box::new(suggested));
 
         let controller = self.controller();
-        if !controller.folders().is_empty() {
-            let mut selected = stack().push(Box::new(
-                Text::new("Selected folders")
-                    .with_role(TextRole::Heading)
-                    .with_heading_level(2),
-            ));
-            for (index, folder) in controller.folders().iter().enumerate() {
-                selected = selected.push(Box::new(self.selected_folder_card(index, folder)));
+        let chosen = |path: &Path| {
+            controller
+                .folders()
+                .iter()
+                .any(|folder| folder.scan.source == path)
+        };
+        let suggestions: Vec<Box<dyn Widget>> = self
+            .known_folders
+            .iter()
+            .enumerate()
+            .filter_map(|(index, known)| {
+                let path = known.path.as_ref()?;
+                if chosen(path) {
+                    return None;
+                }
+                let sink = Rc::clone(&self.commands);
+                let add = Rc::clone(&self.commands);
+                Some(Box::new(
+                    ListRow::new(
+                        format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
+                        known.kind.label(),
+                    )
+                    .icon(Icon::Folder)
+                    .secondary(path.display().to_string())
+                    .action(Icon::Plus, "Add", move || {
+                        add.borrow_mut().push(SetupCommand::AddSuggested(index));
+                    })
+                    .on_activate(move || {
+                        sink.borrow_mut().push(SetupCommand::AddSuggested(index));
+                    }),
+                ) as Box<dyn Widget>)
+            })
+            .collect();
+        let add_folder = self
+            .button("setup.add-folder", "Add folder…", SetupCommand::AddFolder)
+            .with_icon(Icon::FolderPlus)
+            .role(ButtonRole::Plain)
+            .with_enabled(self.folder_selection_settled());
+        body = body.push(Box::new(Section::new(suggestions).with_header(
+            SectionHeader::heading("Suggested folders").action(add_folder),
+        )));
+
+        if !controller.folders().is_empty() || self.pending_scans > 0 {
+            let mut selected: Vec<Box<dyn Widget>> = controller
+                .folders()
+                .iter()
+                .enumerate()
+                .map(|(index, folder)| {
+                    Box::new(self.selected_folder(index, folder)) as Box<dyn Widget>
+                })
+                .collect();
+            if self.pending_scans > 0 {
+                selected.push(Box::new(
+                    Text::new(&self.status)
+                        .dimmed()
+                        .with_id("setup.scan")
+                        .with_live(Politeness::Polite),
+                ));
             }
-            body = body.push(Box::new(selected));
+            body = body.push(Box::new(Section::new(selected).with_header(
+                SectionHeader::heading("Selected folders").count(controller.folders().len()),
+            )));
         }
         drop(controller);
-        Box::new(body)
+        body
     }
 
-    fn review_copy_status(&self, experience: Experience) -> Card {
-        let pending = if experience == Experience::FullOs {
-            "Full Tilo folder copying remains pending until target-side migration resolves and reviews retained volume identities after installation. No destination or copy is authorized yet."
-        } else {
-            "Your folder choices are retained. After the first Tilo login, setup will resolve and show each Tilo-managed destination for review before any copy begins."
-        };
-        Card::titled(
-            "Folder copy status",
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(pending).with_id("setup.review.pending")))
-                    .push(Box::new(self.button(
-                        "setup.open-imports",
-                        "Add folders now…",
-                        SetupCommand::OpenImports,
-                    ))),
-            ),
-        )
-    }
-
-    fn desktop_install_card(&self) -> Card {
-        let detail = match self.desktop_flow.state() {
-            DesktopFlowState::Checking => {
-                "Checking the live host and authenticated Desktop catalog…".to_string()
-            }
-            DesktopFlowState::Unavailable { host, reasons } => {
-                format!("Host: {host}\n{}", reasons.join("\n"))
-            }
-            DesktopFlowState::Ready(selection) => {
-                let action = if selection.already_installed {
-                    "The matching package is already installed. Continue to verify the Tilo login session. Approve verification when asked."
-                } else {
-                    "Continue to download the authenticated package. Approve installation when asked."
-                };
-                format!(
-                    "Host: {}\nSelected package version: {}\n{action}",
-                    selection.host, selection.release.version
-                )
-            }
-            DesktopFlowState::Downloading(selection) => format!(
-                "Downloading and verifying Tilo Desktop {} for {}. Cancellation here stops before native authorization.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Authorizing(selection) => format!(
-                "Waiting for authorization for Tilo Desktop {} on {}. No native transaction has been reported yet.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Preparing(selection) => format!(
-                "The helper is independently rechecking Tilo Desktop {} for {}.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Installing(selection) => format!(
-                "The native package manager is installing Tilo Desktop {} on {}. Closing this view will not cancel the transaction.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Verifying(selection) => format!(
-                "Verifying the installed package and Tilo login session for {}.",
-                selection.host
-            ),
-            DesktopFlowState::Installed { selection, result } => format!(
-                "Tilo Desktop {} is verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Setup will not sign you out or change the default session. Selected folders remain pending for first-login review.",
-                result.version, selection.host
-            ),
-            DesktopFlowState::Failed { kind, message, .. } => {
-                let prefix = match kind {
-                    DesktopFailureKind::DownloadCancelled => "Download cancelled",
-                    DesktopFailureKind::AuthorizationCancelled => "Authorization cancelled",
-                    DesktopFailureKind::AuthorizationRefused => "Authorization refused",
-                    DesktopFailureKind::WorkerLost => "Worker connection lost",
-                    DesktopFailureKind::Readiness => "Readiness check failed",
-                    DesktopFailureKind::Download => "Download failed",
-                    DesktopFailureKind::NativeTransaction => "Native installation failed",
-                };
-                format!(
-                    "{prefix}. {message} Your folder choices are retained; Retry rechecks the host."
-                )
-            }
-        };
-        Card::titled(
-            "Tilo Desktop readiness",
-            Box::new(
-                Text::new(&detail)
-                    .with_id("setup.desktop.status")
-                    .with_live(Politeness::Polite),
-            ),
-        )
-    }
-
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-    fn internal_download_card(&self) -> Card {
-        let mut content = stack();
-        if let Some(flow) = &self.internal_download_flow {
-            let presentation = flow.presentation();
-            let mut detail = format!("{}\n{}", presentation.title, presentation.details);
-            if presentation.phase.is_none()
-                && let Some(error) = flow.catalog_error()
-            {
-                detail.push('\n');
-                detail.push_str(error);
-            }
-            content = content.push(Box::new(
-                Text::new(&detail)
-                    .with_id("setup.internal.status")
-                    .with_live(Politeness::Polite),
-            ));
-            let mut actions = Row::new().no_wrap();
-            if flow.can_start() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.start",
-                    "Download Tilo",
-                    SetupCommand::StartInternalDownload,
-                )));
-            }
-            if flow.can_pause() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.pause",
-                    "Pause download",
-                    SetupCommand::PauseInternalDownload,
-                )));
-            }
-            if flow.can_cancel() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.cancel",
-                    "Cancel download",
-                    SetupCommand::CancelInternalDownload,
-                )));
-            }
-            if flow.can_resume() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.resume",
-                    "Resume download",
-                    SetupCommand::ResumeInternalDownload,
-                )));
-            }
-            if flow.can_release() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.release",
-                    "Keep for later",
-                    SetupCommand::ReleaseInternalDownload,
-                )));
-            }
-            if flow.can_discard() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.discard",
-                    "Discard unfinished download data",
-                    SetupCommand::DiscardInternalDownload,
-                )));
-            }
-            content = content.push(Box::new(actions));
-        } else {
-            let detail = self.internal_download_error.as_deref().unwrap_or(
-                "Full Tilo download is unavailable on this computer. Installation has not started.",
-            );
-            content = content.push(Box::new(
-                Text::new(&format!("Full Tilo download\n{detail}"))
-                    .with_id("setup.internal.status")
-                    .with_live(Politeness::Assertive),
-            ));
-        }
-        Card::titled("Full Tilo download", Box::new(content))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one declarative review composition keeps its card order and accessibility labels visible"
-    )]
-    fn review_body(&self) -> Box<dyn Widget> {
+    /// The selected folders on the review, and what happens to them.
+    fn review_folders(&self, experience: Experience) -> Section {
         let controller = self.controller();
-        let plan = controller.plan();
-        let retained = match self.capabilities.platform.host {
-            HostOs::Windows => "Windows remains installed",
-            HostOs::Linux => "Your Linux installation remains installed",
-            HostOs::Other => "Your current operating system remains installed",
-        };
         let scheduled = controller
             .folders()
             .iter()
-            .filter(|folder| folder.mode != FolderMode::Later)
+            .enumerate()
+            .filter(|(_, folder)| folder.mode != FolderMode::Later)
             .collect::<Vec<_>>();
-        let folders = if scheduled.is_empty() {
-            "No folders are scheduled. You can add them later.".to_string()
-        } else {
-            scheduled
-                .iter()
-                .map(|folder| {
-                    let destination = match &folder.destination {
-                        FolderDestination::Resolved(path) => path.display().to_string(),
-                        FolderDestination::Unresolved => {
-                            "Destination pending review after login".into()
-                        }
-                    };
-                    let summary = format!(
-                        "{} → {} · {} · {}",
-                        folder.scan.source.display(),
-                        destination,
-                        mode_label(folder.mode),
-                        ui::format::bytes_si(folder.scan.bytes)
-                    );
-                    scan_warning(&folder.scan).map_or_else(
-                        || summary.clone(),
-                        |warning| format!("{summary}\n{warning}"),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let skipped_count = scheduled
+        let mut items: Vec<Box<dyn Widget>> = scheduled
             .iter()
-            .map(|folder| folder.scan.skipped_count)
-            .sum::<u64>();
-        let estimate = controller.selected_folder_bytes().map_or_else(
-            |_| "Space estimate is unavailable because the total overflowed.".to_string(),
-            |bytes| {
-                if skipped_count == 0 {
+            .map(|(index, folder)| {
+                let mut facts = format!(
+                    "{}, {}",
+                    mode_label(folder.mode),
+                    ui::format::bytes_si(folder.scan.bytes)
+                );
+                if folder.scan.skipped_count > 0 {
+                    let _ = write!(
+                        facts,
+                        ", {} skipped",
+                        items_phrase(folder.scan.skipped_count)
+                    );
+                }
+                let row = ListRow::new(
+                    format!("setup.review.folder.{index}"),
+                    folder.scan.source.display().to_string(),
+                )
+                .icon(Icon::Folder)
+                .secondary(facts);
+                Box::new(if folder.scan.skipped_count > 0 {
+                    row.warning()
+                } else {
+                    row
+                }) as Box<dyn Widget>
+            })
+            .collect();
+        if scheduled.is_empty() {
+            items.push(Box::new(
+                Text::new("No folders are scheduled. You can add them later.")
+                    .dimmed()
+                    .with_id("setup.review.folders"),
+            ));
+        } else {
+            let skipped = scheduled
+                .iter()
+                .map(|(_, folder)| folder.scan.skipped_count)
+                .sum::<u64>();
+            let estimate = controller.selected_folder_bytes().map_or_else(
+                |_| "The space these folders need could not be added up.".to_string(),
+                |bytes| {
+                    if skipped == 0 {
+                        format!(
+                            "These folders need about {} in Tilo.",
+                            ui::format::bytes_si(bytes)
+                        )
+                    } else {
+                        format!(
+                            "These folders need about {} in Tilo. The estimate is incomplete: it leaves out {} that could not be read.",
+                            ui::format::bytes_si(bytes),
+                            items_phrase(skipped)
+                        )
+                    }
+                },
+            );
+            items.push(Box::new(
+                Text::new(&estimate)
+                    .dimmed()
+                    .with_id("setup.review.estimate"),
+            ));
+        }
+        let pending = if experience == Experience::FullOs {
+            "After Tilo is installed and you sign in, setup shows where each folder goes before anything is copied."
+        } else {
+            "After your first Tilo login, setup shows where each folder goes before anything is copied."
+        };
+        items.push(Box::new(
+            Text::new(pending).dimmed().with_id("setup.review.pending"),
+        ));
+        Section::new(items).with_header(
+            SectionHeader::heading("Folders").action(
+                self.button(
+                    "setup.open-imports",
+                    "Add folders now…",
+                    SetupCommand::OpenImports,
+                )
+                .role(ButtonRole::Plain),
+            ),
+        )
+    }
+
+    /// Tilo Desktop on the review: what will happen, and on which computer.
+    fn desktop_install_card(&self) -> Section {
+        let detail = match self.desktop_flow.state() {
+            DesktopFlowState::Checking => {
+                "Checking this computer and the signed Tilo Desktop catalog…".to_string()
+            }
+            DesktopFlowState::Unavailable { host, .. } => {
+                format!("Tilo Desktop isn't available for {host} yet.")
+            }
+            DesktopFlowState::Ready(selection) => {
+                if selection.already_installed {
                     format!(
-                        "Estimated Tilo space for selected files: {}",
-                        ui::format::bytes_si(bytes)
+                        "Tilo Desktop {} is already installed on {}. Continue to check the Tilo session; approve the check when asked.",
+                        selection.release.version, selection.host
                     )
                 } else {
                     format!(
-                        "Estimated Tilo space for counted files: {}. This total is incomplete because {} skipped.",
-                        ui::format::bytes_si(bytes),
-                        skipped_count_phrase(skipped_count)
+                        "Tilo Desktop {} is ready for {}. Continue to download it; approve the installation when asked.",
+                        selection.release.version, selection.host
                     )
                 }
-            },
+            }
+            DesktopFlowState::Downloading(selection) => format!(
+                "Downloading and checking Tilo Desktop {} for {}. Cancelling now stops before anything is installed.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Authorizing(selection) => format!(
+                "Waiting for you to approve installing Tilo Desktop {} on {}.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Preparing(selection) => format!(
+                "Checking Tilo Desktop {} for {} once more before installing.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Installing(selection) => format!(
+                "Installing Tilo Desktop {} on {}. Closing setup does not stop the installation.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Verifying(selection) => {
+                format!("Checking the installed Tilo session on {}.", selection.host)
+            }
+            DesktopFlowState::Installed { selection, result } => format!(
+                "Tilo Desktop {} is installed on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
+                result.version, selection.host
+            ),
+            DesktopFlowState::Failed { kind, message, .. } => {
+                let what = match kind {
+                    DesktopFailureKind::DownloadCancelled => "The download was cancelled.",
+                    DesktopFailureKind::AuthorizationCancelled => {
+                        "The installation was not approved."
+                    }
+                    DesktopFailureKind::AuthorizationRefused => {
+                        "Installing needs an administrator's approval."
+                    }
+                    DesktopFailureKind::WorkerLost => "Checking this computer stopped early.",
+                    DesktopFailureKind::Readiness => "This computer is not ready for Tilo Desktop.",
+                    DesktopFailureKind::Download => "The download failed.",
+                    DesktopFailureKind::NativeTransaction => "The installation failed.",
+                };
+                format!("{what} {message} Your folder choices are kept; check again to retry.")
+            }
+        };
+        let retained = match self.capabilities.platform.host {
+            HostOs::Windows => "Windows stays installed and remains the startup default.",
+            HostOs::Linux => {
+                "Your Linux installation stays as it is and remains the default session."
+            }
+            HostOs::Other => "Your current system stays installed and remains the default.",
+        };
+        Section::new(vec![Box::new(
+            page::related()
+                .push(Box::new(
+                    Text::new(&detail)
+                        .with_id("setup.desktop.status")
+                        .with_live(Politeness::Polite),
+                ))
+                .push(Box::new(Text::new(retained).dimmed())),
+        )])
+        .with_header(SectionHeader::heading("Tilo Desktop"))
+    }
+
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    fn internal_download_card(&self) -> Section {
+        let mut content = page::related();
+        if let Some(flow) = &self.internal_download_flow {
+            let presentation = flow.presentation();
+            let mut summary = presentation.summary.clone();
+            if presentation.phase.is_none()
+                && let Some(error) = flow.catalog_error()
+            {
+                summary = error.to_string();
+            }
+            content = content.push(Box::new(
+                Text::new(&summary)
+                    .with_id("setup.internal.status")
+                    .with_live(Politeness::Polite),
+            ));
+            let mut actions = Row::new();
+            let mut any = false;
+            for (shown, id, label, command) in [
+                (
+                    flow.can_start(),
+                    "setup.internal.start",
+                    "Download Tilo",
+                    SetupCommand::StartInternalDownload,
+                ),
+                (
+                    flow.can_pause(),
+                    "setup.internal.pause",
+                    "Pause download",
+                    SetupCommand::PauseInternalDownload,
+                ),
+                (
+                    flow.can_cancel(),
+                    "setup.internal.cancel",
+                    "Cancel download",
+                    SetupCommand::CancelInternalDownload,
+                ),
+                (
+                    flow.can_resume(),
+                    "setup.internal.resume",
+                    "Resume download",
+                    SetupCommand::ResumeInternalDownload,
+                ),
+                (
+                    flow.can_release(),
+                    "setup.internal.release",
+                    "Keep for later",
+                    SetupCommand::ReleaseInternalDownload,
+                ),
+                (
+                    flow.can_discard(),
+                    "setup.internal.discard",
+                    "Discard unfinished download",
+                    SetupCommand::DiscardInternalDownload,
+                ),
+            ] {
+                if shown {
+                    actions = actions.push(Box::new(self.button(id, label, command)));
+                    any = true;
+                }
+            }
+            if any {
+                content = content.push(Box::new(actions));
+            }
+            return Section::new(vec![Box::new(content)])
+                .with_header(SectionHeader::heading(presentation.title.clone()));
+        }
+        let detail = self.internal_download_error.as_deref().unwrap_or(
+            "Tilo can't be downloaded on this computer, so installation has not started.",
         );
-        let connected_blocker = controller
-            .folders()
-            .iter()
-            .any(|folder| folder.mode == FolderMode::Connected)
-            .then_some("Folder syncing is not available in this build yet.");
+        content = content.push(Box::new(
+            Text::new(detail)
+                .with_id("setup.internal.status")
+                .with_live(Politeness::Assertive),
+        ));
+        Section::new(vec![Box::new(content)])
+            .with_header(SectionHeader::heading("Full Tilo download"))
+    }
+
+    fn review_body(&self) -> Column {
+        let experience = self.controller().plan().experience;
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         let internal_offered =
-            plan.experience == Experience::FullOs && self.internal_install.offers_full_os();
+            experience == Experience::FullOs && self.internal_install.offers_full_os();
         #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
         let internal_offered = false;
-        let mut blockers = match plan.experience {
-            Experience::FullOs if internal_offered => String::new(),
-            Experience::FullOs => FULL_OS_UNAVAILABLE.to_string(),
-            Experience::Desktop => match self.desktop_flow.state() {
-                DesktopFlowState::Unavailable { reasons, .. } => reasons.join("\n"),
-                DesktopFlowState::Failed { message, .. } => message.clone(),
-                DesktopFlowState::Checking => "Live Desktop readiness is being checked.".into(),
-                _ => "No Desktop installation blockers are currently reported.".into(),
-            },
-        };
-        if let Some(blocker) = connected_blocker {
-            if !blockers.is_empty() {
-                blockers.push('\n');
-            }
-            blockers.push_str(blocker);
-        }
-        let copy_status = self.review_copy_status(plan.experience);
-        let installed = plan.experience == Experience::Desktop
+        let installed = experience == Experience::Desktop
             && matches!(
                 self.desktop_flow.state(),
                 DesktopFlowState::Installed { .. }
             );
-        let header = stack().push(Box::new(
-            Text::new(if installed {
-                "Tilo Desktop is installed"
-            } else {
-                "Review Tilo setup"
-            })
-            .with_role(TextRole::Title)
-            .with_heading_level(1),
-        ));
-        let mut body = stack();
-        if plan.experience == Experience::Desktop {
+        let mut body = page::body(if installed {
+            "Tilo Desktop is installed"
+        } else {
+            "Review Tilo setup"
+        });
+        if experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1835,34 +1771,21 @@ impl SetupApp {
             }
             body = body
                 .push(Box::new(self.internal_plan_card()))
-                .push(Box::new(self.internal_blockers_card(connected_blocker)));
+                .push(Box::new(self.internal_blockers_card(None)));
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-        if plan.experience == Experience::FullOs {
+        if experience == Experience::FullOs {
             body = body.push(Box::new(self.internal_download_card()));
         }
-        body = body.push(Box::new(Card::titled(
-                    "Operating systems",
-                    Box::new(Text::new(&format!(
-                        "{retained}. Tilo setup uses {}. Your existing OS stays the startup default initially.",
-                        experience_label(plan.experience)
-                    ))),
-                )))
-                .push(Box::new(Card::titled(
-                    "Folder policies",
-                    Box::new(Text::new(&folders).with_id("setup.review.folders")),
-                )))
-                .push(Box::new(Card::titled(
-                    "Space estimate",
-                    Box::new(Text::new(&estimate).with_id("setup.review.estimate")),
-                )));
-        if !internal_offered {
-            body = body.push(Box::new(Card::titled(
-                "Current blockers",
-                Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
-            )));
+        if experience == Experience::FullOs && !internal_offered {
+            body = body.push(Box::new(
+                Section::new(vec![Box::new(
+                    Text::new(FULL_OS_UNAVAILABLE).with_live(Politeness::Polite),
+                )])
+                .with_header(SectionHeader::heading("Before installing")),
+            ));
         }
-        Box::new(page(header).push(Box::new(body.push(Box::new(copy_status)))))
+        body.push(Box::new(self.review_folders(experience)))
     }
 
     fn ensure_import_app(&mut self) {
@@ -1877,46 +1800,28 @@ impl SetupApp {
         reason = "the wizard shell declares its body, status, and state-dependent navigation together"
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
-        let page = self.controller().page();
-        let body = match page {
+        let current = self.controller().page();
+        let body = match current {
             SetupPage::Experience => self.experience_body(),
             SetupPage::Folders => self.folders_body(),
             SetupPage::Review => self.review_body(),
         };
-        let scroll = Scrollable::new_vertical()
-            .fill_parent_height()
-            .always_visible()
-            .with_content_gutter(SCROLLBAR_GUTTER)
-            .with_bottom_content_inset(FOOTER_INSET)
-            .with_child(body);
-        let status = Text::new(&self.status).with_live(if self.status_is_error {
-            Politeness::Assertive
-        } else {
-            Politeness::Polite
-        });
-        let status = Card::new(Box::new(
-            Scrollable::new_vertical()
-                .with_max_height(56.0)
-                .with_content_gutter(SCROLLBAR_GUTTER)
-                .with_child(Box::new(stack().push(Box::new(status)))),
-        ));
         let mut nav = Row::new().no_wrap();
-        if page == SetupPage::Experience {
+        if current == SetupPage::Experience {
             nav = nav.push(Box::new(self.button(
                 "setup.open-imports",
                 "Add folders now…",
                 SetupCommand::OpenImports,
             )));
         } else {
-            nav = nav.push(Box::new(self.button(
-                "setup.back",
-                "Back",
-                SetupCommand::Back,
-            )));
+            nav = nav.push(Box::new(
+                self.button("setup.back", "Back", SetupCommand::Back)
+                    .with_icon(Icon::ChevronLeft),
+            ));
         }
         nav = nav.push(Box::new(Spacer::new()));
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-        let internal_nav = page == SetupPage::Review
+        let internal_nav = current == SetupPage::Review
             && self.controller().plan().experience == Experience::FullOs
             && self.internal_install.offers_full_os();
         #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
@@ -1926,56 +1831,57 @@ impl SetupApp {
             {
                 nav = self.internal_nav(nav);
             }
-        } else if page == SetupPage::Review {
+        } else if current == SetupPage::Review {
             let experience = self.controller().plan().experience;
-            let (id, label, command, enabled) = if experience == Experience::FullOs {
-                (
+            // The review's main action names what happens; once Desktop is
+            // installed there is nothing left to do here.
+            let primary = if experience == Experience::FullOs {
+                Some((
                     "setup.internal.install-unavailable",
-                    "Installation has not started",
+                    "Install Tilo",
                     SetupCommand::InternalInstallUnavailable,
                     false,
-                )
+                ))
             } else {
                 match self.desktop_flow.state() {
-                    DesktopFlowState::Ready(_) => (
+                    DesktopFlowState::Ready(_) => Some((
                         "setup.install",
                         "Install Tilo Desktop",
                         SetupCommand::InstallDesktop,
                         self.folder_selection_settled(),
-                    ),
-                    DesktopFlowState::Downloading(_) => (
+                    )),
+                    DesktopFlowState::Downloading(_) => Some((
                         "setup.cancel-download",
                         "Cancel download",
                         SetupCommand::CancelDesktopDownload,
                         true,
-                    ),
-                    DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => (
-                        "setup.retry-desktop",
-                        "Retry host check",
-                        SetupCommand::RetryDesktop,
-                        true,
-                    ),
-                    DesktopFlowState::Installed { .. } => (
+                    )),
+                    DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => {
+                        Some((
+                            "setup.retry-desktop",
+                            "Check again",
+                            SetupCommand::RetryDesktop,
+                            true,
+                        ))
+                    }
+                    DesktopFlowState::Installed { .. } => None,
+                    _ => Some((
                         "setup.install",
-                        "Tilo Desktop installed",
+                        "Installing…",
                         SetupCommand::InstallDesktop,
                         false,
-                    ),
-                    _ => (
-                        "setup.install",
-                        "Desktop setup in progress…",
-                        SetupCommand::InstallDesktop,
-                        false,
-                    ),
+                    )),
                 }
             };
-            nav = nav.push(Box::new(
-                self.button(id, label, command)
-                    .primary()
-                    .with_enabled(enabled),
-            ));
+            if let Some((id, label, command, enabled)) = primary {
+                nav = nav.push(Box::new(
+                    self.button(id, label, command)
+                        .role(ButtonRole::Primary)
+                        .with_enabled(enabled),
+                ));
+            }
         } else {
-            let next_enabled = match page {
+            let next_enabled = match current {
                 SetupPage::Experience => self
                     .chosen_experience
                     .is_some_and(|choice| self.capabilities.platform.supports(choice)),
@@ -1984,34 +1890,23 @@ impl SetupApp {
             };
             nav = nav.push(Box::new(
                 self.button("setup.next", "Continue", SetupCommand::Next)
-                    .primary()
+                    .role(ButtonRole::Primary)
                     .with_enabled(next_enabled),
             ));
         }
 
-        Box::new(
-            Container::new().filling().with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-                    .with_vertical_padding(PAGE_GUTTER)
-                    .with_gap(SIBLING)
-                    .push(Box::new(
-                        Text::new(&format!(
-                            "Set up Tilo  ·  Step {} of 3",
-                            match page {
-                                SetupPage::Experience => 1,
-                                SetupPage::Folders => 2,
-                                SetupPage::Review => 3,
-                            }
-                        ))
-                        .with_role(TextRole::Label),
-                    ))
-                    .push(Box::new(scroll))
-                    .push(Box::new(status))
-                    .push(Box::new(nav)),
-            )),
-        )
+        Frame::new(body)
+            .stepper(
+                &["Experience", "Folders", "Review"],
+                match current {
+                    SetupPage::Experience => 0,
+                    SetupPage::Folders => 1,
+                    SetupPage::Review => 2,
+                },
+            )
+            .notice(page::notice(&self.status, self.status_is_error))
+            .actions(nav)
+            .build()
     }
 }
 
@@ -2497,7 +2392,7 @@ impl SetupApp {
         row
     }
 
-    fn internal_plan_card(&self) -> Card {
+    fn internal_plan_card(&self) -> Section {
         let t = super::strings::t;
         let t_args = super::strings::t_args;
         let install = &self.internal_install;
@@ -2585,7 +2480,6 @@ impl SetupApp {
                         .with_suffix("GiB")
                         .with_id("setup.internal.target-size")
                         .with_accessible_name(t("imager-setup-internal-size-label"))
-                        .with_size(180.0, 40.0)
                         .with_enabled(editable),
                 ))
                 .push(Box::new(
@@ -2611,10 +2505,13 @@ impl SetupApp {
                     .dimmed(),
             ));
         }
-        Card::titled(t("imager-setup-internal-plan-title"), Box::new(content))
+        Section::titled(
+            t("imager-setup-internal-plan-title"),
+            vec![Box::new(content)],
+        )
     }
 
-    fn internal_blockers_card(&self, extra: Option<&str>) -> Card {
+    fn internal_blockers_card(&self, extra: Option<&str>) -> Section {
         let t = super::strings::t;
         let install = &self.internal_install;
         let idle_host = self.host_command_pending.is_none();
@@ -2666,17 +2563,20 @@ impl SetupApp {
             )
             .with_enabled(!install.is_probing() && !install.is_running()),
         ));
-        Card::titled(t("imager-setup-internal-blockers-title"), Box::new(content))
+        Section::titled(
+            t("imager-setup-internal-blockers-title"),
+            vec![Box::new(content)],
+        )
     }
 
-    fn internal_resume_card(&self) -> Option<Card> {
+    fn internal_resume_card(&self) -> Option<Section> {
         let t = super::strings::t;
         let install = &self.internal_install;
         install.pending()?;
         let enabled = !install.is_running();
-        Some(Card::titled(
+        Some(Section::titled(
             t("imager-setup-internal-resume-title"),
-            Box::new(
+            vec![Box::new(
                 stack()
                     .push(Box::new(
                         Text::new(&t("imager-setup-internal-resume"))
@@ -2701,11 +2601,11 @@ impl SetupApp {
                                 .with_enabled(enabled),
                             )),
                     )),
-            ),
+            )],
         ))
     }
 
-    fn internal_run_card(&self) -> Option<Card> {
+    fn internal_run_card(&self) -> Option<Section> {
         let t = super::strings::t;
         let install = &self.internal_install;
         let host = install.host();
@@ -2767,13 +2667,13 @@ impl SetupApp {
                 Politeness::Assertive,
             ),
         };
-        Some(Card::titled(
+        Some(Section::titled(
             &title,
-            Box::new(
+            vec![Box::new(
                 Text::new(&detail)
                     .with_id("setup.internal.run")
                     .with_live(politeness),
-            ),
+            )],
         ))
     }
 
@@ -2796,7 +2696,7 @@ impl SetupApp {
                     &t("imager-setup-internal-restart-now"),
                     SetupCommand::RestartInternal,
                 )
-                .primary()
+                .role(ButtonRole::Primary)
                 .with_enabled(self.host_command_pending.is_none()),
             ));
         }
@@ -2813,7 +2713,7 @@ impl SetupApp {
                 &label,
                 SetupCommand::InstallInternal,
             )
-            .primary()
+            .role(ButtonRole::Primary)
             .with_enabled(
                 install
                     .install_blocker(self.internal_download_ready())
@@ -2917,12 +2817,10 @@ fn experience_unavailable_reason(capabilities: Capabilities, experience: Experie
             "Tilo Desktop is available only on supported Linux installations.".into()
         }
         Experience::Desktop if capabilities.host == HostOs::Linux => {
-            "Tilo Desktop is not available for this Linux installation in this build yet.".into()
+            "Tilo Desktop isn't available for this Linux installation yet.".into()
         }
         Experience::Desktop => "Tilo Desktop is unavailable on this operating system.".into(),
-        Experience::FullOs => {
-            "Full Tilo installation is not available for this computer in this build yet.".into()
-        }
+        Experience::FullOs => "Full Tilo is not available on this computer yet.".into(),
     }
 }
 
@@ -2934,28 +2832,38 @@ fn mode_label(mode: FolderMode) -> &'static str {
     }
 }
 
+/// The entries a folder's scan left out, one per line under a sentence
+/// that says what that means for the estimate.
 fn scan_warning(scan: &FolderScan) -> Option<String> {
     if scan.skipped_count == 0 {
         return None;
     }
-    let count = scan.skipped_count;
     let mut warning = format!(
-        "Estimate incomplete: {} skipped. File count and size exclude them.",
-        skipped_count_phrase(count)
+        "The file count and size leave out {} that couldn't be read:",
+        items_phrase(scan.skipped_count)
     );
     for skipped in &scan.skipped {
         let reason = match &skipped.reason {
-            SkipReason::SymbolicLink => "symbolic link".to_string(),
-            SkipReason::ReadError(error) => format!("could not read: {error}"),
-            SkipReason::UnsupportedFileType => "unsupported file type".to_string(),
+            SkipReason::SymbolicLink => "a symbolic link".to_string(),
+            SkipReason::ReadError(error) => format!("couldn't be read ({error})"),
+            SkipReason::UnsupportedFileType => "not a regular file".to_string(),
         };
-        let _ = write!(warning, "\n{} — {reason}", skipped.path.display());
+        let _ = write!(warning, "\n{}, {reason}", skipped.path.display());
     }
     if scan.skipped_count > scan.skipped.len() as u64 {
         let hidden = scan.skipped_count - scan.skipped.len() as u64;
-        let _ = write!(warning, "\n…and {hidden} more skipped entries.");
+        let _ = write!(warning, "\n{} more", items_phrase(hidden));
     }
     Some(warning)
+}
+
+/// "1 item", "3 items".
+fn items_phrase(count: u64) -> String {
+    if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
+    }
 }
 
 fn skipped_count_phrase(count: u64) -> String {
@@ -3005,7 +2913,7 @@ fn fixture_desktop_release() -> DesktopRelease {
 
 fn fixture_desktop_selection(already_installed: bool) -> DesktopSelection {
     DesktopSelection {
-        host: "fedora 44 (aarch64)".into(),
+        host: "Fedora Linux 44 (ARM64)".into(),
         release: fixture_desktop_release(),
         already_installed,
     }
@@ -3016,8 +2924,8 @@ fn fixture_desktop_flow(available: bool) -> DesktopFlow {
         DesktopFlowState::Ready(fixture_desktop_selection(false))
     } else {
         DesktopFlowState::Unavailable {
-            host: "fixture host".into(),
-            reasons: vec!["No reviewed Desktop release matches this fixture.".into()],
+            host: "Fedora Linux 44 (ARM64)".into(),
+            reasons: vec!["No Tilo Desktop release matches this computer yet.".into()],
         }
     };
     DesktopFlow::from_fixture_state(state)
@@ -3155,13 +3063,6 @@ impl Widget for SetupApp {
             import_app.draw(scene, transform, text_renderer, theme, presence);
             return;
         }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
         if let Some(composed) = &mut self.composed {
             composed.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -3301,6 +3202,8 @@ pub fn app_root() -> Box<dyn Widget> {
 #[cfg(all(test, unix))]
 mod tests {
     use std::path::PathBuf;
+
+    use crate::setup::controller::FolderDestination;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -3670,13 +3573,21 @@ mod tests {
                 connected_folders: false,
             });
             app.import_launcher = || ImportApp::for_shot("import-complete");
+            let composition = app.build_composition();
+            for unavailable in ["setup.experience.desktop", "setup.experience.full"] {
+                assert_eq!(
+                    retained_widget_count(composition.as_ref(), unavailable),
+                    0,
+                    "{unavailable} is not offered as a choice"
+                );
+            }
             let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
 
             harness
-                .expect(&SemanticExpectation::named("setup.experience.desktop").enabled(false))
-                .unwrap();
-            harness
-                .expect(&SemanticExpectation::named("setup.experience.full").enabled(false))
+                .expect(
+                    &SemanticExpectation::named("setup.internal.readiness")
+                        .name_contains("Not available"),
+                )
                 .unwrap();
             harness
                 .expect(&SemanticExpectation::named("setup.open-imports").enabled(true))
@@ -3763,7 +3674,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.internal.install-unavailable")
-                        .name_contains("Installation has not started")
+                        .name_contains("Install Tilo")
                         .enabled(false),
                 )
                 .unwrap();
@@ -3978,7 +3889,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.review.pending")
-                        .name_contains("remains pending"),
+                        .name_contains("before anything is copied"),
                 )
                 .unwrap();
         }
@@ -4021,14 +3932,8 @@ mod tests {
             let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
             harness
                 .expect(
-                    &SemanticExpectation::named("setup.review.folders")
-                        .name_contains("permission denied"),
-                )
-                .unwrap();
-            harness
-                .expect(
-                    &SemanticExpectation::named("setup.review.folders")
-                        .name_contains("symbolic link"),
+                    &SemanticExpectation::named("setup.review.folder.0")
+                        .value_contains("2 items skipped"),
                 )
                 .unwrap();
             harness
@@ -4216,13 +4121,15 @@ mod tests {
                 destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
                 result: Ok(scan("Documents", 12)),
             });
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(inherited), (1180, 820));
-            harness
-                .perform_named("setup.folder.0.copy", &Action::Focus)
-                .unwrap();
+            // A folder that follows the default offers no way back to it.
+            let composition = inherited.build_composition();
             assert_eq!(
-                harness.focused_access_node().and_then(|node| node.name),
-                Some("Common: Copy".into())
+                retained_widget_count(composition.as_ref(), "setup.folder.0.mode"),
+                1
+            );
+            assert_eq!(
+                retained_widget_count(composition.as_ref(), "setup.folder.0.follow"),
+                0
             );
 
             let mut overridden = supported_fixture();
@@ -4233,15 +4140,17 @@ mod tests {
                 result: Ok(scan("Documents", 12)),
             });
             overridden.apply_command(SetupCommand::SetFolderMode(0, FolderMode::Connected));
+            assert!(overridden.controller().folders()[0].mode_overridden);
+            let observed = overridden.controller_handle();
             let mut harness =
                 FrameHarness::new(ui::State::new(), Box::new(overridden), (1180, 820));
             harness
-                .perform_named("setup.folder.0.connected", &Action::Focus)
+                .expect(&SemanticExpectation::named("setup.folder.0.follow").enabled(true))
                 .unwrap();
-            assert_eq!(
-                harness.focused_access_node().and_then(|node| node.name),
-                Some("Selected: Connected".into())
-            );
+            harness
+                .perform_named("setup.folder.0.follow", &Action::Activate)
+                .unwrap();
+            assert!(!observed.borrow().folders()[0].mode_overridden);
         }
     }
 
@@ -4276,6 +4185,7 @@ mod tests {
                     os_release: Ok(super::super::desktop_probe::OsRelease {
                         id: "fedora".into(),
                         version_id: Some("44".into()),
+                        name: Some("Fedora Linux".into()),
                     }),
                     architecture: Ok("aarch64".into()),
                     package_manager: Ok(super::super::desktop_probe::PackageManager::Dnf),
@@ -4387,13 +4297,13 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.desktop.status")
-                        .name_contains("fedora 44 (aarch64)"),
+                        .name_contains("Fedora Linux 44 (ARM64)"),
                 )
                 .unwrap();
             harness
                 .expect(
-                    &SemanticExpectation::named("setup.review.folders")
-                        .name_contains("Destination pending review after login"),
+                    &SemanticExpectation::named("setup.review.pending")
+                        .name_contains("shows where each folder goes"),
                 )
                 .unwrap();
             harness
@@ -4406,13 +4316,10 @@ mod tests {
                 .collect::<Vec<_>>();
             let desktop = labels
                 .iter()
-                .position(|label| label == "Tilo Desktop readiness")
+                .position(|label| label == "Tilo Desktop")
                 .unwrap();
-            let operating_systems = labels
-                .iter()
-                .position(|label| label == "Operating systems")
-                .unwrap();
-            assert!(desktop < operating_systems);
+            let folders = labels.iter().position(|label| label == "Folders").unwrap();
+            assert!(desktop < folders);
         }
 
         // Phase `installed_review_leads_with_login_guidance_and_completion_status`.
@@ -4423,13 +4330,6 @@ mod tests {
             assert!(
                 harness
                     .a11y_node_named("Tilo Desktop is installed")
-                    .is_some()
-            );
-            assert!(
-                harness
-                    .a11y_node_named(
-                        "Tilo Desktop is installed and verified. Sign out when you are ready."
-                    )
                     .is_some()
             );
             harness
@@ -4446,12 +4346,9 @@ mod tests {
             assert!(
                 labels
                     .iter()
-                    .position(|label| label == "Tilo Desktop readiness")
+                    .position(|label| label == "Tilo Desktop")
                     .unwrap()
-                    < labels
-                        .iter()
-                        .position(|label| label == "Folder policies")
-                        .unwrap()
+                    < labels.iter().position(|label| label == "Folders").unwrap()
             );
         }
 
@@ -4627,7 +4524,7 @@ mod tests {
                     .presentation
                     .as_ref()
                     .and_then(|presentation| presentation.detail.as_deref())
-                    .is_some_and(|detail| detail.contains("copy"))
+                    .is_some_and(|detail| detail.contains("Copy"))
             );
         }
 
@@ -4872,8 +4769,10 @@ mod tests {
             .detail
             .as_deref()
             .unwrap();
-        assert!(detail.contains("help open"), "{detail}");
-        assert!(detail.contains("imports closed"), "{detail}");
+        assert!(detail.starts_with("Tilo Desktop"), "{detail}");
+        let projection = app.setup_projection();
+        assert!(projection.selection.help_open);
+        assert!(!projection.selection.imports_open);
         let toggle_help = resource
             .actions
             .iter()
@@ -5327,8 +5226,19 @@ mod tests {
                 .detail
                 .as_deref()
                 .unwrap();
-            assert!(detail.contains("Full OS no"), "{detail}");
-            assert!(detail.contains("Connected no"), "{detail}");
+            assert!(detail.starts_with("Experience page"), "{detail}");
+            let availability = resource
+                .children
+                .iter()
+                .find(|child| child.kind == "imager.setup.availability")
+                .and_then(|child| child.presentation.as_ref())
+                .and_then(|presentation| presentation.detail.as_deref())
+                .unwrap();
+            assert!(!availability.contains("Full Tilo"), "{availability}");
+            assert!(
+                !availability.contains("connected folders"),
+                "{availability}"
+            );
             let choose = resource
                 .actions
                 .iter()
@@ -5396,7 +5306,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 detail,
-                "experience no experience selected · common copy · 2 folders · 1 active · help closed · imports closed"
+                "no experience chosen yet, copy by default, 2 folders, 1 to bring over"
             );
             assert_eq!(selection.children.len(), 2);
             assert_eq!(selection.children[0].kind, "imager.setup.folder");
@@ -5409,7 +5319,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("copy · common")
+                    .contains("Copy, the common choice")
             );
             assert!(
                 selection.children[1]
@@ -5419,7 +5329,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("later · override")
+                    .contains("Decide later, chosen for this folder")
             );
             for folder in &selection.children {
                 assert!(!folder.label.contains("Documents"));
@@ -5449,7 +5359,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("ready no")
+                    .contains("Not ready")
             );
             let availability = child_resource(&root, "imager.setup.availability");
             assert!(
@@ -5460,7 +5370,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("Desktop yes")
+                    .contains("Tilo Desktop")
             );
         }
     }
@@ -5593,10 +5503,11 @@ mod tests {
             let app = &mut fixture.app;
             assert!(!app.capabilities.platform.supports(Experience::FullOs));
             let composition = app.build_composition();
-            assert!(retained_widget_disabled(
-                composition.as_ref(),
-                "setup.experience.full"
-            ));
+            assert_eq!(
+                retained_widget_count(composition.as_ref(), "setup.experience.full"),
+                0,
+                "Full Tilo is not offered until the probe passes"
+            );
             assert!(
                 retained_name(composition.as_ref(), "setup.internal.readiness")
                     .unwrap()
@@ -5606,10 +5517,11 @@ mod tests {
             assert!(app.poll_background());
             assert!(app.capabilities.platform.supports(Experience::FullOs));
             let composition = app.build_composition();
-            assert!(!retained_widget_disabled(
-                composition.as_ref(),
-                "setup.experience.full"
-            ));
+            assert_eq!(
+                retained_widget_count(composition.as_ref(), "setup.experience.full"),
+                1,
+                "Full Tilo is offered once the probe passes"
+            );
             assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
 
             let mut blocked = gated_app(
