@@ -78,6 +78,9 @@ pub struct ColourQuery {
 /// the query is malformed.
 pub fn resolve(select: &mut Select) -> Result<(), String> {
     if !select.looks() {
+        if select.layer.is_some() {
+            return Err("layer names where at or colour is found; give at or colour".into());
+        }
         return Ok(());
     }
     let colour = match &select.colour {
@@ -97,7 +100,7 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
         colour,
         tolerance,
         everywhere: select.at.is_none(),
-        layers: None,
+        layers: select.layer.clone().map(|layer| vec![layer]),
         within: None,
     };
     // Taking from the selection, or keeping only part of it, the wand looks
@@ -105,6 +108,14 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
     // colour outside.
     let within_selection = matches!(select.mode.as_deref(), Some("subtract" | "intersect"));
     let found = with_sight(|renderer, text, art| {
+        if let Some(layer) = &select.layer
+            && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
+        {
+            return Err(format!(
+                "there is no layer {layer:?} to find colour on; the layers are {}",
+                crate::actions::layer_list(art)
+            ));
+        }
         let query = ColourQuery {
             within: art
                 .selection
@@ -127,6 +138,7 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
     select.at = None;
     select.colour = None;
     select.tolerance = None;
+    select.layer = None;
     Ok(())
 }
 

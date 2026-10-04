@@ -726,11 +726,22 @@ impl CanvasSurface {
                     .map(crate::model::Selection::region)
             })
             .flatten();
+        // Sampling one layer, the chosen one (the top one when none is).
+        let layers = (self.tools.sampling.with(|sampling| *sampling)
+            == crate::tools::Sampling::Layer)
+            .then(|| {
+                self.ink()
+                    .layer
+                    .or_else(|| self.art.top_layer().map(|layer| layer.id.clone()))
+            })
+            .flatten()
+            .map(|layer| vec![layer]);
         let query = crate::author::ColourQuery {
             at: Some(at),
             tolerance: crate::author::TOLERANCE,
             // Ctrl finds the colour everywhere, touching or not.
             everywhere: !fill && self.modifiers.control_key(),
+            layers,
             within,
             ..crate::author::ColourQuery::default()
         };
@@ -1261,6 +1272,7 @@ impl CanvasSurface {
                 self.dispatch(&CanvasAction::Paint(Paint {
                     layer: ink.layer,
                     strokes: vec![stroke],
+                    group: None,
                 }));
             }
             Drag::Sweep { crossed, .. } if !crossed.is_empty() => {

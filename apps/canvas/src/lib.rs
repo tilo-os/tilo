@@ -15,6 +15,7 @@ pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
 pub mod adjust;
+pub mod answer;
 pub mod author;
 pub mod brushes;
 pub mod doc;
