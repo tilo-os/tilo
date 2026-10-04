@@ -65,8 +65,8 @@ impl EditMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            EditMode::Overwrite => "OVR",
-            EditMode::Insert => "INS",
+            EditMode::Overwrite => "Overwrite",
+            EditMode::Insert => "Insert",
         }
     }
 }
@@ -89,8 +89,8 @@ impl Endian {
 
     pub fn label(self) -> &'static str {
         match self {
-            Endian::Little => "LE",
-            Endian::Big => "BE",
+            Endian::Little => "Little endian",
+            Endian::Big => "Big endian",
         }
     }
 }

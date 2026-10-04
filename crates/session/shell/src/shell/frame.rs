@@ -409,12 +409,15 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     text_renderer: TextRenderer,
     theme: Theme,
+    /// The theme the settings document describes, before the active
+    /// workspace's temperature and the person's colour dress it into
+    /// [`Self::theme`].
+    configured_theme: Theme,
     watch_configured_theme: bool,
-    /// The active workspace's temperature as last applied, with the
-    /// workspace it belongs to and when it was last looked at. Each
-    /// workspace takes its neutral hue from its wallpaper.
-    workspace_temperature: Option<(String, f32)>,
-    last_temperature_check: Instant,
+    /// Every workspace's temperature and the person's colour: what the
+    /// chrome wears for the active workspace, and what each app window is
+    /// sent for the workspace it is in.
+    windows: super::window_appearance::WindowAppearances,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
     appearance_generation: u64,
@@ -670,10 +673,12 @@ impl FrameBuilder {
             root_node: None,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
+            configured_theme: presentation.theme.clone(),
             theme: presentation.theme,
             watch_configured_theme: false,
-            workspace_temperature: None,
-            last_temperature_check: Instant::now(),
+            windows: super::window_appearance::WindowAppearances::new(
+                ui::tokens::PresenceHue::Blue,
+            ),
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
             appearance_generation: 0,
@@ -2105,70 +2110,105 @@ impl FrameBuilder {
         }
         self.theme_store_stamp = stamp;
         self.appearance_generation = appearance_generation;
-        self.theme = self.with_workspace_temperature(Theme::configured());
+        self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
     }
 
-    /// The configured theme as this person, in this room: their colour
-    /// (their stored choice, or the one their identity derives) is their
-    /// focus ring, caret and selection, and the active workspace's
-    /// temperature tints the neutrals.
-    fn with_workspace_temperature(&self, theme: Theme) -> Theme {
-        let theme = theme.with_your_colour(crate::shell::state::local_presence_hue());
-        match &self.workspace_temperature {
-            Some((_, hue)) => theme.with_neutral_hue(*hue),
-            None => theme,
-        }
+    /// Read the configured theme and the person's colour (their stored
+    /// choice, or the one their identity derives) again, and dress the
+    /// chrome in them.
+    fn apply_configured_theme(&mut self) {
+        self.configured_theme = Theme::configured();
+        self.windows
+            .set_your_colour(crate::shell::state::read_local_presence_hue());
+        self.theme = self
+            .configured_theme
+            .clone()
+            .in_window(&self.windows.active());
     }
 
     /// Entering a workspace enters its temperature: the neutral material
-    /// takes the hue the person set for the active workspace
+    /// takes the hue the person set for a workspace
     /// (`appearance.workspace_temperatures`), or else its wallpaper's
-    /// ([`super::desktop_backdrop::native_workspace_hue`]). Only the hue
-    /// moves, so a neutral palette shows none. Checked when the active
-    /// workspace changes and every few seconds otherwise, so a new wallpaper
-    /// retints the room it was set on. Live sessions only: offscreen capture
-    /// stays on the theme it was asked for.
+    /// ([`super::desktop_backdrop::native_workspace_hue`]); a grey wallpaper
+    /// leaves it neutral. Only the hue moves, so a neutral palette shows
+    /// none. Every workspace is looked at when the active one changes and
+    /// every few seconds otherwise, so a new wallpaper retints the room it
+    /// was set on, in the chrome and in every app window shown there. Live
+    /// sessions only: offscreen capture stays on the theme it was asked for.
     fn refresh_workspace_temperature(&mut self) {
-        const RECHECK: Duration = Duration::from_secs(3);
         if !self.watch_configured_theme {
             return;
         }
-        let active = self
-            .chrome
-            .borrow()
-            .tree()
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        let workspaces = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.0.to_string())
+            .collect::<Vec<_>>();
+        let active = tree
             .desktop
             .active_workspace()
             .map(|workspace| workspace.id.0.to_string());
-        let Some(active) = active else {
-            return;
-        };
-        let same_room = self
-            .workspace_temperature
-            .as_ref()
-            .is_some_and(|(workspace, _)| *workspace == active);
-        if same_room && self.last_temperature_check.elapsed() < RECHECK {
+        drop(tree);
+        drop(chrome);
+        let now = Instant::now();
+        if !self.windows.due(active.as_deref(), now) {
             return;
         }
-        self.last_temperature_check = Instant::now();
         let settings = serde_json::Value::Object(settings_store::load());
-        let hue = ui::theme::workspace_temperature_override(&settings, &active)
-            .unwrap_or_else(|| super::desktop_backdrop::native_workspace_hue(&active));
-        let unchanged = self
-            .workspace_temperature
-            .as_ref()
-            .is_some_and(|(workspace, known)| *workspace == active && (known - hue).abs() < 0.5);
-        if unchanged {
+        let mut temperature_of = |id: &str| {
+            ui::theme::workspace_temperature_override(&settings, id)
+                .or_else(|| super::desktop_backdrop::native_workspace_hue(id))
+        };
+        if !self
+            .windows
+            .update(&workspaces, active.as_deref(), now, &mut temperature_of)
+        {
             return;
         }
-        self.workspace_temperature = Some((active, hue));
-        self.theme = self.theme.clone().with_neutral_hue(hue);
+        self.theme = self
+            .configured_theme
+            .clone()
+            .in_window(&self.windows.active());
         self.rebuild_layout_tree();
         self.relayout();
+    }
+
+    /// What the app window(s) of `app_id` are shown in: the temperature of
+    /// the workspace holding its window (the active one before it has a
+    /// tile) and the person's colour. The compositor sends it over the
+    /// app's shell-ui connection whenever it changes.
+    #[must_use]
+    pub fn window_appearance_for_app(&self, app_id: &str) -> ui::WindowAppearance {
+        let id = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| {
+                            matches!(
+                                &tab.tile,
+                                crate::shell::state::TileContent::Foreign { app_id: candidate, .. }
+                                    if candidate == app_id
+                            )
+                        })
+                })
+                .map(|workspace| workspace.id.0.to_string())
+        };
+        self.windows.in_workspace(id.as_deref())
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -2176,7 +2216,7 @@ impl FrameBuilder {
     /// for a specific palette.
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
-        self.theme = self.with_workspace_temperature(Theme::configured());
+        self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();

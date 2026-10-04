@@ -33,6 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "analysis-hover-narrow",
                 "home",
                 "home-narrow",
+                "loading",
+                "error",
             ])
             .shot_viewport(|args| {
                 if args
@@ -55,6 +57,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
     Ok(disk_usage::shot_root_scenario(
-        args.scenario.as_deref().unwrap_or("analysis"),
+        args.scenario.as_deref().unwrap_or("home"),
     ))
 }

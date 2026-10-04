@@ -1,6 +1,0 @@
-feature ss09 {
-featureNames {
-  name "Alternate Q";
-};
-sub Q by Q.ss09;
-} ss09;

@@ -331,6 +331,15 @@ impl Scrollable {
         self
     }
 
+    /// Keep the viewport as tall as its content and let it shrink only when
+    /// its parent runs out of room, so the content scrolls just in a window
+    /// too short to show it. `with_max_height` without a number.
+    #[must_use]
+    pub fn fit_content_height(mut self) -> Self {
+        self.max_height = Some(f32::INFINITY);
+        self
+    }
+
     #[must_use]
     pub fn fill_parent_height(mut self) -> Self {
         self.fill_parent_height = true;
@@ -1243,7 +1252,10 @@ impl Widget for Scrollable {
                 .then_some(taffy::AlignItems::FlexStart),
             max_size: Size {
                 width: Dimension::auto(),
-                height: self.max_height.map_or(Dimension::auto(), Dimension::length),
+                height: self
+                    .max_height
+                    .filter(|px| px.is_finite())
+                    .map_or(Dimension::auto(), Dimension::length),
             },
             flex_grow: if self.fill_parent_height { 1.0 } else { 0.0 },
             overflow: taffy::Point {

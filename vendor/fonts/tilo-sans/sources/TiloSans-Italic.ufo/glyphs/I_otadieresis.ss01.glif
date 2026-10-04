@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<glyph name="Iotadieresis.ss01" format="2">
-  <advance width="254"/>
-  <outline>
-    <component base="Iota"/>
-    <component base="dieresiscomb.ss01" xOffset="-46" yOffset="210"/>
-  </outline>
-</glyph>
