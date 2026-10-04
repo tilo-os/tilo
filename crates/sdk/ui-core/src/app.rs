@@ -80,6 +80,14 @@ include!("app/host.rs");
 mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
+/// How an app's error begins when its window stopped without being closed.
+/// The shell recognises it in a failed launch's output.
+pub const WINDOW_LOST: &str = "the window stopped without being closed";
+
+/// Exit status of an app whose window stopped without being closed: the
+/// launcher reports it as a failed launch rather than a clean exit.
+pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
+
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
 

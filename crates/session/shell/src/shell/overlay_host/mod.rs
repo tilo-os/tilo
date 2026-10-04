@@ -5398,6 +5398,19 @@ impl ShellOverlayHost {
             posted = true;
         }
         for event in events {
+            // A window that went away without being closed was lost, however
+            // the process then exited; a new start forgets an older loss.
+            let lost = match event.kind {
+                LaunchEventKind::Exited | LaunchEventKind::Failed { .. } => {
+                    crate::shell::launcher::take_launch_vanished(&event.package_id)
+                }
+                LaunchEventKind::Started { .. } => {
+                    let _ = crate::shell::launcher::take_launch_vanished(&event.package_id);
+                    false
+                }
+                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::WindowLost { .. } => false,
+            };
+            let event = event.with_window_lost(lost);
             if self.room_activity.observe_agent_launch_event(&event) {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
@@ -5445,7 +5458,10 @@ impl ShellOverlayHost {
                     posted = true;
                 }
             }
-            if matches!(event.kind, LaunchEventKind::Exited) {
+            if matches!(
+                event.kind,
+                LaunchEventKind::Exited | LaunchEventKind::WindowLost { .. }
+            ) {
                 // A successful launcher parent may have daemonised. Its GUI
                 // child still owns this launch for a short bounded interval,
                 // so dismiss the loading card now but keep placement until a
@@ -5461,13 +5477,18 @@ impl ShellOverlayHost {
                 }
             }
             match &event.kind {
-                LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {
+                LaunchEventKind::Started { .. }
+                | LaunchEventKind::Exited
+                | LaunchEventKind::WindowLost { .. } => {
                     let _ = crate::shell::launcher::take_launch_presented(&event.package_id);
                 }
                 // Its window was up, so it did open; the window, and its
                 // tab, are already gone.
-                LaunchEventKind::Failed { code, .. }
-                    if crate::shell::launcher::take_launch_presented(&event.package_id) =>
+                // A window that stopped on its own is never an ending the
+                // person asked for, shown or not.
+                LaunchEventKind::Failed { code, stderr_tail }
+                    if !stderr_tail.contains(ui::app::WINDOW_LOST)
+                        && crate::shell::launcher::take_launch_presented(&event.package_id) =>
                 {
                     tracing::info!(
                         target: "shell::launcher",
@@ -5515,7 +5536,9 @@ impl ShellOverlayHost {
                     );
                     continue;
                 }
-                LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. } => {}
+                LaunchEventKind::SpawnFailed { .. }
+                | LaunchEventKind::Failed { .. }
+                | LaunchEventKind::WindowLost { .. } => {}
             }
             event.log_failure();
             let Some(notice) = event.failure_notice() else {

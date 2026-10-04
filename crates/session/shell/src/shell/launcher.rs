@@ -750,6 +750,12 @@ pub enum LaunchEventKind {
     /// The app ran and exited cleanly. Not an error; reported so
     /// callers can retire per-app UI state.
     Exited,
+    /// The app's window went away without anyone closing it, whatever its
+    /// process reported. `code` is its exit status when it had one.
+    WindowLost {
+        code: Option<i32>,
+        stderr_tail: String,
+    },
 }
 
 /// Normal-user copy for an asynchronous launch failure. The launcher keeps
@@ -779,12 +785,27 @@ impl LaunchEvent {
             LaunchEventKind::Failed { code, stderr_tail } => {
                 crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
             }
+            LaunchEventKind::WindowLost { .. } => {
+                crate::shell::i18n::t("launch-failed-window-lost")
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
-        Some(LaunchFailureNotice {
-            title: launch_failure_title(&self.display_name),
-            body,
-        })
+        let window_lost = match &self.kind {
+            LaunchEventKind::WindowLost { .. } => true,
+            LaunchEventKind::Failed { stderr_tail, .. } => {
+                stderr_tail.contains(ui::app::WINDOW_LOST)
+            }
+            _ => false,
+        };
+        let title = if window_lost {
+            crate::shell::i18n::t_args(
+                "launch-window-lost-title",
+                &[("app", compact_notice_name(&self.display_name).into())],
+            )
+        } else {
+            launch_failure_title(&self.display_name)
+        };
+        Some(LaunchFailureNotice { title, body })
     }
 
     /// Preserve the complete failure in the compositor's session log. Field
@@ -811,8 +832,39 @@ impl LaunchEvent {
                     "application stopped before presenting a window"
                 );
             }
+            LaunchEventKind::WindowLost { code, stderr_tail } => {
+                tracing::error!(
+                    target: "tilo::app_launch",
+                    package_id = %self.package_id,
+                    display_name = %self.display_name,
+                    exit_code = ?code,
+                    stderr_tail = ?stderr_tail,
+                    "application window went away without being closed"
+                );
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
         }
+    }
+
+    /// This event, read knowing whether the launch's window went away
+    /// without being closed: then neither a clean exit nor an error after
+    /// the window was shown is the app ending as asked.
+    #[must_use]
+    pub(crate) fn with_window_lost(self, lost: bool) -> Self {
+        if !lost {
+            return self;
+        }
+        let kind = match self.kind {
+            LaunchEventKind::Exited => LaunchEventKind::WindowLost {
+                code: Some(0),
+                stderr_tail: String::new(),
+            },
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                LaunchEventKind::WindowLost { code, stderr_tail }
+            }
+            other => other,
+        };
+        Self { kind, ..self }
     }
 }
 
@@ -829,6 +881,8 @@ fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
         "launch-failed-sandbox"
     } else if stderr_tail.contains(ui::collaboration::ROUTE_JOIN_FAILED) {
         "launch-failed-collaboration"
+    } else if stderr_tail.contains(ui::app::WINDOW_LOST) {
+        "launch-failed-window-lost"
     } else if code.is_none() {
         "launch-failed-crashed"
     } else {
@@ -928,6 +982,10 @@ pub(crate) struct SessionLaunches {
     surfaces: Mutex<HashMap<u64, String>>,
     /// Launch keys whose app has shown a window since it last started.
     presented: Mutex<HashSet<String>>,
+    /// Launch keys whose window went away without anyone closing it: the
+    /// compositor never asked, and the person never reached the app to ask
+    /// it. However the process then exits, the window was lost.
+    vanished: Mutex<HashSet<String>>,
     /// User launches still waiting for a window. This outlives the short
     /// placement claim: Wine's first window can announce `wineboot.exe` long
     /// after that claim expires, and it still belongs to the launch the
@@ -960,6 +1018,7 @@ impl Default for SessionLaunches {
             launched: Mutex::default(),
             surfaces: Mutex::default(),
             presented: Mutex::default(),
+            vanished: Mutex::default(),
             awaiting_window: Mutex::default(),
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
@@ -3156,7 +3215,7 @@ pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
 /// its Wayland connection. Host applications may announce an undeclared
 /// toolkit app-id, so this mapping is intentionally independent of protocol
 /// strings and pending-placement matching.
-pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
+pub fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
     lock(&LaunchSession::current().surfaces).insert(surface_id, launch_key.to_string());
 }
 
@@ -3347,8 +3406,29 @@ pub(crate) fn take_launch_presented(key: &str) -> bool {
     lock(&LaunchSession::current().presented).remove(key)
 }
 
-pub(crate) fn forget_surface_launch(surface_id: u64) {
-    lock(&LaunchSession::current().surfaces).remove(&surface_id);
+/// A toplevel went away. `closed` says someone ended it: the compositor
+/// asked it to close, or the person had reached the app and could have
+/// asked it. Otherwise the window was lost under its launch.
+pub(crate) fn note_surface_gone(surface_id: u64, closed: bool) {
+    let session = LaunchSession::current();
+    let key = lock(&session.surfaces).remove(&surface_id);
+    if let Some(key) = key
+        && !closed
+    {
+        tracing::error!(
+            target: "tilo::app_launch",
+            launch = %key,
+            surface_id,
+            "an application window went away without being closed"
+        );
+        lock(&session.vanished).insert(key);
+    }
+}
+
+/// Whether a window of launch `key` went away without being closed since
+/// the launch started, clearing the mark.
+pub fn take_launch_vanished(key: &str) -> bool {
+    lock(&LaunchSession::current().vanished).remove(key)
 }
 
 /// Forget every launch this session has recorded — for tests asserting
@@ -3364,6 +3444,7 @@ pub(crate) fn clear_launched_for_test() {
     lock(&session.session_helpers).clear();
     lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
+    lock(&session.vanished).clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
@@ -4102,6 +4183,59 @@ mod tests {
             assert_eq!(notice.body, body);
             assert!(!notice.body.contains('/'), "no path reaches the banner");
         }
+    }
+
+    /// A window that went away without being closed is a lost window: the
+    /// person is told, whether the process then exited cleanly (an app
+    /// whose drawing surface died used to) or with an error after its
+    /// window was up (which is otherwise an ordinary ending).
+    #[test]
+    fn a_window_lost_unasked_is_reported_however_the_process_exits() {
+        clear_launched_for_test();
+        attribute_surface_launch(7 << 32 | 3, "Broken App");
+        note_surface_gone(7 << 32 | 3, false);
+        assert!(take_launch_vanished("Broken App"));
+        assert!(
+            !take_launch_vanished("Broken App"),
+            "the mark is taken once"
+        );
+
+        attribute_surface_launch(7 << 32 | 4, "Broken App");
+        note_surface_gone(7 << 32 | 4, true);
+        assert!(
+            !take_launch_vanished("Broken App"),
+            "a window someone closed is not lost"
+        );
+
+        let lost = launch_event(LaunchEventKind::Exited).with_window_lost(true);
+        assert!(matches!(
+            lost.kind,
+            LaunchEventKind::WindowLost { code: Some(0), .. }
+        ));
+        let notice = lost.failure_notice().expect("a lost window is reported");
+        assert_eq!(notice.title, "Broken App closed unexpectedly");
+        assert!(
+            launch_event(LaunchEventKind::Exited)
+                .with_window_lost(false)
+                .failure_notice()
+                .is_none(),
+            "a clean exit after a close stays quiet"
+        );
+
+        let stopped = launch_event(LaunchEventKind::Failed {
+            code: Some(ui::app::WINDOW_LOST_EXIT_CODE),
+            stderr_tail: format!(
+                "error: {}: its drawing surface could not be resized: Validation Error",
+                ui::app::WINDOW_LOST
+            ),
+        });
+        let notice = stopped.failure_notice().expect("failure has a notice");
+        assert_eq!(notice.title, "Broken App closed unexpectedly");
+        assert_eq!(
+            notice.body,
+            "Its window stopped without being closed. Open it again from Applications; \
+             the desktop log says why."
+        );
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry
