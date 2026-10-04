@@ -138,12 +138,11 @@ impl ViewStorage {
         self.person.as_ref()?.open::<P>()
     }
 
-    /// The person's record of `P` that the app `owner` keeps.
-    pub(crate) fn person_of<P: tilo_resource::Resource>(
+    /// The shared record of the person's `P`.
+    pub(crate) fn shared_person<P: tilo_resource::SharedRecord>(
         &self,
-        owner: &'static str,
     ) -> Option<super::person::PersonRecord<P>> {
-        self.person.as_ref()?.open_of::<P>(owner)
+        self.person.as_ref()?.open_shared::<P>()
     }
 
     /// The person's records the views opened, as published resources.

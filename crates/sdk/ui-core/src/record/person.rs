@@ -91,6 +91,26 @@ impl PersonRecords {
         })
     }
 
+    /// The person's records `package_id` keeps, held in this app's store
+    /// beside its own: a copy of another app's record the person shares
+    /// across their apps (their accounts), kept here across launches and
+    /// converging with the keeper's over the record's route. A store with
+    /// nowhere to keep it (a test host's memory) holds a replica instead.
+    ///
+    /// # Errors
+    /// Rejects an invalid package.
+    pub fn of_package(&self, package_id: &str) -> Result<Self, RecordOpenError> {
+        let Some(backend) = self.store.backend() else {
+            return Self::replica(package_id, self.author.clone());
+        };
+        let mut owners = RecordOwners::with_store(backend);
+        Ok(Self {
+            store: owners.open_person(package_id, &scope_of(&self.author))?,
+            replica: self.replica,
+            author: self.author.clone(),
+        })
+    }
+
     /// Write out what is not stored yet, as closing the window does.
     ///
     /// # Errors

@@ -193,12 +193,11 @@ impl<R: Resource> ResourceRoot<R> {
         self.storage.person::<P>()
     }
 
-    /// The person's record of `P` that the app `owner` keeps.
-    pub(crate) fn person_of<P: Resource>(
+    /// The shared record of the person's `P`.
+    pub(crate) fn shared_person<P: tilo_resource::SharedRecord>(
         &self,
-        owner: &'static str,
     ) -> Option<super::PersonRecord<P>> {
-        self.storage.person_of::<P>(owner)
+        self.storage.shared_person::<P>()
     }
 
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {

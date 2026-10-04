@@ -40,8 +40,8 @@ impl<P: Resource> Clone for PersonRecord<P> {
 
 struct Shared<P: Resource> {
     record: StoredRecord,
-    /// The app whose record this is, when it is another app's: this one
-    /// reads it and its edits are refused.
+    /// The app that keeps the record, when this app does not change it:
+    /// it is read here and its edits are refused.
     owner: Option<&'static str>,
     app_id: &'static str,
     app_title: &'static str,
@@ -144,7 +144,8 @@ impl<P: Resource> PersonRecord<P> {
         self.apply(&action)
     }
 
-    /// Whether this app edits the record; another app's is read here.
+    /// Whether this app changes the record: its own, or a shared one it is
+    /// an editor of; any other is read here.
     #[must_use]
     pub fn editable(&self) -> bool {
         self.shared.owner.is_none()
@@ -192,8 +193,7 @@ pub(crate) struct PersonState {
     me: String,
     /// The open records, by the app that owns them and their kind.
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
-    /// Other apps' records of the person's, read here: replicas that store
-    /// nothing and follow the owner's over the records' routes.
+    /// The records of the person's other apps keep, held here too.
     others: RefCell<HashMap<&'static str, PersonRecords>>,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
@@ -313,13 +313,18 @@ impl PersonState {
 
     /// The person's record of `P`, opened on first use.
     pub(crate) fn open<P: Resource>(&self) -> Option<PersonRecord<P>> {
-        self.open_of::<P>(self.app_id)
+        self.open_of::<P>(self.app_id, true)
+    }
+
+    /// The shared record `P`, opened on first use: kept by its owner, a copy
+    /// of it here in every other app, changed where `P` says.
+    pub(crate) fn open_shared<P: tilo_resource::SharedRecord>(&self) -> Option<PersonRecord<P>> {
+        self.open_of::<P>(P::OWNER, P::edited_by(self.app_id))
     }
 
     /// The person's record of `P` that the app `owner` keeps, opened on
-    /// first use: this app's own, or another app's, read here and edited
-    /// only there.
-    pub(crate) fn open_of<P: Resource>(&self, owner: &'static str) -> Option<PersonRecord<P>> {
+    /// first use, and whether this app changes it.
+    fn open_of<P: Resource>(&self, owner: &'static str, edits: bool) -> Option<PersonRecord<P>> {
         if let Some(open) = self.opened.borrow().get(&(owner, P::KIND)) {
             return open
                 .clone()
@@ -335,7 +340,9 @@ impl PersonState {
             if let Some(records) = others.get(owner) {
                 records.clone()
             } else {
-                let records = PersonRecords::replica(owner, self.records.author().clone())
+                let records = self
+                    .records
+                    .of_package(owner)
                     .map_err(|error| {
                         tracing::warn!(owner, %error, "the person's records of another app are unavailable");
                     })
@@ -355,7 +362,7 @@ impl PersonState {
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
             record,
-            owner: (!own).then_some(owner),
+            owner: (!edits).then_some(owner),
             app_id: self.app_id,
             app_title: self.app_title,
             me: self.me.clone(),

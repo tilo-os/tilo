@@ -142,8 +142,8 @@ pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Place, Resource, SearchBody,
-    SearchEntry, SearchPiece, SearchText, SearchWeight, action_label, bind_declaration,
-    build_action, declaration_spec, encode, origin_now_ms, publish,
+    SearchEntry, SearchPiece, SearchText, SearchWeight, SharedRecord, action_label,
+    bind_declaration, build_action, declaration_spec, encode, origin_now_ms, publish,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};

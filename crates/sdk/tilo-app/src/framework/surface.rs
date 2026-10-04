@@ -439,13 +439,10 @@ impl<R: Resource> SurfaceCx<R> {
         self.storage.person::<P>()
     }
 
-    /// Another app's record of the person's, as
-    /// [`ViewCx::person_of`](super::ViewCx::person_of) opens it.
-    pub fn person_of<P: tilo_resource::Resource>(
-        &self,
-        owner: &'static str,
-    ) -> Option<super::PersonRecord<P>> {
-        self.storage.person_of::<P>(owner)
+    /// The person's shared record `P`, as
+    /// [`ViewCx::shared_person`](super::ViewCx::shared_person) opens it.
+    pub fn shared_person<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.shared_person::<P>()
     }
 
     /// The app's files, secrets and settings documents, as its host gave
