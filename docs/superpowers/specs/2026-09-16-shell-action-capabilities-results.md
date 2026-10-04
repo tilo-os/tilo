@@ -46,12 +46,6 @@ corrections, process sessions, and scoped source ownership. Accepted coverage:
 | Action publication | Actual collaboration-event Accepted-to-terminal regression 1/1; semantic UI suite 31/31 |
 | Build | Host shell library check passed; final Fedora `cargo check -p shell --no-default-features --tests` passed in 22.84 seconds with matching final app source |
 
-Final source review: `.superpowers/sdd/shell-action-capabilities/final-code-rereview.md`.
-Detailed evidence: `.superpowers/sdd/shell-action-capabilities/implementation-report.md`.
-The eight owned patches and 26-source manifest are retained in
-`.superpowers/sdd/shell-action-capabilities/owned-final/` to separate this work
-from other tasks' concurrent changes. No push or merge is part of this work.
-
 ## Final native acceptance
 
 `target/edited-handoff-proof/native-typed-20260916-final4-manifest.json`
@@ -70,9 +64,7 @@ the exported edited hash is
 Earlier failed or qualified runs remain preserved: one exposed the stale
 publication defect; later runtime passes had concurrent source changes and
 were not accepted as stable-source qualification. Final4 supersedes those
-qualification gaps without weakening assertions. The shared workspace remains
-uncommitted for this implementation; only the approved spec was committed by
-this task. Other tasks' edits remain intact. No push or merge was performed.
+qualification gaps without weakening assertions.
 
 ## Boundaries and ruling
 

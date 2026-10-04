@@ -3307,6 +3307,16 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
 
 /// Whether a client's wayland app-id belongs to `package_id`: either the
 /// app-id *is* the package id, or its trailing component.
+/// Whether a window announcing `app_id` belongs to a Tilo package installed
+/// on this device, rather than to a legacy app. An unreadable registry
+/// answers "no": such a window is then treated as running only here.
+pub(crate) fn is_installed_package(app_id: &str) -> bool {
+    installed_apps().is_ok_and(|apps| {
+        apps.iter()
+            .any(|app| app_id_matches_package(app_id, &app.package_id))
+    })
+}
+
 pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();

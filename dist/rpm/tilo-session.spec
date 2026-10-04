@@ -101,6 +101,11 @@ Requires:       upower
 # Rootless Xwayland maps legacy X11 windows into ordinary Wayland toplevels,
 # preserving applications the user installed before adding Tilo.
 Requires:       xwayland-satellite
+# Legacy VMs (tilo-legacy): each app's windows reach the compositor through a
+# waypipe client over vsock, and granted directories are shared into the VM by
+# an unprivileged virtiofsd.
+Requires:       waypipe
+Requires:       virtiofsd
 # Xwayland compiles an independent server-side XKB map. Settings changes use
 # the standard authenticated X11 utility to update that map in place, so
 # Electron/X11 windows keep working without logout or bridge restart.

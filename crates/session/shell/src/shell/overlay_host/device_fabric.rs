@@ -100,9 +100,6 @@ pub struct DeviceFabricView {
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
-    pub display_mirror_consents: Vec<crate::shell::device_fabric_runtime::DisplayMirrorConsentView>,
-    pub display_mirrors: Vec<crate::shell::device_fabric_runtime::DisplayMirrorStatusView>,
-    pub display_mirror_available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -207,16 +204,6 @@ pub enum DeviceFabricUiAction {
     StopRemoteCapture {
         session_id: [u8; 16],
     },
-    RequestDisplayMirror {
-        target: crate::shell::personal_continuity::DeviceId,
-    },
-    ResolveDisplayMirror {
-        session_id: [u8; 16],
-        approved: bool,
-    },
-    StopDisplayMirror {
-        session_id: [u8; 16],
-    },
     RequestPhoneTethering {
         phone: crate::shell::personal_continuity::DeviceId,
     },
@@ -287,9 +274,6 @@ pub(super) enum DeviceFabricPaneRow {
     RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture::runtime::RemoteCaptureDegradedView),
-    DisplayMirrorConsent(crate::shell::device_fabric_runtime::DisplayMirrorConsentView),
-    DisplayMirrorSource,
-    DisplayMirrorStatus(crate::shell::device_fabric_runtime::DisplayMirrorStatusView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
@@ -396,22 +380,6 @@ pub(super) fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::RemoteCaptureDegraded),
-        )
-        .chain(
-            view.display_mirror_consents
-                .iter()
-                .cloned()
-                .map(DeviceFabricPaneRow::DisplayMirrorConsent),
-        )
-        .chain(
-            view.display_mirror_available
-                .then_some(DeviceFabricPaneRow::DisplayMirrorSource),
-        )
-        .chain(
-            view.display_mirrors
-                .iter()
-                .cloned()
-                .map(DeviceFabricPaneRow::DisplayMirrorStatus),
         )
         .chain(
             realtime
@@ -559,20 +527,6 @@ pub(super) const fn remote_capture_kind_key(
         crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {
             "remote-input-scanner"
         }
-    }
-}
-
-/// The catalogue key of the reason, as the `$reason` of a sentence.
-pub(super) const fn display_mirror_failure_key(
-    failure: crate::shell::device_fabric_runtime::DisplayMirrorFailure,
-) -> &'static str {
-    use crate::shell::device_fabric_runtime::DisplayMirrorFailure;
-    match failure {
-        DisplayMirrorFailure::Denied => "mirror-failure-denied",
-        DisplayMirrorFailure::PeerOffline => "mirror-failure-peer-offline",
-        DisplayMirrorFailure::TimedOut => "mirror-failure-timed-out",
-        DisplayMirrorFailure::Transport => "mirror-failure-transport",
-        DisplayMirrorFailure::Policy => "mirror-failure-policy",
     }
 }
 
