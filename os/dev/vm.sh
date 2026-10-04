@@ -96,6 +96,9 @@ char_key() {
     '#') echo shift-3;; '*') echo shift-8;; '&') echo shift-7;;
     '(') echo shift-9;; ')') echo shift-0;; '!') echo shift-1;;
     '"') echo shift-apostrophe;; "'") echo apostrophe;;
+    '?') echo shift-slash;;
+    # A capital is its letter's key with Shift held, as on a real keyboard.
+    [[:upper:]]) echo "shift-$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')";;
     *) echo "$1";;
   esac
 }
@@ -444,6 +447,9 @@ check_login_submitted() {
     [ "$phase" = sign-in ] || return 0
     sleep 1
   done
+  # A session that dies at once sends greetd back to the greeter. Its own
+  # log, in the user's state directory, is the only record of why.
+  gssh 'f="$HOME/.local/state/tilo/session-logs/latest.log"; [ -f "$f" ] && { echo "--- $f"; tail -n 80 "$f"; }; journalctl -b --no-pager -o short-monotonic -n 40 _UID="$(id -u)"' >&2 2>/dev/null || true
   die "tilo-greeter is still at sign-in 30 s after the credentials were sent"
 }
 

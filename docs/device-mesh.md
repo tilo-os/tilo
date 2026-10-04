@@ -148,6 +148,33 @@ authorization.
 - **App continuation** remains in `personal_continuity`. The fabric advertises
   capability but does not duplicate launch intents, CRDT records, topology, or
   focus state.
+- **Legacy app windows** (Wayland and X11 clients) run only on the device that
+  started them; Tilo apps run on every device against the same records, so
+  only these need a stream, and no device ever streams its desktop or chrome.
+  Rooms carry such a window as a `HostedWindow` tab naming its host. Each
+  other device of the person lists the hosted tabs it currently lays out,
+  with the tile's logical size, in a `WindowViews` action to that tab's host,
+  repeated every 2 s while it shows any and sent empty once it shows none,
+  together with what its hardware decoders take (codec and largest
+  picture).
+  The host streams just that window's surface to each listed viewer over
+  the direct media route, to those devices alone and never to other members
+  of the room. The encoder is chosen as for collaboration: hardware first,
+  AV1/VP9 only when every viewer decodes it in hardware, else H.264. Frames
+  are scaled down on the host to the lowest hardware-decode limit among the
+  viewers (one encode serves all), so a board never falls back to software
+  decoding. The window is sized for the largest viewer while no tab on the
+  host shows it,
+  and paced by its own damage up to the encode cap; a frame held back by the
+  cap is sent when due.
+  A viewer that stops refreshing lapses after 6 s. Pointer, wheel, keys and
+  input-method text come back as window-local input; the person's focus on
+  another device moves the host's keyboard to that window until the host's
+  own input is used again; the host's own cursor neither moves nor changes
+  its image, and its next input takes the pointer back. The first frame a
+  new viewer gets is a keyframe, held if it overtakes the stream start. Copy and paste ride the universal clipboard. The
+  app keeps its normal lifecycle on the host, and its encoder stops with the
+  last viewer.
 - **Notifications** project only the app-authorized redacted or full payload.
   Dismiss and action replies return to the exact originating device instead of
   turning a mirrored notification into ambient remote-control authority.
