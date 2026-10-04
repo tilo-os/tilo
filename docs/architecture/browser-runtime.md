@@ -219,7 +219,7 @@ Still in the wasm graph, left for later:
   feature or fetched dictionary if the bundle budget needs it.
 - `media` (with `rustfft`), `syntect`/`two-face`, `image`, `openmls` and
   `threshold-identity`: portable and used by portable widgets.
-- WebView/adblock, WPE, GPU video, MPRIS, XDG portal and notifications were
+- WebView/adblock, GPU video, MPRIS, XDG portal and notifications were
   already opt-in features and are not in the portable graph.
 
 ## Transport from browser to machine

@@ -32,9 +32,13 @@ for socket in \
   grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
 done
 grep -Fqx 'ulimit -c 0' "$wrapper"
-grep -Fq 'tilo_session_unit_file_t' "$selinux_policy"
-grep -Fqx '(allow xdm_t tilo_session_unit_file_t (service (start stop status)))' "$selinux_policy"
-grep -Fqx '(allow xdm_t home_root_t (dir (read)))' "$selinux_policy"
+# The session runs in the user's SELinux domain (pam_selinux in
+# os/etc/pam.d/greetd), never greetd's xdm_t, so the policy grants the display
+# manager nothing a user session needs.
+if grep -Eq '\(allow xdm_t (tilo_session_unit_file_t|home_root_t)' "$selinux_policy"; then
+  echo 'the policy lets the display manager domain run the user session' >&2
+  exit 1
+fi
 # The compositor verifies and repairs an existing identity on every start;
 # there is no separate pre-session identity unit to order anything after.
 if [ -e "$identity_unit" ] || grep -q 'tilo-identity\.service' "$recipient_unit"; then
@@ -106,17 +110,18 @@ if [ -e "$repo/os/dev-image/usr/lib/systemd/user" ]; then
 fi
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
-grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
-  "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
+[ "$(ls "$repo/os/usr/share/wayland-sessions")" = shell.desktop ] || {
+  echo 'the image must ship exactly one login session: shell.desktop' >&2
+  exit 1
+}
 grep -Fq 'missing="$(ldd /usr/bin/shell | awk '\''/not found/ { print $1 }'\'')"' \
   "$repo/os/Containerfile"
 grep -Fq 'if [ -n "$missing" ]; then' "$repo/os/Containerfile"
 grep -Fq 'shell has unresolved runtime libraries:' "$repo/os/Containerfile"
-wpe_copy_line=$(grep -n '^COPY --from=wpe-builder /wpe/ /$' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-wpe_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
+engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
-test "$wpe_copy_line" -lt "$wpe_deps_line"
-test "$wpe_deps_line" -lt "$shell_link_check_line"
+test "$engine_deps_line" -lt "$shell_link_check_line"
+grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
 grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
@@ -220,6 +225,34 @@ tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* sta
 [ "$(stat -c %a "$flight_dir")" = 700 ]
 [ "$(stat -c %a "$flight_dir/latest.log")" = 600 ]
 [ "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600 ]
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A recorder that starts slowly must still record a compositor that exits at
+# once: the drain timeout covers only output already handed to the recorder.
+slow_recorder="$tmp/slow-flight-recorder"
+cat >"$slow_recorder" <<SH
+#!/bin/bash
+sleep 3
+exec python3 "$repo/dist/session/tilo-flight-recorder.py" "\$@"
+SH
+chmod 0755 "$slow_recorder"
+slow_wrapper="$tmp/tilo-session-slow-recorder"
+tilo_stage_script "$wrapper" "$slow_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell" \
+  FLIGHT_RECORDER="$slow_recorder"
+slow_dir="$tmp/slow-state/tilo/session-logs"
+set +e
+XDG_STATE_HOME="$tmp/slow-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/slow-log" TILO_SESSION_DESKTOP_STATUS=5 \
+  timeout 20 "$slow_wrapper" --backend drm >"$tmp/slow-stdout"
+status=$?
+set -e
+[ "$status" = 5 ]
+grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/slow-stdout"
+head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
+grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
+tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A process that inherited the compositor's output must not keep the wrapper,
 # and so the session unit, alive after the compositor exits. Its own state

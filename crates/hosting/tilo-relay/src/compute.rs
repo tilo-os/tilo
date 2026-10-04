@@ -1297,6 +1297,7 @@ mod tests {
             cli_commands: vec![spec.entrypoint.clone()],
             runtime: String::new(),
             source: String::new(),
+            held: false,
             system: false,
         }
     }

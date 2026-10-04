@@ -603,6 +603,21 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
+/// The launch argv after [`splice_optional_runtimes`] ran on a bare `entry`
+/// token, and the mounts it returned for Landlock.
+///
+/// # Errors
+///
+/// As [`splice_optional_runtimes`].
+pub fn optional_runtimes_test_helper(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<(Vec<String>, Vec<String>), RunError> {
+    let mut argv = vec!["entry".to_string()];
+    let mounts = splice_optional_runtimes(&mut argv, manifest, opts)?;
+    Ok((argv, mounts))
+}
+
 /// Resolve/create/migrate the one directory this launch may write to,
 /// keyed by `opts.workspace_id` — no list to walk.
 fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
@@ -634,7 +649,12 @@ pub fn resolve_gpu_selection(
     opts: &RunOptions,
 ) -> Option<crate::gpu::GpuSelection> {
     let node = opts.render_node.as_ref()?;
-    let selection = crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default());
+    // The compositor resolved its node's drivers once and pinned its own
+    // loaders to them; a launch it started inherits that pin. Asking every
+    // installed ICD again here would load each driver on every app launch.
+    let mut selection = crate::gpu::inherited_selection(node)
+        .unwrap_or_else(|| crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default()));
+    selection.pipeline_seed = crate::gpu::host_pipeline_seed();
     for note in &selection.notes {
         tracing::warn!(target: "tilo_launcher::gpu", package = %manifest.package_id, "{note}");
     }
@@ -675,26 +695,9 @@ pub fn resolve_runtime(
     let Some(raw) = manifest.runtime.as_deref() else {
         return Ok(None);
     };
-    let (_, version) = raw
-        .split_once('/')
-        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
-    // Look up: the configured/user root first, then the immutable system
-    // fallback. A developer build honours TILO_RUNTIME_BUNDLE_DIR; developer
-    // sessions use it to keep the runtime matched to an overlaid
-    // registry/payload set instead of silently binding the installed `/usr`
-    // runtime. A release build ignores it (see `crate::dev_env`).
-    let per_user = runtime_bundle::default_bundle_path_from(
-        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
-        version,
-    )
-    .ok();
-    let system = runtime_bundle::system_bundle_path(version);
-    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
-    for cand in &candidates {
-        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
-            enforce_bundle_policy(cand, opts, cand == &system)?;
-            return Ok(Some((cand.clone(), version.to_string())));
-        }
+    let (found, candidates) = find_runtime_bundle(raw, opts)?;
+    if found.is_some() {
+        return Ok(found);
     }
     if opts.allow_missing_runtime {
         tracing::warn!(
@@ -708,6 +711,103 @@ pub fn resolve_runtime(
         runtime: raw.to_string(),
         paths: candidates,
     })
+}
+
+/// Look `raw` (`<name>/<version>`) up where runtime bundles are installed —
+/// the configured/user root first, then the immutable system fallback — and
+/// verify the first bundle found. Returns the bundle and its version, plus
+/// every directory checked.
+///
+/// A developer build honours `TILO_RUNTIME_BUNDLE_DIR`; developer sessions
+/// use it to keep the runtime matched to an overlaid registry/payload set
+/// instead of silently binding the installed `/usr` runtime. A release build
+/// ignores it (see `crate::dev_env`).
+#[allow(
+    clippy::type_complexity,
+    reason = "the found bundle and the searched directories travel together"
+)]
+fn find_runtime_bundle(
+    raw: &str,
+    opts: &RunOptions,
+) -> Result<(Option<(PathBuf, String)>, Vec<PathBuf>), RunError> {
+    let (_, version) = raw
+        .split_once('/')
+        .filter(|(name, version)| !name.is_empty() && valid_runtime_version(version))
+        .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
+    let per_user = runtime_bundle::default_bundle_path_from(
+        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
+        version,
+    )
+    .ok();
+    let system = runtime_bundle::system_bundle_path(version);
+    let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
+    for cand in &candidates {
+        if cand.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists() {
+            enforce_bundle_policy(cand, opts, cand == &system)?;
+            return Ok((Some((cand.clone(), version.to_string())), candidates));
+        }
+    }
+    Ok((None, candidates))
+}
+
+/// A version names a directory under the runtime roots and the sandbox's
+/// `/run/tilo-runtime`, so it is one plain path component.
+fn valid_runtime_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 64
+        && version != "."
+        && version != ".."
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
+}
+
+/// The minimal-libs stopgap and the manifest's optional runtimes, spliced
+/// before the entrypoint. Returns the sandbox paths Landlock must let the app
+/// read.
+fn splice_runtime_mounts(
+    argv: &mut Vec<String>,
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+    resolved_runtime_present: bool,
+) -> Result<Vec<String>, RunError> {
+    let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
+    paths.extend(splice_optional_runtimes(argv, manifest, opts)?);
+    Ok(paths)
+}
+
+/// Mount every installed, verified bundle the manifest lists in
+/// `[package].optional-runtimes` read-only at its runtime mount, before the
+/// trailing entrypoint token. A missing bundle is skipped and one that fails
+/// verification is refused, so the app sees either as not installed and
+/// offers to install it. Returns the sandbox paths Landlock must let it read.
+fn splice_optional_runtimes(
+    argv: &mut Vec<String>,
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Result<Vec<String>, RunError> {
+    let mut mounts = Vec::new();
+    for raw in &manifest.optional_runtimes {
+        match find_runtime_bundle(raw, opts) {
+            Ok((Some((root, version)), _)) => {
+                let entry = pop_entry(argv)?;
+                let mount = crate::sandbox::push_optional_runtime(argv, &root, &version);
+                argv.push(entry);
+                mounts.push(mount.display().to_string());
+            }
+            Ok((None, searched)) => tracing::info!(
+                runtime = %raw,
+                searched = ?searched,
+                "optional runtime is not installed"
+            ),
+            Err(error) => tracing::warn!(
+                runtime = %raw,
+                %error,
+                "optional runtime refused; launching without it"
+            ),
+        }
+    }
+    Ok(mounts)
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -1381,6 +1481,29 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
     Ok(())
 }
 
+/// The image-owned system authority grant ([`crate::system_authority`]):
+/// bind the control panel's host binaries, configuration and authority
+/// sockets. A no-op for every other package. The returned guard keeps the
+/// system-bus proxy alive and must outlive the child.
+fn splice_system_authority(
+    argv: &mut Vec<String>,
+    package_id: &str,
+) -> Result<
+    (
+        Option<crate::system_authority::SystemAuthorityPlan>,
+        Option<DBusProxyGuard>,
+    ),
+    RunError,
+> {
+    let Some((plan, guard)) = crate::system_authority::resolve(package_id, current_uid()) else {
+        return Ok((None, None));
+    };
+    let entry = pop_entry(argv)?;
+    crate::system_authority::push_binds(argv, &plan);
+    argv.push(entry);
+    Ok((Some(plan), guard))
+}
+
 /// Mount Files' live room-governance identity directory read-only. The
 /// projection is package-scoped and must remain visible across atomic host
 /// replacement, so the containing directory—not one inode—is bound.
@@ -1464,6 +1587,7 @@ struct ShimSpliceCtx<'a> {
     egress: &'a crate::netgate::EgressDecision,
     capabilities: &'a CapabilityPlan,
     dbus_plan: &'a Option<DBusBindPlan>,
+    system_authority: &'a Option<crate::system_authority::SystemAuthorityPlan>,
     wayland_bind: &'a Option<crate::sandbox::WaylandBind>,
     gpu: &'a Option<crate::gpu::GpuSelection>,
     keep_fds: &'a [RawFd],
@@ -1517,20 +1641,7 @@ fn splice_sandbox_shim(
     let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
     argv.push("--ro".to_string());
     argv.push(payload_mount.display().to_string());
-    if let Some((rt_root, ver)) = ctx.runtime_arg {
-        let rt = crate::sandbox::runtime_mount_for(ver);
-        argv.push("--ro".to_string());
-        argv.push(rt.display().to_string());
-        // Also allow the canonical loader paths re-bound out of the bundle —
-        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
-        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
-            let no_slash = canonical.trim_start_matches('/');
-            if rt_root.join("lib").join(no_slash).exists() {
-                argv.push("--ro".to_string());
-                argv.push((*canonical).to_string());
-            }
-        }
-    }
+    push_runtime_landlock_rules(argv, ctx.runtime_arg);
     for p in ctx.extra_ro_paths {
         argv.push("--ro".to_string());
         argv.push(p.clone());
@@ -1558,22 +1669,19 @@ fn splice_sandbox_shim(
         argv.push("--ro".to_string());
         argv.push(plan.sandbox_path.display().to_string());
     }
+    // The control panel's host binaries, configuration and authority
+    // sockets, from the same plan its binds came from.
+    if let Some(plan) = ctx.system_authority {
+        crate::system_authority::push_landlock_rules(argv, plan);
+    }
     // Wayland needs read+write in Landlock: connect(2) on a unix socket is
     // write-flavoured, so read-only surfaces as EACCES at `wl_display_connect`.
     if let Some(bind) = ctx.wayland_bind {
         argv.push("--rw".to_string());
         argv.push(bind.sandbox_socket.display().to_string());
     }
-    // GPU selection is only real if Landlock agrees: loader manifests need
-    // read, the render node needs read+write (opened O_RDWR) — read-only
-    // looks like no GPU present.
     if let Some(sel) = ctx.gpu {
-        for file in sel.manifest_files() {
-            argv.push("--ro".to_string());
-            argv.push(file.display().to_string());
-        }
-        argv.push("--rw".to_string());
-        argv.push(sel.node.display().to_string());
+        crate::sandbox::push_gpu_landlock_rules(argv, sel);
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
@@ -1604,6 +1712,23 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {
+    if let Some((rt_root, ver)) = runtime {
+        let rt = crate::sandbox::runtime_mount_for(ver);
+        argv.push("--ro".to_string());
+        argv.push(rt.display().to_string());
+        // Also allow the canonical loader paths re-bound out of the bundle —
+        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
+        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+            let no_slash = canonical.trim_start_matches('/');
+            if rt_root.join("lib").join(no_slash).exists() {
+                argv.push("--ro".to_string());
+                argv.push((*canonical).to_string());
+            }
+        }
+    }
 }
 
 fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
@@ -2068,13 +2193,15 @@ fn run_with_context(
         )?;
     }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
-    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     if enrolled.is_none() {
         splice_tool_context(&mut argv)?;
     }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) =
+        splice_system_authority(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
@@ -2086,10 +2213,11 @@ fn run_with_context(
             manifest,
             net_gate: &net_gate,
             runtime_arg,
-            extra_ro_paths: &extra_ro_paths,
+            extra_ro_paths: &ro_paths,
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
+            system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
             keep_fds: &keep_fds,
@@ -2605,13 +2733,15 @@ fn run_with_capture_spawn<T>(
         &capabilities,
     )?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
-    let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     let app_dir = resolve_app_dir(manifest, opts)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) =
+        splice_system_authority(&mut argv, &manifest.package_id)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;
@@ -2622,10 +2752,11 @@ fn run_with_capture_spawn<T>(
             manifest,
             net_gate: &net_gate,
             runtime_arg,
-            extra_ro_paths: &extra_ro_paths,
+            extra_ro_paths: &ro_paths,
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
+            system_authority: &system_authority,
             wayland_bind: &wayland_bind,
             gpu: &gpu,
             keep_fds: &keep_fds,

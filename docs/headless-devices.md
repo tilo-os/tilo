@@ -132,9 +132,9 @@ nothing else from it.
 What revocation reaches, and when:
 
 - The device you revoke from refuses the revoked device's signatures at once,
-  stops dialing it, and drops it from `/var/lib/tilo/personal-device-peers.json`
-  within seconds (`tilo-direct-peer-prune.path` applies the revocation that
-  `revoke` records in `/var/lib/tilo/device-revocations`).
+  stops dialing it, and removes it from its direct peers
+  (`/var/lib/tilo/peers/personal-device-peers.json`); the revocation is
+  recorded beside them in `/var/lib/tilo/peers/device-revocations`.
 - Your other devices learn the revocation when they next exchange identities
   with a device that holds it, which happens whenever they connect. From then on
   they refuse the revoked device, remember the revocation in their own fleet,

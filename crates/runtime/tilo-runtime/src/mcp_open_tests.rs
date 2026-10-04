@@ -876,9 +876,10 @@ fn handles_stand_for_long_ids_and_full_ids_keep_working() {
         .await
         .unwrap();
         assert_eq!(
-            resolved["row"]["resource"], DOC,
-            "a resolved contract names the full id"
+            resolved["row"]["resource"], doc,
+            "a resolved contract names the resource by its handle"
         );
+        assert!(!resolved.to_string().contains(DOC), "{resolved}");
         for name in [doc.as_str(), DOC] {
             call(&mut server, "tilo_invoke", json!({"peer_id": 1, "resource": name, "action": "save-as", "arguments": {"path": "/data/out/a.docx"}}))
                 .await
@@ -1322,6 +1323,74 @@ fn a_batch_invocation_id_is_stable_per_step() {
     );
     assert!(batch_invocation(None, 2).unwrap().is_none());
     assert!(batch_invocation(Some("not-a-uuid"), 0).is_err());
+}
+
+#[test]
+fn a_parent_resource_is_named_as_resources_are_named_elsewhere() {
+    let host = Writer::new(Some("open"));
+    *host.running.lock().unwrap() = true;
+    // A fresh connection: no query has issued a handle yet.
+    let mut server = McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        for parent in ["word_processor.document", DOC] {
+            let children = call(
+                &mut server,
+                "tilo_query",
+                json!({"app_id": APP, "parent_resource": parent}),
+            )
+            .await
+            .unwrap();
+            assert!(
+                resource(&children, "word_processor.document")["actions"]["save-as"].is_string(),
+                "{parent}: {children}"
+            );
+        }
+        let page = call(&mut server, "tilo_query", json!({"app_id": APP}))
+            .await
+            .unwrap();
+        let handle = resource(&page, "word_processor.document")["resource"].clone();
+        let by_handle = call(
+            &mut server,
+            "tilo_query",
+            json!({"app_id": APP, "parent_resource": handle}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            resource(&by_handle, "word_processor.style")["actions"]["toggle-bold"].is_string(),
+            "{by_handle}"
+        );
+
+        let leaf = call(
+            &mut server,
+            "tilo_query",
+            json!({"app_id": APP, "parent_resource": RICH}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            leaf["resources"],
+            json!([]),
+            "a resource with nothing beneath it lists nothing"
+        );
+
+        for (unknown, says) in [
+            ("r42", "no handle of this connection"),
+            ("canvas.artwork", "nothing is listed under canvas.artwork"),
+        ] {
+            let refused = call(
+                &mut server,
+                "tilo_query",
+                json!({"app_id": APP, "parent_resource": unknown}),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                refused.contains(says) && refused.contains("Document (word_processor.document)"),
+                "{refused}"
+            );
+        }
+    });
 }
 
 #[test]

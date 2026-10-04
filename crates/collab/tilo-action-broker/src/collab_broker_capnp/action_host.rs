@@ -17,22 +17,34 @@ use tilo_actions::remote::{
     APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
     ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
-    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility, pending,
-    workspace_provider, workspace_provider_room,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility,
+    application_provider, pending, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationInputs,
-    InvocationOwner, LaunchScope, PublishedAction, PublishedInput, PublishedSurface, ResourceRef,
-    Verb, confirmation_satisfied, permission_verb, published_directory_action,
-    validate_directory_target_input,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
+    InvocationInputs, InvocationOwner, LaunchScope, PublishedAction, PublishedInput,
+    PublishedSurface, ResourceRef, Verb, confirmation_satisfied, permission_verb,
+    published_directory_action, validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
 use tilo_automation::SHORTCUTS_APP_ID;
+
+/// Why an action's arguments are too large to pass, in words a caller can
+/// act on: how large they are, the most one action takes, and to split.
+fn oversized_argument(argument: &str) -> Option<String> {
+    (argument.len() > DIRECTORY_MAX_PARAMS_BYTES).then(|| {
+        format!(
+            "the arguments are {} bytes, over the {} one action takes: split them over several calls of the action",
+            argument.len(),
+            DIRECTORY_MAX_PARAMS_BYTES
+        )
+    })
+}
 
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
@@ -855,7 +867,9 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if is_launchable_provider(&request.target.provider) {
+        if is_launchable_provider(&request.target.provider)
+            || application_provider(&request.target.provider).is_some()
+        {
             return self.invoke_launchable(caller, request);
         }
         if let Some(root) = self.directory_target(caller, request) {
@@ -948,18 +962,45 @@ impl CapnpBrokerState {
     }
 
     /// Check a launchable invocation before anything starts: the caller may
-    /// launch the app and use the retained action, and carries the
-    /// confirmation its contract asks for, so a refusal never costs a launch.
-    /// Returns the workspace to launch into and the application.
+    /// launch the app and use the action, and carries the confirmation its
+    /// contract asks for, so a refusal never costs a launch. An application
+    /// target names an app that may never have run in the workspace; what it
+    /// offers is then only known once it publishes, and the delivery admits
+    /// the invocation against that. Returns the workspace to launch into and
+    /// the application.
     fn admit_launchable(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Result<(Workspace, String), ActionHostError> {
-        let retained = self
-            .launchable
-            .surface_for(&request.target.provider)
-            .ok_or(ActionHostError::UnknownAction)?;
+        let address = &request.target.address;
+        let (room, app_id, offered) =
+            if let Some((room, app_id)) = application_provider(&request.target.provider) {
+                let offered = self
+                    .published_surfaces()
+                    .into_iter()
+                    .chain(self.launchable.surfaces())
+                    .filter(|surface| surface.app_id == app_id && surface.route.cluster_id == room)
+                    .find_map(|surface| {
+                        surface.actions.into_iter().find(|action| {
+                            action.resource == address.resource && action.action == address.action
+                        })
+                    });
+                (room.to_owned(), app_id.to_owned(), offered)
+            } else {
+                let retained = self
+                    .launchable
+                    .surface_for(&request.target.provider)
+                    .ok_or(ActionHostError::UnknownAction)?;
+                let offered = retained
+                    .actions
+                    .into_iter()
+                    .find(|action| {
+                        action.resource == address.resource && action.action == address.action
+                    })
+                    .ok_or(ActionHostError::UnknownAction)?;
+                (retained.route.cluster_id, retained.app_id, Some(offered))
+            };
         // Only a caller on this machine launches apps on this desktop.
         if caller.room().is_none() {
             return Err(ActionHostError::UnknownAction);
@@ -967,39 +1008,31 @@ impl CapnpBrokerState {
         let (workspace, policy, now) = self
             .workspaces_for(caller)
             .into_iter()
-            .find(|(workspace, _, _)| workspace.room.to_string() == retained.route.cluster_id)
+            .find(|(workspace, _, _)| workspace.room.to_string() == room)
             .ok_or(ActionHostError::UnknownAction)?;
-        if workspace.decide_at(
-            &policy,
-            &ResourceRef::App(retained.app_id.clone()),
-            Verb::Write,
-            now,
-        ) != CapDecision::Allow
+        if workspace.decide_at(&policy, &ResourceRef::App(app_id.clone()), Verb::Write, now)
+            != CapDecision::Allow
         {
             return Err(refusal(
                 "the caller is not allowed to launch that application".into(),
             ));
         }
-        let address = &request.target.address;
-        let action = retained
-            .actions
-            .iter()
-            .find(|action| action.resource == address.resource && action.action == address.action)
-            .filter(|action| {
-                Self::allowed(
-                    &workspace,
-                    &policy,
-                    now,
-                    &retained.app_id,
-                    &action.action,
-                    action.contract.permission,
-                )
-            })
-            .ok_or(ActionHostError::UnknownAction)?;
-        if !confirmation_satisfied(action, request.confirmation.as_ref()) {
-            return Err(ActionHostError::ConfirmationRequired);
+        if let Some(action) = offered {
+            if !Self::allowed(
+                &workspace,
+                &policy,
+                now,
+                &app_id,
+                &action.action,
+                action.contract.permission,
+            ) {
+                return Err(ActionHostError::UnknownAction);
+            }
+            if !confirmation_satisfied(&action, request.confirmation.as_ref()) {
+                return Err(ActionHostError::ConfirmationRequired);
+            }
         }
-        Ok((workspace, retained.app_id))
+        Ok((workspace, app_id))
     }
 
     /// Launch `app_id` unless it already publishes the action, then deliver
@@ -1163,6 +1196,9 @@ impl CapnpBrokerState {
         };
         let argument = request.argument.to_slot();
         let address = &request.target.address;
+        if let Some(reason) = argument.as_deref().and_then(oversized_argument) {
+            return Pending::ready(Err(ActionHostError::InvalidRequest { reason }));
+        }
         if validate_directory_target_input(
             &root.cluster_id,
             &revision,
@@ -1298,6 +1334,7 @@ impl CapnpBrokerState {
             root.peer_id,
             (surface, offered),
             InvocationInputs {
+                execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument,
                 actor: &actor,
                 confirmation_token: token.as_deref(),
@@ -1379,6 +1416,7 @@ impl CapnpBrokerState {
             &address.resource,
             &address.action,
             InvocationInputs {
+                execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument: argument.as_deref(),
                 actor: &actor,
                 confirmation_token: token.as_deref(),
@@ -2439,5 +2477,23 @@ mod app_close_tests {
         let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
         assert!(app_actions(&state, &stranger).is_empty());
         assert!(launcher.closed.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod argument_size_tests {
+    use super::*;
+
+    #[test]
+    fn an_oversized_argument_says_its_size_and_the_limit() {
+        assert_eq!(oversized_argument("{}"), None);
+        let big = "x".repeat(DIRECTORY_MAX_PARAMS_BYTES + 1);
+        let reason = oversized_argument(&big).unwrap_or_default();
+        assert!(reason.contains(&big.len().to_string()), "{reason}");
+        assert!(
+            reason.contains(&DIRECTORY_MAX_PARAMS_BYTES.to_string()),
+            "{reason}"
+        );
+        assert!(reason.contains("split"), "{reason}");
     }
 }

@@ -23,6 +23,7 @@ pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
 pub mod app_action_consent;
 pub mod app_close;
+pub mod app_tabs;
 pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
@@ -111,6 +112,7 @@ pub mod personal_continuity;
 pub mod personal_continuity_registry;
 pub mod personal_tethering;
 pub mod personal_tethering_runtime;
+pub mod personal_workspaces;
 pub mod physical_gamepad;
 pub mod placement;
 pub mod portal_dialog;
@@ -237,7 +239,7 @@ pub struct Shell {
 impl Shell {
     /// Constructs a shell hosting the default demo workspace: Terminal
     /// (null backend), Files, Notes, Editor, and a
-    /// Browser chrome. Production launches the packaged WPE-backed browser;
+    /// Browser chrome. Production launches the packaged Chromium browser;
     /// this in-process workspace mirror uses the same `BrowserWidget` contract.
     /// # Panics
     /// Panics if its explicitly temporary fixture directory cannot be created.

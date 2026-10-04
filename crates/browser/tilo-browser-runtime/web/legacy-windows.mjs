@@ -13,12 +13,21 @@
  * pointer, wheel, keys and pasted text on its canvas to the host, which
  * forwards them to the session; anyone else's canvas takes no input.
  *
+ * A stream whose codec is `tilo-paint` is a page the session's browser
+ * shares as a display list (`tilo_paint_stream::wire`): its reassembled
+ * frames go to the runtime (`paintFrame`), which draws the page inside the
+ * desktop with the toolkit, and the input the person gives that window comes
+ * back from the runtime (`takePaintInput`) instead of from a canvas.
+ *
  * Frames: `0xF1 | kind u8 | payload`; kind 1 index (JSON streams), 2 start
  * (JSON stream, first frame of every group), 3 chunk (`flags u8 | seq u32 |
  * ts_us u64 | total u32 | bytes`, big endian), 4 end.
  */
 
 export const LEGACY_APP = 'so.tilo.legacy-window';
+/** Codec of a page shared as a display list rather than as video. */
+export const PAINT_CODEC = 'tilo-paint';
+const CODECS = new Set(['h264', PAINT_CODEC]);
 export const INDEX_RECORD = Object.freeze({app: LEGACY_APP, record: '@tilo:legacy-windows'});
 const FRAME_TAG = 0xf1;
 const KIND_INDEX = 1;
@@ -54,7 +63,7 @@ function validStream(value) {
   if (!value || typeof value !== 'object') return null;
   const {surface, app, codec, width, height, record} = value;
   if (!HEX16.test(surface) || typeof app !== 'string' || !app || app.length > 128
-    || codec !== 'h264' || record !== `@tilo:legacy-window:${surface}`
+    || !CODECS.has(codec) || record !== `@tilo:legacy-window:${surface}`
     || !Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || width > 8192 || height > 8192) return null;
   return {surface, app, codec, width, height, record};
 }
@@ -249,8 +258,13 @@ function defaultCancelFrame(handle) {
  * Bind the legacy-window layer to a mounted desktop surface.
  *
  * - `live()`: the room's live layer (`peer.mjs`), or undefined.
- * - `windows()`: `[{key, rect: [x0, y0, x1, y1]}]`, where the desktop shows
- *   each stream's window (`desktop_peer_windows`), or undefined.
+ * - `windows()`: `[{key, rect: [x0, y0, x1, y1], focused}]`, where the
+ *   desktop shows each stream's window and whether it is the focused one
+ *   (`desktop_peer_windows`), or undefined. A window the desktop focuses
+ *   (opening it, or its tab chosen) takes the keyboard; one it stops
+ *   focusing gives it back to `focusDesktop()`.
+ * - `focusWindow(key)`: the person clicked into the window; the desktop
+ *   focuses it too (`desktop_focus_peer_window`).
  * - `setWindows(list)`: show exactly `[{key, app, title}]` as windows
  *   (`desktop_set_peer_windows`).
  * - `sendInput(publisher, surface, events)`: resolves whether the host took
@@ -258,6 +272,10 @@ function defaultCancelFrame(handle) {
  * - `dismissed()`: the keys of windows the person closed since the last
  *   call (`desktop_dismissed_peer_windows`); each is asked to close at its
  *   source, when this member drives it.
+ * - `paintFrame(key, bytes)`: one reassembled frame of a `tilo-paint`
+ *   stream, for the runtime to draw (`desktop_peer_window_paint`).
+ * - `takePaintInput()`: `[{key, events}]` the person gave painted windows
+ *   since the last call (`desktop_take_peer_window_input`).
  */
 export function createLegacyWindows({
   surface,
@@ -266,6 +284,10 @@ export function createLegacyWindows({
   setWindows,
   sendInput,
   dismissed = () => [],
+  paintFrame = () => false,
+  takePaintInput = () => [],
+  focusWindow = () => {},
+  focusDesktop = () => {},
   mac = /Mac/.test(globalThis.navigator?.platform ?? ''),
   document: doc = globalThis.document,
   VideoDecoder = globalThis.VideoDecoder,
@@ -297,7 +319,7 @@ export function createLegacyWindows({
     frame = requestFrame(tick);
   }
   function publishWindows() {
-    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app)}));
+    const list = [...streams].map(([key, entry]) => ({key, app: entry.stream.app, title: windowTitle(entry.stream.app), codec: entry.stream.codec}));
     const next = JSON.stringify(list);
     if (next === shown) return;
     shown = next;
@@ -312,8 +334,8 @@ export function createLegacyWindows({
     entry.input.length = 0;
     entry.reassembler.reset();
     try { entry.unsubscribe(); } catch {}
-    entry.decoder.close();
-    entry.canvas.remove();
+    entry.decoder?.close();
+    entry.canvas?.remove();
   }
   function addStream(publisher, stream) {
     const key = streamKey(publisher, stream);
@@ -321,6 +343,15 @@ export function createLegacyWindows({
     if (existing) { existing.stream = stream; return; }
     const pixels = [...streams.values()].reduce((sum, entry) => sum + entry.stream.width * entry.stream.height, 0);
     if (streams.size >= MAX_ROOM_STREAMS || pixels + stream.width * stream.height > MAX_ROOM_PIXELS) return;
+    if (stream.codec === PAINT_CODEC) {
+      // Drawn by the runtime inside the desktop: no canvas, no decoder.
+      const entry = {publisher, stream, paint: true, reassembler: createReassembler(), visible: false, rect: '', control: false,
+        input: [], focused: false, keys: new Set(), buttons: new Set()};
+      entry.unsubscribe = api.subscribeMemberRecord(publisher, {app: LEGACY_APP, record: stream.record}, bytes => onStreamFrame(entry, bytes));
+      streams.set(key, entry);
+      probeControl(entry);
+      return;
+    }
     const canvas = doc.createElement('canvas');
     canvas.className = 'tilo-legacy-window';
     canvas.dataset.app = stream.app;
@@ -404,6 +435,11 @@ export function createLegacyWindows({
     entry.pasteKey = false;
     if (!entry.flushing) void flushInput(entry);
   }
+  /** Keys typed on the page go to `entry`'s window. */
+  function takeKeyboard(entry) {
+    entry.canvas.focus?.({preventScroll: true});
+    if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: 0, focused: true}}); }
+  }
   function bindInput(entry) {
     const {canvas} = entry;
     entry.input = [];
@@ -426,8 +462,8 @@ export function createLegacyWindows({
     on('pointerdown', event => {
       if (!entry.control) return;
       event.preventDefault();
-      canvas.focus?.({preventScroll: true});
-      if (!entry.focused) { entry.focused = true; queueInput(entry, {KeyboardFocus: {surface: target, focused: true}}); }
+      takeKeyboard(entry);
+      try { focusWindow(canvas.dataset.key); } catch (error) { report(error); }
       if (motion(event) && BUTTONS[event.button] !== undefined) {
         const button = BUTTONS[event.button];
         entry.buttons.add(button);
@@ -487,7 +523,7 @@ export function createLegacyWindows({
     try {
       if (streams.get(streamKey(entry.publisher, entry.stream)) !== entry) return;
       const {canvas} = entry;
-      const pixels = [...streams.values()].reduce((sum, other) => sum + (other === entry ? 0 : other.canvas.width * other.canvas.height), 0);
+      const pixels = [...streams.values()].reduce((sum, other) => sum + (other === entry || !other.canvas ? 0 : other.canvas.width * other.canvas.height), 0);
       if (picture.displayWidth <= 0 || picture.displayHeight <= 0 || picture.displayWidth > 8192 || picture.displayHeight > 8192
         || pixels + picture.displayWidth * picture.displayHeight > MAX_ROOM_PIXELS) return;
       if (canvas.width !== picture.displayWidth || canvas.height !== picture.displayHeight) {
@@ -506,15 +542,19 @@ export function createLegacyWindows({
     if (!value) return;
     stats.frames++;
     if (value.kind === 'start') {
-      if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record) return;
+      if (value.stream.surface !== entry.stream.surface || value.stream.record !== entry.stream.record
+        || value.stream.codec !== entry.stream.codec) return;
       entry.stream = value.stream;
-      entry.decoder.reset();
+      entry.decoder?.reset();
       entry.reassembler.reset();
     } else if (value.kind === 'chunk') {
       const encoded = entry.reassembler.push(value);
-      if (encoded) entry.decoder.decode(encoded);
+      if (!encoded) return;
+      if (entry.paint) {
+        try { if (paintFrame(streamKey(entry.publisher, entry.stream), encoded.data)) stats.drawn++; } catch (error) { report(error); }
+      } else entry.decoder.decode(encoded);
     } else if (value.kind === 'end') {
-      entry.decoder.reset();
+      entry.decoder?.reset();
       entry.reassembler.reset();
     }
   }
@@ -560,11 +600,13 @@ export function createLegacyWindows({
   function layout() {
     let placed = [];
     try { placed = windows() ?? []; } catch (error) { report(error); }
-    const rects = new Map(placed.map(window => [window.key, window.rect]));
+    const byKey = new Map(placed.map(window => [window.key, window]));
     stats.placed = 0;
     for (const [key, entry] of streams) {
-      const rect = rects.get(key);
+      if (entry.paint) continue;
+      const rect = byKey.get(key)?.rect;
       if (!rect) {
+        followDesktopFocus(entry, false);
         if (entry.visible) { releaseInput(entry); entry.canvas.blur?.(); entry.canvas.style.display = 'none'; entry.visible = false; }
         continue;
       }
@@ -580,7 +622,16 @@ export function createLegacyWindows({
       const events = entry.control ? 'auto' : 'none';
       if (entry.canvas.style.pointerEvents !== events) entry.canvas.style.pointerEvents = events;
       if (!entry.visible) { entry.canvas.style.display = 'block'; entry.visible = true; }
+      followDesktopFocus(entry, Boolean(byKey.get(key).focused && entry.control));
     }
+  }
+  /** The desktop's focus moving onto a window (opened, or its tab chosen)
+   * hands it the keyboard; moving off, back to the desktop. */
+  function followDesktopFocus(entry, focus) {
+    if (focus === Boolean(entry.desktopFocus)) return;
+    entry.desktopFocus = focus;
+    if (focus) takeKeyboard(entry);
+    else if (doc.activeElement === entry.canvas) { try { focusDesktop(); } catch (error) { report(error); } }
   }
   /** Ask the source of each window the person closed to close it. */
   function closeDismissed() {
@@ -593,10 +644,21 @@ export function createLegacyWindows({
       sendInput(entry.publisher, entry.stream.surface, ['Close']).catch(report);
     }
   }
+  /** Send what the person did on painted windows to their hosts. */
+  function forwardPaintInput() {
+    let batches = [];
+    try { batches = takePaintInput() ?? []; } catch (error) { report(error); }
+    for (const {key, events} of batches) {
+      const entry = streams.get(key);
+      if (!entry?.paint || !Array.isArray(events)) continue;
+      for (const event of events) queueInput(entry, event);
+    }
+  }
   function tick() {
     frame = undefined;
     if (closed) return;
     closeDismissed();
+    forwardPaintInput();
     layout();
     // Windows move with every presented frame (scrolls, drags, resizes).
     if (streams.size) schedule();
@@ -607,7 +669,7 @@ export function createLegacyWindows({
   return {
     layer,
     stats: () => ({...stats, streams: streams.size, visible: [...streams.values()].filter(entry => entry.visible).length,
-      decoded: [...streams.values()].reduce((sum, entry) => sum + entry.decoder.stats.decoded, 0)}),
+      decoded: [...streams.values()].reduce((sum, entry) => sum + (entry.decoder?.stats.decoded ?? 0), 0)}),
     /** Streams by key, with whether this member drives them and whether they are on screen. */
     streams: () => [...streams].map(([key, entry]) => ({key, publisher: entry.publisher, ...entry.stream, control: entry.control, visible: entry.visible})),
     wake() { schedule(); },

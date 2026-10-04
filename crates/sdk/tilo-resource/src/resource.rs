@@ -217,6 +217,19 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// What declared action `action` (one [`ActionDecl::answering`]) made,
+    /// answered to its caller once it applied to `doc` as `changes`: the
+    /// ids it minted, the area it selected, a warning that what it drew is
+    /// hidden. A compact summary, so the caller needs no second read to
+    /// see what happened. The default answers nothing.
+    fn answer(
+        _doc: &Doc,
+        _action: &str,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
     /// The stored layout of this resource's content, for services that act
     /// on it generically: History restores a past version through it, field
     /// by field and item by item. `#[resource]` returns the record's
@@ -245,6 +258,21 @@ pub trait Resource: Sized + 'static {
 pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
+
+/// The edits of a resource whose document holds nothing. An app whose data
+/// lives entirely outside any document — credentials in this device's
+/// encrypted vault, a device's hardware — publishes that data as live rows
+/// and effects, and its resource is only the door they are published on.
+/// No value exists, so nothing is ever applied, undone or synced.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub enum NoAction {}
+
+impl tilo_actions::Action for NoAction {
+    // No value exists to apply.
+    fn apply(&self, _doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        Ok(())
+    }
+}
 
 /// A search index entry. `anchor` addresses what a hit opens (an item id);
 /// `action`, when set, is the published action a hit invokes, so choosing it
@@ -297,6 +325,8 @@ pub struct ActionDecl<R: Resource> {
     pub params: Vec<ActionParam>,
     pub permission: PermissionRequirement,
     pub destructive: bool,
+    /// Whether it answers what it made ([`Resource::answer`]).
+    pub answers: bool,
     pub build: BuildAction<R>,
 }
 
@@ -309,6 +339,7 @@ impl<R: Resource> Clone for ActionDecl<R> {
             params: self.params.clone(),
             permission: self.permission,
             destructive: self.destructive,
+            answers: self.answers,
             build: Arc::clone(&self.build),
         }
     }
@@ -328,6 +359,7 @@ impl<R: Resource> ActionDecl<R> {
             params,
             permission: PermissionRequirement::Write,
             destructive: false,
+            answers: false,
             build: Arc::new(build),
         }
     }
@@ -347,6 +379,14 @@ impl<R: Resource> ActionDecl<R> {
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
+        self
+    }
+
+    /// Answer the caller with what the action made, from
+    /// [`Resource::answer`].
+    #[must_use]
+    pub fn answering(mut self) -> Self {
+        self.answers = true;
         self
     }
 }
@@ -496,6 +536,11 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     }
     if decl.destructive {
         spec = spec.destructive();
+    }
+    if decl.answers {
+        spec.contract.result = tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
     }
     spec
 }

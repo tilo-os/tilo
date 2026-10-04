@@ -60,6 +60,7 @@ fn paint(art: &mut Replica<ArtworkResource>, layer: Option<&str>, strokes: Vec<N
         CanvasAction::Paint(Paint {
             layer: layer.map(Into::into),
             strokes,
+            group: None,
         }),
     )
     .unwrap();
@@ -242,6 +243,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 colour: String::new(),
                 ..line("blank", [0.0, 0.0], [10.0, 0.0], 1.0)
             }],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -254,6 +256,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 line("crayon", [0.0, 0.0], [10.0, 0.0], 1.0),
                 "crayon",
             )],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -269,10 +272,57 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 params: Some(BTreeMap::from([("load".to_owned(), 0.3)])),
                 ..line("loaded", [0.0, 0.0], [10.0, 0.0], 1.0)
             }],
+            group: None,
         }),
     )
     .unwrap_err();
     assert!(medium.contains("flow, hardness"), "{medium}");
+}
+
+/// `inspect` lists an eraser with what it takes paint off, and it is
+/// removed by id like any mark, the paint under it back.
+#[test]
+fn an_eraser_is_listed_with_what_it_erases_and_removed_by_id() {
+    let mut art = sheet(300.0, 200.0);
+    paint(
+        &mut art,
+        None,
+        vec![
+            line("crossed", [20.0, 60.0], [280.0, 60.0], 1.0),
+            line("apart", [20.0, 160.0], [100.0, 160.0], 1.0),
+        ],
+    );
+    paint(
+        &mut art,
+        None,
+        vec![NewStroke {
+            id: Some("rub".into()),
+            points: vec![vec![150.0, 20.0], vec![150.0, 100.0]],
+            size: 30.0,
+            brush: Some("eraser".into()),
+            ..NewStroke::default()
+        }],
+    );
+    let state = art.state().unwrap();
+    let listed = view_ops::inspect(&state, &canvas::resource::Inspect::default()).unwrap();
+    let rub = listed["marks_bottom_first"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|mark| mark["id"] == "rub")
+        .unwrap()
+        .clone();
+    assert_eq!(rub["brush"], "eraser");
+    assert_eq!(rub["erases"], serde_json::json!(["crossed"]), "{rub}");
+    apply(
+        &mut art,
+        CanvasAction::RemoveMarks(RemoveMarks {
+            ids: vec!["rub".into()],
+            ..RemoveMarks::default()
+        }),
+    )
+    .unwrap();
+    assert!(art.state().unwrap().mark("rub").is_none());
 }
 
 /// A stroke eraser takes the strokes a path crosses, whole, in one step,

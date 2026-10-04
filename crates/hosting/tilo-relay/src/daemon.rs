@@ -625,6 +625,14 @@ impl Relay {
             .authorized_by(&identity.device_cert.capabilities)
             .limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
+        // Reject unavailable local backends before binding endpoints, publishing
+        // capabilities or starting background tasks.
+        let environments = crate::environment_host::worker_environments(
+            cfg.environments.as_ref().filter(|_| cfg.services.compute),
+            &cfg.state_root.join("environments"),
+            &identity.device_signing_key,
+            &tilo_user_identity::IdentityPaths::under(&cfg.identity_root).device_privkey,
+        )?;
         let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
@@ -744,6 +752,7 @@ impl Relay {
             full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
             state_root: cfg.state_root.clone(),
+            workspaces: workspaces.clone(),
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
@@ -863,12 +872,7 @@ impl Relay {
                 workspaces: cfg.workspaces.iter().map(|binding| binding.id).collect(),
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
-                environments: crate::environment_host::worker_environments(
-                    cfg.environments.as_ref(),
-                    &cfg.state_root.join("environments"),
-                    &identity.device_signing_key,
-                    &tilo_user_identity::IdentityPaths::under(&cfg.identity_root).device_privkey,
-                ),
+                environments,
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {
@@ -1857,14 +1861,16 @@ struct RecordedRevocations {
 
 impl RecordedRevocations {
     fn entries(&self) -> Vec<tilo_user_identity::RevocationEntry> {
-        tilo_relay_protocol::personal_devices::read_revocations(&self.identity_root)
-            .map(|list| {
-                list.iter()
-                    .filter(|entry| entry.user_public_key == self.user_public_key)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+        tilo_relay_protocol::personal_devices::read_revocations(
+            &tilo_relay_protocol::personal_devices::peers_dir(&self.identity_root),
+        )
+        .map(|list| {
+            list.iter()
+                .filter(|entry| entry.user_public_key == self.user_public_key)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
     }
 }
 
@@ -2121,6 +2127,21 @@ struct DiscoveryProtocol {
     autobind: Option<WorkspaceAutobind>,
 }
 
+/// What this relay's workers run for environments, across its workspaces.
+async fn environment_offer(
+    workspaces: &WorkspaceRegistry,
+) -> tilo_relay_protocol::RelayEnvironments {
+    let bound: Vec<SharedWorkspace> = workspaces.lock().await.values().cloned().collect();
+    let now_ms = tilo_clock::unix_now_ms();
+    let mut offer = tilo_relay_protocol::RelayEnvironments::default();
+    for workspace in bound {
+        let here = workspace.lock().await.compute.environment_offer(now_ms);
+        offer.sessions |= here.sessions;
+        offer.legacy_apps |= here.legacy_apps;
+    }
+    offer
+}
+
 #[derive(Clone)]
 struct ManagementProtocol {
     endpoint: Endpoint,
@@ -2132,6 +2153,7 @@ struct ManagementProtocol {
     full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
+    workspaces: WorkspaceRegistry,
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -2255,6 +2277,7 @@ impl ProtocolHandler for ManagementProtocol {
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| self.own_cert.device_label.clone());
         let files_ready = self.full_replica.current().is_some();
+        let environments = environment_offer(&self.workspaces).await;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
@@ -2263,6 +2286,7 @@ impl ProtocolHandler for ManagementProtocol {
                 label: label.trim().to_string(),
                 files_ready,
                 services,
+                environments,
                 decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
@@ -2986,8 +3010,8 @@ mod tests {
             signature: [0; 64],
         };
         sign_revocation_entry(&mut entry, &root).unwrap();
-        tilo_relay_protocol::personal_devices::record_revocation(identity_root.path(), &entry)
-            .unwrap();
+        let peers = tilo_relay_protocol::personal_devices::peers_dir(identity_root.path());
+        tilo_relay_protocol::personal_devices::record_revocation(&peers, &entry).unwrap();
         let recorded = RecordedRevocations {
             identity_root: identity_root.path().to_path_buf(),
             user_public_key: user.public_key,
@@ -2999,12 +3023,8 @@ mod tests {
         assert!(live.revocation_of(&user.public_key, &[7; 32]).is_some());
         // The shared directory loses the file; the relay keeps the revocation,
         // in memory and in its own log.
-        std::fs::remove_dir_all(
-            identity_root
-                .path()
-                .join(tilo_relay_protocol::personal_devices::REVOCATIONS_DIR),
-        )
-        .unwrap();
+        std::fs::remove_dir_all(peers.join(tilo_relay_protocol::personal_devices::REVOCATIONS_DIR))
+            .unwrap();
         let live =
             refresh_revocations_once(state.path(), &recorded, &RevocationList::new(), &mut kept)
                 .unwrap();

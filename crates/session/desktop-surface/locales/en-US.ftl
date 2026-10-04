@@ -758,6 +758,13 @@ workspace-settings-rename-admin-only = Only a workspace administrator can rename
 workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
 workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
 workspace-settings-invite-create = Create
+workspace-settings-devices-title = Your devices
+workspace-settings-device-here = { $device } (this device)
+workspace-settings-device-shown = Shown
+workspace-settings-device-hidden = Kept off
+workspace-settings-move-earlier = Move up
+workspace-settings-move-later = Move down
+workspace-settings-delete = Delete workspace
 workspace-settings-invite-title = Invite people
 workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
 workspace-settings-glance-title = At a glance
@@ -809,18 +816,18 @@ a11y-shell-workspace-activity-description = Review grouped outcomes and what hap
 
 # Empty-workspace launchpad
 launchpad-title = Make something together
-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
+launchpad-description = Choose a shared conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
 launchpad-notes = Notes
 launchpad-tasks = Tasks
-launchpad-meet = Plan a meeting
+launchpad-meet = Start a call
 launchpad-invite = Invite people
 launchpad-activity = Catch up
 launchpad-discuss-detail = Open the shared conversation
 launchpad-notes-detail = Write ideas together
-launchpad-tasks-detail = Plan work in Calendar
-launchpad-meet-detail = Open Chat, then start a voice or video call
+launchpad-tasks-detail = Open the to-do list in Calendar
+launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
 

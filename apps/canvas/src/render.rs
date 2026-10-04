@@ -196,6 +196,14 @@ const ERASED: Color = Color::TRANSPARENT.with_alpha(1.0);
 pub const SHADOW_INK: Color = Color::from_rgba8(0, 0, 0, 96); // document colour
 
 impl Renderer {
+    /// A renderer that draws a placeholder for a picture still decoding,
+    /// decoding it in the background, instead of waiting for it.
+    pub fn impatient() -> Self {
+        let mut renderer = Self::default();
+        renderer.pictures.patient = false;
+        renderer
+    }
+
     /// Draw `art` into `scene`, artwork units mapped by `transform`.
     pub fn draw(
         &mut self,
@@ -470,87 +478,10 @@ impl Renderer {
         pictures
     }
 
-    /// The colour of the paint at `at`: the topmost shown layer's there,
-    /// else the ground's. A painted layer answers from its simulation as last
-    /// drawn.
-    pub fn sample(&mut self, art: &Artwork, at: Point) -> Color {
-        for layer in art
-            .layers
-            .iter()
-            .rev()
-            .filter(|layer| layer.visible && !layer.is_mask())
-        {
-            if let Some(entry) = self.painted.get(&layer.id)
-                && let Some(image) = &entry.image
-                && let Some(colour) = pixel(image, Affine::scale(cell_scale(art)) * at)
-                && colour.components[3] > 0.06
-            {
-                return colour.with_alpha(1.0);
-            }
-            let palette = media::palette_for(art, &layer.id);
-            let hit = art
-                .marks_of(&layer.id)
-                .filter(|mark| mark.hit(at) && art.clipped_in(mark, at))
-                .last();
-            if let Some(mark) = hit
-                && let Some(colour) = self.picture_colour(layer, mark, at)
-            {
-                return colour;
-            }
-            if let Some(mark) = hit {
-                let style = &mark.style;
-                let named = if mark.shape.closed() || matches!(mark.shape, Shape::Text { .. }) {
-                    style.fill.as_ref().or(style.stroke.as_ref())
-                } else {
-                    style.stroke.as_ref().or(style.fill.as_ref())
-                };
-                let gradient = style
-                    .gradient
-                    .as_ref()
-                    .and_then(|gradient| gradient.stops.first())
-                    .map(|(_, colour)| colour);
-                if let Some(colour) = named.or(gradient).and_then(|named| colour(named, &palette)) {
-                    return colour.with_alpha(1.0);
-                }
-            }
-        }
-        if Texture::parse(&art.ground.texture).is_some_and(|texture| texture != Texture::Smooth)
-            && let Some(colour) = pixel(
-                &self.ground(art).2.clone(),
-                Affine::scale(cell_scale(art)) * at,
-            )
-        {
-            return colour;
-        }
-        colour(&art.ground.colour, &[]).unwrap_or(BLANK_GROUND)
-    }
-
     /// The reference picture, decoded once per picture.
     pub fn reference_image(&mut self, art: &Artwork) -> Option<ImageData> {
         let address = &art.reference.as_ref()?.image;
         self.pictures.full(address)
-    }
-
-    /// The colour of an image mark's picture at `at`, graded as shown.
-    fn picture_colour(&mut self, layer: &Layer, mark: &Mark, at: Point) -> Option<Color> {
-        let Shape::Image { src, .. } = &mark.shape else {
-            return None;
-        };
-        let placement = Placement::of(&mark.shape)?;
-        let image = self.pictures.full(src)?;
-        let local = mark.affine().inverse() * at;
-        let rgba = crate::picture::pixel_at(&image, &placement, local)?;
-        let mut rgba = rgba;
-        for adjust in [mark.style.adjust.as_ref(), layer.adjust.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(grade) = adjust.grade() {
-                rgba = grade.colour(rgba);
-            }
-        }
-        let [r, g, b, _] = rgba;
-        Some(Color::from_rgba8(r, g, b, 255))
     }
 
     /// Where the reference lies: its frame, or fitted to the artwork with
@@ -1026,25 +957,49 @@ pub fn selection_outline(scene: &mut Scene, path: &BezPath, width: f64, phase: f
     );
 }
 
-/// The straight-alpha pixel of `image` at `at` (pixel coordinates).
-fn pixel(image: &ImageData, at: Point) -> Option<Color> {
-    if at.x < 0.0 || at.y < 0.0 {
-        return None;
-    }
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "non-negative and checked against the image's size below"
-    )]
-    let (column, row) = (at.x.floor() as u32, at.y.floor() as u32);
-    if column >= image.width || row >= image.height {
-        return None;
-    }
-    let start =
-        usize::try_from((u64::from(row) * u64::from(image.width) + u64::from(column)) * 4).ok()?;
-    let rgba = image.data.data().get(start..start.checked_add(4)?)?;
-    let [red, green, blue, alpha] = <[u8; 4]>::try_from(rgba).ok()?;
-    Some(Color::from_rgba8(red, green, blue, alpha))
+/// Where an eraser took paint off, outlined over the artwork: faint dots,
+/// light under dark so they read over any paint, or `marked` (hovered or
+/// picked) in that colour.
+pub fn eraser_outline(scene: &mut Scene, path: &BezPath, marked: Option<Color>) {
+    let (under, dashes, ink) = match marked {
+        Some(colour) => (
+            Stroke::new(2.5),
+            Stroke::new(1.5).with_dashes(0.0, [6.0, 3.0]),
+            colour,
+        ),
+        None => (
+            Stroke::new(2.0),
+            Stroke::new(1.0).with_dashes(0.0, [2.0, 3.0]),
+            SHADOW_INK.with_alpha(0.75),
+        ),
+    };
+    scene.stroke(
+        &under,
+        Affine::IDENTITY,
+        BLANK_GROUND.multiply_alpha(if marked.is_some() { 0.9 } else { 0.55 }),
+        None,
+        path,
+    );
+    scene.stroke(&dashes, Affine::IDENTITY, ink, None, path);
+}
+
+/// Where a brush or eraser will land, round the pointer: a dark ring
+/// under a light one, so it reads on any paint.
+pub fn footprint_ring(scene: &mut Scene, path: &BezPath) {
+    scene.stroke(
+        &Stroke::new(1.5),
+        Affine::IDENTITY,
+        SHADOW_INK.with_alpha(0.6),
+        None,
+        path,
+    );
+    scene.stroke(
+        &Stroke::new(0.75),
+        Affine::IDENTITY,
+        BLANK_GROUND.multiply_alpha(0.9),
+        None,
+        path,
+    );
 }
 
 fn image(pixels: Vec<u8>, width: usize, height: usize) -> ImageData {
@@ -1365,33 +1320,17 @@ pub fn silhouette(mark: &Mark) -> BezPath {
     }
 }
 
-fn wet_points(points: &[Vec<f64>]) -> Vec<WetPoint> {
-    points
-        .iter()
-        .map(|point| {
-            WetPoint::new(
-                narrow(point.first().copied().unwrap_or(0.0)),
-                narrow(point.get(1).copied().unwrap_or(0.0)),
-                narrow(point.get(2).copied().unwrap_or(1.0)),
-            )
-        })
-        .collect()
-}
-
 /// A stroke drawn by the round ink brush: its own line, or every twig or
 /// dab it grows into, each after the stroke's smoothing.
 fn ink_strokes(mark: &Mark) -> BezPath {
     let smoothing = crate::brushes::Dynamics::of_mark(mark).smoothing;
     let mut path = BezPath::new();
     for (points, size) in crate::brushes::pieces(mark) {
+        // Laid as every brush lays its path, so its corners stay sharp.
         let points = crate::brushes::steady_ends(&points, size);
-        let points = if smoothing > 0.0 {
-            crate::brushes::smoothed(&points, smoothing)
-        } else {
-            points
-        };
+        let samples = crate::brushes::samples(&points, 0.75, smoothing, size);
         path.extend(
-            ink_outline(&wet_points(&points), narrow(size))
+            ink_outline(&samples, narrow(size))
                 .elements()
                 .iter()
                 .copied(),
@@ -1400,9 +1339,8 @@ fn ink_strokes(mark: &Mark) -> BezPath {
     path
 }
 
-fn ink_outline(points: &[WetPoint], size: f32) -> BezPath {
-    let samples = tilo_wet_media::brush::smooth(points, 0.75);
-    let outline = tilo_wet_media::brush::ink_outline(&samples, size);
+fn ink_outline(samples: &[tilo_wet_media::brush::Sample], size: f32) -> BezPath {
+    let outline = tilo_wet_media::brush::ink_outline(samples, size);
     let mut path = BezPath::new();
     for (index, (x, y)) in outline.iter().enumerate() {
         let point = Point::new(f64::from(*x), f64::from(*y));
@@ -1692,6 +1630,7 @@ fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
         dabs,
         scatter,
         dab_length,
+        hatch,
     } = &mark.shape
     {
         // Hashed as bytes: this runs for every dabbed stroke every frame.
@@ -1702,7 +1641,9 @@ fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
             key.update(&[0xff]);
         }
         key.update(&size.to_le_bytes());
-        key.update(format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}").as_bytes());
+        key.update(
+            format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}{hatch:?}").as_bytes(),
+        );
     }
     key.update(format!("{:?}{:?}{:?}", style.brush, style.params, style.angle).as_bytes());
     key.update(&rgb);

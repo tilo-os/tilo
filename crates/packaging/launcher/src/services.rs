@@ -444,12 +444,25 @@ fn resolve_blob_bind_at(
         tracing::warn!(app_id, room, "no document media scope for this launch");
         return Ok(None);
     }
-    if !path.exists() {
-        tracing::warn!(
-            path = %path.display(),
-            "document media service is unavailable; the app keeps media in memory"
-        );
-        return Ok(None);
+    // Say which: a missing socket is the media service not running, a
+    // refused lookup is this person not being allowed to reach it.
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::warn!(
+                path = %path.display(),
+                "document media service is not running; the app keeps media in memory"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                path = %path.display(),
+                "document media service is out of this person's reach; the app keeps media in memory"
+            );
+            return Ok(None);
+        }
     }
     let mut stream = match UnixStream::connect(path) {
         Ok(stream) => stream,

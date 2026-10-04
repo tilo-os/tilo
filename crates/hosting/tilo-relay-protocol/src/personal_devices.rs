@@ -2,28 +2,27 @@
 //! dials directly, the workspace rooms they share, and what its running
 //! session last saw of each of them.
 //!
-//! Enrollment writes the first two beside the identity root (normally
-//! `/var/lib/tilo`); only a privileged enrollment path may change them. The
-//! session reads them on every refresh, so a new entry takes effect without a
-//! restart. The presence snapshot is the session's read-only projection of
-//! its live connections, for status tools that run outside the session.
+//! Enrollment writes the first two in the identity's peers directory below
+//! the identity root (normally `/var/lib/tilo/peers`, beside the home-peer
+//! registry; see [`peers_dir`]). The person's own account writes there while
+//! joining or approving, and the session reads it on every refresh, so a new
+//! entry takes effect without a restart. The presence snapshot is the
+//! session's read-only projection of its live connections, for status tools
+//! that run outside the session.
 //!
 //! Each direct peer is recorded with the identity whose certificate the
-//! privileged enrollment checked when it wrote the entry, so an entry speaks
-//! for one person's device and nothing else.
+//! enrollment checked when it wrote the entry, so an entry speaks for one
+//! person's device and nothing else.
 //!
 //! Revocations the person's root signed reach this machine through its
-//! session or `tilo-identity revoke`, neither of which may rewrite the
-//! direct-peer list. They drop the verified entry into [`REVOCATIONS_DIR`]
-//! (group-writable and sticky, like the enrollment nonces); every reader of
-//! the list skips the devices revoked there at once, and a privileged pass
-//! ([`prune_revoked_direct_peers`]) removes them from the list itself. A
-//! revocation removes only entries recorded under the identity that signed
-//! it, so a revocation from any other root — whoever dropped it — prunes
-//! nothing the enrollment wrote for this person. Nothing in the directory is
-//! trusted before its root signature verifies, and a hostile file there (a
-//! symlink, a FIFO, an oversized or misnamed one) is skipped without blocking
-//! the reader.
+//! session or `tilo-identity revoke`. Either records the verified entry in
+//! [`REVOCATIONS_DIR`] (sticky, so no account removes another's entry) and
+//! prunes the revoked device from the direct-peer list
+//! ([`prune_revoked_direct_peers`]); every reader also skips devices revoked
+//! there. A revocation removes only entries recorded under the identity that
+//! signed it. Nothing in the directory is trusted before its root signature
+//! verifies, and a hostile file there (a symlink, a FIFO, an oversized or
+//! misnamed one) is skipped without blocking the reader.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,17 +30,38 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// The person's other devices this machine dials directly, each with the
-/// identity it belongs to, beside the identity root.
+/// identity it belongs to, in [`peers_dir`].
 pub const DIRECT_PEERS_FILE: &str = "personal-device-peers.json";
 
 /// Workspace rooms an enrolling device adopts from the device that enrolled
-/// it, beside the identity root.
+/// it, in [`peers_dir`].
 pub const ROOMS_FILE: &str = "personal-rooms.json";
 
-/// Directory beside the identity root holding root-signed revocations, one
+/// Directory in [`peers_dir`] holding root-signed revocations, one
 /// `<identity>-<device>.json` file each (or `<identity>-<device>.<suffix>.json`
 /// when another file already holds that name).
 pub const REVOCATIONS_DIR: &str = "device-revocations";
+
+/// The identity's peers directory below `identity_root`: the home-peer
+/// registry, the direct peers, the shared rooms and recorded revocations.
+#[must_use]
+pub fn peers_dir(identity_root: &Path) -> PathBuf {
+    tilo_user_identity::home_peer_registry_path(identity_root)
+        .parent()
+        .map_or_else(|| identity_root.join("peers"), Path::to_path_buf)
+}
+
+/// Where the direct-peer list of `identity_root` lives.
+#[must_use]
+pub fn direct_peers_path(identity_root: &Path) -> PathBuf {
+    peers_dir(identity_root).join(DIRECT_PEERS_FILE)
+}
+
+/// Where the shared-room list of `identity_root` lives.
+#[must_use]
+pub fn rooms_path(identity_root: &Path) -> PathBuf {
+    peers_dir(identity_root).join(ROOMS_FILE)
+}
 
 /// Bound on valid revocations [`read_revocations`] takes from
 /// [`REVOCATIONS_DIR`].
@@ -283,8 +303,8 @@ fn suffix_for(entry: &tilo_user_identity::RevocationEntry, attempt: u32) -> Stri
     hex::encode(&hasher.finalize().as_bytes()[..8])
 }
 
-/// Drop a root-signed revocation into [`REVOCATIONS_DIR`] under
-/// `identity_root`. Returns whether a new file was written; when a file
+/// Drop a root-signed revocation into [`REVOCATIONS_DIR`] in the
+/// peers directory `peers` (see [`peers_dir`]). Returns whether a new file was written; when a file
 /// there already holds this exact verified entry it is left alone. The
 /// directory is shared, so a name taken by anything else is not trusted as
 /// "recorded": the entry goes under a suffixed name instead.
@@ -293,12 +313,12 @@ fn suffix_for(entry: &tilo_user_identity::RevocationEntry, attempt: u32) -> Stri
 ///
 /// When the entry's signature does not verify or no file can be written.
 pub fn record_revocation(
-    identity_root: &Path,
+    peers: &Path,
     entry: &tilo_user_identity::RevocationEntry,
 ) -> io::Result<bool> {
     tilo_user_identity::verify_revocation_entry(entry)
         .map_err(|_| invalid("revocation signature does not verify"))?;
-    let directory = identity_root.join(REVOCATIONS_DIR);
+    let directory = peers.join(REVOCATIONS_DIR);
     std::fs::create_dir_all(&directory)?;
     let stem = revocation_stem(entry);
     if let Ok(names) = std::fs::read_dir(&directory) {
@@ -409,8 +429,8 @@ fn scan_revocations(directory: &Path) -> io::Result<tilo_user_identity::Revocati
     Ok(list)
 }
 
-/// The verified revocations recorded in [`REVOCATIONS_DIR`] under
-/// `identity_root`. Files that are not regular, oversized, misnamed or
+/// The verified revocations recorded in [`REVOCATIONS_DIR`] in the
+/// peers directory `peers` (see [`peers_dir`]). Files that are not regular, oversized, misnamed or
 /// unsigned are skipped and do not count toward [`MAX_REVOCATIONS`]. A
 /// reading is reused while the directory is unchanged (no entry added,
 /// renamed or removed), so frequent callers verify nothing twice.
@@ -418,8 +438,8 @@ fn scan_revocations(directory: &Path) -> io::Result<tilo_user_identity::Revocati
 /// # Errors
 ///
 /// When the directory exists but cannot be listed.
-pub fn read_revocations(identity_root: &Path) -> io::Result<tilo_user_identity::RevocationList> {
-    let directory = identity_root.join(REVOCATIONS_DIR);
+pub fn read_revocations(peers: &Path) -> io::Result<tilo_user_identity::RevocationList> {
+    let directory = peers.join(REVOCATIONS_DIR);
     let metadata = match std::fs::metadata(&directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -449,7 +469,7 @@ pub fn read_revocations(identity_root: &Path) -> io::Result<tilo_user_identity::
     Ok(list)
 }
 
-/// The devices of `user_public_key` recorded at `identity_root` as direct
+/// The devices of `user_public_key` recorded in the peers directory `peers` as direct
 /// peers that its root has not revoked — what a session dials. Revocations
 /// count from [`REVOCATIONS_DIR`] and from `known`, the ones the caller
 /// already holds.
@@ -458,12 +478,12 @@ pub fn read_revocations(identity_root: &Path) -> io::Result<tilo_user_identity::
 ///
 /// When the peer list cannot be read or violates its schema.
 pub fn live_direct_peers(
-    identity_root: &Path,
+    peers: &Path,
     user_public_key: &[u8; 32],
     known: &tilo_user_identity::RevocationList,
 ) -> io::Result<Vec<[u8; 32]>> {
-    let recorded = read_revocations(identity_root).unwrap_or_default();
-    Ok(read_direct_peers(&identity_root.join(DIRECT_PEERS_FILE))?
+    let recorded = read_revocations(peers).unwrap_or_default();
+    Ok(read_direct_peers(&peers.join(DIRECT_PEERS_FILE))?
         .into_iter()
         .filter(|peer| &peer.identity == user_public_key)
         .map(|peer| peer.device)
@@ -474,17 +494,16 @@ pub fn live_direct_peers(
         .collect())
 }
 
-/// Remove from the direct-peer list at `identity_root` every entry whose
+/// Remove from the direct-peer list in the peers directory `peers` every entry whose
 /// device was revoked, in [`REVOCATIONS_DIR`], by the identity the entry was
-/// recorded under. Run with the privilege to rewrite the list. Returns the
-/// entries removed.
+/// recorded under. Returns the entries removed.
 ///
 /// # Errors
 ///
 /// When the list cannot be read or replaced.
-pub fn prune_revoked_direct_peers(identity_root: &Path) -> io::Result<Vec<DirectPeer>> {
-    let revocations = read_revocations(identity_root)?;
-    let path = identity_root.join(DIRECT_PEERS_FILE);
+pub fn prune_revoked_direct_peers(peers: &Path) -> io::Result<Vec<DirectPeer>> {
+    let revocations = read_revocations(peers)?;
+    let path = peers.join(DIRECT_PEERS_FILE);
     let mut removed = Vec::new();
     for peer in read_direct_peers(&path)? {
         if revocations
@@ -665,7 +684,7 @@ mod tests {
     #[test]
     fn lists_merge_without_losing_entries_and_refuse_bad_input() {
         let dir = tempfile::tempdir().unwrap();
-        let peers = dir.path().join(DIRECT_PEERS_FILE);
+        let peers = direct_peers_path(dir.path());
         assert!(read_direct_peers(&peers).unwrap().is_empty());
         assert!(remember_direct_peers(&peers, &[peer(9, 1)]).unwrap());
         assert!(remember_direct_peers(&peers, &[peer(9, 2), peer(9, 1)]).unwrap());
@@ -738,7 +757,7 @@ mod tests {
         forged.signature[0] ^= 1;
         assert!(record_revocation(dir.path(), &forged).is_err());
         std::fs::write(
-            dir.path()
+            peers_dir(dir.path())
                 .join(REVOCATIONS_DIR)
                 .join(format!("{}.json", revocation_stem(&forged))),
             serde_json::to_vec(&forged).unwrap(),

@@ -161,24 +161,6 @@ pub trait SecretBackend: Send + Sync {
     fn probe(&self) -> Result<(), SecretError> {
         Ok(())
     }
-    /// The first secret an earlier tool stored under its own item
-    /// `attributes` (`secret-tool store --label=… <name> <value> …`). Only
-    /// the Secret Service has item attributes; other stores have none.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
-    fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
-        let _ = attributes;
-        Ok(None)
-    }
-    /// Delete every item carrying `attributes`; none is success.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
-    fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
-        let _ = attributes;
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -334,50 +316,6 @@ impl SecretStore {
     pub fn delete_blocking(&self, key: &str) -> Result<(), SecretError> {
         check_key(key)?;
         self.sync()?.delete(&self.app, key)
-    }
-
-    /// The secret under `key`, else one an earlier build stored in the
-    /// Secret Service under its own `legacy` item attributes, which is copied
-    /// under `key` and read back before it is returned. The legacy item stays
-    /// for older builds; [`delete_with_legacy_blocking`](Self::delete_with_legacy_blocking)
-    /// removes both. Stores without item attributes (the Keychain, the
-    /// browser) read `key` alone. Desktop code only.
-    ///
-    /// # Errors
-    /// As `get_blocking` and `put_blocking`, or the copy did not read back.
-    pub fn get_or_adopt_blocking(
-        &self,
-        key: &str,
-        legacy: &[(&str, &str)],
-        options: PutOptions,
-    ) -> Result<Option<Secret>, SecretError> {
-        if let Some(secret) = self.get_blocking(key)? {
-            return Ok(Some(secret));
-        }
-        let Some(adopted) = self.sync()?.legacy_get(legacy)? else {
-            return Ok(None);
-        };
-        self.put_blocking(key, adopted.expose(), options)?;
-        match self.get_blocking(key)? {
-            Some(stored) if stored == adopted => Ok(Some(adopted)),
-            _ => Err(SecretError::Failed(
-                "the secret store did not return the adopted secret".into(),
-            )),
-        }
-    }
-
-    /// Delete `key` and any item an earlier build stored under the `legacy`
-    /// attributes of [`get_or_adopt_blocking`](Self::get_or_adopt_blocking).
-    ///
-    /// # Errors
-    /// As `delete_blocking`.
-    pub fn delete_with_legacy_blocking(
-        &self,
-        key: &str,
-        legacy: &[(&str, &str)],
-    ) -> Result<(), SecretError> {
-        self.delete_blocking(key)?;
-        self.sync()?.legacy_delete(legacy)
     }
 
     /// Whether the store answers on this session, blocking the calling
@@ -812,93 +750,6 @@ mod tests {
         assert_eq!(alpha.get_blocking().unwrap(), None);
     }
 
-    /// Secret Service item attributes, as `secret-tool` wrote them.
-    type Attributes = Vec<(String, String)>;
-
-    /// A memory store that also holds one item under Secret Service
-    /// attributes.
-    struct WithLegacy {
-        store: MemoryBackend,
-        legacy: Mutex<Option<(Attributes, Secret)>>,
-    }
-
-    impl WithLegacy {
-        fn matches(&self, attributes: &[(&str, &str)]) -> Option<Secret> {
-            let wanted: Attributes = attributes
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect();
-            let legacy = self.legacy.lock().unwrap().clone();
-            let (stored, secret) = legacy?;
-            (stored == wanted).then_some(secret)
-        }
-    }
-
-    impl SecretBackend for WithLegacy {
-        fn protection(&self) -> Protection {
-            Protection::Memory
-        }
-        fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError> {
-            self.store.get(app, key)
-        }
-        fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
-            self.store.put(app, key, value, label)
-        }
-        fn delete(&self, app: &str, key: &str) -> Result<(), SecretError> {
-            self.store.delete(app, key)
-        }
-        fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
-            Ok(self.matches(attributes))
-        }
-        fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
-            if self.matches(attributes).is_some() {
-                *self.legacy.lock().unwrap() = None;
-            }
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_legacy_item_is_adopted_under_the_key_and_deleted_with_it() {
-        const LEGACY: &[(&str, &str)] = &[("tilo-purpose", "p"), ("tilo-key", "k")];
-        let backend = Arc::new(WithLegacy {
-            store: MemoryBackend::default(),
-            legacy: Mutex::new(Some((
-                vec![
-                    ("tilo-purpose".into(), "p".into()),
-                    ("tilo-key".into(), "k".into()),
-                ],
-                Secret::new(b"old".to_vec()),
-            ))),
-        });
-        let store = SecretStore::with_backend("so.tilo.a", backend.clone());
-        assert_eq!(
-            store
-                .get_or_adopt_blocking("new", &[("tilo-purpose", "other")], PutOptions::default())
-                .unwrap(),
-            None
-        );
-        let adopted = store
-            .get_or_adopt_blocking("new", LEGACY, PutOptions::default())
-            .unwrap()
-            .unwrap();
-        assert_eq!(adopted.expose(), b"old");
-        assert_eq!(store.get_blocking("new").unwrap().unwrap().expose(), b"old");
-        assert!(
-            backend.matches(LEGACY).is_some(),
-            "older builds still read theirs"
-        );
-        store.delete_with_legacy_blocking("new", LEGACY).unwrap();
-        assert_eq!(store.get_blocking("new").unwrap(), None);
-        assert!(backend.matches(LEGACY).is_none());
-        assert_eq!(
-            store
-                .get_or_adopt_blocking("new", LEGACY, PutOptions::default())
-                .unwrap(),
-            None
-        );
-    }
-
     #[test]
     fn secrets_never_print() {
         assert_eq!(
@@ -939,62 +790,5 @@ mod tests {
         let store = SecretStore::for_app("so.tilo.secrets-conformance");
         store.probe_blocking().unwrap();
         conformance::check_store_blocking(&store);
-    }
-
-    /// An item `secret-tool` stored before this crate existed is adopted from
-    /// the real Secret Service, and deleted with the adopted key.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_system_store_adopts_a_secret_tool_item_when_asked() {
-        use std::io::Write as _;
-        use std::process::{Command, Stdio};
-
-        if std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none() {
-            return;
-        }
-        let nonce = format!("{}", std::process::id());
-        let legacy = [
-            ("tilo-purpose", "tilo-secrets-adoption-test"),
-            ("tilo-key", nonce.as_str()),
-        ];
-        let mut writer = Command::new("secret-tool")
-            .args(["store", "--label=tilo-secrets adoption test"])
-            .args(legacy.iter().flat_map(|(name, value)| [*name, *value]))
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("secret-tool is installed");
-        writer
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"pre-existing")
-            .unwrap();
-        assert!(writer.wait().unwrap().success());
-        let lookup = || {
-            Command::new("secret-tool")
-                .arg("lookup")
-                .args(legacy.iter().flat_map(|(name, value)| [*name, *value]))
-                .output()
-                .unwrap()
-                .stdout
-        };
-        assert_eq!(lookup(), b"pre-existing");
-
-        let store = SecretStore::for_app("so.tilo.secrets-adoption");
-        let adopted = store
-            .get_or_adopt_blocking("adopted", &legacy, PutOptions::default())
-            .unwrap()
-            .expect("the secret-tool item is found");
-        assert_eq!(adopted.expose(), b"pre-existing");
-        assert_eq!(
-            store.get_blocking("adopted").unwrap().unwrap().expose(),
-            b"pre-existing"
-        );
-        assert_eq!(lookup(), b"pre-existing", "older builds still read theirs");
-        store
-            .delete_with_legacy_blocking("adopted", &legacy)
-            .unwrap();
-        assert_eq!(store.get_blocking("adopted").unwrap(), None);
-        assert!(lookup().is_empty());
     }
 }

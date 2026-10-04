@@ -164,6 +164,39 @@ impl PeerIdentityStore {
             .collect()
     }
 
+    /// The person (user root key) behind every authenticated peer whose
+    /// certificate is still valid and not revoked at `now_ns`.
+    pub fn authenticated_persons(
+        &self,
+        now_ns: u64,
+    ) -> std::collections::HashMap<PeerOrigin, [u8; 32]> {
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let empty = RevocationList::new();
+        inner
+            .by_peer
+            .iter()
+            .filter(|(_, identity)| {
+                verify_chain(
+                    &identity.device_cert,
+                    &ChainPolicy {
+                        user_public_key: &identity.user_pubkey,
+                        authority: Authority::Device,
+                        revocations: inner
+                            .revocations
+                            .get(&identity.user_pubkey)
+                            .unwrap_or(&empty),
+                        now_ns,
+                    },
+                )
+                .is_ok()
+            })
+            .map(|(peer, identity)| (peer.clone(), identity.user_pubkey))
+            .collect()
+    }
+
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: &RevocationList) {
         let mut inner = self

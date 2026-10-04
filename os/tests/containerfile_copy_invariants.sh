@@ -32,8 +32,7 @@ containerfile="$repo/os/Containerfile"
 # into its loader, so the former systemd environment override is absent.
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
-# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. The VM console
+# every destination is unchanged. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
 # (with their store/system aliases) are deliberate additions, as is the
 # sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper, and the
@@ -76,6 +75,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -87,7 +88,17 @@ containerfile="$repo/os/Containerfile"
 # definitions or upstream keys ship, only the generic helper and its units.
 # The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
 # The extension-manifest public key ships beside the helper.
-expected_contract=6eb69e284555227a46dcc65a3eb0c144e4303db619d3e2df99e18358d0fb7482
+# The release gate's greetd session-context check ships beside the other
+# booted-guest checks in /usr/libexec/tilo.
+# The image ships one login session and no peer-sync marker unit.
+# The release gate's input hotplug check ships beside them.
+# The boot units gate ships with the rollback units whose confirmation it gates.
+# The ush supervisor ships with what it runs: the two relay helpers for
+# Terminal, and the legacy VM service behind app shims. The WPE engine overlay
+# and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
+# app store and its Chromium engine a signed runtime bundle under
+# /usr/lib/tilo-runtime, both already copied.
+expected_contract=dd2a152fd96cf852784056224d43bce11955737e176310c7f6ec450bf0530adc
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -360,7 +360,7 @@ pub struct JoinedDeviceLayout<'a> {
     pub local_identity_dir: &'a Path,
     /// This machine's system identity paths, including its device certificate.
     pub local_system: &'a IdentityPaths,
-    /// This machine's `home-peers.json`, copied when it is present.
+    /// This machine's home-peer registry, copied when it is present.
     pub local_home_peers: &'a Path,
     /// This machine's exported workspace room ids, copied when the file exists.
     pub local_rooms: &'a Path,
@@ -471,17 +471,20 @@ pub fn install_joined_device(
         relay_service,
         cert.device_public_key,
     )?;
-    let rooms_dest = target_system
-        .user_pubkey
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "target identity root is missing",
-            )
-        })?
-        .join("personal-rooms.json");
+    // Beside the peer lists the shell reads it with.
+    let rooms_dest = tilo_relay_protocol::home_peer_registry_path(
+        target_system
+            .user_pubkey
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "target identity root is missing",
+                )
+            })?,
+    )
+    .with_file_name("personal-rooms.json");
     copy_personal_rooms(layout.local_rooms, &rooms_dest)?;
     Ok(cert)
 }
@@ -631,6 +634,7 @@ fn copy_home_peers(
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
             relay_workspace_ids: vec![topic],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         if !relay_is_dialable(&entries, &registration) {
             entries.push(registration);
@@ -659,7 +663,10 @@ fn copy_home_peers(
             )
         })?;
     fs::create_dir_all(parent)?;
-    tilo_files::native::atomic::write(&parent.join("home-peers.json"), &encoded)?;
+    tilo_files::native::atomic::write_creating_parent(
+        &tilo_relay_protocol::home_peer_registry_path(parent),
+        &encoded,
+    )?;
     // Both devices belong to the identity that certified this one; each
     // records the other under it.
     let peer = |device| tilo_relay_protocol::personal_devices::DirectPeer {
@@ -667,7 +674,7 @@ fn copy_home_peers(
         device,
     };
     tilo_relay_protocol::personal_devices::remember_direct_peers(
-        &parent.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
+        &tilo_relay_protocol::personal_devices::direct_peers_path(parent),
         &[peer(local_cert.device_public_key)],
     )?;
     let local_peers =
@@ -1466,6 +1473,7 @@ mod tests {
             user_public_key: identity_id.clone(),
             device_cert: None,
             relay_workspace_ids: vec![1],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         let other = HomePeerRegistration {
             user_public_key: hex::encode([9_u8; 32]),
@@ -1546,7 +1554,10 @@ mod tests {
                 .any(|item| { item.device_public_key == cert.device_public_key })
         );
         let copied: Vec<HomePeerRegistration> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap(),
+            &std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+                &dir.path().join("var/lib/tilo"),
+            ))
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(copied[0].user_public_key, identity_id);
@@ -1560,7 +1571,9 @@ mod tests {
             "a machine that cannot host is not recorded as a relay"
         );
         let direct = tilo_relay_protocol::personal_devices::read_direct_peers(
-            &dir.path().join("var/lib/tilo/personal-device-peers.json"),
+            &tilo_relay_protocol::personal_devices::direct_peers_path(
+                &dir.path().join("var/lib/tilo"),
+            ),
         )
         .unwrap();
         assert_eq!(
@@ -1582,11 +1595,18 @@ mod tests {
             }]
         );
         let rooms: Vec<String> = serde_json::from_slice(
-            &std::fs::read(dir.path().join("var/lib/tilo/personal-rooms.json")).unwrap(),
+            &std::fs::read(
+                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
+                    .with_file_name("personal-rooms.json"),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(rooms, vec!["11111111-1111-4111-8111-111111111111"]);
-        let peers_bytes = std::fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap();
+        let peers_bytes = std::fs::read(tilo_relay_protocol::home_peer_registry_path(
+            &dir.path().join("var/lib/tilo"),
+        ))
+        .unwrap();
         assert!(
             !peers_bytes
                 .windows(32)
@@ -1639,6 +1659,7 @@ mod tests {
                 user_public_key: identity_id,
                 device_cert: None,
                 relay_workspace_ids: vec![1],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             }])
             .unwrap(),
         )

@@ -1,5 +1,5 @@
 name: Restore Cargo downloads
-description: Restore the shared registry and Git dependency cache without affecting correctness.
+description: Restore the shared registry and Git dependency cache under $CARGO_HOME without affecting correctness.
 
 inputs:
   lockfile:
@@ -14,17 +14,24 @@ outputs:
   cache-hit:
     description: Whether the exact Cargo.lock cache key was restored.
     value: ${{ steps.restore.outputs.cache-hit }}
+  paths:
+    description: The cached download directories, for the matching save step.
+    value: ${{ steps.home.outputs.paths }}
 
 runs:
   using: composite
   steps:
+    # The job image's CARGO_HOME, or Cargo's default.
+    - id: home
+      shell: sh
+      run: |
+        home=${CARGO_HOME:-$HOME/.cargo}
+        printf 'paths<<EOF\n%s/registry/index\n%s/registry/cache\n%s/git/db\nEOF\n' \
+          "$home" "$home" "$home" >> "$GITHUB_OUTPUT"
     - id: restore
       uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       continue-on-error: true
       with:
-        path: |
-          /cargo-home/registry/index
-          /cargo-home/registry/cache
-          /cargo-home/git/db
+        path: ${{ steps.home.outputs.paths }}
         key: cargo-deps-${{ hashFiles(inputs.lockfile) }}
         restore-keys: cargo-deps-

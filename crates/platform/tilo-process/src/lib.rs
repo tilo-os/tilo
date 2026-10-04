@@ -8,11 +8,15 @@
 //! This crate is the platform layer's home for process capabilities; child
 //! processes, process groups and PTYs (today's `bounded-command`) move here.
 
+pub mod rendezvous;
+
 /// A capability of this crate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
     /// The current process has an OS process id.
     ProcessId,
+    /// Processes meet at a [`rendezvous::Rendezvous`] beside a resource.
+    Rendezvous,
 }
 
 /// Whether a feature works on this target.
@@ -23,14 +27,24 @@ pub enum Availability {
 }
 
 /// Each feature's availability on Linux, macOS and the web, in that order.
-pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[(
-    Feature::ProcessId,
-    [
-        Availability::Available,
-        Availability::Available,
-        Availability::Unsupported("a page has no process id"),
-    ],
-)];
+pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[
+    (
+        Feature::ProcessId,
+        [
+            Availability::Available,
+            Availability::Available,
+            Availability::Unsupported("a page has no process id"),
+        ],
+    ),
+    (
+        Feature::Rendezvous,
+        [
+            Availability::Available,
+            Availability::Available,
+            Availability::Unsupported("a page has no local sockets"),
+        ],
+    ),
+];
 
 /// Whether `feature` works on the running target.
 #[must_use]
@@ -41,6 +55,13 @@ pub fn availability(feature: Feature) -> Availability {
                 Availability::Available
             } else {
                 Availability::Unsupported("a page has no process id")
+            }
+        }
+        Feature::Rendezvous => {
+            if cfg!(unix) {
+                Availability::Available
+            } else {
+                Availability::Unsupported("a page has no local sockets")
             }
         }
     }

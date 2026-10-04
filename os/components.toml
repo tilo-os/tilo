@@ -188,20 +188,6 @@ files = [
   { from = "settings", to = "/usr/bin/settings", mode = "0755" },
 ]
 
-# Omitted when the image is built with TILO_WITH_BROWSER=0.
-[[component]]
-name = "browser"
-kind = "userspace"
-scope = "session"
-packages = ["browser"]
-bins = ["browser"]
-features = ["browser/wpe"]
-optional = true
-layer = "desktop-binaries"
-files = [
-  { from = "browser", to = "/usr/bin/browser", mode = "0755" },
-]
-
 # ---- Session: package management and user services -------------------------
 
 [[component]]
@@ -283,12 +269,18 @@ files = [
 name = "ush"
 kind = "userspace"
 scope = "session"
-packages = ["ush"]
-bins = ["tilo-ush"]
+packages = ["ush", "tilo-relay", "legacy-vm"]
+bins = ["tilo-ush", "tilo-relay-environment", "tilo-relay-offers", "tilo-legacy"]
 user_units = ["tilo-ush.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+  # A Terminal environment on a relay: the pty's far end, and what tells
+  # the relay picker which relays run environments.
+  { from = "tilo-relay-environment", to = "/usr/libexec/tilo-relay-environment", mode = "0755" },
+  { from = "tilo-relay-offers", to = "/usr/libexec/tilo-relay-offers", mode = "0755" },
+  # The legacy VM service a guest's app shims reach through the broker.
+  { from = "tilo-legacy", to = "/usr/bin/tilo-legacy", mode = "0755" },
 ]
 
 [[component]]
@@ -540,6 +532,20 @@ layer = "dev-tools"
 files = [
   { from = "tilo-vmd", to = "/usr/libexec/tilo-vmd", mode = "0755" },
   { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
+]
+
+# A signed app registry on loopback offering newer versions of an installed
+# app, for os/tests/booted_app_update.sh: the system image's apps update and
+# roll back through `app` like any other.
+[[component]]
+name = "test-registry"
+kind = "userspace"
+scope = "session"
+packages = ["test-app-registry"]
+bins = ["tilo-test-registry"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-test-registry", to = "/usr/bin/tilo-test-registry", mode = "0755" },
 ]
 
 # ---- Boot: effective only after a cold boot ---------------------------------

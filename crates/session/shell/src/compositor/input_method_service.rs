@@ -8,7 +8,7 @@
 //! the ordinary package sandbox, the composer as the image's own executable,
 //! which the socket checks by path as well. [`super::input_method::arbitrate`]
 //! decides which of them runs, from the active input source and — through
-//! [`super::input_method::osk_wanted`] — the on-screen keyboard preference and
+//! [`super::input_method::osk_service_wanted`] — the on-screen keyboard preference and
 //! the input hardware in use. Stopping one terminates its whole process group,
 //! so an old input method cannot linger after it lost the seat.
 
@@ -536,21 +536,30 @@ impl InputMethodServices {
     }
 
     /// Follow the input hardware in use. Only a change in whether the
-    /// on-screen keyboard is wanted re-arbitrates the seat.
+    /// on-screen keyboard should run re-arbitrates the seat; typing and
+    /// touching merely hide and show it (see [`Self::osk_shown`]).
     pub fn follow_input(&mut self, state: &mut State, input: &InputEnvironment) {
         let facts = OskInput::from_environment(input);
         if facts == self.osk_input {
             return;
         }
-        let before = self.osk_wanted();
+        let before = self.osk_service_wanted();
         self.osk_input = facts;
-        if self.osk_wanted() != before {
+        if self.osk_service_wanted() != before {
             self.apply(state);
         }
     }
 
-    fn osk_wanted(&self) -> bool {
-        self.osk_installed && super::input_method::osk_wanted(self.osk_preference, self.osk_input)
+    fn osk_service_wanted(&self) -> bool {
+        self.osk_installed
+            && super::input_method::osk_service_wanted(self.osk_preference, self.osk_input)
+    }
+
+    /// Whether a running on-screen keyboard may be shown for the focused
+    /// field: the preference and the input used most recently allow it.
+    pub fn osk_shown(&self) -> bool {
+        self.osk_service_wanted()
+            && super::input_method::osk_wanted(self.osk_preference, self.osk_input)
     }
 
     /// Apply the ownership decision: the seat's global gate first
@@ -562,7 +571,7 @@ impl InputMethodServices {
             self.engine
                 .is_some_and(super::input_method::engine_installed)
                 && self.has(TrustedInputMethod::Composer),
-            self.osk_wanted(),
+            self.osk_service_wanted(),
         );
         if state.input_method_owner_kind() != owner.kind() {
             tracing::info!(target: "tilo::input_method", ?owner, "input method owner changed");

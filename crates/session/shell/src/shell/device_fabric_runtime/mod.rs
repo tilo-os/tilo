@@ -5,6 +5,9 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 mod remote_capture;
+mod window_views;
+
+pub use window_views::{WindowViewer, publish_window_views, window_viewers};
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::Read as _;
@@ -1774,6 +1777,9 @@ impl DeviceFabricRuntime {
                         action,
                     );
                 }
+                PersonalFabricAction::WindowViews { views, decode } => {
+                    window_views::record(envelope.source, views, &decode);
+                }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
         }
@@ -3329,6 +3335,7 @@ fn handle_spatial_action(
         | PersonalFabricAction::SpeakerListenDecision { .. }
         | PersonalFabricAction::SpeakerListen { .. }
         | PersonalFabricAction::SpeakerHeard { .. }
+        | PersonalFabricAction::WindowViews { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }

@@ -44,7 +44,6 @@
 ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
-ARG WPE_BUILDROOT_REF
 ARG TILO_WINDOWS_ARCH=x86_64
 # Scratch is only a parseable placeholder for an unselected provider branch.
 # ARM validation rejects it; no diagnostic payload or mutable tag is a fallback.
@@ -64,17 +63,21 @@ ARG TILO_WITH_WINDOWS=1
 # image then ships none, and environments fetch it on first use.
 ARG ENV_RUNTIME_REF=scratch
 
-# TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
-# stage, no `browser` binary. Default 1 — a normal build is unchanged.
+# TILO_WITH_BROWSER=0 builds the image without the browser: no Browser app and
+# no Chromium engine runtime. Default 1.
 #
-# The engine compiles in os/Containerfile.wpe (libwpe + wpebackend-fdo + wpewebkit).
-# Measure cold and warm durations on the selected native runner; no universal
-# build-time estimate applies across hardware. Nothing about the boot chain
-# (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
-# it, so an engine failure should not be able to block boot verification. Opting
-# out is how you get an image to boot-test in minutes while the browser's own
-# build is being repaired.
+# The engine is the native CEF host (apps/browser/chromium) built against the
+# pinned CEF distribution (scripts/browser/cef-lock.json, fetched as an external
+# asset) and signed as its own runtime bundle; the Browser is an ordinary tapp.
+# Nothing about the boot chain (kernel, initramfs, LUKS/TPM unlock, greeter,
+# installer, rollback) depends on it, so opting out is how you get an image to
+# boot-test while the engine's own build is being repaired.
 ARG TILO_WITH_BROWSER=1
+# The engine runtime's version: ui::webview::chromium::runtime::RUNTIME_VERSION.
+ARG CHROMIUM_RUNTIME_VERSION=2026.10.0-chromium
+# The pinned builder bootc-builder compiles the image's bootc in, the one
+# os/Containerfile.bootc-helper uses.
+ARG BOOTC_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM scratch AS public-trust
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
@@ -278,31 +281,51 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && test -f /out/usr/lib/systemd/system/joycond.service
 
 
-# ---- Stage 1a: WPE WebKit (browser engine) ----------------------------------
-# Compilation lives only in os/Containerfile.wpe. Image entrypoints
-# (os/dev/build-image.sh, the WPE producer, and adoption/import) supply the
-# completed stage as `--build-context wpe-builder=container-image://…`. This
-# stage exists so a forgotten context fails closed instead of compiling here
-# and invalidating WPE receipts on unrelated OS recipe edits.
-FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
-RUN printf '%s\n' \
-      'WPE compilation lives in os/Containerfile.wpe; supply --build-context wpe-builder=…' >&2 \
-    && exit 1
+# ---- bootc ------------------------------------------------------------------
+# The base's own bootc release, rebuilt with os/external-assets/bootc-runtime/:
+# on a disk shared with another operating system, `bootc status`, `upgrade`
+# and `switch` use the ESP the boot loader started from. Upstream takes the
+# disk's first ESP, which on a laptop that came with Windows is Windows', and
+# every one of them then fails reading loader entries that ESP does not have.
+# The frozen snapshot carries no ostree-devel, so this builds in the pinned
+# builder image as os/Containerfile.bootc-helper does, with that image's own
+# Fedora repositories (BOOTC_BUILD_PACKAGES are no snapshot input). Nothing of
+# it ships but the binary: the rootfs checks it runs against the base's own
+# libraries and reports the base's bootc version.
+FROM ${BOOTC_BUILD_IMAGE} AS bootc-builder
+# v1.16.13, the base's bootc release.
+ARG BOOTC_VERSION=1.16.13
+ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
+ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
+ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
+COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
+    os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch /patches/
+# zlink-macros with its generated enum variants in a fixed order (0002 patches
+# bootc's build onto it): the release emits them in HashMap order, so no two
+# bootc builds matched and the image was not reproducible.
+COPY vendor/zlink-macros /tilo-vendor/zlink-macros
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    dnf install -y ${BOOTC_BUILD_PACKAGES} \
+    && dnf clean all \
+    && echo "${BOOTC_SHA256}  /tilo-assets/${BOOTC_SOURCE}" | sha256sum -c - \
+    && mkdir "/bootc-${BOOTC_VERSION}" \
+    && tar -xzf "/tilo-assets/${BOOTC_SOURCE}" --strip-components=1 -C "/bootc-${BOOTC_VERSION}" \
+    && cd "/bootc-${BOOTC_VERSION}" \
+    && for p in /patches/*.patch; do patch -p1 < "$p"; done \
+    && cargo test --locked -p bootc-internal-blockdev \
+    && CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols \
+       cargo build --locked --release -p bootc \
+    && install -D -m 0755 target/release/bootc /out/usr/bin/bootc \
+    && install -D -m 0644 -t /out/usr/share/licenses/tilo-bootc/ \
+       LICENSE-APACHE LICENSE-MIT /patches/*.patch \
+    && printf '%s\n' \
+      'bootc - boot and upgrade via container images' \
+      'License: Apache-2.0 OR MIT (see LICENSE-APACHE, LICENSE-MIT)' \
+      "Source: https://github.com/bootc-dev/bootc/tree/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60 (v${BOOTC_VERSION})" \
+      'Modified: /usr/bin/bootc is built from the source above with the patches here.' \
+      > /out/usr/share/licenses/tilo-bootc/NOTICE \
+    && rm -rf "/bootc-${BOOTC_VERSION}"
 
-
-# ---- Stage 1a-off: the same stage with no engine in it ----------------------
-# Selected when TILO_WITH_BROWSER=0. It only has to satisfy the two
-# `COPY --from=wpe-builder /wpe/ /` instructions below — copying the contents of
-# an empty directory is a no-op, so both overlays vanish without either COPY
-# needing to be conditional (a Containerfile has no conditional COPY).
-FROM ${BASE_REF} AS wpe-builder-0
-RUN mkdir -p /wpe
-
-# Whichever of the two above TILO_WITH_BROWSER names becomes `wpe-builder`. The
-# other is never built: an unreferenced stage is pruned from the build graph by
-# both buildkit and buildah, so TILO_WITH_BROWSER=0 skips the engine compile
-# rather than building and discarding it.
-FROM wpe-builder-${TILO_WITH_BROWSER} AS wpe-builder
 
 # ---- The sources the Rust compile reads -------------------------------------
 # Only what the builder stage reads, never the whole context: with
@@ -326,6 +349,7 @@ COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
+COPY scripts/browser/build-host.py scripts/browser/cef-lock.json /build/scripts/browser/
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \
@@ -333,7 +357,6 @@ COPY \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
     os/scripts/install-env-runtime.sh \
-    os/scripts/browser-runtime-launcher.c \
     /build/os/scripts/
 COPY os/desktop-artifacts /build/os/desktop-artifacts
 COPY os/app-artifacts /build/os/app-artifacts
@@ -357,23 +380,9 @@ ARG RPMS_REF
 # jemalloc, sqlite) need to build. `sccache` honours the project's
 # .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
 #
-# The last three lines of the list are for the WPE overlay copied in below
-# rather than for any crate of ours, and they serve two different linker needs:
-#
-#   * glib2-devel + libsoup3-devel supply .pc files. `wpe-webkit-2.0.pc`
-#     declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`, and
-#     pkg-config fails the whole lookup when any link in that chain is missing
-#     — which crates/sdk/ui-core/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
-#     found".
-#   * The rest supply plain shared objects. libWPEWebKit-2.0.so records them in
-#     DT_NEEDED, so linking `browser` against it makes ld open each one to
-#     resolve symbols transitively; absent, ld reports them as `needed by
-#     ... not found` and then buries that in hundreds of undefined references
-#     to gst_*/epoxy_*/manette_*. Runtime packages are enough — no -devel
-#     needed, because nothing here compiles against their headers. The engine
-#     decodes JPEG XL (libjxl, colour-managed through lcms2) and speaks through
-#     flite; shell links the same engine when the browser is built, because
-#     both share one Cargo invocation.
+# The browser engine's native host (apps/browser/chromium) builds with the same
+# C++ toolchain and cmake against the pinned CEF distribution; it links nothing
+# from this list beyond the C++ runtime.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
@@ -384,10 +393,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         pipewire-devel \
         sqlite-devel zlib-ng-compat-devel \
         fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
-        glib2-devel libsoup3-devel \
-        atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
-        hyphen libavif libepoxy libmanette libxslt \
-        flite lcms2 libjxl \
+        glib2-devel \
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
@@ -491,29 +497,15 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# WPE WebKit headers + libs so `browser --features wpe` links against the
-# engine built in the wpe-builder stage. Overlaying /usr in this throwaway
-# stage keeps pkg-config discovery entirely standard.
-COPY --from=wpe-builder /wpe/ /
-# The link below needs every library the engine records in DT_NEEDED, and the
-# toolchain list above is what provides them. A WPE buildroot refresh that
-# builds the engine with a new feature fails here, naming the packages to add,
-# instead of as undefined references in the browser and shell links.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
-    bash /run/tilo-check-wpe-runtime.sh "the builder stage's dnf list (and its mirror, builder-packages.txt)"
-
-# Everything above is the build toolchain: it changes with packages, the pinned
-# tools and the browser engine, not with the workspace, and CI caches it on its
-# own (the compile below goes through the compiler cache instead).
+# Everything above is the build toolchain: it changes with packages and the
+# pinned tools, not with the workspace, and CI caches it on its own (the compile
+# below goes through the compiler cache instead).
 FROM builder-base AS builder
 
-# Copy the frequently changing workspace only after the large, stable WPE
-# overlay. This keeps source-only iterations from re-importing the browser
-# engine before Cargo can reach its cache mounts. The sources arrive as one
-# layer (the builder-sources stage above): each instruction here commits a
-# layer of this multi-gigabyte stage, and rootless podman commits one by
-# walking the whole tree, minutes apiece.
+# Copy the frequently changing workspace only after the stable toolchain. The
+# sources arrive as one layer (the builder-sources stage above): each
+# instruction here commits a layer of this multi-gigabyte stage, and rootless
+# podman commits one by walking the whole tree, minutes apiece.
 COPY --from=builder-sources /build/ /build/
 
 # Compile the binaries the OS images need. Cache mounts persist cargo's
@@ -534,18 +526,13 @@ COPY --from=builder-sources /build/ /build/
 #    instead of being swallowed by `|| true` (which masked a cargo failure as a
 #    confusing downstream "COPY --from /out: not found").
 #
-# The browser is the one optional binary (TILO_WITH_BROWSER, top of file). It is
-# staged into /out/optional/ rather than /out/ so the final image can copy the
-# directory's contents unconditionally: empty means no browser, and no COPY
-# needs a condition it cannot express.
-#
 # The application set is read out of the workspace members rather than listed
 # here. A hand-maintained list is how the image came to ship two GUI apps while
 # the tree held forty-six: adding an app to the workspace and forgetting this
 # file was silent. Deriving it means a new `apps/<name>/` is shipped by the
 # build that follows it, and an empty match is a hard failure rather than an
-# image with no apps. The browser is filtered out only because it alone needs
-# the `wpe` feature and the TILO_WITH_BROWSER condition.
+# image with no apps. The browser is filtered out only when TILO_WITH_BROWSER=0
+# leaves its engine out.
 #
 # `tilo-app-package-cli`, `install` and `cli-shim` build the packaging tools: `tilo-app-package` and
 # `tilo-install` pack and install those apps into the image-wide store below,
@@ -563,9 +550,6 @@ COPY --from=builder-sources /build/ /build/
 # Package-qualified (`<pkg>/<feature>`). The tapp applications and their
 # versioned shared runtime are built together below: Rust dylib symbol names
 # contain crate hashes, so separate Cargo invocations are not ABI-compatible.
-#
-# `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
-# engine behind it is the browser's, which TILO_WITH_BROWSER=0 does not build.
 #
 # No app takes a `portal` feature, because none has one: `ui` compiles the host
 # file chooser into every app on every build, including --shots. Asking for
@@ -628,13 +612,14 @@ ARG TILO_APP_COLLECTION_PUBLISHER=""
 # rebuilding each other's artifacts. The cargo home and sccache are shared.
 ARG TILO_BUILD_CACHE_KEY=default
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target \
+    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target,sharing=locked \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
     --mount=type=secret,id=aws_session_token \
     --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
+    --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
     && ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)" \
     && ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)" \
@@ -680,32 +665,28 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          thin|off) ;; \
          *) printf '%s\n' 'TILO_RUST_LTO must be thin or off' >&2; exit 1 ;; \
        esac \
+    # A content record vouches only for the units its build compiles, so each
+    # set of prebuilt inputs keeps its own.
+    && built_sources="/build/target/.tilo-built-sources-apps${TILO_PREBUILT_APPS}-desktop${TILO_PREBUILT_DESKTOP}-browser${TILO_WITH_BROWSER}" \
     && case "$TILO_CARGO_FRESHNESS" in \
          clean) cargo clean --release && cargo clean --profile thin-app ;; \
-         content) sh os/scripts/cargo-freshness.sh /build /build/target/.tilo-content-hashes \
+         content) sh os/scripts/cargo-freshness.sh /build "$built_sources" \
                     || { cargo clean --release && cargo clean --profile thin-app; } ;; \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be clean or content' >&2; exit 1 ;; \
        esac \
     # Thin apps use the same package set and features as dist/apps/app-collections.toml
-    # (default collection). Browser stays out of that graph: ui/webview from
-    # browser/wpe otherwise unifies into every tapp and was the ~1.9 MB .text gap
-    # versus CI package-apps (#1158). Ship browser through the separate runtime
-    # below, the same route prebuilt collections already use.
-    && if [ "${TILO_WITH_BROWSER}" = "0" ]; then \
-         BROWSER_PKG=""; \
-       else \
-         BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
-       fi \
-    && THIN_EXCLUDES="browser" \
+    # (default collection), the Browser included; its engine is the separate
+    # runtime built at the end of this step.
+    && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
     && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody -p tilo-identity-host" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody -p legacy-vm -p tilo-identity-host" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
-    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential --bin tilo-identity" \
+    && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-relay-environment --bin tilo-relay-offers --bin tilo-legacy --bin tilo-account-credential --bin tilo-identity" \
     # The thin-app profile compiles each crate as one codegen unit, for tapp
     # size. Built in the image without LTO (a dev build) the runtime and its
     # dependencies take 16: one unit made fs alone compile for ten minutes.
@@ -737,7 +718,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} \
     && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
@@ -747,20 +728,17 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-identity; do \
+    && for b in shell tilo-runtime-mcp tilo-projector tilo-pdf-helper fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-relay-environment tilo-relay-offers tilo-legacy terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-identity; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
          fi; \
        done \
-    && if [ "${TILO_WITH_BROWSER}" != "0" ] && [ ! -x target/release/browser ]; then \
-         printf '%s\n' 'Required build output is missing: browser' >&2; missing=1; \
-       fi \
     # Profiles were already cleaned before compilation. A missing output now
     # indicates a build contract error; repeating the same full build hides it.
     && [ "$missing" = 0 ] \
     && build_phase rust-stage-outputs \
-    && mkdir -p /out /out/optional /out/thin-apps \
+    && mkdir -p /out /out/thin-apps \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          cp /build/os/desktop-artifacts/shell \
             /build/os/desktop-artifacts/tilo-runtime-mcp \
@@ -774,8 +752,6 @@ RUN --mount=type=cache,target=/build/.cargo-home \
             target/release/tilo-unlock-helper \
             /out/; \
        fi \
-    && { [ "${TILO_WITH_BROWSER}" = "0" ] \
-         || cp target/release/browser /out/optional/browser; } \
     && cp target/release/tilo-projector \
           target/release/tilo-pdf-helper \
           target/release/fs \
@@ -783,6 +759,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-relay-admin \
           target/release/tilo-enroll \
           target/release/tilo-home-peer-control \
+          target/release/tilo-relay-environment \
+          target/release/tilo-relay-offers \
+          target/release/tilo-legacy \
           target/release/terminal \
           target/release/file-explorer \
           target/release/settings \
@@ -822,7 +801,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
-         mkdir -p /out/prebuilt-apps /out/browser-app \
+         mkdir -p /out/prebuilt-apps \
          && cp /build/os/app-artifacts/*.tapp /out/prebuilt-apps/ \
          && cp -a /build/os/app-runtime/tilo-runtime /usr/lib/ \
          && cp /build/os/app-runtime/runtime-bundle-publisher.hex /out/ \
@@ -848,6 +827,26 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
          && cp "${LIBSTD}" /out/; \
+       fi \
+    # The browser engine: the native CEF host and the CEF files it loads,
+    # assembled as the tree the engine runtime bundle below signs.
+    && build_phase chromium-engine \
+    && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
+         case "$(uname -m)" in \
+           x86_64) cef_platform=linux64 ;; \
+           aarch64) cef_platform=linuxarm64 ;; \
+           *) echo "no Chromium engine for $(uname -m)" >&2; exit 1 ;; \
+         esac \
+         && cef_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
+         && python3 scripts/browser/build-host.py --platform "$cef_platform" \
+              --sdk-archive "/tilo-assets/cef-${cef_version}-${cef_platform}-minimal.tar.bz2" \
+              --runtime /out/chromium-engine --jobs "${TILO_CARGO_BUILD_JOBS}" \
+         && test -x /out/chromium-engine/chromium/tilo-chromium-host; \
+       fi \
+    # Only now does the target directory hold this workspace's build in every
+    # profile; a build that stopped earlier left the changed sources marked.
+    && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
+         sh os/scripts/cargo-freshness.sh --built "$built_sources"; \
        fi \
     && build_phase rust-cleanup \
     # Every build product needed below now lives in /out. A clean build's
@@ -939,18 +938,21 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
-# A full WPE browser is much larger than the application wire limit, and putting
-# browser/wpe into the thin-app Cargo graph unified ui/webview into every tapp
-# (~1.9 MB of .text on Settings vs CI). Keep the executable in a separately
-# signed runtime and package only a tiny entrypoint for both source and prebuilt
-# collections, matching dist/apps/app-collections.toml which excludes browser.
+# ---- The browser engine runtime ---------------------------------------------
+# The Chromium engine is its own signed runtime bundle, apart from the Browser
+# tapp: the app updates through the registry like every app, and the launcher
+# mounts the engine into its sandbox read-only, verified against the trusted
+# publishers, because the Browser's manifest lists it in
+# `[package].optional-runtimes`. Its version is the browser's
+# ui::webview::chromium::runtime::RUNTIME_VERSION (scripts/browser/
+# test_engine_runtime.py keeps the two equal). Release builds sign it with the
+# runtime publisher key; other builds with a key made for this build alone.
 ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
+ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         mkdir -p /out/browser-app \
-         && test "${RUNTIME_VERSION}" = 2026.07 \
-         && test -x /out/optional/browser \
+         test -x /out/chromium-engine/chromium/tilo-chromium-host \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
               && actual="$(/out/tilo-runtime-bundle key pubkey \
@@ -962,24 +964,18 @@ RUN --mount=type=secret,id=browser_runtime_identity \
               && identity=/out/browser-runtime-identity.json; \
             fi \
          && /out/tilo-runtime-bundle build \
-              --version 2026.7.0-browser --arch "$(uname -m)" --from / \
-              --include /out/optional/browser \
+              --version "${CHROMIUM_RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
+              --include /out/chromium-engine/chromium \
               --identity "$identity" \
-              --out /usr/lib/tilo-runtime/2026.7.0-browser \
+              --out "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
          && /out/tilo-runtime-bundle key pubkey \
               --identity "$identity" \
               > /out/browser-runtime-publisher.hex \
          && /out/tilo-runtime-bundle verify \
-              /usr/lib/tilo-runtime/2026.7.0-browser \
+              "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
               --require-publisher "$(cat /out/browser-runtime-publisher.hex)" \
-         && test -x /usr/lib/tilo-runtime/2026.7.0-browser/lib/browser \
-         && if [ "$(uname -m)" = x86_64 ]; then cet=-Wl,-z,shstk; else cet=; fi \
-         && cc -std=c11 -Wall -Wextra -Werror -O2 -fPIE -pie \
-              -fstack-protector-strong -Wl,-z,relro,-z,now ${cet} \
-              /build/os/scripts/browser-runtime-launcher.c \
-              -o /out/browser-app/browser \
-         && /build/os/scripts/verify-elf-hardening.sh /out/browser-app/browser \
-         && rm -f /out/browser-runtime-identity.json; \
+         && test -x "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/lib/chromium/tilo-chromium-host" \
+         && rm -rf /out/chromium-engine /out/browser-runtime-identity.json; \
        fi
 
 # ---- Pack + install every app into the image-wide app store -----------------
@@ -994,8 +990,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
 # Packages take the ordinary route — `tilo-app-package pack` then `tilo-install install`
 # — so a preinstalled app is described exactly as a user-installed one is, and
 # the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
-RUN --mount=type=secret,id=browser_app_identity \
-    export TILO_IMAGE_BUILD=1 \
+RUN export TILO_IMAGE_BUILD=1 \
     && BIN_DIR=/out/thin-apps \
     TAPP_DIR=/out/prebuilt-apps \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
@@ -1004,35 +999,7 @@ RUN --mount=type=secret,id=browser_app_identity \
     BUNDLE_BIN=/out/tilo-runtime-bundle \
     SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
-    /build/os/scripts/pack-apps.sh \
-    && { [ "${TILO_WITH_BROWSER}" = 0 ] \
-         || { mkdir -p /tmp/browser-package-repo/apps/browser \
-            && sed "s#tilo-runtime/${RUNTIME_VERSION}\"#tilo-runtime/2026.7.0-browser\"#" \
-                 /build/apps/browser/tilo-app.toml \
-                 > /tmp/browser-package-repo/apps/browser/tilo-app.toml \
-            && grep -Eq '^runtime[[:space:]]*=[[:space:]]*"tilo-runtime/2026\.7\.0-browser"$' \
-                 /tmp/browser-package-repo/apps/browser/tilo-app.toml \
-            && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
-                 test -s /run/secrets/browser_app_identity \
-                 && browser_app_identity=/run/secrets/browser_app_identity \
-                 && browser_app_publisher="$TILO_APP_COLLECTION_PUBLISHER"; \
-               else \
-                 browser_app_identity= \
-                 browser_app_publisher=; \
-               fi \
-            && REPO=/tmp/browser-package-repo \
-            BIN_DIR=/out/browser-app \
-            TAPP_DIR= \
-            IDENTITY_JSON="$browser_app_identity" \
-            EXPECTED_PUBKEY="$browser_app_publisher" \
-            PKG_BIN=/out/tilo-app-package \
-            INSTALL_BIN=/out/tilo-install \
-            BUNDLE_BIN=/out/tilo-runtime-bundle \
-            SHIM_BIN=/out/tilo-cli-shim \
-            REQUIRE_MIN=1 \
-            PUBKEY_OUT=/out/browser-publisher.hex \
-            /build/os/scripts/pack-apps.sh \
-            && rm -rf /tmp/browser-package-repo; }; }
+    /build/os/scripts/pack-apps.sh
 
 # Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
 ARG ENV_RUNTIME_REF
@@ -1054,13 +1021,13 @@ COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
 
 # Fedora DNF/RPM record wall-clock transaction times in rpmdb and history.
-# Build the tiny clock shim separately so it does not invalidate Rust/WPE output.
-FROM ${WPE_BUILDROOT_REF} AS dnf-build-clock
+# Build the tiny clock shim separately so it does not invalidate Rust output.
+FROM builder-base AS dnf-build-clock
 COPY os/scripts/build-clock.c /tmp/build-clock.c
 RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
     /tmp/build-clock.c -o /build-clock.so
 
-FROM ${WPE_BUILDROOT_REF} AS virtio-gallivm-cpu
+FROM builder-base AS virtio-gallivm-cpu
 COPY os/scripts/virtio-gallivm-cpu.c /tmp/virtio-gallivm-cpu.c
 RUN cc -std=c11 -Wall -Wextra -Werror -O2 -fPIC -shared \
     -Wl,-z,relro,-z,now /tmp/virtio-gallivm-cpu.c -o /virtio-gallivm-cpu.so
@@ -1083,7 +1050,7 @@ RUN --network=none \
     --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     python3 /tilo-components/install-components.py \
       --manifest /tilo-components/components.toml \
-      --from /out --from /out/optional \
+      --from /out \
       --dest /image --by-layer --all
 
 FROM scratch AS desktop-binaries
@@ -1094,6 +1061,11 @@ COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 COPY --from=joycond-builder /out/usr/bin/joycond /usr/bin/joycond
 COPY --from=joycond-builder /out/usr/lib/systemd/system/joycond.service /usr/lib/systemd/system/joycond.service
 COPY --from=joycond-builder /out/usr/lib/modules-load.d/joycond.conf /usr/lib/modules-load.d/joycond.conf
+# bootc that finds this system's ESP on a disk it shares (bootc-builder). It
+# replaces the base's binary of the same release; the rootfs's final checks run
+# it against the base's libostree.
+COPY --from=bootc-builder /out/usr/bin/bootc /usr/bin/bootc
+COPY --from=bootc-builder /out/usr/share/licenses/tilo-bootc/ /usr/share/licenses/tilo-bootc/
 # tilo-session records each login through the flight recorder; the report
 # summarises those records. The host package installs the same two files.
 COPY dist/session/tilo-flight-recorder.py /usr/libexec/tilo-flight-recorder
@@ -1125,6 +1097,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
+COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
 
 FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
@@ -1242,10 +1215,10 @@ RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-
 # `rpm -qf` reporting that no package owns files it just installed.
 #
 # So this is not a workaround for the corruption; it is not shipping derived
-# state that was never valid to ship. Only this stage needs it: the wpe-builder
-# and builder stages are thrown away and nothing in them reads the rpmdb after
-# their one transaction, and touching their dnf layers would invalidate a
-# ~45-minute engine build for nothing.
+# state that was never valid to ship. Only this stage needs it: the builder
+# stages are thrown away and nothing in them reads the rpmdb after their one
+# transaction, and touching their dnf layers would invalidate their cached
+# toolchain for nothing.
 #
 # What is established, and what is not — because the next person will need to
 # know which half to trust. Two earlier claims here were wrong and are corrected
@@ -1322,7 +1295,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # Audio/Video
+# alsa-ucm: the per-machine ALSA profiles PipeWire opens DSP sound cards with
+# (Qualcomm X1E, Intel SOF). Without one such a card lists no sink or source
+# (os/tests/board_audio_contract.sh).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    alsa-ucm \
     pipewire \
     pipewire-pulseaudio \
     pipewire-utils \
@@ -1385,9 +1362,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # PAM stack unlocks Secret Service at password login, so an existing Tilo
 # identity is available before the compositor probes it.
 #
-# `polkit` is required so the greeter's Reboot / Shut down buttons can drive
-# logind: `systemctl reboot` / `poweroff` issue the
-# `org.freedesktop.login1.{reboot,power-off}` actions, which polkit authorises
+# `polkit` is required so the greeter's power menu can drive
+# logind: `systemctl suspend` / `reboot` / `poweroff` issue the
+# `org.freedesktop.login1.{suspend,reboot,power-off}` actions, which polkit authorises
 # for the `greetd` user via etc/polkit-1/rules.d/49-tilo-greeter-power.rules.
 # It also ships `polkit-agent-helper-1` (and its activation socket), which the
 # compositor's authentication agent drives to run PAM for administrator
@@ -1545,9 +1522,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# Offline spelling dictionaries used by the shared text toolkit. Hunspell is
-# the affix-aware multilingual baseline; English also has an embedded fallback
-# so recovery/minimal environments retain checking. Keep this explicit rather
+# Offline spelling dictionaries used by the shared text toolkit, which reads
+# /usr/share/hunspell in-process (also inside app sandboxes); English also has
+# an embedded word list so recovery/minimal environments retain checking. The
+# `hunspell` CLI is for people at a terminal. Keep this explicit rather
 # than pulling every Fedora language pack into the immutable image.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     hunspell \
@@ -1640,51 +1618,36 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Packages that no Tilo build output shapes
 # ---------------------------------------------------------------------------
 # Every transaction below, and the SELinux policy load that follows them, reads
-# only the frozen snapshot, the WPE engine and a few configuration files. They
+# only the frozen snapshot and a few configuration files. They
 # come before the first Tilo binary is copied in, so a Rust or /etc change
 # rebuilds none of them; they used to follow it, and every such change reran
 # the Windows packages, the bootloader swap and the policy load. Their order
 # among themselves is unchanged: the ukify transaction removes packages (openssl,
 # ...) that a later one could otherwise require.
 
-# ---- WPE WebKit runtime (browser engine) ------------------------------------
-# Engine libraries + the WebKit helper processes (WPEWebProcess,
-# WPENetworkProcess) from the wpe-builder stage, plus the runtime libraries
-# the engine links that aren't already in this image. GStreamer base/good are
-# installed above.
-#
-# This list has to cover every DT_NEEDED entry of libWPEWebKit-2.0.so or the
-# browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
-# are there because the engine is built with accessibility, gamepad and XSLT
-# support, libjxl and flite because it decodes JPEG XL and synthesises speech;
-# they arrive via no other package in this image.
-#
-# Copies nothing under TILO_WITH_BROWSER=0 (the stage is an empty /wpe then). The
-# dnf list below still runs: those are ordinary frozen-repo packages that cost
-# seconds, and installing them either way keeps the two images' package sets —
-# and this layer's cache entry — identical.
-COPY --from=wpe-builder /wpe/ /
+# ---- Browser engine runtime libraries -------------------------------------
+# The shared libraries CEF's libcef.so records in DT_NEEDED that nothing else in
+# this image brings. The engine runtime bundle carries CEF itself; these come
+# from the image, which the browser's sandbox reads (/usr/lib64). The rootfs
+# check below fails the build, naming the library, when the list falls short.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
-    --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
     dnf install -y --setopt=reposdir=/repo \
-    libepoxy \
-    libsoup3 \
-    enchant2 \
-    hyphen \
-    woff2 \
-    lcms2 \
-    libjxl \
-    flite \
-    openjpeg2 \
-    libavif \
-    libwebp \
-    libgcrypt \
-    libtasn1 \
-    libsecret \
+    nss \
+    nspr \
     atk \
     at-spi2-atk \
-    libmanette \
-    libxslt \
+    cups-libs \
+    libXcomposite \
+    libXdamage \
+    libXrandr \
+    libXext \
+    libXfixes \
+    libxkbcommon \
+    mesa-libgbm \
+    pango \
+    cairo \
+    alsa-lib \
+    dbus-libs \
     && ldconfig \
     && dnf clean all && ${FINALIZE_RPMDB} \
     && gst-inspect-1.0 h264parse >/dev/null \
@@ -1692,7 +1655,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && gst-inspect-1.0 pulsesrc >/dev/null \
     && gst-inspect-1.0 avenc_aac >/dev/null \
     && gst-inspect-1.0 aacparse >/dev/null \
-    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above" \
     && /usr/libexec/tilo/clean-dnf-layer-state
 
 # ---------------------------------------------------------------------------
@@ -1895,6 +1857,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     xwayland-satellite \
     waypipe \
     virtiofsd \
+    vhost-device-vsock \
     skopeo \
     virt-viewer \
     xorriso \
@@ -1960,8 +1923,6 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
-    os/usr/lib/systemd/system/tilo-direct-peer-prune.path \
-    os/usr/lib/systemd/system/tilo-direct-peer-prune.service \
     os/usr/lib/systemd/system/tilo-network-start.timer \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
@@ -1974,10 +1935,6 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
     /etc/polkit-1/rules.d/
-# Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
-# (built in the wpe-builder stage; its libs + WebProcess binaries are copied
-# into this rootfs below). An optional os/components.toml component: the
-# installer skips it when TILO_WITH_BROWSER=0 left no browser in /out/optional/.
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 # Graphical installer. Primarily consumed by the layered installer image
@@ -2041,13 +1998,18 @@ COPY \
 # source-pinned receiver simulator. No receiver hardware or live network is
 # involved, but an empty/control-plane-only session fails the stats assertions.
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
-COPY os/tests/projection-boot-check.sh /usr/libexec/tilo/projection-boot-check.sh
+# The session-context check proves a greetd login runs in the user's SELinux
+# domain and logind session scope, with each launched app in its own scope.
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh \
+     os/tests/input-hotplug-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
-          /usr/libexec/tilo/projection-boot-check.sh
+          /usr/libexec/tilo/projection-boot-check.sh \
+          /usr/libexec/tilo/session-context-check.sh \
+          /usr/libexec/tilo/input-hotplug-check.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -2083,31 +2045,20 @@ COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
 COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
 COPY os/etc/gitconfig /etc/gitconfig
 
-# Wayland session desktop entries. Two files land here:
-#   - shell.desktop          — default session (no peer-sync)
-#   - shell-peer-sync.desktop — opt-in session (Iroh enabled)
-# The custom graphical greeter lists both at the login prompt; see
-# docs/peer-sync.md. The separate text-mode tuigreet package is intentionally
+# The one Wayland session. tilo-greeter starts it directly and shows a session
+# picker only when the directory offers a real choice, so nothing else may land
+# in /usr/share/wayland-sessions or /usr/share/xsessions; the image contract
+# below enforces that. The separate text-mode tuigreet package is intentionally
 # absent from this image.
-COPY \
-    os/usr/share/wayland-sessions/shell.desktop \
-    os/usr/share/wayland-sessions/shell-peer-sync.desktop \
-    /usr/share/wayland-sessions/
+COPY os/usr/share/wayland-sessions/shell.desktop /usr/share/wayland-sessions/
 COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-# User units: the graphical-session target and the opt-in peer-sync user
-# service. (`systemctl --global enable` further down resolves each unit file at
-# build time, so a unit that was never copied in fails the build outright with
-# "does not exist".) Peer sync is NOT enabled by
-# default — users opt in via `systemctl --user enable shell-peer-sync` or by
-# picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
-# /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
-COPY \
-    os/usr/lib/systemd/user/tilo-graphical-session.target \
-    os/usr/lib/systemd/user/shell-peer-sync.service \
-    /usr/lib/systemd/user/
+# The graphical-session user target. (`systemctl --global enable` further down
+# resolves each unit file at build time, so a unit that was never copied in
+# fails the build outright with "does not exist".)
+COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/
 
 # The echo-cancelled microphone for calls: a PipeWire client config the
 # desktop session runs (`pipewire -c tilo-echo-cancel.conf`) while Settings →
@@ -2212,8 +2163,7 @@ COPY os/etc/chrony.conf /etc/chrony.conf
 COPY os/usr/share/tilo/installer-locales.txt /usr/share/tilo/installer-locales.txt
 
 # Bundled documentation (the README in the OS submodule, plus the
-# peer-sync trade-off doc users are pointed at from the .desktop
-# Comment field and the systemd unit Documentation= line).
+# peer-sync transport and diagnostics doc).
 # The Secure Boot + disk-encryption procedure. On-image because the enrolment
 # sequence has to be readable from the machine being enrolled, which is the one
 # place a wrong step stops it from booting.
@@ -2345,6 +2295,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/systemd/system-generators/tilo-root-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
+        /usr/libexec/tilo/boot-units-gate.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
@@ -2440,9 +2391,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # ---------------------------------------------------------------------------
 # The portal backend needs no unit: the compositor serves it in-process,
 # so it starts and stops with the session it answers for.
-# `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
-# user-opt-in part.
-#
 # `tilo-ush.socket` is globally enabled: every app declaring
 # `ush = "required@<v>"` is refused without that endpoint, while socket
 # activation keeps the supervisor itself off the login path until first use.
@@ -2461,7 +2409,6 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
 RUN systemctl enable greetd.service && \
-    restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     # Fedora's presets start these at boot, ordered before multi-user.target or
     # graphical.target. They start on demand instead: ModemManager and
@@ -2475,7 +2422,6 @@ RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
-    systemctl enable tilo-direct-peer-prune.path tilo-direct-peer-prune.service && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
@@ -2917,9 +2863,9 @@ COPY --from=native-builder-payload \
 # image build, and claims nothing more.
 COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
-# Browser and shell are compiled in one Cargo invocation. The browser's WPE
-# feature can therefore affect shell's dynamic link closure. Check it only
-# after both the WPE files and their runtime RPM dependencies are present.
+# The shell and the browser engine must resolve every library they load from
+# this rootfs: a gap is a loader error at the first launch, on a device.
+ARG CHROMIUM_RUNTIME_VERSION
 RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enroll \
         /usr/libexec/tilo-home-peer-control /usr/libexec/tilo-relay-firstboot \
         /usr/libexec/tilo-windows-vm-control /usr/libexec/tilo-windows-rail \
@@ -2932,12 +2878,19 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
               /usr/libexec/tilo-doubletake-test-receiver \
               /usr/libexec/tilo-fluxcast \
               /usr/libexec/tilo-account-credential \
-    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
     && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
     && { if [ -n "$missing" ]; then \
          printf 'shell has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
          exit 1; \
        fi; } \
+    && engine="/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/lib/chromium" \
+    && { [ ! -d "$engine" ] || { \
+         missing="$(LD_LIBRARY_PATH="$engine" ldd "$engine/tilo-chromium-host" "$engine/libcef.so" \
+                    | awk '/not found/ { print $1 }' | sort -u)" \
+         && if [ -n "$missing" ]; then \
+              printf 'the browser engine has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
+              exit 1; \
+            fi; }; } \
     && { /usr/libexec/tilo-doubletake -h >/dev/null \
          || { echo 'doubletake help smoke test failed' >&2; exit 1; }; } \
     && { /usr/libexec/tilo-fluxcast --help >/dev/null \
@@ -3049,6 +3002,7 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
     && sh /usr/local/libexec/tilo-verify-rpm-files.sh \
+    && test "$(bootc --version)" = "bootc $(rpm -q --qf '%{VERSION}' bootc)" \
     && bootc container lint
 
 # COPY is a separate build operation, with no DNS mount in /run. Copy the
@@ -3103,6 +3057,20 @@ COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
 COPY --from=doubletake-builder /out/ /doubletake/
 COPY --from=fluxcast-builder /src/src/ /fluxcast/
 COPY --from=joycond-builder /out/ /joycond/
+COPY --from=bootc-builder /out/ /bootc/
+
+# BuildKit keys a RUN by a content hash of every bind mount, read-only or not,
+# so mounting the whole split rootfs into the uki stage hashed every file of it,
+# about two minutes of every build. With a composefs digest given, uki.sh reads
+# only these files of the rootfs; this stage hands it just those.
+FROM split AS uki-input
+RUN mkdir /uki-input \
+    && cd / \
+    && for path in usr/lib/os-release usr/lib/bootc/kargs.d \
+                   usr/lib/tilo/hardware-profile.json usr/lib/tilo/hardware-profile-definition.json \
+                   usr/lib/modules/*/dtb; do \
+         if [ -e "$path" ] || [ -L "$path" ]; then cp -a --parents "$path" /uki-input/; fi; \
+       done
 
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
@@ -3119,14 +3087,14 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
-# The rootfs mounts are writable (writes are discarded): BuildKit keys a
-# read-only mount by a content hash of everything under it, which for the whole
-# rootfs took two minutes of every build before this step could start.
+# /target holds only uki-input's files, so bootc's own digest of it would be
+# wrong: the digest must be given.
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
-    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=uki-input,source=/uki-input,target=/target,rw \
     --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
-    bash /usr/local/bin/uki.sh
+    { [ -n "$CFS_DIGEST" ] || { echo 'TILO_CFS_DIGEST is required (os/dev/build-image.sh passes a placeholder)' >&2; exit 1; }; } \
+    && bash /usr/local/bin/uki.sh
 
 # NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to
 # the rootfs has a different composefs digest from the one its inherited UKI seals,

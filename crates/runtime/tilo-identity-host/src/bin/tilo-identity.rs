@@ -507,7 +507,7 @@ mod unix {
         let local =
             device_cert(&context.paths, identity.public_key).map(|cert| cert.device_public_key);
         let direct = personal_devices::live_direct_peers(
-            &context.identity_root(),
+            &personal_devices::peers_dir(&context.identity_root()),
             &identity.public_key,
             &fleet.revocation_list(),
         )
@@ -671,11 +671,10 @@ mod unix {
         let cert = device_cert(&context.paths, identity.public_key);
         let rows = device_rows(context, &identity)?;
         let (snapshot, running) = presence();
-        let rooms = personal_devices::read_rooms(
-            &context.identity_root().join(personal_devices::ROOMS_FILE),
-        )
-        .map(|rooms| rooms.len())
-        .unwrap_or_default();
+        let rooms =
+            personal_devices::read_rooms(&personal_devices::rooms_path(&context.identity_root()))
+                .map(|rooms| rooms.len())
+                .unwrap_or_default();
         let next = status_next_steps(
             &identity,
             cert.as_ref(),
@@ -1467,7 +1466,6 @@ mod unix {
     /// What became of the revoked device in this machine's direct-peer list.
     enum PeerPruning {
         Removed,
-        Pending,
         Failed(String),
     }
 
@@ -1475,48 +1473,44 @@ mod unix {
         fn json(&self) -> Value {
             match self {
                 Self::Removed => json!("removed"),
-                Self::Pending => json!("pending"),
                 Self::Failed(error) => json!({ "error": error }),
             }
         }
 
         fn text(&self) -> String {
             match self {
-                Self::Removed => "It is no longer a direct peer of this device.".into(),
-                Self::Pending => "This device stops dialing it now; the system removes it from \
-                    the direct-peer list within seconds. Your other devices refuse it as soon \
-                    as they hear of the revocation from this one."
+                Self::Removed => "It is no longer a direct peer of this device. Your other \
+                    devices refuse it as soon as they hear of the revocation from this one."
                     .into(),
                 Self::Failed(error) => format!(
-                    "Recording the revocation for the direct-peer list failed ({error}); \
-                     this device's session still refuses it."
+                    "Removing it from the direct peers failed ({error}); this device's \
+                     session still refuses it and does not dial it."
                 ),
             }
         }
     }
 
-    /// Record the revocation beside the identity root, where the session and
-    /// the privileged pruning pass find it, and prune right away when this
-    /// account may rewrite the list itself.
+    /// Record the revocation in the identity's peers directory, where the
+    /// session and a relay on this machine find it, and drop the revoked
+    /// device from the direct peers beside it.
     fn forget_revoked_peer(identity_root: &Path, entry: &RevocationEntry) -> PeerPruning {
-        if let Err(error) = personal_devices::record_revocation(identity_root, entry) {
+        let peers = personal_devices::peers_dir(identity_root);
+        if let Err(error) = personal_devices::record_revocation(&peers, entry) {
             return PeerPruning::Failed(error.to_string());
         }
         let revoked = personal_devices::DirectPeer {
             identity: entry.user_public_key,
             device: entry.revoked_device_public_key,
         };
-        match personal_devices::prune_revoked_direct_peers(identity_root) {
-            Ok(_)
-                if !personal_devices::read_direct_peers(
-                    &identity_root.join(personal_devices::DIRECT_PEERS_FILE),
-                )
-                .unwrap_or_default()
-                .contains(&revoked) =>
-            {
-                PeerPruning::Removed
-            }
-            _ => PeerPruning::Pending,
+        match personal_devices::prune_revoked_direct_peers(&peers) {
+            Ok(_) => match personal_devices::read_direct_peers(
+                &personal_devices::direct_peers_path(identity_root),
+            ) {
+                Ok(peers) if !peers.contains(&revoked) => PeerPruning::Removed,
+                Ok(_) => PeerPruning::Failed("it is still listed".into()),
+                Err(error) => PeerPruning::Failed(error.to_string()),
+            },
+            Err(error) => PeerPruning::Failed(error.to_string()),
         }
     }
 }

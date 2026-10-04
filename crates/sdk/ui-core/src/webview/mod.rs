@@ -10,7 +10,9 @@
 //! Backends:
 //!  * [`test_engine::TestEngine`] — deterministic, dependency-free engine
 //!    used by unit tests and `--shots` headless renders.
-//!  * WPE `WebKit` — the Tilo system engine, rendering real pages offscreen.
+//!  * [`chromium::ChromiumEngine`] — the Tilo system engine: a Chromium
+//!    (CEF) host process rendering real pages offscreen, delivered as its
+//!    own signed runtime (see [`chromium::runtime`]).
 //!
 //! Coordinates in commands are **physical pixels relative to the web
 //! view's top-left corner** — the widget does the logical→physical
@@ -23,15 +25,13 @@ pub use credentials::{
     CredentialRequest,
 };
 pub mod page;
+pub mod paint;
 pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
-
-#[cfg(feature = "webview-wpe")]
-pub mod wpe;
 
 pub(crate) mod frame_trace;
 mod scroll_marker;
@@ -280,6 +280,18 @@ pub enum WebViewCommand {
         request_id: u32,
         request: PageRequest,
     },
+    /// Capture the page's layout for the paint stream: every box and text
+    /// line the engine laid out (see `tilo_paint_stream::snapshot`). Exactly
+    /// one [`WebViewEvent::PaintSnapshot`] with the same id answers it.
+    PaintCapture {
+        request_id: u32,
+    },
+    /// The bytes of a resource the page already loaded, read from the
+    /// engine's cache. One [`WebViewEvent::PaintResource`] answers it.
+    PaintResource {
+        request_id: u32,
+        url: String,
+    },
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
@@ -434,6 +446,16 @@ pub enum WebViewEvent {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
     },
+    /// The raw layout snapshot (JSON), or `None` when the engine could not
+    /// take one.
+    PaintSnapshot {
+        request_id: u32,
+        snapshot: Option<String>,
+    },
+    PaintResource {
+        request_id: u32,
+        bytes: Option<Vec<u8>>,
+    },
     /// `WebKit` received response metadata and is waiting for the host's file
     /// portal to grant an explicit destination.
     DownloadRequested {
@@ -469,30 +491,6 @@ pub struct MediaElementInfo {
     pub viewport_rect: [f64; 4],
     pub intrinsic_size: [u32; 2],
     pub label: String,
-}
-
-/// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA
-/// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
-#[derive(Debug)]
-#[cfg(unix)]
-pub struct DmabufPlane {
-    pub fd: media::dmabuf::DmabufHandle,
-    pub stride: u32,
-    pub offset: u32,
-}
-
-/// A GPU frame exported as a DMA-BUF handle (the `webview-wpe` EGL export
-/// path). Feature-neutral so it can cross the engine trait — only the WPE
-/// engine produces one and only the wgpu import consumes it. `fourcc` +
-/// `modifier` describe the pixel format and tiling.
-#[derive(Debug)]
-#[cfg(unix)]
-pub struct DmabufFrame {
-    pub planes: Vec<DmabufPlane>,
-    pub fourcc: u32,
-    pub modifier: u64,
-    pub width: u32,
-    pub height: u32,
 }
 
 /// A running web engine instance. Implementations are `Send + Sync` so
@@ -546,11 +544,28 @@ pub trait WebViewEngine: Send + Sync {
     /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
 
-    /// The zero-copy path, if a GPU frame is pending. Default: none — SHM
-    /// and test engines deliver pixels through [`frames`](Self::frames).
-    #[cfg(unix)]
-    fn take_dmabuf(&self) -> Option<DmabufFrame> {
+    /// The engine this one wraps, for what only a backend can answer.
+    fn wrapped(&self) -> Option<&SharedEngine> {
         None
+    }
+
+    /// The page as a display list. An engine that has one is drawn from it
+    /// instead of [`frames`](Self::frames) (see [`paint`]).
+    fn paint_frame(&self) -> Option<Arc<tilo_paint_stream::Frame>> {
+        None
+    }
+
+    /// Encoded bytes of an image a [`paint_frame`](Self::paint_frame) references.
+    fn paint_blob(&self, _hash: &[u8; 32]) -> Option<Arc<Vec<u8>>> {
+        None
+    }
+
+    /// The page as a stream for a session to share: a whole frame when
+    /// `keyframe` (or when the consumer must start over), else the patches
+    /// since the last call, followed by images not sent yet. Empty for an
+    /// engine without a display list.
+    fn take_paint_stream(&self, _keyframe: bool) -> Vec<tilo_paint_stream::wire::Payload> {
+        Vec::new()
     }
 }
 

@@ -16,7 +16,6 @@ use tilo_relay::{DeviceRole, RelayConfig, ReplicationIntent, WorkspaceBinding};
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
 const MAX_REQUEST: u64 = 64 * 1024;
-const IDENTITY_ROOT: &str = "/var/lib/tilo";
 const MAX_HOME_PEER_EXPORT: u64 = 8 * 1024 * 1024;
 
 #[derive(Parser)]
@@ -30,9 +29,6 @@ struct Cli {
 enum BrokerCommand {
     /// Apply the bounded JSON request read from stdin and restart affected services.
     Apply,
-    /// Remove from this machine's direct-peer list the devices its own
-    /// identities revoked, as recorded under `/var/lib/tilo`.
-    PruneRevoked,
     /// Open a one-minute LAN enrollment approval window.
     ApproveEnrollment {
         #[arg(long)]
@@ -43,21 +39,6 @@ enum BrokerCommand {
         expected_device: Option<String>,
         #[arg(long)]
         expected_service: Option<String>,
-    },
-    /// Receive an existing identity on this new personal device.
-    PairDevice {
-        #[arg(long)]
-        identity_root: PathBuf,
-        #[arg(long)]
-        identity_dir: PathBuf,
-        #[arg(long)]
-        label: String,
-        #[arg(long)]
-        status_file: PathBuf,
-        #[arg(long)]
-        requester_pid: u32,
-        #[arg(long)]
-        requester_start_time: u64,
     },
     /// Approve an ordinary nearby personal device.
     ApproveDevice {
@@ -635,11 +616,15 @@ fn enrollment_command_result(
     bail!("{incomplete}: {detail}")
 }
 
-fn personal_device_command(
-    operation: &str,
+/// Run `tilo-enroll approve-device` for the person who invoked this helper,
+/// with their privileges (or the identity root owner's, for a seed-backed
+/// root), and return its output for `tilo-identity` and Settings.
+fn approve_personal_device(
     identity_root: &Path,
     identity_dir: &Path,
-    extra: impl FnOnce(&mut Command),
+    expected_device: &str,
+    expected_service: &str,
+    timeout: u64,
 ) -> anyhow::Result<bounded_command::Output> {
     let uid = invoking_uid()?;
     let account = account_for_uid(uid)?;
@@ -647,115 +632,35 @@ fn personal_device_command(
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
     command
-        .arg(operation)
+        .arg("approve-device")
         .arg("--identity-root")
         .arg(&identity_root)
         .arg("--identity-dir")
-        .arg(identity_dir);
-    if operation == "approve-device" {
-        command.arg("--personal-rooms").arg(
+        .arg(identity_dir)
+        .args(["--expected-device", expected_device])
+        .args(["--expected-service", expected_service])
+        .args(["--timeout", &timeout.to_string()])
+        .arg("--personal-rooms")
+        .arg(
             account
                 .home
                 .join(".local/state/tilo")
                 .join(tilo_relay_protocol::personal_devices::ROOMS_FILE),
         );
-    }
-    extra(&mut command);
     // A seed under the identity root is opened by whoever owns that root, as
     // before. Without one the approval signs with the person's record.
-    if operation == "approve-device"
-        && !tilo_user_identity::IdentityPaths::under(&identity_root)
-            .user_privkey
-            .exists()
+    if tilo_user_identity::IdentityPaths::under(&identity_root)
+        .user_privkey
+        .exists()
     {
-        run_as_invoking_person(&mut command, uid, &account)?;
-    } else {
         run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    } else {
+        run_as_invoking_person(&mut command, uid, &account)?;
     }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
     enrollment_command_result(&output, "personal-device enrollment was not completed")?;
     Ok(output)
-}
-
-/// The certificate `tilo-enroll approve-device` reports on its last stdout
-/// line.
-fn approved_certificate(stdout: &[u8]) -> anyhow::Result<tilo_user_identity::DeviceCert> {
-    #[derive(Deserialize)]
-    struct Approved {
-        certificate: String,
-    }
-    let line = std::str::from_utf8(stdout)?
-        .lines()
-        .rev()
-        .find(|line| line.trim_start().starts_with('{'))
-        .context("the approval did not report the certificate it issued")?;
-    let approved: Approved = serde_json::from_str(line)?;
-    Ok(tilo_user_identity::canonical::from_canonical_bytes(
-        &hex::decode(approved.certificate)?,
-    )?)
-}
-
-/// Record a device the person just approved as one this machine dials
-/// directly. The list lives in the root-owned identity root, so this helper
-/// writes it on behalf of an approver that ran unprivileged.
-///
-/// The approver's report is not trusted as such: the certificate must name
-/// the device the person chose, must not be a home server, and must chain to
-/// the same root that certified this machine's own device key. That key is
-/// readable but not writable by the session, so a forged report cannot name
-/// another person's device.
-fn remember_approved_device(
-    identity_root: &Path,
-    expected_device: &str,
-    stdout: &[u8],
-) -> anyhow::Result<()> {
-    let cert = approved_certificate(stdout)?;
-    tilo_user_identity::verify_device_cert(&cert)
-        .context("the approved certificate does not verify")?;
-    if hex::encode(cert.device_public_key) != expected_device {
-        bail!("the approval certified a device other than the one chosen");
-    }
-    if cert.capabilities.can_act_as_host {
-        bail!("a home server is reached through the home-peer registry, not as a direct peer");
-    }
-    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
-    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-        .context("this machine's device key is unreadable")?;
-    let local = tilo_user_identity::persist::read_device_cert(
-        &paths.device_cert_for_user(&cert.user_public_key),
-    )
-    .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))
-    .context("this machine holds no certificate for the approving person")?;
-    if local.device_public_key != device.verifying_key().to_bytes()
-        || local.user_public_key != cert.user_public_key
-        || tilo_user_identity::verify_device_cert(&local).is_err()
-    {
-        bail!("the approved device belongs to a person this machine is not enrolled to");
-    }
-    tilo_relay_protocol::personal_devices::remember_direct_peers(
-        &identity_root.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
-        &[tilo_relay_protocol::personal_devices::DirectPeer {
-            identity: cert.user_public_key,
-            device: cert.device_public_key,
-        }],
-    )
-    .context("record the approved device as a direct peer")?;
-    Ok(())
-}
-
-/// Prune from the direct-peer list under `identity_root` every entry whose
-/// device the identity it was recorded under revoked. The revocation
-/// directory is writable by the identity group, but an entry there can only
-/// remove list entries recorded under the root that signed it, and only a
-/// privileged enrollment, after checking that root's certificate, records
-/// entries. A revocation from any other root, with whatever certificates
-/// were planted beside it, removes nothing. Returns the entries removed.
-fn prune_revoked(
-    identity_root: &Path,
-) -> anyhow::Result<Vec<tilo_relay_protocol::personal_devices::DirectPeer>> {
-    tilo_relay_protocol::personal_devices::prune_revoked_direct_peers(identity_root)
-        .context("prune the direct-peer list")
 }
 
 fn main() -> anyhow::Result<std::process::ExitCode> {
@@ -770,12 +675,6 @@ fn run() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
-        BrokerCommand::PruneRevoked => {
-            for peer in prune_revoked(Path::new(IDENTITY_ROOT))? {
-                println!("{}", hex::encode(peer.device));
-            }
-            Ok(())
-        }
         BrokerCommand::ApproveEnrollment {
             identity_root,
             workspace_ids,
@@ -787,34 +686,6 @@ fn run() -> anyhow::Result<()> {
             expected_device,
             expected_service,
         ),
-        BrokerCommand::PairDevice {
-            identity_root,
-            identity_dir,
-            label,
-            status_file,
-            requester_pid,
-            requester_start_time,
-        } => {
-            let status_parent = status_file.parent().context("status file has no parent")?;
-            if status_parent != identity_dir {
-                bail!("pairing status must be stored in the identity directory");
-            }
-            let requester =
-                tilo_relay::ProcessLease::from_parts(requester_pid, requester_start_time);
-            requester
-                .validate_owner(invoking_uid()?)
-                .context("pairing requester is no longer the invoking user process")?;
-            personal_device_command("pair-device", &identity_root, &identity_dir, |command| {
-                command
-                    .args(["--label", &label, "--status-file"])
-                    .arg(status_file)
-                    .arg("--requester-pid")
-                    .arg(requester_pid.to_string())
-                    .arg("--requester-start-time")
-                    .arg(requester_start_time.to_string());
-            })
-            .map(drop)
-        }
         BrokerCommand::ApproveDevice {
             identity_root,
             identity_dir,
@@ -823,21 +694,13 @@ fn run() -> anyhow::Result<()> {
             timeout,
         } => {
             validate_peer_ids(&expected_device, &expected_service)?;
-            let output = personal_device_command(
-                "approve-device",
+            let output = approve_personal_device(
                 &identity_root,
                 &identity_dir,
-                |command| {
-                    command
-                        .args(["--expected-device", &expected_device])
-                        .args(["--expected-service", &expected_service])
-                        .args(["--timeout", &timeout.to_string()]);
-                },
+                &expected_device,
+                &expected_service,
+                timeout,
             )?;
-            let identity_root = identity_root.canonicalize()?;
-            if identity_root == Path::new("/var/lib/tilo") {
-                remember_approved_device(&identity_root, &expected_device, &output.stdout)?;
-            }
             // Pass the result through for `tilo-identity` and Settings.
             std::io::Write::write_all(&mut std::io::stdout(), &output.stdout)?;
             Ok(())
@@ -851,149 +714,12 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     #[test]
-    fn a_planted_certificate_and_a_strangers_revocation_prune_nothing() {
-        use tilo_relay_protocol::personal_devices::{self as devices, DirectPeer};
-        use tilo_user_identity::{
-            DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
-        };
-
-        let dir = tempfile::tempdir().unwrap();
-        let paths = IdentityPaths::under(dir.path());
-        let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
-        let stranger = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
-        let certify = |by: &ed25519_dalek::SigningKey| {
-            let mut cert = DeviceCert {
-                user_public_key: by.verifying_key().to_bytes(),
-                device_public_key: device.verifying_key().to_bytes(),
-                device_label: "Board A".into(),
-                capabilities: DeviceCapabilities::primary(),
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_device_cert(&mut cert, by).unwrap();
-            cert
-        };
-        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &certify(&root))
-            .unwrap();
-        // The identity group can write the certificate directory: the
-        // stranger certifies this machine's key under its own root.
-        let stranger_key = stranger.verifying_key().to_bytes();
-        std::fs::create_dir_all(paths.device_cert_for_user(&stranger_key).parent().unwrap())
-            .unwrap();
-        tilo_user_identity::persist::write_device_cert(
-            &paths.device_cert_for_user(&stranger_key),
-            &certify(&stranger),
-        )
-        .unwrap();
-        let ours = |device: u8| DirectPeer {
-            identity: root.verifying_key().to_bytes(),
-            device: [device; 32],
-        };
-        let peers = dir.path().join(devices::DIRECT_PEERS_FILE);
-        devices::remember_direct_peers(&peers, &[ours(1), ours(2)]).unwrap();
-        let revoke = |by: &ed25519_dalek::SigningKey, device: [u8; 32]| {
-            let mut entry = RevocationEntry {
-                user_public_key: by.verifying_key().to_bytes(),
-                revoked_device_public_key: device,
-                revoked_at_ns: 5,
-                reason: RevocationReason::Lost,
-                signature: [0; 64],
-            };
-            tilo_user_identity::sign_revocation_entry(&mut entry, by).unwrap();
-            devices::record_revocation(dir.path(), &entry).unwrap();
-        };
-        revoke(&stranger, [2; 32]);
-        assert!(prune_revoked(dir.path()).unwrap().is_empty());
-        assert_eq!(
-            devices::read_direct_peers(&peers).unwrap(),
-            vec![ours(1), ours(2)]
-        );
-        revoke(&root, [1; 32]);
-        assert_eq!(prune_revoked(dir.path()).unwrap(), vec![ours(1)]);
-        assert_eq!(devices::read_direct_peers(&peers).unwrap(), vec![ours(2)]);
-    }
-
-    #[test]
     fn the_requesting_account_comes_from_polkit_or_sudo_and_is_never_root() {
         assert_eq!(invoking_uid_from(Some("1000"), Some("7")).unwrap(), 1000);
         assert_eq!(invoking_uid_from(None, Some("1001")).unwrap(), 1001);
         assert!(invoking_uid_from(None, None).is_err());
         assert!(invoking_uid_from(None, Some("0")).is_err());
         assert!(invoking_uid_from(Some("x"), None).is_err());
-    }
-
-    #[test]
-    fn only_a_same_person_ordinary_device_the_person_chose_becomes_a_direct_peer() {
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-        let cert = |root: &ed25519_dalek::SigningKey, device: [u8; 32], capabilities| {
-            let mut cert = DeviceCert {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: device,
-                device_label: "Board".into(),
-                capabilities,
-                issued_at_ns: 1,
-                expires_at_ns: None,
-                signature: [0; 64],
-            };
-            sign_device_cert(&mut cert, root).unwrap();
-            cert
-        };
-        let report = |cert: &DeviceCert| {
-            format!(
-                "note: something\n{}\n",
-                serde_json::json!({
-                    "approved_device": hex::encode(cert.device_public_key),
-                    "certificate": hex::encode(
-                        tilo_user_identity::canonical::canonical_bytes(cert).unwrap()
-                    ),
-                })
-            )
-            .into_bytes()
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let paths = tilo_user_identity::IdentityPaths::under(dir.path());
-        paths.ensure_directories().unwrap();
-        let person = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
-        let stranger = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
-        let local = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-        tilo_user_identity::persist::write_device_key(&paths.device_privkey, &local).unwrap();
-        tilo_user_identity::persist::write_device_cert(
-            &paths.device_cert,
-            &cert(
-                &person,
-                local.verifying_key().to_bytes(),
-                DeviceCapabilities::primary(),
-            ),
-        )
-        .unwrap();
-        let board = ed25519_dalek::SigningKey::from_bytes(&[6; 32])
-            .verifying_key()
-            .to_bytes();
-        let chosen = hex::encode(board);
-        let peers = dir
-            .path()
-            .join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE);
-
-        let foreign = cert(&stranger, board, DeviceCapabilities::member());
-        assert!(remember_approved_device(dir.path(), &chosen, &report(&foreign)).is_err());
-        let host = cert(&person, board, DeviceCapabilities::host());
-        assert!(remember_approved_device(dir.path(), &chosen, &report(&host)).is_err());
-        let member = cert(&person, board, DeviceCapabilities::member());
-        assert!(
-            remember_approved_device(dir.path(), &hex::encode([9; 32]), &report(&member)).is_err()
-        );
-        assert!(!peers.exists());
-
-        remember_approved_device(dir.path(), &chosen, &report(&member)).unwrap();
-        assert_eq!(
-            tilo_relay_protocol::personal_devices::read_direct_peers(&peers).unwrap(),
-            vec![tilo_relay_protocol::personal_devices::DirectPeer {
-                identity: person.verifying_key().to_bytes(),
-                device: board,
-            }]
-        );
     }
 
     #[test]

@@ -9,7 +9,7 @@
 use serde_json::{Value, json};
 use ui::TextRenderer;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Rect};
+use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::vello::peniko::Color;
 
 use crate::media;
@@ -174,20 +174,26 @@ pub fn pixels(
         let [r, g, b, a] = BACKDROP;
         Color::from_rgba8(r, g, b, a)
     };
-    // The renderer for the last size is kept: it has learned how much memory
-    // a scene this busy needs, so the next look fits at once.
+    // The renderers for the last sizes are kept: each has learned how much
+    // memory a scene this busy needs, so the next look fits at once, and an
+    // eyedropper's tiny picture does not cost the magic wand's its renderer.
     let mut kept = OFFSCREEN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if kept
-        .as_ref()
-        .is_none_or(|(size, _)| *size != (width, height))
-    {
+    let at = if let Some(at) = kept.iter().position(|(size, _)| *size == (width, height)) {
+        at
+    } else {
         let offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        *kept = Some(((width, height), offscreen));
-    }
-    let Some((_, offscreen)) = kept.as_mut() else {
+        if kept.len() >= KEPT_RENDERERS {
+            kept.remove(0);
+        }
+        kept.push(((width, height), offscreen));
+        kept.len() - 1
+    };
+    let entry = kept.remove(at);
+    kept.push(entry);
+    let Some((_, offscreen)) = kept.last_mut() else {
         return Err("no renderer".to_owned());
     };
     let rgba = offscreen.try_render_resilient(&scene, backdrop);
@@ -195,9 +201,50 @@ pub fn pixels(
     Ok((rgba?, width, height))
 }
 
-/// The offscreen renderer of the last picture's size.
-static OFFSCREEN: std::sync::Mutex<Option<((u32, u32), ui::offscreen::OffscreenRenderer)>> =
-    std::sync::Mutex::new(None);
+/// The offscreen renderers of the last pictures' sizes, the newest last.
+static OFFSCREEN: std::sync::Mutex<Vec<((u32, u32), ui::offscreen::OffscreenRenderer)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many picture sizes keep a renderer.
+const KEPT_RENDERERS: usize = 2;
+
+/// The side of the patch of artwork the eyedropper averages, in units.
+const SAMPLED_SIDE: f64 = 1.0; // a sampling footprint in artwork units, not on-screen spacing
+
+/// The colour the artwork shows at `at`, as the window draws it: every
+/// layer composited through its mask, erasers taken off, the reference
+/// over it when it is shown. Averaged over a unit's patch, so a grainy
+/// paint gives its colour rather than one fleck's.
+///
+/// # Errors
+/// Returns a render failure.
+pub fn shown_colour(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    at: Point,
+) -> Result<Color, String> {
+    let half = SAMPLED_SIDE / 2.0;
+    let patch = Rect::new(at.x - half, at.y - half, at.x + half, at.y + half);
+    let options = Options {
+        view: Some(patch),
+        reference: true,
+        ..Options::default()
+    };
+    let (rgba, _, _) = pixels(patch, 4.0, false, |scene, to| {
+        renderer.draw(art, scene, to, text, &options);
+    })?;
+    let mut sum = [0u32; 3];
+    let mut count = 0u32;
+    for pixel in rgba.chunks_exact(4) {
+        for (total, channel) in sum.iter_mut().zip(pixel) {
+            *total += u32::from(*channel);
+        }
+        count += 1;
+    }
+    let mean = |total: u32| u8::try_from(total / count.max(1)).unwrap_or(u8::MAX);
+    Ok(Color::from_rgb8(mean(sum[0]), mean(sum[1]), mean(sum[2])))
+}
 
 /// The cells `compare` scores the picture in, per side.
 const COMPARE_CELLS: u32 = 4;
@@ -619,7 +666,18 @@ pub fn export(
             "scale must be within 0.05..=4 and the picture at most 8192 pixels wide".into(),
         );
     }
-    let format = export.format.as_deref().unwrap_or("png");
+    // A path names its format when the caller names none.
+    let named = export
+        .path
+        .as_deref()
+        .and_then(|path| std::path::Path::new(path).extension())
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let format = export
+        .format
+        .as_deref()
+        .or(named.as_deref())
+        .unwrap_or("png");
     let quality = export.quality.unwrap_or(EXPORT_JPEG_QUALITY);
     if !(1..=100).contains(&quality) {
         return Err("quality is 1 to 100".into());
@@ -638,7 +696,18 @@ pub fn export(
         "webp" => (encode_webp(&rgba, width, height)?, "webp"),
         other => return Err(format!("format {other:?} is png, jpeg or webp")),
     };
-    let info = json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    let mut info =
+        json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    if let Some(path) = &export.path {
+        let extensions: &[&str] = match format {
+            "jpeg" => &["jpg", "jpeg"],
+            other => &[other],
+        };
+        let written = crate::document::export_to(path, extensions, &bytes)?;
+        if let Value::Object(fields) = &mut info {
+            fields.insert("path".into(), written.into());
+        }
+    }
     Ok((
         Picture {
             bytes,
@@ -677,6 +746,9 @@ fn whole(value: f64) -> f64 {
 
 /// One mark as `inspect` lists it; its layer only when the caller did not
 /// name one, and its shape, style and transform when `full`.
+/// The most marks an eraser's entry names as those it takes paint off.
+const ERASED_LISTED: usize = 8;
+
 fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Value {
     let bounds = art.visible_bounds(mark);
     let mut entry = json!({
@@ -727,6 +799,15 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         }
         if let Some(adjust) = &mark.style.adjust {
             fields.insert("adjust".into(), json!(adjust));
+        }
+        if mark.erases() {
+            // What it takes paint off: the marks beneath it on its layer.
+            let erased: Vec<&str> = art
+                .erased_by(mark)
+                .map(|under| under.id.as_str())
+                .take(ERASED_LISTED)
+                .collect();
+            fields.insert("erases".into(), erased.into());
         }
         if !mark.group.is_empty() {
             fields.insert("group".into(), mark.group.clone().into());
@@ -849,11 +930,13 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             region.is_none_or(|region| art.visible_bounds(mark).intersect(region).area() > 0.0)
         })
         .collect();
+    // Measuring, the measures are the answer: marks are listed when asked.
+    let listed = if inspect.measure.is_some() { 0 } else { LISTED };
     let limit = inspect
         .limit
-        .map_or(LISTED, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
-    if !(1..=MAX_LISTED).contains(&limit) {
-        return Err(format!("limit must be within 1..={MAX_LISTED}"));
+        .map_or(listed, |limit| usize::try_from(limit).unwrap_or(MAX_LISTED));
+    if limit > MAX_LISTED {
+        return Err(format!("limit must be within 0..={MAX_LISTED}"));
     }
     let marks: Vec<Value> = matching
         .iter()
