@@ -358,7 +358,7 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
     {
         use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
         let mut app = MapsApp::offline();
-        app.set_demo_pois();
+        app.stage_pois();
         app.seed_perf_tiles(1280.0, 800.0);
         let scenario = PerfScenario {
             name: "maps-zoom-scroll".into(),
@@ -911,7 +911,7 @@ fn search_field_overlay_keys_and_history_dispatch() {
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 720.0);
         let panel_before = a.panel_rect();
-        a.set_demo_search();
+        a.stage_search();
         let mut scene = Scene::new();
         a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 
@@ -955,7 +955,7 @@ fn search_field_overlay_keys_and_history_dispatch() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 800.0);
-        a.set_demo_search();
+        a.stage_search();
         assert!(
             a.search_overlay_active(),
             "the demo raises the results overlay"

@@ -2,12 +2,14 @@
 //! path for the workspace document.
 
 use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, DiscoveryScope, EncodedAction, ExecutionMode,
     OperationKind, PermissionRequirement, ResultSpec, RetryPolicy,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -17,6 +19,7 @@ use crate::actions::{
 use crate::app::MapsApp;
 use crate::doc::MapsDoc;
 use crate::model::MapModel;
+use crate::scenario::Sample;
 
 /// The maps workspace resource.
 pub struct Maps;
@@ -121,12 +124,36 @@ impl ResourceApp for MapsShell {
     const ID: &'static str = "so.tilo.maps";
     const TITLE: &'static str = "Maps";
     const ICON: Option<&'static str> = Some("maps");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenario::SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        crate::scenario::viewport(scenario)
+    }
+
+    /// A capture shows the bundled sample city instead of live imagery.
+    fn fixture(fixture: &mut Fixture<Maps>) {
+        crate::scenario::prepare(fixture);
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Maps>> {
+        crate::scenario::actions(name)
     }
 
     fn view(cx: &mut ViewCx<Maps>) -> Element {
-        cx.surface(MapsApp::new())
+        // Only a live window fetches tiles, places and routes; a capture
+        // draws its sample, and a past version draws what it held.
+        let app = match cx.mode() {
+            RunMode::Live => MapsApp::new(),
+            RunMode::Capture => MapsApp::sample(
+                cx.fixture::<Sample>()
+                    .map_or(Sample::City, |sample| *sample),
+            ),
+            RunMode::Past => MapsApp::past(),
+        };
+        cx.surface(app)
     }
 }
 
@@ -137,6 +164,12 @@ impl ResourceSurface<Maps> for MapsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Maps>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(scenario) = scenario {
+            self.stage_scenario(scenario);
+        }
     }
 }
 
@@ -318,6 +351,70 @@ mod tests {
         // Document door still resolves through provide_resources / publish.
         let door = provide_resources(&seeded);
         assert_eq!(door[0].kind, "maps.workspace");
+    }
+
+    #[test]
+    fn every_scenario_stages_its_places_and_plans_through_map_actions() {
+        use ui::framework::testing::TestApp;
+        // Coordinates are stored rounded, so a place is compared by what
+        // names it.
+        let by_id = |places: &[Place]| {
+            let mut places: Vec<_> = places
+                .iter()
+                .map(|place| (place.id.clone(), place.name.clone(), place.saved))
+                .collect();
+            places.sort();
+            places
+        };
+        let sample = crate::sample::default_model();
+        for scenario in MapsShell::scenarios() {
+            let app = TestApp::<MapsShell>::capture(Some(scenario)).unwrap();
+            let state = app.state();
+            if matches!(*scenario, "empty" | "traffic-empty") {
+                assert!(state.places.is_empty(), "`{scenario}` is a first run");
+                assert!(state.route.is_none(), "`{scenario}` plans nothing");
+                continue;
+            }
+            assert_eq!(
+                by_id(&state.places),
+                by_id(&sample.places),
+                "`{scenario}` holds the city"
+            );
+            assert_eq!(state.recents, sample.recents, "`{scenario}` searched");
+            assert_eq!(
+                state.transit.len(),
+                sample.transit.len(),
+                "`{scenario}` planned transit"
+            );
+            match *scenario {
+                "transit" | "transit-arrive" => {
+                    assert_eq!(state.mode, TravelMode::Transit);
+                    assert!(state.route.is_none(), "`{scenario}` draws no road");
+                }
+                "pois" | "offline" => assert!(state.route.is_none()),
+                _ => {
+                    assert_eq!(
+                        state.route.as_ref().map(|route| route.geometry.len()),
+                        sample.route.as_ref().map(|route| route.geometry.len()),
+                        "`{scenario}` routes"
+                    );
+                    assert_eq!(state.mode, sample.mode);
+                    assert_eq!(state.dest_name, sample.dest_name);
+                }
+            }
+            let regions = if *scenario == "offline" {
+                crate::sample::regions()
+            } else {
+                Vec::new()
+            };
+            assert_eq!(state.regions, regions, "`{scenario}` downloaded areas");
+        }
+        let arrive = TestApp::<MapsShell>::capture(Some("transit-arrive"))
+            .unwrap()
+            .state()
+            .transit_time;
+        assert_eq!(arrive.offset_min, 60);
+        assert!(arrive.arrive_by());
     }
 
     #[test]
