@@ -365,8 +365,12 @@ pub fn provide_folder_resource(folder: String) -> Resource {
     let label = folder.clone();
     let create = ActionDecl::<Snippets>::new(
         "new-snippet",
-        format!("New snippet in {folder}"),
-        vec![ActionParam::required("title", ParamType::Text, "Title")],
+        crate::tr("snippets-new-snippet"),
+        vec![ActionParam::required_owned(
+            "title",
+            ParamType::Text,
+            crate::tr("snippets-action-title"),
+        )],
         move |args, _| {
             Ok(create_snippet_action(titled_snippet(
                 args.text("title").unwrap_or_default(),
@@ -381,7 +385,7 @@ pub fn provide_folder_resource(folder: String) -> Resource {
 pub fn provide_tag_resource(tag: String) -> Resource {
     Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
         "reveal",
-        "Reveal tagged snippets",
+        &crate::tr("snippets-action-reveal-tag"),
         &SnippetsOperation::RevealTag { tag },
     ))
 }
@@ -396,13 +400,13 @@ fn text_decl(
     action: &'static str,
     label: &str,
     param: &'static str,
-    prompt: &'static str,
+    prompt: String,
     build: impl Fn(&str) -> SnippetsAction + Send + Sync + 'static,
 ) -> ActionSpec {
     declaration_spec(&ActionDecl::<Snippets>::new(
         action,
         label,
-        vec![ActionParam::required(param, ParamType::Text, prompt)],
+        vec![ActionParam::required_owned(param, ParamType::Text, prompt)],
         move |args, _| Ok(build(args.text(param).unwrap_or_default())),
     ))
 }
@@ -419,28 +423,33 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     )
     .with_action(view_operation(
         "open",
-        "Open snippet",
+        &crate::tr("snippets-action-open"),
         &SnippetsOperation::OpenSnippet { id },
     ))
     .with_action(text_decl(
         "edit-body",
         &crate::tr("snippets-edit-body"),
         "body",
-        "The whole new body",
+        crate::tr("snippets-body-placeholder"),
         move |body| set_body_action(id, body),
     ))
     .with_action(text_decl(
         "rename",
-        "Rename",
+        &crate::tr("snippets-action-rename"),
         "title",
-        "New title",
+        crate::tr("snippets-action-title"),
         move |t| rename_action(id, t.trim()),
     ))
     .with_action(declaration_spec(&ActionDecl::<Snippets>::new(
         "set-language",
-        "Set language",
+        crate::tr("snippets-action-set-language"),
         vec![
-            ActionParam::required("language", ParamType::Text, "Language").with_choices(languages),
+            ActionParam::required_owned(
+                "language",
+                ParamType::Text,
+                crate::tr("snippets-language"),
+            )
+            .with_choices(languages),
         ],
         move |args, _| {
             Ok(set_language_action(
@@ -451,35 +460,42 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     )))
     .with_action(text_decl(
         "move-to-folder",
-        "Move to folder",
+        &crate::tr("snippets-action-move"),
         "folder",
-        "Folder name (blank = All Snippets)",
+        crate::tr("snippets-action-folder-hint"),
         move |t| set_folder_action(id, t.trim()),
     ))
     .with_action(text_decl(
         "set-tags",
-        "Set tags",
+        &crate::tr("snippets-action-set-tags"),
         "tags",
-        "Comma-separated tags",
+        crate::tr("snippets-action-tags-hint"),
         move |t| set_tags_action(id, &parse_tags(t)),
     ))
     .with_action(text_decl(
         "edit-description",
-        "Edit description",
+        &crate::tr("snippets-action-describe"),
         "description",
-        "Description",
+        crate::tr("snippets-action-description"),
         move |t| set_description_action(id, t),
     ))
     .with_action(declaration_spec(&ActionDecl::<Snippets>::new(
         "toggle-favorite",
-        if s.favorite { "Unstar" } else { "Star" },
+        crate::tr(if s.favorite {
+            "snippets-remove-favorite"
+        } else {
+            "snippets-add-favorite"
+        }),
         Vec::new(),
         move |_, _| Ok(set_favorite_action(id, favorite)),
     )))
     .with_action(declaration_spec(
-        &ActionDecl::<Snippets>::new("delete", "Delete snippet", Vec::new(), move |_, _| {
-            Ok(delete_snippet_action(id))
-        })
+        &ActionDecl::<Snippets>::new(
+            "delete",
+            crate::tr("snippets-action-delete"),
+            Vec::new(),
+            move |_, _| Ok(delete_snippet_action(id)),
+        )
         .destructive(),
     ));
     resource.with_children(vec![publish_child::<PlainText, Snippets>(

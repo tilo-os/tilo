@@ -8,12 +8,15 @@
 
 use super::{
     Addr, Affine, AnnotationClick, Button, CellValue, ChartKind, ChartSnapshot, ChromeMetrics,
-    Fill, HashMap, Point, Rect, Scene, SheetsApp, TextRenderer, TextRole, Theme, count_f64,
+    Fill, HashMap, Point, Rect, Scene, SheetsApp, TextRenderer, TextRole, Theme, WindowEvent,
+    count_f64,
 };
+use ui::charts::legend;
+use ui::charts::{Sparkline, TrendFill, TrendRange, TrendStyle};
 use ui::paint::PaintCtx;
 use ui::surface::separator;
 use ui::widget::{BadgeFace, ButtonFace, ButtonRole, CardFace, ChipStyle, ControlSize, Tone};
-use vello::kurbo::{BezPath, Cap, Circle, Join, Stroke};
+use vello::kurbo::Vec2;
 
 /// How many chart cards stand in the dock at once.
 const MAX_CHART_CARDS: usize = 3;
@@ -44,9 +47,10 @@ pub(super) struct CommentRows {
 }
 
 impl ChromeMetrics {
-    /// Height of a chart's plot: content-sized, not text-sized.
+    /// Height of a chart's plot: the legend's line and a step under it, then
+    /// a content-sized plot.
     pub(super) fn plot_h(&self) -> f64 {
-        self.s16 + self.s6
+        self.lh_caption + self.s1 + self.s16 + self.s6
     }
 
     /// Rows of a comment card's body: the range line, the comment text, the
@@ -151,16 +155,18 @@ impl SheetsApp {
 
     /// Lay the dock out in `area`, the strip the grid and the dock share: the
     /// height the dock takes (zero when the sheet has no annotations, or the
-    /// window is too short to give them up) and where each card stands.
+    /// window is too short to give them up), where each card stands before
+    /// the dock is scrolled, and how wide the cards are together.
     ///
     /// The cards stand left to right, the comment first, each as wide as a
     /// utility panel while they fit. When they do not they share the width,
-    /// none narrower than its action row needs; a card that still does not
-    /// fit is left out (its actions stay in the command palette).
-    pub(super) fn dock_layout(&self, area: Rect) -> (f64, Vec<(DockCard, Rect)>) {
+    /// none narrower than its action row needs, and the dock scrolls
+    /// sideways to the ones past its edge, with its bar under them.
+    pub(super) fn dock_layout(&self, area: Rect) -> (f64, Vec<(DockCard, Rect)>, f64) {
         let m = &self.metrics;
         let cm = &m.cards;
         let mut cards: Vec<DockCard> = Vec::new();
+        // Every card has a place, however narrow the window.
         if !self.sheet_comments.is_empty() {
             cards.push(DockCard::Comment);
         }
@@ -170,47 +176,85 @@ impl SheetsApp {
             .iter()
             .map(|card| cm.height(*card))
             .fold(0.0, f64::max);
-        let dock_h = card_h + 2.0 * pad;
+        let avail = (area.width() - 2.0 * pad).max(0.0);
+        let gaps = pad * count_f64(cards.len().saturating_sub(1));
+        let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
+        let room = avail - gaps - mins.iter().sum::<f64>();
+        // Every card gets what its action row needs; what is left over grows
+        // them toward a utility panel's width, equally.
+        let slack: f64 = mins.iter().map(|min| (cm.width - min).max(0.0)).sum();
+        let grow = if slack > 0.0 {
+            room.max(0.0).min(slack) / slack
+        } else {
+            0.0
+        };
+        let widths: Vec<f64> = mins
+            .iter()
+            .map(|min| min + (cm.width - min).max(0.0) * grow)
+            .collect();
+        let content_w = widths.iter().sum::<f64>() + gaps + 2.0 * pad;
+        // Cards past the edge scroll in, over the bar's lane under them.
+        let lane = if content_w > area.width() + 0.5 {
+            f64::from(self.chrome_theme.tokens.metrics.scrollbar_gutter)
+        } else {
+            0.0
+        };
+        let dock_h = card_h + 2.0 * pad + lane;
         let min_grid = m.grid.col_header_h()
             + count_f64(MIN_GRID_ROWS) * m.grid.default_row_h()
             + self.grid.scrollbar_thickness();
         if cards.is_empty() || area.height() - dock_h < min_grid {
-            return (0.0, Vec::new());
+            return (0.0, Vec::new(), 0.0);
         }
-        let avail = (area.width() - 2.0 * pad).max(0.0);
-        let widths = loop {
-            let gaps = pad * count_f64(cards.len().saturating_sub(1));
-            let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
-            let room = avail - gaps - mins.iter().sum::<f64>();
-            if room >= 0.0 || cards.len() <= 1 {
-                // Every card gets what its action row needs; what is left
-                // over grows them toward a utility panel's width, equally.
-                let slack: f64 = mins.iter().map(|min| (cm.width - min).max(0.0)).sum();
-                let grow = if slack > 0.0 {
-                    room.max(0.0).min(slack) / slack
-                } else {
-                    0.0
-                };
-                break mins
-                    .iter()
-                    .map(|min| min + (cm.width - min).max(0.0) * grow)
-                    .collect::<Vec<f64>>();
-            }
-            cards.pop();
-        };
         let y0 = area.y1 - dock_h + pad;
         let mut x = area.x0 + pad;
         let placed = cards
             .iter()
             .zip(widths)
             .map(|(card, w)| {
-                let w = w.min(avail);
                 let rect = Rect::new(x, y0, x + w, y0 + card_h);
                 x += w + pad;
                 (*card, rect)
             })
             .collect();
-        (dock_h, placed)
+        (dock_h, placed, content_w)
+    }
+
+    /// Route the wheel, the touchpad and the bar's drag over the dock to its
+    /// sideways scroll while cards stand past its edge. Returns whether the
+    /// event was consumed.
+    pub(super) fn route_dock_scroll(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if !self.dock_scroll.overflows_horizontally() {
+            return false;
+        }
+        let over = self.dock_rect.contains(self.last_mouse);
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        );
+        let wheel = matches!(event, WindowEvent::MouseWheel { .. });
+        if !(pointer || wheel && over) {
+            return false;
+        }
+        let before = *ctx.handled;
+        let changed = self
+            .dock_scroll
+            .handle_event(event, ctx, &self.chrome_theme);
+        if changed {
+            self.pending.redraw = true;
+        }
+        // Motion and presses still reach the cards and the sheet; only a
+        // scroll, or a press that the bar took, stops here.
+        let took = *ctx.handled && !before;
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            *ctx.handled = before;
+            return false;
+        }
+        took
     }
 
     /// Paint a row of small buttons from `x0` along `y`, registering each as a
@@ -263,7 +307,7 @@ impl SheetsApp {
         );
         let Some(cache) = &self.cache else { return };
         let cards = self.dock_cards.clone();
-        let series: Vec<Vec<Vec<f64>>> = cards
+        let series: Vec<Vec<PlotSeries>> = cards
             .iter()
             .map(|(card, _)| match card {
                 DockCard::Chart(i) => self
@@ -274,8 +318,24 @@ impl SheetsApp {
                 DockCard::Comment => Vec::new(),
             })
             .collect();
+        // The cards stand where the dock is scrolled to, clipped to the
+        // dock; their click targets are kept only where they show.
+        let shift = Vec2::new(-self.dock_scroll.offset().x, 0.0);
+        let shown = self.dock_scroll.content_rect();
+        let first_click = self.annotation_clicks.len();
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &shown,
+        );
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for ((card, rect), series) in cards.into_iter().zip(series) {
+            let rect = rect + shift;
+            if rect.intersect(shown).is_zero_area() {
+                continue;
+            }
             match card {
                 DockCard::Chart(i) => {
                     let Some(chart) = self.sheet_charts.get(i).cloned() else {
@@ -286,6 +346,15 @@ impl SheetsApp {
                 DockCard::Comment => self.draw_comment_card(&mut ctx, rect),
             }
         }
+        scene.pop_layer();
+        self.dock_scroll.paint_bars(scene, transform, theme);
+        let clicks = self.annotation_clicks.split_off(first_click);
+        self.annotation_clicks.extend(
+            clicks
+                .into_iter()
+                .map(|(rect, action)| (rect.intersect(shown), action))
+                .filter(|(rect, _)| !rect.is_zero_area()),
+        );
     }
 
     /// One chart card: its title, its plot in the room above the action row,
@@ -295,7 +364,7 @@ impl SheetsApp {
         ctx: &mut PaintCtx<'_>,
         card: Rect,
         chart: &ChartSnapshot,
-        series: &[Vec<f64>],
+        series: &[PlotSeries],
     ) {
         let gap = self.metrics.s2;
         let face = CardFace::new().title(&chart.title);
@@ -331,40 +400,172 @@ impl SheetsApp {
         );
     }
 
-    /// The chart's plot in the theme's series colours: columns grouped by
-    /// point from a zero baseline, or one line per series.
-    fn draw_plot(ctx: &mut PaintCtx<'_>, plot: Rect, kind: ChartKind, series: &[Vec<f64>]) {
+    /// The chart in the theme's series colours: a legend naming each series
+    /// over the plot, a value axis with its ticks and rules at the plot's
+    /// leading edge, then columns grouped by point from a zero baseline, or
+    /// one line per series.
+    fn draw_plot(ctx: &mut PaintCtx<'_>, area: Rect, kind: ChartKind, series: &[PlotSeries]) {
         let theme = ctx.theme;
-        if series.iter().all(Vec::is_empty) {
-            let style = theme.text(TextRole::Caption);
-            let (_, h) = ctx.text.measure_style("Ag", None, &style);
+        let caption = theme.text(TextRole::Caption);
+        let (_, line) = ctx.text.measure_style("Ag", None, &caption);
+        let line = f64::from(line);
+        if series.iter().all(|series| series.values.is_empty()) {
             ctx.text.draw_style(
                 ctx.scene,
                 "No numbers in this range",
                 theme.tokens.colors.text_dim,
                 ctx.transform
-                    * Affine::translate((plot.x0, ChromeMetrics::centred_top(plot, f64::from(h)))),
+                    * Affine::translate((area.x0, ChromeMetrics::centred_top(area, line))),
                 None,
-                &style,
+                &caption,
             );
             return;
         }
-        let all = || series.iter().flatten().copied();
+        let sp = &theme.tokens.spacing;
+        let step = f64::from(sp.s1);
+
+        Self::draw_legend(ctx, area, line, series);
+
+        // The value axis: rounded ticks over the range, each a rule across
+        // the plot and its value in the gutter, the half line it needs
+        // above the top rule and below the bottom one kept inside the card.
+        let all = || {
+            series
+                .iter()
+                .flat_map(|series| series.values.iter().copied())
+        };
         let max = all().fold(f64::NEG_INFINITY, f64::max);
         let min = all().fold(f64::INFINITY, f64::min);
+        // Columns stand on zero, so their heights compare honestly.
+        let (lo, hi) = match kind {
+            ChartKind::Column => (min.min(0.0), max.max(0.0)),
+            ChartKind::Line => (min, max),
+        };
+        let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
+        let tick_step = match ticks.as_slice() {
+            [first, second, ..] => second - first,
+            _ => 1.0,
+        };
+        // The rules reach past both ends of the data, so no mark stands
+        // above the top value read off the axis.
+        while let Some(&top) = ticks.last()
+            && top < hi - tick_step * 1e-9
+            && ticks.len() < 8
+        {
+            ticks.push(top + tick_step);
+        }
+        while let Some(&bottom) = ticks.first()
+            && bottom > lo + tick_step * 1e-9
+            && ticks.len() < 8
+        {
+            ticks.insert(0, bottom - tick_step);
+        }
+        let (lo, hi) = (
+            ticks.first().copied().unwrap_or(lo).min(lo),
+            ticks.last().copied().unwrap_or(hi).max(hi),
+        );
+        let span = (hi - lo).max(f64::EPSILON);
+        let labels: Vec<String> = ticks
+            .iter()
+            .map(|tick| ui::charts::format_tick(*tick, tick_step))
+            .collect();
+        let gutter = labels
+            .iter()
+            .map(|label| f64::from(ctx.text.measure_style(label, None, &caption).0))
+            .fold(0.0, f64::max)
+            + f64::from(sp.s2);
+        let plot = Rect::new(
+            area.x0 + gutter,
+            area.y0 + line + step + line / 2.0,
+            area.x1,
+            (area.y1 - line / 2.0).max(area.y0 + line + step + line / 2.0 + 1.0),
+        );
+        let y_of = |value: f64| plot.y1 - (value - lo) / span * plot.height();
+        for (tick, label) in ticks.iter().zip(&labels) {
+            let y = y_of(*tick);
+            // The card's own hairline, the edge its raised ground derives.
+            separator(
+                ctx.scene,
+                ctx.transform,
+                plot.x0,
+                plot.x1,
+                y,
+                0.0,
+                theme.tokens.colors.surfaces.raised,
+            );
+            let (w, _) = ctx.text.measure_style(label, None, &caption);
+            ctx.text.draw_style(
+                ctx.scene,
+                label,
+                theme.tokens.colors.text_dim,
+                ctx.transform
+                    * Affine::translate((
+                        plot.x0 - f64::from(sp.s2) - f64::from(w),
+                        y - line / 2.0,
+                    )),
+                None,
+                &caption,
+            );
+        }
+
+        Self::draw_marks(ctx, plot, (lo, span), kind, series);
+    }
+
+    /// The legend over the plot: one row, each entry its swatch and the
+    /// series' name, sharing the width when they do not all fit.
+    fn draw_legend(ctx: &mut PaintCtx<'_>, area: Rect, line: f64, series: &[PlotSeries]) {
+        let theme = ctx.theme;
+        let sp = &theme.tokens.spacing;
+        let names: Vec<&str> = series.iter().map(|series| series.name.as_str()).collect();
+        let entries = legend::measure(ctx.text, theme, names.iter().copied());
+        let gap = f64::from(sp.rhythm.section);
+        let gaps = gap * count_f64(entries.len().saturating_sub(1));
+        let natural: f64 = entries.iter().map(|entry| entry.width).sum::<f64>() + gaps;
+        let share = if natural > area.width() {
+            (area.width() - gaps).max(0.0) / count_f64(entries.len().max(1))
+        } else {
+            f64::INFINITY
+        };
+        let mut x = area.x0;
+        for (s, (entry, name)) in entries.iter().zip(&names).enumerate() {
+            let w = entry.width.min(share);
+            let rect = Rect::new(x, area.y0, x + w, area.y0 + line);
+            legend::paint_entry(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                rect,
+                theme.tokens.colors.presence.series(s),
+                name,
+            );
+            x += w + gap;
+        }
+    }
+
+    /// The series' marks in `plot`, over the value range `lo` to `lo + span`.
+    fn draw_marks(
+        ctx: &mut PaintCtx<'_>,
+        plot: Rect,
+        (lo, span): (f64, f64),
+        kind: ChartKind,
+        series: &[PlotSeries],
+    ) {
+        let theme = ctx.theme;
+        let y_of = |value: f64| plot.y1 - (value - lo) / span * plot.height();
         let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
-        let points = series.iter().map(Vec::len).max().unwrap_or(0);
+        let points = series
+            .iter()
+            .map(|series| series.values.len())
+            .max()
+            .unwrap_or(0);
         match kind {
             ChartKind::Column => {
-                // Bars stand on zero, so their heights compare honestly.
-                let (lo, hi) = (min.min(0.0), max.max(0.0));
-                let span = (hi - lo).max(f64::EPSILON);
-                let y_of = |value: f64| plot.y1 - (value - lo) / span * plot.height();
                 let cluster = plot.width() / count_f64(points.max(1));
                 let bar_w = (cluster - 2.0 * inset) / count_f64(series.len().max(1));
-                for (s, values) in series.iter().enumerate() {
+                for (s, line) in series.iter().enumerate() {
                     let ink = theme.tokens.colors.presence.series(s);
-                    for (i, value) in values.iter().enumerate() {
+                    for (i, value) in line.values.iter().enumerate() {
                         let x0 = plot.x0 + cluster * count_f64(i) + inset + bar_w * count_f64(s);
                         let (a, b) = (y_of(*value), y_of(0.0));
                         let (top, bottom) = (a.min(b), a.max(b));
@@ -375,46 +576,23 @@ impl SheetsApp {
                 }
             }
             ChartKind::Line => {
+                // The toolkit's trend line, a dot on every sample, kept a
+                // dot's radius in from the plot's sides.
                 let dot = 2.5 * f64::from(theme.text_scale).max(1.0);
-                let area = plot.inflate(-dot, -dot);
-                let span = (max - min).max(f64::EPSILON);
-                let step = if points > 1 {
-                    area.width() / count_f64(points - 1)
-                } else {
-                    0.0
-                };
-                let at = |i: usize, value: f64| {
-                    let x = if points > 1 {
-                        area.x0 + step * count_f64(i)
-                    } else {
-                        area.center().x
-                    };
-                    Point::new(x, area.y1 - (value - min) / span * area.height())
-                };
-                for (s, values) in series.iter().enumerate() {
-                    let ink = theme.tokens.colors.presence.series(s);
-                    let mut path = BezPath::new();
-                    for (i, value) in values.iter().enumerate() {
-                        let point = at(i, *value);
-                        if i == 0 {
-                            path.move_to(point);
-                        } else {
-                            path.line_to(point);
-                        }
-                    }
-                    let stroke = Stroke::new(2.0)
-                        .with_join(Join::Round)
-                        .with_caps(Cap::Round);
-                    ctx.scene.stroke(&stroke, ctx.transform, ink, None, &path);
-                    for (i, value) in values.iter().enumerate() {
-                        ctx.scene.fill(
-                            Fill::NonZero,
-                            ctx.transform,
-                            ink,
-                            None,
-                            &Circle::new(at(i, *value), dot),
-                        );
-                    }
+                let style = TrendStyle::CHART
+                    .with_fill(TrendFill::None)
+                    .with_markers(dot);
+                let range = TrendRange { lo, hi: lo + span };
+                for (s, line) in series.iter().enumerate() {
+                    Sparkline::paint(
+                        ctx.scene,
+                        ctx.transform,
+                        plot.inflate(-dot, 0.0),
+                        &line.values,
+                        range,
+                        theme.tokens.colors.presence.series(s),
+                        &style,
+                    );
                 }
             }
         }
@@ -537,11 +715,19 @@ impl SheetsApp {
     }
 }
 
+/// One series of a chart: its name and its numbers in order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct PlotSeries {
+    pub name: String,
+    pub values: Vec<f64>,
+}
+
 /// The series a chart plots from the numbers of its range. A range taller
 /// than it is wide plots its columns, a wider one its rows (the usual
 /// convention), so a single column or row is one series of its values in
-/// order. Text, errors and blanks are skipped.
-fn chart_series(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> Vec<Vec<f64>> {
+/// order. A series is named by the text that heads it, or else by its
+/// column letter or row number. Text, errors and blanks are skipped.
+fn chart_series(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> Vec<PlotSeries> {
     let (c0, r0) = chart.start;
     let (c1, r1) = chart.end;
     let by_columns = r1.saturating_sub(r0) >= c1.saturating_sub(c0);
@@ -550,24 +736,30 @@ fn chart_series(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> Vec
     } else {
         (r0..=r1, c0..=c1)
     };
+    let at = |line, step| {
+        if by_columns {
+            (line, step)
+        } else {
+            (step, line)
+        }
+    };
     lines
         .take(MAX_SERIES)
         .map(|line| {
-            steps
+            let name = match values.get(&at(line, *steps.start())) {
+                Some(CellValue::Text(text)) if !text.trim().is_empty() => text.trim().to_owned(),
+                _ if by_columns => crate::model::col_to_letters(line),
+                _ => format!("Row {}", line + 1),
+            };
+            let values = steps
                 .clone()
-                .filter_map(|step| {
-                    let addr = if by_columns {
-                        (line, step)
-                    } else {
-                        (step, line)
-                    };
-                    match values.get(&addr) {
-                        Some(CellValue::Number(value)) => Some(*value),
-                        _ => None,
-                    }
+                .filter_map(|step| match values.get(&at(line, step)) {
+                    Some(CellValue::Number(value)) => Some(*value),
+                    _ => None,
                 })
                 .take(MAX_PLOT_POINTS)
-                .collect()
+                .collect();
+            PlotSeries { name, values }
         })
         .collect()
 }

@@ -161,6 +161,20 @@ impl Format {
         }
     }
 
+    fn icon(self) -> Icon {
+        match self {
+            Self::Bold => Icon::Bold,
+            Self::Italic => Icon::Italic,
+            Self::Underline => Icon::Underline,
+            Self::Heading1 => Icon::Heading1,
+            Self::Heading2 => Icon::Heading2,
+            Self::Bullet => Icon::List,
+            Self::Numbered => Icon::ListOrdered,
+            Self::Quote => Icon::Quote,
+            Self::Link => Icon::Link,
+        }
+    }
+
     /// Whether the command is a toggle (everything but inserting a link).
     fn toggles(self) -> bool {
         self != Self::Link
@@ -185,9 +199,9 @@ impl FormatBar {
                 let chosen = Rc::clone(&chosen);
                 let on_click = move || chosen.set(Some(format));
                 bar = if format.toggles() {
-                    bar.push_toggle(format.label(), false, on_click)
+                    bar.push_icon_toggle(format.icon(), format.label(), false, on_click)
                 } else {
-                    bar.push_button(format.label(), on_click)
+                    bar.push_icon(format.icon(), format.label(), on_click)
                 };
             }
         }
@@ -2283,11 +2297,8 @@ impl ComposeWindow {
             );
         }
         if let Some(rect) = self.hit_rect(ComposeHit::FormatToggle) {
-            let half = rect.width() / 2.0;
-            let segments = [
-                Rect::new(rect.x0, rect.y0, rect.x0 + half, rect.y1),
-                Rect::new(rect.x0 + half, rect.y0, rect.x1, rect.y1),
-            ];
+            let segments =
+                SegmentedFace::partition(rect, &FORMAT_LABELS, ControlSize::Regular, tr, theme);
             let selected = usize::from(self.format == ComposeFormat::Text);
             let hovered = segments.iter().position(|r| r.contains(self.last_mouse));
             ToggleGroup::paint(

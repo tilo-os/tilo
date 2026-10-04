@@ -291,6 +291,10 @@ pub struct GitClientApp {
     /// The list column of the Changes and History screens: docked beside the
     /// content when the window is wide, a floating drawer when it is narrow.
     drawer: SidebarDrawer,
+    /// The window's History control, which the header row holds, and where
+    /// the last paint put it.
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
     /// The Syntax toggle in the Changes header, and the press it reports.
     syntax_tool: Toolbar,
     syntax_pressed: Rc<Cell<bool>>,
@@ -495,6 +499,8 @@ impl GitClientApp {
             conventions: ui::platform::PlatformConventions::default(),
             targets: Vec::new(),
             semantic: Vec::new(),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
             scroll_regions: Vec::new(),
             scroll_bars: Vec::new(),
             scrollbar: Scrollbar::vertical(),
@@ -1298,6 +1304,22 @@ impl GitClientApp {
         let window = self.rect;
         let header_h = Self::header_height(theme);
         let has_list = self.screen.has_list();
+        // The window's header row: the drawer lays its toggle out in it and
+        // a floating drawer opens under it, so the row stays live. The
+        // History control takes the trailing corner.
+        let row = Rect::new(
+            window.x0,
+            window.y0,
+            window.x1,
+            (window.y0 + header_h).min(window.y1),
+        );
+        let history_shown = self.history.is_shown();
+        let face = if has_list {
+            self.drawer.header_with_history(row, theme, history_shown)
+        } else {
+            ui::chrome::HeaderRowFace::new(row, theme).with_history_if(history_shown)
+        };
+        self.history_rect = face.history;
         if has_list {
             self.drawer.tick(theme);
             self.drawer.resolve(window);
@@ -1313,12 +1335,7 @@ impl GitClientApp {
         } else {
             window
         };
-        let header = Rect::new(
-            column.x0,
-            window.y0,
-            column.x1,
-            (window.y0 + header_h).min(window.y1),
-        );
+        let header = Rect::new(column.x0, row.y0, column.x1, row.y1);
         let body = Rect::new(column.x0, header.y1, column.x1, window.y1.max(header.y1));
         let body = self.paint_banner(ctx, body);
         match self.screen {
@@ -1326,8 +1343,18 @@ impl GitClientApp {
             Screen::History => self.paint_detail(ctx, body),
             Screen::Panels => self.paint_panels(ctx, presence, body),
         }
-        let toggle_in_list = has_list && self.drawer.is_open();
-        self.paint_content_header(ctx, presence, header, has_list && !toggle_in_list);
+        // A docked, open list column holds the toggle in its own header; in
+        // every other case it leads the content header.
+        let toggle_in_list = has_list && !overlay && self.drawer.is_open();
+        self.paint_content_header(
+            ctx,
+            presence,
+            header,
+            has_list && !toggle_in_list,
+            face.toggle,
+        );
+        self.history
+            .paint(ctx.scene, ctx.transform, ctx.text, theme, self.history_rect);
 
         if !has_list {
             return;
@@ -1338,16 +1365,18 @@ impl GitClientApp {
                 return;
             }
             self.drawer.draw_scrim(ctx.scene, ctx.transform, theme);
-            // Everything under the drawer is inert while it is out.
+            // Everything under the drawer is inert while it is out; the row
+            // above it stays live.
+            self.targets.retain(|t| t.rect.y1 <= row.y1 + 0.5);
+            self.semantic.retain(|t| t.rect.y1 <= row.y1 + 0.5);
             self.targets.push(Target {
-                rect: window,
+                rect: Rect::new(window.x0, row.y1, window.x1, window.y1),
                 hit: Hit::Scrim,
             });
-            self.semantic.clear();
             self.scroll_regions.clear();
             let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
             let mut lctx = PaintCtx::new(&mut *ctx.scene, ctx.transform, &mut *ctx.text, &local);
-            self.paint_list_column(&mut lctx, presence, panel, panel, header_h, toggle_in_list);
+            self.paint_list_column(&mut lctx, presence, panel, panel, 0.0, None);
         } else if panel.width() > 0.5 {
             let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
             // The list keeps its width while the column opens or closes: it
@@ -1359,20 +1388,11 @@ impl GitClientApp {
                 panel.y1,
             );
             let mut lctx = PaintCtx::new(&mut *ctx.scene, ctx.transform, &mut *ctx.text, &local);
-            self.paint_list_column(&mut lctx, presence, panel, full, header_h, toggle_in_list);
+            let toggle = toggle_in_list.then_some(face.toggle);
+            self.paint_list_column(&mut lctx, presence, panel, full, header_h, toggle);
         } else {
             self.commit_input.apply_layout_external(Rect::ZERO);
         }
-    }
-
-    /// The square the sidebar toggle stands in, from `x` in `band`.
-    fn toggle_rect(theme: &Theme, band: Rect, x: f64) -> Rect {
-        let side = ui::widget::text_control_height(
-            f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
-            theme,
-        );
-        let y = band.center().y - side / 2.0;
-        Rect::new(x, y, x + side, y + side)
     }
 
     fn paint_toggle(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect) {
@@ -1392,7 +1412,7 @@ impl GitClientApp {
         clip: Rect,
         full: Rect,
         header_h: f64,
-        with_toggle: bool,
+        toggle: Option<Rect>,
     ) {
         let theme = ctx.theme;
         let s3 = f64::from(theme.tokens.spacing.s3);
@@ -1405,26 +1425,29 @@ impl GitClientApp {
             &clip,
         );
         let header = Rect::new(full.x0, full.y0, full.x1, full.y0 + header_h);
-        let mut x = header.x0 + s3;
-        if with_toggle {
-            let rect = Self::toggle_rect(theme, header, x);
-            self.paint_toggle(ctx, rect);
-            x = rect.x1 + gap;
+        // Under the window's header row (a floating drawer) the column has
+        // no header of its own.
+        if header_h > 0.0 {
+            let mut x = header.x0 + s3;
+            if let Some(rect) = toggle {
+                self.paint_toggle(ctx, rect);
+                x = rect.x1 + gap;
+            }
+            let heading = theme.text(TextRole::Heading);
+            let name = ctx.text.elide_to_width_style(
+                &self.model.name,
+                ui::num::f32_of_f64((header.x1 - s3 - x).max(0.0)),
+                &heading,
+            );
+            ctx.text_role_in_band(
+                &name,
+                TextRole::Heading,
+                theme.text_primary,
+                x,
+                header,
+                None,
+            );
         }
-        let heading = theme.text(TextRole::Heading);
-        let name = ctx.text.elide_to_width_style(
-            &self.model.name,
-            ui::num::f32_of_f64((header.x1 - s3 - x).max(0.0)),
-            &heading,
-        );
-        ctx.text_role_in_band(
-            &name,
-            TextRole::Heading,
-            theme.text_primary,
-            x,
-            header,
-            None,
-        );
 
         let list = Rect::new(full.x0, header.y1, full.x1, full.y1.max(header.y1));
         match self.screen {
@@ -1536,6 +1559,7 @@ impl GitClientApp {
         presence: &PresenceCtx,
         header: Rect,
         with_toggle: bool,
+        toggle: Rect,
     ) {
         let theme = ctx.theme;
         let s3 = f64::from(theme.tokens.spacing.s3);
@@ -1551,9 +1575,8 @@ impl GitClientApp {
         );
         let mut x = header.x0 + s3;
         if with_toggle {
-            let rect = Self::toggle_rect(theme, header, x);
-            self.paint_toggle(ctx, rect);
-            x = rect.x1 + gap;
+            self.paint_toggle(ctx, toggle);
+            x = toggle.x1 + gap;
         }
 
         let owned: Vec<String> = Screen::ALL.iter().map(|s| s.label()).collect();
@@ -1561,6 +1584,9 @@ impl GitClientApp {
         let natural =
             SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
         let mut right = header.x1 - s3;
+        if self.history_rect.width() > 0.0 {
+            right = right.min(self.history_rect.x0 - gap);
+        }
         let min_x = x + natural + s3;
         match self.screen {
             Screen::Changes => {
@@ -2557,7 +2583,9 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 impl Widget for GitClientApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2708,6 +2736,13 @@ impl Widget for GitClientApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self
+            .history
+            .handle_event(event, self.history_rect, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            return;
+        }
         let mut input = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -2792,7 +2827,7 @@ impl Widget for GitClientApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let children = self
+        let mut children: Vec<_> = self
             .accessibility_targets()
             .into_iter()
             .enumerate()
@@ -2804,6 +2839,7 @@ impl Widget for GitClientApp {
                 node.with_key(index as u64).with_action_target(target)
             })
             .collect();
+        children.extend(self.history.accessibility(self.history_rect));
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
                 .with_name("Git")
@@ -2835,6 +2871,9 @@ impl Widget for GitClientApp {
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
         let (state, path) = ui::doc::document(state, path);
 
         let field = match target {
@@ -3555,6 +3594,22 @@ impl GitClientApp {
     }
 }
 
+/// The view's header row is the window's: it holds the History control the
+/// host offers, so the window draws no History bar above the client.
+impl ui::widget::WindowHeader for GitClientApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for GitClientApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3645,12 +3700,22 @@ mod tests {
         narrow.drawer.snap(true);
         draw_frame(&mut narrow);
         assert!(narrow.drawer_is_modal());
+        let header_h = GitClientApp::header_height(&Theme::dark());
         assert!(
-            !narrow
+            narrow.semantic.iter().all(|t| t.rect.y1 <= header_h + 0.5)
+                || narrow
+                    .semantic
+                    .iter()
+                    .filter(|t| t.rect.y1 > header_h + 0.5)
+                    .all(|t| matches!(t.hit, Hit::Change(_) | Hit::Commit(_))),
+            "what the drawer covers leaves the semantic tree; the header row stays"
+        );
+        assert!(
+            narrow
                 .semantic
                 .iter()
                 .any(|t| matches!(t.hit, Hit::Screen(_))),
-            "what the drawer covers leaves the semantic tree"
+            "the header row stays live under a floating drawer"
         );
         let row = target(
             &narrow,

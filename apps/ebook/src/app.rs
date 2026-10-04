@@ -341,14 +341,8 @@ fn book_open_request() -> PickRequest {
         .all_files()
 }
 
-/// Pixels one wheel-line notch maps to, matching the toolkit's other scroll
-/// surfaces so a mouse wheel feels consistent across apps.
-const WHEEL_LINE_PX: f64 = 48.0;
 /// Accumulated reader wheel travel (px) that commits to one page turn.
 const TURN_STEP_PX: f64 = 40.0;
-/// Accumulated horizontal swipe travel (px) that commits to one page turn;
-/// larger than the vertical wheel step so a swipe reads as a deliberate flick.
-const SWIPE_STEP_PX: f64 = 80.0;
 /// The widest a reading page (and the settings column) grows: a readable
 /// measure for the book's text at its default size.
 const PAGE_MAX_W: f64 = 680.0;
@@ -905,9 +899,9 @@ pub struct BooksApp {
     /// Height of the window's header row in the current theme, refreshed at
     /// the top of every frame so the event path hit-tests what was painted.
     header_h: f64,
-    /// Height of the page bubble in the current theme: the page foot keeps
-    /// a slot this tall above the progress slider, so the bubble never
-    /// covers text. Refreshed with `header_h`.
+    /// Height of the page bubble in the current theme: the page foot's band
+    /// is at least this tall, so the bubble it shares with the progress
+    /// slider never covers text. Refreshed with `header_h`.
     bubble_h: f64,
     /// The reading-appearance button as last painted: where its popover
     /// opens from.
@@ -2048,7 +2042,7 @@ impl BooksApp {
                 id,
                 &Progress {
                     chapter: 0,
-                    page: 0,
+                    block: 0,
                     fraction: f,
                     opened: unix_now_ms() - (i as u64) * 3_600_000,
                 },
@@ -2176,12 +2170,9 @@ impl BooksApp {
         if self.view != View::Reader {
             return;
         }
+        let block = self.reading_block();
         let fraction = self.current_progress_fraction();
-        let key = (
-            self.chapter,
-            self.page,
-            (fraction * 10_000.0).round() as u16,
-        );
+        let key = (self.chapter, block, (fraction * 10_000.0).round() as u16);
         if self.last_persisted == Some(key) {
             return;
         }
@@ -2195,7 +2186,7 @@ impl BooksApp {
                 &id,
                 Progress {
                     chapter: self.chapter,
-                    page: self.page,
+                    block,
                     fraction,
                     // 0 ⇒ the action preserves the recorded open time.
                     opened: 0,
@@ -2203,6 +2194,33 @@ impl BooksApp {
             ),
         );
         self.last_persisted = Some(key);
+    }
+
+    /// The first block on the page the reader is at: what the reading
+    /// position records. Until a pending move is laid out it is the start
+    /// of the chapter; the next frame records the block it lands on.
+    fn reading_block(&self) -> usize {
+        if let Some(block) = self.pending_jump_block {
+            return block;
+        }
+        let Some(layout) = self
+            .layout
+            .as_ref()
+            .filter(|layout| layout.key.chapter == self.chapter)
+            .filter(|_| !self.pending_last_page && self.pending_seek_fraction.is_none())
+        else {
+            return 0;
+        };
+        let top = if self.settings.mode.is_continuous() {
+            self.scroll_y as f32
+        } else {
+            layout.pages.get(self.page).copied().unwrap_or(0.0)
+        };
+        layout
+            .blocks
+            .iter()
+            .find(|b| b.lines.iter().any(|l| l.y >= top - 0.5))
+            .map_or(0, |b| b.index)
     }
 
     fn current_progress_fraction(&self) -> f32 {
@@ -2419,7 +2437,8 @@ impl BooksApp {
         let mut p = BooksDoc::read_progress(doc, &id);
         let nchap = self.num_chapters().saturating_sub(1);
         self.chapter = p.chapter.min(nchap);
-        self.page = p.page;
+        self.page = 0;
+        self.pending_jump_block = Some(p.block);
         p.opened = unix_now_ms();
         self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
@@ -4885,7 +4904,7 @@ impl Continuable for BooksApp {
         let bytes = serde_json::to_vec(&serde_json::json!({
             "book_id": book.id,
             "chapter": self.chapter,
-            "page": self.page,
+            "block": self.reading_block(),
         }))
         .ok()?;
         Some(ui::collaboration::ContinuationMetadata {
@@ -4922,14 +4941,16 @@ impl Continuable for BooksApp {
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(0)
             .min(last_chapter);
-        let page = value
-            .get("page")
+        let block = value
+            .get("block")
             .and_then(serde_json::Value::as_u64)
             .and_then(|v| usize::try_from(v).ok())
             .unwrap_or(0);
         self.book_idx = index;
         self.chapter = chapter;
-        self.page = page;
+        self.page = 0;
+        self.pending_jump_block = Some(block);
+        self.layout = None;
         true
     }
 }
@@ -5144,7 +5165,8 @@ impl Widget for BooksApp {
             let p = BooksDoc::read_progress(doc, &id);
             let nchap = self.num_chapters().saturating_sub(1);
             self.chapter = p.chapter.min(nchap);
-            self.page = p.page;
+            self.page = 0;
+            self.pending_jump_block = Some(p.block);
         }
         self.refresh_from_doc(doc);
         if self.shot_clean_reader {
@@ -6678,7 +6700,10 @@ impl BooksApp {
         // only the vertical is negated to make a downward scroll "forward".
         let (dx, dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => {
-                (f64::from(x) * WHEEL_LINE_PX, f64::from(-y) * WHEEL_LINE_PX)
+                // A notch travels as far as on the toolkit's other scroll
+                // surfaces, so a mouse wheel feels the same in every app.
+                let line = f64::from(Metrics::BASE.wheel_line);
+                (f64::from(x) * line, f64::from(-y) * line)
             }
             MouseScrollDelta::PixelDelta(p) => (p.x, -p.y),
         };
@@ -7027,7 +7052,7 @@ impl BooksApp {
     /// deltas coalesce into whole turns. Returns `true` when a page turned.
     #[allow(
         clippy::while_float,
-        reason = "each iteration subtracts a fixed SWIPE_STEP_PX and breaks immediately \
+        reason = "each iteration subtracts a fixed swipe step and breaks immediately \
                   if a turn made no progress, so the loop is bounded regardless of float \
                   imprecision"
     )]
@@ -7038,10 +7063,13 @@ impl BooksApp {
         if self.reading_settings.is_open() || self.composing.is_some() {
             return false;
         }
+        // A swipe turns the page once it travels as far as any swipe that
+        // commits: further than a wheel step, so it reads as a deliberate flick.
+        let step = f64::from(Metrics::BASE.swipe_commit);
         self.swipe_accum += dx;
         let mut turned = false;
-        while self.swipe_accum >= SWIPE_STEP_PX {
-            self.swipe_accum -= SWIPE_STEP_PX;
+        while self.swipe_accum >= step {
+            self.swipe_accum -= step;
             let before = (self.chapter, self.page);
             self.dispatch(Action::NextPage, doc);
             if (self.chapter, self.page) == before {
@@ -7050,8 +7078,8 @@ impl BooksApp {
             }
             turned = true;
         }
-        while self.swipe_accum <= -SWIPE_STEP_PX {
-            self.swipe_accum += SWIPE_STEP_PX;
+        while self.swipe_accum <= -step {
+            self.swipe_accum += step;
             let before = (self.chapter, self.page);
             self.dispatch(Action::PrevPage, doc);
             if (self.chapter, self.page) == before {
@@ -7174,15 +7202,12 @@ fn paint_scroll_thumb(ctx: &mut PaintCtx<'_>, area: Rect, metrics: ScrollMetrics
     if !metrics.overflows() {
         return;
     }
-    let spacing = &ctx.theme.tokens.spacing;
-    let (margin, thickness) = (f64::from(spacing.s1) / 2.0, f64::from(spacing.s2));
-    let track = Rect::new(
-        area.x1 - margin - thickness,
-        area.y0 + margin,
-        area.x1 - margin,
-        area.y1 - margin,
-    );
-    Scrollbar::vertical().draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
+    // The bar sits in the lane a `Scrollable` keeps on its trailing edge.
+    let gutter = f64::from(ctx.theme.tokens.metrics.scrollbar_gutter);
+    let lane = Rect::new(area.x1 - gutter, area.y0, area.x1, area.y1);
+    let bar = Scrollbar::vertical();
+    let track = bar.track_in(lane, ctx.theme);
+    bar.draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
 }
 
 /// The width of a button face of `size` showing `label` (and `icon`).
@@ -8042,27 +8067,42 @@ impl BooksApp {
         } else {
             Theme::light()
         };
-        Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
-        self.push_hit(slider_rect, Action::SeekProgress);
-        // The bubble's slot: between the content box and the slider band.
-        let bubble_y1 = paper_y1 - geom.slider_band;
-        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, bubble_y1);
-
-        // ---- chrome: header row, floating page bubble, selection HUD, drawers
-        self.draw_reader_header(ctx, &lib);
-        // The bubble stands in its slot in the page's foot, above the
-        // progress slider.
-        self.reader_bubble.draw(
-            ctx,
-            self.toast_area,
-            self.cursor,
-            ReaderPosition {
-                chapter: self.chapter,
-                page: self.page,
-                page_count: self.cur_page_count,
-                chapter_count: nchap.max(1),
-            },
+        // The foot's band: the slider's, and the page bubble's while a new
+        // page is shown. Reaching for the slider gives it back.
+        let band = Rect::new(
+            geom.center_x0,
+            paper_y1 - geom.slider_band,
+            geom.center_x1,
+            paper_y1,
         );
+        let position = ReaderPosition {
+            chapter: self.chapter,
+            page: self.page,
+            page_count: self.cur_page_count,
+            chapter_count: nchap.max(1),
+        };
+        let slider_active = self.progress_dragging || band.contains(self.cursor);
+        let bubble = self
+            .reader_bubble
+            .advance(position, slider_active, self.cursor);
+        let slider_alpha = 1.0 - bubble;
+        if slider_alpha > 0.0 {
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                slider_alpha,
+                ctx.transform,
+                &band,
+            );
+            Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
+            ctx.scene.pop_layer();
+        }
+        self.push_hit(slider_rect, Action::SeekProgress);
+        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, band.y0);
+        self.reader_bubble.draw(ctx, band, self.cursor, position);
+
+        // ---- chrome: header row, selection HUD, drawers
+        self.draw_reader_header(ctx, &lib);
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(ctx, geom, sel_anchor);
         self.draw_rails(ctx, &lib);
@@ -8117,14 +8157,15 @@ impl BooksApp {
         let framed = self.rect.width() >= f64::from(Metrics::BASE.compact_breakpoint);
         let center_w = (center_x1 - center_x0).max(120.0);
         let sp = ui::tokens::spacing::Spacing::BASE;
-        // The foot holds the progress slider in its own band and, above it,
-        // the page bubble's slot, so neither ever lies over the text.
+        // The foot is one band the progress slider and the page bubble take
+        // turns in, so neither ever lies over the text.
         let slider_band = if framed {
             f64::from(sp.s12)
         } else {
             f64::from(sp.s8)
-        };
-        let pad_bot = slider_band + self.bubble_h + f64::from(sp.s2);
+        }
+        .max(self.bubble_h + f64::from(sp.s4));
+        let pad_bot = slider_band;
         let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, header_y, rule_y) = if framed {
             let margin = f64::from(sp.s6);
             let paper_w = (center_w - 2.0 * margin).clamp(120.0, PAGE_MAX_W);
@@ -9713,7 +9754,7 @@ impl SettingsColumn {
     /// the column: the row's own inset hangs outside it, where only a
     /// row's lift reaches.
     fn row_span(self, theme: &Theme) -> (f64, f64) {
-        let inset = f64::from(theme.tokens.spacing.s3);
+        let inset = ui::chrome::row_bleed(theme);
         (self.x - inset, self.x1() + inset)
     }
 }
@@ -9773,6 +9814,8 @@ struct SettingsRow<'a> {
     selected: bool,
     /// The rename field takes the row's text: paint none.
     renaming: bool,
+    /// A font row sets its name in the font it names.
+    title_family: Option<&'a FontChoice>,
 }
 
 /// The settings tabs, in order.
@@ -9864,10 +9907,23 @@ impl BooksApp {
         let theme = ctx.theme;
         let size = ControlSize::Regular;
         let height = SegmentedFace::height(size, theme);
-        let widths: Vec<f64> = SETTINGS_TABS
+        // Each tab as wide as a tab strip makes it: packed from the leading
+        // edge, its label's own width.
+        let segments: Vec<ui::widget::Segment> = SETTINGS_TABS
             .iter()
-            .map(|(_, label)| SegmentedFace::intrinsic_width(&[label], size, ctx.text, theme))
+            .map(|(_, label)| ui::widget::Segment::new(*label))
             .collect();
+        let widths: Vec<f64> = SegmentedFace::partition_segments(
+            Rect::new(0.0, 0.0, f64::MAX / 4.0, height),
+            &segments,
+            SegmentedStyle::Tabs,
+            size,
+            ctx.text,
+            theme,
+        )
+        .iter()
+        .map(Rect::width)
+        .collect();
         // Greedy rows of whole tabs.
         let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
         let mut x = 0.0;
@@ -9881,24 +9937,11 @@ impl BooksApp {
             }
             x += width;
         }
-        // A tab's label sits centred in its segment; the strip starts that
-        // inset before the column so the first label lines up with the
-        // title and the rows below it.
-        let label_w = |label: &str, text: &mut TextRenderer| {
-            f64::from(
-                text.measure_style(label, None, &size.label_style(theme).strong())
-                    .0,
-            )
-        };
+        // A tab strip's first label starts the strip, so the strip starts on
+        // the column: in line with the title and the rows below it.
         let mut row_y = y;
         for row in rows {
-            let lead = row
-                .first()
-                .and_then(|&i| Some((widths.get(i)?, SETTINGS_TABS.get(i)?.1)))
-                .map_or(0.0, |(width, label)| {
-                    (width - label_w(label, ctx.text)) / 2.0
-                });
-            let mut x = col.x - lead.max(0.0);
+            let mut x = col.x;
             let segments: Vec<Rect> = row
                 .iter()
                 .map(|&i| {
@@ -9993,9 +10036,13 @@ impl BooksApp {
             separator,
             selected,
             renaming,
+            title_family,
         } = row;
         let theme = ctx.theme;
         let mut face = ListRowFace::new(title).selected(selected);
+        if let Some(family) = title_family {
+            face = face.title_family(family);
+        }
         if let Some(secondary) = secondary {
             face = face.secondary(secondary);
         }
@@ -10018,7 +10065,7 @@ impl BooksApp {
         if separator {
             // Inset like a list row's own separator: from the text to the
             // trailing edge of the controls.
-            let inset = f64::from(theme.tokens.spacing.s3);
+            let inset = ui::chrome::row_bleed(theme);
             ui::surface::separator(
                 ctx.scene,
                 ctx.transform,
@@ -10088,6 +10135,7 @@ impl BooksApp {
                     separator: i + 1 < ReaderShortcut::ALL.len(),
                     selected: capturing,
                     renaming: false,
+                    title_family: None,
                 },
             );
             let x1 = col.x1();
@@ -10231,6 +10279,7 @@ impl BooksApp {
                     separator: i + 1 < folders.len(),
                     selected: false,
                     renaming: false,
+                    title_family: None,
                 },
             );
             let x1 = col.x1();
@@ -10272,6 +10321,7 @@ impl BooksApp {
                 separator: false,
                 selected: false,
                 renaming: false,
+                title_family: None,
             },
         );
         let x1 = col.x1();
@@ -10346,6 +10396,7 @@ impl BooksApp {
         let controls_w = small + gap + stepper_w + gap + switch_w;
         let renaming_this =
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
+        let family = crate::paginate::font_choice(&f.kind);
         let row = Self::draw_settings_row(
             ctx,
             col.row_span(theme),
@@ -10357,6 +10408,7 @@ impl BooksApp {
                 separator,
                 selected: false,
                 renaming: renaming_this,
+                title_family: Some(&family),
             },
         );
         let controls_x0 = col.x1() - controls_w;
@@ -10414,7 +10466,7 @@ impl BooksApp {
         begin: Action,
     ) {
         let theme = ctx.theme;
-        let pad = f64::from(theme.tokens.spacing.s3);
+        let pad = ui::chrome::row_bleed(theme);
         if renaming {
             // The field's edge stands on the row text's edge, in line with
             // the separators and the column above it.
@@ -10532,6 +10584,7 @@ impl BooksApp {
                 separator: false,
                 selected: false,
                 renaming: renaming_this,
+                title_family: None,
             },
         );
         if separator {

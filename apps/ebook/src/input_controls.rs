@@ -1020,13 +1020,8 @@ impl SchemeColorSheet {
             .max(picker.preferred_size().0)
             .min(viewport.width() - 2.0 * pad)
             .max(0.0);
-        // The picker sets its hex field out from under its preview, past
-        // the trailing edge of the rect it is given; the sheet widens by that
-        // overhang so the field stays inside it.
         let h = picker.preferred_height(w);
-        picker.apply_layout_external(Rect::new(0.0, 0.0, w, h));
-        let overhang = (picker.hex_input_rect().x1 - w).max(0.0);
-        let width = (w + overhang + 2.0 * pad).min(viewport.width());
+        let width = (w + 2.0 * pad).min(viewport.width());
         let height = (h + 2.0 * pad).min(viewport.height());
         let x = viewport.x0 + (viewport.width() - width) / 2.0;
         let y = viewport.y0 + (viewport.height() - height) / 2.0;

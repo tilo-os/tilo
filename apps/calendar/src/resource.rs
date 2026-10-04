@@ -9,7 +9,7 @@ use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamT
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_resource::{
-    ActionDecl, Doc, ModelError, Resource, SearchEntry, child_resource_id, publish_child,
+    ActionDecl, Doc, ModelError, Resource, ScopeDecl, SearchEntry, child_resource_id, publish_child,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -372,21 +372,52 @@ impl Resource for Calendar {
         children
     }
 
+    /// Search narrows to the events, to the tasks, or to one project's
+    /// tasks; a project's scope nests under the tasks'.
+    fn search_scopes(state: &Model) -> Vec<ScopeDecl> {
+        let mut scopes = vec![
+            ScopeDecl::new(EVENTS_SCOPE, "Events"),
+            ScopeDecl::new(TASKS_SCOPE, "Tasks"),
+        ];
+        scopes.extend(
+            state
+                .projects
+                .iter()
+                .map(|project| ScopeDecl::new(project_scope(project.id), project.name.clone())),
+        );
+        scopes
+    }
+
     fn search(state: &Model) -> Vec<SearchEntry> {
         let events = state.events.iter().map(|event| SearchEntry {
             anchor: Some(format!("calendar.event:{}", event.id)),
+            within: Some(EVENTS_SCOPE.into()),
             title: event.display_title().to_owned(),
             text: event.location.clone(),
             ..Default::default()
         });
         let tasks = state.tasks.iter().map(|task| SearchEntry {
             anchor: Some(format!("calendar.task:{}", task.id)),
+            within: Some(
+                task.project
+                    .map_or_else(|| TASKS_SCOPE.into(), project_scope),
+            ),
             title: task.title.clone(),
             text: String::new(),
             ..Default::default()
         });
         events.chain(tasks).collect()
     }
+}
+
+/// The search scope holding every event.
+const EVENTS_SCOPE: &str = "calendar.events";
+/// The search scope holding every task.
+const TASKS_SCOPE: &str = "calendar.tasks";
+
+/// The search scope of one project's tasks, inside the tasks' scope.
+fn project_scope(id: crate::model::Id) -> String {
+    format!("{TASKS_SCOPE}/calendar.project:{id}")
 }
 
 impl ResourceApp for CalendarShell {
@@ -496,6 +527,39 @@ impl ResourceSurface<Calendar> for CalendarApp {
 
     fn attach(&mut self, cx: SurfaceCx<Calendar>) {
         self.attach_framework(cx.dispatcher());
+    }
+}
+
+#[cfg(test)]
+mod search_scope_tests {
+    use super::*;
+    use ui::tilo_resource::scope_contains;
+
+    /// Every entry lies in the events' or the tasks' scope, and a project's
+    /// tasks also in that project's scope.
+    #[test]
+    fn entries_nest_under_the_declared_scopes() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 30).expect("date");
+        let model = crate::model::seed_demo(today);
+        let scopes = Calendar::search_scopes(&model);
+        let entries = Calendar::search(&model);
+        assert_eq!(scopes.len(), 2 + model.projects.len());
+        let in_scope = |anchor: &str| entries.iter().filter(|e| e.in_scope(anchor)).count();
+        assert_eq!(in_scope(EVENTS_SCOPE), model.events.len());
+        assert_eq!(in_scope(TASKS_SCOPE), model.tasks.len());
+        for project in &model.projects {
+            let scope = scopes
+                .iter()
+                .find(|scope| scope.label == project.name)
+                .expect("each project is a scope");
+            assert!(scope_contains(TASKS_SCOPE, &scope.anchor));
+            let tasks = model
+                .tasks
+                .iter()
+                .filter(|task| task.project == Some(project.id))
+                .count();
+            assert_eq!(in_scope(&scope.anchor), tasks);
+        }
     }
 }
 

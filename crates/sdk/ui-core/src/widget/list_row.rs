@@ -281,6 +281,9 @@ struct RowGeometry {
     meta_right: f64,
 }
 
+/// How many marks [`ListRowFace::mark`] keeps after a title.
+pub const MAX_MARKS: usize = 3;
+
 /// Immediate-mode list row. Build one per row per frame, `measure` it for
 /// its height, then `paint` it into the rect you laid out: the row's outer
 /// rect, the list's content edge grown by [`row_bleed`] on both sides.
@@ -297,7 +300,7 @@ pub struct ListRowFace<'a> {
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
-    mark: Option<Icon>,
+    marks: [Option<Icon>; MAX_MARKS],
     tags: &'a [(&'a str, ChipStyle)],
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
@@ -335,7 +338,7 @@ impl<'a> ListRowFace<'a> {
             meta: None,
             meta_spans: &[],
             value: None,
-            mark: None,
+            marks: [None; MAX_MARKS],
             tags: &[],
             count: None,
             leading: None,
@@ -429,11 +432,15 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A mark after the title in tertiary ink (starred, pinned, shared).
-    /// Star, pin and bookmark are filled.
+    /// A mark after the title in tertiary ink (starred, pinned, shared,
+    /// has attachments). Each call adds one more, in order, up to
+    /// [`MAX_MARKS`]; later ones are ignored. Star, pin and bookmark are
+    /// filled.
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
-        self.mark = Some(icon);
+        if let Some(slot) = self.marks.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(icon);
+        }
         self
     }
 
@@ -1024,11 +1031,9 @@ impl<'a> ListRowFace<'a> {
         let mut y = text_top;
         let title_width = (geo.title_right - text_x).max(0.0);
         let tags_w = self.tags_width(ctx.text, theme, &m);
-        let mark_w = if self.mark.is_some() {
-            m.mark + m.tag_gap
-        } else {
-            0.0
-        };
+        let mark_count = self.marks.iter().flatten().count();
+        #[allow(clippy::cast_precision_loss, reason = "at most MAX_MARKS")]
+        let mark_w = mark_count as f64 * (m.mark + m.tag_gap);
         // The title keeps at least half its line; tags and the mark take the
         // rest and drop off before the title elides further.
         let accessories = (tags_w + mark_w).min(title_width / 2.0);
@@ -1056,9 +1061,10 @@ impl<'a> ListRowFace<'a> {
         }
         let line_cy = y - title_line / 2.0;
         let mut x = last_end + m.tag_gap;
-        if let Some(mark) = self.mark
-            && x + m.mark <= geo.title_right
-        {
+        for mark in self.marks.iter().flatten().copied() {
+            if x + m.mark > geo.title_right {
+                break;
+            }
             let r = Rect::new(
                 x,
                 line_cy - m.mark / 2.0,

@@ -3188,11 +3188,17 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ToggleTraffic,
         ];
 
-        // Docked, 720×360: beside would overlap the panel, below would run
-        // past the overflow button.
-        let mut docked = app_at(720.0, 360.0);
+        // Docked at the breakpoint, 840×360, with text a quarter larger:
+        // beside would overlap the wider panel, below would run past the
+        // overflow button.
+        let mut docked = app_at(840.0, 360.0);
         let mut scene = Scene::new();
-        docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        docked.draw_app(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme.clone().with_text_scale(1.25),
+        );
         assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
         let panel = docked.panel_rect();
         let overflow = docked.overflow_rect();

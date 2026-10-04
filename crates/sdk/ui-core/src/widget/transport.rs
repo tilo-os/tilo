@@ -7,7 +7,9 @@
 //! its neighbours. It is the one round button: a circle by meaning, the
 //! way a play control is everywhere. Previous and next are plain: solid
 //! glyphs in the ground's ink, a round lift under the pointer. The glyphs
-//! are drawn solid ([`Icon::draw_solid`]), never as outlines.
+//! are solid media marks (a play triangle, pause bars, a skip triangle
+//! against its stop bar), never outlines. With nothing to play the
+//! controls keep their look under the disabled alpha.
 //!
 //! ```ignore
 //! let side = TransportFace::side(TransportControl::PlayPause { playing }, theme);
@@ -17,7 +19,7 @@
 //! ```
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::Fill;
 
 use crate::icons::Icon;
@@ -151,8 +153,16 @@ impl TransportFace {
         } else {
             ButtonRole::Plain
         };
-        let (fill, edge, ink) = face_colors(theme, role, face.interact);
+        // A transport with nothing to play keeps its look under the disabled
+        // alpha, so play still reads as the primary control.
         let disabled = face.interact.disabled;
+        let enabled = ButtonInteract {
+            disabled: false,
+            hovered: face.interact.hovered && !disabled,
+            pressed: face.interact.pressed && !disabled,
+            ..face.interact
+        };
+        let (fill, _, ink) = face_colors(theme, role, enabled);
         let circle = Circle::new(centre, radius);
         if disabled {
             scene.push_layer(
@@ -166,34 +176,13 @@ impl TransportFace {
         if fill.components[3] > 0.0 {
             scene.fill(Fill::NonZero, transform, fill, None, &circle);
         }
-        // The glyph takes a little under half the circle; play sits a touch
-        // right of centre so the triangle's mass, not its box, is centred.
-        let glyph = (side * if face.control.is_play() { 0.46 } else { 0.56 }).round();
-        let nudge = if face.control == (TransportControl::PlayPause { playing: false }) {
-            glyph / 12.0
-        } else {
-            0.0
-        };
-        let glyph_rect =
-            Rect::from_center_size(Point::new(centre.x + nudge, centre.y), (glyph, glyph));
-        face.control
-            .icon()
-            .draw_solid(scene, transform, glyph_rect, ink);
+        let glyph = (side * if face.control.is_play() { 0.42 } else { 0.5 }).round();
+        let glyph_rect = Rect::from_center_size(centre, (glyph, glyph));
+        for shape in glyph_shapes(face.control, glyph_rect) {
+            scene.fill(Fill::NonZero, transform, ink, None, &shape);
+        }
         if disabled {
             scene.pop_layer();
-        }
-        // A resting play button (nothing to play) keeps its round edge, so
-        // its bounds still show on a light ground.
-        if let Some(edge) = edge
-            && (!face.interact.focused || disabled)
-        {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                edge,
-                None,
-                &Circle::new(centre, radius - 0.5),
-            );
         }
         if face.interact.focused && !disabled {
             scene.stroke(
@@ -205,6 +194,65 @@ impl TransportFace {
             );
         }
     }
+}
+
+/// The solid media glyphs of `control` in the square `r`: a play triangle
+/// (its mass, not its box, centred), two pause bars, or a skip triangle
+/// against its stop bar. Corners are softened the way the icon set's are.
+fn glyph_shapes(control: TransportControl, r: Rect) -> Vec<BezPath> {
+    let g = r.width();
+    let at = |x: f64, y: f64| Point::new(r.x0 + x * g, r.y0 + y * g);
+    let corner = g * 0.08;
+    let bar = |x0: f64, x1: f64| {
+        RoundedRect::from_rect(
+            Rect::from_points(at(x0, 0.1), at(x1, 0.9)),
+            (g * 0.06).max(1.0),
+        )
+        .to_path(0.1)
+    };
+    match control {
+        TransportControl::PlayPause { playing: true } => vec![bar(0.14, 0.4), bar(0.6, 0.86)],
+        TransportControl::PlayPause { playing: false } => {
+            vec![rounded_triangle(
+                [at(0.18, 0.06), at(0.18, 0.94), at(0.96, 0.5)],
+                corner,
+            )]
+        }
+        TransportControl::Next => vec![
+            rounded_triangle([at(0.08, 0.1), at(0.08, 0.9), at(0.74, 0.5)], corner),
+            bar(0.76, 0.92),
+        ],
+        TransportControl::Previous => vec![
+            rounded_triangle([at(0.92, 0.1), at(0.92, 0.9), at(0.26, 0.5)], corner),
+            bar(0.08, 0.24),
+        ],
+    }
+}
+
+/// A triangle through `points` with each corner rounded by `radius`.
+fn rounded_triangle(points: [Point; 3], radius: f64) -> BezPath {
+    let [a, b, c] = points;
+    let mut path = BezPath::new();
+    for (i, (prev, here, next)) in [(c, a, b), (a, b, c), (b, c, a)].into_iter().enumerate() {
+        let toward = |to: Point| {
+            let d = to - here;
+            let len = d.hypot();
+            if len <= 0.0 {
+                here
+            } else {
+                here + d * (radius.min(len / 2.0) / len)
+            }
+        };
+        let (enter, leave) = (toward(prev), toward(next));
+        if i == 0 {
+            path.move_to(enter);
+        } else {
+            path.line_to(enter);
+        }
+        path.quad_to(here, leave);
+    }
+    path.close_path();
+    path
 }
 
 #[cfg(test)]

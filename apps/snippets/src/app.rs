@@ -62,8 +62,6 @@ pub(crate) enum Action {
     Duplicate(SnippetId),
     Delete(SnippetId),
     SetLanguage(SnippetId, Language),
-    /// Show the language picker under the language button.
-    PickLanguage(SnippetId),
     /// Show the menu of the snippet's less frequent actions.
     More(SnippetId),
 }
@@ -87,7 +85,6 @@ impl Action {
             Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
             Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
             Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
-            Self::PickLanguage(id) => format!("snippets.snippet:{id}.language"),
             Self::More(id) => format!("snippets.snippet:{id}.more"),
         }
     }
@@ -111,15 +108,6 @@ impl Action {
             Self::SetLanguage(_, language) => {
                 tr_with("snippets-set-language", &[("language", &language.name())])
             }
-            Self::PickLanguage(id) => core.library.get(*id).map_or_else(
-                || tr("snippets-language"),
-                |snippet| {
-                    tr_with(
-                        "snippets-language-of",
-                        &[("language", &snippet.language.name())],
-                    )
-                },
-            ),
             Self::More(_) => tr("snippets-more-actions"),
         }
     }
@@ -210,8 +198,8 @@ pub(crate) struct Core {
     pub(crate) list: ListState,
     /// Where the header's overflow button is, for its menu.
     pub(crate) more_anchor: Rect,
-    /// Where the language button is, for its picker.
-    pub(crate) language_anchor: Rect,
+    /// The language picker should open (taken by the picker).
+    pub(crate) pick_language: bool,
     /// The screen a narrow window should bring to the front next.
     show_pane: Option<NavPane>,
     /// The body editor may take input (the content column is on screen and
@@ -240,7 +228,7 @@ impl Core {
             window: Rect::ZERO,
             list: ListState::default(),
             more_anchor: Rect::ZERO,
-            language_anchor: Rect::ZERO,
+            pick_language: false,
             show_pane: None,
             body_reachable: false,
         };
@@ -645,26 +633,15 @@ impl Core {
             Action::Duplicate(id) => self.duplicate(id),
             Action::Delete(id) => self.delete(id),
             Action::SetLanguage(id, lang) => self.set_language(id, lang),
-            Action::PickLanguage(id) => self.open_languages(id),
             Action::More(id) => self.open_more(id),
         }
     }
 
-    /// Open the snippet's language picker under the language button, the
-    /// current language checked.
+    /// Open the open snippet's language picker.
     pub(crate) fn open_languages(&mut self, id: SnippetId) {
-        let Some(current) = self.library.get(id).map(|s| s.language) else {
-            return;
-        };
-        let mut menu = ContextMenu::new();
-        for language in Language::ALL {
-            menu.push(MenuItem::action(language.name(), || {}).with_checked(language == current));
+        if self.open == Some(id) {
+            self.pick_language = true;
         }
-        let actions = Language::ALL
-            .into_iter()
-            .map(|language| Action::SetLanguage(id, language))
-            .collect();
-        self.open_menu(menu, self.language_anchor, tr("snippets-language"), actions);
     }
 
     /// Open the snippet's overflow menu under the header's overflow button.
@@ -974,10 +951,7 @@ impl SnippetsApp {
             )
             .content_header(
                 titles.1.clone(),
-                vec![
-                    detail_pane::favorite_button(&core, &requests),
-                    detail_pane::more_button(&core, &requests),
-                ],
+                detail_pane::header_actions(&core, &requests, detail.has_snippet()),
             );
         if !library_empty {
             shell.set_overview(Some(Box::new(ListPane::new(&core))));
@@ -1072,6 +1046,13 @@ impl SnippetsApp {
             );
         }
         if detail != self.detail {
+            if detail.has_snippet() != self.detail.has_snippet() {
+                let title = self.core.borrow().open_title();
+                self.shell.set_content_header(
+                    title,
+                    detail_pane::header_actions(&self.core, &self.requests, detail.has_snippet()),
+                );
+            }
             self.detail = detail;
             self.shell
                 .set_content(detail_pane::build(&self.core, &self.requests));
@@ -1334,7 +1315,7 @@ impl ui::widget::Decorator for SnippetsApp {
         let window = core.window;
         if let Some(open) = core.menu.as_mut() {
             open.menu.layout_within(text, theme);
-            Widget::draw(&mut open.menu, scene, transform, text, theme, presence);
+            Widget::draw_overlay(&mut open.menu, scene, transform, text, theme, presence);
         }
         if let Some(modal) = core.expand.as_mut() {
             modal.draw(scene, transform, text, theme, window);

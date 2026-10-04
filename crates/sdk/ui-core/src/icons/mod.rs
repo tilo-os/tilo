@@ -2140,15 +2140,6 @@ impl Icon {
         }
     }
 
-    /// Paint the icon **solid**: its closed sub-paths filled and every
-    /// stroke drawn over them, so a glyph that pairs a shape with a bar (a
-    /// skip triangle and its stop line) reads as one solid mark with the
-    /// outline's rounded silhouette. Media transport glyphs use it.
-    pub fn draw_solid(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
-        self.draw_filled(scene, transform, rect, color);
-        self.draw(scene, transform, rect, color);
-    }
-
     /// Same as [`Icon::draw`] but with an explicit output stroke width in
     /// pixels — use when a call site needs a heavier or lighter glyph than
     /// the 1.5 px default (e.g. a large hero icon).

@@ -43,8 +43,8 @@ fn annotation_cards_keep_rows_and_targets_clear() {
                 "the card ends with its action row"
             );
             assert!(
-                (m.plot_h() - (m.s16 + m.s6)).abs() < 0.01,
-                "a plot is content-sized, not text-sized"
+                (m.plot_h() - m.lh_caption - m.s1 - (m.s16 + m.s6)).abs() < 0.01,
+                "a plot is content-sized under its legend's line"
             );
             heights.push(rows.height);
         }
@@ -182,6 +182,37 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         assert!(
             app.grid_rect.height() > 6.0 * app.metrics.grid.default_row_h(),
             "the sheet keeps its rows"
+        );
+
+        // At phone width the cards keep their widths and the dock scrolls
+        // sideways to the ones past its edge; a target never leaves the dock.
+        let (mut phone, mut tr, theme) = measured_app(390.0, 844.0, 1.0);
+        seed_annotations(&mut phone);
+        phone.relayout();
+        paint_frame(&mut phone, &mut tr, &theme);
+        assert_eq!(phone.dock_cards.len(), 2, "every card has a place");
+        assert!(phone.dock_scroll.overflows_horizontally());
+        assert!(
+            phone
+                .annotation_clicks
+                .iter()
+                .all(|(rect, _)| phone.dock_rect.contains(rect.center()))
+        );
+        phone
+            .dock_scroll
+            .scroll_by(vello::kurbo::Vec2::new(10_000.0, 0.0));
+        paint_frame(&mut phone, &mut tr, &theme);
+        let last = phone
+            .dock_cards
+            .last()
+            .map(|(_, rect)| *rect)
+            .expect("a card");
+        assert!(
+            phone
+                .annotation_clicks
+                .iter()
+                .any(|(rect, _)| rect.x1 > phone.dock_rect.center().x),
+            "scrolled to its end, the dock shows the last card {last:?}"
         );
 
         let (mut short, mut tr, theme) = measured_app(800.0, 360.0, 1.0);

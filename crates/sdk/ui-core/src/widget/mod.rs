@@ -2242,7 +2242,8 @@ pub use sidebar::{
 mod nav_shell;
 pub mod window_header;
 pub use nav_shell::{
-    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
+    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
+    SidebarPlacement,
 };
 pub use window_header::{HISTORY_CONTROL_ID, HistoryControl, HistoryOpener, WindowHeader};
 mod nav_list;
@@ -2425,7 +2426,7 @@ pub use chart::{
     TrendRange, TrendStyle,
 };
 pub(crate) mod chart_labels;
-mod chart_legend;
+pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,

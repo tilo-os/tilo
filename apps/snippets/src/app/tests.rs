@@ -149,8 +149,17 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
 fn the_snippet_menus_set_the_language_and_duplicate() {
     let mut app = launched(vec![snippet("Deploy", "kubectl apply")]);
     activate(&mut app, "Deploy");
-    activate(&mut app, "Plain text");
-    activate(&mut app, "Set language to Rust");
+    // The language is a dropdown: assistive technology sets its value.
+    {
+        let harness = app.harness();
+        let picker = harness
+            .a11y_node_named("Language")
+            .expect("the language picker");
+        harness
+            .perform_a11y_action(picker, &ui::a11y::Action::SetValue("Rust".into()))
+            .unwrap();
+    }
+    app.settle();
     assert_eq!(by_title(&app, "Deploy").language, Language::Rust);
 
     activate(&mut app, "More actions");
