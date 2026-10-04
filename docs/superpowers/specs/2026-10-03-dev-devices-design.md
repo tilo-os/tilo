@@ -62,7 +62,10 @@ headless in the account's user manager, or on seat0 as the transient unit
   removes the image and uploads only that layer (adapter capability
   `ci_layers_from_host`); its provenance is the one a pull on the device would write
   (`Provenance::from_ci`: authority, image digest, the commit from the image's revision
-  label). A VM keeps pulling in the guest.
+  label). The extracted layer stays cached on the host by the image's per-architecture
+  digest and the component (`tilo-vm/ci-layers`, the six most recently used); a repeat
+  swap looks the digest up in the registry and skips the pull. A VM keeps pulling in the
+  guest.
 - `--builder host` with a `TILO_VM_CARGO` drop-in builds anywhere (the ARM builder); the
   layer's target and rustc are read from the binary it produced, so the device's ABI check
   sees what was really built.
