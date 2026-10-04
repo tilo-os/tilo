@@ -1,22 +1,6 @@
 # The app-paint ratchet for apps-word-processor: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/word-processor/src/compact_swatch_palette.rs desktop_ground 1
-apps/word-processor/src/compact_swatch_palette.rs literal_radius 1
-apps/word-processor/src/compact_swatch_palette.rs raw_paint 1
-apps/word-processor/src/find_bar.rs glyph_icon 2
-apps/word-processor/src/find_bar.rs raw_paint 4
-apps/word-processor/src/history_panel.rs literal_radius 1
-apps/word-processor/src/history_panel.rs raw_paint 2
-apps/word-processor/src/main.rs transparent_shot 1
-apps/word-processor/src/outline_pane.rs raw_paint 2
-apps/word-processor/src/recovery_banner.rs raw_paint 3
-apps/word-processor/src/review_overlay.rs literal_radius 8
-apps/word-processor/src/review_overlay.rs raw_paint 13
-apps/word-processor/src/ruler.rs raw_paint 11
-apps/word-processor/src/widget.rs desktop_ground 3
-apps/word-processor/src/widget.rs glyph_icon 2
-apps/word-processor/src/widget.rs literal_alpha 1
-apps/word-processor/src/widget.rs literal_radius 8
-apps/word-processor/src/widget.rs ramp_slot 1
-apps/word-processor/src/widget.rs raw_paint 48
+apps/word-processor/src/ruler.rs raw_paint 7
+apps/word-processor/src/widget.rs glyph_icon 1
+apps/word-processor/src/widget.rs raw_paint 26
