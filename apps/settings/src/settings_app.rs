@@ -691,8 +691,6 @@ impl SettingsApp {
 }
 
 impl Widget for SettingsApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
     fn native_input_snapshot(
         &self,
         state: &AppModel,
@@ -775,10 +773,6 @@ impl Widget for SettingsApp {
             "original_pending_ops": state.pending_ops(),
         }))
     }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::OPEN_PANE_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Background work an effect started finishes whether or not its pane
         // is open.
@@ -792,8 +786,8 @@ impl Widget for SettingsApp {
         self.network.poll();
         // Sidebar selection and search are local presentation state. They do
         // not create CRDT click flags, draft text, collaboration traffic or
-        // undo entries. The canonical resource `settings.section:<slug>/open`
-        // still reaches the same `select` method through its View operation.
+        // undo entries. A pane's row offers the same `select` to search and
+        // agents through its open effect.
         if let Some(category) = self.sidebar_selection.with(|request| *request) {
             self.sidebar_selection.set(None);
             self.select(category);
@@ -984,114 +978,6 @@ impl Widget for SettingsApp {
         self.shell
             .as_ref()
             .is_some_and(ui::Widget::layout_needs_measure)
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = self.admit_resource_operation_with_document(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.shell.as_mut().and_then(|shell| {
-            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
-        })
-    }
-}
-
-impl ui::resources::PublishesResources for SettingsApp {
-    /// The sections of this device's hardware and services, with the local
-    /// operations their controls use, and the account inventory.
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::live_device_resources(doc)
-    }
-    /// Resolve one of them by id when an invocation names it.
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.publish_resource(doc, id)
-    }
-}
-
-impl SettingsApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "local account and presentation operation routing stays auditable in one dispatch point"
-    )]
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::View
-            || type_id != crate::actions::OPEN_PANE_OPERATION_TYPE
-        {
-            return Ok(false);
-        }
-        let slug: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let category = Category::ALL
-            .iter()
-            .copied()
-            .find(|category| category.slug() == slug)
-            .ok_or_else(|| "Settings pane is no longer available".to_string())?;
-        self.select(category);
-        Ok(true)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "central router keeps validation beside dispatch"
-    )]
-    fn admit_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
-        if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
-            return Ok(Some(started));
-        }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| {
-                handled.then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                })
-            })
     }
 }
 

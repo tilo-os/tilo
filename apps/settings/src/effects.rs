@@ -116,7 +116,8 @@ settings_effects! {
 /// entities outside any document that Settings shows — with the effects each
 /// offers bound to it.
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
-    let mut rows = app.notifications().rows();
+    let mut rows = pane_rows();
+    rows.extend(app.notifications().rows());
     rows.extend(app.default_apps().rows());
     rows.extend(app.input().rows());
     rows.extend(app.printers().rows());
@@ -153,6 +154,42 @@ pub const fn effect<E, A: serde::Serialize>(
     effect: ActionRef<E, A>,
 ) -> ActionRef<SettingsEffect, A> {
     ActionRef::new(effect.id, effect.params)
+}
+
+/// The live row of `category`'s pane.
+#[must_use]
+pub fn pane_row_id(category: Category) -> String {
+    format!("settings.section:{}", category.slug())
+}
+
+/// What opens `category`'s pane, for search, agents and accessibility: its
+/// row's [`NavigationEffect::OpenPane`].
+#[must_use]
+pub fn open_pane_address(category: Category) -> tilo_actions::ActionAddress {
+    let open = NavigationEffect::OpenPane {
+        pane: category.slug().to_owned(),
+    };
+    tilo_actions::ActionAddress::new(pane_row_id(category), open.id())
+}
+
+/// One row per pane, each opening it.
+fn pane_rows() -> Vec<ui::framework::LiveRow> {
+    Category::ALL
+        .iter()
+        .map(|category| {
+            ui::framework::LiveRow::new(
+                pane_row_id(*category),
+                "settings.section",
+                category.label(),
+            )
+            .operation(
+                SettingsEffect::from(NavigationEffect::OpenPane {
+                    pane: category.slug().to_owned(),
+                })
+                .bound(),
+            )
+        })
+        .collect()
 }
 
 /// Moving between the panes of Settings.

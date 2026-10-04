@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ReadDoc};
+use automerge::AutoCommit;
 use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};

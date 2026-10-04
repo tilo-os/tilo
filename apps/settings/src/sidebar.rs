@@ -517,7 +517,7 @@ impl Widget for SidebarRow {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
                 .with_name(&self.label)
-                .with_action_target(crate::actions::open_pane_address(self.category).encode())
+                .with_action_target(crate::effects::open_pane_address(self.category).encode())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
                     focused: self.is_focused,

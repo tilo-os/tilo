@@ -2,12 +2,12 @@
 //!
 //! Every [`Category`] pane is findable from the unified Ctrl+K palette by its
 //! title, summary, or any of its built-in keyword synonyms ("vpn", "night
-//! light", "wallpaper", …). Each entry invokes the pane's stable exported
-//! `open` View action, so search, agents, accessibility and resource
-//! navigation all use the same brokered operation.
+//! light", "wallpaper", …). Each entry invokes its pane's row's open
+//! effect, so search, agents, accessibility and the sidebar all
+//! open a pane the same way.
 //!
 //! This indexes **panes** (navigation), not individual toggles — those are
-//! already exported to Ctrl+K as *actions* through the app's resources.
+//! already exported to Ctrl+K as the app's effects.
 
 use ui::tilo_resource::SearchEntry;
 
@@ -25,7 +25,7 @@ pub fn pane_entries() -> Vec<SearchEntry> {
         .copied()
         .map(|category| {
             SearchEntry::new(category.label(), category.keywords().join(" "))
-                .invoking(crate::actions::open_pane_address(category))
+                .invoking(crate::effects::open_pane_address(category))
                 .grouped(SETTINGS_KIND)
                 .subtitled(category.subtitle())
                 .with_icon(category.icon().name())
@@ -52,7 +52,7 @@ mod tests {
         let hits = provider.search("night light");
         assert!(
             hits.iter().any(|r| r.action_address()
-                == Some(crate::actions::open_pane_address(Category::Displays))),
+                == Some(crate::effects::open_pane_address(Category::Displays))),
             "a keyword synonym surfaces its pane, got {:?}",
             hits.iter().map(|r| &r.title).collect::<Vec<_>>()
         );
@@ -95,83 +95,44 @@ mod tests {
             .query("appearance")
             .into_iter()
             .find(|r| {
-                r.action_address() == Some(crate::actions::open_pane_address(Category::Appearance))
+                r.action_address() == Some(crate::effects::open_pane_address(Category::Appearance))
             })
             .expect("Appearance is findable");
         assert_eq!(
             hit.action_address(),
-            Some(crate::actions::open_pane_address(Category::Appearance))
+            Some(crate::effects::open_pane_address(Category::Appearance))
         );
     }
 
+    /// Every search address names a pane's row, which offers exactly that
+    /// view; a removed pane or action names nothing.
     #[test]
-    fn broker_resolves_every_search_address_and_navigates_to_the_exact_pane() {
-        use automerge::{AutoCommit, ROOT};
-        use ui::widget::Widget;
+    fn every_search_address_names_its_panes_row() {
         let config = crate::prefs::test_env::ScratchConfig::new();
-
-        let mut app = config.app();
-        let mut doc = AutoCommit::new();
-        let resources = ui::resources::resources(&app, &doc);
+        let app = config.app();
         let hits = source().search("");
         assert_eq!(hits.len(), Category::ALL.len());
-
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
             let address = hit.action_address().expect("canonical action address");
-            assert_eq!(address, crate::actions::open_pane_address(category));
-            let spec = tilo_actions::door::resolve(&resources, &address)
-                .expect("the search address is exported by Settings");
+            assert_eq!(address, crate::effects::open_pane_address(category));
+            let row = crate::effects::row(&app, &address.resource)
+                .expect("the search address names a row")
+                .into_resource();
+            let rows = [row];
+            let spec = tilo_actions::door::resolve(&rows, &address)
+                .expect("the row offers the search address");
             assert_eq!(spec.kind, tilo_actions::OperationKind::View);
-            assert_eq!(spec.contract, tilo_actions::ActionContract::view());
-            let kind = spec.kind;
-            let encoded = tilo_actions::door::encode(&resources, &address, None)
-                .expect("the exported operation encodes");
-            assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .expect("the brokered operation succeeds"),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(
-                app.selected(),
-                category,
-                "the broker selected the pane named by the result"
-            );
         }
-    }
 
-    #[test]
-    fn runtime_lazy_resolution_only_accepts_current_canonical_open_addresses() {
-        use automerge::AutoCommit;
-        let config = crate::prefs::test_env::ScratchConfig::new();
-
-        let app = config.app();
-        let doc = AutoCommit::new();
-        let address = crate::actions::open_pane_address(Category::Accessibility);
-        let resource = ui::resources::resource(&app, &doc, &address.resource)
-            .expect("the widget resolves a current canonical resource at activation time");
-        assert_eq!(resource.id.as_str(), address.resource);
-        let resources = [resource];
-        let resolved = tilo_actions::door::resolve(&resources, &address)
-            .expect("resolved resource exports the exact open action");
-        assert_eq!(resolved.kind, tilo_actions::OperationKind::View);
-
-        let stale_resource = ActionAddress::new("settings.section:removed-pane", "open");
+        assert!(crate::effects::row(&app, "settings.section:removed-pane").is_none());
         let stale_action = ActionAddress::new(
-            crate::actions::pane_resource_id(Category::Accessibility),
+            crate::effects::pane_row_id(Category::Accessibility),
             "removed-action",
         );
-        assert!(ui::resources::resource(&app, &doc, &stale_resource.resource).is_none());
-        let current_resource = ui::resources::resource(&app, &doc, &stale_action.resource)
-            .expect("the current resource remains resolvable");
-        assert!(tilo_actions::door::resolve(&[current_resource], &stale_action).is_none());
+        let current = crate::effects::row(&app, &stale_action.resource)
+            .expect("the current row remains")
+            .into_resource();
+        let rows = [current];
+        assert!(tilo_actions::door::resolve(&rows, &stale_action).is_none());
     }
 }

@@ -622,10 +622,11 @@ mod tests {
             .iter()
             .map(|display| {
                 use ui::tilo_resource::Effect as _;
-                let spec = crate::effects::SettingsEffect::specs()
+                let spec = crate::effects::SettingsEffect::declarations()
                     .into_iter()
-                    .find(|spec| spec.id == "move-display")
-                    .expect("moving a display is an effect");
+                    .find(|decl| decl.id == "move-display")
+                    .expect("moving a display is an effect")
+                    .spec(crate::effects::OPERATION);
                 let resource =
                     ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
                         .with_action(spec.clone());

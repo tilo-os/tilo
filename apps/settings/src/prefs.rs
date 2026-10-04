@@ -1252,8 +1252,6 @@ impl SystemPrefs {
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 #[cfg(test)]
 pub(crate) mod test_env {
-    use std::path::PathBuf;
-
     use crate::settings_app::SettingsApp;
 
     /// Holds the redirected environment for a test's duration.
