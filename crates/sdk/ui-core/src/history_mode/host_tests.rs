@@ -1574,13 +1574,85 @@ fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
     let spacing = driver.theme().tokens.spacing;
     let button = driver.targets()["history-open"];
     assert_eq!(
-        button.x0,
-        f64::from(spacing.s3),
-        "sibling step from the edge"
+        button.x1,
+        900.0 - f64::from(spacing.s3),
+        "sibling step from the trailing edge"
     );
     assert_eq!(
         button.y0,
         f64::from(spacing.s1),
         "one control tall, not a band"
     );
+}
+
+/// A `NavShell` app carries the window's History control in its header row;
+/// under the app's registered History that control opens and closes that
+/// History, never the standalone chrome the app does not have.
+#[test]
+fn header_history_control_opens_the_registered_history() {
+    fn history_toggled(driver: &Driver) -> Vec<Option<accesskit::Toggled>> {
+        driver
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| {
+                node.label() == Some("History") && node.role() == accesskit::Role::Button
+            })
+            .map(|(_, node)| node.toggled())
+            .collect()
+    }
+    let mut state = State::new();
+    for body in ["first", "second"] {
+        state.doc.put(ROOT, "body", body).unwrap();
+        state.commit_action(None, None);
+    }
+    let before = state.doc.get_heads();
+    let shell = crate::widget::NavShell::new()
+        .content_header("Notes", vec![])
+        .content(Box::new(crate::widget::Text::new("Body")));
+    let mut driver = Driver::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(shell), registration()),
+        (1000, 700),
+    )
+    .unwrap();
+    assert!(
+        !driver.targets().contains_key("history-open"),
+        "the header row presents History; the window draws no bar for it"
+    );
+    assert_eq!(history_toggled(&driver), [Some(accesskit::Toggled::False)]);
+
+    driver.click_named("nav-shell-history").unwrap();
+    assert!(
+        driver.targets().contains_key("activity_timeline"),
+        "the header control opens the registered History"
+    );
+    assert!(
+        !driver.targets().contains_key("nav-shell-history"),
+        "while open the inert app's header gives the control to History's bar"
+    );
+    assert_eq!(
+        history_toggled(&driver),
+        [Some(accesskit::Toggled::True)],
+        "and the one History control reads as on"
+    );
+
+    driver.click_named("history-open").unwrap();
+    assert!(!driver.targets().contains_key("activity_timeline"));
+    assert!(driver.targets().contains_key("nav-shell-history"));
+    assert_eq!(history_toggled(&driver), [Some(accesskit::Toggled::False)]);
+
+    // The History door the control is bound to closes it too.
+    driver.click_named("nav-shell-history").unwrap();
+    assert!(driver.targets().contains_key("activity_timeline"));
+    driver
+        .invoke_local_history_action(
+            &tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "hide",
+            ),
+            None,
+        )
+        .unwrap();
+    assert!(!driver.targets().contains_key("activity_timeline"));
+    assert_eq!(driver.state_mut().doc.get_heads(), before);
 }

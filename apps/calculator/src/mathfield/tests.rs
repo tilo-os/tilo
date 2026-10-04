@@ -998,3 +998,39 @@ fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
         field.scroll.x
     );
 }
+
+/// A subtraction reads as the true minus sign wherever it sits in the
+/// notation, while the formula the engine receives keeps its ASCII hyphen.
+#[test]
+fn subtraction_is_drawn_with_the_true_minus_and_stored_with_the_hyphen() {
+    use super::MathField;
+    use super::layout::BoxKind;
+    use ui::text_render::TextRenderer;
+
+    let mut tr = TextRenderer::new();
+    let mut field = MathField::new("(x^2+1)/(x-3)-2^-1").with_size(20.0);
+    field.set_rect(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 80.0), &mut tr);
+    let layout = field.layout.as_ref().expect("laid out");
+    let glyphs: Vec<char> = layout
+        .boxes
+        .iter()
+        .filter_map(|b| match b.kind {
+            BoxKind::Glyph { ch, .. } => Some(ch),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !glyphs.contains(&'-'),
+        "no ASCII hyphen is drawn: {glyphs:?}"
+    );
+    assert_eq!(
+        glyphs.iter().filter(|&&ch| ch == '\u{2212}').count(),
+        3,
+        "the denominator, the subtraction and the exponent's sign"
+    );
+    let linear = field.linear();
+    assert!(
+        linear.contains("(x-3)-2") && !linear.contains('\u{2212}'),
+        "the engine form keeps the hyphen: {linear}"
+    );
+}

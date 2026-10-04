@@ -63,7 +63,7 @@ impl Action for StoreDocumentAction {
                 doc.put(
                     &ROOT,
                     format!("{REPORT_RESOURCE_KEY_PREFIX}{app_id}"),
-                    "Draft · not submitted",
+                    "Not submitted",
                 )?;
             }
             Self::SetReportNote { app_id, note } => {
@@ -188,8 +188,11 @@ pub(crate) fn state_from_doc(doc: &Doc) -> StoreState {
 
 /// Moderation child with report drafts / set-note for the framework door.
 pub(crate) fn report_document_children(state: &StoreState) -> Vec<Resource> {
-    let mut moderation =
-        Resource::new("store:moderation", "store.moderation", "Trust & moderation");
+    let mut moderation = Resource::new(
+        "store:moderation",
+        "store.moderation",
+        "Trust and moderation",
+    );
     if let Ok(show) = ActionSpec::operation(
         "show",
         "Show trust and moderation",
@@ -203,7 +206,7 @@ pub(crate) fn report_document_children(state: &StoreState) -> Vec<Resource> {
         let mut report_resource = Resource::new(
             report.id.clone(),
             "store.report",
-            format!("{} · {}", report.app_id, report.status),
+            format!("{}: {}", report.app_id, report.status),
         );
         let note_app_id = report.app_id.clone();
         report_resource.actions.push(ActionSpec::prompted(

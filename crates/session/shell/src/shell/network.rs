@@ -1344,6 +1344,10 @@ pub struct ShellNetwork {
     /// Names live members asked to be drawn with, per room and handle:
     /// browsers and agents that are no peers of the room document.
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
+    /// The colour each peer session said its person wears, by handle: the
+    /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
+    /// a live frame's participant colour).
+    peer_colours: Mutex<std::collections::HashMap<u64, ui::tokens::PresenceHue>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
@@ -1750,6 +1754,7 @@ impl ShellNetwork {
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
+            peer_colours: Mutex::default(),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -2297,8 +2302,36 @@ impl ShellNetwork {
             key,
             point,
             ts,
+            colour: Some(crate::shell::state::local_presence_hue().id().to_owned()),
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Remember the colour peer session `peer` said its person wears. A
+    /// name this build does not know, or none, leaves what was heard before.
+    pub fn note_peer_colour(&self, peer: u64, colour: Option<&str>) {
+        let Some(hue) = colour.and_then(ui::tokens::PresenceHue::from_id) else {
+            return;
+        };
+        if peer == self.local_peer_hash {
+            return;
+        }
+        if let Ok(mut colours) = self.peer_colours.lock() {
+            colours.insert(peer, hue);
+        }
+    }
+
+    /// The colour peer session `peer` said its person wears, if it said.
+    pub fn peer_colour(&self, peer: u64) -> Option<ui::tokens::PresenceHue> {
+        self.peer_colours.lock().ok()?.get(&peer).copied()
+    }
+
+    /// Every colour a peer session said its person wears, by handle.
+    pub fn peer_colours(&self) -> Vec<(u64, ui::tokens::PresenceHue)> {
+        self.peer_colours
+            .lock()
+            .map(|colours| colours.iter().map(|(peer, hue)| (*peer, *hue)).collect())
+            .unwrap_or_default()
     }
 
     /// Queue a received presence move; public so tests can inject one
@@ -2527,6 +2560,7 @@ impl ShellNetwork {
             app_id,
             cluster_id,
             presence,
+            colour: Some(crate::shell::state::local_presence_hue().id().to_owned()),
         };
         let _ = self.publish_message(msg);
     }
@@ -2625,13 +2659,7 @@ impl ShellNetwork {
             })
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "Tilo".into());
-        let device = self
-            .host_identity
-            .as_ref()
-            .map_or(*self.local_peer_id.as_bytes(), |identity| {
-                identity.device_signing_key.verifying_key().to_bytes()
-            });
-        crate::shell::live_presence::participant(label, &device)
+        crate::shell::live_presence::participant(label, crate::shell::state::local_presence_hue())
     }
 
     /// A live member's frame: its pointer and caret reach local apps as
@@ -2650,6 +2678,7 @@ impl ShellNetwork {
         };
         let cluster_id = room.to_string();
         let peer = neighbour_wire::peer_handle(&from);
+        self.note_peer_colour(peer, inbound.colour.map(ui::tokens::PresenceHue::id));
         tracing::debug!(
             room = %cluster_id,
             from = %hex::encode(&from[..4]),
@@ -5790,7 +5819,9 @@ impl ShellNetwork {
                 key,
                 point,
                 ts,
+                colour,
             } => {
+                self.note_peer_colour(peer_hash, colour.as_deref());
                 self.handle_presence_message(peer_hash, user, key, point, ts);
             }
             NeighbourMsg::AppDocument {
@@ -5827,7 +5858,14 @@ impl ShellNetwork {
                 app_id,
                 cluster_id,
                 presence,
-            } => self.dispatch_app_presence_v2(peer_hash, app_id, cluster_id, presence),
+                colour,
+            } => self.dispatch_app_presence_v2(
+                peer_hash,
+                app_id,
+                cluster_id,
+                presence,
+                colour.as_deref(),
+            ),
             // Cooperative scrollback: skip self-echoes.
             NeighbourMsg::ScrollbackRequest {
                 artifact,
@@ -6212,8 +6250,10 @@ impl ShellNetwork {
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
+        colour: Option<&str>,
     ) {
         if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+            self.note_peer_colour(peer_hash, colour);
             self.handle_typed_app_presence_message(peer_hash, app_id, cluster_id, presence);
         }
     }
@@ -6740,6 +6780,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
+        peer_colours: Mutex::default(),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -11409,6 +11450,27 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_wears_the_colour_its_presence_said() {
+        let (net, _cmds) = shell_network_for_test(WorkspaceTree::bootstrap_demo().shared(), 0x1234);
+        assert_eq!(net.peer_colour(7), None);
+        net.note_peer_colour(7, Some("violet"));
+        assert_eq!(net.peer_colour(7), Some(ui::tokens::PresenceHue::Violet));
+        net.note_peer_colour(7, Some("chartreuse"));
+        net.note_peer_colour(7, None);
+        assert_eq!(
+            net.peer_colour(7),
+            Some(ui::tokens::PresenceHue::Violet),
+            "an unknown or missing colour leaves what was heard"
+        );
+        net.note_peer_colour(0x1234, Some("teal"));
+        assert_eq!(net.peer_colour(0x1234), None, "never this session's own");
+        assert_eq!(
+            net.peer_colours(),
+            vec![(7, ui::tokens::PresenceHue::Violet)]
+        );
+    }
+
+    #[test]
     fn presence_publishes_and_buffers_foreign_cursors_only() {
         fn publish_presence_emits_a_publish_command() {
             let tree = WorkspaceTree::bootstrap_demo().shared();
@@ -11428,12 +11490,15 @@ mod tests {
                             key,
                             point,
                             ts: _,
+                            colour,
                         } => {
                             assert_eq!(peer, 0xABCDu64);
                             assert_eq!(user, crate::shell::state::local_user_id());
                             assert!(!user.is_empty());
                             assert_eq!(key, "local-cursor");
                             assert_eq!(point, (100.0, 200.0));
+                            let you = crate::shell::state::local_presence_hue();
+                            assert_eq!(colour.as_deref(), Some(you.id()), "your colour travels");
                         }
                         other => panic!("expected PresenceMoved, got {other:?}"),
                     }

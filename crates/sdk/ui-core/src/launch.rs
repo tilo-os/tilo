@@ -178,6 +178,14 @@ pub struct LaunchArgs {
     /// `--theme NAME`: the shipped theme a capture renders in
     /// ([`Theme::named`]), over `TILO_SHOTS_THEME`.
     pub theme: Option<String>,
+    /// `--workspace-hue DEGREES` and `--your-colour NAME`: what the shell
+    /// would tell the captured window about where and for whom it is shown
+    /// ([`crate::theme::WindowAppearance`]). Without them a capture is what
+    /// a window without a shell shows: neutral, in the default colour.
+    pub window: crate::theme::WindowAppearance,
+    /// `--history`: a capture shows History open, where the app has
+    /// History.
+    pub history: bool,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -197,6 +205,8 @@ impl LaunchArgs {
             pseudo_locale: false,
             text_scale: None,
             theme: None,
+            window: crate::theme::WindowAppearance::default(),
+            history: false,
             extras: Vec::new(),
             values: Vec::new(),
             positionals: Vec::new(),
@@ -1303,9 +1313,11 @@ fn run_with_args_with_attachment(
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
                     driver.prepare_component_output();
+                    show_history_for_capture(&mut driver, &args)?;
                     driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                     driver.render_png(out);
                 } else if let Some(directory) = &args.responsive_matrix {
+                    show_history_for_capture(&mut driver, &args)?;
                     for (name, viewport) in RESPONSIVE_VIEWPORTS {
                         driver.resize_component_capture(viewport);
                         driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
@@ -1358,6 +1370,7 @@ fn run_with_args_with_attachment(
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
         let mut harness = build_history_capture(spec, &args, root, viewport)?;
+        show_history_for_capture(&mut harness, &args)?;
         harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
         harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
@@ -1382,6 +1395,7 @@ fn run_with_args_with_attachment(
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
                 let mut harness = build_history_capture(spec, &matrix_args, root, viewport)?;
+                show_history_for_capture(&mut harness, &matrix_args)?;
                 harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
                 harness.render_png(&out);
             }
@@ -1622,6 +1636,21 @@ fn dispatch_definition_with_manager(
     .map_err(LaunchError::Operation)??;
     crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
+}
+
+/// `--history`: open History before the capture settles, so the shot shows
+/// History mode as a person sees it.
+#[cfg(feature = "native")]
+fn show_history_for_capture(
+    driver: &mut FrameHarness,
+    args: &LaunchArgs,
+) -> Result<(), LaunchError> {
+    if args.history {
+        driver
+            .open_history()
+            .map_err(|error| LaunchError::Operation(format!("--history: {error}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native")]
@@ -2029,6 +2058,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         Some(hue) => theme.with_your_colour(hue),
         None => theme,
     };
+    let theme = theme.in_window(&args.window);
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     let theme = theme.with_text_scale(shot_text_scale(
         args.text_scale,
@@ -2151,6 +2181,8 @@ fn parse_args_extended(
         pseudo_locale: false,
         text_scale: None,
         theme: None,
+        window: crate::theme::WindowAppearance::default(),
+        history: false,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -2199,6 +2231,36 @@ fn parse_args_extended(
                 }
                 set_once(&mut parsed.theme, value.to_owned(), flag)?;
             }
+            "--workspace-hue" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let hue = value
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|hue| hue.is_finite())
+                    .ok_or_else(|| {
+                        LaunchError::Scenario(format!(
+                            "{flag}: {value:?} is not a hue in OKLCH degrees"
+                        ))
+                    })?;
+                set_once(
+                    &mut parsed.window.workspace_hue,
+                    hue.rem_euclid(360.0),
+                    flag,
+                )?;
+            }
+            "--your-colour" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let hue = crate::tokens::PresenceHue::from_id(value).ok_or_else(|| {
+                    LaunchError::Scenario(format!(
+                        "{flag}: no presence colour is called {value:?} (one of {})",
+                        crate::tokens::PresenceHue::ALL
+                            .map(crate::tokens::PresenceHue::id)
+                            .join(", ")
+                    ))
+                })?;
+                set_once(&mut parsed.window.your_colour, hue, flag)?;
+            }
             "--headless-drive" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 let value = headless::parse_spec(value)
@@ -2210,6 +2272,12 @@ fn parse_args_extended(
                     return Err(LaunchError::Duplicate(flag.to_owned()));
                 }
                 parsed.native_audit = true;
+            }
+            "--history" if inline.is_none() => {
+                if parsed.history {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.history = true;
             }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
@@ -2251,12 +2319,21 @@ fn parse_args_extended(
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
+    if parsed.history && parsed.shots.is_none() && parsed.responsive_matrix.is_none() {
+        return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
     if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
         if parsed.theme.is_some() {
             return Err(LaunchError::ShotsOnly("--theme".to_owned()));
+        }
+        if parsed.window.workspace_hue.is_some() {
+            return Err(LaunchError::ShotsOnly("--workspace-hue".to_owned()));
+        }
+        if parsed.window.your_colour.is_some() {
+            return Err(LaunchError::ShotsOnly("--your-colour".to_owned()));
         }
         // A headless drive may name a scenario: it dumps that fixture's
         // geometry, the counterpart of `--shots --scenario`.
@@ -2746,6 +2823,43 @@ mod tests {
             assert_eq!(parsed.viewport, Some((640, 480)));
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
             assert!(parsed.has("--empty"));
+            assert_eq!(
+                parsed.window,
+                crate::theme::WindowAppearance::default(),
+                "a capture without a shell is neutral"
+            );
+        }
+
+        // Case `a_capture_can_stand_in_a_workspace_for_a_person`.
+        {
+            let args = strings(&[
+                "app",
+                "--shots=/tmp/shot.png",
+                "--workspace-hue=400",
+                "--your-colour",
+                "violet",
+            ]);
+            let parsed = parse_args(&args, &[], &[]).unwrap();
+            assert_eq!(
+                parsed.window,
+                crate::theme::WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: Some(crate::tokens::PresenceHue::Violet),
+                }
+            );
+            let theme = shot_theme(&LaunchArgs {
+                theme: Some("light".into()),
+                ..parsed
+            });
+            assert_eq!(theme.document.palette.hue, Some(40.0));
+            assert_eq!(theme.tokens.colors.you, crate::tokens::PresenceHue::Violet);
+            for bad in [
+                &["app", "--shots=/tmp/s.png", "--workspace-hue=warm"][..],
+                &["app", "--shots=/tmp/s.png", "--your-colour=chartreuse"][..],
+                &["app", "--workspace-hue=40"][..],
+            ] {
+                assert!(parse_args(&strings(bad), &[], &[]).is_err(), "{bad:?}");
+            }
         }
 
         // Case `parses_responsive_matrix_and_pseudo_locale_as_common_audit_modes`.
@@ -2886,6 +3000,21 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
                 Err(LaunchError::Duplicate(_))
+            ));
+        }
+
+        // Case `history_is_a_capture_option`.
+        {
+            let shot = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(shot.history);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--history"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
             ));
         }
 

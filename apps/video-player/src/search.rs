@@ -62,11 +62,7 @@ impl VideoPlayerSearchProvider {
                     &item.title,
                     ActionAddress::new(crate::actions::queue_item_resource_id(&item.id), "play"),
                 )
-                .with_subtitle(if item.current {
-                    "Playing on this device"
-                } else {
-                    "Queue · local session"
-                })
+                .with_subtitle(if item.current { "Playing now" } else { "Queue" })
                 .with_icon(Icon::Play),
             );
         }
@@ -79,7 +75,7 @@ impl VideoPlayerSearchProvider {
                     &item.title,
                     ActionAddress::new(crate::actions::recent_item_resource_id(&item.id), "play"),
                 )
-                .with_subtitle("Recent · this device")
+                .with_subtitle("Recent")
                 .with_icon(Icon::Play),
             );
         }
@@ -151,7 +147,7 @@ impl VideoPlayerSearchProvider {
                         ),
                     ),
                 )
-                .with_subtitle(format!("{:.1}s", chapter.seconds))
+                .with_subtitle(ui::format::timecode(chapter.seconds.max(0.0) as u64))
                 .with_icon(Icon::Play),
             );
         }
@@ -173,8 +169,9 @@ impl VideoPlayerSearchProvider {
             .iter()
             .take(crate::shared::MAX_SHARED_ROWS)
         {
+            let time = ui::format::timecode(annotation.time_ms / 1000);
             let title = if annotation.text.is_empty() {
-                format!("Bookmark at {:.1}s", annotation.time_ms as f64 / 1000.0)
+                format!("Bookmark at {time}")
             } else {
                 annotation.text.clone()
             };
@@ -187,9 +184,9 @@ impl VideoPlayerSearchProvider {
                 "show"
             };
             let subtitle = if action == "jump" {
-                format!("Jump to {:.1}s", annotation.time_ms as f64 / 1000.0)
+                format!("Jump to {time}")
             } else {
-                format!("Timestamp · {:.1}s", annotation.time_ms as f64 / 1000.0)
+                format!("Bookmark at {time}")
             };
             let _ = provider.catalog.upsert(
                 crate::actions::annotation_resource_id(&annotation.id),
@@ -279,7 +276,7 @@ mod tests {
                         ),
                     ))
             }));
-            let page = provider.search_page("Résumé", None, 1, 1);
+            let page = provider.search_page(&ui::search::SearchQuery::new("Résumé"), None, 1, 1);
             assert!(
                 page.inspected <= 1,
                 "the posting list keeps page work bounded"
@@ -371,11 +368,16 @@ mod tests {
             };
             let provider =
                 VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
-            let first = provider.search_page("Ωmega", None, 64, 4);
+            let first = provider.search_page(&ui::search::SearchQuery::new("Ωmega"), None, 64, 4);
             assert!(first.inspected <= 64);
             let mut page = first;
             while page.next.is_some() && page.results.is_empty() {
-                page = provider.search_page("Ωmega", page.next.as_ref(), 64, 4);
+                page = provider.search_page(
+                    &ui::search::SearchQuery::new("Ωmega"),
+                    page.next.as_ref(),
+                    64,
+                    4,
+                );
                 assert!(page.inspected <= 64, "each page obeys its scan budget");
             }
             assert_eq!(
