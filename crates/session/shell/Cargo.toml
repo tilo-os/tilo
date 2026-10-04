@@ -66,6 +66,8 @@ tempfile.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 notify.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
+# Where the control sockets live, shared with the `tilo-control` client.
+tilo-control = { path = "../control-cli" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
@@ -335,11 +337,6 @@ wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 # the way a composing input method and a text field do.
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
-
-# Keep the public CLI name stable if `src/bin/` is reorganized.
-[[bin]]
-name = "tilo-control"
-path = "src/bin/tilo-control.rs"
 
 [[test]]
 name = "it"

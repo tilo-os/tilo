@@ -160,6 +160,14 @@ mod device_fabric_ui_tests;
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
+    reason = "each test reads one host and chrome borrow through to its last assertion"
+)]
+#[path = "launcher_action_coverage_tests.rs"]
+mod launcher_action_coverage_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "idle_io_animation_tests.rs"]
@@ -8285,6 +8293,20 @@ impl ShellOverlayHost {
         out
     }
 
+    /// Pan every strip to `scroll` layout pixels.
+    #[cfg(test)]
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the rows are written through pointers this host owns; `&mut self` keeps the write exclusive"
+    )]
+    pub(crate) fn set_strip_scroll_for_test(&mut self, scroll: f64) {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: as in `strip_row_rect`, and `&mut self` makes the
+            // access exclusive.
+            unsafe { (&mut *ptr).set_scroll_x_for_test(scroll) };
+        }
+    }
+
     /// Where `strip` is drawn on screen, as laid out last. `None` while the
     /// strip has no row yet or its row is collapsed (another strip's window
     /// is fullscreen).
@@ -8364,13 +8386,15 @@ impl ShellOverlayHost {
         root: &ObjId,
         visibility: &dyn crate::shell::search::action_api::ActionVisibility,
     ) -> crate::shell::search::action_api::ActionCatalog {
-        let scope = chrome.search_scope;
-        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        // A caller that cannot see the screen cannot see the palette's scope
+        // pills either: whichever pill a person last left selected must not
+        // narrow what an agent or script is told exists. Visibility is the
+        // capability gate's alone.
         crate::shell::search::action_api::ActionCatalog::build(
             &self.search_registry,
             query,
-            scope,
-            active_provider.as_deref(),
+            crate::shell::chrome_state::SearchScope::All,
+            None,
             chrome,
             doc,
             root,
