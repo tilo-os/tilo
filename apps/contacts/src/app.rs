@@ -1312,8 +1312,11 @@ pub struct ContactsApp {
     /// The contacts + vCard version parked while the export Save dialog is up,
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
+    /// The answer owed to the import or export effect still running.
+    resource_reply: Option<ui::framework::EffectReply>,
+    /// How the last import or export ended, as its caller was told.
+    #[cfg(test)]
+    file_outcome: Option<Result<(), String>>,
     /// Pending untrusted UID collisions. These never enter the document until
     /// the user explicitly chooses a safe resolution.
     import_conflicts: Vec<ImportConflict>,
@@ -1394,8 +1397,9 @@ impl ContactsApp {
             import_generation: 0,
             export_rx: None,
             pending_export: None,
-            resource_invocation: None,
-            completed_resource_invocation: None,
+            resource_reply: None,
+            #[cfg(test)]
+            file_outcome: None,
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
             dispatcher: None,
@@ -2342,30 +2346,18 @@ impl ContactsApp {
     }
 
     fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.completed_resource_invocation = Some(if success {
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            }
-        } else if let Some(message) = error {
-            tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "contacts.file_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            }
+        let outcome = if success {
+            Ok(tilo_actions::ActionOutput::default())
         } else {
-            tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            }
-        });
+            Err(error.unwrap_or_else(|| "the contact file operation was cancelled".into()))
+        };
+        #[cfg(test)]
+        {
+            self.file_outcome = Some(outcome.clone().map(|_| ()));
+        }
+        if let Some(reply) = self.resource_reply.take() {
+            reply.finish(outcome);
+        }
     }
 
     /// Drain any in-flight import/export portal request. Called once per frame
@@ -2499,9 +2491,7 @@ impl ContactsApp {
         if self.store.get(id).is_none() {
             return Err("contact no longer exists".into());
         }
-        if self.export_dialog.is_open()
-            || self.export_rx.is_some()
-            || self.resource_invocation.is_some()
+        if self.export_dialog.is_open() || self.export_rx.is_some() || self.resource_reply.is_some()
         {
             return Err("a contact export is already in progress".into());
         }
@@ -2516,14 +2506,8 @@ impl ContactsApp {
     /// [`Self::open_contact_export`] directly: this keeps pointer, keyboard,
     /// AT-SPI and agent activation on one typed operation boundary.
     fn invoke_contact_export_operation(&mut self, id: ContactId) -> Result<bool, String> {
-        let operation = crate::actions::export_contact_operation(id);
-        let payload = serde_json::to_vec(&operation)
-            .map_err(|error| format!("couldn't encode contact export: {error}"))?;
-        self.answer_resource_operation(
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CONTACTS_OPERATION_TYPE,
-            &payload,
-        )
+        self.perform_effect(crate::actions::export_contact_operation(id))?;
+        Ok(true)
     }
 
     /// Open the locally surfaced candidate through the exact typed operation
@@ -2536,14 +2520,9 @@ impl ContactsApp {
             .duplicate_candidate
             .as_ref()
             .ok_or_else(|| "there are no duplicate contacts to review".to_string())?;
-        let operation = crate::actions::open_duplicate_review_operation(candidate);
-        let payload = serde_json::to_vec(&operation)
-            .map_err(|error| format!("couldn't encode duplicate review: {error}"))?;
-        self.answer_resource_operation(
-            tilo_actions::OperationKind::View,
-            crate::actions::CONTACTS_OPERATION_TYPE,
-            &payload,
-        )
+        let effect = crate::actions::open_duplicate_review_operation(candidate);
+        self.perform_effect(effect)?;
+        Ok(true)
     }
 
     /// Write the chosen `ids` out as a `.vcf` of `version` to `path`, reporting
@@ -6318,11 +6297,8 @@ impl ContactsApp {
 impl Widget for ContactsApp {
     ui::provides!(dyn ui::undo::UndoPoints);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::CONTACTS_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.settle_cancelled_file_effect();
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(&token, import_as_new)
         {
@@ -6440,76 +6416,6 @@ impl Widget for ContactsApp {
 
     fn test_id(&self) -> Option<&str> {
         Some("contacts")
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.import_rx = None;
-            self.import_parse_rx = None;
-            let exhausted = self.advance_import_generation().is_err();
-            self.export_rx = None;
-            self.pending_export = None;
-            if exhausted {
-                self.show_toast(
-                    "Import cancelled; restart Contacts before importing again (generation exhausted)",
-                );
-            }
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(
-                    if exhausted {
-                        "contact file operation cancelled; import generation exhausted"
-                    } else {
-                        "contact file operation cancelled"
-                    }
-                    .into(),
-                ),
-            });
-        }
-        if self
-            .completed_resource_invocation
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.completed_resource_invocation.take();
-        }
-        None
     }
 
     fn get_rect(&self) -> Rect {
@@ -7639,216 +7545,124 @@ impl ui::undo::UndoPoints for ContactsApp {
 }
 
 impl ContactsApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "all admitted Contacts view operations are centralized so resource routes cannot drift"
-    )]
-    fn answer_resource_operation(
+    /// Answer `effect`: an import or an export answers once the file
+    /// chooser and the file settle; the rest at once.
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::ContactsOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, crate::actions::ContactsOperation::Open { id }) => {
-                let id =
-                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
-                if self.store.get(id).is_none() {
-                    return Err("contact no longer exists".into());
-                }
-                self.reveal_contact(id);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenGroup { name },
-            ) => self.reveal_group(&name)?,
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenFavorites,
-            ) => {
-                self.set_group_filter(Some(FAVORITES_FILTER.into()));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::ContactsOperation::OpenDuplicateReview {
-                    survivor_id,
-                    source_id,
-                },
-            ) => {
-                let survivor = uuid::Uuid::parse_str(&survivor_id)
-                    .map_err(|_| "invalid surviving contact id".to_string())?;
-                let source = uuid::Uuid::parse_str(&source_id)
-                    .map_err(|_| "invalid source contact id".to_string())?;
-                self.open_duplicate_review(survivor, source)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportVcard { path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                if self.import_rx.is_some() || self.import_parse_rx.is_some() {
-                    return Err("a contact import is already in progress".into());
-                }
-                self.request_import();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportAllVcard { path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                if self.export_rx.is_some() {
-                    return Err("a contact export is already in progress".into());
-                }
-                let ids = self
-                    .store
-                    .contacts
-                    .iter()
-                    .map(|contact| contact.id)
-                    .collect();
-                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    return Err("there are no contacts to export".into());
-                }
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportContactVcard { id, path },
-            ) => {
-                if path.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                let id =
-                    uuid::Uuid::parse_str(&id).map_err(|_| "invalid contact id".to_string())?;
-                self.open_contact_export(id)?;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::KeepImportConflict { token },
-            ) => {
-                if !self
-                    .import_conflicts
-                    .iter()
-                    .any(|conflict| conflict.token.to_string() == token)
-                {
-                    return Err("import conflict no longer exists".into());
-                }
-                self.pending_conflict_resolution = Some((token, false));
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportConflictAsNew { token },
-            ) => {
-                if !self
-                    .import_conflicts
-                    .iter()
-                    .any(|conflict| conflict.token.to_string() == token)
-                {
-                    return Err("import conflict no longer exists".into());
-                }
-                self.pending_conflict_resolution = Some((token, true));
-            }
-            _ => return Err("operation kind does not match Contacts operation".into()),
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id != crate::actions::CONTACTS_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::ContactsOperation =
-            serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        match operation {
-            crate::actions::ContactsOperation::ImportVcard { path: file } => {
-                if self.resource_invocation.is_some()
+        effect: crate::actions::ContactsEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::Contacts, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::ContactsEffect;
+        match effect {
+            ContactsEffect::ImportVcard => {
+                if self.resource_reply.is_some()
                     || self.import_rx.is_some()
                     || self.import_parse_rx.is_some()
                 {
                     return Err("another contact file operation is running".into());
                 }
-                if file.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                self.resource_invocation = Some(invocation);
                 self.request_import();
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
+            ContactsEffect::ExportAllVcard => {
                 if self.store.contacts.is_empty() {
                     return Err("there are no contacts to export".into());
                 }
-                if self.resource_invocation.is_some() {
+                if self.resource_reply.is_some() || self.export_rx.is_some() {
                     return Err("another contact file operation is running".into());
                 }
-                if file.is_some() {
-                    return Err(
-                        "direct filesystem paths are not accepted; use the system file picker"
-                            .into(),
-                    );
-                }
-                self.resource_invocation = Some(invocation);
                 let ids = self.store.contacts.iter().map(|c| c.id).collect();
                 if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    self.resource_invocation = None;
                     return Err("contact export could not be started".into());
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            crate::actions::ContactsOperation::ExportContactVcard { .. } => {
-                // Decode/validate and open the exact same export dialog as a
-                // context-menu activation. This operation completes once the
-                // flow is shown; a portal job begins only after the person
-                // chooses a vCard version and destination in that flow.
-                self.answer_resource_operation(kind, type_id, payload)
-                    .map(|handled| {
-                        handled.then(|| {
-                            ui::widget::ResourceOperationStart::Completed(
-                                tilo_actions::ActionOutput::default(),
-                            )
-                        })
-                    })
+            other => {
+                self.perform_effect(other)?;
+                return Ok(ui::framework::Effected::done());
             }
-            crate::actions::ContactsOperation::Open { .. }
-            | crate::actions::ContactsOperation::OpenGroup { .. }
-            | crate::actions::ContactsOperation::OpenFavorites
-            | crate::actions::ContactsOperation::OpenDuplicateReview { .. }
-            | crate::actions::ContactsOperation::KeepImportConflict { .. }
-            | crate::actions::ContactsOperation::ImportConflictAsNew { .. } => self
-                .answer_resource_operation(kind, type_id, payload)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
         }
+        self.resource_reply = Some(cx.reply());
+        Ok(ui::framework::Effected::Pending)
+    }
+
+    /// Settle the pending import review `token` on the next sync.
+    fn queue_import_resolution(
+        &mut self,
+        token: String,
+        import_as_new: bool,
+    ) -> Result<(), String> {
+        if !self
+            .import_conflicts
+            .iter()
+            .any(|conflict| conflict.token.to_string() == token)
+        {
+            return Err("import conflict no longer exists".into());
+        }
+        self.pending_conflict_resolution = Some((token, import_as_new));
+        Ok(())
+    }
+
+    /// Drop the import or export its caller cancelled, before it changed the
+    /// book or wrote a file.
+    fn settle_cancelled_file_effect(&mut self) {
+        if self
+            .resource_reply
+            .as_ref()
+            .is_some_and(ui::framework::EffectReply::is_cancelled)
+        {
+            self.cancel_file_effect();
+        }
+    }
+
+    /// Detach the running import or export and answer its caller cancelled.
+    fn cancel_file_effect(&mut self) {
+        self.import_rx = None;
+        self.import_parse_rx = None;
+        let exhausted = self.advance_import_generation().is_err();
+        self.export_rx = None;
+        self.pending_export = None;
+        if exhausted {
+            self.show_toast(
+                "Import cancelled; restart Contacts before importing again (generation exhausted)",
+            );
+        }
+        self.finish_resource_file(
+            false,
+            Some(
+                if exhausted {
+                    "contact file operation cancelled; import generation exhausted"
+                } else {
+                    "contact file operation cancelled"
+                }
+                .into(),
+            ),
+        );
+    }
+
+    /// Do what an effect that answers at once asks.
+    fn perform_effect(&mut self, effect: crate::actions::ContactsEffect) -> Result<(), String> {
+        use crate::actions::ContactsEffect;
+        match effect {
+            ContactsEffect::Open { contact } => {
+                if self.store.get(contact).is_none() {
+                    return Err("contact no longer exists".into());
+                }
+                self.reveal_contact(contact);
+            }
+            ContactsEffect::OpenGroup { name } => self.reveal_group(&name)?,
+            ContactsEffect::OpenFavorites => {
+                self.set_group_filter(Some(FAVORITES_FILTER.into()));
+            }
+            ContactsEffect::OpenReview { survivor, source } => {
+                self.open_duplicate_review(survivor, source)?;
+            }
+            ContactsEffect::ExportContact { contact } => self.open_contact_export(contact)?,
+            ContactsEffect::KeepExisting { token } => self.queue_import_resolution(token, false)?,
+            ContactsEffect::ImportAsNew { token } => self.queue_import_resolution(token, true)?,
+            ContactsEffect::ImportVcard | ContactsEffect::ExportAllVcard => {
+                return Err("a file operation answers through its effect".into());
+            }
+        }
+        Ok(())
     }
 }
 

@@ -144,6 +144,25 @@ fn every_view_mode_renders_legibly() {
     }
 }
 
+/// The window offers importing and exporting the book beside its actions.
+#[test]
+fn the_window_offers_import_and_export_on_the_book() {
+    let mut app = Live::live_sample(1280, 800);
+    let resources = app.app.harness().resources();
+    let book = resources
+        .iter()
+        .find(|resource| {
+            resource.id.as_str() == <crate::resource::Contacts as ui::tilo_resource::Resource>::KIND
+        })
+        .expect("the address book");
+    for id in ["import-vcard", "export-all-vcard"] {
+        assert!(
+            book.actions.iter().any(|action| action.id == id),
+            "{id} is on the book"
+        );
+    }
+}
+
 /// Search hits and published open operations reveal the addressed contact or group.
 #[allow(
     clippy::too_many_lines,
@@ -157,7 +176,7 @@ fn search_and_open_operations_reveal_their_target() {
     // invokes the same published `open` view operation agents and
     // accessibility consume.
     {
-        let mut app = Live::sample(1280, 800);
+        let mut app = Live::live_sample(1280, 800);
         let id = app
             .store
             .contacts
@@ -182,6 +201,7 @@ fn search_and_open_operations_reveal_their_target() {
         app.app
             .call_on(&address.resource, &address.action, serde_json::json!({}))
             .expect("the open operation succeeds");
+        app.settle();
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
     }
 
@@ -211,33 +231,16 @@ fn search_and_open_operations_reveal_their_target() {
             "the Friends group filter hides Grace before activation"
         );
 
-        let mut doc = AutoCommit::new();
         let resources = published(&app);
         let address = crate::actions::open_contact_address(id);
         let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("the search address resolves in the agent-visible tree");
-        let encoded = match &spec.input {
-            tilo_actions::ActionInput::Immediate(encoded) => encoded,
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("open takes no arguments")
-            }
-        };
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("open operation succeeds"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        let encoded = ui::testing::action_contract::spec_encoding(spec, None);
+        let effect = <crate::actions::ContactsEffect as ui::tilo_resource::Effect>::from_payload(
+            &encoded.payload,
+        )
+        .expect("the address names a contacts effect");
+        app.perform_effect(effect).expect("open succeeds");
 
         assert_eq!(app.selected, Some(id), "activation selected Grace");
         assert!(
@@ -265,26 +268,10 @@ fn search_and_open_operations_reveal_their_target() {
             .into_iter()
             .find(|group| group == "Work")
             .expect("samples expose Work");
-        let operation = crate::actions::ContactsOperation::OpenGroup {
+        app.perform_effect(crate::actions::ContactsEffect::OpenGroup {
             name: group.clone(),
-        };
-        let payload = serde_json::to_vec(&operation).expect("view operation serializes");
-
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::CONTACTS_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut AutoCommit::new(),
-                &ROOT
-            )
-            .expect("group open succeeds"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        })
+        .expect("group open succeeds");
         assert_eq!(app.group_filter.as_deref(), Some(group.as_str()));
         assert!(
             app.search.value().is_empty(),
@@ -3246,8 +3233,6 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         let (sender, receiver) = mpsc::sync_channel(1);
         app.import_generation = 2;
         app.import_parse_rx = Some(receiver);
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_invocation = Some(invocation);
         sender
             .send(ParsedImport {
                 generation: 1,
@@ -3262,41 +3247,7 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
             "wrong-generation data never reaches the book"
         );
         assert!(app.import_parse_rx.is_none());
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
-    }
-
-    // --- phase: brokered_file_operations_refuse_legacy_direct_paths ---
-    {
-        let mut doc = AutoCommit::new();
-        let mut app = sampled();
-        app.sync(&mut doc, &ROOT);
-        for operation in [
-            crate::actions::ContactsOperation::ImportVcard {
-                path: Some("/etc/passwd".into()),
-            },
-            crate::actions::ContactsOperation::ExportAllVcard {
-                path: Some("/tmp/contacts.vcf".into()),
-            },
-        ] {
-            let payload = serde_json::to_vec(&operation).unwrap();
-            let error = app
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::CONTACTS_OPERATION_TYPE,
-                        &payload,
-                    ),
-                    &mut doc,
-                    &ROOT,
-                )
-                .expect_err("a broker cannot bypass the system file picker");
-            assert!(error.contains("system file picker"));
-            assert!(app.resource_invocation.is_none());
-        }
+        assert!(matches!(app.file_outcome.take(), Some(Err(_))));
     }
 
     // --- phase: exhausted_parser_generation_refuses_a_new_import_and_settles_the_job ---
@@ -3308,8 +3259,6 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
 
         let mut doc = AutoCommit::new();
         let mut app = ContactsApp::new();
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_invocation = Some(invocation);
         app.import_generation = u64::MAX;
         import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
 
@@ -3329,10 +3278,7 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
                 .as_ref()
                 .is_some_and(|(message, _)| message.contains("generation exhausted"))
         );
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
+        assert!(matches!(app.file_outcome.take(), Some(Err(_))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3341,18 +3287,14 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         let mut doc = AutoCommit::new();
         let mut app = ContactsApp::new();
         let (sender, receiver) = mpsc::sync_channel(1);
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_invocation = Some(invocation);
         app.import_parse_rx = Some(receiver);
         app.import_generation = u64::MAX;
 
-        let update = app
-            .poll_resource_operation(invocation, true, &doc, &ROOT)
-            .expect("accepted import is settled when cancelled");
-        assert!(matches!(
-            update,
-            tilo_actions::InvocationUpdate::Cancelled { .. }
-        ));
+        app.cancel_file_effect();
+        assert!(
+            matches!(app.file_outcome.take(), Some(Err(message)) if message.contains("cancelled")),
+            "accepted import is settled when cancelled"
+        );
         assert!(
             app.import_parse_rx.is_none(),
             "the worker result is detached"
@@ -3898,6 +3840,16 @@ impl Live {
             ui::framework::testing::TestApp::capture_at(None, (w, h)).unwrap(),
             (w, h),
         )
+    }
+
+    /// The sample book in a window someone uses, where effects run.
+    fn live_sample(w: u32, h: u32) -> Self {
+        let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
+        for invoke in <crate::ContactsShell as ui::framework::ResourceApp>::scenario(None) {
+            app.invoke(invoke).unwrap();
+        }
+        app.settle();
+        Self::mount(app, (w, h))
     }
 
     /// The capture of `scenario`, at `w`x`h`.
