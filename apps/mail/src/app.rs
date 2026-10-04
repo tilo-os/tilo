@@ -56,7 +56,7 @@ use ui::widget::{
 use ui::{ColorCompat, ImageStore};
 
 use crate::account::{Account, AccountStore};
-use crate::actions::{MailAction, ServerUpdate};
+use crate::actions::{MailAction, Outgoing, ServerUpdate};
 use crate::compose::{ComposeAction, ComposeEventContext, ComposeWindow};
 use crate::doc::MailDoc;
 use ui::surface::pill;
@@ -141,14 +141,14 @@ struct EngineHandle {
     rx: std::sync::mpsc::Receiver<EngineEvent>,
 }
 
-/// A locally-authored message waiting for a real SMTP acknowledgement.  It is
-/// deliberately kept out of Sent until the server accepts it: treating MIME
-/// serialization as delivery makes an offline fallback (and a rejected SMTP
-/// send) look like mail was sent.
+/// A message from the outbox the engine is delivering. It joins Sent only
+/// once the server accepts it: treating MIME serialization as delivery makes
+/// an offline fallback (and a rejected SMTP send) look like mail was sent.
 struct PendingSend {
-    request_id: EngineRequestId,
+    outgoing: Outgoing,
+    /// The copy Sent shows once it is delivered.
     message: Message,
-    edited_draft: Option<MessageId>,
+    done: ServerUpdateDone,
 }
 
 /// How the drain that asked for a server update hears how it went.
@@ -162,12 +162,19 @@ type ServerUpdateDone = Box<dyn FnOnce(Result<(), String>)>;
 pub(crate) struct ServerOutbox {
     queued: Vec<(ServerUpdate, ServerUpdateDone)>,
     sent: HashMap<EngineRequestId, (ServerUpdate, ServerUpdateDone)>,
+    /// Messages from the document's outbox, waiting for the engine.
+    deliveries: Vec<(Outgoing, ServerUpdateDone)>,
 }
 
 impl ServerOutbox {
     /// Carry out `update`, then tell `done` how it went.
     pub(crate) fn push(&mut self, update: ServerUpdate, done: ServerUpdateDone) {
         self.queued.push((update, done));
+    }
+
+    /// Deliver `outgoing`, then tell `done` how it went.
+    pub(crate) fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+        self.deliveries.push((outgoing, done));
     }
 }
 
@@ -344,7 +351,13 @@ pub struct MailApp {
     /// The drain that fills the outbox, told when a server may now accept
     /// what it refused (a fetch arrived, the engine reconnected).
     projection: Option<ui::framework::Projection>,
-    pending_send: Option<PendingSend>,
+    /// The drain that hands the document's outbox to the engine.
+    delivery: Option<ui::framework::Projection>,
+    /// Outbox messages the engine is delivering, by request.
+    pending_send: HashMap<EngineRequestId, PendingSend>,
+    /// The outbox message the composer was reopened from after its server
+    /// refused it; sending again replaces it.
+    resending: Option<String>,
     /// Where account changes persist. The live app targets the real user config
     /// root; the sample / shots / test constructors target a throwaway sandbox
     /// so they can never write into the real account store.
@@ -432,7 +445,7 @@ impl MailApp {
     }
 
     pub(crate) fn has_pending_send(&self) -> bool {
-        self.pending_send.is_some()
+        !self.pending_send.is_empty()
     }
 
     #[cfg(test)]
@@ -573,7 +586,9 @@ impl MailApp {
             engine,
             server_outbox: Rc::default(),
             projection: None,
-            pending_send: None,
+            delivery: None,
+            pending_send: HashMap::new(),
+            resending: None,
             accounts_persist,
             persisted_active_account,
             preferences: None,
@@ -1338,12 +1353,11 @@ impl MailApp {
         self.dirty = true;
     }
 
+    /// Send the message the composer holds: it goes into the mailbox's
+    /// outbox as an action — undone like any edit until it is delivered —
+    /// and a device that holds its account delivers it.
     fn send_compose(&mut self, doc: &mut AutoCommit) {
         self.store_preferences_if_changed();
-        if self.pending_send.is_some() {
-            self.shared.borrow_mut().status = Some("Message is still sending…".into());
-            return;
-        }
         let draft = self.compose.to_draft(doc);
         let acct = self.shared.borrow().accounts.active_config();
         if acct.email.trim().is_empty() {
@@ -1352,47 +1366,41 @@ impl MailApp {
             self.dirty = true;
             return;
         }
-        if self.engine.is_none() {
+        if self.shared.borrow().dispatcher.is_none() {
             self.shared.borrow_mut().status =
                 Some("Sending is unavailable in this offline preview; save a draft instead".into());
             self.dirty = true;
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
-        match crate::transport::build_mime(&self.content, &from, &draft) {
-            Ok(_) => {
-                let to = crate::transport::parse_addr_list(&draft.to);
-                let now = self.shared.borrow().now_min;
-                let msg = Message {
-                    id: uuid::Uuid::new_v4(),
-                    rfc_message_id: None,
-                    in_reply_to: None,
-                    from,
-                    to,
-                    cc: crate::transport::parse_addr_list(&draft.cc),
-                    subject: draft.subject.clone(),
-                    body: draft.body.clone(),
-                    html_body: draft.html_body.clone(),
-                    attachments: draft.attachments.iter().map(attachment_meta).collect(),
-                    timestamp_min: now,
-                    read: true,
-                    starred: false,
-                    folder: Folder::Sent,
-                    labels: Vec::new(),
-                };
-                let Some(request_id) = self.post_engine(EngineRequest::send(acct, Box::new(draft)))
-                else {
-                    return;
-                };
-                self.pending_send = Some(PendingSend {
-                    request_id,
-                    message: msg,
-                    edited_draft: self.editing_draft,
-                });
-                self.shared.borrow_mut().status = Some("Sending…".into());
-            }
-            Err(e) => self.shared.borrow_mut().status = Some(format!("Send failed: {e}")),
+        if let Err(e) = crate::transport::build_mime(&self.content, &from, &draft) {
+            self.shared.borrow_mut().status = Some(format!("Send failed: {e}"));
+            self.dirty = true;
+            return;
         }
+        if crate::transport::parse_addr_list(&draft.to).is_empty() {
+            self.shared.borrow_mut().status = Some("Add a recipient before sending".into());
+            self.dirty = true;
+            return;
+        }
+        {
+            let st = self.shared.borrow();
+            if let Some(refused) = self.resending.take() {
+                st.dispatch_external(doc, &MailAction::CancelSend { id: refused });
+            }
+            st.dispatch_external(doc, &MailAction::Send(Outgoing::new(&acct.email, &draft)));
+        }
+        // The message is in the outbox now; the draft it was written in is
+        // done with.
+        if let Some(draft_id) = self.editing_draft.take() {
+            let mut st = self.shared.borrow_mut();
+            st.mailbox.messages.remove(&draft_id);
+            st.mailbox
+                .order
+                .retain(|message_id| *message_id != draft_id);
+        }
+        self.compose.close();
+        self.shared.borrow_mut().status = Some("Sending…".into());
         self.dirty = true;
     }
 
@@ -2387,7 +2395,7 @@ impl MailApp {
         let count = messages.len();
         st.ingest_fetched(doc, account_id, &messages);
         // The server answered: what it refused before may go through now.
-        if let Some(projection) = &self.projection {
+        for projection in [&self.projection, &self.delivery].into_iter().flatten() {
             projection.outside_changed();
         }
         for message in messages {
@@ -2429,34 +2437,25 @@ impl MailApp {
         request_id: EngineRequestId,
         wire_bytes: usize,
     ) {
-        if self
-            .pending_send
-            .as_ref()
-            .is_none_or(|pending| pending.request_id != request_id)
-        {
-            return;
-        }
-        let Some(pending) = self.pending_send.take() else {
+        let Some(pending) = self.pending_send.remove(&request_id) else {
             return;
         };
-        // A message joins Sent only after SMTP has accepted its bytes. If this
-        // was an edited draft, remove it at the same point; failures leave the
-        // composer and draft intact for retry.
-        if let Some(draft_id) = pending.edited_draft {
-            st.mailbox.messages.remove(&draft_id);
-            st.mailbox
-                .order
-                .retain(|message_id| *message_id != draft_id);
-        }
+        // A message joins Sent only after SMTP has accepted its bytes.
         st.ingest_messages(doc, std::slice::from_ref(&pending.message));
         st.mailbox.insert(pending.message);
-        self.editing_draft = None;
-        self.compose.close();
+        st.dispatch_external(
+            doc,
+            &MailAction::Delivered {
+                id: pending.outgoing.id,
+            },
+        );
+        (pending.done)(Ok(()));
         st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
     }
 
     fn apply_engine_error(
         &mut self,
+        doc: &mut AutoCommit,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
@@ -2479,13 +2478,21 @@ impl MailApp {
             accounts::AccountSyncHealth::Error
         };
         report_account_sync(&account_id, health, false, Some(&detail));
-        if self
-            .pending_send
-            .as_ref()
-            .is_some_and(|pending| pending.request_id == request_id)
-        {
-            // Failed SMTP delivery leaves the composer contents recoverable.
-            self.pending_send = None;
+        if let Some(pending) = self.pending_send.remove(&request_id) {
+            // The server refused it: it stays in the outbox with the reason,
+            // and comes back to the composer to be fixed and sent again.
+            st.dispatch_external(
+                doc,
+                &MailAction::SendFailed {
+                    id: pending.outgoing.id.clone(),
+                    reason: detail.clone(),
+                },
+            );
+            if !self.compose.open {
+                self.compose.open_with_draft(&pending.outgoing.to_draft());
+                self.resending = Some(pending.outgoing.id);
+            }
+            (pending.done)(Err(detail.clone()));
         }
         if self
             .resource_refresh_invocation
@@ -2557,7 +2564,7 @@ impl MailApp {
                 context,
                 message,
             } if self.expects_engine_event(request_id, kind) => {
-                self.apply_engine_error(st, request_id, &context, &message);
+                self.apply_engine_error(doc, st, request_id, &context, &message);
             }
             EngineEvent::Completed { request_id, kind }
                 if self.expects_engine_event(request_id, kind) =>
@@ -2582,6 +2589,10 @@ impl MailApp {
     /// such account here, no engine) is refused; another device with the
     /// account carries it out.
     fn flush_server_outbox(&mut self) {
+        let deliveries = std::mem::take(&mut self.server_outbox.borrow_mut().deliveries);
+        for (outgoing, done) in deliveries {
+            self.deliver(outgoing, done);
+        }
         let queued = std::mem::take(&mut self.server_outbox.borrow_mut().queued);
         for (update, done) in queued {
             let account = self
@@ -2617,6 +2628,58 @@ impl MailApp {
         }
     }
 
+    /// Hand an outbox message to the engine on the account it is sent from.
+    /// One whose account this device does not hold is left for a device
+    /// that does.
+    fn deliver(&mut self, outgoing: Outgoing, done: ServerUpdateDone) {
+        let account = self
+            .shared
+            .borrow()
+            .accounts
+            .accounts
+            .iter()
+            .find(|account| account.config.email == outgoing.account)
+            .map(|account| account.config.clone());
+        let Some(account) = account else {
+            done(Err(format!(
+                "{} is not set up on this device",
+                outgoing.account
+            )));
+            return;
+        };
+        let draft = outgoing.to_draft();
+        let message = Message {
+            id: outgoing.id.parse().unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            rfc_message_id: None,
+            in_reply_to: None,
+            from: Addr::new(account.display_name.clone(), account.email.clone()),
+            to: crate::transport::parse_addr_list(&draft.to),
+            cc: crate::transport::parse_addr_list(&draft.cc),
+            subject: draft.subject.clone(),
+            body: draft.body.clone(),
+            html_body: draft.html_body.clone(),
+            attachments: draft.attachments.iter().map(attachment_meta).collect(),
+            timestamp_min: self.shared.borrow().now_min,
+            read: true,
+            starred: false,
+            folder: Folder::Sent,
+            labels: Vec::new(),
+        };
+        match self.post_engine(EngineRequest::send(account, Box::new(draft))) {
+            Some(request_id) => {
+                self.pending_send.insert(
+                    request_id,
+                    PendingSend {
+                        outgoing,
+                        message,
+                        done,
+                    },
+                );
+            }
+            None => done(Err("the mail engine is not running".into())),
+        }
+    }
+
     /// The outbox the projection drain fills.
     pub(crate) fn server_outbox(&self) -> Rc<RefCell<ServerOutbox>> {
         Rc::clone(&self.server_outbox)
@@ -2625,6 +2688,11 @@ impl MailApp {
     /// Keep the drain that fills the outbox.
     pub(crate) fn follow_projection(&mut self, projection: ui::framework::Projection) {
         self.projection = Some(projection);
+    }
+
+    /// Keep the drain that hands the document's outbox to the engine.
+    pub(crate) fn follow_delivery(&mut self, delivery: ui::framework::Projection) {
+        self.delivery = Some(delivery);
     }
 
     fn drain_engine(&mut self, doc: &mut AutoCommit) {
@@ -6472,11 +6540,21 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             app.resource_refresh_invocation = Some((refresh_id, invocation));
             let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
-            app.pending_send = Some(PendingSend {
-                request_id: send_id,
-                message,
-                edited_draft: None,
-            });
+            let outgoing = Outgoing::new(
+                "me@example.test",
+                &crate::model::Draft {
+                    to: "you@example.test".into(),
+                    ..Default::default()
+                },
+            );
+            app.pending_send.insert(
+                send_id,
+                PendingSend {
+                    outgoing,
+                    message,
+                    done: Box::new(|_| {}),
+                },
+            );
             app.pending_engine_requests
                 .insert(refresh_id, EngineRequestKind::Fetch);
             app.pending_engine_requests
@@ -7469,7 +7547,7 @@ mod tests {
             );
         }
 
-        // Phase `offline_preview_send_keeps_the_message_in_the_composer`.
+        // Phase `sending_queues_the_message_in_the_outbox_until_it_is_delivered`.
         {
             let (mut app, mut doc) = app();
             let before = app.shared.borrow().mailbox.count(Folder::Sent);
@@ -7484,18 +7562,64 @@ mod tests {
             };
             app.compose.reattach(&draft);
             app.send_compose(&mut doc);
-            assert!(app.compose.open, "offline preview must preserve the draft");
+            let outbox = MailDoc::outbox(&doc);
+            let [(outgoing, None)] = outbox.as_slice() else {
+                panic!("one message waits in the outbox: {outbox:?}");
+            };
+            assert_eq!(outgoing.draft.to, "dest@there.example");
+            assert_eq!(outgoing.draft.subject, "Hi");
+            assert!(
+                !app.compose.open,
+                "the message left the composer for the outbox"
+            );
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Sent),
                 before,
-                "validating a MIME message locally is not delivery"
+                "a queued message is not delivered"
+            );
+
+            // The server refusing it leaves it in the outbox with the reason,
+            // and brings it back to the composer.
+            let (outgoing_tx, _outgoing_rx) = std::sync::mpsc::channel();
+            let (incoming, incoming_rx) = std::sync::mpsc::channel();
+            app.engine = Some(EngineHandle {
+                tx: outgoing_tx,
+                rx: incoming_rx,
+            });
+            app.server_outbox()
+                .borrow_mut()
+                .deliver(outgoing.clone(), Box::new(|_| {}));
+            app.flush_server_outbox();
+            let (&request_id, _) = app
+                .pending_send
+                .iter()
+                .next()
+                .expect("handed to the engine");
+            incoming
+                .send(EngineEvent::Error {
+                    request_id,
+                    kind: EngineRequestKind::Send,
+                    context: "send".into(),
+                    message: "relay denied".into(),
+                })
+                .unwrap();
+            app.drain_engine(&mut doc);
+            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
+                "{outbox:?}"
             );
             assert!(
-                app.shared
-                    .borrow()
-                    .status
-                    .as_deref()
-                    .is_some_and(|status| status.contains("offline preview"))
+                app.compose.open,
+                "a refused message comes back to the composer"
+            );
+
+            // Sending it again replaces the refused one.
+            app.send_compose(&mut doc);
+            let outbox = MailDoc::outbox(&doc);
+            assert!(
+                matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
+                "{outbox:?}"
             );
         }
 
@@ -7839,7 +7963,7 @@ mod tests {
             fixture.drain();
             assert!(fixture.app.resource_refresh_invocation.is_some());
             assert!(fixture.app.resource_refresh_result.is_none());
-            assert!(fixture.app.pending_send.is_some());
+            assert!(!fixture.app.pending_send.is_empty());
             assert!(
                 fixture
                     .app
@@ -7877,7 +8001,7 @@ mod tests {
             });
             fixture.drain();
             assert!(
-                fixture.app.pending_send.is_some(),
+                !fixture.app.pending_send.is_empty(),
                 "wrong-kind results are inert"
             );
             assert!(
@@ -7913,7 +8037,7 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == fixture.invocation
             ));
             assert!(fixture.app.resource_refresh_invocation.is_none());
-            assert!(fixture.app.pending_send.is_some());
+            assert!(!fixture.app.pending_send.is_empty());
 
             fixture.send(EngineEvent::Sent {
                 request_id: fixture.send_id,
@@ -7924,7 +8048,7 @@ mod tests {
                 kind: EngineRequestKind::Send,
             });
             fixture.drain();
-            assert!(fixture.app.pending_send.is_none());
+            assert!(fixture.app.pending_send.is_empty());
             assert!(!fixture.app.awaiting_engine);
             assert_eq!(fixture.app.next_wake_deadline(), fixture.app.toast_deadline);
         }
