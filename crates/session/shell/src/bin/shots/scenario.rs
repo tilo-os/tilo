@@ -864,7 +864,7 @@ fn apply_hosted_window_and_wheel_drag(driver: &mut ShellDriver, action: &Action)
             });
         }
         Action::EnableNativeAppSearch => {
-            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory(
+            match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
                 &std::env::temp_dir(),
             ) {
                 Ok(inputs) => {

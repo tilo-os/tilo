@@ -362,6 +362,13 @@ impl VisualAccessibility {
 
 use crate::shell::output_scene::{self, OutputGeometry};
 
+/// Whether `widget` is a terminal tab's root: the terminal's own widget, or
+/// the framework root of the terminal mounted as its component, which
+/// answers to the terminal's address.
+fn is_terminal(widget: &dyn Widget) -> bool {
+    widget.name() == "Terminal" || widget.test_id() == Some("terminal")
+}
+
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
 ///
@@ -954,6 +961,21 @@ impl FrameBuilder {
         self.set_native_focus_with_reveal(focus, target, true);
     }
 
+    /// The first widget in the live layout `find` recognises: an app a tab
+    /// mounted, for a test that drives it.
+    #[cfg(test)]
+    pub(crate) fn mounted_mut<T: 'static>(
+        &mut self,
+        find: impl Fn(&mut dyn Widget) -> Option<&mut T>,
+    ) -> Option<&mut T> {
+        self.node_map.values_mut().find_map(|widget| {
+            // SAFETY: node_map pointers are owned by the live widget tree and
+            // remain valid for the borrow of `self`.
+            find(unsafe { &mut **widget })
+        })
+    }
+
+    #[cfg(test)]
     fn widget_name(&self, id: NodeId) -> Option<&'static str> {
         self.node_map.get(&id).map(|&widget| {
             // SAFETY: this map belongs to the current, live layout tree.
@@ -1082,15 +1104,16 @@ impl FrameBuilder {
             // Terminal even though it is in the live node map.
             if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
                 let widget = unsafe { &***mapped };
-                widget.name() == "Terminal" && widget.is_focusable() && widget.is_enabled()
+                is_terminal(widget) && widget.is_focusable() && widget.is_enabled()
             }) {
                 return Some(id);
             }
-            if let Some(terminal) = order
-                .iter()
-                .copied()
-                .find(|id| self.widget_name(*id) == Some("Terminal"))
-            {
+            if let Some(terminal) = order.iter().copied().find(|id| {
+                self.node_map
+                    .get(id)
+                    // SAFETY: this map belongs to the current, live layout tree.
+                    .is_some_and(|&widget| is_terminal(unsafe { &*widget }))
+            }) {
                 return Some(terminal);
             }
         }
@@ -3214,7 +3237,7 @@ impl FrameBuilder {
         let Some((&id, &widget)) = self
             .node_map
             .iter()
-            .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
+            .find(|(_, mapped)| is_terminal(unsafe { &***mapped }))
         else {
             return false;
         };
@@ -4793,7 +4816,7 @@ mod tests {
             let terminal = fb.node_map.iter().find_map(|(id, widget)| {
                 // SAFETY: node_map pointers are owned by the live widget tree and
                 // remain valid until the next structural rebuild.
-                (unsafe { (**widget).name() } == "Terminal").then_some(*id)
+                is_terminal(unsafe { &**widget }).then_some(*id)
             });
             let Some(terminal) = terminal else {
                 // Environments without a PTY deliberately mount the terminal
@@ -4869,18 +4892,21 @@ mod tests {
         fb.relayout();
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
-        assert_eq!(
-            fb.widget_name(focus.expect("a terminal tile must take initial focus")),
-            Some("Terminal"),
-            "chrome must not keep initial focus on a workspace pill"
+        let focused = focus.expect("a terminal tile must take initial focus");
+        assert!(
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            fb.node_map
+                .get(&focused)
+                .is_some_and(|&widget| is_terminal(unsafe { &*widget })),
+            "chrome must not keep initial focus on a workspace pill: {:?}",
+            fb.widget_name(focused)
         );
         let probe = fb.node_map.values().find_map(|widget| {
             // SAFETY: node_map pointers are owned by the live widget tree.
             let widget = unsafe { &mut **widget };
-            (widget.name() == "Terminal")
-                .then(|| widget.as_any_mut())
+            is_terminal(widget)
+                .then(|| terminal::mounted_terminal(widget))
                 .flatten()
-                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
                 .map(|term| term.attach_input_probe())
         });
         let Some(probe) = probe else {
@@ -4968,10 +4994,9 @@ mod tests {
         );
         let probe = fb.node_map.values().find_map(|widget| {
             let widget = unsafe { &mut **widget };
-            (widget.name() == "Terminal")
-                .then(|| widget.as_any_mut())
+            is_terminal(widget)
+                .then(|| terminal::mounted_terminal(widget))
                 .flatten()
-                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
                 .map(|term| term.attach_input_probe())
         });
         let Some(probe) = probe else {
@@ -5060,10 +5085,9 @@ mod tests {
         );
         let probe = fb.node_map.values().find_map(|widget| {
             let widget = unsafe { &mut **widget };
-            (widget.name() == "Terminal")
-                .then(|| widget.as_any_mut())
+            is_terminal(widget)
+                .then(|| terminal::mounted_terminal(widget))
                 .flatten()
-                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
                 .map(|term| term.attach_input_probe())
         });
         let Some(probe) = probe else {

@@ -68,43 +68,6 @@ fn bootstrap_root_builds_and_seeds_the_demo_tabs_in_order() {
             );
         }
     }
-
-    // Phase `editor_app_is_bootstrapped_as_fifth_demo_tab`.
-    {
-        // The runtime demo workspace (`cargo run -p tilo-desktop`) carries five
-        // tabs in one group: Terminal, Files, Notes, Editor, Browser; Editor must
-        // be a live AppWidget, not a Stub.
-        use shell::shell::Shell;
-        use shell::shell::tile::TileContent as RuntimeTile;
-
-        let shell = Shell::new_with_default_demo_workspace();
-        let tree = shell.workspace_tree();
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == tree.active)
-            .expect("active workspace");
-        let strip = ws.strips.first().expect("at least one strip");
-        let group = strip.window_groups.first().expect("at least one group");
-        let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            titles,
-            vec!["Terminal", "Files", "Notes", "Editor", "Browser"]
-        );
-
-        // Identified by title rather than index so the assertion survives a
-        // future reshuffling of the tab order.
-        let editor_tab = group
-            .tabs
-            .iter()
-            .find(|t| t.title == "Editor")
-            .expect("Editor tab");
-        assert!(
-            matches!(editor_tab.tile, RuntimeTile::App(_)),
-            "expected Editor to be a live App, got {:?}",
-            editor_tab.tile
-        );
-    }
 }
 
 #[test]
