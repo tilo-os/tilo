@@ -11,6 +11,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use uuid::Uuid;
 
+/// Non-authoritative progress from an actual snapshot service. Errors retain
+/// failed/unvisited work; completed owners have returned all ordinary doors.
+#[derive(Debug)]
+pub struct OwnerModelServiceReport {
+    pub attempted: bool,
+    pub completed: usize,
+    pub result: Result<(), BoundDispatchError>,
+}
+
 struct Token {
     id: Uuid,
     open: AtomicBool,
@@ -227,8 +236,9 @@ impl OwnerWakeQueue {
     }
     /// Take the whole pending collection BEFORE any consumer callback. Return
     /// owners in first-dirty arrival order; coalescing retains their position.
-    /// Late wakes enter a new collection. Requeue merges at a late owner's
-    /// existing position or appends after already pending owners.
+    /// Late wakes enter a new collection. Public requeue merges at a late
+    /// owner's existing position or appends after already pending owners.
+    /// Batch Drop instead restores failed and unvisited requests before late owners.
     /// Work is proportional to queued owners, not registrations.
     pub fn take_pending(&self) -> Vec<OwnerWakeRequest> {
         let mut packets = {
@@ -313,12 +323,63 @@ impl OwnerWakeBatch {
 }
 impl Drop for OwnerWakeBatch {
     fn drop(&mut self) {
-        for request in self.requests.drain(..) {
-            self.queue.requeue(request);
-        }
+        self.queue.restore_failed_prefix(self.requests.drain(..));
     }
 }
 impl OwnerWakeQueue {
+    fn restore_failed_prefix(&self, requests: impl Iterator<Item = OwnerWakeRequest>) {
+        let retained = {
+            let index = self.index.borrow();
+            requests
+                .filter_map(|request| {
+                    let token = request.key.token.upgrade()?;
+                    index
+                        .get(&request.key.id)
+                        .filter(|entry| Weak::ptr_eq(&entry.token, &request.key.token))?;
+                    Some((token, request))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut pending = self
+            .pending
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut prefix = Vec::new();
+        for (token, request) in retained {
+            if !token.accepts(&request.event) {
+                continue;
+            }
+            match pending.entries.entry(token.id) {
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    if !Weak::ptr_eq(&slot.get().token, &request.key.token) {
+                        continue;
+                    }
+                    slot.get_mut().requires_sync |= request.requires_sync;
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(Packet {
+                        token: request.key.token,
+                        event: request.event,
+                        requires_sync: request.requires_sync,
+                    });
+                }
+            }
+            prefix.push(token.id);
+        }
+        let restored = prefix
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        prefix.extend(
+            pending
+                .order
+                .iter()
+                .copied()
+                .filter(|id| !restored.contains(id)),
+        );
+        pending.order = prefix;
+    }
     pub(crate) fn take_batch(&self) -> OwnerWakeBatch {
         OwnerWakeBatch {
             queue: self.clone(),

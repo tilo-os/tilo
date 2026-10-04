@@ -1767,6 +1767,26 @@ impl Widget for DesktopSurface {
             .collect()
     }
 
+    fn visit_retained_components(
+        &mut self,
+        request: &mut ui::bound_dispatch::RetainedComponentRequest<'_, '_>,
+    ) -> Result<(), ui::bound_dispatch::BoundDispatchError> {
+        for row in self.rows.values_mut() {
+            request.visit(row)?;
+        }
+        // Retain original visible overlay callback reach after the retained rows.
+        if self.search.is_open() {
+            request.visit(self.search.palette_mut())?;
+        }
+        if let Some(activity) = &mut self.activity {
+            request.visit(activity)?;
+        }
+        if let Some(notices) = &mut self.notices {
+            request.visit(notices)?;
+        }
+        Ok(())
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let open = self.search.is_open();
         let row = self

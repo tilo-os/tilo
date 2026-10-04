@@ -83,6 +83,7 @@ pub(crate) struct Shared {
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
+    pub owner_wakes: ui::owner_wake::OwnerWakeQueue,
     /// The applications whose components woke the mount since it last
     /// looked, for the frame metrics.
     wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -394,7 +395,7 @@ impl Tiles {
         let notify = Arc::clone(&self.notify);
         let app_id = definition.app_id;
         component
-            .mount(move |_| {
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
                 woken.store(true, Ordering::Release);
                 let mut wakers = wakers
                     .lock()
