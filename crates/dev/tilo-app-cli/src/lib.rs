@@ -6659,7 +6659,10 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Optio
     }
     #[cfg(target_os = "linux")]
     {
-        attach_session_chooser(command, app_dir)
+        let mut kept: Vec<std::os::fd::OwnedFd> =
+            attach_model_gateway(command, app_dir).into_iter().collect();
+        kept.extend(attach_session_chooser(command, app_dir));
+        Some(kept)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -6667,9 +6670,10 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Optio
     }
 }
 
-/// `dev`'s end of the connection an app it started chooses files over.
+/// `dev`'s ends of the connections it made for an app it started: the file
+/// chooser, and the services it hands over as the launcher does.
 #[cfg(target_os = "linux")]
-type DevChooser = std::os::fd::OwnedFd;
+type DevChooser = Vec<std::os::fd::OwnedFd>;
 #[cfg(not(target_os = "linux"))]
 type DevChooser = ();
 
@@ -6684,6 +6688,63 @@ fn session_room() -> Option<String> {
     let room = std::fs::read_to_string(runtime.join("tilo-session").join("workspace-id")).ok()?;
     let room = room.trim();
     (!room.is_empty()).then(|| room.to_owned())
+}
+
+/// Hand the app the session's model gateway when its manifest declares it,
+/// connected and authenticated for the app the way the launcher does
+/// (`launcher::services`), so features served by the gateway (Canvas's
+/// select subject, Photos' analysis) work in a dev session as they do in a
+/// login. Nothing is attached when no gateway runs in the session.
+#[cfg(target_os = "linux")]
+fn attach_model_gateway(
+    command: &mut ProcessCommand,
+    app_dir: &Path,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
+    let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
+    let name = launcher::services::MODEL_GATEWAY_SERVICE;
+    let requirement = manifest.sandbox.services.get(name)?;
+    // A dev session may run without one: what the app requires, it asks
+    // for here as optional, and says what is missing.
+    let wanted = std::collections::BTreeMap::from([(
+        name.to_owned(),
+        format!("optional@{}", requirement.version),
+    )]);
+    let context = launcher::services::ServiceLaunchContext {
+        app_id: &manifest.package.id,
+        workspace_id: None,
+    };
+    let resolved =
+        match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                eprintln!("[tilo-app] the session's model gateway is unavailable: {error}");
+                return None;
+            }
+        };
+    let Some(service) = resolved.into_iter().next() else {
+        eprintln!(
+            "[tilo-app] no model gateway answers at {}; the app runs without it",
+            launcher::services::socket_for(name).display()
+        );
+        return None;
+    };
+    let fd = service.host;
+    // SAFETY: `fd` is an open descriptor this process owns; F_GETFD and
+    // F_SETFD only read and change its close-on-exec flag.
+    let inheritable = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
+    };
+    if !inheritable {
+        return None;
+    }
+    command.env(
+        launcher::sandbox::svc_env_var(name),
+        fd.as_raw_fd().to_string(),
+    );
+    Some(fd)
 }
 
 /// Hand the app the session shell's file chooser, the way the launcher hands
