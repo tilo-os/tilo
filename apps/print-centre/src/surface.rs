@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
-use ui::framework::{Dispatcher, Effect as _, LiveRow};
+use ui::framework::{Dispatcher, LiveRow};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{AppModel, ModelPath};
@@ -403,17 +403,14 @@ fn printer_row(queue: &os_actions::printing::PrinterQueue) -> LiveRow {
         "print-centre.printer",
         display_name(&queue.name),
     )
-    .operation(PrintCentreEffect::OpenPrinter { printer: printer() }.operation("Open printer"));
+    .effect(&PrintCentreEffect::OpenPrinter { printer: printer() });
     if !queue.default {
-        row = row.operation(
-            PrintCentreEffect::SetDefaultPrinter { printer: printer() }
-                .operation("Set as default printer"),
-        );
+        row = row.effect(&PrintCentreEffect::SetDefaultPrinter { printer: printer() });
     }
-    row.operation(if queue.accepting_jobs {
-        PrintCentreEffect::PausePrinter { printer: printer() }.operation("Pause printer")
+    row.effect(&if queue.accepting_jobs {
+        PrintCentreEffect::PausePrinter { printer: printer() }
     } else {
-        PrintCentreEffect::ResumePrinter { printer: printer() }.operation("Resume printer")
+        PrintCentreEffect::ResumePrinter { printer: printer() }
     })
 }
 
@@ -424,27 +421,18 @@ fn job_row(job: &os_actions::printing::PrintJob) -> LiveRow {
         "print-centre.job",
         job_title(job),
     );
+    let job_id = || job.id.clone();
     if matches!(
         job.state,
         Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
     ) {
-        row = row.operation(
-            PrintCentreEffect::CancelDocument {
-                job: job.id.clone(),
-            }
-            .operation("Cancel document"),
-        );
+        row = row.effect(&PrintCentreEffect::CancelDocument { job: job_id() });
     }
     if matches!(
         job.state,
         Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
     ) {
-        row = row.operation(
-            PrintCentreEffect::RetryDocument {
-                job: job.id.clone(),
-            }
-            .operation("Print again"),
-        );
+        row = row.effect(&PrintCentreEffect::RetryDocument { job: job_id() });
     }
     row
 }
@@ -455,12 +443,9 @@ fn scanner_row(scanner: &os_actions::printing::Scanner) -> LiveRow {
         "print-centre.scanner",
         scanner.description.clone(),
     )
-    .operation(
-        PrintCentreEffect::ScanWith {
-            scanner: scanner.device.clone(),
-        }
-        .operation("Scan a document"),
-    )
+    .effect(&PrintCentreEffect::ScanWith {
+        scanner: scanner.device.clone(),
+    })
 }
 
 fn command_action(id: &str, label: &str, tx: &mpsc::Sender<UiCommand>, command: UiCommand) -> El {
