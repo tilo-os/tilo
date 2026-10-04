@@ -99,14 +99,12 @@ impl CalendarApp {
         column.hits
     }
 
-    /// The month navigator's rect at the bottom of the sidebar: a header
-    /// row and a weekday row above six week rows.
+    /// The month navigator's rect at the bottom of the sidebar: as wide as
+    /// the column and as tall as that width needs.
     fn mini_month_rect(&self, theme: &Theme) -> Rect {
         let r = self.sidebar.rect();
-        let m = &theme.tokens.metrics;
         let inset = f64::from(theme.tokens.spacing.s3);
-        let height =
-            f64::from(m.min_pointer_target + m.icon_md) + 6.0 * f64::from(m.bar_control_height);
+        let height = self.mini_month.intrinsic_height(r.width() - 2.0 * inset);
         Rect::new(
             r.x0 + inset,
             r.y1 - inset - height,
@@ -355,10 +353,28 @@ impl CalendarApp {
         )
     }
 
-    /// The month navigator: the shared date grid on the anchor date; its
-    /// arrows move the anchor by a month.
+    /// The month navigator: the shared date grid on the anchor date, a dot
+    /// under each day with a shown event; its arrows move the anchor by a
+    /// month.
     fn draw_sidebar_month(&mut self, ctx: &mut PaintCtx<'_>, column: &mut Column<'_>, rect: Rect) {
         self.mini_month.set_selected(self.anchor);
+        let (year, month) = self.mini_month.month_view();
+        let hidden = self.hidden_calendar_ids();
+        if let Some(first) = chrono::NaiveDate::from_ymd_opt(year, month, 1) {
+            // The grid spills into the neighbouring months: seven weeks from
+            // the week before the first cover every cell.
+            let start = first - chrono::Duration::days(7);
+            let marked: Vec<_> = (0..49)
+                .map(|offset| start + chrono::Duration::days(offset))
+                .filter(|day| {
+                    self.model
+                        .events_on(*day)
+                        .iter()
+                        .any(|event| event.visible_under(&hidden))
+                })
+                .collect();
+            self.mini_month.set_marked(marked);
+        }
         self.mini_month.apply_layout_external(rect);
         self.mini_month.draw(
             ctx.scene,
