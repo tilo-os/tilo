@@ -38,6 +38,49 @@ pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
 /// Domain-separation prefix for the bundle-signing preimage; bumped only on a wire-breaking change.
 pub const BUNDLE_SIGNING_DOMAIN: &[u8] = b"tilo-runtime-bundle-v1\0";
 
+/// Domain-separation prefix of a runtime build's ABI digest.
+pub const ABI_DIGEST_DOMAIN: &[u8] = b"tilo-runtime-abi-v1\0";
+
+/// Separates a runtime release from its ABI digest in a bundle version:
+/// `2026.07+native.<32 hex>`. The same spelling `registry_types` parses in
+/// an app's `tilo-runtime/<version>`.
+pub const NATIVE_ABI_MARKER: &str = "+native.";
+
+/// Hex digits of the ABI digest.
+pub const ABI_DIGEST_HEX_LEN: usize = 32;
+
+/// The ABI digest of the runtime build whose payload has `root_hash`.
+///
+/// Thin apps link the bundle's Rust dylibs (`libruntime_dylib.so`,
+/// `libstd-<hash>.so`), which have no stable ABI: an app runs only on the
+/// exact build it was linked against. The digest covers every payload byte,
+/// so two bundles share it exactly when an app linked against one loads the
+/// other.
+#[must_use]
+pub fn abi_digest(root_hash: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(ABI_DIGEST_DOMAIN);
+    hasher.update(root_hash.as_bytes());
+    let mut hex = hasher.finalize().to_hex().to_string();
+    hex.truncate(ABI_DIGEST_HEX_LEN);
+    hex
+}
+
+/// The bundle version of the build of `release` whose payload has
+/// `root_hash`: `<release>+native.<abi digest>`.
+#[must_use]
+pub fn abi_version(release: &str, root_hash: &str) -> String {
+    format!("{release}{NATIVE_ABI_MARKER}{}", abi_digest(root_hash))
+}
+
+/// Split an ABI-bound bundle version into its release and digest; `None`
+/// for a version that names a release only (an engine runtime, a
+/// development bundle).
+#[must_use]
+pub fn split_abi_version(version: &str) -> Option<(&str, &str)> {
+    version.split_once(NATIVE_ABI_MARKER)
+}
+
 /// Bundle metadata written into `bundle.toml`; fields are stable so `verify` roundtrips across tool versions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
@@ -131,6 +174,17 @@ pub enum BundleError {
     IncludeUnnamed { path: PathBuf },
     #[error("included directory holds something other than files and directories: {path}")]
     IncludeSpecialFile { path: PathBuf },
+    #[error(
+        "bundle version {version} claims ABI digest {claimed}, but its payload's digest is \
+         {computed}: it is not the runtime build it names"
+    )]
+    AbiDigestMismatch {
+        version: String,
+        claimed: String,
+        computed: String,
+    },
+    #[error("runtime release {0:?} must not be empty or contain `/` or `+`")]
+    InvalidRelease(String),
 }
 
 /// The set of host source paths for a given target architecture.
@@ -296,6 +350,24 @@ pub fn system_bundle_path(version: &str) -> PathBuf {
     PathBuf::from("/usr/lib/tilo-runtime").join(version)
 }
 
+/// The image's list of runtime publishers the launcher accepts: one hex
+/// Ed25519 key per line, `#` comments.
+pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
+
+/// Read a trusted-publisher list, ignoring blank and `#` lines; `None` when
+/// the file is absent or unreadable.
+#[must_use]
+pub fn load_trusted_publishers(path: &Path) -> Option<Vec<String>> {
+    let text = fs::read_to_string(path).ok()?;
+    Some(
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_ascii_lowercase)
+            .collect(),
+    )
+}
+
 /// Walk the search path and return the first existing bundle dir with a `bundle.toml` (per-user, then system).
 pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     if let Ok(p) = default_bundle_path(version)
@@ -455,6 +527,60 @@ pub fn build_bundle_with(
     version: &str,
     opts: &BuildOptions<'_>,
 ) -> Result<BundleManifest, BundleError> {
+    let (arch, files) = stage_payload(out, opts)?;
+    seal(out, version.to_string(), arch, files, opts.identity)
+}
+
+/// Build the runtime build of `release` under `out_root`, named by its ABI:
+/// the bundle lands at `<out_root>/<release>+native.<digest>/` with that
+/// version in its signed `bundle.toml`, where the digest is
+/// [`abi_digest`] of the payload. Returns the manifest and the bundle's
+/// directory. An existing bundle at that path is replaced: same name, same
+/// bytes.
+///
+/// # Errors
+///
+/// [`BundleError::InvalidRelease`] for a release that cannot be a path
+/// component or carry the marker, plus everything [`build_bundle_with`]
+/// returns.
+pub fn build_abi_bundle(
+    out_root: &Path,
+    release: &str,
+    opts: &BuildOptions<'_>,
+) -> Result<(BundleManifest, PathBuf), BundleError> {
+    if release.is_empty() || release.contains(['/', '+', '\\']) || release.starts_with('.') {
+        return Err(BundleError::InvalidRelease(release.to_string()));
+    }
+    fs::create_dir_all(out_root)?;
+    let staging = out_root.join(format!(".staging-{release}-{}", std::process::id()));
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    let built = stage_payload(&staging, opts).and_then(|(arch, files)| {
+        let version = abi_version(release, &compute_root_hash(&files));
+        seal(&staging, version, arch, files, opts.identity)
+    });
+    let manifest = match built {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let dest = out_root.join(&manifest.version);
+    if dest.exists() {
+        fs::remove_dir_all(&dest)?;
+    }
+    fs::rename(&staging, &dest)?;
+    Ok((manifest, dest))
+}
+
+/// Copy the payload into `out` and hash it; returns the architecture and the
+/// sorted file list.
+fn stage_payload(
+    out: &Path,
+    opts: &BuildOptions<'_>,
+) -> Result<(String, Vec<BundleFile>), BundleError> {
     let host_root = opts.from.unwrap_or_else(|| Path::new("/"));
     let arch: &str = opts.arch.unwrap_or_else(|| host_arch());
     let paths = host_minimal_paths_for(arch)
@@ -513,15 +639,26 @@ pub fn build_bundle_with(
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((arch.to_string(), files))
+}
+
+/// Sign (when `identity` is set) and write `bundle.toml` for a staged payload.
+fn seal(
+    out: &Path,
+    version: String,
+    arch: String,
+    files: Vec<BundleFile>,
+    identity: Option<&Path>,
+) -> Result<BundleManifest, BundleError> {
     let root_hash = compute_root_hash(&files);
 
     // Optional signing.
-    let (publisher_hex, signature_hex) = match opts.identity {
+    let (publisher_hex, signature_hex) = match identity {
         Some(id_path) => {
             use ed25519_dalek::Signer;
 
             let identity = Identity::load(id_path)?;
-            let preimage = signing_preimage(version, &root_hash);
+            let preimage = signing_preimage(&version, &root_hash);
             let sig = identity.signing_key.sign(&preimage);
             (
                 Some(identity.public_key_hex()),
@@ -532,8 +669,8 @@ pub fn build_bundle_with(
     };
 
     let manifest = BundleManifest {
-        version: version.to_string(),
-        arch: arch.to_string(),
+        version,
+        arch,
         root_hash,
         files,
         produced_at: produced_at()?,
@@ -708,9 +845,29 @@ fn verify_bundle_impl(
             computed,
         });
     }
+    verify_abi_digest(&manifest)?;
 
     verify_manifest_signature(&manifest, opts)?;
     Ok(manifest)
+}
+
+/// A version that names an ABI digest must name its own payload's: the
+/// digest is what apps are matched against, so a bundle claiming another
+/// build's digest would load apps it cannot run.
+fn verify_abi_digest(manifest: &BundleManifest) -> Result<(), BundleError> {
+    let Some((_, claimed)) = split_abi_version(&manifest.version) else {
+        return Ok(());
+    };
+    let computed = abi_digest(&manifest.root_hash);
+    if claimed == computed {
+        Ok(())
+    } else {
+        Err(BundleError::AbiDigestMismatch {
+            version: manifest.version.clone(),
+            claimed: claimed.to_string(),
+            computed,
+        })
+    }
 }
 
 fn verify_manifest_signature(
@@ -949,6 +1106,64 @@ fn produced_at_from(value: Result<String, std::env::VarError>) -> Result<u64, Bu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_abi_bundle_is_named_by_its_payload_and_cannot_claim_another_build() {
+        // phase: the_version_carries_the_payload_digest
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let libs = tempfile::tempdir().unwrap();
+        let dylib = libs.path().join("libruntime_dylib.so");
+        std::fs::write(&dylib, b"runtime build one").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let build = |extra: &[PathBuf]| {
+            build_abi_bundle(
+                root.path(),
+                "2026.07",
+                &BuildOptions {
+                    from: Some(host.path()),
+                    arch: Some("x86_64"),
+                    identity: None,
+                    extra_libs: extra,
+                },
+            )
+            .expect("build")
+        };
+        let (first, first_dir) = build(std::slice::from_ref(&dylib));
+        let (release, digest) = split_abi_version(&first.version).expect("abi version");
+        assert_eq!(release, "2026.07");
+        assert_eq!(digest, abi_digest(&first.root_hash));
+        assert_eq!(digest.len(), ABI_DIGEST_HEX_LEN);
+        assert_eq!(first_dir, root.path().join(&first.version));
+        verify_bundle(&first_dir).expect("verify");
+
+        // phase: rebuilding_the_same_bytes_names_the_same_build
+        let (again, _) = build(std::slice::from_ref(&dylib));
+        assert_eq!(again.version, first.version);
+
+        // phase: a_different_dylib_is_a_different_runtime
+        std::fs::write(&dylib, b"runtime build two").unwrap();
+        let (second, second_dir) = build(std::slice::from_ref(&dylib));
+        assert_ne!(second.version, first.version);
+        assert!(first_dir.exists() && second_dir.exists());
+
+        // phase: a_bundle_claiming_another_builds_digest_is_refused
+        let text = std::fs::read_to_string(second_dir.join(BUNDLE_MANIFEST_FILENAME)).unwrap();
+        let forged = text.replace(&second.version, &first.version);
+        std::fs::write(second_dir.join(BUNDLE_MANIFEST_FILENAME), forged).unwrap();
+        assert!(matches!(
+            verify_bundle(&second_dir),
+            Err(BundleError::AbiDigestMismatch { .. })
+        ));
+
+        // phase: a_release_must_be_one_path_component
+        for bad in ["", "2026/07", "2026.07+native.00", ".hidden"] {
+            assert!(matches!(
+                build_abi_bundle(root.path(), bad, &BuildOptions::default()),
+                Err(BundleError::InvalidRelease(_))
+            ));
+        }
+    }
 
     #[test]
     #[allow(

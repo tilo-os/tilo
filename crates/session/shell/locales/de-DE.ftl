@@ -1075,6 +1075,7 @@ launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestar
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-runtime-mismatch = Diese App wurde für eine andere Tilo-Laufzeitumgebung gebaut. Aktualisiere sie oder installiere sie neu, um die passende Laufzeitumgebung zu erhalten.
 launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
 launch-failed-collaboration = Die App konnte dem Zusammenarbeitsdienst dieses Arbeitsbereichs nicht beitreten und wurde daher beendet, bevor sie sich öffnete. Das Desktop-Protokoll nennt den Grund.
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.

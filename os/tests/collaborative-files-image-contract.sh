@@ -216,10 +216,19 @@ require_exec "$payload/bin/file-explorer"
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
 require_toml_string "$manifest" package.id "so.tilo.file-explorer"
 require_toml_string "$manifest" sandbox.services.tilo-fs "optional@1"
-require_toml_string "$manifest" package.runtime "tilo-runtime/2026.07"
+# The package names the exact runtime build it links, and the image ships it.
+runtime_version="$(python3 - "$(at "$manifest")" <<'PY'
+import pathlib, re, sys, tomllib
+runtime = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["package"]["runtime"]
+match = re.fullmatch(r"tilo-runtime/(2026\.07\+native\.[0-9a-f]{32})", runtime)
+print(match.group(1) if match else "")
+PY
+)"
+[ -n "$runtime_version" ] \
+  || die "$manifest does not name the runtime build it links (tilo-runtime/2026.07+native.<digest>)"
 # A thin app links the runtime bundle's shared libraries, which the launcher
 # puts on its loader path.
-require_file /usr/lib/tilo-runtime/2026.07/lib/libruntime_dylib.so
+require_file "/usr/lib/tilo-runtime/$runtime_version/lib/libruntime_dylib.so"
 # These are deliberately allowed to be distinct signed build artifacts.  The
 # loose binary is the privileged recovery surface built with the OS, while the
 # launcher resolves the checksum-pinned app-collection payload.  Requiring
@@ -227,7 +236,7 @@ require_file /usr/lib/tilo-runtime/2026.07/lib/libruntime_dylib.so
 # installed-session AT-SPI gate could run.  The checks below exercise the
 # recovery binary and verify the installed package independently; runtime mode
 # then launches this exact payload for the external AT-SPI smoke.
-require_file /usr/lib/tilo-runtime/2026.07/bundle.toml
+require_file "/usr/lib/tilo-runtime/$runtime_version/bundle.toml"
 require_file /usr/share/tilo/runtime-bundle-publisher.hex
 require_file /etc/tilo/runtime-bundle-trusted-publishers.txt
 
@@ -246,7 +255,7 @@ if [ "$root" = / ]; then
   TILO_APPS_DATA_DIR=/usr/share/tilo-apps \
     /usr/bin/tilo-install verify so.tilo.file-explorer >/dev/null \
     || die "installed Files payload failed its recorded integrity check"
-  /usr/bin/tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
+  /usr/bin/tilo-runtime-bundle verify "/usr/lib/tilo-runtime/$runtime_version" \
     --require-publisher "$(cat /usr/share/tilo/runtime-bundle-publisher.hex)" >/dev/null \
     || die "shipped runtime bundle signature or content check failed"
   # Everything the store volume helper runs, at install and at boot.

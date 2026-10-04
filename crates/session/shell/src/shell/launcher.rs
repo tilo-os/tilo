@@ -821,9 +821,17 @@ impl LaunchEvent {
 /// they are only recognised here and logged in full by
 /// [`LaunchEvent::log_failure`].
 fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
-    if stderr_tail.contains("error while loading shared libraries")
-        || stderr_tail.contains("cannot open shared object file")
+    let loader_failed = stderr_tail.contains("error while loading shared libraries")
+        || stderr_tail.contains("cannot open shared object file");
+    // The launcher's own refusal (`RunError::RuntimeLibraryMissing`), or the
+    // loader failing on a library only a Tilo runtime bundle ships: the app
+    // was built against another runtime than the one installed.
+    if stderr_tail.contains("built for a different Tilo runtime")
+        || (loader_failed
+            && (stderr_tail.contains("libstd-") || stderr_tail.contains("libruntime_dylib")))
     {
+        "launch-failed-runtime-mismatch"
+    } else if loader_failed {
         "launch-failed-missing-library"
     } else if stderr_tail.lines().any(|line| line.starts_with("bwrap: ")) {
         "launch-failed-sandbox"
@@ -4069,8 +4077,29 @@ mod tests {
             (
                 Some(127),
                 "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
-                 libstd-8f2c.so: cannot open shared object file: No such file or directory",
+                 libvulkan.so.1: cannot open shared object file: No such file or directory",
                 "The app needs a library this system doesn't have, so it stopped before opening.",
+            ),
+            (
+                Some(127),
+                "/var/tilo-apps/so.tilo.terminal/bin/terminal: error while loading shared \
+                 libraries: libstd-8f2c.so: cannot open shared object file: No such file or \
+                 directory",
+                "This app was built for a different Tilo runtime. Update or reinstall it to get \
+                 the runtime it needs.",
+            ),
+            (
+                Some(1),
+                "tilo-launcher: `so.tilo.terminal` was built for a different Tilo runtime than \
+                 the one installed, so it cannot start: it needs the library \
+                 `libstd-55999f89fc36b51f.so`, which the installed runtime \
+                 `tilo-runtime/2026.10.0` does not provide (looked in \
+                 /usr/lib/tilo-runtime/2026.10.0/lib, /etc/ld.so.cache, /lib64). Update it with \
+                 `app update so.tilo.terminal` or reinstall it with `app install \
+                 so.tilo.terminal`, which also fetches the runtime it needs, or remove it with \
+                 `app remove so.tilo.terminal` to go back to the system build.",
+                "This app was built for a different Tilo runtime. Update or reinstall it to get \
+                 the runtime it needs.",
             ),
             (
                 Some(1),

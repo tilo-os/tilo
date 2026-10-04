@@ -356,6 +356,7 @@ COPY \
     os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
+    os/scripts/stamp-runtime.sh \
     os/scripts/install-env-runtime.sh \
     /build/os/scripts/
 COPY os/desktop-artifacts /build/os/desktop-artifacts
@@ -871,7 +872,7 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out \
 
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
-# /usr/lib/tilo-runtime/<RUNTIME_VERSION>/ that the launcher can find
+# /usr/lib/tilo-runtime/<release>+native.<digest>/ that the launcher can find
 # without a post-boot `tilo-install runtime install`.
 #
 # The signing key is generated fresh per build. Its pubkey is baked into
@@ -879,23 +880,24 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out \
 # signature-verify step accepts this bake. The private key is discarded
 # once the bundle is signed — this is fine for a build-time attestation
 # (nothing else ever needs to sign as this identity again).
-# Must match the `runtime = "tilo-runtime/<version>"` every app manifest under
-# apps/ declares: the launcher resolves that literal version to
-# /usr/lib/tilo-runtime/<version>/ and refuses to start the app when it is not
-# there. Baking "1" while the fleet asked for 2026.07 meant every packaged app
-# failed at launch with RuntimeBundleMissing.
+# The release every app manifest under apps/ declares
+# (`runtime = "tilo-runtime/<release>"`). The bundle baked here is one build of
+# it, named by its ABI: `/usr/lib/tilo-runtime/<release>+native.<digest>/`,
+# where the digest covers the bundle's payload (libruntime_dylib.so, the Rust
+# libstd, the loader set). Thin apps link those Rust dylibs, which have no
+# stable ABI, so pack-apps.sh stamps that exact id into every packaged app
+# and the launcher, `tilo-install` and the Store match apps to runtimes by it:
+# an app built against another build is refused, or its runtime fetched,
+# instead of dying at exec with an unresolved `libstd-<hash>.so`.
+# /out/runtime-version records the id for the steps below.
 #
-# Baked at /usr/lib/tilo-runtime/<version>/ — the path it will occupy on the
-# booted system — and not into a staging directory, for the same reason the app
-# store below is written at its final path. `tilo-install` refuses to install a
-# package whose declared runtime is absent, and it looks for exactly two places:
-# the per-user bundle dir and this system one (runtime_status ->
-# runtime_bundle::system_bundle_path). Staging the bake somewhere else and
-# relocating it in the rootfs stage left that lookup failing during pack-apps,
-# so every packaged app was refused at *install* time with the message telling
-# the operator to run `tilo-install runtime install` — 46 of them, and no image.
-ARG RUNTIME_VERSION=2026.07
-ENV RUNTIME_VERSION=${RUNTIME_VERSION}
+# Baked at /usr/lib/tilo-runtime/ — the path it will occupy on the booted
+# system — and not into a staging directory, for the same reason the app
+# store below is written at its final path: `tilo-install` refuses to install
+# a package whose declared runtime is absent, and it looks only in the
+# per-user bundle dir and this system one.
+ARG RUNTIME_RELEASE=2026.07
+ENV RUNTIME_RELEASE=${RUNTIME_RELEASE}
 # The bundle and the app store below record when they were produced: the build
 # scripts' SOURCE_DATE_EPOCH, not the fixed one the compile above ran with.
 ARG SOURCE_DATE_EPOCH=0
@@ -905,24 +907,32 @@ ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 # closure check then loads every bundled object and thin app the way the
 # launcher does, with only the bundle's lib/ on LD_LIBRARY_PATH.
 RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=/usr/local/libexec/tilo-verify-runtime-bundle-closure.sh,ro \
-    if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
+    --mount=type=bind,source=os/registry-runtime-publisher.hex,target=/usr/local/share/tilo-registry-runtime-publisher.hex,ro \
+    grep -Eqx '[0-9a-f]{64}' /usr/local/share/tilo-registry-runtime-publisher.hex \
+    && cp /usr/local/share/tilo-registry-runtime-publisher.hex /out/registry-runtime-publisher.hex \
+    && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
       test -s /out/runtime-bundle-publisher.hex \
+      && runtime_dirs="$(find /usr/lib/tilo-runtime -mindepth 1 -maxdepth 1 -type d \
+           -name "${RUNTIME_RELEASE}+native.*" -printf '%f\n')" \
+      && [ "$(printf '%s\n' "$runtime_dirs" | grep -c .)" = 1 ] \
+      && printf '%s\n' "$runtime_dirs" > /out/runtime-version \
       && /out/tilo-runtime-bundle verify \
-        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
-        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"; \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)"; \
     else \
       /out/tilo-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
       && RUST_LIBSTD="$(find /out -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
       && [ -n "${RUST_LIBSTD}" ] \
       && /bin/bash -eu -o pipefail -c ' \
         args=(/out/tilo-runtime-bundle build \
-          --version "${RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
+          --release "${RUNTIME_RELEASE}" --arch "$(uname -m)" --from / \
           --include /out/libruntime_dylib.so \
           --include "$1" \
           --identity /out/runtime-bundle-identity.json \
-          --out "/usr/lib/tilo-runtime/${RUNTIME_VERSION}"); \
+          --out-root /usr/lib/tilo-runtime \
+          --version-out /out/runtime-version); \
         while IFS= read -r dependency; do args+=(--include "$dependency"); done \
           < <(ldd /out/libruntime_dylib.so \
               | awk '\''{ for (i=1; i<=NF; i++) if ($i ~ /^\//) print $i }'\'' \
@@ -932,10 +942,10 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
       && /out/tilo-runtime-bundle verify \
-        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
       && bash /usr/local/libexec/tilo-verify-runtime-bundle-closure.sh \
-        "/usr/lib/tilo-runtime/${RUNTIME_VERSION}" /out/thin-apps/* \
+        "/usr/lib/tilo-runtime/$(cat /out/runtime-version)" /out/thin-apps/* \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
@@ -1000,6 +1010,7 @@ RUN export TILO_IMAGE_BUILD=1 \
     BUNDLE_BIN=/out/tilo-runtime-bundle \
     SHIM_BIN=/out/tilo-cli-shim \
     PUBKEY_OUT=/out/app-publisher.hex \
+    RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh
 
 # Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
@@ -1020,6 +1031,27 @@ FROM scratch AS native-builder-payload
 COPY --from=builder /out/ /out/
 COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
 COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
+
+# The browser engine runtime as the registry package that offers it
+# (`so.tilo.runtime.chromium`), for a publication to submit: the thin package
+# and its content-addressed payload objects, plus the packaging CLI that
+# submits them. Built only when that target is asked for; the image never
+# contains it.
+FROM builder AS engine-runtime-package-build
+ARG CHROMIUM_RUNTIME_VERSION
+ARG ENGINE_RUNTIME_PACKAGE_VERSION=0.1.0
+RUN --mount=type=secret,id=tapp_publisher_identity \
+    --mount=type=bind,source=tools/apps/pack-runtime-package.sh,target=/usr/local/libexec/tilo-pack-runtime-package.sh,ro \
+    test -s /run/secrets/tapp_publisher_identity \
+    && test -f "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}/bundle.toml" \
+    && bash /usr/local/libexec/tilo-pack-runtime-package.sh \
+         "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" so.tilo.runtime.chromium \
+         "Browser engine" "${ENGINE_RUNTIME_PACKAGE_VERSION}" \
+         /run/secrets/tapp_publisher_identity /out /engine-runtime-package
+
+FROM scratch AS engine-runtime-package
+COPY --from=engine-runtime-package-build /engine-runtime-package/ /package/
+COPY --from=engine-runtime-package-build /out/tilo-app-package /bin/tilo-app-package
 
 # Fedora DNF/RPM record wall-clock transaction times in rpmdb and history.
 # Build the tiny clock shim separately so it does not invalidate Rust output.
@@ -2834,7 +2866,7 @@ COPY --from=desktop-binaries / /
 COPY --from=component-files /image/windows/ /
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
-# image's own rootfs at /usr/lib/tilo-runtime/${RUNTIME_VERSION} — the same
+# image's own rootfs at /usr/lib/tilo-runtime/<release>+native.<digest> — the same
 # path it takes here, because `tilo-install` had to find it there while
 # packing the app store — and wrote its publisher pubkey to
 # /out/runtime-bundle-publisher.hex. Install both here so:
@@ -2847,9 +2879,15 @@ COPY --from=component-files /image/windows/ /
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
 COPY --from=native-builder-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+# registry-runtime-publisher.hex is the publisher of the runtimes the Tilo
+# registry offers. An app installed or updated from the Store is linked against
+# the release runtime build, which is rarely this image's own bake, and the
+# Store installs that runtime beside it; the launcher mounts it only when its
+# publisher is trusted here.
 COPY --from=native-builder-payload \
     /out/runtime-bundle-publisher.hex \
     /out/browser-runtime-publisher.hex \
+    /out/registry-runtime-publisher.hex \
     /usr/share/tilo/
 # ---- Preinstalled application store -----------------------------------------
 # The registry + unpacked payloads the builder produced with `tilo-app-package pack` and
@@ -2905,6 +2943,8 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
     && cat /usr/share/tilo/runtime-bundle-publisher.hex \
         > /etc/tilo/runtime-bundle-trusted-publishers.txt \
     && cat /usr/share/tilo/browser-runtime-publisher.hex \
+        >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
+    && cat /usr/share/tilo/registry-runtime-publisher.hex \
         >> /etc/tilo/runtime-bundle-trusted-publishers.txt \
     && chmod 0755 /usr/libexec/tilo/collaborative-files-image-contract.sh \
         /usr/libexec/tilo/files-atspi-smoke.sh \
