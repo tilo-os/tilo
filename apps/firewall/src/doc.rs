@@ -117,7 +117,7 @@ fn read_rule(doc: &AutoCommit, row: &ObjId, id: RuleId) -> Option<Rule> {
 }
 
 impl FirewallDoc {
-    pub fn has_native(doc: &AutoCommit) -> bool {
+    fn has_native(doc: &AutoCommit) -> bool {
         get_map(doc, &ROOT, ROOT_KEY).is_some()
     }
     pub fn load(doc: &AutoCommit) -> Option<FirewallConfig> {
@@ -201,16 +201,17 @@ impl FirewallDoc {
         ordered.extend(remaining.into_values());
         ordered
     }
-    /// Full native seed/import. Interactive actions use the narrow methods.
-    pub fn store(doc: &mut AutoCommit, cfg: &FirewallConfig) -> String {
+    /// Write a whole configuration. Interactive actions use the narrow
+    /// methods.
+    pub fn store(doc: &mut AutoCommit, cfg: &FirewallConfig) {
         let Some(root) = map(doc, &ROOT, ROOT_KEY) else {
-            return cfg.to_json();
+            return;
         };
         let _ = doc.put(&root, "enabled", cfg.enabled);
         let _ = doc.put(&root, "panic_mode", cfg.panic_mode);
         text(doc, &root, "default_zone", cfg.default_zone.name());
         let Some(zones) = map(doc, &root, "zones") else {
-            return cfg.to_json();
+            return;
         };
         for zone in &cfg.zones {
             let Some(row) = map(doc, &zones, zone.kind.name()) else {
@@ -232,26 +233,28 @@ impl FirewallDoc {
                 Self::add_rule(doc, zone.kind, rule);
             }
         }
-        cfg.to_json()
     }
-    /// Reconcile an authoritative, read-only host probe into a native document.
+    /// Take in a configuration firewalld reported: written whole into an
+    /// empty document, reconciled into an existing one.
     ///
-    /// Unlike `store`, this makes absence explicit: stale interfaces/services
-    /// become false membership and stale rules receive delete-wins tombstones.
-    /// A concurrent user deletion still wins over a probe that carries the same
-    /// id; an external snapshot never resurrects a tombstoned rule.
-    pub fn reconcile_probe(doc: &mut AutoCommit, cfg: &FirewallConfig) -> String {
+    /// Unlike `store`, reconciling makes absence explicit: stale
+    /// interfaces/services become false membership and stale rules receive
+    /// delete-wins tombstones. A concurrent user deletion still wins over a
+    /// report that carries the same id; an external snapshot never
+    /// resurrects a tombstoned rule.
+    pub fn import(doc: &mut AutoCommit, cfg: &FirewallConfig) {
         if !Self::has_native(doc) {
-            return Self::store(doc, cfg);
+            Self::store(doc, cfg);
+            return;
         }
         let Some(root) = map(doc, &ROOT, ROOT_KEY) else {
-            return cfg.to_json();
+            return;
         };
         let _ = doc.put(&root, "enabled", cfg.enabled);
         let _ = doc.put(&root, "panic_mode", cfg.panic_mode);
         text(doc, &root, "default_zone", cfg.default_zone.name());
         let Some(zones) = map(doc, &root, "zones") else {
-            return cfg.to_json();
+            return;
         };
         for incoming in &cfg.zones {
             let Some(zone) = map(doc, &zones, incoming.kind.name()) else {
@@ -263,7 +266,6 @@ impl FirewallDoc {
             Self::reconcile_membership(doc, &zone, "services", &incoming.services);
             Self::reconcile_rules(doc, incoming.kind, &incoming.rules);
         }
-        cfg.to_json()
     }
     fn reconcile_membership(doc: &mut AutoCommit, zone: &ObjId, field: &str, incoming: &[String]) {
         let Some(members) = map(doc, zone, field) else {
@@ -485,7 +487,7 @@ mod tests {
     use super::*;
     use crate::sample::sample_config;
     use tilo_automerge::ApplyIncoming;
-    /// The native document round-trips and probe reconciliation removes absent members and rules.
+    /// The native document round-trips and an import removes absent members and rules.
     #[test]
     fn document_round_trips_and_reconciles_probe_state() {
         // --- phase: native_round_trip ---
@@ -493,11 +495,15 @@ mod tests {
             let mut d = AutoCommit::new();
             let c = sample_config();
             FirewallDoc::store(&mut d, &c);
-            assert!(FirewallDoc::has_native(&d));
             let restored = FirewallDoc::load(&d).unwrap();
             assert_eq!(restored.enabled, c.enabled);
             assert_eq!(restored.panic_mode, c.panic_mode);
             assert_eq!(restored.default_zone, c.default_zone);
+            assert_eq!(
+                restored,
+                c.canonical(),
+                "the canonical form is what reads back"
+            );
             assert_eq!(
                 restored
                     .zones
@@ -521,7 +527,7 @@ mod tests {
             zone.interfaces.retain(|interface| interface != "eth0");
             zone.rules.retain(|rule| rule.id != stale_rule);
 
-            FirewallDoc::reconcile_probe(&mut doc, &probe);
+            FirewallDoc::import(&mut doc, &probe);
             let restored = FirewallDoc::load(&doc).unwrap();
             let zone = restored.zone(zone_kind).unwrap();
             assert!(!zone.has_service("ssh"));

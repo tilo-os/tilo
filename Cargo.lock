@@ -4121,6 +4121,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]

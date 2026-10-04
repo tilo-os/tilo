@@ -28,6 +28,7 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 vello.workspace = true
 winit.workspace = true

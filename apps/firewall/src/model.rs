@@ -337,6 +337,28 @@ impl FirewallConfig {
         self.zones.iter_mut().find(|z| z.kind == kind)
     }
 
+    /// This configuration as the document reads it back once written whole:
+    /// zones in their stock order, membership sets sorted without repeats,
+    /// rules in their order. The form two devices compare a configuration in.
+    #[must_use]
+    pub fn canonical(&self) -> Self {
+        let mut zones = Vec::new();
+        for kind in ZoneKind::ALL {
+            if let Some(zone) = self.zone(kind) {
+                let mut zone = zone.clone();
+                zone.interfaces.sort();
+                zone.interfaces.dedup();
+                zone.services.sort();
+                zone.services.dedup();
+                zones.push(zone);
+            }
+        }
+        Self {
+            zones,
+            ..self.clone()
+        }
+    }
+
     /// JSON encode for the CRDT text blob.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
