@@ -195,6 +195,8 @@ impl ResourceApp for ContactsShell {
     const ID: &'static str = "so.tilo.contacts";
     const TITLE: &'static str = "Contacts";
     const ICON: Option<&'static str> = Some("contacts");
+    const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         cx.surface(ContactsApp::new())
@@ -269,6 +271,11 @@ impl ResourceSurface<Contacts> for ContactsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_dispatcher(cx.dispatcher());
+        // A vCard file the app was opened with ("open with", a dropped
+        // file) is imported into the address book.
+        if let Some(file) = cx.launch().file() {
+            self.open_cards(String::from_utf8_lossy(file.bytes()).into_owned());
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -307,6 +314,30 @@ mod tests {
             .children
             .iter()
             .find(|child| child.id.as_str() == id)
+    }
+
+    /// A vCard file the app is opened with is imported into the book, as
+    /// an import the person picked: created through the door, undone in one
+    /// step.
+    #[test]
+    fn a_vcard_file_the_app_is_opened_with_is_imported() {
+        let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEND:VCARD\r\n\
+                     BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alan Turing\r\nN:Turing;Alan;;;\r\nEND:VCARD\r\n";
+        let (file, _receipt) =
+            ui::application::OpenFile::new("friends.vcf", "text/vcard", cards.as_bytes().to_vec())
+                .unwrap();
+        let mut app = TestApp::<ContactsShell>::handed(file).unwrap();
+        app.harness().relayout();
+        let mut names: Vec<String> = app
+            .state()
+            .contacts
+            .iter()
+            .map(crate::model::Contact::display_name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Ada Lovelace", "Alan Turing"]);
+        assert!(app.undo());
+        assert!(app.state().contacts.is_empty(), "one import, one undo step");
     }
 
     /// A new window starts on an empty book; captures stage the sample book
