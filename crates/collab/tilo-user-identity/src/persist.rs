@@ -414,9 +414,35 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
     Ok(bytes)
 }
 
-/// Atomically write a 32-byte Ed25519 public key to disk. Mode is left at the
-/// filesystem default (typically 0644) — public keys are non-secret. Atomic
-/// replacement avoids both partial trust roots and following a final symlink.
+/// Unix mode of the public device-trust files: the device certificates and the
+/// person's public key. Everyone who may reach their directory reads them,
+/// which on an installed system is the device-trust group the session and the
+/// relay read through.
+pub const PUBLIC_TRUST_FILE_MODE: u32 = 0o644;
+
+/// Atomically publish public trust material with [`PUBLIC_TRUST_FILE_MODE`],
+/// whatever the writer's umask. A restrictive umask (a sandboxed service, or
+/// `sudo` from a shell with `umask 077`) must not leave a certificate that only
+/// its writer can read.
+///
+/// # Errors
+///
+/// Returns an error if writing to `path` fails.
+pub fn write_public_trust_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        tilo_files::native::atomic::write_with_mode(path, bytes, PUBLIC_TRUST_FILE_MODE)
+    }
+    #[cfg(not(unix))]
+    {
+        tilo_files::native::atomic::write(path, bytes)
+    }
+}
+
+/// Atomically write a 32-byte Ed25519 public key to disk, readable by everyone
+/// who may reach its directory whatever the writer's umask — public keys are
+/// non-secret. Atomic replacement avoids both partial trust roots and
+/// following a final symlink.
 ///
 /// # Errors
 ///
@@ -424,7 +450,7 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    tilo_files::native::atomic::write(path, pubkey)
+    write_public_trust_file(path, pubkey)
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
@@ -953,8 +979,8 @@ pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
     Ok(cert)
 }
 
-/// Write a signed device cert to disk. Public metadata; default
-/// permissions.
+/// Write a signed device cert to disk. Public metadata, published with
+/// [`PUBLIC_TRUST_FILE_MODE`] whatever the writer's umask.
 ///
 /// # Errors
 ///
@@ -967,7 +993,7 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     fs::create_dir_all(parent)?;
-    tilo_files::native::atomic::write(path, &bytes)?;
+    write_public_trust_file(path, &bytes)?;
     Ok(())
 }
 
