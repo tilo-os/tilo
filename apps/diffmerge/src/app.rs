@@ -1927,9 +1927,9 @@ mod tests {
         );
         assert_eq!(selected_compact_source(&app), "Show Ours source");
 
-        // At tablet width the selector disappears because all three panes are
-        // deliberately visible side by side.
-        rerender_merge_frame(&mut app, (800.0, 760.0));
+        // Past the compact breakpoint the selector disappears because all
+        // three panes are deliberately visible side by side.
+        rerender_merge_frame(&mut app, (1024.0, 760.0));
         assert!(app.merge.compact_source_hits().is_empty());
         assert!(app.merge.access_controls().iter().all(|child| {
             !child

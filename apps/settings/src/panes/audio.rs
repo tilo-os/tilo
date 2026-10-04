@@ -78,7 +78,9 @@ use winit::event::WindowEvent;
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::prefs::{AudioPrefs, SystemPrefs};
-use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
+use crate::widgets::{
+    caption, card, choice_row, choice_row_described, rows, setting_row, slider_row,
+};
 use media::event_sound::SoundTheme;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs};
 
@@ -988,7 +990,7 @@ impl AudioPane {
     /// The way into Speakers: several of your devices as one set.
     fn speakers_card() -> crate::widgets::El {
         let open_label = t("sound-speakers-open");
-        let open = ui::widget::Button::new("sound.speakers", &open_label, None).content_sized();
+        let open = ui::widget::Button::new("sound.speakers", &open_label, None);
         let open = match tilo_actions::ActionBinding::unit_for(
             &crate::actions::pane_navigation_resource(crate::categories::Category::Speakers),
             crate::actions::OPEN_PANE_ACTION,
@@ -1028,9 +1030,9 @@ impl AudioPane {
             if let Some(name) = self.devices.default_sink() {
                 dd = dd.with_placeholder(name);
             }
-            output_rows.push(setting_row(&t("sound-output-device"), Box::new(dd)));
+            output_rows.push(choice_row(&t("sound-output-device"), Box::new(dd)));
         }
-        output_rows.push(setting_row(
+        output_rows.push(slider_row(
             &t("sound-volume"),
             Box::new(
                 Slider::new("settings.audio.volume", VOLUME_KEY)
@@ -1054,7 +1056,7 @@ impl AudioPane {
         ));
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
-            output_rows.push(setting_row(
+            output_rows.push(slider_row(
                 &t("sound-balance"),
                 Box::new(
                     Slider::new("settings.audio.balance", BALANCE_KEY)
@@ -1078,7 +1080,6 @@ impl AudioPane {
                         ),
                 ),
             ));
-            output_rows.push(caption(&t("sound-mono-caption")));
         }
         if self.runtime_caps.channel_test && stereo_sink.is_some() {
             output_rows.push(Box::new(
@@ -1093,7 +1094,6 @@ impl AudioPane {
                             },
                             None,
                         )
-                        .content_sized()
                         .on_action(
                             crate::actions::audio_unit_binding("diagnostics")
                                 .expect("audio diagnostics action is published"),
@@ -1106,7 +1106,6 @@ impl AudioPane {
                     Row::new()
                         .push(Box::new(
                             Button::new("settings.audio.test.left", &t("sound-test-left"), None)
-                                .content_sized()
                                 .on_action(
                                     crate::actions::audio_unit_binding("test-left")
                                         .expect("left speaker test action is published"),
@@ -1114,7 +1113,6 @@ impl AudioPane {
                         ))
                         .push(Box::new(
                             Button::new("settings.audio.test.right", &t("sound-test-right"), None)
-                                .content_sized()
                                 .on_action(
                                     crate::actions::audio_unit_binding("test-right")
                                         .expect("right speaker test action is published"),
@@ -1157,9 +1155,9 @@ impl AudioPane {
             if let Some(name) = self.devices.default_source() {
                 dd = dd.with_placeholder(name);
             }
-            input_rows.push(setting_row(&t("sound-input-device"), Box::new(dd)));
+            input_rows.push(choice_row(&t("sound-input-device"), Box::new(dd)));
         }
-        input_rows.push(setting_row(
+        input_rows.push(slider_row(
             &t("sound-input-level"),
             Box::new(
                 Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
@@ -1185,7 +1183,9 @@ impl AudioPane {
             };
             input_rows.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&activity).with_size(12.0)))
+                    .push(Box::new(
+                        Text::new(&activity).with_role(ui::TextRole::Caption),
+                    ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         Button::new(
@@ -1197,14 +1197,12 @@ impl AudioPane {
                             },
                             None,
                         )
-                        .content_sized()
                         .on_action(
                             crate::actions::audio_unit_binding("microphone-meter")
                                 .expect("microphone meter action is published"),
                         ),
                     )),
             ));
-            input_rows.push(caption(&t("sound-mic-caption")));
         }
         if self.runtime_caps.echo_cancellation && !self.graph.sources.is_empty() {
             input_rows.push(setting_row(
@@ -1219,7 +1217,6 @@ impl AudioPane {
                         ),
                 ),
             ));
-            input_rows.push(caption(&t("sound-echo-caption")));
         }
         card(&t("sound-input"), rows(input_rows))
     }
@@ -1315,7 +1312,7 @@ impl AudioPane {
                 .with_placeholder(&current);
             let route_row =
                 choice_row_described(&s.app, s.media_name.as_deref().unwrap_or(""), Box::new(dd));
-            let vol_row = setting_row(
+            let vol_row = slider_row(
                 &t("sound-volume"),
                 Box::new(
                     Slider::new("settings.audio.volume", &vol_key)
@@ -1912,7 +1909,7 @@ impl AudioPane {
         if !self.system_sounds.enabled {
             return card(&t("sound-system"), rows(sound_rows));
         }
-        sound_rows.push(setting_row(
+        sound_rows.push(slider_row(
             &t("sound-volume"),
             Box::new(
                 Slider::new(
@@ -1935,7 +1932,7 @@ impl AudioPane {
             && let Some(binding) = crate::actions::audio_sound_theme_binding(themes.clone())
         {
             let names = themes.into_iter().map(|(name, _)| name).collect();
-            sound_rows.push(setting_row(
+            sound_rows.push(choice_row(
                 &t("sound-theme"),
                 Box::new(
                     Dropdown::new(names, SOUND_THEME_KEY)
@@ -1961,7 +1958,6 @@ impl AudioPane {
                 ),
             ));
         }
-        sound_rows.push(caption(&t("sound-system-caption")));
         card(&t("sound-system"), rows(sound_rows))
     }
 

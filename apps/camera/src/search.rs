@@ -247,7 +247,12 @@ mod tests {
                 .map(|index| format!("/dev/video{index}"))
                 .collect();
             provider.sync(&context).unwrap();
-            let page = provider.search_page("camera", None, usize::MAX, usize::MAX);
+            let page = provider.search_page(
+                &ui::search::SearchQuery::new("camera"),
+                None,
+                usize::MAX,
+                usize::MAX,
+            );
             assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
             assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
             assert!(provider.stats().records <= MAX_CAMERA_SEARCH_RESOURCES);

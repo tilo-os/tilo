@@ -43,7 +43,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, caption, card, card_with_action, choice_row, rows, setting_row, value_row,
+    El, caption, card, card_with_action, choice_row, field_row, rows, setting_row, value_row,
 };
 
 fn connectivity_shown(state: ConnectivityState) -> String {
@@ -215,7 +215,7 @@ fn ipv4_key(uuid: &str, field: &str) -> String {
 }
 fn profile_label(profile: &SavedNetworkProfile) -> String {
     let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} · {}", profile.name, short_uuid)
+    format!("{} ({})", profile.name, short_uuid)
 }
 
 fn load_profile_settings(
@@ -231,19 +231,14 @@ fn load_profile_settings(
         .collect()
 }
 
-/// Nerd Font (Material Design Icons) Wi-Fi signal-strength glyph for a 0..=4
-/// bar level. These are the same MDI `wifi-strength-*` family the sidebar's
-/// Network icon draws, so they render as real signal arcs. Unicode
-/// block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and fall
-/// back to a `.notdef` tofu box — do not substitute those here.
-fn wifi_signal_glyph(signal: u8) -> &'static str {
-    match signal {
-        0 => "\u{f092b}", // wifi-strength-outline (no bars)
-        1 => "\u{f091f}", // wifi-strength-1
-        2 => "\u{f0922}", // wifi-strength-2
-        3 => "\u{f0925}", // wifi-strength-3
-        _ => "\u{f0928}", // wifi-strength-4 (full)
-    }
+/// The word for a 0..=4 bar signal level.
+fn wifi_signal_label(signal: u8) -> String {
+    t(match signal {
+        0 | 1 => "net-signal-weak",
+        2 => "net-signal-fair",
+        3 => "net-signal-good",
+        _ => "net-signal-strong",
+    })
 }
 
 /// Network-list provider — the prod impl shells out to nmcli, tests
@@ -1281,14 +1276,13 @@ impl NetworkPane {
             return vec![
                 caption(&t("net-vpn-empty")),
                 Box::new(
-                    Row::new().push(Box::new(Spacer::new())).push(Box::new(
-                        Button::new(
+                    Row::new()
+                        .push(Box::new(Spacer::new()))
+                        .push(Box::new(Button::new(
                             "settings.network.vpn.studio.open",
                             &t("net-open-vpn-studio"),
                             Some(Self::VPN_STUDIO_OVERVIEW_KEY),
-                        )
-                        .content_sized(),
-                    )),
+                        ))),
                 ),
             ];
         }
@@ -1298,20 +1292,16 @@ impl NetworkPane {
             let key = Self::vpn_key(&v.name);
             out.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&v.name).with_size(13.0)))
+                    .push(Box::new(Text::new(&v.name)))
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(
-                        Button::new(
-                            &format!("settings.network.vpn.studio.{}", v.name),
-                            &t("net-open-vpn-studio"),
-                            Some(&Self::vpn_studio_key(&v.name)),
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        &format!("settings.network.vpn.studio.{}", v.name),
+                        &t("net-open-vpn-studio"),
+                        Some(&Self::vpn_studio_key(&v.name)),
+                    )))
                     .push(Box::new(Toggle::new(&id, &key))),
             ));
         }
-        out.push(caption(&t("net-vpn-caption")));
         out
     }
 
@@ -1378,25 +1368,16 @@ impl NetworkPane {
     fn internet_access_card(&self) -> El {
         let connectivity = t("net-connectivity");
         let connectivity_value = connectivity_shown(self.connectivity);
-        let mut content = vec![
-            value_row(&connectivity, &connectivity_value),
-            caption(&t(if self.connectivity == ConnectivityState::Portal {
-                "net-portal-caption"
-            } else {
-                "net-connectivity-caption"
-            })),
-        ];
+        let mut content = vec![value_row(&connectivity, &connectivity_value)];
         if self.connectivity == ConnectivityState::Portal {
+            content.push(caption(&t("net-portal-caption")));
             content.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            "settings.network.captive-portal",
-                            &t("net-open-signin"),
-                            Some(CAPTIVE_PORTAL_KEY),
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        "settings.network.captive-portal",
+                        &t("net-open-signin"),
+                        Some(CAPTIVE_PORTAL_KEY),
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
         }
@@ -1437,18 +1418,13 @@ impl NetworkPane {
         } else if self.snapshot_request.is_pending() {
             wifi_rows.push(caption(&t("net-refreshing")));
         }
-        wifi_rows.push(Box::new(
-            Row::new().push(Box::new(Spacer::new())).push(Box::new(
-                Button::new(
-                    "settings.network.refresh",
-                    &t("net-refresh"),
-                    Some(REFRESH_KEY),
-                )
-                .content_sized(),
+        wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
+            Box::new(Button::new(
+                "settings.network.refresh",
+                &t("net-refresh"),
+                Some(REFRESH_KEY),
             )),
-        ));
-        wifi_rows.push(caption(&t("net-wifi-caption")));
-
+        )));
         card_with_action(&t("net-wifi"), wifi_toggle, rows(wifi_rows))
     }
 
@@ -1526,26 +1502,20 @@ impl NetworkPane {
             ),
             Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            "settings.network.hotspot.apply",
-                            &t("net-apply-start"),
-                            Some(HOTSPOT_APPLY_KEY),
-                        )
-                        .content_sized(),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            "settings.network.hotspot.qr",
-                            &if self.hotspot_qr_visible {
-                                t("net-hide-qr")
-                            } else {
-                                t("net-share-qr")
-                            },
-                            Some(HOTSPOT_QR_KEY),
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        "settings.network.hotspot.apply",
+                        &t("net-apply-start"),
+                        Some(HOTSPOT_APPLY_KEY),
+                    )))
+                    .push(Box::new(Button::new(
+                        "settings.network.hotspot.qr",
+                        &if self.hotspot_qr_visible {
+                            t("net-hide-qr")
+                        } else {
+                            t("net-share-qr")
+                        },
+                        Some(HOTSPOT_QR_KEY),
+                    )))
                     .push(Box::new(Spacer::new())),
             ),
         ];
@@ -1565,7 +1535,6 @@ impl NetworkPane {
                     .map_or_else(|| t("net-signal-unknown"), |dbm| format!("{dbm} dBm"));
                 hotspot_rows.push(value_row(&client.mac, &signal));
             }
-            hotspot_rows.push(caption(&t("net-hotspot-clients-caption")));
         }
         hotspot_rows
     }
@@ -1581,18 +1550,15 @@ impl NetworkPane {
     fn profile_card(&self) -> El {
         card_with_action(
             &t("net-profiles"),
-            Box::new(
-                Button::new(
-                    "settings.network.advanced",
-                    &if self.advanced_open {
-                        t("net-hide-policy")
-                    } else {
-                        t("net-show-policy")
-                    },
-                    Some(ADVANCED_KEY),
-                )
-                .content_sized(),
-            ),
+            Box::new(Button::new(
+                "settings.network.advanced",
+                &if self.advanced_open {
+                    t("net-hide-policy")
+                } else {
+                    t("net-show-policy")
+                },
+                Some(ADVANCED_KEY),
+            )),
             rows(self.profile_rows()),
         )
     }
@@ -1610,7 +1576,7 @@ impl NetworkPane {
         for profile in &wifi_profiles {
             rows_out.push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(&profile.name).with_size(13.0)))
+                    .push(Box::new(Text::new(&profile.name)))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(Button::new(
                         &format!("settings.network.profile.share.{}", profile.uuid),
@@ -1631,7 +1597,6 @@ impl NetworkPane {
                     )),
             ));
         }
-        rows_out.push(caption(&t("net-share-caption")));
         self.push_advanced_profile_rows(&wifi_profiles, &mut rows_out);
         rows_out
     }
@@ -1700,7 +1665,7 @@ impl NetworkPane {
                     .with_placeholder(&mac_shown("Stable per network")),
                 ),
             ));
-            rows_out.push(setting_row(
+            rows_out.push(field_row(
                 &t("net-proxy-url"),
                 Box::new(
                     TextInput::new(Vec::new())
@@ -1710,14 +1675,11 @@ impl NetworkPane {
             ));
             rows_out.push(Box::new(
                 Row::new()
-                    .push(Box::new(
-                        Button::new(
-                            &format!("settings.network.profile.policy.{}", profile.uuid),
-                            &t("net-apply-policy"),
-                            Some(&format!("network.profile.policy.{}", profile.uuid)),
-                        )
-                        .content_sized(),
-                    ))
+                    .push(Box::new(Button::new(
+                        &format!("settings.network.profile.policy.{}", profile.uuid),
+                        &t("net-apply-policy"),
+                        Some(&format!("network.profile.policy.{}", profile.uuid)),
+                    )))
                     .push(Box::new(Spacer::new())),
             ));
         }
@@ -1726,14 +1688,11 @@ impl NetworkPane {
     fn diagnostic_rows(&self) -> Vec<El> {
         let mut out: Vec<El> = vec![Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new(
-                        "settings.network.diagnostics",
-                        &t("net-run-diagnostics"),
-                        Some(DIAGNOSTICS_KEY),
-                    )
-                    .content_sized(),
-                ))
+                .push(Box::new(Button::new(
+                    "settings.network.diagnostics",
+                    &t("net-run-diagnostics"),
+                    Some(DIAGNOSTICS_KEY),
+                )))
                 .push(Box::new(Spacer::new())),
         )];
         if let Some(d) = &self.diagnostics {
@@ -1760,8 +1719,6 @@ impl NetworkPane {
             for recommendation in &d.recommendations {
                 out.push(caption(recommendation));
             }
-        } else {
-            out.push(caption(&t("net-diag-idle")));
         }
         out
     }
@@ -1810,7 +1767,6 @@ impl NetworkPane {
                     )))
                     .push(Box::new(Spacer::new())),
             ),
-            caption(&t("net-sim-pin-caption")),
         ];
         if let Some(first_sim) = self.sims.first() {
             rows.push(choice_row(
@@ -1933,24 +1889,21 @@ impl NetworkPane {
     /// view. The affordance remains visible, while the form appears only when
     /// someone has chosen to add that kind of network.
     fn enterprise_card(&self) -> El {
-        let mut content = vec![caption(&t("net-enterprise-caption"))];
+        let mut content = Vec::new();
         if self.enterprise_editor_open {
             content.extend(self.enterprise_rows());
         }
         content.push(Box::new(
             Row::new()
-                .push(Box::new(
-                    Button::new(
-                        "settings.network.enterprise.editor",
-                        &if self.enterprise_editor_open {
-                            t("net-close-enterprise")
-                        } else {
-                            t("net-setup-enterprise")
-                        },
-                        Some(ENTERPRISE_EDITOR_KEY),
-                    )
-                    .content_sized(),
-                ))
+                .push(Box::new(Button::new(
+                    "settings.network.enterprise.editor",
+                    &if self.enterprise_editor_open {
+                        t("net-close-enterprise")
+                    } else {
+                        t("net-setup-enterprise")
+                    },
+                    Some(ENTERPRISE_EDITOR_KEY),
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         card(&t("net-enterprise"), rows(content))
@@ -1976,15 +1929,18 @@ impl NetworkPane {
         Ok(config)
     }
 
-    /// One scanned-network row: signal + lock glyph + SSID on the left, a
-    /// Connect / Connected button on the right.
+    /// One scanned-network row: the Wi-Fi icon and name on the left, what the
+    /// network offers (its protection and signal) and a Connect / Connected
+    /// button on the right.
     fn network_row(&self, net: &WifiNetworkInfo) -> El {
-        let signal_glyph = wifi_signal_glyph(net.signal);
-        // A closed padlock for secure networks, its open-padlock pair for open
-        // ones — both from the MDI `lock` family the shipped fonts carry, so the
-        // security state reads at a glance without a stray unrelated glyph.
-        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f033f}" };
-        let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
+        let detail = t_args(
+            if net.secure {
+                "net-wifi-detail-secured"
+            } else {
+                "net-wifi-detail-open"
+            },
+            &[("signal", wifi_signal_label(net.signal).into())],
+        );
         let key = connect_key(&net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
         let cta_label = if net.connected {
@@ -1994,13 +1950,11 @@ impl NetworkPane {
         } else {
             t("net-connect")
         };
-        Box::new(
-            Row::new()
-                .push(Box::new(Text::new(&label).with_size(13.0)))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Button::new(&cta_id, &cta_label, Some(&key)).content_sized(),
-                )),
+        crate::widgets::icon_row(
+            ui::icons::Icon::Wifi,
+            &net.ssid,
+            &detail,
+            Box::new(Button::new(&cta_id, &cta_label, Some(&key))),
         )
     }
 
@@ -2020,15 +1974,12 @@ impl NetworkPane {
             .with_id(&field_id)
             .with_external_buffer(buffer)
             .with_secret(true)
-            .with_placeholder(&t("net-password"))
-            .with_font_size(13.0);
+            .with_placeholder(&t("net-password"));
         Box::new(
             Row::new()
                 .push(Box::new(field))
                 .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Button::new(&join_id, &t("net-join"), Some(&jk)).content_sized(),
-                )),
+                .push(Box::new(Button::new(&join_id, &t("net-join"), Some(&jk)))),
         )
     }
 
@@ -2124,7 +2075,6 @@ impl NetworkPane {
                         )))
                         .push(Box::new(Spacer::new())),
                 ),
-                caption(&t("net-ipv4-caption")),
             ]);
         }
         out
@@ -2986,7 +2936,7 @@ impl NetworkPane {
             let _ = tx.send((
                 NetworkJob::SimUnlock,
                 result.map(|()| NetworkJobSuccess::OperationCompleted {
-                    notice: "SIM unlocked.".into(),
+                    notice: "The SIM card is unlocked.".into(),
                 }),
             ));
         });
@@ -3452,37 +3402,26 @@ mod tests {
         }
     }
 
-    /// MDI signal glyphs, one row per network, refresh and the first snapshot via the wake.
+    /// One row per network, refresh and the first snapshot via the wake.
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn wifi_list_arrives_through_the_wake_and_renders_each_network() {
-        // Case `wifi_signal_glyph_uses_the_mdi_family_not_block_elements`.
-        // The signal indicator must use the Material Design Icons `wifi-strength`
-        // family (Private Use Area, `U+F09xx`) — the same family the sidebar's
-        // Network glyph uses and which the shipped fonts actually carry — never the
-        // Unicode block elements (`U+258x`), which fall back to a `.notdef` tofu
-        // box and convey no signal level.
+        // Case `wifi_signal_levels_are_worded_not_drawn_with_font_glyphs`.
+        // The signal level is a word: no private-use or block-element glyph
+        // that a font may not carry.
         {
-            for signal in 0u8..=6 {
-                let g = wifi_signal_glyph(signal);
-                let cp = g.chars().next().unwrap() as u32;
+            let levels: Vec<String> = (1u8..=4).map(wifi_signal_label).collect();
+            let unique: std::collections::HashSet<&String> = levels.iter().collect();
+            assert_eq!(unique.len(), 4, "each level reads differently");
+            for level in &levels {
                 assert!(
-                    (0xF091F..=0xF092B).contains(&cp),
-                    "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
-                );
-                // Never a Unicode block element (the old tofu bars).
-                assert!(
-                    !(0x2580..=0x259F).contains(&cp),
-                    "block-element bars are tofu"
+                    level.chars().all(|c| c.is_ascii_alphabetic() || c == ' '),
+                    "{level:?} is plain text"
                 );
             }
-            // Distinct levels for 1..=4 so strength is legible at a glance.
-            let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
-            let unique: std::collections::HashSet<&&str> = levels.iter().collect();
-            assert_eq!(unique.len(), 4, "each bar level is a distinct glyph");
         }
 
         // Case `wifi_list_renders_each_returned_network`.
@@ -4274,8 +4213,8 @@ mod tests {
                 },
             ]);
             assert_eq!(pane.vpns().len(), 2);
-            // 2 status rows + 1 caption.
-            assert_eq!(pane.vpn_rows().len(), 3);
+            // Two status rows.
+            assert_eq!(pane.vpn_rows().len(), 2);
         }
 
         // Case `vpn_rows_show_empty_state_when_none`.

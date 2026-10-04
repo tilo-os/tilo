@@ -441,22 +441,15 @@ impl SearchResultsView {
         };
         let selected = row.flat == self.cursor;
         let hovered = self.hover == Some(row.flat);
-        let selected_ink = colors.intent.on_inverted;
-
-        // Selection = a filled row (per the command palette convention);
-        // hover = a barely-there veneer, distinct from selection.
+        // Selection is the panel's strong lift, as the armed row of every
+        // menu; hover is a barely-there veneer, distinct from it.
+        let (armed_fill, selected_ink) = crate::widget::floating_surface::armed_row(theme);
         let lift = RoundedRect::from_rect(
             row.rect.inflate(0.0, -ROW_LIFT_INSET),
             f64::from(theme.tokens.radii.detail),
         );
         if selected {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.intent.inverted,
-                None,
-                &lift,
-            );
+            scene.fill(Fill::NonZero, transform, armed_fill, None, &lift);
         } else if hovered {
             // One step off the panel it sits on, polarity chosen the way
             // `hairline_on` chooses it — the white veneer this replaces was

@@ -177,7 +177,7 @@ pub const fn capability() -> SyncCapability {
     #[cfg(feature = "grayjay-sync")]
     return SyncCapability {
         available: true,
-        summary: "Encrypted Grayjay sync is available when the desktop secret broker is unlocked.",
+        summary: "Encrypted Grayjay sync is available when the desktop's secret store is unlocked.",
     };
     #[cfg(not(feature = "grayjay-sync"))]
     SyncCapability {
