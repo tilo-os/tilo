@@ -11,8 +11,8 @@ use ui::text_render::TextKind;
 use ui::tokens::SpacingStep;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Avatar, AvatarSize, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState,
-    Field, Form, FormSection, LabelPlacement, ListRow, ModalDialog, Property, PropertyList, Row,
+    Actions, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState, Field, Form,
+    FormSection, LabelPlacement, ListRow, ModalDialog, ObjectHeader, Property, PropertyList, Row,
     Scrollable, Section, SectionHeader, Spacer, Stack, StatGroup, StatTile, Text, TextInput,
     TextInputKind, ToggleGroup, Tone,
 };
@@ -138,23 +138,10 @@ fn detail_header(item: &SecretItem, requests: &Requests) -> Vec<Element> {
                 .push(Request::ToggleFavorite(id.clone()));
         })
     };
-    let name = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(text(&item.title, TextRole::Title))
-        .push(Box::new(
-            Text::new(kind_label(item.kind))
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ));
-    let title = Row::new()
-        .no_wrap()
-        .push(Box::new(
-            Avatar::person(&item.title, &item.id.0)
-                .square()
-                .size(AvatarSize::Large),
-        ))
-        .push(Box::new(name));
+    let title = ObjectHeader::new(&item.title)
+        .avatar(&item.title, &item.id.0)
+        .square()
+        .caption(kind_label(item.kind));
     let actions = Row::new()
         .push(Box::new(button(
             "passwords.copy",
@@ -194,15 +181,20 @@ fn properties(core: &Core, item: &SecretItem, requests: &Requests) -> Vec<Proper
     }
     let label = secret_label(item.kind);
     let revealed = core.revealed_value(&item.id);
+    let shown = revealed.is_some();
     let (value, action) = match revealed {
         Some(value) => (value, format!("Hide {}", secret_noun(item.kind))),
         None => (MASK, format!("Show {}", secret_noun(item.kind))),
     };
-    rows.push(
-        Property::new(label, value)
-            .with_kind(TextKind::Secret)
-            .action(Icon::Eye, action, ask(requests, Request::RevealSecret)),
-    );
+    let secret = Property::new(label, value)
+        .with_kind(TextKind::Secret)
+        .action(Icon::Eye, action, ask(requests, Request::RevealSecret));
+    // A masked value reads as hidden, not as a row of dots.
+    rows.push(if shown {
+        secret
+    } else {
+        secret.with_accessible_value("Hidden")
+    });
     if matches!(item.kind, SecretItemKind::Login | SecretItemKind::ApiKey)
         && !item.origins.is_empty()
     {
@@ -254,10 +246,10 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
             .with_kind(TextInputKind::Url)
             .with_placeholder("https://example.com"),
         DraftField::Password => input.with_secret(true),
-        DraftField::Notes => input.multiline(true).with_placeholder("Add a note"),
+        DraftField::Notes => input.with_min_lines(4).with_placeholder("Add a note"),
         DraftField::Tags => input.with_placeholder("Separate tags with commas"),
         DraftField::CustomFields => input
-            .multiline(true)
+            .with_min_lines(3)
             .with_placeholder("One per line, such as PIN = 1234"),
     };
     input

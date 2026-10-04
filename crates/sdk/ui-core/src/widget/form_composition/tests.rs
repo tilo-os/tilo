@@ -340,8 +340,8 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             );
         }
         assert!(
-            (controls[0][0] - controls[1][0]).abs() < 0.5,
-            "wide: sibling choosers share one column: {:?} {:?}",
+            (controls[0][0] + controls[0][2] - controls[1][0] - controls[1][2]).abs() < 0.5,
+            "wide: sibling choosers share one trailing edge: {:?} {:?}",
             controls[0],
             controls[1]
         );
@@ -349,7 +349,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         let narrow = FrameHarness::new_with_theme(
             crate::State::new(),
             trailing_fixture(),
-            (320, 600),
+            (240, 600),
             Theme::dark(),
         );
         let snapshot = narrow.inspection();

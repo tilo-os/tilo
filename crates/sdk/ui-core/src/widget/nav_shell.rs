@@ -7,25 +7,32 @@
 //! else, at the shell metrics (`theme.tokens.metrics`):
 //!
 //! - **One header row** across the top of the window holds each column's
-//!   header (title and actions), so the row reads as one unified toolbar.
-//!   Windows have no title bar; this row is the window's top edge.
+//!   header (title, an optional count, a leading fill such as a path bar,
+//!   and actions), so the row reads as one unified toolbar. Windows have no
+//!   title bar; this row is the window's top edge. Its geometry is
+//!   [`crate::chrome::HeaderRowFace`], the same face a painted app uses.
+//!   Actions that do not fit first collapse to their icons, then move into
+//!   a trailing More menu.
 //! - **The sidebar toggle** is a Plain icon button (`Icon::PanelLeft`) the
-//!   shell draws at the top-leading corner of the sidebar; with the sidebar
-//!   hidden it moves to the leading edge of the next column's header. One
-//!   shortcut toggles it in every app (`HostShortcut::Sidebar`), and the
-//!   button publishes the action ("Show sidebar" / "Hide sidebar") to the
-//!   palette and to agents.
+//!   shell draws at the window's top-leading corner, on the sidebar while it
+//!   shows and on the next column while it is hidden. One shortcut toggles
+//!   it in every app (`HostShortcut::Sidebar`), and the button publishes the
+//!   action ("Show sidebar" / "Hide sidebar") to the palette and to agents.
+//! - **Back** is the shell's: a narrow window's push stack, and an app's own
+//!   page stack ([`NavShell::with_back`]), share one `ChevronLeft` chip at
+//!   the leading edge of the content's header.
 //! - **History** is the window's: where the app has History, the host puts
 //!   its control (`Icon::History`, a Plain icon button named "History") at
 //!   the trailing edge of the row, and it reads as on while History shows.
 //!   The app adds no History button of its own.
 //! - **Responsive:** below the width where the content would be squeezed
-//!   the sidebar collapses into a floating drawer over the content (or, in
-//!   [`NavMode::Push`], becomes the first screen of a push stack); the
+//!   the sidebar collapses into a floating drawer under the header row (or,
+//!   in [`NavMode::Push`], becomes the first screen of a push stack); the
 //!   overview and the content become push screens with a Back button when
 //!   they no longer fit side by side; the inspector becomes a drawer from
-//!   the trailing edge. A person's show/hide choice is remembered per window
-//!   size class.
+//!   the trailing edge. Behind an open drawer the other columns stay laid
+//!   out and painted, inert under the scrim, and the header row stays live.
+//!   A person's show/hide choice is remembered per window size class.
 //! - **Resizable:** dragging the sidebar's trailing edge resizes it;
 //!   dragging it below its minimum width hides it.
 //! - **Regions:** the sidebar stands on `Region::Sidebar`, the inspector on
@@ -37,6 +44,11 @@
 //! There is no width, breakpoint, colour or padding to pass: the shell is
 //! semantic. A filter field for the sidebar's list goes in
 //! [`NavShell::with_filter`] (Ctrl+F focuses it).
+//!
+//! Slots and headers change in place (`set_content`, `set_content_header`,
+//! …). A change made while an event is being routed takes effect when the
+//! host next builds the tree, never in the middle of the event, so the host
+//! never holds a widget the shell has dropped.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -49,6 +61,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::LocalState;
+use crate::chrome::HeaderRowMetrics;
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::platform::{HostShortcut, PlatformConventions};
@@ -56,13 +69,15 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::TextRole;
 use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, Element, ModelPath, TaffyTreeExt, Widget, WidgetLayoutError,
+    AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
 };
+
+mod header_parts;
+use header_parts::{HeaderTitle, MoreActions};
 
 /// Caps the per-frame dt so a stale clock (first frame, or a parked event
 /// loop) can't teleport a slide past its animation.
@@ -118,6 +133,18 @@ pub enum InspectorPlacement {
     Drawer,
 }
 
+/// Where the overview is this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverviewPlacement {
+    /// No overview.
+    #[default]
+    None,
+    /// The overview list, beside the content or as a push screen.
+    List,
+    /// Collapsed into its rail beside the content ([`NavShell::overview_rail`]).
+    Rail,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Column {
     Sidebar,
@@ -142,13 +169,56 @@ impl Column {
             Self::Inspector => 3,
         }
     }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Sidebar => "sidebar",
+            Self::Overview => "overview",
+            Self::Content => "content",
+            Self::Inspector => "inspector",
+        }
+    }
+}
+
+/// `array`'s entry for `column`.
+fn at<T>(array: &[T; 4], column: Column) -> &T {
+    let [sidebar, overview, content, inspector] = array;
+    match column {
+        Column::Sidebar => sidebar,
+        Column::Overview => overview,
+        Column::Content => content,
+        Column::Inspector => inspector,
+    }
+}
+
+/// `array`'s entry for `column`, to change.
+fn at_mut<T>(array: &mut [T; 4], column: Column) -> &mut T {
+    let [sidebar, overview, content, inspector] = array;
+    match column {
+        Column::Sidebar => sidebar,
+        Column::Overview => overview,
+        Column::Content => content,
+        Column::Inspector => inspector,
+    }
 }
 
 /// One retained child of the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Part {
     Body(Column),
-    Actions(Column),
+    /// The overview's rail, standing in for the overview where the list
+    /// does not fit.
+    Rail,
+    /// A column's title (and count) in the header row.
+    Title(Column),
+    /// The fill between a header's leading buttons and its actions.
+    Leading(Column),
+    /// One of a header's actions.
+    Action(Column, usize),
+    /// The More button the actions overflow into.
+    More(Column),
+    /// Controls under the overview's header.
+    Controls,
     Filter,
     Toggle,
     Back,
@@ -159,15 +229,59 @@ enum Part {
 }
 
 /// A column's header: a title the shell paints and actions the app owns.
-#[derive(Default)]
 struct Header {
-    title: Option<String>,
-    actions: Option<Element>,
+    title: HeaderTitle,
+    binding: Option<LocalBinding<String>>,
+    actions: Vec<Element>,
+    more: MoreActions,
+    leading: Option<Element>,
+}
+
+impl Header {
+    fn new(column: Column) -> Self {
+        Self {
+            title: HeaderTitle::new(),
+            binding: None,
+            actions: Vec::new(),
+            more: MoreActions::new(&format!("nav-shell-more-{}", column.key())),
+            leading: None,
+        }
+    }
+}
+
+/// What an optional slot becomes at the next build: the element, or none.
+struct Staged(Option<Element>);
+
+impl Staged {
+    fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+/// Slot and header changes waiting for the next build of the host tree.
+#[derive(Default)]
+struct Pending {
+    bodies: [Option<Staged>; 4],
+    actions: [Option<Vec<Element>>; 4],
+    leading: [Option<Staged>; 4],
+    controls: Option<Staged>,
+    rail: Option<Staged>,
+}
+
+impl Pending {
+    fn is_empty(&self) -> bool {
+        self.bodies.iter().all(Option::is_none)
+            && self.actions.iter().all(Option::is_none)
+            && self.leading.iter().all(Option::is_none)
+            && self.controls.is_none()
+            && self.rail.is_none()
+    }
 }
 
 /// The shell metrics resolved against the theme the tree was built with.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
+    row: HeaderRowMetrics,
     header: f64,
     chip: f64,
     inset: f64,
@@ -191,16 +305,13 @@ impl Metrics {
         let m = theme.tokens.metrics;
         let s = theme.tokens.spacing;
         let growth = f64::from(theme.text_growth());
-        let chip = crate::widget::text_control_height(
-            f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
-            theme,
-        );
-        let inset = f64::from(s.s3);
+        let row = HeaderRowMetrics::resolve(theme);
         Self {
-            header: f64::from(m.header_height).max(chip + 2.0 * inset),
-            chip,
-            inset,
-            gap: f64::from(s.s2),
+            row,
+            header: row.height,
+            chip: row.chip,
+            inset: row.inset,
+            gap: row.gap,
             sidebar: f64::from(m.sidebar_width) * growth,
             sidebar_min: f64::from(m.sidebar_min_width) * growth,
             sidebar_max: f64::from(m.sidebar_max_width) * growth,
@@ -226,20 +337,45 @@ impl Default for Metrics {
     }
 }
 
+/// How a column's actions fit its header, decided by the layout policy.
+#[derive(Clone, Debug, Default)]
+struct ColumnFit {
+    /// Which actions are buttons that can show their icon alone.
+    capable: Vec<bool>,
+    /// Which of them show their icon alone right now.
+    compact_now: Vec<bool>,
+    /// Each action's width with its label, measured while it showed it.
+    full: Vec<Option<f64>>,
+    /// The labelled buttons collapse to their icons.
+    compact: bool,
+    /// How many actions stand in the row; the rest are in the More menu.
+    /// `None` until the first layout decides.
+    shown: Option<usize>,
+}
+
 /// Everything the geometry depends on. Shared with the layout policy the
 /// host runs, so the policy and the shell compute the same rects.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "which slots the app filled are independent facts"
+)]
 #[derive(Clone, Debug)]
 struct Inputs {
     mode: NavMode,
     metrics: Metrics,
     has_sidebar: bool,
     has_overview: bool,
+    has_rail: bool,
     has_inspector: bool,
     has_filter: bool,
+    has_controls: bool,
     /// The window's History control, where the host gave the shell one.
     history: Option<HistoryControl>,
     titled: [bool; 4],
-    with_actions: [bool; 4],
+    actions: [usize; 4],
+    leading: [bool; 4],
+    /// The app's own page stack can go back ([`NavShell::with_back`]).
+    content_back: bool,
     /// The docked sidebar width a person dragged to, authored at 1×.
     user_sidebar: Option<f64>,
     sidebar: FlapState,
@@ -252,6 +388,8 @@ struct Inputs {
     push_progress: f64,
     /// The parts in the order they were built (their placement index).
     parts: Vec<Part>,
+    /// How each column's actions fit, written by the layout policy.
+    fit: Rc<RefCell<[ColumnFit; 4]>>,
 }
 
 impl Default for Inputs {
@@ -261,11 +399,15 @@ impl Default for Inputs {
             metrics: Metrics::default(),
             has_sidebar: false,
             has_overview: false,
+            has_rail: false,
             has_inspector: false,
             has_filter: false,
+            has_controls: false,
             history: None,
             titled: [false; 4],
-            with_actions: [false; 4],
+            actions: [0; 4],
+            leading: [false; 4],
+            content_back: false,
             user_sidebar: None,
             sidebar: FlapState::open_when_docked(),
             inspector: FlapState::open_when_docked(),
@@ -274,6 +416,7 @@ impl Default for Inputs {
             push_from: None,
             push_progress: 1.0,
             parts: Vec::new(),
+            fit: Rc::new(RefCell::new(Default::default())),
         }
     }
 }
@@ -288,15 +431,13 @@ impl Inputs {
             .map_or(m.sidebar, |authored| authored * m.scale)
             .clamp(m.sidebar_min, m.sidebar_max)
     }
-}
 
-/// How a part is placed by the layout policy.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Placement {
-    /// Exactly this rect.
-    Exact(Rect),
-    /// Its intrinsic size, at the trailing end of this band, centred.
-    Trailing(Rect),
+    fn header_wanted(&self, column: Column) -> bool {
+        let i = column.index();
+        self.titled.get(i).copied().unwrap_or(false)
+            || self.actions.get(i).copied().unwrap_or(0) > 0
+            || self.leading.get(i).copied().unwrap_or(false)
+    }
 }
 
 /// The shell's geometry for one size, in coordinates local to the shell.
@@ -304,6 +445,7 @@ enum Placement {
 pub struct NavGeometry {
     pub sidebar: SidebarPlacement,
     pub inspector: InspectorPlacement,
+    pub overview: OverviewPlacement,
     /// The overview and content stand side by side.
     pub side_by_side: bool,
     /// The push stack's screens, first to last, when it has more than one.
@@ -316,9 +458,13 @@ pub struct NavGeometry {
     pub overview_column: Rect,
     pub content_column: Rect,
     pub inspector_column: Rect,
+    /// The overview's rail, where the overview collapsed into it.
+    pub rail: Rect,
     bodies: [Rect; 4],
     headers: [Rect; 4],
     pub filter: Rect,
+    /// The band of the controls under the overview's header.
+    pub controls: Rect,
     pub toggle: Rect,
     pub back: Rect,
     pub inspector_toggle: Rect,
@@ -365,9 +511,11 @@ impl NavGeometry {
             overview_column: t(self.overview_column),
             content_column: t(self.content_column),
             inspector_column: t(self.inspector_column),
+            rail: t(self.rail),
             bodies: self.bodies.map(t),
             headers: self.headers.map(t),
             filter: t(self.filter),
+            controls: t(self.controls),
             toggle: t(self.toggle),
             back: t(self.back),
             inspector_toggle: t(self.inspector_toggle),
@@ -378,10 +526,14 @@ impl NavGeometry {
         }
     }
 
-    /// The parts this geometry shows, in build order (back to front).
+    /// The parts this geometry shows, in build order (back to front). Behind
+    /// an open drawer the other columns stay: laid out and painted, inert.
     fn visible_parts(&self, inputs: &Inputs) -> Vec<Part> {
         let mut parts = Vec::new();
         let shows = |r: Rect| r.width() > 0.0 && r.height() > 0.0;
+        if inputs.has_rail && shows(self.rail) {
+            parts.push(Part::Rail);
+        }
         for column in [
             Column::Overview,
             Column::Content,
@@ -397,37 +549,44 @@ impl NavGeometry {
             if !present || !shows(self.column(column)) {
                 continue;
             }
-            if self.modal() && !self.in_drawer(column) {
-                continue;
-            }
             parts.push(Part::Body(column));
-            if inputs
-                .with_actions
-                .get(column.index())
-                .copied()
-                .unwrap_or(false)
-                && shows(self.header(column))
-            {
-                parts.push(Part::Actions(column));
+            let i = column.index();
+            if shows(self.header(column)) {
+                let docked_rail = inputs.mode == NavMode::Docked && column == Column::Sidebar;
+                if inputs.titled.get(i).copied().unwrap_or(false) && !docked_rail {
+                    parts.push(Part::Title(column));
+                }
+                if inputs.leading.get(i).copied().unwrap_or(false) {
+                    parts.push(Part::Leading(column));
+                }
+                let actions = inputs.actions.get(i).copied().unwrap_or(0);
+                for action in 0..actions {
+                    parts.push(Part::Action(column, action));
+                }
+                if actions > 0 {
+                    parts.push(Part::More(column));
+                }
             }
             if inputs.has_filter && self.filter_column(inputs) == Some(column) && shows(self.filter)
             {
                 parts.push(Part::Filter);
             }
+            if inputs.has_controls && column == Column::Overview && shows(self.controls) {
+                parts.push(Part::Controls);
+            }
         }
         if shows(self.back) {
             parts.push(Part::Back);
         }
-        if shows(self.inspector_toggle) && (!self.modal() || self.inspector_modal()) {
+        if shows(self.inspector_toggle) {
             parts.push(Part::InspectorToggle);
         }
         if let Some(control) = inputs.history
             && shows(self.history)
-            && !self.modal()
         {
             parts.push(Part::History(control.is_open()));
         }
-        if shows(self.toggle) && (!self.modal() || self.sidebar_modal()) {
+        if shows(self.toggle) {
             parts.push(Part::Toggle);
         }
         parts
@@ -441,7 +600,8 @@ impl NavGeometry {
         self.inspector == InspectorPlacement::Drawer && self.inspector_column.width() > 0.0
     }
 
-    /// An open drawer is modal: only it takes input and is exposed.
+    /// An open drawer is modal: the columns under its scrim take no input
+    /// and are not exposed; the header row stays live.
     fn modal(&self) -> bool {
         self.sidebar_modal() || self.inspector_modal()
     }
@@ -450,6 +610,14 @@ impl NavGeometry {
         match column {
             Column::Sidebar => self.sidebar_modal(),
             Column::Inspector => self.inspector_modal(),
+            Column::Overview | Column::Content => false,
+        }
+    }
+
+    fn floating(&self, column: Column) -> bool {
+        match column {
+            Column::Sidebar => self.sidebar == SidebarPlacement::Drawer,
+            Column::Inspector => self.inspector == InspectorPlacement::Drawer,
             Column::Overview | Column::Content => false,
         }
     }
@@ -464,20 +632,35 @@ impl NavGeometry {
         }
     }
 
-    fn placement(&self, part: Part) -> Placement {
-        match part {
-            Part::Body(column) => Placement::Exact(self.body(column)),
-            Part::Actions(column) => Placement::Trailing(self.actions_band(column)),
-            Part::Filter => Placement::Exact(self.filter),
-            Part::Toggle => Placement::Exact(self.toggle),
-            Part::Back => Placement::Exact(self.back),
-            Part::InspectorToggle => Placement::Exact(self.inspector_toggle),
-            Part::History(_) => Placement::Exact(self.history),
+    /// Where the title (or, without one, the leading fill) of `column`'s
+    /// header starts: after the shell's leading buttons in it, else at the
+    /// content gutter (a sidebar's at the buttons' inset).
+    fn lead_end(&self, column: Column, m: &Metrics) -> f64 {
+        let header = self.header(column);
+        let mut x = if column == Column::Sidebar {
+            header.x0 + m.inset
+        } else {
+            header.x0 + m.row.gutter
+        };
+        for (button, home) in [
+            (self.toggle, self.toggle_column),
+            (self.back, self.back_column),
+        ] {
+            if home == Some(column) && button.width() > 0.0 {
+                x = x.max(button.x1 + m.gap);
+            }
         }
+        x
     }
 
-    /// The run of a header the app's actions may take: from after the title
-    /// lead to before the trailing shell buttons.
+    /// The trailing end of `column`'s actions: before the shell's trailing
+    /// buttons in it, one inset in.
+    fn trail_start(&self, column: Column, m: &Metrics) -> f64 {
+        self.actions_band(column).x1 - m.inset
+    }
+
+    /// The run of a header the app's actions may take: from the header's
+    /// start to before the trailing shell buttons.
     fn actions_band(&self, column: Column) -> Rect {
         let header = self.header(column);
         if header == Rect::ZERO {
@@ -557,10 +740,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         InspectorPlacement::Drawer
     };
-    let inspector_layout = match g.inspector {
-        InspectorPlacement::Drawer => SplitLayout::Overlay,
-        InspectorPlacement::Docked | InspectorPlacement::None => SplitLayout::Docked,
-    };
+    let inspector_layout = inspector_layout_of(g.inspector);
     let inspector_open = inputs.inspector.is_open(inspector_layout);
     let inspector_reveal = inputs.inspector.reveal_in(inspector_layout);
     let inspector_target = if g.inspector == InspectorPlacement::Docked && inspector_open {
@@ -574,9 +754,19 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         0.0
     };
 
-    // 3. Overview and content side by side while both fit.
+    // 3. Overview and content side by side while both fit; where the list
+    //    does not but its rail does, the overview collapses into the rail.
     let region_target = w - docked_target - inspector_target;
-    g.side_by_side = !inputs.has_overview || region_target >= ow + m.detail_min;
+    let list_fits = region_target >= ow + m.detail_min;
+    let rail_fits = inputs.has_rail && region_target >= m.rail + m.detail_min;
+    g.overview = if !inputs.has_overview {
+        OverviewPlacement::None
+    } else if !list_fits && rail_fits {
+        OverviewPlacement::Rail
+    } else {
+        OverviewPlacement::List
+    };
+    g.side_by_side = !inputs.has_overview || list_fits || rail_fits;
 
     // 4. The push stack.
     let mut stack = Vec::new();
@@ -601,8 +791,8 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     let needs_header = inputs.has_sidebar
         || inputs.has_inspector
         || inputs.history.is_some()
-        || inputs.titled.iter().any(|t| *t)
-        || inputs.with_actions.iter().any(|a| *a)
+        || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
+        || inputs.content_back
         || stack.len() > 1;
     g.header_height = if needs_header { m.header.min(h) } else { 0.0 };
     let hh = g.header_height;
@@ -613,6 +803,9 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             Rect::ZERO
         }
     };
+    // A floating drawer stands under the header row, `s2` in.
+    let drawer_top = if hh > 0.0 { hh + m.gap } else { m.gap };
+    let drawer_bottom = (h - m.gap).max(drawer_top);
 
     // 6. Columns.
     let region = Rect::new(docked_now, 0.0, (w - inspector_now).max(docked_now), h);
@@ -623,6 +816,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     // Sidebar.
     let mut sidebar_body = Rect::ZERO;
+    let mut sidebar_header = Rect::ZERO;
     match g.sidebar {
         SidebarPlacement::None => {}
         SidebarPlacement::Docked => {
@@ -631,20 +825,17 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 // The body keeps its width and slides under the edge, so its
                 // rows never reflow while it collapses.
                 sidebar_body = Rect::new(docked_now - sw, hh, docked_now, h);
+                sidebar_header = header_of(g.sidebar_column);
             }
         }
         SidebarPlacement::Drawer => {
             if sidebar_reveal > 0.001 {
                 let dw = m.drawer.min((w - 2.0 * m.gap).max(0.0));
                 let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
-                g.sidebar_column = Rect::new(x0, m.gap, x0 + dw, (h - m.gap).max(m.gap));
-                sidebar_body = Rect::new(
-                    g.sidebar_column.x0,
-                    hh.max(g.sidebar_column.y0),
-                    g.sidebar_column.x1,
-                    g.sidebar_column.y1,
-                );
-                g.scrim = Rect::new(0.0, 0.0, w, h);
+                g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
+                (sidebar_header, sidebar_body) =
+                    drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
+                g.scrim = Rect::new(0.0, hh, w, h);
                 g.scrim_strength =
                     crate::widget::sidebar::DRAWER_SCRIM_STRENGTH * unit_f32(sidebar_reveal);
             }
@@ -654,21 +845,24 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             if x > -w && x < w {
                 g.sidebar_column = Rect::new(x, 0.0, x + w, h);
                 sidebar_body = Rect::new(x, hh, x + w, h);
+                sidebar_header = header_of(g.sidebar_column);
             }
         }
     }
     // Overview and content.
     if g.side_by_side {
         let x = region.x0 + screen_x(NavPane::Content);
-        let ow_now = if inputs.has_overview {
-            ow.min((region_w - m.detail_min).max(0.0))
-        } else {
-            0.0
+        let lead = match g.overview {
+            OverviewPlacement::List => ow.min((region_w - m.detail_min).max(0.0)),
+            OverviewPlacement::Rail => m.rail.min(region_w),
+            OverviewPlacement::None => 0.0,
         };
-        if inputs.has_overview {
-            g.overview_column = Rect::new(x, 0.0, x + ow_now, h);
+        match g.overview {
+            OverviewPlacement::List => g.overview_column = Rect::new(x, 0.0, x + lead, h),
+            OverviewPlacement::Rail => g.rail = Rect::new(x, 0.0, x + lead, h),
+            OverviewPlacement::None => {}
         }
-        g.content_column = Rect::new(x + ow_now, 0.0, x + region_w, h);
+        g.content_column = Rect::new(x + lead, 0.0, x + region_w, h);
     } else {
         let ox = region.x0 + screen_x(NavPane::Overview);
         let cx = region.x0 + screen_x(NavPane::Content);
@@ -681,27 +875,28 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     }
     // Inspector.
     let mut inspector_body = Rect::ZERO;
+    let mut inspector_header = Rect::ZERO;
     match g.inspector {
         InspectorPlacement::None => {}
         InspectorPlacement::Docked => {
             if inspector_now > 0.0 {
                 g.inspector_column = Rect::new(w - inspector_now, 0.0, w, h);
                 inspector_body = Rect::new(w - inspector_now, hh, w - inspector_now + iw, h);
+                inspector_header = header_of(g.inspector_column);
             }
         }
         InspectorPlacement::Drawer => {
             if inspector_reveal > 0.001 {
                 let dw = iw.min((w - 2.0 * m.gap).max(0.0));
                 let x1 = w - m.gap + (dw + m.gap) * (1.0 - inspector_reveal);
-                g.inspector_column = Rect::new(x1 - dw, m.gap, x1, (h - m.gap).max(m.gap));
-                inspector_body = Rect::new(
-                    g.inspector_column.x0,
-                    hh.max(g.inspector_column.y0),
-                    g.inspector_column.x1,
-                    g.inspector_column.y1,
+                g.inspector_column = Rect::new(x1 - dw, drawer_top, x1, drawer_bottom);
+                (inspector_header, inspector_body) = drawer_split(
+                    g.inspector_column,
+                    hh,
+                    inputs.header_wanted(Column::Inspector),
                 );
                 if g.scrim == Rect::ZERO {
-                    g.scrim = Rect::new(0.0, 0.0, w, h);
+                    g.scrim = Rect::new(0.0, hh, w, h);
                     g.scrim_strength =
                         crate::widget::sidebar::DRAWER_SCRIM_STRENGTH * unit_f32(inspector_reveal);
                 }
@@ -711,14 +906,10 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
 
     // 7. Headers and bodies.
     g.headers = [
-        drawer_header(&g.sidebar_column, hh, g.sidebar == SidebarPlacement::Drawer),
+        sidebar_header,
         header_of(g.overview_column),
         header_of(g.content_column),
-        drawer_header(
-            &g.inspector_column,
-            hh,
-            g.inspector == InspectorPlacement::Drawer,
-        ),
+        inspector_header,
     ];
     let body_of = |col: Rect| {
         if col.width() > 0.0 {
@@ -733,68 +924,91 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         body_of(g.content_column),
         inspector_body,
     ];
+    if g.rail.width() > 0.0 {
+        g.rail = Rect::new(g.rail.x0, hh, g.rail.x1, g.rail.y1);
+    }
 
-    // 8. The filter field sits under its column's header.
+    // 8. The filter field and the overview's controls sit under their
+    //    column's header, one control band each.
+    let take_band = |g: &mut NavGeometry, column: Column| -> Rect {
+        let body = g.body(column);
+        if g.column(column).width() <= 0.0 || body.height() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let top = body.y0;
+        let band = Rect::new(
+            body.x0 + m.inset,
+            top,
+            (body.x1 - m.inset).max(body.x0 + m.inset),
+            top + m.filter,
+        );
+        if let Some(slot) = g.bodies.get_mut(column.index()) {
+            slot.y0 = (top + m.filter + m.gap).min(slot.y1);
+        }
+        band
+    };
     if inputs.has_filter
         && let Some(column) = g.filter_column(inputs)
     {
-        let col = g.column(column);
-        let body = g.body(column);
-        if col.width() > 0.0 && body.height() > 0.0 {
-            let top = body.y0;
-            g.filter = Rect::new(
-                body.x0 + m.inset,
-                top,
-                (body.x1 - m.inset).max(body.x0 + m.inset),
-                top + m.filter,
-            );
-            if let Some(slot) = g.bodies.get_mut(column.index()) {
-                slot.y0 = (top + m.filter + m.gap).min(slot.y1);
-            }
-        }
+        g.filter = take_band(&mut g, column);
+    }
+    if inputs.has_controls && inputs.has_overview {
+        g.controls = take_band(&mut g, Column::Overview);
     }
 
     // 9. The shell's own buttons.
-    let chip_in = |col: Rect, header: Rect, leading: bool| {
-        if header == Rect::ZERO {
-            return Rect::ZERO;
-        }
-        let y = header.y0 + (header.height() - m.chip) / 2.0;
-        let x = if leading {
-            col.x0.max(header.x0) + m.inset
-        } else {
-            header.x1 - m.inset - m.chip
-        };
-        Rect::new(x, y, x + m.chip, y + m.chip)
-    };
+
     let front_pane = stack.get(front).copied().unwrap_or(NavPane::Content);
     let front_column = match front_pane {
         NavPane::Sidebar => Column::Sidebar,
         NavPane::Overview => Column::Overview,
-        NavPane::Content if inputs.has_overview && g.side_by_side => Column::Overview,
+        NavPane::Content if inputs.has_overview && g.overview_column.width() > 0.0 => {
+            Column::Overview
+        }
         NavPane::Content => Column::Content,
     };
-    if stack.len() > 1 && front > 0 {
-        g.back_column = Some(front_column);
-        g.back = chip_in(g.column(front_column), g.header(front_column), true);
-    } else if inputs.has_sidebar && g.sidebar == SidebarPlacement::Docked {
+    let push_back = stack.len() > 1 && front > 0;
+    let window_row = Rect::new(0.0, 0.0, w, hh);
+    if hh > 0.0
+        && !push_back
+        && inputs.has_sidebar
+        && matches!(
+            g.sidebar,
+            SidebarPlacement::Docked | SidebarPlacement::Drawer
+        )
+    {
         // Pinned to the window's top-leading corner, on the sidebar while it
-        // shows and on the next column while it is hidden, so it never
-        // chases a sliding edge.
-        g.toggle = chip_in(Rect::new(0.0, 0.0, w, h), Rect::new(0.0, 0.0, w, hh), true);
-        g.toggle_column = Some(if g.sidebar_column.x1 >= g.toggle.x1 {
-            Column::Sidebar
+        // shows docked and on the next column otherwise, so it never chases
+        // a sliding edge (a drawer opens under the row, beside it).
+        g.toggle = m.row.leading_chip(window_row, 0);
+        g.toggle_column = Some(
+            if g.sidebar == SidebarPlacement::Docked && g.sidebar_column.x1 >= g.toggle.x1 {
+                Column::Sidebar
+            } else {
+                front_column
+            },
+        );
+    }
+    let back_column = if push_back {
+        Some(front_column)
+    } else if inputs.content_back && g.content_column.width() > 0.0 {
+        Some(Column::Content)
+    } else {
+        None
+    };
+    if let Some(column) = back_column
+        && g.header(column) != Rect::ZERO
+    {
+        let slot = usize::from(g.toggle_column == Some(column) && g.toggle.width() > 0.0);
+        let row = g.header(column);
+        g.back = if slot == 0 {
+            m.row.leading_chip(row, 0)
         } else {
-            front_column
-        });
-    } else if inputs.has_sidebar && g.sidebar == SidebarPlacement::Drawer {
-        let column = if sidebar_open {
-            Column::Sidebar
-        } else {
-            front_column
+            // After the toggle, which is pinned to the window's corner.
+            let x = g.toggle.x1 + m.gap;
+            Rect::new(x, g.toggle.y0, x + m.chip, g.toggle.y1)
         };
-        g.toggle_column = Some(column);
-        g.toggle = chip_in(g.column(column), g.header(column), true);
+        g.back_column = Some(column);
     }
     // History stands in the window's top-trailing corner: the trailing edge
     // of the column that reaches the window's trailing edge (never a drawer).
@@ -808,29 +1022,30 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         .into_iter()
         .find(|column| {
             let header = g.header(*column);
-            !g.in_drawer(*column)
+            !g.floating(*column)
                 && g.column(*column).width() > 0.0
                 && header.x0 < w - 0.5
                 && header.x1 >= w - 0.5
         })
     {
         g.history_column = Some(column);
-        g.history = chip_in(g.column(column), g.header(column), false);
+        g.history = m.row.trailing_chip(g.header(column), 0);
     }
-    if inputs.has_inspector {
-        let column = match g.inspector {
-            InspectorPlacement::Docked | InspectorPlacement::Drawer if inspector_open => {
-                Column::Inspector
-            }
-            _ => Column::Content,
+    if inputs.has_inspector && hh > 0.0 {
+        // Docked and open, the toggle heads the inspector; otherwise it
+        // stands in the content's header (a drawer opens under it).
+        let column = if g.inspector == InspectorPlacement::Docked && inspector_open {
+            Column::Inspector
+        } else if g.content_column.width() > 0.0 {
+            Column::Content
+        } else {
+            front_column
         };
-        let header = g.header(column);
-        if header != Rect::ZERO && g.column(column).width() > 0.0 {
+        let row = g.header(column);
+        if row != Rect::ZERO && g.column(column).width() > 0.0 {
             g.inspector_toggle_column = Some(column);
-            g.inspector_toggle = chip_in(g.column(column), header, false);
-            if g.history_column == Some(column) && !g.inspector_modal() {
-                g.inspector_toggle = g.inspector_toggle - Vec2::new(m.chip + m.gap, 0.0);
-            }
+            let slot = usize::from(g.history_column == Some(column));
+            g.inspector_toggle = m.row.trailing_chip(row, slot);
         }
     }
     // Content is fully hidden by a pushed screen: no buttons on it.
@@ -851,24 +1066,33 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     g
 }
 
-fn drawer_header(col: &Rect, hh: f64, floating: bool) -> Rect {
-    if hh <= 0.0 || col.width() <= 0.0 {
-        return Rect::ZERO;
+/// A floating drawer's header (when its column has one) and body.
+fn drawer_split(col: Rect, hh: f64, header: bool) -> (Rect, Rect) {
+    if col.width() <= 0.0 {
+        return (Rect::ZERO, Rect::ZERO);
     }
-    // A floating drawer's header ends where the window's header row ends, so
-    // titles line up across the drawer and the content behind it.
-    let y1 = if floating {
-        hh.max(col.y0)
+    if header && hh > 0.0 {
+        let y1 = (col.y0 + hh).min(col.y1);
+        (
+            Rect::new(col.x0, col.y0, col.x1, y1),
+            Rect::new(col.x0, y1, col.x1, col.y1),
+        )
     } else {
-        col.y0 + hh
-    };
-    Rect::new(col.x0, col.y0, col.x1, y1)
+        (Rect::ZERO, col)
+    }
 }
 
 fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
     match sidebar {
         SidebarPlacement::Drawer | SidebarPlacement::Screen => SplitLayout::Overlay,
         SidebarPlacement::Docked | SidebarPlacement::None => SplitLayout::Docked,
+    }
+}
+
+fn inspector_layout_of(inspector: InspectorPlacement) -> SplitLayout {
+    match inspector {
+        InspectorPlacement::Drawer => SplitLayout::Overlay,
+        InspectorPlacement::Docked | InspectorPlacement::None => SplitLayout::Docked,
     }
 }
 
@@ -920,6 +1144,64 @@ struct Resize {
     start_width: f64,
 }
 
+/// An app's own page stack, which the shell's Back chip pops.
+struct ContentBack {
+    can_go_back: Box<dyn Fn() -> bool>,
+    go_back: Box<dyn FnMut()>,
+}
+
+/// An open/closed state the app keeps in a [`LocalState`].
+struct OpenBinding {
+    binding: LocalBinding<bool>,
+    /// A value to apply once the layout knows the placement.
+    wanted: Option<bool>,
+}
+
+/// What the host walks in place of a part under an open drawer's scrim:
+/// no focus, no semantics, no children. The part itself is still laid out,
+/// painted, synced and updated by the shell.
+#[derive(Debug, Default)]
+struct InertPart;
+
+static INERT_PART: InertPart = InertPart;
+
+impl Widget for InertPart {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(Style::default());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "NavShellInert"
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn get_rect(&self) -> Rect {
+        Rect::ZERO
+    }
+}
+
 /// The one window shell. See the module docs.
 #[allow(
     clippy::struct_excessive_bools,
@@ -931,8 +1213,11 @@ pub struct NavShell {
     overview: Option<Element>,
     content: Element,
     inspector: Option<Element>,
-    filter: Option<Element>,
+    rail: Option<Element>,
+    filter: Option<SearchField>,
+    controls: Option<Element>,
     headers: [Header; 4],
+    pending: Pending,
     toggle: Button,
     back: Button,
     inspector_toggle: Button,
@@ -942,6 +1227,9 @@ pub struct NavShell {
     history_close: Button,
     requests: Rc<Requests>,
     pane_binding: Option<LocalBinding<NavPane>>,
+    sidebar_state: Option<OpenBinding>,
+    inspector_state: Option<OpenBinding>,
+    content_back: Option<ContentBack>,
     /// The content pane the person last worked in; a collapse to narrow
     /// keeps it in front.
     active_hint: Option<NavPane>,
@@ -952,6 +1240,9 @@ pub struct NavShell {
     baseline: Vec<(NodeId, Style)>,
     /// The parts in the host tree, in build order.
     host_parts: Vec<Part>,
+    /// What the host meets in place of a part under a drawer's scrim, one
+    /// per part in the tree.
+    inert_parts: Vec<InertPart>,
     layout_theme: Theme,
     conventions: PlatformConventions,
 
@@ -1006,8 +1297,11 @@ impl NavShell {
             overview: None,
             content: Box::new(crate::widget::Spacer::new()),
             inspector: None,
+            rail: None,
             filter: None,
-            headers: Default::default(),
+            controls: None,
+            headers: Column::ALL.map(Header::new),
+            pending: Pending::default(),
             toggle,
             back,
             inspector_toggle,
@@ -1021,12 +1315,16 @@ impl NavShell {
             ),
             requests,
             pane_binding: None,
+            sidebar_state: None,
+            inspector_state: None,
+            content_back: None,
             active_hint: None,
             inputs,
             policy,
             invalidation: ManualInvalidation::default(),
             baseline: Vec::new(),
             host_parts: Vec::new(),
+            inert_parts: Vec::new(),
             layout_theme: Theme::dark(),
             conventions: PlatformConventions::default(),
             rect: Rect::ZERO,
@@ -1066,6 +1364,16 @@ impl NavShell {
         self
     }
 
+    /// What the overview collapses into where the list no longer fits
+    /// beside the content but a rail does: a [`crate::widget::NavList::rail`]
+    /// of the same places, so the window narrows to rail and detail before
+    /// it pushes.
+    #[must_use]
+    pub fn overview_rail(mut self, rail: Element) -> Self {
+        self.set_overview_rail(Some(rail));
+        self
+    }
+
     /// The content.
     #[must_use]
     pub fn content(mut self, content: Element) -> Self {
@@ -1080,56 +1388,98 @@ impl NavShell {
         self
     }
 
+    /// Controls that act on the overview list (its sort order, a scope),
+    /// under the overview's header at the shell's inset.
+    #[must_use]
+    pub fn overview_controls(mut self, controls: Element) -> Self {
+        self.set_overview_controls(Some(controls));
+        self
+    }
+
     /// The sidebar column's header: a sentence-case title and the app's
     /// actions (buttons). The toggle is the shell's; do not add one.
     #[must_use]
-    pub fn sidebar_header(self, title: impl Into<String>, actions: Vec<Element>) -> Self {
-        self.with_header(Column::Sidebar, title.into(), actions)
+    pub fn sidebar_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_sidebar_header(title, actions);
+        self
     }
 
     /// The overview column's header (the list's title and its actions).
     #[must_use]
-    pub fn overview_header(self, title: impl Into<String>, actions: Vec<Element>) -> Self {
-        self.with_header(Column::Overview, title.into(), actions)
+    pub fn overview_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_overview_header(title, actions);
+        self
     }
 
     /// The content column's header: the detail title and toolbar actions.
     #[must_use]
-    pub fn content_header(self, title: impl Into<String>, actions: Vec<Element>) -> Self {
-        self.with_header(Column::Content, title.into(), actions)
+    pub fn content_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_content_header(title, actions);
+        self
+    }
+
+    /// The content's header with its title bound to `title`: a view names
+    /// its content from resource state, and the header follows the state.
+    #[must_use]
+    pub fn content_header_bound(
+        mut self,
+        title: &LocalState<String>,
+        actions: Vec<Element>,
+    ) -> Self {
+        let (value, binding) = LocalBinding::new(title);
+        self.set_content_header(value, actions);
+        if let Some(header) = self.headers.get_mut(Column::Content.index()) {
+            header.binding = Some(binding);
+        }
+        self
+    }
+
+    /// The fill of the content's header between the shell's leading buttons
+    /// and the actions: a path bar or breadcrumb, or a mode or tab switcher
+    /// with no title. It stands at its own width, and gets the room there is
+    /// when it needs more.
+    #[must_use]
+    pub fn content_header_leading(mut self, leading: Element) -> Self {
+        self.set_content_header_leading(Some(leading));
+        self
     }
 
     /// The inspector column's header.
     #[must_use]
-    pub fn inspector_header(self, title: impl Into<String>, actions: Vec<Element>) -> Self {
-        self.with_header(Column::Inspector, title.into(), actions)
-    }
-
-    fn with_header(mut self, column: Column, title: String, actions: Vec<Element>) -> Self {
-        self.set_header(column, title, actions);
+    pub fn inspector_header(mut self, title: impl Into<String>, actions: Vec<Element>) -> Self {
+        self.set_inspector_header(title, actions);
         self
     }
 
-    fn set_header(&mut self, column: Column, title: String, actions: Vec<Element>) {
-        let actions = (!actions.is_empty()).then(|| -> Element {
-            let mut row = crate::widget::Row::new().no_wrap();
-            for action in actions {
-                row = row.push(action);
-            }
-            Box::new(row)
-        });
-        if let Some(header) = self.headers.get_mut(column.index()) {
-            header.title = (!title.trim().is_empty()).then_some(title);
-            header.actions = actions;
-        }
-        self.slots_changed();
+    /// How many items the sidebar holds, after its title (a quiet count, as
+    /// `SectionHeader::count`).
+    #[must_use]
+    pub fn sidebar_count(mut self, count: usize) -> Self {
+        self.set_count(Column::Sidebar, Some(count));
+        self
+    }
+
+    /// How many items the overview lists, after its title.
+    #[must_use]
+    pub fn overview_count(mut self, count: usize) -> Self {
+        self.set_count(Column::Overview, Some(count));
+        self
+    }
+
+    /// How many items the content shows, after its title.
+    #[must_use]
+    pub fn content_count(mut self, count: usize) -> Self {
+        self.set_count(Column::Content, Some(count));
+        self
     }
 
     /// The one filter field of the window, scoped to the sidebar's list (or
-    /// the overview when there is no sidebar), at the shell's metrics.
-    /// Ctrl+F (⌘F) focuses it.
+    /// the overview when there is no sidebar, else the content), at the
+    /// shell's metrics. Ctrl+F (⌘F) focuses it. The shell carries its query
+    /// to the column's [`crate::widget::Filterable`] after every event and
+    /// keeps the field: read it back with [`Self::filter`].
     #[must_use]
-    pub fn with_filter(mut self, filter: Element) -> Self {
+    pub fn with_filter(mut self, filter: SearchField) -> Self {
         self.filter = Some(filter);
         self.slots_changed();
         self
@@ -1143,7 +1493,8 @@ impl NavShell {
         self
     }
 
-    /// Give the shell a stable id for tests and inspection.
+    /// Give the shell a stable id for tests and inspection; its headings
+    /// group is keyed by it on the agent surface.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -1164,6 +1515,32 @@ impl NavShell {
         self
     }
 
+    /// Keep whether the sidebar shows in `state`: the shell writes where it
+    /// stands once laid out and every choice the person makes; setting the
+    /// state shows or hides the sidebar (opens the drawer in a narrow
+    /// window, from `ViewCx::on_stage` for a capture).
+    #[must_use]
+    pub fn with_sidebar_state(mut self, state: &LocalState<bool>) -> Self {
+        let (_, binding) = LocalBinding::new(state);
+        self.sidebar_state = Some(OpenBinding {
+            binding,
+            wanted: None,
+        });
+        self
+    }
+
+    /// Keep whether the inspector shows in `state`, as
+    /// [`Self::with_sidebar_state`].
+    #[must_use]
+    pub fn with_inspector_state(mut self, state: &LocalState<bool>) -> Self {
+        let (_, binding) = LocalBinding::new(state);
+        self.inspector_state = Some(OpenBinding {
+            binding,
+            wanted: None,
+        });
+        self
+    }
+
     /// Keep the front screen of a narrow window in `state`: a row of the
     /// overview can push the content by setting [`NavPane::Content`], and
     /// the Back button writes the screen it returns to.
@@ -1176,34 +1553,124 @@ impl NavShell {
         self
     }
 
+    /// Bind the content's Back to the app's page stack: while `stack` can go
+    /// back the shell shows its Back chip at the leading edge of the
+    /// content's header, and pressing it pops the stack (browse history, a
+    /// drill-down from a dashboard into a queue). A narrow window's push
+    /// stack shares the chip: Back pops the app's pages first.
+    #[must_use]
+    pub fn with_back<T>(self, stack: &LocalState<crate::NavStack<T>>) -> Self
+    where
+        T: Clone + PartialEq + 'static,
+    {
+        let read = stack.clone();
+        let write = stack.clone();
+        self.on_back(
+            move || read.with(crate::NavStack::can_go_back),
+            move || {
+                write.update(|stack| {
+                    stack.back();
+                });
+            },
+        )
+    }
+
+    /// The content's Back for a page stack the app keeps itself:
+    /// `can_go_back` is asked every frame, `go_back` runs on a press.
+    #[must_use]
+    pub fn on_back(
+        mut self,
+        can_go_back: impl Fn() -> bool + 'static,
+        go_back: impl FnMut() + 'static,
+    ) -> Self {
+        let can = can_go_back();
+        self.content_back = Some(ContentBack {
+            can_go_back: Box::new(can_go_back),
+            go_back: Box::new(go_back),
+        });
+        self.inputs.borrow_mut().content_back = can;
+        self.slots_changed();
+        self
+    }
+
     // --- live slot swap ----------------------------------------------------
     //
     // A host that rebuilds its children keeps the shell and swaps them in
-    // here: the shell's responsive state lives on the shell.
+    // here: the shell's responsive state lives on the shell. A swap made
+    // while the host holds the tree waits for the next build.
 
     pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
-        self.sidebar = sidebar;
-        self.slots_changed();
+        self.stage_body(Column::Sidebar, sidebar);
     }
 
     pub fn set_overview(&mut self, overview: Option<Element>) {
-        self.overview = overview;
-        self.slots_changed();
+        self.stage_body(Column::Overview, overview);
     }
 
     pub fn set_content(&mut self, content: Element) {
-        self.content = content;
-        self.slots_changed();
+        self.stage_body(Column::Content, Some(content));
     }
 
     pub fn set_inspector(&mut self, inspector: Option<Element>) {
-        self.inspector = inspector;
-        self.slots_changed();
+        self.stage_body(Column::Inspector, inspector);
     }
 
-    /// Change a column's title in place (the selected message's subject).
-    pub fn set_content_title(&mut self, title: impl Into<String>) {
-        self.set_title(Column::Content, title.into());
+    pub fn set_overview_rail(&mut self, rail: Option<Element>) {
+        self.pending.rail = Some(Staged(rail));
+        self.pending_changed();
+    }
+
+    pub fn set_overview_controls(&mut self, controls: Option<Element>) {
+        self.pending.controls = Some(Staged(controls));
+        self.pending_changed();
+    }
+
+    pub fn set_content_header_leading(&mut self, leading: Option<Element>) {
+        if let Some(slot) = self.pending.leading.get_mut(Column::Content.index()) {
+            *slot = Some(Staged(leading));
+        }
+        self.pending_changed();
+    }
+
+    fn stage_body(&mut self, column: Column, element: Option<Element>) {
+        if let Some(slot) = self.pending.bodies.get_mut(column.index()) {
+            *slot = Some(Staged(element));
+        }
+        self.pending_changed();
+    }
+
+    /// Change the sidebar's header in place: its title and actions.
+    pub fn set_sidebar_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Sidebar, title.into(), actions);
+    }
+
+    /// Change the overview's header in place.
+    pub fn set_overview_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Overview, title.into(), actions);
+    }
+
+    /// Change the content's header in place (the selected message's subject
+    /// and what can be done to it).
+    pub fn set_content_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Content, title.into(), actions);
+    }
+
+    /// Change the inspector's header in place.
+    pub fn set_inspector_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
+        self.stage_header(Column::Inspector, title.into(), actions);
+    }
+
+    fn stage_header(&mut self, column: Column, title: String, actions: Vec<Element>) {
+        self.set_title(column, title);
+        if let Some(slot) = self.pending.actions.get_mut(column.index()) {
+            *slot = Some(actions);
+        }
+        self.pending_changed();
+    }
+
+    /// Change the sidebar's title in place.
+    pub fn set_sidebar_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Sidebar, title.into());
     }
 
     /// Change the overview's title in place.
@@ -1211,32 +1678,199 @@ impl NavShell {
         self.set_title(Column::Overview, title.into());
     }
 
+    /// Change the content's title in place (the selected message's subject).
+    pub fn set_content_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Content, title.into());
+    }
+
+    /// Change the inspector's title in place.
+    pub fn set_inspector_title(&mut self, title: impl Into<String>) {
+        self.set_title(Column::Inspector, title.into());
+    }
+
+    /// Show or clear the count after the sidebar's title.
+    pub fn set_sidebar_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Sidebar, count);
+    }
+
+    /// Show or clear the count after the overview's title.
+    pub fn set_overview_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Overview, count);
+    }
+
+    /// Show or clear the count after the content's title.
+    pub fn set_content_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Content, count);
+    }
+
+    /// Show or clear the count after the inspector's title.
+    pub fn set_inspector_count(&mut self, count: Option<usize>) {
+        self.set_count(Column::Inspector, count);
+    }
+
+    /// Whether the content's page stack can go back, for an app that keeps
+    /// it itself ([`Self::on_back`]).
+    pub fn set_can_go_back(&mut self, can: bool) {
+        let changed = {
+            let mut inputs = self.inputs.borrow_mut();
+            let changed = inputs.content_back != can;
+            inputs.content_back = can;
+            changed
+        };
+        if changed {
+            self.structure_dirty = true;
+            self.invalidate();
+        }
+    }
+
     fn set_title(&mut self, column: Column, title: String) {
         let title = (!title.trim().is_empty()).then_some(title);
         if let Some(header) = self.headers.get_mut(column.index())
-            && header.title != title
+            && header.title.title != title
         {
-            header.title = title;
+            header.title.title = title;
             self.slots_changed();
+        }
+    }
+
+    fn set_count(&mut self, column: Column, count: Option<usize>) {
+        if let Some(header) = self.headers.get_mut(column.index())
+            && header.title.count != count
+        {
+            header.title.count = count;
+            self.invalidate();
+            self.structure_dirty = true;
+        }
+    }
+
+    /// A slot or header waits for the next build; before the first one there
+    /// is no tree to wait for.
+    fn pending_changed(&mut self) {
+        if !self.built {
+            self.apply_pending();
+        }
+        self.slots_changed();
+    }
+
+    /// Put the waiting slots and headers in place, dropping what they
+    /// replace. Only before the first build or from `build_layout`, when the
+    /// host holds no part of the old tree.
+    fn apply_pending(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.pending);
+        let Pending {
+            bodies,
+            actions,
+            leading,
+            controls,
+            rail,
+        } = pending;
+        for (column, body) in Column::ALL.into_iter().zip(bodies) {
+            let Some(Staged(body)) = body else { continue };
+            match column {
+                Column::Sidebar => self.sidebar = body,
+                Column::Overview => self.overview = body,
+                Column::Content => {
+                    if let Some(content) = body {
+                        self.content = content;
+                    }
+                }
+                Column::Inspector => self.inspector = body,
+            }
+        }
+        for (header, actions) in self.headers.iter_mut().zip(actions) {
+            if let Some(actions) = actions {
+                header.more.close();
+                header.actions = actions;
+            }
+        }
+        for (header, leading) in self.headers.iter_mut().zip(leading) {
+            if let Some(Staged(leading)) = leading {
+                header.leading = leading;
+            }
+        }
+        if let Some(Staged(controls)) = controls {
+            self.controls = controls;
+        }
+        if let Some(Staged(rail)) = rail {
+            self.rail = rail;
+        }
+        self.reset_fit();
+    }
+
+    /// Forget how the actions fit: new actions are measured afresh.
+    fn reset_fit(&mut self) {
+        let inputs = self.inputs.borrow();
+        let mut fit = inputs.fit.borrow_mut();
+        for (slot, header) in fit.iter_mut().zip(&mut self.headers) {
+            let capable: Vec<bool> = header
+                .actions
+                .iter_mut()
+                .map(|action| {
+                    action
+                        .as_any()
+                        .and_then(|any| any.downcast_ref::<Button>())
+                        .is_some_and(Button::compacts_to_icon)
+                })
+                .collect();
+            let compact_now: Vec<bool> = header
+                .actions
+                .iter()
+                .map(|action| {
+                    action
+                        .as_any()
+                        .and_then(|any| any.downcast_ref::<Button>())
+                        .is_some_and(Button::is_compact_presentation)
+                })
+                .collect();
+            if slot.capable != capable || slot.compact_now.len() != compact_now.len() {
+                *slot = ColumnFit {
+                    full: vec![None; capable.len()],
+                    capable,
+                    compact_now,
+                    compact: false,
+                    shown: None,
+                };
+            } else {
+                slot.compact_now = compact_now;
+            }
         }
     }
 
     fn slots_changed(&mut self) {
         {
             let mut inputs = self.inputs.borrow_mut();
-            inputs.has_sidebar = self.sidebar.is_some();
-            inputs.has_overview = self.overview.is_some();
-            inputs.has_inspector = self.inspector.is_some();
+            let has = |current: bool, pending: Option<&Staged>| match pending {
+                Some(next) => next.is_some(),
+                None => current,
+            };
+            inputs.has_sidebar = has(
+                self.sidebar.is_some(),
+                at(&self.pending.bodies, Column::Sidebar).as_ref(),
+            );
+            inputs.has_overview = has(
+                self.overview.is_some(),
+                at(&self.pending.bodies, Column::Overview).as_ref(),
+            );
+            inputs.has_inspector = has(
+                self.inspector.is_some(),
+                at(&self.pending.bodies, Column::Inspector).as_ref(),
+            );
+            inputs.has_rail = has(self.rail.is_some(), self.pending.rail.as_ref());
+            inputs.has_controls = has(self.controls.is_some(), self.pending.controls.as_ref());
             inputs.has_filter = self.filter.is_some();
             for column in Column::ALL {
-                let i = column.index();
-                let header = self.headers.get(i);
-                if let Some(slot) = inputs.titled.get_mut(i) {
-                    *slot = header.is_some_and(|h| h.title.is_some());
-                }
-                if let Some(slot) = inputs.with_actions.get_mut(i) {
-                    *slot = header.is_some_and(|h| h.actions.is_some());
-                }
+                let header = at(&self.headers, column);
+                *at_mut(&mut inputs.titled, column) = header.title.is_shown();
+                *at_mut(&mut inputs.actions, column) = at(&self.pending.actions, column)
+                    .as_ref()
+                    .map_or(header.actions.len(), Vec::len);
+                *at_mut(&mut inputs.leading, column) = has(
+                    header.leading.is_some(),
+                    at(&self.pending.leading, column).as_ref(),
+                );
             }
         }
         self.structure_dirty = true;
@@ -1249,6 +1883,56 @@ impl NavShell {
         self.paint_dirty = true;
     }
 
+    // --- typed access ------------------------------------------------------
+
+    /// The sidebar as the widget the app gave it (the one waiting to be
+    /// shown, if a swap is pending), through its `Widget::as_any_mut`
+    /// (which the widget answers with `Some(self)`).
+    pub fn sidebar_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Sidebar) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => self.sidebar.as_deref_mut(),
+        };
+        downcast(slot)
+    }
+
+    /// The overview as the widget the app gave it.
+    pub fn overview_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Overview) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => self.overview.as_deref_mut(),
+        };
+        downcast(slot)
+    }
+
+    /// The content as the widget the app gave it.
+    pub fn content_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Content) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => Some(self.content.as_mut()),
+        };
+        downcast(slot)
+    }
+
+    /// The inspector as the widget the app gave it.
+    pub fn inspector_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
+        let slot = match at_mut(&mut self.pending.bodies, Column::Inspector) {
+            Some(Staged(pending)) => pending.as_deref_mut(),
+            None => self.inspector.as_deref_mut(),
+        };
+        downcast(slot)
+    }
+
+    /// The window's filter field ([`Self::with_filter`]): its query and the
+    /// count the filtered column reports.
+    pub fn filter(&self) -> Option<&SearchField> {
+        self.filter.as_ref()
+    }
+
+    pub fn filter_mut(&mut self) -> Option<&mut SearchField> {
+        self.filter.as_mut()
+    }
+
     // --- state -------------------------------------------------------------
 
     /// The geometry of the last layout, in window coordinates.
@@ -1257,11 +1941,11 @@ impl NavShell {
     }
 
     pub fn has_sidebar(&self) -> bool {
-        self.sidebar.is_some()
+        self.inputs.borrow().has_sidebar
     }
 
     pub fn has_overview(&self) -> bool {
-        self.overview.is_some()
+        self.inputs.borrow().has_overview
     }
 
     /// Whether the sidebar shows (docked and not hidden, or a drawer that
@@ -1280,8 +1964,7 @@ impl NavShell {
     pub fn is_inspector_open(&self) -> bool {
         let layout = match self.geometry.inspector {
             InspectorPlacement::None => return false,
-            InspectorPlacement::Docked => SplitLayout::Docked,
-            InspectorPlacement::Drawer => SplitLayout::Overlay,
+            placement => inspector_layout_of(placement),
         };
         self.inputs.borrow().inspector.is_open(layout)
     }
@@ -1323,15 +2006,28 @@ impl NavShell {
         }
     }
 
-    /// Show or hide the inspector.
+    /// Show or hide the inspector, remembering the choice for this window
+    /// size class (also while the app takes the inspector away and gives it
+    /// back).
     pub fn toggle_inspector(&mut self) {
         let layout = match self.geometry.inspector {
             InspectorPlacement::None => return,
-            InspectorPlacement::Docked => SplitLayout::Docked,
-            InspectorPlacement::Drawer => SplitLayout::Overlay,
+            placement => inspector_layout_of(placement),
         };
         self.inputs.borrow_mut().inspector.toggle(layout);
         self.after_flap_change();
+    }
+
+    pub fn open_inspector(&mut self) {
+        if !self.is_inspector_open() {
+            self.toggle_inspector();
+        }
+    }
+
+    pub fn close_inspector(&mut self) {
+        if self.is_inspector_open() {
+            self.toggle_inspector();
+        }
     }
 
     fn after_flap_change(&mut self) {
@@ -1341,7 +2037,72 @@ impl NavShell {
         self.animating = true;
         self.structure_dirty = true;
         self.update_toggle_names();
+        self.publish_open_states();
         self.invalidate();
+    }
+
+    /// Write the sidebar's and inspector's openness to bound states.
+    fn publish_open_states(&mut self) {
+        let sidebar = self.is_sidebar_open();
+        let inspector = self.is_inspector_open();
+        if let Some(state) = self.sidebar_state.as_mut()
+            && state.wanted.is_none()
+        {
+            state.binding.publish(&sidebar);
+        }
+        if let Some(state) = self.inspector_state.as_mut()
+            && state.wanted.is_none()
+        {
+            state.binding.publish(&inspector);
+        }
+    }
+
+    /// Bring the sidebar and inspector in line with bound states that
+    /// changed, once the layout knows where they stand.
+    fn apply_open_states(&mut self) {
+        for sidebar in [true, false] {
+            let slot = if sidebar {
+                &mut self.sidebar_state
+            } else {
+                &mut self.inspector_state
+            };
+            let Some(state) = slot.as_mut() else {
+                continue;
+            };
+            if let Some(value) = state.binding.poll() {
+                state.wanted = Some(value);
+            }
+            let Some(wanted) = state.wanted else {
+                continue;
+            };
+            let placed = if sidebar {
+                self.geometry.sidebar != SidebarPlacement::None
+            } else {
+                self.geometry.inspector != InspectorPlacement::None
+            };
+            if !placed {
+                continue;
+            }
+            if let Some(state) = if sidebar {
+                self.sidebar_state.as_mut()
+            } else {
+                self.inspector_state.as_mut()
+            } {
+                state.wanted = None;
+            }
+            let open = if sidebar {
+                self.is_sidebar_open()
+            } else {
+                self.is_inspector_open()
+            };
+            if open != wanted {
+                if sidebar {
+                    self.toggle_sidebar();
+                } else {
+                    self.toggle_inspector();
+                }
+            }
+        }
     }
 
     /// Bring `pane` to the front of a narrow window's push stack. In a wide
@@ -1382,8 +2143,21 @@ impl NavShell {
         self.invalidate();
     }
 
-    /// Go back one screen in a narrow window. Returns whether it did.
+    /// Go back one screen: the app's page stack first ([`Self::with_back`]),
+    /// then a narrow window's push stack. Returns whether it did.
     pub fn back(&mut self) -> bool {
+        if self.inputs.borrow().content_back
+            && self.geometry.back_column == Some(Column::Content)
+            && let Some(back) = self.content_back.as_mut()
+        {
+            (back.go_back)();
+            self.refresh_content_back();
+            return true;
+        }
+        self.pop_push_stack()
+    }
+
+    fn pop_push_stack(&mut self) -> bool {
         let stack = self.geometry.stack.clone();
         let front = stack_index(&stack, self.front_pane());
         let Some(previous) = front.checked_sub(1).and_then(|i| stack.get(i).copied()) else {
@@ -1393,6 +2167,15 @@ impl NavShell {
         true
     }
 
+    /// Ask the app's page stack whether it can go back.
+    fn refresh_content_back(&mut self) {
+        let Some(back) = self.content_back.as_ref() else {
+            return;
+        };
+        let can = (back.can_go_back)();
+        self.set_can_go_back(can);
+    }
+
     /// Snap every animation to its end (deterministic shots and tests).
     pub fn snap(&mut self) {
         {
@@ -1400,10 +2183,7 @@ impl NavShell {
             let layout = layout_of(self.geometry.sidebar);
             let open = inputs.sidebar.is_open(layout);
             inputs.sidebar.snap(open);
-            let layout = match self.geometry.inspector {
-                InspectorPlacement::Drawer => SplitLayout::Overlay,
-                _ => SplitLayout::Docked,
-            };
+            let layout = inspector_layout_of(self.geometry.inspector);
             let open = inputs.inspector.is_open(layout);
             inputs.inspector.snap(open);
             inputs.push_pos = None;
@@ -1446,11 +2226,26 @@ impl NavShell {
             Part::Body(Column::Overview) => self.overview.as_deref(),
             Part::Body(Column::Content) => Some(self.content.as_ref()),
             Part::Body(Column::Inspector) => self.inspector.as_deref(),
-            Part::Actions(column) => self
+            Part::Rail => self.rail.as_deref(),
+            Part::Title(column) => self
                 .headers
                 .get(column.index())
-                .and_then(|header| header.actions.as_deref()),
-            Part::Filter => self.filter.as_deref(),
+                .map(|header| &header.title as &dyn Widget),
+            Part::Leading(column) => self
+                .headers
+                .get(column.index())
+                .and_then(|header| header.leading.as_deref()),
+            Part::Action(column, i) => self
+                .headers
+                .get(column.index())
+                .and_then(|header| header.actions.get(i))
+                .map(AsRef::as_ref),
+            Part::More(column) => self
+                .headers
+                .get(column.index())
+                .map(|header| &header.more as &dyn Widget),
+            Part::Controls => self.controls.as_deref(),
+            Part::Filter => self.filter.as_ref().map(|f| f as &dyn Widget),
             Part::Toggle => Some(&self.toggle),
             Part::Back => Some(&self.back),
             Part::InspectorToggle => Some(&self.inspector_toggle),
@@ -1465,11 +2260,26 @@ impl NavShell {
             Part::Body(Column::Overview) => self.overview.as_deref_mut(),
             Part::Body(Column::Content) => Some(self.content.as_mut()),
             Part::Body(Column::Inspector) => self.inspector.as_deref_mut(),
-            Part::Actions(column) => self
+            Part::Rail => self.rail.as_deref_mut(),
+            Part::Title(column) => self
                 .headers
                 .get_mut(column.index())
-                .and_then(|header| header.actions.as_deref_mut()),
-            Part::Filter => self.filter.as_deref_mut(),
+                .map(|header| &mut header.title as &mut dyn Widget),
+            Part::Leading(column) => self
+                .headers
+                .get_mut(column.index())
+                .and_then(|header| header.leading.as_deref_mut()),
+            Part::Action(column, i) => self
+                .headers
+                .get_mut(column.index())
+                .and_then(|header| header.actions.get_mut(i))
+                .map(AsMut::as_mut),
+            Part::More(column) => self
+                .headers
+                .get_mut(column.index())
+                .map(|header| &mut header.more as &mut dyn Widget),
+            Part::Controls => self.controls.as_deref_mut(),
+            Part::Filter => self.filter.as_mut().map(|f| f as &mut dyn Widget),
             Part::Toggle => Some(&mut self.toggle),
             Part::Back => Some(&mut self.back),
             Part::InspectorToggle => Some(&mut self.inspector_toggle),
@@ -1479,26 +2289,46 @@ impl NavShell {
     }
 
     /// Every element the shell owns, shown or not: sync, update and wake
-    /// reach parts a modal drawer hides from input.
-    const ALL_PARTS: [Part; 14] = [
-        Part::Body(Column::Overview),
-        Part::Body(Column::Content),
-        Part::Body(Column::Inspector),
-        Part::Body(Column::Sidebar),
-        Part::Actions(Column::Overview),
-        Part::Actions(Column::Content),
-        Part::Actions(Column::Inspector),
-        Part::Actions(Column::Sidebar),
-        Part::Filter,
-        Part::Toggle,
-        Part::Back,
-        Part::InspectorToggle,
-        Part::History(false),
-        Part::History(true),
-    ];
+    /// reach parts the shell is not showing.
+    fn all_parts(&self) -> Vec<Part> {
+        let mut parts = vec![
+            Part::Body(Column::Overview),
+            Part::Body(Column::Content),
+            Part::Body(Column::Inspector),
+            Part::Body(Column::Sidebar),
+            Part::Rail,
+        ];
+        for column in [
+            Column::Overview,
+            Column::Content,
+            Column::Inspector,
+            Column::Sidebar,
+        ] {
+            let header = at(&self.headers, column);
+            if header.leading.is_some() {
+                parts.push(Part::Leading(column));
+            }
+            for i in 0..header.actions.len() {
+                parts.push(Part::Action(column, i));
+            }
+            if !header.actions.is_empty() {
+                parts.push(Part::More(column));
+            }
+        }
+        parts.extend([
+            Part::Controls,
+            Part::Filter,
+            Part::Toggle,
+            Part::Back,
+            Part::InspectorToggle,
+            Part::History(false),
+            Part::History(true),
+        ]);
+        parts
+    }
 
     fn for_each_owned(&self, mut visit: impl FnMut(&dyn Widget)) {
-        for part in Self::ALL_PARTS {
+        for part in self.all_parts() {
             if let Some(widget) = self.part(part) {
                 visit(widget);
             }
@@ -1506,30 +2336,80 @@ impl NavShell {
     }
 
     fn for_each_owned_mut(&mut self, mut visit: impl FnMut(&mut (dyn Widget + 'static))) {
-        for part in Self::ALL_PARTS {
+        for part in self.all_parts() {
             if let Some(widget) = self.part_mut(part) {
                 visit(widget);
             }
         }
     }
 
-    /// The parts input and semantics reach: those in the host tree once it
-    /// is built (in its order), and every owned part before the first build,
-    /// when there is no tree for their order to disagree with.
+    /// How many of `column`'s actions stand in the row.
+    fn shown_actions(&self, column: Column) -> usize {
+        let count = at(&self.headers, column).actions.len();
+        at(&self.inputs.borrow().fit.borrow(), column)
+            .shown
+            .map_or(count, |shown| shown.min(count))
+    }
+
+    /// A part the layout put away: an action in the More menu, or the More
+    /// button while everything fits.
+    fn part_hidden(&self, part: Part) -> bool {
+        match part {
+            Part::Action(column, i) => i >= self.shown_actions(column),
+            Part::More(column) => {
+                self.shown_actions(column) >= at(&self.headers, column).actions.len()
+            }
+            _ => false,
+        }
+    }
+
+    /// A part under an open drawer's scrim: laid out and painted, but it
+    /// takes no input and is not exposed. The header row stays live.
+    fn part_inert(&self, part: Part) -> bool {
+        let g = &self.geometry;
+        if !g.modal() {
+            return false;
+        }
+        match part {
+            Part::Body(column) => !g.in_drawer(column),
+            Part::Filter => self
+                .geometry
+                .filter_column(&self.inputs.borrow())
+                .is_none_or(|column| !g.in_drawer(column)),
+            Part::Controls | Part::Rail => true,
+            _ => false,
+        }
+    }
+
+    /// What the host meets for `part`: the part, or a stand-in while it is
+    /// under a drawer's scrim, so a walk that pairs children with the
+    /// tree's nodes never reaches an inert column.
+    fn exposed(&self, part: Part) -> Option<&dyn Widget> {
+        if self.part_inert(part) {
+            return Some(&INERT_PART);
+        }
+        self.part(part)
+    }
+
+    /// The parts the host walks: those in the host tree once it is built,
+    /// in its order (the host pairs them with the tree's nodes), and every
+    /// owned part before the first build, when there is no tree for their
+    /// order to disagree with. A part under a drawer's scrim answers as an
+    /// [`InertPart`]; an action in the More menu stays, so its door is still
+    /// published.
     fn exposed_parts(&self) -> Vec<Part> {
         if self.built {
             self.host_parts.clone()
         } else {
-            Self::ALL_PARTS
+            let history = self.inputs.borrow().history.map(HistoryControl::is_open);
+            self.all_parts()
                 .into_iter()
                 .filter(|part| self.part(*part).is_some())
-                .filter(|part| !matches!(part, Part::Toggle) || self.has_sidebar())
-                .filter(|part| !matches!(part, Part::InspectorToggle) || self.inspector.is_some())
-                .filter(|part| !matches!(part, Part::Back))
                 .filter(|part| match part {
-                    Part::History(open) => {
-                        self.inputs.borrow().history.map(HistoryControl::is_open) == Some(*open)
-                    }
+                    Part::Toggle => self.has_sidebar(),
+                    Part::InspectorToggle => self.inspector.is_some(),
+                    Part::Back | Part::More(_) => false,
+                    Part::History(open) => history == Some(*open),
                     _ => true,
                 })
                 .collect()
@@ -1539,7 +2419,12 @@ impl NavShell {
     /// Which column's theme a part draws with.
     fn part_column(&self, part: Part) -> Option<Column> {
         match part {
-            Part::Body(column) | Part::Actions(column) => Some(column),
+            Part::Body(column)
+            | Part::Title(column)
+            | Part::Leading(column)
+            | Part::Action(column, _)
+            | Part::More(column) => Some(column),
+            Part::Rail | Part::Controls => Some(Column::Overview),
             Part::Filter => self.geometry.filter_column(&self.inputs.borrow()),
             Part::Toggle => self.geometry.toggle_column,
             Part::Back => self.geometry.back_column,
@@ -1578,6 +2463,88 @@ impl NavShell {
         acted
     }
 
+    /// Open a More menu whose button was pressed, with the actions that did
+    /// not fit.
+    fn open_more_menus(&mut self) {
+        let viewport = self.rect;
+        for column in Column::ALL {
+            let shown = self.shown_actions(column);
+            let header = at_mut(&mut self.headers, column);
+            if !header.more.take_open_request() {
+                continue;
+            }
+            let items = header
+                .actions
+                .iter()
+                .skip(shown)
+                .map(|action| {
+                    let node = action.accessibility();
+                    let name = node
+                        .as_ref()
+                        .and_then(|node| node.name.clone())
+                        .unwrap_or_default();
+                    let mut item = crate::widget::context_menu::MenuItem::selection(name)
+                        .with_enabled(node.as_ref().is_none_or(|node| !node.state.disabled));
+                    if let Some(checked) = node.as_ref().and_then(|node| node.state.checked) {
+                        item = item.with_checked(checked);
+                    }
+                    item
+                })
+                .collect();
+            header.more.open(items, viewport);
+            self.paint_dirty = true;
+        }
+    }
+
+    /// Activate the action the person chose in a More menu: from the event
+    /// that chose it, so its invocation leaves with that event.
+    fn take_more_choices(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let mut acted = false;
+        for column in Column::ALL {
+            let shown = self.shown_actions(column);
+            let header = at_mut(&mut self.headers, column);
+            if let Some(row) = header.more.take_choice()
+                && let Some(action) = header.actions.get_mut(shown.saturating_add(row))
+            {
+                action.perform_action(&crate::a11y::Action::Activate, state, path);
+                acted = true;
+            }
+        }
+        acted
+    }
+
+    /// Poll the bound content title and the app's page stack.
+    fn poll_bindings(&mut self) {
+        let mut titles = Vec::new();
+        for column in Column::ALL {
+            if let Some(binding) = at_mut(&mut self.headers, column).binding.as_mut()
+                && let Some(title) = binding.poll()
+            {
+                titles.push((column, title));
+            }
+        }
+        for (column, title) in titles {
+            self.set_title(column, title);
+        }
+        self.refresh_content_back();
+    }
+
+    /// Carry the filter field's query to the column it filters.
+    fn sync_filter(&mut self) {
+        let Some(column) = self.geometry.filter_column(&self.inputs.borrow()) else {
+            return;
+        };
+        let target = match column {
+            Column::Sidebar => self.sidebar.as_deref_mut(),
+            Column::Overview => self.overview.as_deref_mut(),
+            Column::Content => Some(self.content.as_mut()),
+            Column::Inspector => self.inspector.as_deref_mut(),
+        };
+        if let (Some(field), Some(target)) = (self.filter.as_mut(), target) {
+            crate::widget::sync_filter(field, target);
+        }
+    }
+
     /// The person chose a destination in the sidebar or a row of the
     /// overview: a narrow window moves on to what they chose.
     fn follow_navigation(&mut self) {
@@ -1585,6 +2552,10 @@ impl NavShell {
             .sidebar
             .as_deref_mut()
             .is_some_and(|sidebar| crate::widget::nav_list::take_navigation(sidebar));
+        let from_rail = self
+            .rail
+            .as_deref_mut()
+            .is_some_and(|rail| crate::widget::nav_list::take_navigation(rail));
         let from_overview = self
             .overview
             .as_deref_mut()
@@ -1602,7 +2573,10 @@ impl NavShell {
                 self.show(next);
             }
         }
-        if from_overview && !self.geometry.stack.is_empty() && !self.geometry.side_by_side {
+        if (from_overview || from_rail)
+            && !self.geometry.stack.is_empty()
+            && !self.geometry.side_by_side
+        {
             self.show(NavPane::Content);
         }
     }
@@ -1617,10 +2591,7 @@ impl NavShell {
         let base = theme.tokens.motion.durations.base();
         let reduce = theme.reduce_motion;
         let sidebar_layout = layout_of(self.geometry.sidebar);
-        let inspector_layout = match self.geometry.inspector {
-            InspectorPlacement::Drawer => SplitLayout::Overlay,
-            _ => SplitLayout::Docked,
-        };
+        let inspector_layout = inspector_layout_of(self.geometry.inspector);
         let stack = self.geometry.stack.clone();
         let mut moving = false;
         {
@@ -1682,7 +2653,8 @@ impl NavShell {
     }
 
     /// Note a change of size class: the sidebar's choice for the new class
-    /// applies, and a collapse keeps the pane the person worked in.
+    /// applies, and a collapse keeps the pane the person worked in. An
+    /// inspector the app took away keeps the choice made for it.
     fn reconcile_size_class(&mut self) {
         let layout = layout_of(self.geometry.sidebar);
         let stack = self.geometry.stack.clone();
@@ -1690,11 +2662,11 @@ impl NavShell {
         {
             let mut inputs = self.inputs.borrow_mut();
             inputs.sidebar.reconcile(layout);
-            let inspector_layout = match self.geometry.inspector {
-                InspectorPlacement::Drawer => SplitLayout::Overlay,
-                _ => SplitLayout::Docked,
-            };
-            inputs.inspector.reconcile(inspector_layout);
+            if self.geometry.inspector != InspectorPlacement::None {
+                inputs
+                    .inspector
+                    .reconcile(inspector_layout_of(self.geometry.inspector));
+            }
         }
         if previous.as_ref() != Some(&stack) {
             // The first layout opens on the stack's first screen unless the
@@ -1721,15 +2693,39 @@ impl NavShell {
         }
     }
 
+    /// Show each column's actions with their labels or their icons alone,
+    /// as the layout decided.
+    fn apply_fit(&mut self) {
+        let fit = Rc::clone(&self.inputs.borrow().fit);
+        let mut fit = fit.borrow_mut();
+        for (slot, header) in fit.iter_mut().zip(&mut self.headers) {
+            let shown = slot.shown.unwrap_or(header.actions.len());
+            header.more.set_shown(shown < header.actions.len());
+            for (i, action) in header.actions.iter_mut().enumerate() {
+                if !slot.capable.get(i).copied().unwrap_or(false) {
+                    continue;
+                }
+                let want = slot.compact;
+                if slot.compact_now.get(i).copied() == Some(want) {
+                    continue;
+                }
+                if let Some(button) = action
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Button>())
+                {
+                    button.set_compact_toolbar_presentation(want);
+                    if let Some(now) = slot.compact_now.get_mut(i) {
+                        *now = want;
+                    }
+                }
+            }
+        }
+    }
+
     // --- painting ----------------------------------------------------------
 
     fn paint(&mut self, f: &mut Frame<'_>) {
         let g = self.geometry.clone();
-        let floating = |column: Column| match column {
-            Column::Sidebar => g.sidebar == SidebarPlacement::Drawer,
-            Column::Inspector => g.inspector == InspectorPlacement::Drawer,
-            Column::Overview | Column::Content => false,
-        };
         // Under reduced motion a sidebar or drawer that just appeared fades
         // in instead of sliding.
         let fade = unit_f32(self.fade);
@@ -1749,6 +2745,10 @@ impl NavShell {
             SidebarPlacement::Docked | SidebarPlacement::Screen
         ) && g.sidebar_column.width() > 0.0;
 
+        if self.built_has(Part::Rail) && g.rail.width() > 0.0 {
+            let local = self.column_theme(f.theme, Some(Column::Overview));
+            f.draw(self.part_mut(Part::Rail), &local);
+        }
         // Columns standing in the window, back to front.
         for column in [
             Column::Overview,
@@ -1756,7 +2756,7 @@ impl NavShell {
             Column::Inspector,
             Column::Sidebar,
         ] {
-            if floating(column) {
+            if g.floating(column) {
                 continue;
             }
             let faded = column == Column::Sidebar && sidebar_region && fade < 1.0;
@@ -1784,6 +2784,37 @@ impl NavShell {
             }
         }
         self.paint_rules(f.scene, f.transform, f.theme, &g);
+
+        // Drawers over the columns, behind their scrim, under the header
+        // row; the row's buttons stay above everything.
+        let open_drawer = g.floating(Column::Sidebar) && g.sidebar_column.width() > 0.0
+            || g.floating(Column::Inspector) && g.inspector_column.width() > 0.0;
+        if open_drawer {
+            let faded = fade < 1.0;
+            if faded {
+                f.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    fade,
+                    f.transform,
+                    &self.rect,
+                );
+            }
+            if g.scrim.width() > 0.0 {
+                crate::chrome::fill_scrim(f.scene, f.transform, g.scrim, g.scrim_strength, f.theme);
+            }
+            for column in [Column::Inspector, Column::Sidebar] {
+                let rect = g.column(column);
+                if !g.floating(column) || rect.width() <= 0.0 {
+                    continue;
+                }
+                crate::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);
+                self.paint_column(f, column);
+            }
+            if faded {
+                f.scene.pop_layer();
+            }
+        }
         let history = self
             .inputs
             .borrow()
@@ -1793,46 +2824,14 @@ impl NavShell {
             .into_iter()
             .chain(history)
         {
-            if !self.part_column(part).is_some_and(floating) {
-                self.paint_part(f, part);
-            }
+            self.paint_part(f, part);
         }
+    }
 
-        // Drawers over everything, behind their scrim.
-        let open_drawer = floating(Column::Sidebar) && g.sidebar_column.width() > 0.0
-            || floating(Column::Inspector) && g.inspector_column.width() > 0.0;
-        if !open_drawer {
-            return;
-        }
-        let faded = fade < 1.0;
-        if faded {
-            f.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                fade,
-                f.transform,
-                &self.rect,
-            );
-        }
-        if g.scrim.width() > 0.0 {
-            crate::chrome::fill_scrim(f.scene, f.transform, g.scrim, g.scrim_strength, f.theme);
-        }
-        for column in [Column::Inspector, Column::Sidebar] {
-            let rect = g.column(column);
-            if !floating(column) || rect.width() <= 0.0 {
-                continue;
-            }
-            crate::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);
-            self.paint_column(f, column);
-            for part in [Part::Toggle, Part::InspectorToggle] {
-                if self.part_column(part) == Some(column) {
-                    self.paint_part(f, part);
-                }
-            }
-        }
-        if faded {
-            f.scene.pop_layer();
-        }
+    /// Whether `part` is in the host tree this frame: only those were laid
+    /// out, so only those paint.
+    fn built_has(&self, part: Part) -> bool {
+        self.host_parts.contains(&part)
     }
 
     fn paint_column(&mut self, f: &mut Frame<'_>, column: Column) {
@@ -1849,13 +2848,24 @@ impl NavShell {
             f.transform,
             &clip,
         );
-        self.paint_title(f.scene, f.transform, f.text, &local, column);
-        let mut parts = vec![Part::Body(column), Part::Actions(column)];
+        let mut parts = vec![
+            Part::Body(column),
+            Part::Title(column),
+            Part::Leading(column),
+        ];
+        let actions = at(&self.headers, column).actions.len();
+        parts.extend((0..actions).map(|i| Part::Action(column, i)));
+        parts.push(Part::More(column));
         if self.geometry.filter_column(&self.inputs.borrow()) == Some(column) {
             parts.push(Part::Filter);
         }
+        if column == Column::Overview {
+            parts.push(Part::Controls);
+        }
         for part in parts {
-            f.draw(self.part_mut(part), &local);
+            if self.built_has(part) && !self.part_hidden(part) {
+                f.draw(self.part_mut(part), &local);
+            }
         }
         f.scene.pop_layer();
     }
@@ -1868,98 +2878,34 @@ impl NavShell {
             Part::History(_) => self.geometry.history,
             _ => return,
         };
-        if rect.width() <= 0.0 {
+        if rect.width() <= 0.0 || !self.built_has(part) {
             return;
         }
         let local = self.column_theme(f.theme, self.part_column(part));
         f.draw(self.part_mut(part), &local);
     }
 
-    /// A column's title: `Heading`, primary ink of its ground, after the
-    /// shell's leading button and before the actions.
-    fn paint_title(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        column: Column,
-    ) {
-        let Some(title) = self
-            .headers
-            .get(column.index())
-            .and_then(|header| header.title.as_deref())
-        else {
-            return;
-        };
-        let g = &self.geometry;
-        let header = g.header(column);
-        if header == Rect::ZERO
-            || self.inputs.borrow().mode == NavMode::Docked && column == Column::Sidebar
-        {
-            return;
-        }
-        let m = self.inputs.borrow().metrics;
-        let mut x0 = header.x0 + m.inset;
-        for (button, home) in [(g.toggle, g.toggle_column), (g.back, g.back_column)] {
-            if home == Some(column) && button.width() > 0.0 && button.x1 > x0 - m.inset {
-                x0 = button.x1 + m.gap;
-            }
-        }
-        let mut x1 = g.actions_band(column).x1 - m.inset;
-        if let Some(actions) = self.part(Part::Actions(column)) {
-            let rect = actions.get_rect();
-            if rect.width() > 0.0 {
-                x1 = x1.min(rect.x0 - m.gap);
-            }
-        }
-        if x1 <= x0 {
-            return;
-        }
-        let style = theme.text(TextRole::Heading);
-        let title = text.elide_to_width_style(title, to_f32(x1 - x0), &style);
-        let (_, line_h) = text.measure_style(&title, None, &style);
-        let y =
-            crate::text_metrics::centered_text_top(header.y0, header.height(), f64::from(line_h));
-        text.draw_style(
-            scene,
-            &title,
-            theme.tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(x0, y)),
-            None,
-            &style,
-        );
-    }
-
     /// The hairline under the header row over the content columns, and the
-    /// rule between the overview and the content. Regions are told apart by
-    /// tone, not lines.
+    /// rule between the overview (or its rail) and the content. Regions are
+    /// told apart by tone, not lines.
     fn paint_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme, g: &NavGeometry) {
-        let hh = g.header_height;
         for column in [Column::Overview, Column::Content, Column::Inspector] {
             let header = g.header(column);
-            if header == Rect::ZERO || g.in_drawer(column) {
+            if header == Rect::ZERO || g.floating(column) {
                 continue;
             }
-            let ground = self
-                .column_theme(theme, Some(column))
-                .tokens
-                .colors
-                .surfaces
-                .content;
-            crate::surface::separator(
-                scene,
-                transform,
-                header.x0,
-                header.x1,
-                header.y0 + hh,
-                0.0,
-                ground,
-            );
+            let local = self.column_theme(theme, Some(column));
+            crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row)
+                .paint_rule(scene, transform, &local);
         }
-        if g.side_by_side && g.overview_column.width() > 0.0 && g.content_column.width() > 0.0 {
-            let x = g.overview_column.x1;
-            let rule = Rect::new(x - 1.0, g.overview_column.y0, x, g.overview_column.y1);
+        let lead = if g.overview_column.width() > 0.0 {
+            g.overview_column
+        } else {
+            g.rail
+        };
+        if g.side_by_side && lead.width() > 0.0 && g.content_column.width() > 0.0 {
+            let x = lead.x1;
+            let rule = Rect::new(x - 1.0, g.content_column.y0, x, lead.y1);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1969,6 +2915,13 @@ impl NavShell {
             );
         }
     }
+}
+
+fn downcast<'a, T: Widget + 'static>(
+    slot: Option<&'a mut (dyn Widget + 'static)>,
+) -> Option<&'a mut T> {
+    slot.and_then(|widget| widget.as_any_mut())
+        .and_then(|any| any.downcast_mut::<T>())
 }
 
 /// What one paint pass draws into.
@@ -2005,32 +2958,56 @@ impl Frame<'_> {
 }
 
 /// The layout policy the host runs: place every built part at the rect the
-/// plan gives it.
+/// plan gives it, and lay each header row out from what its parts measure.
 fn place_parts(
     inputs: &Inputs,
     ctx: &mut ManualContext<'_>,
 ) -> Result<Size<f32>, WidgetLayoutError> {
     let size = ctx.available();
     let g = plan(inputs, f64::from(size.width), f64::from(size.height));
+    let mut placed: Vec<Option<Rect>> = vec![None; inputs.parts.len()];
     for (index, part) in inputs.parts.iter().enumerate() {
-        let rect = match g.placement(*part) {
-            Placement::Exact(rect) => rect,
-            Placement::Trailing(band) => {
-                if band.width() <= 0.0 || band.height() <= 0.0 {
-                    Rect::ZERO
+        let rect = match part {
+            Part::Body(column) => Some(g.body(*column)),
+            Part::Rail => Some(g.rail),
+            Part::Filter => Some(g.filter),
+            Part::Toggle => Some(g.toggle),
+            Part::Back => Some(g.back),
+            Part::InspectorToggle => Some(g.inspector_toggle),
+            Part::History(_) => Some(g.history),
+            Part::Controls => {
+                let band = g.controls;
+                if band.width() <= 0.0 {
+                    Some(Rect::ZERO)
                 } else {
-                    let proposal = Size {
-                        width: MeasureConstraint::AtMost(to_f32(band.width())),
-                        height: MeasureConstraint::AtMost(to_f32(band.height())),
+                    // Its own width (the band's when it has none of its
+                    // own), a control's height: the band is one control tall.
+                    let measured = measure(ctx, index, Some(band.width()))?;
+                    let w = if measured.0 > 0.0 {
+                        measured.0.min(band.width())
+                    } else {
+                        band.width()
                     };
-                    let measured = ManualContext::measure(ctx, index, proposal)?.size;
-                    let (w, h) = (f64::from(measured.width), f64::from(measured.height));
-                    let x1 = band.x1 - inputs.metrics.inset;
+                    let h = if measured.1 > 0.0 {
+                        measured.1.min(band.height())
+                    } else {
+                        band.height()
+                    };
                     let y0 = band.center().y - h / 2.0;
-                    Rect::new((x1 - w).max(band.x0), y0, x1, y0 + h)
+                    Some(Rect::new(band.x0, y0, band.x0 + w, y0 + h))
                 }
             }
+            Part::Title(_) | Part::Leading(_) | Part::Action(..) | Part::More(_) => None,
         };
+        if let (Some(slot), Some(rect)) = (placed.get_mut(index), rect) {
+            *slot = Some(rect);
+        }
+    }
+    for column in Column::ALL {
+        place_header(inputs, &g, column, ctx, &mut placed)?;
+    }
+    for (index, rect) in placed.into_iter().enumerate() {
+        let rect = rect.unwrap_or(Rect::ZERO);
         let rect = if rect.width() < 0.0 || rect.height() < 0.0 {
             Rect::ZERO
         } else {
@@ -2039,6 +3016,187 @@ fn place_parts(
         ctx.place(index, rect)?;
     }
     Ok(size)
+}
+
+/// A part's natural size, within `width` when given.
+fn measure(
+    ctx: &mut ManualContext<'_>,
+    index: usize,
+    width: Option<f64>,
+) -> Result<(f64, f64), WidgetLayoutError> {
+    let proposal = Size {
+        width: width.map_or(MeasureConstraint::Intrinsic, |w| {
+            MeasureConstraint::AtMost(to_f32(w.max(0.0)))
+        }),
+        height: MeasureConstraint::Intrinsic,
+    };
+    let measured = ManualContext::measure(ctx, index, proposal)?.size;
+    Ok((f64::from(measured.width), f64::from(measured.height)))
+}
+
+/// Lay out one header row: the title at its measured width after the
+/// leading buttons, the actions trailing (labelled buttons collapsing to
+/// their icons, then the rest moving into the More menu when they do not
+/// fit), and the leading fill between them.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one row's layout is one ordered decision: title, actions, overflow, leading"
+)]
+fn place_header(
+    inputs: &Inputs,
+    g: &NavGeometry,
+    column: Column,
+    ctx: &mut ManualContext<'_>,
+    placed: &mut [Option<Rect>],
+) -> Result<(), WidgetLayoutError> {
+    let header = g.header(column);
+    let ci = column.index();
+    let index_of = |part: Part| inputs.parts.iter().position(|p| *p == part);
+    if header == Rect::ZERO || header.width() <= 0.0 {
+        return Ok(());
+    }
+    let m = &inputs.metrics;
+    let cy = header.center().y;
+    let lead = g.lead_end(column, m);
+    let trail = g.trail_start(column, m).max(lead);
+    let avail = trail - lead;
+    let gap = m.gap;
+    let centred = |x0: f64, w: f64, h: f64| -> Rect {
+        let h = h.min(header.height()).max(0.0);
+        Rect::new(x0, cy - h / 2.0, x0 + w.max(0.0), cy + h / 2.0)
+    };
+
+    // The actions, at their natural sizes.
+    let count = inputs.actions.get(ci).copied().unwrap_or(0);
+    let mut items: Vec<(usize, f64, f64)> = Vec::with_capacity(count);
+    for i in 0..count {
+        if let Some(index) = index_of(Part::Action(column, i)) {
+            let (w, h) = measure(ctx, index, Some(avail))?;
+            items.push((index, w, h));
+        }
+    }
+    let fit_cell = Rc::clone(&inputs.fit);
+    let mut fits = fit_cell.borrow_mut();
+    let fit = at_mut(&mut fits, column);
+    if fit.capable.len() != items.len() {
+        fit.capable.resize(items.len(), false);
+        fit.compact_now.resize(items.len(), false);
+        fit.full.resize(items.len(), None);
+    }
+    let mut full = Vec::with_capacity(items.len());
+    let mut compact = Vec::with_capacity(items.len());
+    for (i, (_, w, h)) in items.iter().enumerate() {
+        let capable = fit.capable.get(i).copied().unwrap_or(false);
+        let now = fit.compact_now.get(i).copied().unwrap_or(false);
+        if capable && now {
+            full.push(fit.full.get(i).copied().flatten().unwrap_or(*w));
+            compact.push(*w);
+        } else {
+            if let Some(slot) = fit.full.get_mut(i) {
+                *slot = Some(*w);
+            }
+            full.push(*w);
+            compact.push(if capable { w.min(*h) } else { *w });
+        }
+    }
+    let run = |widths: &[f64]| -> f64 {
+        if widths.is_empty() {
+            0.0
+        } else {
+            widths.iter().sum::<f64>() + gap * index_f64(widths.len().saturating_sub(1))
+        }
+    };
+    let reserve = run(&compact);
+
+    // The title: its measured width, never pushing the actions past their
+    // icons, and keeping a third of the row however many actions there are.
+    let mut start = lead;
+    if let Some(index) = index_of(Part::Title(column)) {
+        let (tw, th) = measure(ctx, index, None)?;
+        let room = if reserve > 0.0 {
+            avail - reserve - gap
+        } else {
+            avail
+        };
+        let width = tw.min(room.max(tw.min(avail / 3.0))).clamp(0.0, avail);
+        if let Some(slot) = placed.get_mut(index) {
+            *slot = Some(centred(lead, width, th));
+        }
+        if width > 0.0 {
+            start = lead + width + gap;
+        }
+    }
+    let band = (trail - start).max(0.0);
+
+    // Labels, icons, or the More menu.
+    let more = index_of(Part::More(column));
+    let (use_compact, shown) = if run(&full) <= band {
+        (false, items.len())
+    } else if run(&compact) <= band {
+        (true, items.len())
+    } else {
+        let more_w = match more {
+            Some(index) => measure(ctx, index, None)?.0,
+            None => 0.0,
+        };
+        let mut k = items.len();
+        while k > 0 {
+            let used = run(compact.get(..k).unwrap_or(&[])) + gap + more_w;
+            if used <= band {
+                break;
+            }
+            k = k.saturating_sub(1);
+        }
+        (true, k)
+    };
+    fit.compact = use_compact;
+    fit.shown = Some(shown);
+    let widths = if use_compact { &compact } else { &full };
+    let overflow = shown < items.len();
+    let more_size = match (overflow, more) {
+        (true, Some(index)) => Some((index, measure(ctx, index, None)?)),
+        _ => None,
+    };
+    let mut total = run(widths.get(..shown).unwrap_or(&[]));
+    if let Some((_, (mw, _))) = more_size {
+        total += if shown > 0 { gap + mw } else { mw };
+    }
+    let mut x = (trail - total).max(start.min(trail));
+    let actions_x0 = if total > 0.0 { x } else { trail };
+    for (k, (index, _, h)) in items.iter().enumerate() {
+        let rect = if k < shown {
+            let w = widths.get(k).copied().unwrap_or(0.0);
+            let rect = centred(x, w, *h);
+            x += w + gap;
+            rect
+        } else {
+            Rect::ZERO
+        };
+        if let Some(slot) = placed.get_mut(*index) {
+            *slot = Some(rect);
+        }
+    }
+    if let Some(index) = more {
+        let rect = match more_size {
+            Some((_, (mw, mh))) => centred(x, mw, mh),
+            None => Rect::ZERO,
+        };
+        if let Some(slot) = placed.get_mut(index) {
+            *slot = Some(rect);
+        }
+    }
+    drop(fits);
+
+    // The leading fill: its own width, or what is left when it needs more.
+    if let Some(index) = index_of(Part::Leading(column)) {
+        let end = if total > 0.0 { actions_x0 - gap } else { trail };
+        let room = (end - start).max(0.0);
+        let (lw, lh) = measure(ctx, index, Some(room))?;
+        if let Some(slot) = placed.get_mut(index) {
+            *slot = Some(centred(start, lw.min(room), lh));
+        }
+    }
+    Ok(())
 }
 
 impl Widget for NavShell {
@@ -2065,9 +3223,15 @@ impl Widget for NavShell {
         if let Some(pane) = next {
             self.show(pane);
         }
+        self.poll_bindings();
+        if self.built {
+            self.apply_open_states();
+        }
         self.take_requests();
+        self.open_more_menus();
         self.follow_navigation();
         self.for_each_owned_mut(|child| child.sync(state, path));
+        self.sync_filter();
     }
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
@@ -2082,6 +3246,9 @@ impl Widget for NavShell {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The host is building a new tree: what waited for it goes in now.
+        self.apply_pending();
+        self.slots_changed();
         self.layout_theme = theme.clone();
         let size = if self.rect.width() > 0.0 {
             (self.rect.width(), self.rect.height())
@@ -2156,10 +3323,13 @@ impl Widget for NavShell {
                 widget.apply_layout(taffy, child, child_origin);
             }
         }
+        self.apply_fit();
         self.invalidation.acknowledge_applied();
         self.layout_dirty = false;
+        self.apply_open_states();
+        self.publish_open_states();
         let visible = self.geometry.visible_parts(&self.inputs.borrow());
-        if visible != self.host_parts {
+        if visible != self.host_parts || !self.pending.is_empty() {
             self.structure_dirty = true;
         }
     }
@@ -2224,19 +3394,22 @@ impl Widget for NavShell {
         }
         self.route_event_to_children(event, ctx);
         self.take_requests();
+        self.take_more_choices(&mut *ctx.state, ctx.path);
+        self.open_more_menus();
         self.follow_navigation();
+        self.sync_filter();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         self.exposed_parts()
             .iter()
-            .filter_map(|part| self.part(*part))
+            .filter_map(|part| self.exposed(*part))
             .collect()
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for part in self.exposed_parts() {
-            if let Some(widget) = self.part(part) {
+            if let Some(widget) = self.exposed(part) {
                 visitor(widget);
             }
         }
@@ -2244,45 +3417,84 @@ impl Widget for NavShell {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let parts = self.exposed_parts();
+        let inert: Vec<bool> = parts.iter().map(|part| self.part_inert(*part)).collect();
+        self.inert_parts.resize_with(parts.len(), || InertPart);
         let NavShell {
             sidebar,
             overview,
             content,
             inspector,
+            rail,
             filter,
+            controls,
             headers,
             toggle,
             back,
             inspector_toggle,
             history_open,
             history_close,
+            inert_parts,
             ..
         } = self;
-        let [h_sidebar, h_overview, h_content, h_inspector] = headers;
-        let mut sidebar = sidebar.as_deref_mut();
-        let mut overview = overview.as_deref_mut();
-        let mut content = Some(content.as_mut());
-        let mut inspector = inspector.as_deref_mut();
-        let mut filter = filter.as_deref_mut();
-        let mut actions = [
-            h_sidebar.actions.as_deref_mut(),
-            h_overview.actions.as_deref_mut(),
-            h_content.actions.as_deref_mut(),
-            h_inspector.actions.as_deref_mut(),
+        let mut stubs = inert_parts.iter_mut();
+        let mut bodies: [Option<&mut (dyn Widget + 'static)>; 4] = [
+            sidebar.as_deref_mut(),
+            overview.as_deref_mut(),
+            Some(content.as_mut()),
+            inspector.as_deref_mut(),
         ];
+        let mut rail = rail.as_deref_mut();
+        let mut filter = filter.as_mut().map(|f| f as &mut dyn Widget);
+        let mut controls = controls.as_deref_mut();
+        let mut titles: Vec<Option<&mut dyn Widget>> = Vec::with_capacity(4);
+        let mut leadings: Vec<Option<&mut (dyn Widget + 'static)>> = Vec::with_capacity(4);
+        let mut mores: Vec<Option<&mut dyn Widget>> = Vec::with_capacity(4);
+        let mut actions: Vec<Vec<Option<&mut (dyn Widget + 'static)>>> = Vec::with_capacity(4);
+        for header in headers.iter_mut() {
+            let Header {
+                title,
+                actions: list,
+                more,
+                leading,
+                ..
+            } = header;
+            titles.push(Some(title as &mut dyn Widget));
+            leadings.push(leading.as_deref_mut());
+            mores.push(Some(more as &mut dyn Widget));
+            actions.push(list.iter_mut().map(|a| Some(a.as_mut())).collect());
+        }
         let mut toggle = Some(toggle as &mut dyn Widget);
         let mut back = Some(back as &mut dyn Widget);
         let mut inspector_toggle = Some(inspector_toggle as &mut dyn Widget);
         let mut history_open = Some(history_open as &mut dyn Widget);
         let mut history_close = Some(history_close as &mut dyn Widget);
         let mut out: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(parts.len());
-        for part in parts {
-            let next = match part {
-                Part::Body(Column::Sidebar) => sidebar.take(),
-                Part::Body(Column::Overview) => overview.take(),
-                Part::Body(Column::Content) => content.take(),
-                Part::Body(Column::Inspector) => inspector.take(),
-                Part::Actions(column) => actions.get_mut(column.index()).and_then(Option::take),
+        for (part, inert) in parts.into_iter().zip(inert) {
+            let stub = stubs.next();
+            if inert {
+                if let Some(stub) = stub {
+                    out.push(stub);
+                }
+                continue;
+            }
+            let next: Option<&mut (dyn Widget + '_)> = match part {
+                Part::Body(column) => bodies
+                    .get_mut(column.index())
+                    .and_then(Option::take)
+                    .map(|w| w as &mut dyn Widget),
+                Part::Rail => rail.take().map(|w| w as &mut dyn Widget),
+                Part::Title(column) => titles.get_mut(column.index()).and_then(Option::take),
+                Part::Leading(column) => leadings
+                    .get_mut(column.index())
+                    .and_then(Option::take)
+                    .map(|w| w as &mut dyn Widget),
+                Part::Action(column, i) => actions
+                    .get_mut(column.index())
+                    .and_then(|list| list.get_mut(i))
+                    .and_then(Option::take)
+                    .map(|w| w as &mut dyn Widget),
+                Part::More(column) => mores.get_mut(column.index()).and_then(Option::take),
+                Part::Controls => controls.take().map(|w| w as &mut dyn Widget),
                 Part::Filter => filter.take(),
                 Part::Toggle => toggle.take(),
                 Part::Back => back.take(),
@@ -2301,6 +3513,14 @@ impl Widget for NavShell {
         "NavShell"
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
     }
@@ -2314,22 +3534,13 @@ impl Widget for NavShell {
             .then_some(winit::window::CursorIcon::ColResize)
     }
 
+    /// The window's group: keyed by the shell's id, so what stands under a
+    /// titled column keeps its identity on the agent surface while titles
+    /// come and go. The column titles are its headings (the title parts).
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // The column titles are headings of the window.
-        let headings: Vec<AccessNode> = Column::ALL
-            .iter()
-            .filter_map(|column| {
-                let title = self.headers.get(column.index())?.title.clone()?;
-                let header = self.geometry.header(*column);
-                (header.width() > 0.0).then(|| {
-                    AccessNode::new(Role::Heading { level: 2 })
-                        .with_name(title)
-                        .with_bounds(header)
-                })
-            })
-            .collect();
-        (!headings.is_empty()).then(|| AccessNode::new(Role::Group).with_children(headings))
+        let key = self.id.as_deref().unwrap_or("nav-shell");
+        Some(AccessNode::new(Role::Group).with_semantic_key(format!("{key}.window")))
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -2349,7 +3560,11 @@ impl Widget for NavShell {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        let mut needed = self.animating;
+        let mut needed = self.animating
+            || self.content_back.is_some()
+            || self.headers.iter().any(|header| header.binding.is_some())
+            || self.sidebar_state.is_some()
+            || self.inspector_state.is_some();
         self.for_each_owned(|child| needed |= child.needs_idle_sync());
         needed
     }
@@ -2370,6 +3585,20 @@ impl Widget for NavShell {
         let mut dirty = std::mem::take(&mut self.structure_dirty);
         self.for_each_owned_mut(|child| dirty |= child.take_structure_dirty());
         dirty
+    }
+
+    /// A part whose overlay holds the pointer (a popover a header button
+    /// owns, an open More menu) first; then the default.
+    fn modal_capture(&self) -> Option<Rect> {
+        let mut capture = None;
+        for part in self.exposed_parts() {
+            if capture.is_none()
+                && let Some(widget) = self.exposed(part)
+            {
+                capture = widget.modal_capture();
+            }
+        }
+        capture
     }
 }
 
@@ -2475,12 +3704,25 @@ impl NavShell {
                         ..
                     },
                 ..
-            } => self.handle_key(logical_key, ctx),
+            } => {
+                if self.modal_capture().is_some() {
+                    return false;
+                }
+                self.handle_key(logical_key, ctx)
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_press(),
+            } => {
+                if self
+                    .modal_capture()
+                    .is_some_and(|rect| rect.contains(self.last_cursor))
+                {
+                    return false;
+                }
+                self.handle_press()
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
@@ -2537,7 +3779,7 @@ impl NavShell {
                 self.toggle_inspector();
                 return true;
             }
-            if self.back() {
+            if self.pop_push_stack() {
                 return true;
             }
         }
@@ -2557,10 +3799,7 @@ impl NavShell {
         if g.scrim.width() > 0.0 && g.scrim.contains(p) {
             let in_sidebar = g.sidebar_modal() && g.sidebar_column.contains(p);
             let in_inspector = g.inspector_modal() && g.inspector_column.contains(p);
-            let on_button = [g.toggle, g.inspector_toggle, g.back, g.history]
-                .iter()
-                .any(|r| r.contains(p));
-            if !in_sidebar && !in_inspector && !on_button {
+            if !in_sidebar && !in_inspector {
                 if g.sidebar_modal() {
                     self.toggle_sidebar();
                 } else if g.inspector_modal() {
@@ -2572,7 +3811,7 @@ impl NavShell {
         // Remember which content pane the person works in.
         if g.content_column.contains(p) {
             self.active_hint = Some(NavPane::Content);
-        } else if g.overview_column.contains(p) {
+        } else if g.overview_column.contains(p) || g.rail.contains(p) {
             self.active_hint = Some(NavPane::Overview);
         }
         false
@@ -2598,13 +3837,36 @@ impl NavShell {
             inputs.user_sidebar = Some(width.max(min) / scale.max(f64::EPSILON));
         }
         self.update_toggle_names();
+        self.publish_open_states();
         self.structure_dirty = true;
         self.invalidate();
     }
 
-    /// Route `event` to the shown parts, front to back. Pointer events go
-    /// first to the part under the pointer, so a release or a wheel lands
-    /// where it happened and never on a column beside it.
+    /// The rect a pointer event over `part` lands in.
+    fn part_area(&self, part: Part) -> Rect {
+        let g = &self.geometry;
+        match part {
+            Part::Toggle => g.toggle,
+            Part::Back => g.back,
+            Part::InspectorToggle => g.inspector_toggle,
+            Part::History(_) => g.history,
+            Part::Filter => g.filter,
+            Part::Controls => g.controls,
+            Part::Rail => g.rail,
+            Part::Title(column)
+            | Part::Leading(column)
+            | Part::Action(column, _)
+            | Part::More(column) => g.header(column),
+            Part::Body(column) => g.body(column).union(g.column(column)),
+        }
+    }
+
+    /// Route `event` to the live parts, front to back. A part whose overlay
+    /// holds the pointer (a popover a header button owns) hears pointer
+    /// events first; then pointer events go to the part under the pointer,
+    /// so a release or a wheel lands where it happened and never on a column
+    /// beside it. Parts under a drawer's scrim and actions in the More menu
+    /// hear nothing.
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,
@@ -2626,22 +3888,23 @@ impl NavShell {
             .copied()
             .zip(child_nodes)
             .rev()
+            .filter(|(part, _)| !self.part_inert(*part) && !self.part_hidden(*part))
             .collect();
         if pointer {
             let p = self.last_cursor;
-            let under = |part: &Part| -> bool {
-                let rect = match part {
-                    Part::Toggle => self.geometry.toggle,
-                    Part::Back => self.geometry.back,
-                    Part::InspectorToggle => self.geometry.inspector_toggle,
-                    Part::History(_) => self.geometry.history,
-                    Part::Filter => self.geometry.filter,
-                    Part::Actions(column) => self.geometry.header(*column),
-                    Part::Body(column) => self.geometry.column(*column),
-                };
-                rect.contains(p)
+            let rank = |part: &Part| -> u8 {
+                if self
+                    .part(*part)
+                    .is_some_and(|w| w.modal_capture().is_some())
+                {
+                    0
+                } else if self.part_area(*part).contains(p) {
+                    1
+                } else {
+                    2
+                }
             };
-            order.sort_by_key(|(part, _)| !under(part));
+            order.sort_by_key(|(part, _)| rank(part));
         }
         for (part, node) in order {
             if *ctx.handled {

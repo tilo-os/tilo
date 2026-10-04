@@ -1704,21 +1704,10 @@ impl GitClientApp {
             return body;
         };
         let theme = ctx.theme;
-        let s = &theme.tokens.spacing;
-        let m = &theme.tokens.metrics;
-        let margin = f64::from(s.s3);
-        let rect_w = (body.width() - 2.0 * margin).max(0.0);
-        let text_w = (rect_w
-            - 2.0 * f64::from(s.s4)
-            - f64::from(m.icon_md)
-            - 2.0 * f64::from(s.s3)
-            - f64::from(m.bar_control_height))
-        .max(1.0);
-        let style = theme.text(TextRole::Body).strong();
-        let (_, title_h) =
-            ctx.text
-                .measure_style(&title, Some(ui::num::f32_of_f64(text_w)), &style);
-        let h = (f64::from(title_h) + 2.0 * f64::from(s.s3)).max(f64::from(m.panel_row_height));
+        let margin = f64::from(theme.tokens.spacing.s3);
+        let rect_w = (body.width() - 2.0 * margin).max(1.0);
+        let content = BannerContent::new(kind, &title).dismissible(dismissible);
+        let h = Banner::height(&content, rect_w, ctx.text, theme);
         let rect = Rect::new(
             body.x0 + margin,
             body.y0 + margin,
@@ -1726,17 +1715,12 @@ impl GitClientApp {
             body.y0 + margin + h,
         );
         let hover = self.pointer.unwrap_or(Point::new(f64::MIN, f64::MIN));
-        let dismiss = Banner::paint(
-            ctx,
-            rect,
-            &BannerContent::new(kind, &title).dismissible(dismissible),
-            hover,
-        );
+        let hit = Banner::paint(ctx, rect, &content, hover);
         self.semantic.push(Target {
             rect,
             hit: Hit::DismissError,
         });
-        if dismiss.width() > 0.0 {
+        if let Some(dismiss) = hit.dismiss {
             self.targets.push(Target {
                 rect: dismiss,
                 hit: Hit::DismissError,
@@ -1944,18 +1928,10 @@ impl GitClientApp {
 
         if let Some(error) = &self.last_error {
             let top = button.y1 + f64::from(s.s4);
-            let banner = Rect::new(
-                lane.x0,
-                top,
-                lane.x1,
-                top + f64::from(theme.tokens.metrics.panel_row_height),
-            );
-            Banner::paint(
-                ctx,
-                banner,
-                &BannerContent::new(BannerKind::Error, error),
-                Point::new(f64::MIN, f64::MIN),
-            );
+            let content = BannerContent::new(BannerKind::Error, error);
+            let h = Banner::height(&content, lane.width(), ctx.text, theme);
+            let banner = Rect::new(lane.x0, top, lane.x1, top + h);
+            Banner::paint(ctx, banner, &content, Point::new(f64::MIN, f64::MIN));
         }
     }
 

@@ -1735,6 +1735,15 @@ impl BooksApp {
                     ..Settings::default()
                 });
             }
+            // `face-<name>`: the reader in one of the reading faces a reader
+            // can choose (`face-literata` reads in `reading-literata`).
+            other if other.starts_with("face-") => {
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings {
+                    font_id: format!("reading-{}", other.trim_start_matches("face-")),
+                    ..Settings::default()
+                });
+            }
             "light" => {
                 self.view = View::Reader;
                 self.shot_settings = Some(Settings {
@@ -8581,7 +8590,7 @@ impl BooksApp {
                         );
                         ctx.fill_rect(bar, ReaderPalette::highlight_swatch(a.color));
                         let gx = content_x + f64::from(content_w) + 6.0;
-                        paint::note(
+                        Icon::MessageSquare.draw_with_stroke(
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0, gx + 20.0, by0 + 20.0),
@@ -8591,13 +8600,11 @@ impl BooksApp {
                     }
                     AnnoKind::Bookmark => {
                         let gx = content_x + f64::from(content_w) + 6.0;
-                        paint::bookmark(
+                        Icon::Bookmark.draw_filled(
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0 - 2.0, gx + 20.0, by0 + 22.0),
                             palette.accent,
-                            1.6,
-                            true,
                         );
                     }
                 }
@@ -9253,14 +9260,12 @@ impl BooksApp {
         } else {
             theme.text_dim
         };
-        paint::bookmark(
-            ctx.scene,
-            ctx.transform,
-            Rect::from_center_size(rect.center(), (glyph, glyph)),
-            ink,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            bookmarked,
-        );
+        let glyph = Rect::from_center_size(rect.center(), (glyph, glyph));
+        if bookmarked {
+            Icon::Bookmark.draw_filled(ctx.scene, ctx.transform, glyph, ink);
+        } else {
+            Icon::Bookmark.draw(ctx.scene, ctx.transform, glyph, ink);
+        }
     }
 
     /// A header's title in `Heading` with a secondary detail (an author, a
@@ -10326,7 +10331,8 @@ impl BooksApp {
         let spacing = &theme.tokens.spacing;
         let kind = match &f.kind {
             FontKind::Default => "Default face".to_string(),
-            FontKind::Serif => "Serif book face".to_string(),
+            FontKind::Serif => "System reading face".to_string(),
+            FontKind::Reading(_) => "Reading face".to_string(),
             FontKind::Mono => "Monospace".to_string(),
             FontKind::Named(_) => "System font".to_string(),
         };

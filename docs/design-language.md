@@ -144,7 +144,11 @@ Vietnamese and Greek; Cyrillic falls back to Onest, matched to its x-height
 and stem weight, and every other script to Noto. A
 theme or the accessibility layer may choose the built-in Hyperlegible face
 (Atkinson Hyperlegible Next) instead.
-Reading text is serif and code is mono, both from the font catalog.
+Reading text is set in New Computer Modern, in the optical cut its size
+calls for (the 8 pt design for footnotes, Book for body text, Regular for
+titles), with old-style figures; a theme or a reader may choose Libertinus,
+Literata, EB Garamond or Source Serif instead. Code is mono. All come from
+the font catalog.
 
 | Role | Size / weight / leading | Use |
 |---|---|---|
@@ -217,8 +221,9 @@ distribution, user, workspace and accessibility layers. A theme can set:
 - **Presence:** lightness and chroma of the presence palette (hues stay evenly
   spaced so participants remain equal).
 - **Shape:** the window radius; every other radius derives concentrically.
-- **Density, type and motion:** spacing scale, UI face, base size and
-  whether similar letters are always distinguished, and spring character.
+- **Density, type and motion:** spacing scale, UI face, reading face,
+  base size and whether similar letters are always distinguished, and spring
+  character.
 - **Material:** blur strength and tint opacity of floating chrome.
 
 A theme cannot set colours of individual widgets, remove the lift or focus

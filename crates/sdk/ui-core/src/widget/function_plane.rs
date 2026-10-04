@@ -125,7 +125,15 @@ impl FunctionPlane {
             step,
         );
         let origin = self.paint_axes(scene, transform, edge_on_with(ground, AXIS_ALPHA));
-        self.paint_labels(scene, transform, text_renderer, theme, span, (step, origin));
+        self.paint_labels(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            ground,
+            span,
+            (step, origin),
+        );
         scene.pop_layer();
     }
 
@@ -188,19 +196,32 @@ impl FunctionPlane {
 
     /// Tick labels beside each axis at the major step, a step of the theme's
     /// spacing off the axis; an axis scrolled off screen pins its labels
-    /// inside the nearest canvas edge.
+    /// inside the nearest canvas edge. Each label stands on a halo of the
+    /// ground, so a curve or a rule passing under it never cuts its figures.
     fn paint_labels(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        ground: Color,
         span: WorldSpan,
         (step, origin): (f64, Point),
     ) {
         let style = theme.text(TextRole::Caption).numeric();
         let color = theme.tokens.colors.text_dim;
+        let halo = f64::from(theme.tokens.spacing.s1) / 2.0;
         for placed in self.label_layout(text_renderer, theme, span, (step, origin)) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                ground,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(
+                    placed.rect.inflate(halo, 0.0),
+                    f64::from(theme.tokens.radii.detail),
+                ),
+            );
             text_renderer.draw_style(
                 scene,
                 &placed.text,
@@ -226,18 +247,20 @@ impl FunctionPlane {
         let style = theme.text(TextRole::Caption).numeric();
         let gap = f64::from(theme.tokens.spacing.s1);
         let inset = gap / 2.0;
+        // A label keeps a full step clear of the canvas edges.
+        let edge = f64::from(theme.tokens.spacing.s2);
         let line_h = f64::from(text_renderer.measure_style("0", None, &style).1);
         let canvas = self.canvas;
         let mut out = Vec::new();
         let place = |text: String, x: f64, top: f64, text_renderer: &mut TextRenderer| {
             let w = f64::from(text_renderer.measure_style(&text, None, &style).0);
             let x = x.clamp(
-                canvas.x0 + inset,
-                (canvas.x1 - w - inset).max(canvas.x0 + inset),
+                canvas.x0 + edge,
+                (canvas.x1 - w - edge).max(canvas.x0 + edge),
             );
             let top = top.clamp(
-                canvas.y0 + inset,
-                (canvas.y1 - line_h - inset).max(canvas.y0 + inset),
+                canvas.y0 + edge,
+                (canvas.y1 - line_h - edge).max(canvas.y0 + edge),
             );
             TickLabel {
                 text,
@@ -400,10 +423,15 @@ pub fn format_tick(value: f64, step: f64) -> String {
         (-step.log10().floor()) as usize
     };
     let text = format!("{value:.decimals$}");
-    if decimals == 0 {
+    let text = if decimals == 0 {
         text
     } else {
         text.trim_end_matches('0').trim_end_matches('.').to_string()
+    };
+    // A negative tick reads with a true minus sign, the width of a plus.
+    match text.strip_prefix('-') {
+        Some(magnitude) => format!("\u{2212}{magnitude}"),
+        None => text,
     }
 }
 
@@ -447,7 +475,7 @@ mod tests {
         assert_eq!(format_tick(0.30000000000000004, 0.1), "0.3");
         assert_eq!(format_tick(2.0, 1.0), "2");
         assert_eq!(format_tick(1e-12, 0.5), "0");
-        assert_eq!(format_tick(-0.25, 0.05), "-0.25");
+        assert_eq!(format_tick(-0.25, 0.05), "\u{2212}0.25");
     }
 
     #[test]

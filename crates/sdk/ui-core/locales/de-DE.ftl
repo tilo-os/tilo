@@ -269,6 +269,7 @@ block-editor-code-exit-hint = Ctrl+Enter: Code verlassen
 block-editor-code-exit-compact = Ctrl+Enter ↵
 block-editor-code-copied = Kopiert
 block-editor-code-keyboard-hint = Ctrl+Enter: darunter schreiben · Ctrl+Shift+Enter: darüber schreiben · Tab / Shift+Tab: einrücken / ausrücken · Ctrl+Shift+C: Code kopieren
+widget-breadcrumb = Pfad
 widget-block-indent = Block mit Unterelementen einrücken
 widget-block-text = Blocktext
 widget-block-outdent = Block mit Unterelementen ausrücken

@@ -31,6 +31,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
+use crate::widget::control_size::ControlSize;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -360,6 +361,53 @@ pub struct TextInput {
     /// trait hook does not receive a theme.
     last_caret_width: f64,
     interaction: crate::interaction::InteractionEnvironment,
+    /// The single-line band's height, shared with buttons of the same size.
+    control_size: ControlSize,
+    /// A wrapping field is at least this many lines tall.
+    min_lines: usize,
+    /// The theme's field inset from the latest layout or paint: the
+    /// horizontal text inset of a chrome'd field, single- or multiline.
+    field_pad_x: f64,
+    /// The single-line band of the latest layout; a wrapping chrome'd field
+    /// is never shorter.
+    band_height: f64,
+    /// A plain field inside a toolkit document view keeps the document's own
+    /// text inset instead of the zero inset of a plain app field.
+    document_inset: bool,
+    /// Called with the text on a submitting Enter.
+    on_submit: Option<TextChangeCallback>,
+    /// Route a submitting Enter through an exported resource action.
+    submit_action: Option<ActionEmitter<String>>,
+    /// A trailing icon button inside the field.
+    accessory: Option<Accessory>,
+    /// `font_size_override` is a document-space size, never grown by the text
+    /// scale ([`Self::with_content_size`]).
+    content_sized: bool,
+    /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
+    span_highlighter: Option<SpanHighlighter>,
+}
+
+/// Colours spans of a field's text from the theme: each `(range, colour)`
+/// is a byte range of the text and the ink it takes (a reference in a
+/// formula, in the colour of the cells it outlines).
+pub type SpanHighlighter =
+    Box<dyn Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>>;
+
+/// What a field's trailing accessory does when pressed.
+pub enum AccessoryAction {
+    /// Empty the field, as an edit by the person; shown only while the
+    /// field holds text.
+    Clear,
+    /// Run the callback.
+    Run(Box<dyn FnMut()>),
+}
+
+/// A trailing icon button inside a field.
+struct Accessory {
+    icon: crate::icons::Icon,
+    name: String,
+    action: AccessoryAction,
+    hovered: bool,
 }
 
 /// One on-screen row: a whole short logical line, or one soft-wrapped
@@ -521,6 +569,16 @@ impl TextInput {
             last_scroll_caret: None,
             last_caret_width: 2.0,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            control_size: ControlSize::Regular,
+            min_lines: 0,
+            field_pad_x: f64::from(crate::tokens::Spacing::BASE.s3),
+            band_height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            document_inset: false,
+            on_submit: None,
+            submit_action: None,
+            accessory: None,
+            content_sized: false,
+            span_highlighter: None,
         }
     }
 
@@ -675,6 +733,7 @@ impl TextInput {
             self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.text_role = role;
             self.font_size_override = None;
+            self.content_sized = false;
         }
     }
 
@@ -1160,7 +1219,11 @@ impl TextInput {
         }
         self.text = s.to_string();
         self.selection_anchor = None;
-        self.clamp_to_text();
+        // A programmatic value is a fresh value: the caret waits at its end.
+        self.cursor_pos = self.text.len();
+        self.caret_affinity = TextAffinity::Before;
+        self.goal_x = None;
+        self.scroll_x = 0.0;
         self.dirty = false;
         self.model_layout_dirty = self.multiline || self.single_attributes.is_some();
         self.last_edit_time = None;
@@ -1892,11 +1955,7 @@ impl TextInput {
                 color,
                 origin,
                 None,
-                &TextStyle::new(size).with_family(if self.mono {
-                    FontChoice::Monospace
-                } else {
-                    FontChoice::SansSerif
-                }),
+                &TextStyle::new(size).with_family(self.role_family()),
             );
         }
     }
@@ -1961,11 +2020,7 @@ impl TextInput {
     }
 
     fn multiline_style(&self, scale: f32) -> TextStyle {
-        let family = self.family.clone().unwrap_or(if self.mono {
-            FontChoice::Monospace
-        } else {
-            FontChoice::SansSerif
-        });
+        let family = self.family.clone().unwrap_or(self.role_family());
         // Already grown by the text scale here, so the renderer paints it as
         // given.
         let mut style = TextStyle::new(self.effective_font_size() * scale)
@@ -2020,13 +2075,14 @@ impl TextInput {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> f32 {
-        self.gutter_text_scale = f64::from(theme.text_scale);
-        let available = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
-        let style = self.multiline_style(theme.text_scale);
+        self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
+        let available = (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0);
+        let style = self.multiline_style(self.scale_for(theme.text_scale));
         #[allow(clippy::cast_possible_truncation, reason = "bounded widget width")]
         let available_width = available as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
-        let minimum = self.effective_font_size() * theme.text_scale * LINE_HEIGHT_RATIO;
+        let minimum =
+            self.effective_font_size() * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO;
         let height = self
             .single_layout
             .as_ref()
@@ -2226,14 +2282,14 @@ impl TextInput {
         shape: &RoundedRect,
     ) {
         let size = self.effective_font_size();
-        let style = self.multiline_style(theme.text_scale);
-        self.update_gutter_metrics(tr, &style, theme.text_scale);
+        let style = self.multiline_style(self.scale_for(theme.text_scale));
+        self.update_gutter_metrics(tr, &style, self.scale_for(theme.text_scale));
         let left = self.ml_left();
         #[allow(
             clippy::cast_possible_truncation,
             reason = "widget width is a bounded on-screen size for vello/layout math, never near f32's range"
         )]
-        let available_width = (self.rect.width() - left - ML_PAD_X).max(1.0) as f32;
+        let available_width = (self.rect.width() - left - self.ml_pad_x()).max(1.0) as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
 
         let caret_position = if self.preedit.is_empty() {
@@ -2288,13 +2344,13 @@ impl TextInput {
             transform * Affine::translate((self.single_origin.x, self.single_origin.y));
         if self.shows_placeholder() {
             let placeholder = crate::i18n!(&self.placeholder);
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &placeholder,
-                size,
-                theme.text_dim,
+                theme.tokens.colors.text_tertiary,
                 text_transform,
                 Some(available_width),
+                &self.placeholder_style(size),
             );
         } else if let Some(layout) = &self.single_layout {
             let color = if self.effectively_disabled() {
@@ -2527,7 +2583,7 @@ impl TextInput {
         let lh = self.line_height();
         let left = self.ml_left();
         let gutter_w = self.code_gutter_w();
-        let avail_w = self.rect.width() - left - ML_PAD_X;
+        let avail_w = self.rect.width() - left - self.ml_pad_x();
         self.build_lines(tr, avail_w);
         self.refresh_highlight();
         self.update_ml_body_scroll(lh);
@@ -2562,7 +2618,14 @@ impl TextInput {
                     self.rect.x0 + left,
                     self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
                 ));
-            tr.draw_text(scene, &placeholder, size, theme.text_dim, origin, None);
+            tr.draw_style(
+                scene,
+                &placeholder,
+                theme.tokens.colors.text_tertiary,
+                origin,
+                None,
+                &self.placeholder_style(size),
+            );
         }
 
         let text_color = if self.effectively_disabled() {
@@ -2907,7 +2970,7 @@ impl TextInput {
     }
 
     fn ml_left(&self) -> f64 {
-        ML_PAD_X + self.code_gutter_w()
+        self.ml_pad_x() + self.code_gutter_w()
     }
 
     /// Threads the cross-line carry over all lines so block comments / fenced
@@ -3009,6 +3072,321 @@ impl TextInput {
     pub fn with_persistent_placeholder(mut self) -> Self {
         self.persistent_placeholder = true;
         self
+    }
+
+    /// How tall a single-line field is: the height of a button of the same
+    /// size, so fields and buttons share a row. Regular (32) by default.
+    #[must_use]
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.set_control_size(size);
+        self
+    }
+
+    /// Change the field's [`ControlSize`]; see [`Self::control_size`].
+    pub fn set_control_size(&mut self, size: ControlSize) {
+        if self.control_size != size {
+            self.control_size = size;
+            self.model_layout_dirty = true;
+        }
+    }
+
+    /// A wrapping field at least `lines` lines tall, with the same text
+    /// inset as a single-line field and never shorter than one.
+    #[must_use]
+    pub fn with_min_lines(mut self, lines: usize) -> Self {
+        self.multiline = true;
+        self.min_lines = lines;
+        self.model_layout_dirty = true;
+        self
+    }
+
+    /// Run `callback` with the text when the person presses Enter: the
+    /// field's commit for a tree-owned field nobody polls. Enter submits
+    /// (Shift+Enter still breaks a wrapping field's line).
+    #[must_use]
+    pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.enter_submits = true;
+        self.on_submit = Some(Box::new(callback));
+        self
+    }
+
+    /// Route Enter through an exported resource action with the text as its
+    /// input; see [`Self::on_submit`].
+    #[must_use]
+    pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.enter_submits = true;
+        self.submit_action = Some(ActionEmitter::new(binding));
+        self
+    }
+
+    /// A trailing clear button inside the field while it holds text.
+    #[must_use]
+    pub fn with_clear_button(self) -> Self {
+        self.with_trailing_accessory(crate::icons::Icon::X, "Clear", AccessoryAction::Clear)
+    }
+
+    /// A trailing icon button inside the field, named `name` for assistive
+    /// technology (a reveal toggle, a picker).
+    #[must_use]
+    pub fn with_trailing_accessory(
+        mut self,
+        icon: crate::icons::Icon,
+        name: &str,
+        action: AccessoryAction,
+    ) -> Self {
+        self.accessory = Some(Accessory {
+            icon,
+            name: name.to_string(),
+            action,
+            hovered: false,
+        });
+        self
+    }
+
+    /// Edit text that belongs to a document in place, at the document's own
+    /// `px` size (a note on a zoomed page): the text scale does not grow it,
+    /// the document's zoom does.
+    #[must_use]
+    pub fn with_content_size(mut self, px: f32) -> Self {
+        self.set_content_size(Some(px));
+        self
+    }
+
+    /// Change or clear the document-space size of [`Self::with_content_size`].
+    pub fn set_content_size(&mut self, px: Option<f32>) {
+        let sized = px.is_some();
+        if self.font_size_override != px || self.content_sized != sized {
+            self.font_size_override = px;
+            self.content_sized = sized;
+            self.model_layout_dirty = true;
+        }
+    }
+
+    /// Colour spans of a single-line field's text (references in a
+    /// formula); see [`SpanHighlighter`]. A wrapping field takes a
+    /// [`Highlighter`] instead.
+    #[must_use]
+    pub fn with_span_highlighter(
+        mut self,
+        highlighter: impl Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>
+        + 'static,
+    ) -> Self {
+        self.span_highlighter = Some(Box::new(highlighter));
+        self
+    }
+
+    /// Keep the document's text inset on a plain field inside a toolkit
+    /// document view (a block, a table cell, a code view).
+    pub(crate) fn keep_document_inset(&mut self) {
+        self.document_inset = true;
+    }
+
+    /// Where the trailing accessory sits: a square at the field's trailing
+    /// edge, one band tall, while it is shown.
+    fn accessory_rect(&self) -> Option<Rect> {
+        let accessory = self.accessory.as_ref()?;
+        if self.multiline
+            || (matches!(accessory.action, AccessoryAction::Clear) && self.text.is_empty())
+        {
+            return None;
+        }
+        let edge = self.rect.height();
+        (self.rect.width() > edge * 2.0).then(|| {
+            Rect::new(
+                self.rect.x1 - edge,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y0 + edge,
+            )
+        })
+    }
+
+    /// The room the accessory takes from the text.
+    fn accessory_room(&self) -> f64 {
+        self.accessory_rect().map_or(0.0, |rect| rect.width())
+    }
+
+    /// Paint the trailing accessory: a plain icon button, lifted under the
+    /// pointer.
+    fn draw_accessory(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) else {
+            return;
+        };
+        let inset = f64::from(theme.tokens.spacing.s1);
+        let face = rect.inset(-inset);
+        if accessory.hovered && !self.effectively_disabled() {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.intent.selection_hover,
+                None,
+                &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
+            );
+        }
+        let edge = f64::from(theme.tokens.metrics.icon_sm);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(rect.center(), (edge, edge)),
+            accessory.icon,
+            theme.text_dim,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+
+    /// A press on the accessory: run it. Returns whether it took the press.
+    fn press_accessory(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+        let Some(rect) = self.accessory_rect() else {
+            return false;
+        };
+        if !rect.contains(self.last_mouse_pos) {
+            return false;
+        }
+        let Some(accessory) = self.accessory.as_mut() else {
+            return false;
+        };
+        match &mut accessory.action {
+            AccessoryAction::Run(callback) => callback(),
+            AccessoryAction::Clear => {
+                let previous_text = self.text.clone();
+                let obj_id = self.resolve_text_obj(state, root);
+                self.selection_anchor = Some(0);
+                self.cursor_pos = self.text.len();
+                self.delete_selection(state, obj_id.as_ref());
+                if obj_id.is_none() {
+                    self.persist_first_path_edit(&previous_text, state, root);
+                }
+            }
+        }
+        true
+    }
+
+    /// Shape the single line in the span highlighter's colours.
+    fn apply_span_highlighter(&mut self, theme: &Theme) {
+        let Some(highlight) = &self.span_highlighter else {
+            return;
+        };
+        if self.masked() {
+            return;
+        }
+        let mut ranges = highlight(&self.text, theme);
+        ranges.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut spans = Vec::new();
+        let mut cursor = 0usize;
+        for (range, color) in ranges {
+            let start = range.start.max(cursor).min(self.text.len());
+            let end = range.end.min(self.text.len());
+            if start >= end
+                || !self.text.is_char_boundary(start)
+                || !self.text.is_char_boundary(end)
+            {
+                continue;
+            }
+            if cursor < start
+                && let Some(before) = self.text.get(cursor..start)
+            {
+                spans.push(RichSpan::new(before));
+            }
+            if let Some(mid) = self.text.get(start..end) {
+                spans.push(RichSpan::new(mid).color(Some([color.r(), color.g(), color.b()])));
+            }
+            cursor = end;
+        }
+        if (cursor < self.text.len() || spans.is_empty())
+            && let Some(tail) = self.text.get(cursor..)
+        {
+            spans.push(RichSpan::new(tail));
+        }
+        self.single_attributes = Some(SingleLineAttributes {
+            spans,
+            ..SingleLineAttributes::default()
+        });
+    }
+
+    /// A submitting Enter: tell whoever listens.
+    fn fire_submit(&mut self) {
+        self.submit_requested = true;
+        if let Some(action) = &mut self.submit_action {
+            let _ = action.emit(self.text.clone());
+        }
+        if let Some(callback) = self.on_submit.as_mut() {
+            callback(&self.text);
+        }
+    }
+
+    /// The text scale this field grows by: none for document-space text.
+    fn scale_for(&self, scale: f32) -> f32 {
+        if self.content_sized { 1.0 } else { scale }
+    }
+
+    /// The family the field's text sets in: the app's explicit one, else the
+    /// role's (Reading is serif, Code is mono, the rest the UI face).
+    fn role_family(&self) -> FontChoice {
+        if self.mono {
+            return FontChoice::Monospace;
+        }
+        match self.text_role {
+            TextRole::Reading => FontChoice::Serif,
+            TextRole::Code => FontChoice::Monospace,
+            _ => FontChoice::SansSerif,
+        }
+    }
+
+    /// The style the placeholder draws in: the field's own family and size,
+    /// so a serif or mono field shows a serif or mono prompt.
+    fn placeholder_style(&self, size: f32) -> TextStyle {
+        let mut style = TextStyle::new(size)
+            .with_family(self.family.clone().unwrap_or_else(|| self.role_family()));
+        if self.content_sized {
+            style.scaling = TextScaling::Content;
+        }
+        style
+    }
+
+    /// The horizontal inset of a wrapping field's text: the single-line
+    /// inset of a chrome'd field, none for a plain field whose parent
+    /// supplies the gutter, the document's own inside a toolkit document.
+    fn ml_pad_x(&self) -> f64 {
+        if !self.plain {
+            self.field_pad_x
+        } else if self.document_inset {
+            ML_PAD_X
+        } else {
+            0.0
+        }
+    }
+
+    /// The single-line band at `scale`: the control height, grown with the
+    /// line plus `spacing.s1` above and below at large text.
+    pub(crate) fn band_in(&self, theme: &Theme) -> f64 {
+        let line_px = f64::from(
+            self.effective_font_size() * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO,
+        );
+        let grown = (line_px + 2.0 * f64::from(theme.tokens.spacing.s1)).ceil();
+        self.control_size.height(theme).max(grown)
+    }
+
+    /// Adopt the theme's field geometry.
+    fn adopt_field_theme(&mut self, theme: &Theme) {
+        let pad = f64::from(theme.padding_standard);
+        let band = self.band_in(theme);
+        if (pad - self.field_pad_x).abs() > f64::EPSILON || (band - self.band_height).abs() > 0.01 {
+            self.field_pad_x = pad;
+            self.band_height = band;
+            self.model_layout_dirty |= self.multiline;
+        }
+    }
+
+    /// The least height of a wrapping chrome'd field: one band, or
+    /// `min_lines` lines and the vertical inset.
+    fn multiline_floor(&self, scale: f32) -> f64 {
+        if self.plain {
+            return 0.0;
+        }
+        let line =
+            f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
+        let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
+        (lines * line + 2.0 * self.multiline_padding_y()).max(self.band_height)
     }
 
     fn masked(&self) -> bool {
@@ -3959,6 +4337,218 @@ impl TextInput {
     }
 }
 
+/// How a field stands: what its chrome shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a POD bundle of independent interaction flags a field can be in any combination of"
+)]
+struct FieldState {
+    hovered: bool,
+    focused: bool,
+    invalid: bool,
+    disabled: bool,
+}
+
+/// A field's chrome: the raised face, a half lift under the pointer, the
+/// derived rest edge, your colour as the focus ring and danger ink for a
+/// rejected value. Shared by [`TextInput`] and [`FieldFace`].
+fn paint_field_chrome(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    shape: &RoundedRect,
+    state: FieldState,
+) {
+    let disabled = state.disabled;
+    let rest = theme.tokens.colors.surfaces.raised;
+    // Focus keeps the rest fill: the ring alone marks it, so a focused
+    // field reads as the same field. Hover is a half lift of an idle one.
+    let bg_color = if state.hovered && !state.focused && !disabled {
+        theme.tokens.colors.lift_on(rest, 0.5)
+    } else {
+        rest
+    };
+    // Disabled is the rest face under one group alpha (HIG §9.5), so rest
+    // and disabled never look alike; a "one step darker" fill with the
+    // same declared border did, on the dark preset.
+    if disabled {
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            crate::widget::DISABLED_ALPHA,
+            transform,
+            shape,
+        );
+    }
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        bg_color,
+        None,
+        shape,
+    );
+    // Rest edge derived from the field fill; focus keeps `border_focus`;
+    // a value the form rejected edges the field in danger ink, the one
+    // status colour a field takes.
+    let colors = &theme.tokens.colors;
+    let (border_w, border_color) = if state.focused && !disabled {
+        (2.0, colors.border_focus)
+    } else if state.invalid && !disabled {
+        (
+            1.5,
+            colors.ink_on_any(
+                &[bg_color, colors.surfaces.content],
+                colors.semantic.danger,
+                crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            ),
+        )
+    } else {
+        (1.0, crate::surface::edge_on(rest))
+    };
+    // Rest edge and focus ring share one half-pixel-inset outline, so
+    // the hairline never bleeds onto the ground and the ring sits where
+    // the edge was.
+    scene.stroke(
+        &Stroke::new(border_w),
+        transform,
+        border_color,
+        None,
+        &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
+    );
+    if disabled {
+        scene.pop_layer();
+    }
+}
+
+/// An immediate-mode text field: the [`TextInput`] look for a painted host
+/// (a formula bar, a cell editor) that shapes and edits its own text.
+///
+/// Size the rect from the face: [`FieldFace::height`] for a field of a
+/// [`ControlSize`], [`FieldFace::text_rect`] for where its text goes.
+/// `paint_chrome` paints only the frame, for a host that draws its own
+/// text (or hosts a [`TextInput`] with plain chrome inside it); `paint`
+/// adds the value, or the placeholder in the weaker placeholder ink.
+pub struct FieldFace<'a> {
+    rect: Rect,
+    text: &'a str,
+    placeholder: &'a str,
+    role: TextRole,
+    state: FieldState,
+}
+
+impl<'a> FieldFace<'a> {
+    /// A field at `rect` showing `text`.
+    #[must_use]
+    pub fn new(rect: Rect, text: &'a str) -> Self {
+        Self {
+            rect,
+            text,
+            placeholder: "",
+            role: TextRole::Body,
+            state: FieldState::default(),
+        }
+    }
+    /// Shown, in the placeholder ink, while the text is empty.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: &'a str) -> Self {
+        self.placeholder = placeholder;
+        self
+    }
+    /// What the text is (default [`TextRole::Body`]).
+    #[must_use]
+    pub fn text_role(mut self, role: TextRole) -> Self {
+        self.role = role;
+        self
+    }
+    #[must_use]
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.state.hovered = hovered;
+        self
+    }
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.state.focused = focused;
+        self
+    }
+    /// The value was rejected: the edge takes danger ink.
+    #[must_use]
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.state.invalid = invalid;
+        self
+    }
+    #[must_use]
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.state.disabled = disabled;
+        self
+    }
+
+    /// The height of a single-line field of `size` in `theme`, the height of
+    /// a button of the same size, grown with a Body line at large text.
+    #[must_use]
+    pub fn height(size: ControlSize, theme: &Theme) -> f64 {
+        let line = f64::from(theme.text(TextRole::Body).size * LINE_HEIGHT_RATIO);
+        let grown = (line + 2.0 * f64::from(theme.tokens.spacing.s1)).ceil();
+        size.height(theme).max(grown)
+    }
+
+    /// Where the text goes: the field inset by the field's text inset.
+    #[must_use]
+    pub fn text_rect(&self, theme: &Theme) -> Rect {
+        let pad = f64::from(theme.padding_standard).min(self.rect.width() / 2.0);
+        Rect::new(
+            self.rect.x0 + pad,
+            self.rect.y0,
+            self.rect.x1 - pad,
+            self.rect.y1,
+        )
+    }
+
+    /// Paint only the frame.
+    pub fn paint_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
+        paint_field_chrome(scene, transform, theme, &shape, self.state);
+    }
+
+    /// Paint the frame and the text (or the placeholder), elided to one
+    /// line and centred in the band.
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.paint_chrome(scene, transform, theme);
+        let (shown, ink) = if self.text.is_empty() {
+            (self.placeholder, theme.tokens.colors.text_tertiary)
+        } else if self.state.disabled {
+            (self.text, theme.text_dim)
+        } else {
+            (self.text, theme.text_primary)
+        };
+        if shown.is_empty() {
+            return;
+        }
+        let style = theme.text(self.role);
+        let room = self.text_rect(theme);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a field width is a bounded on-screen size, far inside f32"
+        )]
+        let width = room.width().max(1.0) as f32;
+        let line = text.elide_to_width_style(shown, width, &style);
+        let (_, h) = text.measure_style(&line, None, &style);
+        let y = room.y0 + (room.height() - f64::from(h)) / 2.0;
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine transform composition over f64 screen coordinates"
+        )]
+        let origin = transform * Affine::translate((room.x0, y));
+        text.draw_style(scene, &line, ink, origin, None, &style);
+    }
+}
+
 impl Drop for TextInput {
     fn drop(&mut self) {
         if self.secret {
@@ -4047,25 +4637,28 @@ impl Widget for TextInput {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.capture_layout_text_scale(theme.text_scale);
+        self.capture_layout_text_scale(self.scale_for(theme.text_scale));
+        self.adopt_field_theme(theme);
         // Multiline is measured (grows with content, see `measure`). Single-
-        // line is the 40 px form-field band — until the scaled line no
-        // longer fits it: at 2× text the 16 px face shapes a 40 px line,
-        // which left zero slack in a 40 px band, so the band grows to the
-        // line plus the same vertical inset the multiline body keeps
-        // (`ML_PAD_Y` each side). At 1× a 20 px line leaves the band at 40.
+        // line is the control band of its size (Regular, 32, by default), so
+        // a field and a button share a row — until the scaled line no longer
+        // fits it, when the band grows to the line plus `spacing.s1` above
+        // and below.
         let height = if self.multiline {
             Dimension::auto()
         } else {
-            let line_px = f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
-                * f64::from(theme.text_scale);
-            let band = (line_px + ML_PAD_Y * 2.0).max(40.0);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a control band is a few dozen logical pixels, far inside f32"
             )]
-            let band = band as f32;
-            Dimension::length(band.max(self.interaction.minimum_target()))
+            let band = self.band_height as f32;
+            // A fine pointer keeps the size's band (a Small field beside a
+            // Small button); a coarse one grows it to the touch target.
+            if self.interaction.supports_hover() {
+                Dimension::length(band)
+            } else {
+                Dimension::length(band.max(self.interaction.minimum_target()))
+            }
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -4100,12 +4693,12 @@ impl Widget for TextInput {
         // Taffy measures before painting. Retain the renderer scale here too,
         // so a freshly opened editor reserves its full accessibility gutter
         // on the very first layout rather than correcting on frame two.
-        self.gutter_text_scale = f64::from(text_renderer.text_scale());
+        self.gutter_text_scale = f64::from(self.scale_for(text_renderer.text_scale()));
         if !self.multiline {
             if !self.masked() && self.single_attributes.is_some() {
                 let scale = self
                     .layout_text_scale
-                    .unwrap_or_else(|| text_renderer.text_scale());
+                    .unwrap_or_else(|| self.scale_for(text_renderer.text_scale()));
                 let display = self.layout_display_text();
                 self.build_single_line_metrics(
                     text_renderer,
@@ -4124,14 +4717,15 @@ impl Widget for TextInput {
         if !self.masked() {
             let scale = self
                 .layout_text_scale
-                .unwrap_or_else(|| text_renderer.text_scale());
+                .unwrap_or_else(|| self.scale_for(text_renderer.text_scale()));
             let style = self.multiline_style(scale);
             self.update_gutter_metrics(text_renderer, &style, scale);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
             )]
-            let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
+            let available_width =
+                (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0) as f32;
             let display = self.layout_display_text();
             let signature =
                 self.shaped_signature(&display, &style.family, style.size, Some(available_width));
@@ -4169,16 +4763,19 @@ impl Widget for TextInput {
                 // Taffy rounds layout boxes to pixels. Never round intrinsic
                 // text below its last row: subpixel inner overflow would eat
                 // the first wheel event instead of scrolling the outer pane.
-                height: height.ceil() as f32,
+                height: height.max(self.multiline_floor(scale)).ceil() as f32,
             };
         }
-        let avail_w = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
+        let avail_w = (f64::from(width) - self.ml_left() - self.ml_pad_x()).max(1.0);
         self.build_lines(text_renderer, avail_w);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
         )]
-        let height = self.content_height() as f32;
+        let height = self
+            .content_height()
+            .max(self.multiline_floor(self.layout_text_scale.unwrap_or(1.0)))
+            as f32;
         self.model_layout_dirty = false;
         taffy::Size { width, height }
     }
@@ -4192,11 +4789,13 @@ impl Widget for TextInput {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
-        self.gutter_text_scale = f64::from(theme.text_scale);
+        self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
+        self.adopt_field_theme(theme);
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
         }
+        self.draw_accessory(scene, transform, theme);
 
         if self.multiline {
             if self.masked() {
@@ -4214,7 +4813,8 @@ impl Widget for TextInput {
         self.multiline_shaped = false;
 
         let text_size = self.effective_font_size();
-        let line_height = f64::from(text_size * theme.text_scale * LINE_HEIGHT_RATIO);
+        let line_height =
+            f64::from(text_size * self.scale_for(theme.text_scale) * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
             // The parent already adds whatever gutter the document layout wants.
             0.0
@@ -4227,9 +4827,14 @@ impl Widget for TextInput {
         // normal text now gets every position from the same shaped paragraph
         // used for paint and hit-testing. Masked fields keep the prefix path
         // because bullet byte offsets intentionally differ from the secret.
+        self.apply_span_highlighter(theme);
         let display = self.layout_display_text();
-        let total_w =
-            self.build_single_line_metrics(text_renderer, &display, text_size, theme.text_scale);
+        let total_w = self.build_single_line_metrics(
+            text_renderer,
+            &display,
+            text_size,
+            self.scale_for(theme.text_scale),
+        );
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
@@ -4242,6 +4847,22 @@ impl Widget for TextInput {
             transform,
             &shape,
         );
+        // The text never runs under the trailing accessory.
+        let accessory = self.accessory_room();
+        if accessory > 0.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &Rect::new(
+                    self.rect.x0,
+                    self.rect.y0,
+                    self.rect.x1 - accessory,
+                    self.rect.y1,
+                ),
+            );
+        }
 
         self.draw_single_line_decorations(scene, transform, theme, true);
         self.draw_single_line_selection(scene, transform, theme);
@@ -4256,6 +4877,9 @@ impl Widget for TextInput {
             self.draw_single_line_caret(scene, transform, theme);
         }
 
+        if accessory > 0.0 {
+            scene.pop_layer();
+        }
         scene.pop_layer();
         self.draw_spelling(scene, transform, theme);
         self.draw_autocorrection(scene, transform, theme);
@@ -4388,7 +5012,13 @@ impl Widget for TextInput {
 
     /// A disabled input claims no cursor and defers to the host default.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.effectively_disabled() && self.rect.contains(point) {
+        if !self.effectively_disabled()
+            && self
+                .accessory_rect()
+                .is_some_and(|rect| rect.contains(point))
+        {
+            Some(winit::window::CursorIcon::Default)
+        } else if !self.effectively_disabled() && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
@@ -4503,7 +5133,18 @@ impl Widget for TextInput {
             // explicit name still wins when the prompt is merely an example.
             node = node.with_name(crate::i18n!(&self.placeholder));
         }
+        if let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) {
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(crate::i18n!(&accessory.name))
+                    .with_bounds(rect),
+            ]);
+        }
         Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        (path == [0]).then(|| self.accessory_rect()).flatten()
     }
 
     fn perform_action(
@@ -4781,12 +5422,40 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.action {
             let _ = action.install_custody(domain, attachment);
         }
+        if let Some(action) = &mut self.submit_action {
+            let _ = action.install_custody(domain, attachment);
+        }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
+        self.action
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.submit_action.as_mut().and_then(ActionEmitter::take))
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("text_input");
+        let mut bindings = self.value_bindings(control_id);
+        if let Some(action) = &self.submit_action {
+            bindings.push(action.metadata(control_id));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(action) = &mut self.submit_action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
+impl TextInput {
+    /// What the field's value is bound to, for the control-binding audit.
+    fn value_bindings(&self, control_id: &str) -> Vec<ControlBindingMetadata> {
         if let Some(action) = &self.action {
             vec![action.metadata(control_id)]
         } else if self.crdt_bound || self.bound_text.is_some() {
@@ -4812,14 +5481,6 @@ impl crate::widget::controls::ActionControls for TextInput {
             }]
         }
     }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
 }
 
 impl TextInput {
@@ -4830,67 +5491,18 @@ impl TextInput {
         theme: &Theme,
         shape: &RoundedRect,
     ) {
-        let disabled = self.effectively_disabled();
-        let rest = theme.tokens.colors.surfaces.raised;
-        // Hover is a half lift of the field, focus the whole lift plus your
-        // colour: rest, hover, focus and disabled each look different.
-        let bg_color = if self.is_focused && !disabled {
-            theme.tokens.colors.lift_on(rest, 1.0)
-        } else if self.is_hovered && !disabled {
-            theme.tokens.colors.lift_on(rest, 0.5)
-        } else {
-            rest
-        };
-        // Disabled is the rest face under one group alpha (HIG §9.5), so rest
-        // and disabled never look alike; a "one step darker" fill with the
-        // same declared border did, on the dark preset.
-        if disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                shape,
-            );
-        }
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        paint_field_chrome(
+            scene,
             transform,
-            bg_color,
-            None,
+            theme,
             shape,
+            FieldState {
+                hovered: self.is_hovered,
+                focused: self.is_focused,
+                invalid: self.invalid,
+                disabled: self.effectively_disabled(),
+            },
         );
-        // Rest edge derived from the field fill; focus keeps `border_focus`;
-        // a value the form rejected edges the field in danger ink, the one
-        // status colour a field takes.
-        let colors = &theme.tokens.colors;
-        let (border_w, border_color) = if self.is_focused && !disabled {
-            (2.0, colors.border_focus)
-        } else if self.invalid && !disabled {
-            (
-                1.5,
-                colors.ink_on_any(
-                    &[bg_color, colors.surfaces.content],
-                    colors.semantic.danger,
-                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                ),
-            )
-        } else {
-            (1.0, crate::surface::edge_on(rest))
-        };
-        // Rest edge and focus ring share one half-pixel-inset outline, so
-        // the hairline never bleeds onto the ground and the ring sits where
-        // the edge was.
-        scene.stroke(
-            &Stroke::new(border_w),
-            transform,
-            border_color,
-            None,
-            &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
-        );
-        if disabled {
-            scene.pop_layer();
-        }
     }
 
     /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)
@@ -4921,11 +5533,7 @@ impl TextInput {
             }
             width
         } else {
-            let family = self.family.clone().unwrap_or(if self.mono {
-                FontChoice::Monospace
-            } else {
-                FontChoice::SansSerif
-            });
+            let family = self.family.clone().unwrap_or(self.role_family());
             let layout_size = text_size * text_scale;
             let mut style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
@@ -5020,7 +5628,9 @@ impl TextInput {
     ) {
         // Include the caret's painted width, especially for padding-free code
         // lines: putting its left edge on the clip boundary hides it entirely.
-        let visible_width = (self.rect.width() - padding_x * 2.0 - caret_width * 2.0).max(0.0);
+        let visible_width =
+            (self.rect.width() - padding_x * 2.0 - self.accessory_room() - caret_width * 2.0)
+                .max(0.0);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -5131,13 +5741,15 @@ impl TextInput {
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let placeholder_origin = transform * Affine::translate((self.single_origin.x, text_y));
-            text_renderer.draw_text(
+            // The placeholder sets in the field's own style, in the tertiary
+            // ink: a prompt, clearly weaker than any value.
+            text_renderer.draw_style(
                 scene,
                 &placeholder,
-                text_size,
-                theme.text_dim,
+                theme.tokens.colors.text_tertiary,
                 placeholder_origin,
                 None,
+                &self.placeholder_style(text_size),
             );
         }
         #[allow(
@@ -5166,11 +5778,7 @@ impl TextInput {
                 text_color,
                 text_origin,
                 None,
-                &TextStyle::new(text_size).with_family(if self.mono {
-                    FontChoice::Monospace
-                } else {
-                    FontChoice::SansSerif
-                }),
+                &TextStyle::new(text_size).with_family(self.role_family()),
             );
         }
     }
@@ -5223,6 +5831,12 @@ impl TextInput {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
         if self.update_pointer_position(logical_pos) {
             *handled = true;
+        }
+        let over_accessory = self
+            .accessory_rect()
+            .is_some_and(|rect| rect.contains(logical_pos));
+        if let Some(accessory) = self.accessory.as_mut() {
+            accessory.hovered = over_accessory;
         }
 
         if !self.is_dragging {
@@ -5374,6 +5988,9 @@ impl TextInput {
             // finger's own touch already pressed, and a second press would
             // count as a double click.
             ElementState::Pressed if self.active_touch.is_some() => *handled = true,
+            ElementState::Pressed if self.is_hovered && self.press_accessory(state, root) => {
+                *handled = true;
+            }
             ElementState::Pressed if self.is_hovered => {
                 self.handle_left_press(modifiers, focus_target, node_id, handled);
             }
@@ -5553,7 +6170,7 @@ impl TextInput {
             .then(|| self.autocorrect_previous_word(state, obj_id))
             .flatten();
         if self.enter_submits && !shift {
-            self.submit_requested = true;
+            self.fire_submit();
             *handled = true;
         } else if self.multiline {
             self.insert_str("\n", state, obj_id);

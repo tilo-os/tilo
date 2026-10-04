@@ -216,7 +216,11 @@ fn place_result(group: &str, place: &Place, hit: &PlaceHit, anchor: LatLon) -> S
     };
     SearchResult::new(group, &place.name, hit.action_id(place.saved))
         .with_subtitle(subtitle)
-        .with_icon(if place.saved { Icon::Star } else { Icon::Pin })
+        .with_icon(if place.saved {
+            Icon::Star
+        } else {
+            place.category.icon()
+        })
 }
 
 /// Whether `place` answers `needle` (already lower case): by name, address,

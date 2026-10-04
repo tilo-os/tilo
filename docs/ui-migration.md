@@ -199,7 +199,7 @@ and presence palette. There is no accent colour any more: nothing in
 | `border_white_10` / `_20` | `overlay_border_subtle` / `overlay_border_strong` |
 | `PaletteSpec`, `Colors::themed`, `Colors::set_accent`, `Colors::set_overlays` | delete; colours come from a theme document (`Theme::from_document`, `Theme::preset`, `Colors::of_palette`) |
 | `Colors::tilo_blue()`, `Theme::{tilo_blue, dracula, nord, gruvbox, gruvbox_light, catppuccin_mocha, catppuccin_latte, solarized, oled, warm_light, rose_pine}` | `Theme::dark()` / `Theme::light()` (`Theme::ALL` is now `Dark`, `Light`, `High Contrast`); a different temperature is `theme.with_neutral_hue(h)` |
-| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 5 (`Theme::from_document`); see [Theming](#theming) |
+| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 6 (`Theme::from_document`); see [Theming](#theming) |
 | `ContentSurface::accent` | delete |
 | `QueryInk::accented(text, placeholder, accent)` | `QueryInk::of(&theme.tokens.colors)` (caret and selection in your colour) |
 | `palette.surface_radius_px()` (`CommandPalette`) | `CommandPalette::surface_radius_px(theme)` (the panel radius) |
@@ -297,10 +297,13 @@ section).
 | `RichSpan::kind(TextKind)` | A rich-text run that knows what it is; mention marks are `Identifier` and external link marks `Url` already. |
 | `TextInputKind::Secret`, `TextInputKind::text_kind()` | A code or key typed in the clear; every field kind sets its text kind while typing. |
 | `ui::UiFace::{Default, Hyperlegible}`, `Typography::set_face(name)`, `Typography::face_name()`, `UI_HYPERLEGIBLE_FAMILY` | Theme authors: the UI face by the name a theme document stores. |
+| `ui::ReadingFace::{Default, Libertinus, Literata, Garamond, SourceSerif}`, `ReadingFace::{ALL, name, family, from_name}`, `Typography::set_reading_face(name)` / `with_reading_face(name)` / `reading_face_name()` | The `Reading` role's face, by name ([Reading faces](#reading-faces)). |
+| `ui::TextGround::{Light, Dark}`, `TextGround::of(colour)`, `TextStyle::with_ground` | The ground text is set on. Theme roles carry their theme's; a surface that paints its own page (a sepia book page in a dark theme) sets it, so the reading face keeps its sturdier cut on a dark page. |
 | `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
 | `PaintCtx::text_role`, `measure_role`, `line_box`, `text_role_in_band` | Custom painters: paint, measure, size a row, or centre one line in a band in a role. |
 | `ui::widget::ControlSize::{Small, Regular, Large}` | A control's size: label role (`Label`, `Label`, `Body`) and height (`bar_control_height`, `min_pointer_target`, `bar_height`). |
-| `with_text_role(role)` on `TextInput`, `Autocomplete`, `EditableLabel`, `Link`, `RichTextLine`, `RichTextEditor`; `set_text_role` on `TextInput`, `EditableLabel`, `RichTextLine`; `TextInput::text_role()`, `BlockEditor::text_role()` | The role a text widget sets its text in. `RichTextEditor` maps `Reading` to the serif and `Code` to the mono family. |
+| `with_text_role(role)` on `TextInput`, `Autocomplete`, `EditableLabel`, `Link`, `RichTextLine`, `RichTextEditor`; `set_text_role` on `TextInput`, `EditableLabel`, `RichTextLine`; `TextInput::text_role()`, `BlockEditor::text_role()` | The role a text widget sets its text in. The role sets the family too: `Reading` is serif and `Code` mono in a `TextInput`, its placeholder and a `RichTextEditor`, and an `EditableLabel` sets its idle text in the role's whole style (weight and leading included). |
+| `TextInput::with_content_size(px)` / `set_content_size(Some(px))` | Editing text in place at a document's own size (a note on a zoomed page): never grown by the text scale. |
 | `Typography::with_base_size(body_px)`, `typography.size(role)`, `ui::tokens::REFERENCE_BODY_PX` (14) | Theme authors and geometry only: the body size every role derives from, and a role's resolved size. Not for building a style. |
 | `ui::TextScaling::{Renderer, Resolved, Content}` (field `TextStyle::scaling`) | What a style's size is relative to. Role styles are `Resolved`, `content(px)` is `Content`; `TextStyle::new(px)` is `Renderer`, kept for the few renderer-relative callers in the toolkit. |
 
@@ -322,7 +325,9 @@ section).
 | `tr.measure(s, px, w)` / `measure_weighted` / `measure_styled` | `tr.measure_style(s, w, &theme.text(role))` or `ctx.measure_role(s, role, w)` |
 | `tr.elide_to_width(s, px, max)` / `elide_to_width_weighted` | `tr.elide_to_width_style(s, max, &theme.text(role))` |
 | `tr.clamp_to_lines(s, px, max_w, n)` | `tr.clamp_to_lines(s, &theme.text(role), max_w, n)` |
-| `TextInput::with_font_size(px)` / `set_font_size(px)` | `with_text_role(role)` / `set_text_role(role)` (default `Body`) |
+| `TextInput::with_font_size(px)` / `set_font_size(px)` | `with_text_role(role)` / `set_text_role(role)` (default `Body`); a document's own size: `with_content_size(px)` |
+| `TextInput::with_text_role(TextRole::Reading).with_font_family(FontChoice::Serif)` (and `Code` + `Monospace`) | `with_text_role(role)` alone: the role sets the family |
+| `EditableLabel::with_text_role(role).with_font_family(..)` for a title | `with_text_role(role)`: the idle label draws and centres from `theme.text(role)` |
 | `Autocomplete::with_font_size`, `Link::with_font_size`, `EditableLabel::with_font_size` / `set_font_size` | `with_text_role(role)` / `set_text_role(role)` |
 | `RichTextLine::with_size(px)` / `set_size(px)` / `font_size()` | `with_text_role(role)` / `set_text_role(role)`; a block kind's role comes from `BlockKind` (paragraphs `Body`, H1 `LargeTitle`, H2 `Title`, H3+ `Heading`, code and tables `Code`) |
 | `BlockEditor::font_size()` | `BlockEditor::text_role()` |
@@ -366,6 +371,7 @@ set it themselves.
 | `.with_font_family(FontChoice::Monospace)` on source or terminal text | `.with_kind(TextKind::Code)`, or the `Code` role |
 | A numeric `DataTable` column drawn by hand to line digits up | `ColumnDef::with_text(…).with_kind(TextKind::Numeric)` |
 | `.with_font_feature(*b"ss01", 1)` or any stylistic set for a look | Delete; the face is the theme's |
+| `.with_numeric_style(NumericStyle::ProportionalOldstyle)` on `Reading` text | Delete; the `Reading` role sets old-style proportional figures itself, and `.numeric()` turns them tabular lining |
 
 ### The UI face
 
@@ -376,6 +382,27 @@ accessibility layer may choose the built-in `Hyperlegible` face instead. Code
 never names a family: `TextRole` picks sans, serif (`Reading`) or mono
 (`Code`), and `FontChoice::{SansSerif, Serif, Monospace}` remains for the rare
 explicit choice.
+
+### Reading faces
+
+The `Reading` role is set in New Computer Modern, the way TeX sets it: the
+toolkit picks its 8 pt, Book or Regular cut for the size each run is set at
+(`docs/typography.md`, Reading faces). Noto Serif is gone; `FontChoice::Serif`
+is New Computer Modern. A theme document's `type.reading` names the face, and
+an app that lets a reader choose (Books) passes the chosen face by name:
+
+| Old | New |
+|---|---|
+| `FontChoice::Named("Noto Serif".into())`, any serif family literal for long-form text | `theme.text(TextRole::Reading)` |
+| A reader's serif choice stored as a family or file name | `ui::ReadingFace::name()` stored, `ReadingFace::from_name(stored)` read back; set with `.with_family(FontChoice::Named(face.family().to_owned()))` on the `Reading` style |
+| `"Noto Serif"` / `"New Computer Modern Book"` / a cut's family in app code | Delete; name the face (`ReadingFace`), the toolkit picks the cut |
+| `.with_small_caps(true)` on a book's opening words or a chapter label | Keep in document engines (Books, the word processor): small caps, ligatures and kerning reach every reading face through the shaping path |
+
+The reading faces a theme or reader can choose are `ReadingFace::ALL`: New
+Computer Modern (default), Libertinus, Literata, EB Garamond and Source Serif.
+Books lists each as an entry of its font registry (`FontKind::Reading(name)`,
+id `reading-<name>`), so the typography popover offers them beside the system
+reading face, the UI face, mono and families the reader added.
 
 ## Ground & regions
 
@@ -585,6 +612,11 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
 | A collapse that the drawer forgot after the window crossed the breakpoint | Remembered per size class now; delete app code that re-applies it. |
 | An app holding a `FlapState` for its own sidebar or side panel, with its own breakpoint, scrim and slide arithmetic | A `SidebarDrawer` (`.right()` for a trailing panel). `FlapState::tick(layout, dt)` is now `tick(layout, dt, theme.tokens.motion.durations.base())` and `slide()` is gone: `reveal()` is already eased. |
+| A hand-placed toggle rect, its hover tracking, the sidebar shortcut and the toggle's semantic node | `let face = drawer.header(area, theme);` (`header_with_history(area, theme, opener.is_shown())` with History): the window's `HeaderRowFace` with the toggle in it. Route events with `drawer.handle_event(event, ctx)` (hit-test, hover, `HostShortcut::Sidebar`, Escape and a scrim press), paint with `drawer.paint_toggle(..)`, publish `drawer.toggle_accessibility()` and route its `Activate` with `perform_toggle_action`. The floating drawer opens under the row. |
+| `.breakpoint(f64::INFINITY)` | `.overlay_only()`. |
+| A `snap` re-applied after the first `resolve` | Delete: a snap before the first `resolve` waits for the layout. |
+| Two drawers side by side for an icon rail and a list | `.with_rail()`: one drawer, `rail_rect()` and `list_rect()`. |
+| A floating panel painted by hand at the host's own rect | `SidebarDrawer::paint_panel_in(scene, transform, rect, theme) -> Theme`. |
 
 `TreeView`:
 
@@ -593,7 +625,7 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | `.inset_rows()` | Delete; every tree insets its rows `s2`, so the depth-0 caret is never on the pane edge. |
 | `.with_trailing_edge()` | Delete; regions are told apart by tone (`NavShell`, `surface::region`). |
 | The current row's accent rail (`set_current`) | Unchanged call; the current row is now its label in the heavier weight. |
-| A tree in a sidebar listing destinations (code-editor explorer, db-client schema, notes pages) | Keep `TreeView` for real hierarchies the person edits (files, schema, pages); it is a `NavShell::sidebar` child and paints the same lift. A flat or two-level list of places is a `NavList`. |
+| A tree in a sidebar listing destinations (code-editor explorer, db-client schema, notes pages) | A list of places, nested or not, is a `NavList`: nested items, rename, drag into and between items, Delete, row menus and per-row semantic keys are all its own. Keep `TreeView` only for a hierarchy the list cannot hold (a file tree that loads its children lazily); it is a `NavShell::sidebar` child and paints the same lift. |
 | `.with_ground(|t| t.tokens.colors.surfaces.sidebar)` (or another region tier) | Delete: the tree stands on the ground of the region its container hands it. Keep `with_ground` only for a tree on a raised well. |
 
 Selection forks:
@@ -606,44 +638,116 @@ Selection forks:
 
 ### Rows: what each part of a `NavItem` means
 
-- **Label**: sentence case, what the destination is called. It elides; it
-  never wraps. The selected row's label is set in the heavier weight.
+A sidebar row is a `NavItem` (in a painted app, a `NavRowFace` with the same
+builder names; both paint through `chrome::paint_nav_row`). A `ListRow` is a
+row of content the person reads, never a sidebar row: when a sidebar needs a
+part that is not here, report the gap instead of reaching for `ListRow`.
+
+Leading to trailing:
+
+- **Check**: `.checked(on)` with `NavList::on_check(|id, on| ..)`: a checkbox
+  in the leading slot for a place the person shows or hides (a calendar).
+  The whole row is its target (a click anywhere, Space, Enter); a checkable
+  row is not a destination and is never selected.
 - **Icon**: one `ui::icons` icon per row, or none for the whole section. Use
   the same icon family as the app's other chrome. Never an emoji or a
   coloured dot.
+- **Swatch**: `.swatch(color)` in the icon's place for the person's own
+  content colour (a calendar's, a project's). Never a status or a decoration.
+- **Badge**: `.badge("GET")` for a short leading code that classifies the row
+  (an HTTP method, a file kind). The codes of one section share a column, so
+  their labels line up.
+- **Label**: sentence case, what the destination is called. It elides; it
+  never wraps (a rail's caption wraps to a second line, then elides). The
+  selected row's label is set in the heavier weight; an elided label shows
+  in full as the row's tooltip.
+- **Secondary**: `.secondary("db.example.net:5432")`: one `Caption` line
+  under the label (a host and port, a schedule). It elides; the row grows to
+  hold it.
+- **Level**: `.level(fraction)`: a usage bar under the text, on the progress
+  bar's track and fill (a backup destination's space).
+- **Presence**: `.presence(identity)`, once per person: a mark in their
+  presence colour for someone on that place (a page a collaborator has open).
+- **Status label**: `.status_label("Active", Tone::Success)`: a quiet tinted
+  badge naming the row's state (a firewall zone).
+- **Meta**: `.meta("1.2 TB")`: a tertiary figure at the trailing edge (a size).
 - **Count**: `.count(n)` for how many items a place holds (messages in a
   folder, tracks in a playlist) — quiet tabular figures in tertiary ink.
   `.live_count(n)` only for things waiting for the person (unread, mentions,
   failed jobs): the one filled badge, in the person's own colour. Never a
   filled badge for a plain count, never a status colour.
+- **Status**: `.status(RowStatus::Active / Warning / Error / Idle)`: the dot
+  at the trailing edge (a drive's health, a connection's state, an account
+  that needs attention); `RowStatus::Presence(id)` for a person.
 - **Children**: nested places (`.children(..)`), indented one `s4` step, with
-  a trailing chevron. `.expanded()` to start open.
+  a trailing chevron. `.expanded()` to start open; `.ensure_expanded()` to
+  open whatever the person folded (the database a connection just opened).
+  `NavList::on_expand(|id, open| ..)` reports what the person folds so the
+  app can keep it; `set_expanded(id, open)` changes it without a report.
 - **Actions**: actions that apply to every row (rename, more) go in
   `NavList::item_actions(..)`; they show on hover and focus at the trailing
-  edge. `.without_actions()` on rows where none apply (Inbox, Trash).
+  edge, in place of the trailing parts. `.without_actions()` on rows where
+  none apply (Inbox, Trash). The row's More is
+  `NavAction::new("more", Icon::MoreHorizontal, "More").opens_context_menu()`.
+- **Menu**: `NavList::on_context_menu(|id, lift, at| ..)` is called for a
+  right click, a long press, the Menu key (Shift+F10) and a More action that
+  opens the menu. Open the app's `ContextMenu` there:
+  `menu.anchor_row(lift); menu.open_at([at.x as f32, at.y as f32])`. Outside
+  the callback, `row_lift_rect(id)` and `item_action_rect(id, "more")` give
+  the same geometry; never hit-test the list's rows yourself.
 - **Section**: `NavSection::new(id, "Sentence case title", items)`; never
   upper case or letter-spaced. `.collapsible()` when the person may fold it,
+  `.collapsed()` to start folded,
   `.trailing_action(NavAction::new("new", Icon::Plus, "New playlist"))` for
-  the one "new …" action of the section.
+  the one "new …" action of the section, `.empty_caption("No drafts")` for
+  what it says while empty, `.filterable()` when the window's filter
+  (`NavShell::with_filter`) narrows it. A section that does not opt in (the
+  connections above the tables) stays whole while the person filters. An
+  elided title shows in full as its tooltip.
 - **Editing**: `.editable_label()` plus `NavList::on_rename`; `.drop_target()`
-  plus `NavList::on_move` for places that hold other places.
+  plus `NavList::on_move` for places that hold other places;
+  `NavList::on_delete(|id| ..)` for the Delete key (never Backspace).
+  `NavList::stage_drag(id, before)` shows a drag in progress for a capture.
+- **Addressing**: `.semantic_key(key)` when agents and tests address the row
+  by the app's own id (a page); the default is `nav:item:{id}`.
+- **Selection**: `set_selected`, `.selected` and `bind_selection` bring the
+  chosen row into view, also before the list's first layout.
 
 ### New API
 
 | API | Use |
 |---|---|
 | `NavShell::new()` with `.sidebar(e)`, `.overview(e)`, `.content(e)`, `.inspector(e)` | The window's columns. |
-| `.sidebar_header(title, actions)`, `.overview_header(..)`, `.content_header(..)`, `.inspector_header(..)` | Each column's header in the one header row: a sentence-case title and the column's actions (icon `Button`s, a `ToggleGroup`). |
-| `.with_filter(e)` | The one filter field of the window, under the sidebar's header (the overview's without a sidebar); Ctrl+F / ⌘F focuses it. |
+| `.sidebar_header(title, actions)`, `.overview_header(..)`, `.content_header(..)`, `.inspector_header(..)` | Each column's header in the one header row: a sentence-case title and the column's actions (`Button`s, a `ToggleGroup`). The title starts at the content gutter (after the toggle or Back when the column holds one); the actions start after the title's measured width. Labelled buttons collapse to their icons when the row is short, then the rest move into a trailing More menu built from their names; nothing to configure. |
+| `set_sidebar_header(title, actions)`, `set_overview_header(..)`, `set_content_header(..)`, `set_inspector_header(..)` | Change a header in place. |
+| `set_sidebar_title`, `set_overview_title`, `set_content_title`, `set_inspector_title` | Change only the title. |
+| `.content_header_bound(&LocalState<String>, actions)` | The content's title follows a `LocalState` a view writes from resource state (as `NavList::bind_selection`). |
+| `.sidebar_count(n)`, `.overview_count(n)`, `.content_count(n)`; `set_*_count(Option<usize>)` | How many items the column holds, a quiet `Caption.numeric` pill after the title (`SectionHeader::count`). |
+| `.content_header_leading(e)`, `set_content_header_leading(Option<e>)` | The fill between the toggle or Back and the actions: a path bar or breadcrumb, a mode or tab switcher with no title. It stands at its own width and gets what is left when it needs more. |
+| `.with_back(&LocalState<NavStack<T>>)`; `.on_back(can_go_back, go_back)` + `set_can_go_back(bool)` | The content's Back for the app's own page stack (browse history, a drill-down from a dashboard). The shell draws its `ChevronLeft` chip at the leading edge of the content's header and pops the stack on a press; a narrow window's push stack shares the chip. |
+| `.overview_controls(e)`, `set_overview_controls(Option<e>)` | Controls that act on the overview list (its sort order), under the overview's header at the shell inset. |
+| `.overview_rail(e)` | A `NavList::rail()` the overview collapses into where the list no longer fits beside the content but the rail does; narrower still, the overview pushes. |
+| `sidebar_mut::<T>()`, `overview_mut::<T>()`, `content_mut::<T>()`, `inspector_mut::<T>()` | The column as the widget the app gave it (an explorer, an editor, a tree), the one waiting to go in if a swap is pending. |
+| `.with_sidebar_state(&LocalState<bool>)`, `.with_inspector_state(..)`; `open_inspector()`, `close_inspector()` | Show or hide from state (`ViewCx::on_stage`, a scenario opening a drawer for a shot); the shell writes the person's choice back. |
+| `.with_filter(SearchField::filter())`, `filter()`, `filter_mut()` | The one filter field of the window, under the sidebar's header (the overview's without a sidebar, else the content's); Ctrl+F / ⌘F focuses it. The shell carries its query to the column's `Filterable` after every event (`sync_filter`); read the query and the count back from `filter()`. |
 | `.mode(NavMode::{Overlay, Push, Docked})` | What the sidebar becomes in a narrow window. |
 | `.with_pane_state(&LocalState<NavPane>)`, `show(NavPane)`, `back()`, `front_pane()` | The front screen of a narrow window's push stack. |
 | `toggle_sidebar()`, `open_sidebar()`, `close_sidebar()`, `is_sidebar_open()`, `with_sidebar_hidden()`; the same for the inspector | Show and hide; remembered per window size class. |
-| `geometry()` (`NavGeometry`) | What the shell laid out, for tests and shots. |
+| `geometry()` (`NavGeometry`) | What the shell laid out, for tests and shots (`overview` is `OverviewPlacement::{None, List, Rail}`). |
+| Changing a slot or header from an event | Safe: `set_content`, `set_inspector`, `set_*_header`, … take effect when the host next builds the tree, never while it routes the event. |
+| An open drawer | Opens under the header row, which stays live (the toggle, History, the columns' header actions); the other columns stay laid out and painted under the scrim, and take no input. |
+| `chrome::HeaderRowFace::new(area, theme)` with `.with_toggle()`, `.with_back()`, `.with_history()`, `.with_history_if(shown)`, `.with_trailing()`, `.without_rule()`, `.with_inset_title()`; `row`, `toggle`, `back`, `title`, `actions`, `history`, `rule`, `split(title_width)`, `body_of(area)`, `history_rect()`, `paint_rule(..)`, `paint_title(..)`; `HeaderRowMetrics` | The header row's geometry for a painted app: the same face `NavShell` lays its row out with. |
+| `widget::WindowHeader` (`set_history_control(Option<HistoryControl>)`), `widget::HistoryOpener`, `chrome::paint_history_control(..)` | A painted app's header row takes the window's History control: provide `WindowHeader`, keep a `HistoryOpener` (`set_control`, `handle_event(event, face.history_rect(), scale)`, `paint`, `accessibility(rect)`, `perform_action`), and return `opener.take()` from `ActionControls::take_control_invocation`. A header row that hosts library controls hosts `opener.button_mut()` instead (the same History button, bound to the History door, at `widget::HISTORY_CONTROL_ID`; `take_rebuilt` / `tree_rebuilt` when it is replaced). The window then draws no History bar above the app. |
 | `NavList::new(sections)` with `NavSection`, `NavItem`, `NavAction`, `NavDrop` | The one navigation list (keyboard, disclosure, semantics, rename, drag, row actions). |
 | `.selected(id)`, `.bind_selection(&LocalState<Option<String>>)`, `.on_select(..)`, `set_sections(..)`, `set_selected(..)`, `selected_id()` | Selection and updates. Choosing a destination in a narrow window closes the drawer or pushes the content by itself. |
 | `.item_actions(actions, on_action)`, `.on_section_action(..)`, `.on_rename(..)`, `.on_move(..)` | What the person can do to rows. |
-| `.rail()` | Icon over caption, for a docked rail. |
+| `NavItem::{secondary, meta, status, status_label, badge, swatch, checked, level, presence, ensure_expanded, semantic_key}` | The parts of a row ([Rows](#rows-what-each-part-of-a-navitem-means)). |
+| `NavSection::{collapsed, empty_caption, filterable}` | A section that starts folded, says when it is empty, and narrows under the window's filter. |
+| `.on_check(..)`, `.on_expand(..)`, `.on_delete(..)`, `.on_context_menu(..)`, `NavAction::opens_context_menu()` | Checks, folding, Delete and row menus. |
+| `set_expanded(id, open)`, `is_expanded(id)`, `row_lift_rect(id)`, `item_action_rect(id, action)`, `stage_drag(id, before)`, `set_filter(query)` | Folding without a report, menu geometry, a staged drag for captures, filtering by hand. |
+| `.rail()` | Icon over caption, for a docked rail; captions wrap to two lines before they elide. |
 | `chrome::paint_nav_row(scene, transform, text, theme, &NavRowFace)`, `chrome::nav_row_layout`, `nav_row_height(theme)`, `nav_rail_row_height(theme)` | One navigation row in a painted app, identical to a `NavList` row. |
+| `NavRowFace::{secondary, meta, status, status_label, badge, badge_column, swatch, checked, level, presence}`, `face.height(theme)` / `chrome::nav_item_height(theme, secondary, level)`, `chrome::nav_badge_column(theme, text, codes)`, `chrome::nav_rail_item_height(..)` | The same parts in a painted row: size the row with `height`, share a section's badge column. |
 | `chrome::paint_nav_section(.., &NavSectionFace)`, `nav_section_layout`, `nav_section_height(theme, first)` | One section header in a painted app. |
 | `chrome::paint_row_selection(scene, transform, rect, state, ground, theme)` | The hover and selection lift of any list row. |
 | `chrome::selection_floor_ramp(theme, state, ground)` | States of a control with its own rest face. |
@@ -676,6 +780,10 @@ Selection forks:
    `selection_fill`, `row_fill`, `selection_fill_on_raised`, `floor_ramp`).
 7. App-owned search fields at the top of a sidebar (see
    [Search](#search)); a filter of the list becomes `with_filter`.
+8. `std::mem::take(&mut shell).content_header(..)` rebuilds, `Decorator`s
+   that redraw a title or a count over a header, and app-placed Back
+   buttons (`ControlSize::Small` "Back"): use `set_content_header`,
+   `set_content_title`, `set_*_count` and `with_back`.
 
 ### Example: a mail window
 
@@ -787,6 +895,11 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | a fixed-width button that truncates its label | delete the width; buttons size to their label and never elide while the parent has room |
 | a solid red "Delete" next to "Cancel" | `ButtonRole::Destructive`; the filled face appears only in the `ModalDialog` that confirms it |
 | an accent/blue primary | `ButtonRole::Primary` (inverted: primary ink fill, content-surface label) |
+| keypad and on-screen keyboard keys painted by hand, a one-letter square toggle ("B", "I") | `ButtonRole::Key` (a faint lift at rest, the label in `Title`); a toggle with `.toggled(on)` |
+| a star or pin glyph swapped for a filled one when on | nothing: a toggled button with `Icon::Star` / `Icon::Pin` draws it filled |
+| a plain text button nudged so its text lines up with the content edge ("Back", "Show") | nothing: a labelled `Plain` button's ink sits on its layout edge; its lift and hit area reach outward |
+| `set_enabled` called from a state watcher | `Button::enabled_from(&state)` |
+| a `Link` whose activation runs an app action through a callback | `Link::action(label, binding)` / `Link::on_action(binding)` |
 
 ### Segmented controls and tabs
 
@@ -802,6 +915,15 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | accent-filled selected segment, a selected segment painted by the app | `ToggleGroup` / `SegmentedFace`: the chosen segment is a lift thumb |
 | hand-drawn tab row with an accent underline | `ToggleGroup::new(..).with_style(SegmentedStyle::Tabs)` (2 px primary-ink underline) |
 | `TriStateControl` | `ToggleGroup` with three segments |
+| a strip with nothing chosen yet, `selected = 0` as a stand-in | `ToggleGroup::unchosen(segments)` / `set_selection(None)`; `selection() -> Option<usize>`; a painted strip `SegmentedFace::selection(None)` |
+| `on_change` that only mirrors the index into a `LocalState` | `.bind_selection(&state)` |
+| a row of hand-drawn weekday toggles | `ToggleGroup::multiple(segments, chosen).on_chosen_change(f)`: each its own toggle, as wide as its label, wrapping |
+| an icon drawn over a segment, an icon-only segment with an empty label | `Segment::icon(Icon::List, "List")` (the name is spoken) |
+| a strip greyed out by hand | `ToggleGroup::with_enabled(false)` / `set_enabled`; `SegmentedFace::disabled(true)` |
+| a label stacked over a strip | `ToggleGroup::caption("Repeat")` |
+| `SegmentedFace::new(rects, labels, i)` with a hand-picked short label | `SegmentedFace::of_segments(rects, &segments, i)` (short forms where the full label does not fit), split with `SegmentedFace::partition_segments(rect, &segments, style, size, ..)` |
+| tabs inset from the content edge, equal-width tabs, a long tab strip that elides | nothing: `SegmentedStyle::Tabs` packs tabs from the leading edge (first label and underline flush) and scrolls sideways when longer than its room |
+| `use ui::widget::toggle_group::Segment` | `use ui::widget::Segment` |
 
 ### Switches, sliders, checkboxes
 
@@ -812,6 +934,11 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | `CheckboxFace::transparent_unchecked()` | delete; an unchecked box always has its raised face and edge |
 | a non-square checkbox rect | nothing: the face paints the largest square in it |
 | a slider squeezed to a knob in a row | nothing: a `Slider` keeps six knob widths of track |
+| a `0..1` slider scaled into the app's units by hand, a percentage spoken for seconds | `Slider::range(min, max).step(s).value_text(f)`; the value, binding and callbacks are in those units; arrow, Page Up/Down and Home/End keys work |
+| a slider inset so its knob does not leave the column | nothing: the track runs flush with the slider's rect and the knob overhangs it; a painted host hit-tests with `SliderFace::hit_rect` and maps with `SliderFace::value_at` (`SliderFace::overhang()` is the room it reaches out) |
+| `ToggleFace` sized with a literal 44×24 | `ToggleFace::size(theme)` |
+| a labelled checkbox spanning its row next to other controls | `Checkbox::with_label(..).intrinsic_width()` |
+| a checkbox edge strengthened by hand on light grounds | nothing: the unchecked edge reaches 3:1 on its ground |
 
 ### Menus and dropdowns
 
@@ -824,7 +951,11 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | `menu.draw(scene, t, text, theme, presence)` in a painted widget's `draw` | delete it: a `ContextMenu` paints only in the window's top layer. Call `menu.draw_overlay(..)` from the widget's own `draw_overlay`, or return the menu from `children_mut` while it is open so the default `draw_overlay` reaches it |
 | `floating_surface::paint_armed_row(scene, t, row, theme)` | `paint_armed_row(scene, t, row, inset, theme)`, `inset` the row's distance from the panel edge (`menu_inset(theme)` for a menu on it) |
 | a menu placed by hand next to its button | `ContextMenu::open_anchored(button_rect, window)`; it opens under the button, aligns to its trailing edge at the window's edge and flips above near the bottom |
-| a hand-drawn caption above a dropdown ("Level" over a filter) | `Dropdown::new(..).caption("Level")` and delete the caption text |
+| a hand-drawn caption above a dropdown ("Level" over a filter) | `Dropdown::new(..).caption("Level")` and delete the caption text; placed by hand, give it `DropdownFace::outer_height` and `apply_layout_external` keeps the caption above the field |
+| a dropdown that spans its row by default | nothing: a dropdown is as wide as its widest option; `.fill()` where it should span (a form column) |
+| a closed dropdown painted by a canvas host (camera, reader settings) | `DropdownFace::new(rect, value).caption(..).leading_icon(..).open(b).hovered(b).paint(..)`, sized with `DropdownFace::height(size, theme)` / `outer_height` × `intrinsic_width(options, ..)`, hit-tested with `contains`; the list is an option `Popover` opened at `field_rect(theme)` |
+| a "Type to filter…" prompt, a filter on a short list | nothing: the value stays while open, the query shows once the person types, and lists under `FILTER_MIN_OPTIONS` (8) never filter (a typed letter arms the next match) |
+| `Dropdown::with_accessible_name(already_localized)` | `with_resolved_accessible_name(name)` |
 | a hand-drawn `▾` / chevron path on a dropdown-like field | `Dropdown` |
 | `Dropdown` at a fixed 40 px | nothing: it is a `Regular` control; `.control_size(ControlSize::Small)` in a toolbar |
 | `NumberInput::with_size(w, h)` | delete; `.control_size(size)`. The width is measured to hold every value in range |
@@ -838,6 +969,28 @@ there: `ModalDialog::with_destructive(true)` and a painted modal action made wit
 | a popover or menu aligned to a trailing anchor by hand | `Popover::aligned(PanelAlign::Trailing)`, `ContextMenu::set_align(PanelAlign::Trailing)`; it flips to the leading edge only when it would leave the window |
 | a viewport inset by hand so a menu or popover keeps off the window edge | delete: every anchored panel keeps `floating_surface::viewport_margin(theme)` from the window's edges |
 | a form wrapper around one `TextInput` in a popover (caption, field, hint, Enter submits) | `Popover::prompt(caption, placeholder, hint).with_field_chars(n).with_field(\|input\| input.with_kind(..))`; `open_prompt(anchor, initial)`, `take_submitted()` |
+
+### Text fields and pickers
+
+| Old | New |
+|---|---|
+| a 40 px field beside 32 px buttons, `TextInput` placed in a hand-sized band | nothing: a single-line field is a Regular control (32); `.control_size(ControlSize::Small / Large)` to match its row |
+| a multiline field given a hand-made minimum height or inset | `TextInput::with_min_lines(n)`: never below the single-line band, the same text inset |
+| `take_submit()` polled by a tree-owned field, Enter caught by the parent | `.on_submit(\|text\| ..)` or `.on_submit_action(binding)` |
+| a clear "×" drawn over a field, a reveal or picker glyph beside it | `.with_clear_button()`; any other: `.with_trailing_accessory(icon, name, AccessoryAction::Run(f))` |
+| a plain field padded by hand inside a pane that already has its gutter | nothing: a plain-chrome field has no horizontal inset |
+| the caret moved to the end after `set_text` | nothing: `set_text` (and `SearchField::set_query`, `Autocomplete::set_text`) parks the caret at the end |
+| a focused field filled darker | nothing: focus keeps the rest fill; the ring marks focus |
+| a placeholder in a hand-picked dim ink or the sans face of a serif field | nothing: placeholders draw in the field's own style, in the tertiary ink |
+| a formula or query coloured by repainting over the field | `TextInput::with_span_highlighter(\|text, theme\| ranges)`; a field painted by a canvas host: `FieldFace::new(rect, text).focused(b).invalid(b).paint(..)` / `.paint_chrome(..)`, `FieldFace::height(size, theme)`, `text_rect(theme)` |
+| `NumberInput` showing a value through a wrapper string ("Now", "10:57") | `NumberInput::with_value_format(format, parse)` |
+| `"50 %"` spelled in English | nothing: the unit sits where the locale puts it (`50%`, `50 %` in German) |
+| a suggestion popup placed, flipped and scrolled by hand under a caret | `SuggestionList` (`set_anchor`, `set_viewport`, `set_suggestions`, `set_highlight`, `row_at`, `paint`); `Autocomplete` is built on it |
+| an autocomplete status line with a hand-drawn spinner | `Autocomplete::set_busy(true)` with `set_status(Some(..))` |
+| `Autocomplete::new()` reconfigured through private fields | `Autocomplete::with_input(TextInput::local().with_placeholder(..))` |
+| a month calendar framed by hand in a sidebar, event dots painted over it | `DatePicker::new(day).navigator().marked(days)`; `intrinsic_height(width)` for a painted host |
+| a shortcut recorder whose keycaps sit off the `InputHint` column | nothing: its keycaps start on its leading edge like an `InputHint`'s |
+| a "Search everywhere" label in dim text, a filter count that disappears at zero | nothing: it is a plain button and "0 of N" stays |
 
 ### Chips and badges
 
@@ -881,6 +1034,7 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `ToolbarItem::new(label, w).group_start(true)` | `.push_separator()` before the group |
 | `ToolbarItem::new(label, w).cue(..)` | delete (labels are `Label`) |
 | an icon-only toolbar command | `.push_icon(icon, name, f)` |
+| an icon-only toggle (bold, italic, compare) | `.push_icon_toggle(icon, name, on, f)` |
 | `chrome::paint_bar(scene, t, theme, rect)` | `ui::widget::toolbar::paint_band(scene, t, theme, rect)` (no fill, a bottom hairline) |
 | `chrome::bar_padding(theme)` | `ui::widget::toolbar::band_padding(theme)` |
 | a toolbar that wraps or clips commands on a narrow window | `Toolbar`: commands that do not fit go to its More menu |
@@ -913,6 +1067,8 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `with_accessible_labels(..)` | the swatch names |
 | `picker.color_at(i)` | `picker.swatch(i).map(|s| s.color)` |
 | `ui::widget::color_picker::ColorSwatch` | `ui::widget::ColorSwatch` (same type, now in `color_swatch`) |
+| a padding added so swatches line up with text, a selected swatch ringed in your colour | nothing: the first swatch sits on the content edge, and the chosen one is a concentric primary-ink ring with a gap of the ground (focus is that ring in your colour) |
+| `ColorPicker::rgb_string()` drawn beside the picker, the picker clipped by hand | nothing: the picker adapts to the width it is given, its hex field and every part lie inside `preferred_size()` / `preferred_height(w)`, and its channel sliders are the shared `Slider` |
 
 ### Delete
 
@@ -935,8 +1091,15 @@ mention, something live). Danger red is only a status: `Tinted(Tone::Danger)`.
 | `ToggleGroup::{fill, control_size}`, `Segment::short`, `SegmentedStyle::{Segmented, Tabs, Quiet}`, `SegmentedFace::{focused, control_size, height, intrinsic_width}` | Segmented strips |
 | `ToggleColors` | A switch face's resolved colours |
 | `MenuItem::with_checked`, `ContextMenu::anchor_row` | State rows; the row a menu acts on |
-| `Dropdown::{caption, control_size}` | Stacked caption; size |
-| `NumberInput::{compact, control_size}` | Inline stepper; size |
+| `Dropdown::{caption, control_size, fill, leading_icon, with_resolved_accessible_name}`, `DropdownFace::{height, outer_height, intrinsic_width, field_rect, contains, paint}`, `FILTER_MIN_OPTIONS` | Stacked caption; size; span; glyph; a resolved name; the painted closed control |
+| `NumberInput::{compact, control_size, with_value_format}` | Inline stepper; size; the app's own words for a value |
+| `ButtonRole::Key`, `Button::enabled_from`, `Link::{action, on_action}` | Keys; enabled from a state; links that run actions |
+| `ToggleGroup::{unchosen, multiple, on_chosen_change, bind_selection, caption, with_accessible_name, with_enabled, selection, set_selection}`, `Segment::icon`, `SegmentedFace::{of_segments, partition_segments, selection, chosen, disabled}`, `NONE_CHOSEN` | No choice yet; many choices; bound selection; icon segments; painted strips |
+| `TextInput::{control_size, with_min_lines, on_submit, on_submit_action, with_clear_button, with_trailing_accessory, with_content_size, with_span_highlighter}`, `AccessoryAction`, `FieldFace` | Fields |
+| `Slider::{range, step, value_text}`, `SliderFace::{hit_rect, value_at, overhang}`, `ToggleFace::size`, `Checkbox::intrinsic_width` | Ranged sliders; painted switches; a hugging checkbox |
+| `SuggestionList`, `Autocomplete::{with_input, set_busy, list_rect}` | The floating suggestion list |
+| `DatePicker::{navigator, marked, set_marked, intrinsic_height}` | A sidebar month |
+| `FormControl` for `ToggleGroup` and `Autocomplete` | Both take a `labeled_field` label as their accessible name |
 | `ChipStyle::{Neutral, Tinted(Tone), Live}`, `ChipFace`, `BadgeFace`, `ChipColors`, `Chip::{style, with_lead}`, `Badge::style` | Chips and badges |
 | `Toolbar::{push_icon, push_toggle, set_active, lay_out_in}`, `toolbar::{paint_band, band_padding}` | Toolbars |
 | `Toolbar::{push_icon_toggle, push_menu, push_element, with_priority, joined, with_enabled, with_accessible_name, set_enabled, set_label, set_dot, set_menu, item_rect, intrinsic_size, lay_out_at, take_activated, open_overflow}` | Toolbar commands with state, menus, hosted controls and overflow priority |
@@ -966,6 +1129,38 @@ icon instead of a stripe; the tree's disclosure, the breadcrumb separator,
 the date picker's month steps and the time picker's arrows are chevrons from
 `ui::icons` instead of typed glyphs. A screenshot test pinned to the old
 pixels is regenerated, not worked around.
+
+## Icons
+
+One set, `ui::icons::Icon`: Lucide glyphs stroked at 1.5 px on the 24-unit
+grid, in ink colours. Every icon an app needs is in it; an app never draws a
+glyph by hand, uses a Unicode character or an emoji, or borrows a nearby
+glyph that means something else. A missing icon is reported and added here.
+
+| Old | New |
+|---|---|
+| `IconWidget::new(icon, 20.0)` (or `Metrics::BASE.icon_md`, any pixel size) | `IconWidget::new(icon)` (Regular) or `.sized(IconSize::Small / Regular / Large)`, resolved from `metrics.icon_sm` / `icon_md` / `icon_lg` |
+| A hand-drawn heart, flag, pin, bookmark or star filled when on | `icon.draw_filled(scene, transform, rect, ink)` for the on state, `icon.draw(..)` for off |
+| `"..."` or `…` for hidden path segments | `Breadcrumb` paints `Icon::MoreHorizontal` itself |
+| A stand-in glyph (a `Circle` for a status, `Monitor` for a USB stick, `FileText` for a quote) | The icon that names the thing (below) |
+| A text toolbar command that has a glyph (Bold, Italic, Link, Table) | `Toolbar::push_icon(icon, name, f)` / `push_icon_toggle(icon, name, on, f)`; the name stays its tooltip, accessible name and overflow row |
+
+Added to the set, by what they are for:
+
+| Use | Icons |
+|---|---|
+| People and calls | `User`, `UserPlus`, `Phone`, `PhoneOff`, `Video`, `MessageSquare`, `Smile`, `SmilePlus`, `Hand`, `Hash` |
+| Places and travel | `MapPin`, `Navigation`, `LocateFixed`, `Landmark`, `Hospital`, `Coffee`, `Utensils`, `Beer`, `BedDouble`, `ShoppingBag`, `TrainFront`, `Plane`, `Trees`, `PawPrint`, `Flag`, `Trophy` |
+| Turns | `CornerUpLeft`, `CornerUpRight`, `ArrowUpLeft`, `ArrowUpRight`, `ArrowDownLeft`, `ArrowDownRight` |
+| Weather and time | `Cloud`, `CloudRain`, `CloudSnow`, `Wind`, `Droplet`, `Moon`, `Gauge`, `Clock`, `AlarmClock`, `Hourglass` |
+| Media | `Shuffle`, `Repeat`, `Repeat1`, `Heart`, `ListMusic`, `Speaker`, `Headphones`, `Disc3` |
+| Text and documents | `Type`, `Bold`, `Italic`, `Underline`, `Strikethrough`, `Superscript`, `Subscript`, `Heading1`, `Heading2`, `ListOrdered`, `ListTree`, `Quote`, `AlignLeft`, `AlignCenter`, `AlignRight`, `AlignJustify`, `Baseline`, `Highlighter`, `Table`, `Columns2` |
+| Canvas and images | `Box`, `BringToFront`, `SendToBack`, `Palette`, `Contrast`, `Crop`, `ScanLine`, `QrCode`, `SwitchCamera` |
+| Mail and sharing | `MailOpen`, `ReplyAll`, `Forward`, `Link`, `Upload`, `Rss`, `Bookmark`, `Tag` |
+| Devices and state | `Usb`, `SdCard`, `Lock`, `EyeOff`, `CircleCheck`, `Lightbulb` |
+
+Filled variants are not separate icons: a glyph whose on state is filled
+(`Heart`, `Bookmark`, `Flag`, `Star`, `Pin`) paints with `draw_filled`.
 
 ## Content widgets
 
@@ -1040,6 +1235,60 @@ Apply the first row that matches each call.
 | A legend painted next to a `PieChart` | `PieChart::new(slices).with_legend()` |
 | `PageSidebar` markup dots drawn by the app | `sidebar.set_marked(page_indices)` |
 | `PageSidebar::with_header("PAGES")` | Delete the call (the default is "Pages"), or pass sentence case. |
+| A header, a sentence or a status set in by hand (`with_horizontal_padding`, an `inset(S3, ..)`, a `text_edge` helper) so it meets a list's text | Delete it: rows, headers, property labels and table columns share the column's content edge (HIG §9.3). |
+| A `Row` of a `Text` title and a `Toggle` / `Button` built to look like a list row | `ListRow::new(id, title).trailing(Box::new(control))` |
+| A `Row` of title, value text and spacer for a figure at the trailing edge (a clock's time, a code) | `ListRow::…value(text)` / `.title_value(text)` |
+| `ListRow::on_activate(f)` for an open or select | `.on_view(f)`; for an action that changes something, `.on_effect(f)` |
+| A row's hover action routed to an exported action by hand | `.action_binding(icon, label, binding)` |
+| A hand-built count pill, star or tag beside a row's title | `.count(n)`, `.mark(Icon::Star)`, `.tags(&[(label, style)])` |
+| `PropertyRow { action, .. }` | `PropertyRow::new(label, value).action(icon, label)` (up to two); the field is `actions` |
+| Two `PropertyList`s whose label columns differ in one section | Put them in the same `Section` (they share one column), or `PropertyList::sections(..)` |
+| A `Text` + `Icon` button pair that folds a group | `Section::…collapsible()` |
+| A dot and a `Caption` built as a status footer | `StatusLine::active(text)` (or `warning`, `error`, `idle`) |
+| An avatar beside a `Title` and a `Caption` heading a detail view | `ObjectHeader::new(name).avatar(name, id).caption(text)` |
+| A plain `Chip` beside an invisible button that navigates | `Chip::new(label).with_id(id).on_click(f)` |
+| `CellRender` closures `|row, scene, theme, text, rect|` | `|row, scene, transform, theme, text, rect|`, painting through `transform` |
+| `CellTextRender` closures `|row, scene, text, rect, theme, selected|` | `|row, scene, transform, text, rect, theme, selected|` |
+| A cell painter that draws a severity or status pill | `.with_badge(|row| (label, tone))` |
+| A cell painter that draws a tree's indent and chevron, with app hit-testing | `DataTable::tree(depth, has_children, expanded, on_toggle)` |
+| `DataTable` row selection on release of a drag-scrolling body | A mouse press selects at once; add `.drag_scroll()` only where a mouse drag should scroll |
+| A painted track list or a hand-drawn header band | `data_table::DataTableFace` |
+| A `Button` placed beside a `Banner` (Retry, Restore, Open settings) | `Banner::warning(..).with_action(button)` (and `.with_secondary_action(button)`); immediate: `BannerContent::new(..).action("Try again")`, hit-test `BannerHit::action`. Size a painted banner with `Banner::height(&content, width, text, theme)`. |
+| `Banner::paint(..)` returning the dismiss `Rect` | `Banner::paint(..)` returns a `BannerHit { rect, action, secondary_action, dismiss }`; `dismiss` is `None` when not dismissible. |
+| A banner kept in the tree with `is_dismissed()` checks and an app flag for "show it" | `Banner::from_state(&LocalState<Option<BannerNotice>>)`: `None` collapses it with its gap. `.on_dismiss(f)` runs when the person closes it. |
+| `BannerKind::Info` for a notice where nothing is wrong (a private window, a read-only copy) | `BannerKind::Neutral` (`Banner::neutral(..)`, `BannerNotice::neutral(..)`): primary ink, no hue. |
+| `toast::paint_transient` with a hand-placed action button or a second card for the body | `ToastCard::new(title, kind).body(body).action(label, hovered)`; the card sizes itself to its wrapped text. `ToastAnchor::TopCenter` / `TopRight` under a HUD. |
+| `when.elapsed() > TOAST_TTL` around an immediate toast | `toast::transient_expired(shown_at, ttl)`: holds under the capture clock. |
+| `toasts.tick(dt)` and a `toasts_ticked` instant in the app | Delete both: `ToastStack` advances itself from `ui::time`, pauses on hover and under the capture clock, and wakes the host at the next expiry. The app only pushes. |
+| `EmptyState::with_action(..)` + `take_action()` polled after events | `.with_action(label).on_view(f)` (or `.on_effect(f)`, `.on_action(binding)`); give it `.with_action_id(id)` to address it. The drain channel stays for painted hosts. |
+| A small "nothing here yet" stack hand-built under a heading inside a page | `EmptyState::new(title).inline()`: a `Heading`, hugging its content. |
+| A spinner placed over or beside an empty state while something loads | `EmptyState::new(title).busy()` (`set_busy(bool)`): a spinner in the hero slot. |
+| `EmptyState::minimum_essential_height` plus app math to find the action | `EmptyState::layout(text, theme, rect, &content)` returns `natural_height`, `hero` and `action` without painting. |
+| `ProgressBar` painted in a status colour by the app | `ProgressBar::new(f).tone(Tone::Danger)` or `.level(GaugeThresholds::default())`; painted: `ProgressBarFace::new(f).tone(..).paint(ctx, rect)`, sized by `ProgressBarFace::height(theme)`. |
+| `BarGauge::with_color(theme.tokens.colors.intent.inverted)` | `BarGauge::new(f).neutral()` |
+| A small ring with the seconds painted beside it (one-time codes) | `ProgressRingFace::new(f).size(ProgressRingSize::Small).value("23")`: a small ring holds a numeric `Caption`. |
+| A `ProgressRing` rebuilt on every tick | `ProgressRing::from_state(&state, \|s\| RingReading::new(frac, value).caption(..))`; `set_caption(..)` changes the caption in place. |
+| A wizard's own "not started" state or clickable step labels | `Stepper::new(steps).current(None)`; `.on_station(\|index\| ..)` lets the person go back to a done step; `station_rects()` / `StepperFace::station_rects(..)` for painted hosts. |
+| A qualifier appended to a stat's value ("1.2 TB of 2 TB") | `StatTile::new("Used", "1.2").unit("TB").note("of 2 TB")` |
+| A `StatGroup` rebuilt to change one reading | `group.tile_mut(i).set_value(..)` (`set_note`, `set_change`, `set_tone`), or `set_tiles(..)` for a different set. |
+| A dot painted for "unsaved changes" | `Badge::modified()` / `BadgeFace::modified(rect)`; a new-item dot is `BadgeFace::dot(rect)`. |
+| A presence dot painted on an avatar's corner | `AvatarFace::new(name, id).status(PresenceStatus::Online)` (`Away`, `Busy`, `Offline`). |
+| A rounded-rect letter tile for an app without an icon | `AvatarFace::new(name, id).neutral()` (`Avatar::person(..).neutral()`). |
+| A circular artist picture clipped by the app | `MediaCard::new(..).aspect(MediaAspect::Circle)` |
+| A 2×2 cover collage, a kind icon, or app-painted art on a media tile | `MediaSource::Mosaic(images)`, `MediaSource::Kind(icon)`, `MediaSource::Paint(Box::new(\|ctx, rect\| ..))`; painted: `MediaArt::Mosaic`, `MediaArt::Kind`, `MediaArt::Paint`. |
+| A tag painted over art ("New", "Explicit") | `.badge(OwnedBadge::Tag(text, ChipStyle::…))` / `MediaBadge::Tag(..)` |
+| A verified glyph after a channel name | `.meta(channel).meta_mark(Icon::…)` |
+| A loading grid of hand-sized grey boxes | `MediaGrid::loading(count, aspect)` |
+| `Card` with a hand-painted selected outline | `Card::new(..).selected(true)` / `CardFace::new().selected(true)` |
+| `VideoPlayer` with an app-painted still before playback | `VideoPlayer::new().with_poster(MediaSource::Url { store, url })` |
+| A page outline with a stripe and a shadow (print and scan queues) | `PagePreview::new(label, page, count)`: flat, sized by the theme. |
+| A PDF reader's rail that ignores drags and menus by hand | `PageSidebar::new(aspect).read_only()`; `set_drop_target_armed(true)` while a file is dragged over it. |
+| Edge handles or a rotation-less frame hand-drawn around a crop | `SelectionHandles::new(bounds, metrics).with_edges().without_rotation()`; `resize_for(handle, from, to)` for one-axis resizes. |
+| A camera shutter painted from circles | `CaptureButtonFace::new(CaptureKind::Photo / Video / Recording).live(..).paint(ctx, center)`; `accessibility(rect)` names it. |
+| `PieChart::with_height(px)` to make room for a legend | Delete it: the chart takes the room it is given and centres the donut and legend as one unit. `PieSlice::with_legend_detail("12 GB")` adds a size column. |
+| Axis labels drawn inside a `Chart`'s plot | Nothing to do: `Chart` sets them in a gutter outside the plot. |
+| `format!("-{}", ..)` for a negative tick on a function plane | `function_plane::format_tick(value, step)` (uses U+2212). |
+| `math::layout` at `size * text_scale` with glyphs that outgrow their bars | Unchanged call: math glyphs are content-sized now. `math::layout_wrapped(row, text, size, max_width)` breaks before top-level operators. |
 
 ### Which widget replaces which hand-drawn pattern
 
@@ -1071,27 +1320,79 @@ Apply the first row that matches each call.
 - **Section header.** `SectionHeader::heading` for a section of a page,
   `SectionHeader::group` for a group inside one. `.count(n)` when the number
   of items matters (unread, changes); `.action(button)` for one text action
-  on the whole group. No subtitle: if the person must know something to act,
-  put one sentence in the content.
-- **ListRow leading column.** `.avatar(name, identity)` for people and
-  accounts, `.icon(icon)` for kinds of things, `.badge(code)` for a short
-  classifying code (`GET`, `PDF`, `WARN`). With faces, compute
-  `badge_column_width(text, theme, &all_badges)` once per list and pass it to
-  every row's `.leading_column(..)` so titles line up.
-- **ListRow text.** Title in `Body` (`.emphasized(true)` for unread),
-  `.secondary(text)` for the one secondary fact (`.two_line_secondary()` for a
-  message preview), `.meta(text)` for a time, size or count. More than one
-  secondary fact: a `PropertyList` in the detail view, or columns in a
-  `DataTable`. Never join facts with `·`.
-- **ListRow trailing.** `.active()`, `.warning()`, `.error()`, `.idle()` for a
-  status dot; `.presence(identity)` for a person's presence; `.disclosure()`
-  when activating opens a page; `.action(icon, label, f)` for actions shown on
-  hover and focus (they replace the meta); `.swipe_action(icon, label,
-  destructive, f)` for touch.
-- **Lists.** Put `ListRow`s in a `Section`: consecutive rows become one list,
-  edge to edge, with inset separators that hide beside the selected row.
-  With faces, call `.separator(next_selected)` on every row but the last.
-  Selection is `.selected(true)`; never paint a row fill.
+  on the whole group (its label ends on the trailing edge). The header is
+  one height with or without an action. No subtitle: if the person must know
+  something to act, put one sentence in the content. A painted host uses
+  `SectionHeaderFace` with the same geometry (`height`, `action_rect`,
+  `paint`).
+- **A section that folds** (a window group, an archive): `Section::…
+  .with_header(..).collapsible()` (or `.collapsed()`), `.on_toggle(f)`. The
+  header gets a chevron, toggles with a pointer, Enter, Space and the arrow
+  keys, and reads as expanded or collapsed. Never build a disclosure out of a
+  button and a flag.
+- **Status and detail heads.** A non-interactive status ("Engine running",
+  "3 stopped") is a `StatusLine::active(text)` (`warning`, `error`, `idle`,
+  `presence`): a dot and a `Caption` on the content edge. The head of a detail
+  view is an `ObjectHeader::new(name).avatar(name, id)` (or `.icon(icon)`,
+  `.square()`) `.caption(text)`: never a hand-stacked `Title` and `Caption`.
+- **ListRow leading column.** `.avatar(name, identity)` for people
+  (`.square()` for accounts and sites), `.icon(icon)` for kinds of things,
+  `.badge(code)` for a short classifying code (`GET`, `PDF`, `WARN`, with
+  `.badge_tooltip(text)` when the code needs explaining; the code is part of
+  the row's name), `.thumbnail(image)` for a picture,
+  `.media(source, aspect)` for media art (the title's initials stand in until
+  it loads), `.checkbox(checked, f)` for multi-select, `.swatch(colour)` for a
+  colour that is content, `.leading_paint(f)` for anything else (a font
+  sample). In a `Section`, consecutive rows share one badge column on their
+  own; with faces, compute `badge_column_width(text, theme, &all_badges)`
+  once per list and pass it to every row's `.leading_column(..)`.
+- **ListRow text.** Title in `Body` (`.emphasized(true)` for unread,
+  `.two_line_title()` for long names, `.title_family(font)` only in a font
+  list), `.mark(icon)` after it for starred or pinned, `.tags(&[(label,
+  style)])` for labels; `.subtitle(text)` for a `Body` line under the title (a
+  message's subject), `.secondary(text)` for the one secondary fact
+  (`.two_line_secondary()` for a message preview), `.meta(text)` for a time,
+  size or count on the title's line (`.meta_spans(&[(text, tone)])` for toned
+  figures such as `+2.4%`), `.count(n)` for how many items the row stands
+  for. More than one secondary fact: a `PropertyList` in the detail view, or
+  columns in a `DataTable`. Never join facts with `·`.
+- **ListRow trailing.** `.value(text)` (or `.title_value(text)`) for the
+  row's own figure (a time, a code, a temperature): hover actions never
+  replace it. `.trailing(element)` for one persistent control (a `Toggle`, a
+  `Button`, a `ToggleGroup`, a small `ProgressRing`, a `Badge`): the row
+  keeps its width, it stays reachable by keyboard and assistive technology,
+  and it moves under the text when the row is narrow (faces:
+  `.trailing_width(w)` and `trailing_rect(..)`). `.checked(bool)` for the
+  chosen row of a single-choice list; `.active()`, `.warning()`, `.error()`,
+  `.idle()` for a status dot on the title's line; `.presence(identity)` for a
+  person's presence; `.disclosure()` when activating opens a page.
+  `.action(icon, label, f)` (or `.action_binding(icon, label, binding)` for an
+  exported action the host confirms) for actions shown on hover and focus
+  (they replace the meta; the arrow keys reach them, and a touch pointer
+  shows them on the selected row); `.swipe_action(icon, label, destructive,
+  f)` for touch. `.with_enabled(false)` dims a row and takes it out of focus.
+- **ListRow activation.** `.on_view(f)` when activating opens or selects
+  something, `.on_effect(f)` when it does something; both publish the row's
+  action so it is discoverable and driveable, as a `Button`'s do. `.on_action
+  (binding)` for an exported resource action. `.on_activate(f)` remains for
+  a closure the native audit may report.
+- **Chip.** A tag or a backlink that navigates is a `Chip::new(label)
+  .with_id(id).on_click(f)` (or `.on_action(binding)`): a button with a focus
+  ring that Enter and Space press. `.menu()` adds a trailing chevron for a
+  chip that opens choices. A painted keyboard key is a `ChipFace` wider than
+  its label: the label centres in it.
+- **PropertyList.** One label column per section: lists in one `Section`
+  share it on their own, and `PropertyList::sections(vec![(title, rows)])`
+  groups related facts under titles in one list (`PropertyColumn` shares a
+  column across stacks; faces take `.label_column(property_label_column(..))`).
+  `Property::with_kind(TextKind::Identifier / Secret / Numeric)` for values
+  that never break (they elide before the actions); prose wraps at a readable
+  measure. `.tone(Tone)` for a value that carries a status; `.copyable()`
+  and `.action(icon, label, f)` for up to two trailing actions;
+  `.with_accessible_value(text)` when the painted value is not what should
+  be read (a masked secret). `.compact()` for an inspector beside a canvas;
+  `.with_id(id)` for tests and the accessibility tree. A `Field` that shows a
+  value it cannot edit hosts a `PropertyValue`.
 - **Tone.** `Success`, `Warning`, `Danger` and `Info` for status,
   `Tone::of_identity(id)` / `Tone::Presence(hue)` for a person. `Neutral` is
   no colour. A tone is never decoration: a card stripe or a stat ticker
@@ -1104,6 +1405,60 @@ Apply the first row that matches each call.
   `.meta(..)` lines.
 - **Progress ring.** Plain progress or a countdown: no fill call. A measured
   level: `.level(thresholds)`. A status: `.tone(..)`.
+- **Banner actions.** A banner holds what resolves it: one action
+  (`.with_action(Button)`) and at most one secondary. They sit inside the
+  box at the trailing edge and wrap under the message when the banner is
+  narrow. Never place a button beside a banner.
+- **Empty states.** A pane with nothing in it: `EmptyState::new(..)`. A
+  section of a page with nothing in it: `.inline()`. Something on its way:
+  `.busy()`. The one action is a published button: give it
+  `.with_action_id(..)` and `.on_view(..)` / `.on_effect(..)`.
+
+### Lists
+
+- **One content edge.** A row's text, a section's title, a property list's
+  labels and a table's first column all start on the column's content edge;
+  the lift and the stripes bleed `chrome::row_bleed` (`s2`) past it (HIG
+  §9.3). Give the column its gutter and nothing else: no inset on a header to
+  meet a row's text, no padding on a sentence to meet a list.
+- **Rows in a section.** Put `ListRow`s in a `Section`: consecutive rows
+  become one list, edge to edge, with inset separators that hide beside the
+  selected row, one shared badge column, and one lift across a run of
+  selected rows (a multi-selection). Selection is `.selected(true)`; never
+  paint a row fill.
+- **Painted rows.** Paint each `ListRowFace` into its outer rect (the
+  content edge grown by `row_bleed`), call `.separator(next_selected)` on
+  every row but the last and `.joined(RowJoin::new(above, below))` on
+  selected rows. `paint_row_selection_joined` is the lift for anything else a
+  host paints as a row.
+- **Long lists.** A `VirtualList` stands its rows one bleed in from its
+  edges, so their lift fills it, and keeps the shared scroll bar in its
+  gutter. `.on_activate(f)` runs on Enter and on a double click,
+  `.on_context(f)` on a right click (the row is selected first, and `f` gets
+  the row's rect to anchor a menu), `reveal(key)` scrolls a row into view.
+  Build it with `VirtualList::with_selection_delegate(..)` when the rows
+  paint their own selection: each row receives a `RowSelection` with its
+  neighbours' (a `ListRow` row takes it in place, with its joined lift and
+  separators).
+- **Tables.** A `DataTable`'s rows are 40 high, 32 with `.compact()`. Columns:
+  `ColumnWidth::Auto` measures header, text, badges and controls, and shares
+  the leftover when no column is flexible; `.priority(n)` lets a column give
+  way when the table is narrow (higher first); what still does not fit
+  scrolls sideways (shift-wheel or the bar). `.wrapping(lines)` lets a cell
+  wrap and its row grow. `.with_badge(|row| (label, tone))` for a level or a
+  status, `ColumnDef::checkbox(..)` with `.on_check(f)` for a column of
+  boxes, `.with_add_row(label, f)` for the blank row that adds one. Painters
+  (`with_render`, `with_text_render`) receive the table's transform; never
+  paint text a column can declare. A table that holds a hierarchy is
+  `.tree(depth, has_children, expanded, on_toggle)`: the chevron, the indent,
+  Right and Left to fold, level and expansion read out. `.fill_height()`
+  takes the parent's height and scrolls inside; `.on_row_context_menu(f)`
+  selects the row and hands its rect; `.drag_scroll()` lets a mouse drag
+  scroll the body (a finger always does), otherwise a drag past the slop runs
+  `.on_row_drag_begin(f)` and `row_rect` / `row_at_point` find drop targets.
+  Edit rows in place with `rows_mut()` and `apply_changes(&changes)` so cell
+  controls stay mounted by row key. `set_sort_indicator(key, ascending)` shows
+  a sort the host applied. A painted host draws `data_table::DataTableFace`.
 
 ### What to delete in an app
 
@@ -1514,7 +1869,8 @@ message.
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
 | A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
 | A readout that does something when clicked (a zoom level, an offset that opens Go to) | `ui::chrome::status_bar::draw_readouts(scene, t, tr, theme, bar, &left, &right, hovered)` with `StatusReadout::action(text)`; it returns each readout's rect to hit-test. `status_bar::height` grows with the `Caption` line at a large text scale |
-| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
+| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
+| A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
 | A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Saving and saved show in the transient bubble; a failure is an error card with Try again that stays until the save succeeds. Delete any save pill, pinned bubble or hand-drawn failure text |
 
@@ -1588,6 +1944,19 @@ header row and which reads as on while History shows. Apps place nothing.
 
 - An app without a header row (a single canvas or form) keeps the window's
   History bar: the same glyph at its trailing edge, nothing else.
+- A painted app with a header row of its own (an editor's file name and
+  mode strip, a viewer's toolbar) lays the row out with
+  `chrome::HeaderRowFace`, provides `widget::WindowHeader` and keeps a
+  `widget::HistoryOpener`; the History control then stands at
+  `face.history_rect()` and the window draws no bar above it. A media app
+  may place the control in its floating strip over the media instead
+  (`chrome::paint_history_control` at any rect, presses through the
+  opener).
+
+| Painted app before | After |
+|---|---|
+| A History bar drawn by the window above the app's own header | `impl WindowHeader for App { fn set_history_control(&mut self, c) { self.history.set_control(c) } }` and `ui::provides!(.., dyn ui::widget::WindowHeader)`. |
+| Space reserved under that bar | Delete it; the app's header row is the window's top edge. |
 - The header control is bound to the window's History door. The App, the
   headless harness and `native_app_audit` all resolve that door (and the
   search door) as the window's, so delete any audit filter for
@@ -1782,7 +2151,7 @@ A host that draws floating surfaces and renders the result itself:
 
 ## Theming
 
-A theme is one versioned document (`ui::theme::ThemeDocument`, schema 5) of
+A theme is one versioned document (`ui::theme::ThemeDocument`, schema 6) of
 semantic roles; `docs/architecture/theming.md` is the contract. Apps read
 tokens and never a theme's name, and Settings and Theme Studio are the only
 writers of the appearance state.
@@ -1792,7 +2161,7 @@ writers of the appearance state.
 | Old | New |
 |---|---|
 | `CustomThemeSpec`, `CUSTOM_THEME_SCHEMA_VERSION`, `CUSTOM_THEME_SCHEMA_MIN`, `Theme::from_custom_spec` | `ThemeDocument`, `THEME_SCHEMA_VERSION`, `Theme::from_document` (`None` for a document this build does not admit) |
-| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
+| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, reading, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
 | `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
 | `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
 | `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |
@@ -1902,6 +2271,34 @@ take them when its migration is reconciled.
 - **The block editor owns its handle column.** Hosts of a `BlockEditor`
   (chat, ebook, mail, notes, pdf-viewer, slides, word-processor) delete the
   gutter they reserved for its drag handles.
+- **Rows stand where they are laid out.** A `NavList` (or any `TreeView`)
+  handed new sections before its first layout no longer animates its rows
+  from the stock 28 px row, and a finished transition always leaves rows at
+  their laid-out geometry. Delete workarounds that rebuilt the list until it
+  had been laid out, or held `set_sections` back until then (mail and feeds
+  are done).
+- **The lifted row floats beside the pointer.** A dragged tree row now
+  hangs below and beside the pointer, and the drop line paints above it, so
+  the place it lands is never hidden; nothing to change in an app.
 - **The sidebar collapses for the content's room.** `compact_breakpoint` is
   840 (`sidebar_width` 280 + `content_min_width` 560): tests or shots that
   pinned a docked sidebar at 720–839 px wide now see the drawer.
+- **The header row is a capability.** Every `NavShell` app replaces its
+  `std::mem::take(&mut self.shell).content_header(..)` /
+  `inspector_header(..)` rebuilds with `set_content_header` /
+  `set_inspector_header`, and any `Decorator` drawn over a header with a
+  title, `set_*_count` or `content_header_leading`: backups, clocks,
+  contacts, containers, feeds, firewall, logs, mail, monitor, passwords,
+  snippets, vpn, windows. Hand-placed Back buttons become `with_back`
+  (disk-usage, print-centre, store, tube). `with_filter` takes a
+  `SearchField` (logs). Painted apps with a header row of their own take
+  the window's History control through `WindowHeader` + `HistoryOpener`
+  and lay the row out with `HeaderRowFace` (hex-editor, photos,
+  video-editor, typst-editor, calculator, music, git-client, maps,
+  sheets); `SidebarDrawer` hosts move to `drawer.header(..)` and
+  `drawer.handle_event(..)` (code-editor, music, chat, video-player,
+  word-processor, video-editor).
+- **An open drawer leaves the window in place.** A `NavShell` drawer opens
+  under the header row; tests that expected only the drawer and its toggle
+  among the exposed children now also see the header row's controls, and
+  the toggle stays in the row instead of moving into the drawer.

@@ -64,6 +64,25 @@ pub fn breadcrumb_components(
     out
 }
 
+/// The glyph leading the trail: what its first segment is (recent files, a
+/// workspace, home, or a drive).
+pub fn breadcrumb_root_icon(
+    cwd: &Path,
+    home: Option<&Path>,
+    workspace_roots: &[PathBuf],
+) -> ui::icons::Icon {
+    use ui::icons::Icon;
+    if crate::recent::is_location(cwd) {
+        Icon::History
+    } else if crate::model::workspace_root_for(cwd, workspace_roots).is_some() {
+        Icon::Users
+    } else if home.is_some_and(|home| cwd.starts_with(home)) {
+        Icon::Home
+    } else {
+        Icon::HardDrive
+    }
+}
+
 /// The drive or share root on Windows; `/` for unprefixed paths.
 pub fn filesystem_root(path: &Path) -> PathBuf {
     if let Some(std::path::Component::Prefix(prefix)) = path.components().next() {

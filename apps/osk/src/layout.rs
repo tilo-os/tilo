@@ -292,7 +292,7 @@ impl KeyboardLayout {
         rows.push(vec![
             Key::action("?123", KeyAction::SymbolsToggle, 1.5),
             Key::ch(","),
-            Key::action("Emoji", KeyAction::Emoji, 1.5),
+            Key::action("Emoji", KeyAction::Emoji, 1.5).with_icon(Icon::Smile),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
             Key::action("Return", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),

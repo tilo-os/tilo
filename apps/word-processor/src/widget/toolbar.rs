@@ -52,6 +52,27 @@ pub(super) enum ToolAction {
 }
 
 impl ToolAction {
+    /// The glyph the command shows in the toolbar instead of its name (the
+    /// name stays its tooltip and accessible name); `None` keeps the name.
+    pub(super) fn icon(self) -> Option<ui::icons::Icon> {
+        use ui::icons::Icon;
+        Some(match self {
+            ToolAction::Bold => Icon::Bold,
+            ToolAction::Italic => Icon::Italic,
+            ToolAction::Underline => Icon::Underline,
+            ToolAction::Strike => Icon::Strikethrough,
+            ToolAction::Super => Icon::Superscript,
+            ToolAction::Sub => Icon::Subscript,
+            ToolAction::TextColorPalette => Icon::Baseline,
+            ToolAction::HighlightPalette => Icon::Highlighter,
+            ToolAction::Hyperlink => Icon::Link,
+            ToolAction::InsertImage => Icon::Image,
+            ToolAction::InsertTable => Icon::Table,
+            ToolAction::InsertToc => Icon::ListTree,
+            _ => return None,
+        })
+    }
+
     /// Whether the command changes the document (and so ends an undo step).
     /// View toggles and commands that only open a menu or a picker do not.
     pub(super) fn edits_document(self) -> bool {

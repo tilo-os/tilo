@@ -43,8 +43,6 @@ pub struct Ui<'a> {
     pub invocations: &'a Invocations,
     /// Width of the shell's content column, which sizes the media grids.
     pub content_width: f64,
-    /// Whether the browse history has a page to return to.
-    pub can_go_back: bool,
 }
 
 impl Ui<'_> {
@@ -253,7 +251,7 @@ pub fn title(route: &Route) -> String {
     match route {
         Route::Home => t("tube-nav-home"),
         Route::Trending => t("tube-nav-trending"),
-        Route::Subscriptions => t("tube-nav-channels"),
+        Route::Subscriptions => t("tube-nav-subscriptions"),
         Route::Queue => t("tube-nav-queue"),
         Route::History => t("tube-nav-history"),
         Route::Settings => t("tube-nav-settings"),
@@ -289,22 +287,6 @@ pub fn header_actions(ui: Ui<'_>) -> Vec<Element> {
 fn connection_badge(model: &TubeModel) -> Option<Badge> {
     (!model.data_source.live && model.data_source.label.contains("connect"))
         .then(|| Badge::text(t("tube-connecting")).style(ChipStyle::Tinted(Tone::Info)))
-}
-
-/// Back to the page this one was opened from, at the top of a page reached
-/// by browsing (a video, a creator, a playlist). Escape, Alt+Left, the mouse
-/// back button and an edge swipe do the same.
-fn back_button(ui: Ui<'_>) -> Option<Element> {
-    ui.can_go_back.then(|| {
-        Box::new(
-            Row::new().no_wrap().push(Box::new(
-                Button::new("tube_back", &t("tube-back"), None)
-                    .with_icon(Icon::ChevronLeft)
-                    .control_size(ControlSize::Small)
-                    .on_click(ui.push(Action::Back)),
-            )),
-        ) as Element
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -541,8 +523,7 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
             vec![video_grid(ui, videos)],
         ))
     };
-    let mut children: Vec<Element> = back_button(ui).into_iter().collect();
-    children.push(Box::new(header));
+    let mut children: Vec<Element> = vec![Box::new(header)];
     children.push(list);
     page(ui.theme, children)
 }
@@ -557,7 +538,7 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
             )],
         );
     };
-    let mut children: Vec<Element> = back_button(ui).into_iter().collect();
+    let mut children: Vec<Element> = Vec::new();
     if !ch.banner_url.is_empty() && ui.imgs.store_handle().is_some() {
         children.push(Box::new(
             MediaCard::new(
@@ -573,10 +554,7 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
         .with_gap(ui.theme.tokens.spacing.rhythm.related)
         .push(Box::new(text(&ch.name, TextRole::Title)));
     if ch.verified {
-        name = name.push(Box::new(ui::widget::IconWidget::new(
-            Icon::Check,
-            ui.theme.tokens.metrics.icon_md,
-        )));
+        name = name.push(Box::new(ui::widget::IconWidget::new(Icon::Check)));
     }
     let mut about = stack()
         .with_gap(ui.theme.tokens.spacing.rhythm.tight)
@@ -708,18 +686,10 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
         )
     };
 
-    // The player sits under the header row (and Back, when there is a page
-    // to return to); the details below it stand in the page gutter.
-    let mut content = stack().with_gap(theme.tokens.spacing.s0);
-    if let Some(back) = back_button(ui) {
-        content = content.push(Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_vertical_padding(theme.tokens.spacing.rhythm.related)
-                .push(back),
-        ));
-    }
-    let content = content
+    // The player sits under the header row, whose Back returns to the page
+    // this one was opened from; the details below it stand in the gutter.
+    let content = stack()
+        .with_gap(theme.tokens.spacing.s0)
         .push(Box::new(stage))
         .push(Box::new(Column::new().with_intrinsic_height().push(lower)));
     Scrollable::new_vertical().with_child(Box::new(content))

@@ -68,8 +68,10 @@ pub struct Chrome {
     picker_for: (Vec<String>, usize),
     view: ToggleGroup,
     close_problems: Button,
-    /// The window's History button, placed in this bar so the window draws
-    /// no History bar of its own.
+    /// The window's History control, at the bar's trailing edge: the bar is
+    /// the window's header row, so the window draws no History bar above it.
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
     structure_dirty: bool,
     toolbar_rect: Rect,
     visible: Visible,
@@ -169,6 +171,8 @@ impl Chrome {
             view,
             close_problems: Button::icon_only("typst.close-problems", Icon::X, "Close problems")
                 .on_click(command(&queue, Command::ToggleProblems)),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
             structure_dirty: false,
             toolbar_rect: Rect::ZERO,
             visible: Visible::default(),
@@ -234,6 +238,12 @@ impl Chrome {
         dirty
     }
 
+    /// The layout tree was rebuilt: a History control the header replaced
+    /// may now be dropped.
+    pub fn layout_rebuilt(&mut self) {
+        self.history.tree_rebuilt();
+    }
+
     /// The height of one control in the bar: the toolbar's own measure, so
     /// the band grows with the text size.
     pub fn control_height(tr: &mut TextRenderer, theme: &Theme) -> f64 {
@@ -270,7 +280,18 @@ impl Chrome {
         let natural = self.natural_picker_width(tr, theme);
         let mut x = bar.x0 + pad;
 
-        let right = bar.x1 - pad;
+        let mut right = bar.x1 - pad;
+        // The window's History control holds the trailing corner.
+        self.history_rect = if self.history.is_shown() {
+            let rect = row(right - control, right);
+            right = (right - control - gap).max(x);
+            rect
+        } else {
+            Rect::ZERO
+        };
+        if let Some(button) = self.history.button_mut() {
+            button.apply_layout_external(self.history_rect);
+        }
 
         let hidden = Rect::ZERO;
         let (mut prev_rect, mut next_rect, mut view_rect) = (hidden, hidden, hidden);
@@ -394,6 +415,9 @@ impl Chrome {
         if self.visible.close {
             children.push(&self.close_problems);
         }
+        if let Some(history) = self.history.button() {
+            children.push(history);
+        }
         children
     }
 
@@ -413,6 +437,9 @@ impl Chrome {
         if self.visible.close {
             children.push(&mut self.close_problems);
         }
+        if let Some(history) = self.history.button_mut() {
+            children.push(history);
+        }
         children
     }
 
@@ -428,6 +455,13 @@ impl Chrome {
         for child in self.children_mut() {
             child.draw(scene, transform, tr, theme, presence);
         }
+    }
+
+    /// Show the History control the host offers (or none) at the bar's
+    /// trailing edge; the bar is laid out and built again around it.
+    pub fn set_history(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+        self.structure_dirty |= self.history.take_rebuilt();
     }
 
     pub fn needs_redraw(&self) -> bool {
