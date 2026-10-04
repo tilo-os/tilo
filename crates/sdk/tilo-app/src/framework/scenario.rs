@@ -66,11 +66,13 @@ pub(crate) struct Run {
     pub(crate) launched: Rc<Launched>,
 }
 
-/// The arguments and the file a launch handed the app.
+/// The arguments, the file and the playback handoff a launch handed the
+/// app.
 #[derive(Default)]
 pub(crate) struct Launched {
     pub(crate) arguments: Vec<String>,
     pub(crate) file: Option<ui_core::application::OpenFile>,
+    pub(crate) handoff: Option<ui_core::application::PlaybackHandoff>,
 }
 
 impl Run {
@@ -102,6 +104,7 @@ impl Run {
     pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
         super::launch::LaunchInput::new(&self.launched.arguments, self.launched.file.as_ref())
             .with_content(self.fixtures.content.as_ref())
+            .with_handoff(self.launched.handoff.as_ref())
     }
 
     pub(crate) fn fixture<T: 'static>(&self) -> Option<Rc<T>> {
