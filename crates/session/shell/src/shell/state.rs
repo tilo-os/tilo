@@ -5,10 +5,12 @@ use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
 mod local_app_records;
+mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use local_app_records::LocalAppRecord;
+pub use window_hosting::WindowHosting;
 
 fn now_unix_nanos() -> u64 {
     tilo_clock::unix_now_ns()
@@ -660,6 +662,10 @@ pub struct WorkspaceTree {
     /// to `tilo-fs --acl`, so both sides decide from one list.
     #[serde(skip)]
     pub fs_acl_path: Option<std::path::PathBuf>,
+    /// This device as host of its legacy windows, which rooms carry as
+    /// hosted here instead of as windows to reopen. Set at session start.
+    #[serde(skip)]
+    pub window_hosting: Option<WindowHosting>,
 }
 
 impl Default for WorkspaceTree {
@@ -684,6 +690,7 @@ impl Default for WorkspaceTree {
             local_app_records: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
+            window_hosting: None,
         }
     }
 }
@@ -855,6 +862,7 @@ impl WorkspaceTree {
                     app_id: kind.app_id(),
                     label: label.clone(),
                     note: String::new(),
+                    missing: None,
                 };
                 changed = true;
             }
@@ -1478,7 +1486,10 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_default();
-        let strips: Vec<Strip> = ws.strips.clone();
+        let strips: Vec<Strip> = self.window_hosting.as_ref().map_or_else(
+            || ws.strips.clone(),
+            |hosting| hosting.published(&ws.strips),
+        );
         let room_str = room.to_string();
         let local_salt = self.local_salt();
         let share_floor = self.room_share_floor.get(&room).copied();
@@ -3941,6 +3952,7 @@ impl WorkspaceTree {
                                 app_id: app_id.clone(),
                                 label: "Available on another device".to_string(),
                                 note: String::new(),
+                                missing: None,
                             },
                         )
                     }
@@ -6027,6 +6039,81 @@ mod automerge_foundation_tests {
     /// tab)`. Half of
     /// [`a_window_the_host_opens_appears_for_the_guest_without_moving_them`]'s
     /// fixture — the host's side.
+    #[test]
+    fn legacy_windows_cross_the_room_as_hosted_and_tilo_apps_as_windows_to_open() {
+        const HOST: u16 = 0xCAFE;
+        const GUEST: u16 = 0xBEEF;
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_salt_override(HOST);
+        guest.set_salt_override(GUEST);
+        let (_, _, tab) = seed_single_tab_strip(&mut host, room, HOST);
+        let native = salted(HOST, 4);
+        {
+            let ws = host
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.room == room)
+                .unwrap();
+            let group = &mut ws.strips[0].window_groups[0];
+            group.tabs[0].tile = TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 41,
+            };
+            group.tabs.push(Tab {
+                id: native,
+                title: "Groceries".into(),
+                tile: TileContent::Foreign {
+                    app_id: "so.tilo.notes".into(),
+                    surface_id: 42,
+                },
+            });
+        }
+        host.window_hosting = Some(WindowHosting {
+            device: "ab".repeat(32),
+            device_label: "Laptop".into(),
+            is_legacy: std::sync::Arc::new(|app: &str| !app.starts_with("so.tilo.")),
+        });
+
+        ship(&mut host, &mut guest, room, 1);
+
+        let tiles: std::collections::HashMap<u64, TileContent> = guest
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .into_iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| (tab.id, tab.tile.clone()))
+            .collect();
+        assert_eq!(
+            tiles.get(&tab),
+            Some(&TileContent::HostedWindow {
+                app_id: "org.gimp.GIMP".into(),
+                label: "Plan".into(),
+                host: "ab".repeat(32),
+                host_label: "Laptop".into(),
+            }),
+            "a legacy window is shown as running on its host"
+        );
+        assert!(
+            matches!(
+                tiles.get(&native),
+                Some(TileContent::PeerWindow { app_id, .. }) if app_id == "so.tilo.notes"
+            ),
+            "a Tilo app's window is one to open here"
+        );
+        assert!(
+            matches!(
+                host.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+                TileContent::Foreign { .. }
+            ),
+            "the host keeps its own live window"
+        );
+    }
+
     fn seed_single_tab_strip(
         tree: &mut WorkspaceTree,
         room: RoomId,
