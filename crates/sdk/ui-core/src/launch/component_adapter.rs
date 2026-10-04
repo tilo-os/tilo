@@ -236,19 +236,6 @@ impl Decorator for AdaptedRoot {
     fn name(&self) -> &str {
         "AdaptedRoot"
     }
-
-    // Host traversals meet this decorator in the app root's place, so it
-    // must own the node for the root's accessibility subtree to resolve.
-    fn build_layout(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        let node = self.root.build_layout(taffy, theme, node_map);
-        crate::widget::decorator::register_node(node_map, node, self);
-        node
-    }
 }
 
 impl AppWidget for AdaptedRoot {

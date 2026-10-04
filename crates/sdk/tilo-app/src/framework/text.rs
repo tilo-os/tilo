@@ -186,19 +186,6 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         &mut self.control
     }
 
-    // The host routes focused input and accessibility actions through the
-    // node map: they reach the wrapper, which submits what they edited.
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui_core::taffy::TaffyTree<()>,
-        theme: &ui_core::theme::Theme,
-        node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui_core::taffy::NodeId {
-        let node = self.control.build_layout(taffy, theme, node_map);
-        ui_core::widget::decorator::register_node(node_map, node, self);
-        node
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         {
             let (doc, _) = ui_core::doc::document(state, path);
