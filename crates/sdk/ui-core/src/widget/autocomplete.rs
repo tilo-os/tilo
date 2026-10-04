@@ -482,11 +482,11 @@ impl Autocomplete {
             theme,
         } = ctx.reborrow();
         let tokens = &theme.tokens;
-        let accent = tokens.colors.intent.inverted;
+        // The armed row is the panel's strong lift, as in every menu.
+        let (accent, on_accent) = crate::widget::floating_surface::armed_row(theme);
         let armed = self.highlight == Some(i);
         let hovered = self.hover == Some(i) && !armed;
         Self::draw_row_background(scene, transform, tokens, accent, row, armed, hovered);
-        let on_accent = tokens.colors.intent.on_inverted;
         let text_color = if armed {
             on_accent
         } else {

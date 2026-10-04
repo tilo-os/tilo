@@ -19,7 +19,7 @@ use std::time::Duration;
 use ui::widget::{Button, Row, Spacer, Widget};
 
 use crate::i18n::t;
-use crate::widgets::{caption, card, hero, rows, value_row};
+use crate::widgets::{card, hero, rows, value_row};
 
 fn fact(value: &str) -> String {
     if value == "unknown" {
@@ -117,6 +117,22 @@ impl AboutInfo {
         }
     }
 
+    /// The facts of a fixed machine, for captures: the same on every host.
+    #[cfg(not(feature = "thin"))]
+    pub(crate) fn for_shot() -> Self {
+        Self {
+            pretty_name: "Tilo 1.0".to_string(),
+            kernel: "6.14.2-tilo".to_string(),
+            uptime: "2d 3h 18m".to_string(),
+            hostname: "ada-laptop".to_string(),
+            arch: "x86_64".to_string(),
+            cpu: "AMD Ryzen 7 7840U".to_string(),
+            memory: "32.0 GiB".to_string(),
+            identity_name: Some("Ada Lovelace".to_string()),
+            identity_public_key: Some([0x3a; 32]),
+        }
+    }
+
     /// A short, stable workspace identity fingerprint.
     ///
     /// Connected workspaces use the public group key that identifies the
@@ -138,7 +154,7 @@ impl AboutInfo {
         );
         let hex = format!("{fingerprint:016x}");
         format!(
-            "{}·{}·{}·{}",
+            "{} {} {} {}",
             hex.get(0..4).unwrap_or_default(),
             hex.get(4..8).unwrap_or_default(),
             hex.get(8..12).unwrap_or_default(),
@@ -152,8 +168,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
-    // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
+    // The machine's name and icon head the page; the OS is a row below.
+    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname);
 
     let person = info
         .identity_name
@@ -171,26 +187,20 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         rows(vec![
             value_row(&t("settings-about-person"), &person),
             value_row(&t("settings-about-identity"), &info.fingerprint()),
-            caption(&t("settings-about-identity-caption")),
         ]),
     );
 
     let backup = card(
         &t("settings-about-backup-card"),
-        rows(vec![
-            caption(&t("settings-about-backup-caption")),
-            Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None)
-                            .content_sized()
-                            .on_effect(|| {
-                                let _ = os_actions::open_tool(portable_identity_backup_intent());
-                            }),
-                    ))
-                    .push(Box::new(Spacer::new())),
-            ),
-        ]),
+        rows(vec![Box::new(
+            Row::new()
+                .push(Box::new(
+                    Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None).on_effect(|| {
+                        let _ = os_actions::open_tool(portable_identity_backup_intent());
+                    }),
+                ))
+                .push(Box::new(Spacer::new())),
+        )]),
     );
 
     let system = card(
@@ -343,7 +353,7 @@ mod tests {
         // Architecture is a compile-time fact, always present.
         assert!(!info.arch.is_empty());
         info.identity_public_key = Some([0xab; 32]);
-        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
+        assert_eq!(info.fingerprint(), "abab abab abab abab");
 
         let info = AboutInfo {
             pretty_name: "x".into(),
@@ -357,8 +367,9 @@ mod tests {
             identity_public_key: None,
         };
         let fp = info.fingerprint();
-        // 4 groups of 4 hex chars separated by middots.
-        assert_eq!(fp.matches('\u{00B7}').count(), 3);
+        // 4 groups of 4 hex chars separated by spaces.
+        assert_eq!(fp.split(' ').count(), 4);
+        assert!(fp.split(' ').all(|group| group.len() == 4));
         assert_eq!(info.fingerprint(), fp, "deterministic");
 
         let intent = portable_identity_backup_intent();

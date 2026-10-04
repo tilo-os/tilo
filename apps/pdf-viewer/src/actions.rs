@@ -1376,7 +1376,7 @@ fn anno_label(a: &Annotation) -> String {
         AnnoKind::Note { .. } => "Note",
         AnnoKind::FreeText { .. } => "Text",
     };
-    format!("{kind} · p.{}", a.page)
+    format!("{kind} on page {}", a.page)
 }
 
 /// One-line comment preview for the palette label.
@@ -1641,7 +1641,7 @@ fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Re
             ctx.doc_id, ctx.search_token
         ),
         "pdf.search-result",
-        format!("Match {} · page {page}", index + 1),
+        format!("Match {} on page {page}", index + 1),
     )
     .with_action(operation(
         "open",
@@ -1766,7 +1766,10 @@ pub(crate) fn markup_children(state: &crate::resource::PdfMarkup) -> Vec<Resourc
         let mut resource = Resource::new(
             format!("pdf.signature:{}", signature.id),
             "pdf.signature",
-            format!("Signature by {} · p.{}", signature.signer, signature.page),
+            format!(
+                "Signature by {} on page {}",
+                signature.signer, signature.page
+            ),
         );
         if let Some(spec) = encode_spec(
             "delete",
@@ -2193,7 +2196,10 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
                 let mut resource = Resource::new(
                     format!("pdf.signature:{}", signature.id),
                     "pdf.signature",
-                    format!("Signature by {} · p.{}", signature.signer, signature.page),
+                    format!(
+                        "Signature by {} on page {}",
+                        signature.signer, signature.page
+                    ),
                 );
                 if let Some(spec) = encode_spec(
                     "delete",

@@ -42,25 +42,7 @@ use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
 /// Side of the anchor a popover prefers to open on. It flips to the
 /// opposite side when the window has no room there; see
 /// [`Popover::resolved_side`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum PopoverSide {
-    Above,
-    #[default]
-    Below,
-    Left,
-    Right,
-}
-
-impl PopoverSide {
-    fn opposite(self) -> Self {
-        match self {
-            Self::Above => Self::Below,
-            Self::Below => Self::Above,
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-}
+pub use crate::widget::floating_surface::PopoverSide;
 
 /// The body of an option menu: no content widget.
 #[derive(Clone, Copy, Debug, Default)]
@@ -320,33 +302,12 @@ impl<C: Widget> Popover<C> {
         };
         let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
         let gap = f64::from(theme.tokens.spacing.s1);
-        let preferred = self.position_on(self.side, w, h, gap);
-        let side = if fits(viewport, preferred, self.side) {
-            self.side
-        } else {
-            let flipped = self.side.opposite();
-            if fits(viewport, self.position_on(flipped, w, h, gap), flipped) {
-                flipped
-            } else {
-                self.side
-            }
-        };
+        let (rect, side) =
+            floating_surface::place_anchored(self.anchor, (w, h), self.side, gap, viewport);
         self.resolved_side = side;
-        self.rect = clamp_into(viewport, self.position_on(side, w, h, gap));
+        self.rect = rect;
         if self.options.is_none() {
             self.place_content(tr, theme);
-        }
-    }
-
-    /// Candidate panel on `side`: leading-aligned with the anchor above or
-    /// below it, top-aligned beside it.
-    fn position_on(&self, side: PopoverSide, w: f64, h: f64, gap: f64) -> Rect {
-        let a = self.anchor;
-        match side {
-            PopoverSide::Below => Rect::new(a.x0, a.y1 + gap, a.x0 + w, a.y1 + gap + h),
-            PopoverSide::Above => Rect::new(a.x0, a.y0 - gap - h, a.x0 + w, a.y0 - gap),
-            PopoverSide::Right => Rect::new(a.x1 + gap, a.y0, a.x1 + gap + w, a.y0 + h),
-            PopoverSide::Left => Rect::new(a.x0 - gap - w, a.y0, a.x0 - gap, a.y0 + h),
         }
     }
 
@@ -439,10 +400,12 @@ impl<C: Widget> Popover<C> {
         let style = on_panel.text(TextRole::Body);
         for (idx, label) in options.items.iter().enumerate() {
             let row = self.row_rect_in(idx, theme);
-            // The armed row is inverted, as in every menu (HIG §9.3); the
-            // applied option carries the check.
+            // The armed row is the panel's strong lift, as in every menu
+            // (HIG §9.3); the applied option carries the check.
             let ink = if idx == options.highlighted {
-                crate::widget::floating_surface::paint_armed_row(scene, transform, row, theme)
+                crate::widget::floating_surface::paint_armed_row(
+                    scene, transform, row, m.pad, theme,
+                )
             } else {
                 colors.text_primary
             };
@@ -481,34 +444,6 @@ impl<C: Widget> Popover<C> {
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
-}
-
-/// True if `candidate` fits inside `viewport` along `side`'s axis.
-fn fits(viewport: Rect, candidate: Rect, side: PopoverSide) -> bool {
-    match side {
-        PopoverSide::Below => candidate.y1 <= viewport.y1,
-        PopoverSide::Above => candidate.y0 >= viewport.y0,
-        PopoverSide::Right => candidate.x1 <= viewport.x1,
-        PopoverSide::Left => candidate.x0 >= viewport.x0,
-    }
-}
-
-/// Slide `rect` into `viewport` (keeping its size where it fits).
-fn clamp_into(viewport: Rect, rect: Rect) -> Rect {
-    let dx = if rect.x1 > viewport.x1 {
-        viewport.x1 - rect.x1
-    } else {
-        0.0
-    };
-    let dy = if rect.y1 > viewport.y1 {
-        viewport.y1 - rect.y1
-    } else {
-        0.0
-    };
-    let moved = rect.with_origin((rect.x0 + dx, rect.y0 + dy));
-    let dx = (viewport.x0 - moved.x0).max(0.0);
-    let dy = (viewport.y0 - moved.y0).max(0.0);
-    moved.with_origin((moved.x0 + dx, moved.y0 + dy))
 }
 
 impl Popover {

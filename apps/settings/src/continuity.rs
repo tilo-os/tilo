@@ -91,6 +91,7 @@ pub(crate) struct AuditEntry {
 }
 
 impl AuditEntry {
+    /// What changed, in words: `Clipboard allowed`, `All Continuity stopped`.
     pub(crate) fn summary(&self) -> String {
         let subject = self
             .capability
@@ -101,13 +102,17 @@ impl AuditEntry {
             } else {
                 "continuity-audit-stopped"
             },
-            &[
-                ("subject", subject.into()),
-                (
-                    "at",
-                    i64::try_from(self.recorded_at_secs).unwrap_or(0).into(),
-                ),
-            ],
+            &[("subject", subject.into())],
+        )
+    }
+
+    /// How long ago it changed (`2 hours ago`), read through the toolkit clock.
+    pub(crate) fn when(&self) -> String {
+        let now = ui::time::wall()
+            .duration_since(ui::time::SystemTime::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        ui::format::relative(
+            i64::try_from(now.saturating_sub(self.recorded_at_secs)).unwrap_or(i64::MAX),
         )
     }
 }

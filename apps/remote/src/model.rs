@@ -22,7 +22,7 @@ pub type ConnectionId = Uuid;
 /// RDP remains a variant so saved, older connection profiles can round-trip
 /// without data loss. Tilo device control is backed by the shell's authenticated
 /// workspace transport and is available for new profiles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnectionKind {
     /// Secure shell — an interactive terminal session.
     Ssh,
@@ -139,7 +139,7 @@ impl ConnectionKind {
 /// How a connection authenticates. Stored alongside the connection but
 /// never carries a live secret in the document — passwords are entered at
 /// connect time and held only in volatile memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AuthMethod {
     /// Username + password prompted at connect time.
     Password,
@@ -196,7 +196,7 @@ impl AuthMethod {
 /// Reachability of a saved machine, as last observed. For live
 /// connections this is refreshed by a background probe; offline it's the
 /// seed value so the screenshot reads as a populated, lived-in list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Presence {
     /// Reachable on the last probe.
     Online,
@@ -221,9 +221,10 @@ pub struct Connection {
     pub user: String,
     pub kind: ConnectionKind,
     pub auth: AuthMethod,
-    /// "Last used" descriptor, kept as a short human string so it renders
-    /// without a clock dependency (e.g. "2h ago", "yesterday", "Never").
-    pub last_used: String,
+    /// When a session to this machine was last opened, in Unix seconds;
+    /// `None` until the first one. Rendered relative to the clock the person
+    /// reads (`ui::clock`), so it never goes stale.
+    pub last_used: Option<i64>,
     pub presence: Presence,
     /// Optional one-line note / tag (e.g. "prod", "lab").
     pub group: String,
@@ -232,15 +233,17 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Compact address line, omitting parts that don't apply.
+    /// Compact address line, omitting parts that don't apply (a port the
+    /// protocol uses anyway, a user the protocol doesn't sign in with).
     pub fn address(&self) -> String {
         if self.kind == ConnectionKind::Tilo {
             // A certified endpoint id is intentionally long. The row already
-            // carries the user-assigned connection name; show a stable prefix
-            // here while the editable form retains the exact target id.
-            return format!("Tilo device {}", compact_tilo_endpoint(&self.host));
+            // carries the user-assigned connection name and the protocol;
+            // show a stable prefix here while the editable form retains the
+            // exact target id.
+            return compact_tilo_endpoint(&self.host);
         }
-        let host_part = if self.port == 0 {
+        let host_part = if self.port == 0 || self.port == self.kind.default_port() {
             self.host.clone()
         } else {
             format!("{}:{}", self.host, self.port)
@@ -391,7 +394,7 @@ impl ConnectionDraft {
             },
             kind: self.kind,
             auth: self.auth,
-            last_used: "Never".to_string(),
+            last_used: None,
             presence: Presence::Unknown,
             group: self.group.trim().to_string(),
             favorite: false,
@@ -505,7 +508,7 @@ mod tests {
             user: "user".into(),
             kind,
             auth: AuthMethod::Password,
-            last_used: "now".into(),
+            last_used: None,
             presence: Presence::Online,
             group: String::new(),
             favorite: false,
@@ -521,6 +524,8 @@ mod tests {
             c.user = "root".into();
             c.port = 2222;
             assert_eq!(c.address(), "root@10.0.0.1:2222");
+            c.port = 22;
+            assert_eq!(c.address(), "root@10.0.0.1", "the default port goes unsaid");
         }
 
         eprintln!("phase tilo_address_drops_port");
@@ -529,14 +534,14 @@ mod tests {
             c.host = "studio-node".into();
             c.user = String::new();
             c.port = 0;
-            assert_eq!(c.address(), "Tilo device studio-node");
+            assert_eq!(c.address(), "studio-node");
         }
 
         eprintln!("phase tilo_address_compacts_a_long_endpoint_without_string_slicing");
         {
             let mut c = sample("q", ConnectionKind::Tilo);
             c.host = "abcdefghijklmnopqrstuvwxyz".into();
-            assert_eq!(c.address(), "Tilo device abcdefghijkl…");
+            assert_eq!(c.address(), "abcdefghijkl…");
         }
     }
 

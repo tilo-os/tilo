@@ -1603,52 +1603,15 @@ impl CommandPalette {
         }
     }
 
-    /// A selected row is the card plus an accent wash; ink chosen against
-    /// the bare card would read a tier lower there. Resolve the composite
-    /// once so paint and contrast checks agree.
+    /// A selected row stands on the panel's strong lift, as the armed row
+    /// of every menu (`floating_surface::armed_row`); ink is measured on
+    /// that ground.
     pub(crate) fn row_ground(theme: &Theme, selected: bool) -> Color {
-        let ground = crate::chrome::panel_ground(theme);
         if selected {
-            crate::tokens::colors::over(ground, theme.tokens.colors.intent.inverted, SELECTION_WASH)
+            crate::widget::floating_surface::armed_row(theme).0
         } else {
-            ground
+            crate::chrome::panel_ground(theme)
         }
-    }
-
-    /// The accent fill + stroke + left bar painted under a selected row.
-    fn draw_selection_highlight(
-        scene: &mut Scene,
-        transform: Affine,
-        row: Rect,
-        colors: &crate::tokens::Colors,
-        radius: f64,
-    ) {
-        let shape = RoundedRect::from_rect(row, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.text_primary.with_alpha_factor(SELECTION_WASH),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.text_primary.with_alpha_factor(0.55),
-            None,
-            &shape,
-        );
-        let bar = RoundedRect::from_rect(
-            Rect::new(row.x0 + 1.0, row.y0 + 6.0, row.x0 + 4.0, row.y1 - 6.0),
-            1.5,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.intent.inverted,
-            None,
-            &bar,
-        );
     }
 
     /// Paints the row's leading icon, if any, and returns where the label
@@ -1818,17 +1781,17 @@ impl CommandPalette {
         let colors = &theme.tokens.colors;
         let (label_style, desc_style) = Self::row_text_styles(theme);
         let row_ground = Self::row_ground(theme, selected);
-        // Needs contrast against the selection wash: take the nearest
+        // Needs contrast against the armed lift: take the nearest
         // legible step from the theme's dim tone rather than promoting it
         // to the title's weight to survive.
         let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, SMALL_TEXT_MIN_CONTRAST);
         if selected {
-            Self::draw_selection_highlight(
+            crate::widget::floating_surface::paint_armed_row(
                 scene,
                 transform,
                 row,
-                colors,
-                Self::inner_radius(theme, row.x0 - self.rect.x0),
+                row.x0 - self.rect.x0,
+                theme,
             );
         }
 
@@ -2040,7 +2003,6 @@ impl CommandPalette {
 
 /// Ink drawn on a selected row is measured against the composite this
 /// produces — the two values must stay equal.
-const SELECTION_WASH: f32 = 0.22;
 
 const ROW_HEIGHT: f64 = 32.0;
 const TWO_LINE_ROW_HEIGHT: f64 = 42.0;

@@ -10,10 +10,11 @@
 //! document plus an input router.
 //!
 //! ## Layout
-//! Two adaptive flaps ([`responsive`]) frame a conversation column: a left
-//! flap (workspace rail + channel sidebar) and a right flap (members /
-//! thread). Each docks beside the content on a wide window and slides over
-//! it behind a scrim on a narrow one — a GNOME Adwaita overlay-flap.
+//! Two toolkit drawers (`ui::widget::SidebarDrawer`) frame a conversation
+//! column: the navigation drawer (workspace rail + channel list) and the
+//! detail drawer (people, or the open thread). Each docks beside the
+//! conversation on a wide window and floats over it behind a scrim on a
+//! narrow one.
 //!
 //! ## Calls
 //! Voice controls send typed local commands to the privileged native media
@@ -74,7 +75,6 @@ pub mod picker;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
-pub mod responsive;
 pub mod search_provider;
 pub mod semantic_read;
 pub mod storage;
@@ -95,7 +95,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// yields the default frame.
 ///
 /// Recognised scenarios:
-/// * `"narrow"` — collapse both flaps for the responsive overlay capture.
+/// * `"narrow"` — collapse both drawers for the narrow-window capture.
+/// * `"sidebar-narrow"` — the navigation drawer floating open over a narrow
+///   window.
 /// * `"compact"` — medium window: channels docked, members summoned on demand.
 /// * `"starter"` — the real first-run empty workspace (no demo content).
 /// * `"people"` — the workspace People roster.
@@ -103,6 +105,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"collaboration"` — the desktop thread plus active huddle state.
 /// * `"context"` — open a channel context menu.
 /// * `"msgmenu"` — open an owned-message action menu.
+/// * `"inbox"` — every workspace's conversations.
+/// * `"emoji"` — the reaction picker.
+/// * `"edit-history"` — an edited message's versions.
 /// * `"attach"` — open the workspace file picker over the composer.
 /// * `"attach-loading"` / `"attach-error"` — bounded attachment lifecycle
 ///   feedback in the same picker.

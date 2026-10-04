@@ -3,24 +3,23 @@
 //!
 //! Document mutations (`new-snippet` under All Snippets, per-snippet rename /
 //! language / tags / star / delete, …) live on this resource via
-//! [`Resource::declarations`] / [`Resource::children`]. Search focus is a View
-//! ([`Resource::local_operations`]). Hosted [`PublishesResources::resources`]
+//! [`Resource::declarations`] / [`Resource::children`]. Hosted
+//! [`PublishesResources::resources`]
 //! returns only the peer's sidebar-folder create (`snippets.folder`) — never a
 //! second hand-built `snippets.library` root beside [`tilo_resource::publish`].
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
-    Resource as PublishedResource,
+    ActionParam, EncodedAction, PROMPTED_PARAM, ParamType, Resource as PublishedResource,
 };
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, library_view_specs,
-    publish_children, register, snippet_resource_id,
+    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, publish_children, register,
+    snippet_resource_id,
 };
 use crate::app::SnippetsApp;
 use crate::doc::SnippetsDoc;
@@ -77,20 +76,13 @@ impl Resource for Snippets {
         publish_children(state)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        library_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
-    }
-
     fn search(state: &Vec<Snippet>) -> Vec<SearchEntry> {
         state
             .iter()
             .map(|snippet| SearchEntry {
                 anchor: Some(snippet_resource_id(snippet.id)),
                 title: if snippet.title.trim().is_empty() {
-                    "Untitled snippet".into()
+                    crate::tr("snippets-untitled")
                 } else {
                     snippet.title.clone()
                 },
@@ -113,6 +105,24 @@ impl ResourceApp for SnippetsShell {
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
         cx.surface(SnippetsApp::new())
     }
+
+    /// * `narrow` — the sidebar drawer open over a narrow window.
+    /// * `detail` — a very narrow window showing the open snippet pushed in
+    ///   front of the list.
+    /// * `empty` — a fresh install with no snippets.
+    /// * `expand` — the fill-in-variables dialog over the open snippet.
+    /// * `language`, `more` — the language picker or the overflow menu.
+    fn scenarios() -> &'static [&'static str] {
+        &["narrow", "detail", "empty", "expand", "language", "more"]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        match name {
+            "narrow" => Some((800, 600)),
+            "detail" => Some((520, 800)),
+            _ => None,
+        }
+    }
 }
 
 impl ResourceSurface<Snippets> for SnippetsApp {
@@ -124,6 +134,14 @@ impl ResourceSurface<Snippets> for SnippetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Snippets>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    /// A capture shows the starter library at work (an empty one for the
+    /// `empty` scenario): its snippets are created through the same action
+    /// a person's "New snippet" dispatches, then the scenario's view state
+    /// is staged once they are presented.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -173,6 +191,18 @@ impl ActionSink {
             None => self
                 .local
                 .dispatch_with_context(doc, type_id, action, context),
+        }
+    }
+
+    /// Submit `actions` through the framework as one edit, applied before
+    /// the next frame. Only a hosted app has the framework to submit to.
+    pub(crate) fn submit_all(&self, actions: impl IntoIterator<Item = SnippetsAction>) {
+        if let Some(dispatcher) = &self.framework {
+            dispatcher.group(|| {
+                for action in actions {
+                    dispatcher.apply(&action);
+                }
+            });
         }
     }
 
@@ -235,12 +265,13 @@ mod tests {
         let published =
             ui::tilo_resource::publish::<Snippets>(LIBRARY_RESOURCE_ID, "Snippets", &state);
         assert_eq!(published.kind, "snippets.library");
-        for id in ["new-snippet", "search"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
-            );
-        }
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "new-snippet"),
+            "new-snippet must be on the framework resource"
+        );
         assert!(
             published
                 .children

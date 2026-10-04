@@ -14,19 +14,18 @@
 
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::Widget;
 use ui::widget::code_editor::{CodeEditor, Language};
 
 use crate::compile::{DiagKind, Diagnostic};
 
-/// Monospace point size of the editor text.
-pub const FONT_SIZE: f32 = 13.0;
 /// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
 
@@ -50,7 +49,6 @@ impl Default for SourceEditor {
         Self {
             code: CodeEditor::local()
                 .with_language(Language::Typst)
-                .with_font_size(FONT_SIZE)
                 .with_tab_width(TAB_WIDTH),
             focused: true,
             rect: Rect::ZERO,
@@ -106,7 +104,7 @@ impl SourceEditor {
     }
 
     pub fn line_height(&self) -> f64 {
-        self.code.line_height().max(f64::from(FONT_SIZE))
+        self.code.line_height()
     }
 
     /// Bind the editor to the Automerge `Text` object holding the source and
@@ -265,6 +263,8 @@ impl SourceEditor {
 
     // ----- rendering -------------------------------------------------------
 
+    /// Paint the pane. The editor stands on the window ground: it fills
+    /// nothing of its own.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -273,10 +273,6 @@ impl SourceEditor {
         theme: &Theme,
         diags: &[Diagnostic],
     ) {
-        let c = &theme.tokens.colors;
-        // Pane background (slightly darker than chrome for an "editor" feel).
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
         // The shared widget paints the gutter, line numbers, current-line band,
         // selection, highlighted text, and caret.
         self.code.set_focused(self.focused);
@@ -292,21 +288,30 @@ impl SourceEditor {
             transform,
             &self.rect,
         );
-        self.draw_diagnostics(scene, transform, tr, theme, diags);
+        self.draw_diagnostics(scene, transform, theme, diags);
         scene.pop_layer();
+    }
 
-        // Hover tooltip for a diagnostic squiggle — drawn last and outside the
-        // clip so it floats above the source and can overflow the pane.
-        if let Some(hp) = self.hover
-            && self.rect.contains(hp)
-        {
-            let byte = self.code.byte_at_point(hp);
-            let text = self.code.value().to_string();
-            if let Some(d) = diags.iter().find(|d| {
-                diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-            }) {
-                self.draw_tooltip(scene, transform, tr, theme, hp, d);
-            }
+    /// The hover card for the diagnostic under the pointer, drawn in the
+    /// window's top layer so it floats above the preview and can overflow
+    /// the pane.
+    pub fn draw_tooltip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        diags: &[Diagnostic],
+    ) {
+        let Some(hp) = self.hover.filter(|p| self.rect.contains(*p)) else {
+            return;
+        };
+        let byte = self.code.byte_at_point(hp);
+        let text = self.code.value().to_string();
+        if let Some(d) = diags.iter().find(|d| {
+            diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
+        }) {
+            self.paint_tooltip(scene, transform, tr, theme, hp, d);
         }
     }
 
@@ -317,7 +322,6 @@ impl SourceEditor {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        _tr: &mut TextRenderer,
         theme: &Theme,
         diags: &[Diagnostic],
     ) {
@@ -326,6 +330,7 @@ impl SourceEditor {
         }
         let text = self.code.value().to_string();
         let lh = self.code.line_height();
+        let unit = f64::from(theme.tokens.spacing.s1);
 
         // Gutter severity dot on each line a diagnostic starts on.
         for (line0, kind) in worst_severity_by_line(diags) {
@@ -334,14 +339,14 @@ impl SourceEditor {
             if cr.y1 < self.rect.y0 || cr.y0 > self.rect.y1 {
                 continue;
             }
-            let cx = self.rect.x0 + 7.0;
+            let cx = self.rect.x0 + 2.0 * unit;
             let cy = cr.y0 + lh * 0.5;
             scene.fill(
                 Fill::NonZero,
                 transform,
                 diag_color(kind, theme),
                 None,
-                &Circle::new(Point::new(cx, cy), 3.0),
+                &Circle::new(Point::new(cx, cy), unit * 0.75),
             );
         }
 
@@ -349,17 +354,23 @@ impl SourceEditor {
         for d in diags {
             if let Some((b0, b1)) = diag_byte_span(d, &text) {
                 for r in self.code.selection_rects(theme, b0, b1) {
-                    let yb = r.y1 - 3.5;
-                    draw_squiggle(scene, transform, r.x0, r.x1, yb, diag_color(d.kind, theme));
+                    let yb = r.y1 - unit * 0.9;
+                    draw_squiggle(
+                        scene,
+                        transform,
+                        (r.x0, r.x1, yb),
+                        unit,
+                        diag_color(d.kind, theme),
+                    );
                 }
             }
         }
     }
 
-    /// Draw a floating tooltip card near `at` carrying a diagnostic's message
-    /// (and its first hint, dimmed). Sizing is measured from the text so the
-    /// card hugs the content.
-    fn draw_tooltip(
+    /// Draw a floating card near `at` carrying a diagnostic's message (and
+    /// its first hint, dimmed). Sizing is measured from the text so the card
+    /// hugs the content.
+    fn paint_tooltip(
         &self,
         scene: &mut Scene,
         transform: Affine,
@@ -368,75 +379,54 @@ impl SourceEditor {
         at: Point,
         d: &Diagnostic,
     ) {
-        let c = &theme.tokens.colors;
-        let pad = 8.0;
-        let font = 12.0;
-        let gap = 3.0;
-        let max_text_w = 360.0f64;
-        let mut lines: Vec<(String, bool)> = vec![(d.message.clone(), false)];
+        let spacing = &theme.tokens.spacing;
+        let pad = f64::from(spacing.s3);
+        let gap = f64::from(spacing.s1);
+        let max_text_w = f64::from(theme.tokens.metrics.panel_width_list) - 2.0 * pad;
+        let message_style = theme.text(TextRole::Label);
+        let hint_style = theme.text(TextRole::Caption);
+        let mut lines = vec![(d.message.clone(), message_style, false)];
         if let Some(h) = d.hints.first() {
-            lines.push((format!("hint: {h}"), true));
+            lines.push((h.clone(), hint_style, true));
         }
         let mut w = 0.0f64;
         let mut total_h = 0.0f64;
         let mut heights = Vec::with_capacity(lines.len());
-        for (s, _) in &lines {
-            let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
+        for (s, style, _) in &lines {
+            let (tw, th) = tr.measure_style(s, Some(ui::num::f32_of_f64(max_text_w)), style);
             w = w.max(f64::from(tw));
-            let h = f64::from(th).max(f64::from(font) * 1.2);
-            heights.push(h);
-            total_h += h + gap;
+            heights.push(f64::from(th));
+            total_h += f64::from(th) + gap;
         }
         total_h -= gap;
-        let card_w = (w + pad * 2.0).min(max_text_w + pad * 2.0);
+        let card_w = w + pad * 2.0;
         let card_h = total_h + pad * 2.0;
-        let mut x0 = at.x + 12.0;
-        let mut y0 = at.y + 18.0;
-        if x0 + card_w > self.rect.x1 - 4.0 {
-            x0 = (self.rect.x1 - 4.0 - card_w).max(self.rect.x0 + 4.0);
+        let (below, side) = (f64::from(spacing.s4), f64::from(spacing.s3));
+        let mut x0 = at.x + side;
+        let mut y0 = at.y + below + f64::from(spacing.s1);
+        if x0 + card_w > self.rect.x1 - gap {
+            x0 = (self.rect.x1 - gap - card_w).max(self.rect.x0 + gap);
         }
-        if y0 + card_h > self.rect.y1 - 4.0 {
-            y0 = (at.y - card_h - 8.0).max(self.rect.y0 + 4.0);
+        if y0 + card_h > self.rect.y1 - gap {
+            y0 = (at.y - card_h - f64::from(spacing.s2)).max(self.rect.y0 + gap);
         }
         let card = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, 7.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(card, 7.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            diag_color(d.kind, theme),
-            None,
-            &Rect::new(card.x0, card.y0, card.x0 + 3.0, card.y1),
-        );
+        ui::widget::floating_surface::paint(scene, transform, card, theme);
+        let on_card = theme.on_ground(ui::chrome::panel_ground(theme));
         let mut ty = y0 + pad;
-        for ((s, dim), h) in lines.iter().zip(heights.iter()) {
-            let col = if *dim { c.text_dim } else { c.text_primary };
-            tr.draw_text(
+        for ((s, style, dim), h) in lines.iter().zip(heights.iter()) {
+            let color = if *dim {
+                on_card.text_dim
+            } else {
+                on_card.text_primary
+            };
+            tr.draw_style(
                 scene,
                 s,
-                font,
-                col,
-                transform * Affine::translate((x0 + pad + 4.0, ty)),
-                Some((card_w - pad * 2.0 - 4.0) as f32),
+                color,
+                transform * Affine::translate((x0 + pad, ty)),
+                Some(ui::num::f32_of_f64(card_w - pad * 2.0)),
+                style,
             );
             ty += h + gap;
         }
@@ -505,17 +495,18 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
     Some((b0, b1.min(text.len())))
 }
 
-/// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
+/// Stroke a wavy underline (a squiggle) from `x0` to `x1` at baseline `y`
+/// (`span` is `(x0, x1, y)`), its wave `unit` wide, in `color`.
 fn draw_squiggle(
     scene: &mut Scene,
     transform: Affine,
-    x0: f64,
-    x1: f64,
-    y: f64,
+    span: (f64, f64, f64),
+    unit: f64,
     color: vello::peniko::Color,
 ) {
-    const PERIOD: f64 = 4.0;
-    const AMP: f64 = 1.6;
+    let (x0, x1, y) = span;
+    let period = unit;
+    let amplitude = unit * 0.4;
     if x1 <= x0 {
         return;
     }
@@ -527,12 +518,12 @@ fn draw_squiggle(
         if x >= x1 {
             break;
         }
-        x = (x + PERIOD * 0.5).min(x1);
-        let dy = if up { -AMP } else { AMP };
+        x = (x + period * 0.5).min(x1);
+        let dy = if up { -amplitude } else { amplitude };
         path.line_to(Point::new(x, y + dy));
         up = !up;
     }
-    scene.stroke(&Stroke::new(1.3), transform, color, None, &path);
+    scene.stroke(&Stroke::new(unit * 0.32), transform, color, None, &path);
 }
 
 #[cfg(test)]

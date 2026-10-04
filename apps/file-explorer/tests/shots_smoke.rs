@@ -29,7 +29,7 @@ fn shots_flag_writes_png_and_refuses_unavailable_projection_scenarios() {
 #[cfg(windows)]
 fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images() {
     let directory = tempfile::tempdir().unwrap();
-    for scenario in ["sync", "thumbnails-fs", "history"] {
+    for scenario in ["sync", "thumbnails-fs"] {
         let output = directory.path().join(format!("{scenario}.png"));
         let result = crate::common::app_command()
             .arg("--shots")

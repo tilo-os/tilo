@@ -174,6 +174,38 @@ impl HistoryHost {
         self.open
     }
 
+    /// The window's History door as this History serves it: the same
+    /// Open, Open at and Hide as the standalone door, without session rows.
+    pub(crate) fn door_resource(&self) -> tilo_actions::Resource {
+        crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
+    }
+
+    /// Run one History door operation resolved against [`Self::door_resource`]
+    /// (a header History control, the History shortcut): it opens, opens at
+    /// a change, or closes exactly as this History's own button does.
+    pub(crate) fn invoke_door(
+        &mut self,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, decode_entry};
+        if encoded.type_id != HISTORY_OPERATION {
+            return Err("Unsupported History operation".into());
+        }
+        match serde_json::from_slice(&encoded.payload) {
+            Ok(HistoryCommand::Open) if self.request_open() => Ok(()),
+            Ok(HistoryCommand::OpenAt { entry })
+                if decode_entry(&entry).is_ok_and(|entry| self.request_open_at(entry)) =>
+            {
+                Ok(())
+            }
+            Ok(HistoryCommand::Hide) => {
+                self.request_close();
+                Ok(())
+            }
+            _ => Err("Unsupported History operation".into()),
+        }
+    }
+
     /// The changes the timeline would list now, in causal order, whether
     /// or not History is open.
     #[cfg(any(feature = "native", test))]

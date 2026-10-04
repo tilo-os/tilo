@@ -1,22 +1,28 @@
 //! Root widget for the Disk Imager (imager) app.
 //!
-//! `ImagerApp` is a single self-drawing "canvas" widget that renders a guided
-//! **wizard** with a six-station step indicator —
-//! Source → Drive → Customize → Confirm → Write → Done — and a Back /
-//! primary-action footer for creating a verified USB/SD installation medium.
+//! `ImagerApp` holds the state of a guided **wizard** — Image → Drive →
+//! Customize → Confirm → Write → Done — for creating a verified USB or SD
+//! installation medium, and composes each step from toolkit widgets in the
+//! shared [`page`](crate::page) frame:
 //!
-//! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
-//!   (never a bespoke picker, per HIG §5), or a known Tilo release.
+//! * **Image** — pick a local `.iso` / `.img` through the host XDG portal
+//!   (never a bespoke picker, per HIG §5), drop one on the drop zone, or
+//!   choose a known Tilo release.
 //! * **Drive** — choose external media from the *real* block devices (`lsblk`);
 //!   internal and system disks are never eligible. Installation onto those is
 //!   handled after boot by the live Tilo installer.
-//! * **Customize** (Tilo only) — the shared guided-customization step, delegated
-//!   in full to [`CustomizePanel`](crate::customize); a plain ISO skips it.
-//! * **Confirm** — a read-only review of every choice, an erase warning, and
-//!   the typed device-name gate.
+//! * **Customize** (Tilo only) — the guided-customization form shared by the
+//!   write and install flows ([`crate::customize`]); a plain ISO skips it.
+//! * **Confirm** — a read-only review of every choice, the optional network
+//!   and identity setup, the erase warning and the typed device-name gate.
 //! * **Write** — a real, byte-for-byte streaming copy with live progress and a
 //!   read-back **verify** pass.
 //! * **Done** — the verified / failed outcome with a fresh-start affordance.
+//!
+//! Every control is a toolkit widget that owns its hit-testing, focus, states
+//! and accessibility; a control reports what the person asked for as a
+//! [`Command`], which the wizard applies with the document in hand. When what
+//! the page shows changes, the page is composed again.
 //!
 //! Every write is doubly gated: the typed confirmation at Confirm, then native
 //! host authentication for a short-lived privileged writer. The wizard itself
@@ -27,479 +33,89 @@
 //! worker channels are local capabilities: another peer can inspect a plan,
 //! but never select/arm/write this machine's device.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Write as _;
+use std::path::PathBuf;
+use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
-use taffy::style_helpers::percent;
-use taffy::{NodeId, Style, TaffyTree};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use ui::paint::{PaintCtx, with_alpha};
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::surface;
-use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{ParagraphAlign, TextRenderer};
 use ui::theme::Theme;
-use ui::tokens::Metrics;
-use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
-use ui::widget::{Badge, Button, ButtonFace, TextInput, Widget};
-
-use crate::customize::{CustomizePanel, CzField};
-use crate::doc::ImagerDoc;
-use crate::export_dialog::ExportDialog;
-use crate::model::{
-    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TargetKind,
-    TiloRelease, fmt_eta, fmt_rate, fmt_size,
+use ui::tokens::TextRole;
+use ui::widget::{
+    Banner, Button, ButtonRole, Column, Container, ControlSize, DropZone, EmptyState, Field,
+    ListRow, ProgressRing, ProgressRingSize, Property, PropertyList, Row, Section, Spacer, Text,
+    TextInput, Tone, Widget,
 };
+
+use crate::customize::CzField;
+use crate::doc::ImagerDoc;
+use crate::model::{
+    Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TiloRelease,
+    fmt_eta, fmt_rate, fmt_size,
+};
+use crate::page::{self, Frame};
 use crate::write::{JobControl, WriteRequest, spawn_job};
-use crate::write_setup::WriteSetupPanel;
+use crate::write_setup::SetupField;
 
-// ---- layout constants (logical px) -------------------------------------
-// The spacing rhythm (HIG §7b) is the crate's: `crate::rhythm` names every
-// step once, and this immediate-mode layout — a pure function of the
-// viewport that receives no `Theme` — imports the ones it uses.
-use crate::rhythm::{GROUP, HERO, LABEL, REGION, RELATED, SECTION, SIBLING};
+const DROP_TITLE: &str = "Choose a disk image";
+const DROP_MESSAGE: &str = "Drop an ISO, IMG or RAW file here";
+const DROP_ACTION: &str = "Browse…";
+const EMPTY_DRIVES: &str = "Insert a USB drive or SD card";
+const NO_RELEASES: &str = "No Tilo releases are stored on this computer.";
+const PLAIN_BODY: &str =
+    "Setup options are only available for Tilo images. This image is written unchanged.";
 
-/// Page gutter; below [`COMPACT_GUTTER_BELOW`] the compact gutter applies.
-const OUTER: f64 = GROUP;
-const OUTER_COMPACT: f64 = SECTION;
-const COMPACT_GUTTER_BELOW: f64 = 600.0;
-// The compositor draws the window chrome + app name (OS owns chrome), so the
-// app itself opens straight into the step indicator — no in-app title bar.
-const CRUMB_TOP: f64 = GROUP;
-/// A step station is a pointer target.
-const CRUMB_H: f64 = Metrics::BASE.min_pointer_target as f64;
-/// Wide step stations: the labelled width, and the gap carrying the connector.
-const CRUMB_W: f64 = 132.0;
-const CRUMB_GAP: f64 = SECTION;
-/// Footer actions and the confirmation field are panel rows.
-const CONTROL_H: f64 = Metrics::BASE.panel_row_height as f64;
-/// Small secondary buttons (Rescan, Preview): the minimum pointer target.
-const SMALL_CONTROL_H: f64 = Metrics::BASE.min_pointer_target as f64;
-const FOOTER_H: f64 = CONTROL_H + 2.0 * SECTION;
-const CONTENT_MAX_W: f64 = 900.0;
-/// Hand-drawn glyphs: the drop-zone arrow's box, the check discs, the hero.
-const ICON: f64 = Metrics::BASE.icon_lg as f64;
-const CHECK_R: f64 = ICON / 2.0;
-const HERO_DISC_R: f64 = 2.0 * ICON;
-/// Progress ring: radius and stroke.
-const RING_R: f64 = 76.0;
-const RING_W: f64 = 12.0;
-const RING_OUTER: f64 = RING_R + RING_W / 2.0;
-/// Phase bar thickness.
-const BAR_H: f64 = RELATED;
-/// The zero-state USB-stick glyph: cap and body.
-const GLYPH_CAP_H: f64 = SECTION;
-const GLYPH_BODY_H: f64 = 54.0;
-const GLYPH_H: f64 = GLYPH_CAP_H + GLYPH_BODY_H;
-/// Gap between a step title and its description line (title + explanation).
-const STEP_SUB_GAP: f64 = RELATED;
-/// The gap between a step's heading group and its first content block is the
-/// theme's `spacing.s3`, cached from `build_layout` into `heading_gap` because
-/// the renderer hook that measures the heading receives no `Theme`.
-fn default_heading_gap() -> f64 {
-    f64::from(ui::tokens::spacing::Spacing::default().s3)
-}
-/// Unmeasured floor for the heading group (a wrapped description needs the
-/// taller compact value); the measured group is never shorter.
-const STEP_HEADER_FLOOR: f64 = 44.0;
-const STEP_HEADER_FLOOR_COMPACT: f64 = 64.0;
-
-/// Copy of the Drive step's zero state, shared by the measurer and painter.
-const EMPTY_TITLE: &str = "Insert a drive";
-const EMPTY_LINE_1: &str = "Plug in a USB stick or SD card, then press Rescan.";
-const EMPTY_LINE_2: &str = "Internal disks are available after booting this installation medium.";
-const RESCAN_LABEL: &str = "⟳ Rescan";
-const PLAIN_TITLE: &str = "This image is written unchanged";
-const PLAIN_BODY: &str = "Pre-configuration (hostname, user, region) is available for Tilo images. Press Continue to write it as-is.";
-
-/// The text measurements the layout model needs, so the unmeasured 1×
-/// defaults and the renderer-measured bands share one set of formulas: a
-/// band is always "its line boxes plus rhythm steps", never a hand-tuned
-/// pixel count.
-trait Measure {
-    /// Line-box height of `size`-pt text.
-    fn line(&mut self, size: f32) -> f64;
-    /// Advance width of `s`.
-    fn width(&mut self, s: &str, size: f32, weight: TextWeight) -> f64;
-    /// Height of `s` wrapped to `max_w`.
-    fn para(&mut self, s: &str, size: f32, weight: TextWeight, max_w: f64) -> f64;
-}
-
-impl Measure for TextRenderer {
-    fn line(&mut self, size: f32) -> f64 {
-        f64::from(self.measure("Hg", size, None).1)
-    }
-    fn width(&mut self, s: &str, size: f32, weight: TextWeight) -> f64 {
-        f64::from(self.measure_weighted(s, size, None, weight).0)
-    }
-    fn para(&mut self, s: &str, size: f32, weight: TextWeight, max_w: f64) -> f64 {
-        f64::from(
-            self.measure_weighted(s, size, Some(max_w.max(1.0) as f32), weight)
-                .1,
-        )
-    }
-}
-
-/// The layout before the renderer has measured anything: the same formulas
-/// over a type-scale estimate, so a probe frame never places a control on a
-/// zero-height band.
-struct Estimate;
-
-impl Measure for Estimate {
-    /// The toolkit's line-height formula at 1× — what `TextRenderer::measure`
-    /// reports for one line — so the unmeasured and measured bands agree.
-    fn line(&mut self, size: f32) -> f64 {
-        line_height_px(size, 1.0)
-    }
-    fn width(&mut self, s: &str, size: f32, _weight: TextWeight) -> f64 {
-        s.chars().count() as f64 * f64::from(size) * 0.55
-    }
-    fn para(&mut self, s: &str, size: f32, weight: TextWeight, max_w: f64) -> f64 {
-        let lines = (self.width(s, size, weight) / max_w.max(1.0))
-            .ceil()
-            .max(1.0);
-        lines * self.line(size)
-    }
-}
-
-/// Text-derived geometry of the Source step's blocks: the drop zone, the
-/// selected-source card, the release rows, the recent rows and the section
-/// captions. Measured from the renderer in `adjust_layout_with_measure` and
-/// read by both the hit layout and the painters, so a row is clickable
-/// exactly where it is drawn at every text scale.
+/// What a control on the wizard asked for. Controls only record the
+/// request; the wizard applies it with the document in hand.
 #[derive(Clone, Debug, PartialEq)]
-struct SourceMetrics {
-    /// Text scale the bands were measured at; the compact breakpoint scales
-    /// by it.
-    text_scale: f64,
-    /// Browse drop zone: band, and the tops of its title / hint lines
-    /// (the stack is centred in the band).
-    dropzone_h: f64,
-    dz_title_top: f64,
-    dz_sub_top: f64,
-    /// Selected-source card, wide and compact: badge band, card band and the
-    /// tops of the summary and tag lines. The compact card stacks the name
-    /// beside the kind badge, so its lines start under the badge band.
-    card_badge_h: f64,
-    card_h: f64,
-    card_summary_top: f64,
-    card_tag_top: f64,
-    card_h_compact: f64,
-    card_summary_top_compact: f64,
-    card_tag_top_compact: f64,
-    /// Release row: band and the top of its channel/size line.
-    release_row_h: f64,
-    release_detail_top: f64,
-    /// Recent row: band and the top of its size line.
-    recent_row_h: f64,
-    recent_size_top: f64,
-    /// A section caption's band: its line box plus the gap to its list.
-    section_h: f64,
-    /// The "no releases" zero-state card.
-    zero_h: f64,
-}
-
-impl Default for SourceMetrics {
-    fn default() -> Self {
-        Self::from_lines(1.0, &mut Estimate)
-    }
-}
-
-impl SourceMetrics {
-    fn from_lines(text_scale: f64, m: &mut dyn Measure) -> Self {
-        let (h16, h15_5, h14_5, h14) = (m.line(16.0), m.line(15.5), m.line(14.5), m.line(14.0));
-        let (h13, h12_5, h12, h11_5, h11) = (
-            m.line(13.0),
-            m.line(12.5),
-            m.line(12.0),
-            m.line(11.5),
-            m.line(11.0),
-        );
-        // Drop zone: the title/hint stack sits `GROUP` inside the band.
-        let dz_stack = h16 + RELATED + h12_5;
-        // Cards and rows: `SECTION` / `RELATED` padding, `LABEL` between the
-        // lines of one block.
-        let card_badge_h = h12 + RELATED;
-        let card_summary_top = SECTION + h15_5 + LABEL;
-        let card_tag_top = card_summary_top + h12 + LABEL;
-        let card_summary_top_compact = SECTION + h15_5.max(card_badge_h) + RELATED;
-        let card_tag_top_compact = card_summary_top_compact + h12 + LABEL;
-        let release_detail_top = RELATED + h14_5 + LABEL;
-        let recent_size_top = RELATED + h13 + LABEL;
-        Self {
-            text_scale,
-            dropzone_h: dz_stack + 2.0 * GROUP,
-            dz_title_top: GROUP,
-            dz_sub_top: GROUP + h16 + RELATED,
-            card_badge_h,
-            card_h: card_tag_top + h11_5 + SECTION,
-            card_summary_top,
-            card_tag_top,
-            card_h_compact: card_tag_top_compact + h11_5 + SECTION,
-            card_summary_top_compact,
-            card_tag_top_compact,
-            release_row_h: release_detail_top + h11_5 + RELATED,
-            release_detail_top,
-            recent_row_h: recent_size_top + h11 + RELATED,
-            recent_size_top,
-            section_h: h11 + RELATED,
-            zero_h: h14 + RELATED + h12 + 2.0 * GROUP,
-        }
-    }
-
-    fn card_h(&self, compact: bool) -> f64 {
-        if compact {
-            self.card_h_compact
-        } else {
-            self.card_h
-        }
-    }
-}
-
-/// Text-derived geometry of the Drive step: the Rescan button, the drive
-/// card's stacked lines and the zero-state card.
-#[derive(Clone, Debug, PartialEq)]
-struct DriveMetrics {
-    /// Rescan: its label plus a `SECTION` inset each side.
-    rescan_w: f64,
-    /// Kind badge / removable chip band.
-    badge_h: f64,
-    /// Line tops inside a card: model, device · size, the erase note.
-    model_top: f64,
-    dev_top: f64,
-    erase_top: f64,
-    card_h: f64,
-    /// Zero-state card: glyph, title and both lines, and the band.
-    empty_glyph_top: f64,
-    empty_title_top: f64,
-    empty_line_top: f64,
-    empty_line2_top: f64,
-    empty_h: f64,
-}
-
-impl Default for DriveMetrics {
-    fn default() -> Self {
-        Self::from_lines(&mut Estimate, CONTENT_MAX_W)
-    }
-}
-
-impl DriveMetrics {
-    fn from_lines(m: &mut dyn Measure, content_w: f64) -> Self {
-        let (h17, h16, h12_5, h12, h11_5) = (
-            m.line(17.0),
-            m.line(16.0),
-            m.line(12.5),
-            m.line(12.0),
-            m.line(11.5),
-        );
-        // The badge band, shared by the kind badge and the removable chip.
-        let badge_h = h12 + RELATED;
-        let model_top = SECTION + badge_h + RELATED;
-        let dev_top = model_top + h16 + LABEL;
-        let erase_top = dev_top + h12_5 + LABEL;
-        let para_w = (content_w - 2.0 * GROUP).max(1.0);
-        let empty_glyph_top = REGION;
-        let empty_title_top = empty_glyph_top + GLYPH_H + GROUP;
-        let empty_line_top = empty_title_top + h17 + RELATED;
-        let empty_line2_top =
-            empty_line_top + m.para(EMPTY_LINE_1, 13.0, TextWeight::Regular, para_w) + RELATED;
-        Self {
-            rescan_w: m.width(RESCAN_LABEL, 12.5, TextWeight::Medium) + 2.0 * SECTION,
-            badge_h,
-            model_top,
-            dev_top,
-            erase_top,
-            card_h: erase_top + h11_5 + SECTION,
-            empty_glyph_top,
-            empty_title_top,
-            empty_line_top,
-            empty_line2_top,
-            empty_h: empty_line2_top
-                + m.para(EMPTY_LINE_2, 12.0, TextWeight::Regular, para_w)
-                + REGION,
-        }
-    }
-}
-
-/// One key/value row of the Confirm review card.
-struct ConfirmRow {
-    key: &'static str,
-    value: String,
-    size: f32,
-    weight: TextWeight,
-    tone: RowTone,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RowTone {
-    Primary,
-    Success,
-    Danger,
-}
-
-/// Text-derived geometry of the Confirm step: the review card's rows, the
-/// danger banner and the caption / note around the confirmation field.
-#[derive(Clone, Debug, PartialEq, Default)]
-struct ConfirmMetrics {
-    /// Value column offset from the card's left edge: the widest key plus a
-    /// `GROUP` gap.
-    value_x: f64,
-    /// Row tops (offsets from the card top) and the card band.
-    row_top: Vec<f64>,
-    card_h: f64,
-    banner_h: f64,
-    label_h: f64,
-    note_h: f64,
-}
-
-/// Text-derived geometry of the Write step below its title.
-#[derive(Clone, Debug, PartialEq)]
-struct WriteMetrics {
-    /// The ring's percentage readout.
-    pct_h: f64,
-    /// The rate / ETA line.
-    meta_h: f64,
-    /// The 12 pt lines: the ring caption, each phase label, the foot line.
-    small_h: f64,
-}
-
-impl Default for WriteMetrics {
-    fn default() -> Self {
-        Self::from_lines(&mut Estimate)
-    }
-}
-
-impl WriteMetrics {
-    fn from_lines(m: &mut dyn Measure) -> Self {
-        Self {
-            pct_h: m.line(30.0),
-            meta_h: m.line(13.0),
-            small_h: m.line(12.0),
-        }
-    }
-
-    /// Ring centre offset from the content top for a heading band `head`.
-    fn ring_cy(&self, head: f64) -> f64 {
-        head + REGION + RING_OUTER
-    }
-
-    /// Top of the rate / ETA line.
-    fn meta_top(&self, head: f64) -> f64 {
-        self.ring_cy(head) + RING_OUTER + SIBLING
-    }
-
-    /// Top of the first phase label.
-    fn bars_top(&self, head: f64) -> f64 {
-        self.meta_top(head) + self.meta_h + GROUP
-    }
-
-    /// Pitch of one labelled phase bar.
-    fn bar_pitch(&self) -> f64 {
-        self.small_h + LABEL + BAR_H + SIBLING
-    }
-
-    /// Top of the "image → drive" caption after both bars.
-    fn foot_top(&self, head: f64) -> f64 {
-        self.bars_top(head) + 2.0 * self.bar_pitch() - SIBLING + GROUP
-    }
-
-    fn extent(&self, head: f64) -> f64 {
-        self.foot_top(head) + self.small_h + SECTION
-    }
-}
-
-/// Text-derived geometry of the Done step: hero, copy and the summary card.
-#[derive(Clone, Debug, PartialEq, Default)]
-struct DoneMetrics {
-    headline_h: f64,
-    /// Height of the sub-copy block (one line, or the wrapped failure detail).
-    sub_h: f64,
-    /// Value column offset from the card's left edge.
-    value_x: f64,
-    row_h: f64,
-    /// Card top offset from the content top, and its band.
-    card_top: f64,
-    card_h: f64,
-}
-
-impl DoneMetrics {
-    fn disc_cy(content_y0: f64) -> f64 {
-        content_y0 + HERO + HERO_DISC_R
-    }
-
-    fn headline_top(content_y0: f64) -> f64 {
-        Self::disc_cy(content_y0) + HERO_DISC_R + GROUP
-    }
-
-    fn sub_top(&self, content_y0: f64) -> f64 {
-        Self::headline_top(content_y0) + self.headline_h + RELATED
-    }
-
-    fn extent(&self) -> f64 {
-        self.card_top + self.card_h + SECTION
-    }
-}
-
-/// Every text-derived band of the wizard, measured together: one comparison
-/// decides whether the layout re-solves and one assignment stores the
-/// result, so a band added later cannot be left out of either.
-#[derive(Clone, Debug, PartialEq, Default)]
-struct Bands {
-    source: SourceMetrics,
-    drive: DriveMetrics,
-    confirm: ConfirmMetrics,
-    write: WriteMetrics,
-    done: DoneMetrics,
-    /// The "written unchanged" card of a plain-ISO Customize step.
-    plain_card_h: f64,
-}
-
-/// A clickable hit-target for one frame. Pure function of the viewport +
-/// state, so `draw` and `handle_event` agree without ordering hazards. The
-/// Customize step's own affordances live inside [`CustomizePanel`], not here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Hit {
+pub(crate) enum Command {
     PickFile,
+    Dropped(PathBuf),
     Release(usize),
     CancelDownload,
     Recent(usize),
     Target(usize),
     Rescan,
-    ConfirmField,
-    StepJump(Step),
     Back,
     Next,
     StartWrite,
     CancelWrite,
     WriteAnother,
+    /// The typed device-name confirmation changed.
+    Confirm(String),
+    /// A guided-customization field changed (the value as the form shows it).
+    Profile(CzField, String),
+    /// A network or identity field on Confirm changed.
+    WriteSetup(SetupField, String),
+    /// Enrolling the new device as one of yours was switched.
+    Enroll(bool),
 }
 
-struct Layout {
-    crumbs: Vec<(Rect, Step)>,
-    /// At compact widths the six-step rail shows numbered/checkmarked discs
-    /// without labels. The page heading still names the current station, and
-    /// this keeps every station visible instead of clipping the first/last
-    /// controls outside the window.
-    compact_crumbs: bool,
-    back: Option<Rect>,
-    primary: Option<Rect>,
-    hits: Vec<(Rect, Hit)>,
-    viewport_content: Rect,
-    content: Rect,
+/// Where the controls of the composed page leave their requests.
+pub(crate) type Commands = Rc<RefCell<Vec<Command>>>;
+
+/// A button that records `command` when activated.
+pub(crate) fn command_button(
+    commands: &Commands,
+    id: &str,
+    label: &str,
+    command: Command,
+) -> Button {
+    let sink = Rc::clone(commands);
+    Button::new(id, label, None).on_effect(move || sink.borrow_mut().push(command.clone()))
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
-)]
 pub struct ImagerApp {
     // ---- collaborative records (cached each `sync`) ----
     source: Option<Source>,
@@ -517,10 +133,13 @@ pub struct ImagerApp {
     selected: Option<usize>,
     action: Action,
     progress: Progress,
-    /// Peer-local destructive-write arming field. This must never replicate:
+    /// Peer-local destructive-write arming text. This must never replicate:
     /// a collaborator may review the plan, but cannot type consent for us.
-    confirm_input: TextInput,
+    confirm_text: String,
+    /// The latest outcome the person should know about, and whether it is a
+    /// problem they have to act on (only those are shown on the page).
     status: String,
+    status_is_error: bool,
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
@@ -531,48 +150,28 @@ pub struct ImagerApp {
     release_download_index: Option<usize>,
     release_download_progress: Option<(u64, u64)>,
     release_download_stage: Option<&'static str>,
-    export_dialog: ExportDialog,
-    /// Stages the read-only export modal after the demo document has synced.
-    /// Used only by the deterministic `export` screenshot scenario.
-    export_after_sync: bool,
     /// Makes the destructive action look armed in an offscreen documentation
     /// frame without enabling (or bypassing) the real write backend.
     shot_confirmation_ready: bool,
+    /// Opens the time-zone chooser in the posed Customize frame.
+    shot_timezone_open: bool,
+    /// The control a posed frame shows focused (and scrolled into view).
+    shot_focus: Option<&'static str>,
     /// False until the first live sync has reconciled any persisted active
     /// phase with this process's necessarily empty worker channels.
     startup_write_state_reconciled: bool,
-    // ---- render caches ----
+    // ---- composition ----
     seeded: bool,
     rect: Rect,
-    dirty: bool,
-    last_mouse: Point,
-    /// Measured height of the current step's heading group (title + wrapped
-    /// description + the gap before content), refreshed from the renderer in
-    /// `adjust_layout_with_measure`. `None` until the first measurement or on
-    /// steps that place their own header; see [`Self::step_header_h`].
-    step_heading_h: Option<f64>,
-    /// `theme.tokens.spacing.s3`, refreshed in `build_layout` for the
-    /// renderer hook (which receives no `Theme`).
-    heading_gap: f64,
-    /// Every step's text-derived bands, refreshed with the heading; see
-    /// [`Bands`].
-    bands: Bands,
-    /// Measured line box of a step title (the accessible heading's bounds).
-    title_h: f64,
-    hover_target: Option<usize>,
-    /// Vertical offset for the step body. The step rail and footer stay put.
-    scroll_y: f64,
-    /// Keyboard focus for canvas controls. Profile fields retain their focus
-    /// in `CustomizePanel`, using the same Tab sequence.
-    keyboard_hit: Option<Hit>,
-    /// The shared guided-customization panel — the one component the write and
-    /// install flows both use to collect the install profile. It owns its own
-    /// fields (real [`ui::widget::TextInput`]s, the password masked + a11y
-    /// protected) and dispatches each edit through [`Self::actions`]. See
-    /// [`crate::customize`].
-    customize: CustomizePanel,
-    /// Wi-Fi and identity applied onto the written root by this machine.
-    write_setup: WriteSetupPanel,
+    /// The page the controls below were composed for.
+    composed: Option<Box<dyn Widget>>,
+    /// What the composed page shows; a change composes the page again.
+    view_key: Option<String>,
+    structure_dirty: bool,
+    commands: Commands,
+    /// The step body's scroll offset, kept while the page is composed again
+    /// and reset on every step change.
+    scroll: Rc<Cell<(f32, f32)>>,
     /// Framework-owned action dispatch (the only action-dispatch state the app
     /// holds). Every guided-customization profile edit dispatches its
     /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
@@ -589,7 +188,7 @@ impl Default for ImagerApp {
 
 impl ImagerApp {
     pub fn new() -> Self {
-        let mut app = Self {
+        Self {
             source: None,
             recent: Vec::new(),
             targets: Vec::new(),
@@ -599,12 +198,9 @@ impl ImagerApp {
             profile: InstallProfile::default(),
             wifi_psk: String::new(),
             progress: Progress::default(),
-            confirm_input: TextInput::local()
-                .with_id("imager_device_confirmation")
-                .with_font_size(14.0)
-                .with_plain_chrome()
-                .with_enter_submits(true),
+            confirm_text: String::new(),
             status: String::new(),
+            status_is_error: false,
             step: Step::Source,
             job_rx: None,
             job_control: None,
@@ -614,58 +210,18 @@ impl ImagerApp {
             release_download_index: None,
             release_download_progress: None,
             release_download_stage: None,
-            export_dialog: ExportDialog::new(),
-            export_after_sync: false,
             shot_confirmation_ready: false,
+            shot_timezone_open: false,
+            shot_focus: None,
             startup_write_state_reconciled: false,
             seeded: false,
             rect: Rect::ZERO,
-            dirty: true,
-            last_mouse: Point::ZERO,
-            step_heading_h: None,
-            heading_gap: default_heading_gap(),
-            bands: Bands::default(),
-            title_h: Estimate.line(19.0),
-            hover_target: None,
-            scroll_y: 0.0,
-            keyboard_hit: None,
-            customize: CustomizePanel::new(),
-            write_setup: WriteSetupPanel::new(),
+            composed: None,
+            view_key: None,
+            structure_dirty: true,
+            commands: Rc::new(RefCell::new(Vec::new())),
+            scroll: Rc::new(Cell::new((0.0, 0.0))),
             actions: crate::resource::ActionSink::default(),
-        };
-        app.estimate_bands();
-        app
-    }
-
-    /// Every band at its unmeasured 1× estimate, so a layout taken before
-    /// the renderer's first measurement still places every block — the
-    /// state-dependent Confirm rows and Done copy, the plain-ISO card — on a
-    /// real band rather than at zero height.
-    fn estimate_bands(&mut self) {
-        self.bands = self.measure_bands(&mut Estimate, CONTENT_MAX_W, 1.0);
-    }
-
-    /// Every band at content width `content_w`, from `m` at `text_scale`:
-    /// the same formulas over the renderer (`adjust_layout_with_measure`)
-    /// and over the 1× estimate (`estimate_bands`).
-    fn measure_bands(&self, m: &mut dyn Measure, content_w: f64, text_scale: f64) -> Bands {
-        let plain_card_h = SECTION
-            + m.line(16.0)
-            + RELATED
-            + m.para(
-                PLAIN_BODY,
-                13.0,
-                TextWeight::Regular,
-                (content_w - 2.0 * SECTION).max(1.0),
-            )
-            + SECTION;
-        Bands {
-            source: SourceMetrics::from_lines(text_scale, m),
-            drive: DriveMetrics::from_lines(m, content_w),
-            confirm: self.measure_confirm(m, content_w),
-            write: WriteMetrics::from_lines(m),
-            done: self.measure_done(m, content_w, crate::compact_content(content_w, text_scale)),
-            plain_card_h,
         }
     }
 
@@ -696,7 +252,7 @@ impl ImagerApp {
             .count()
     }
 
-    /// Can the flow move forward from `from`? (Also gates the step-indicator.)
+    /// Can the flow move forward from `from`?
     fn can_advance(&self, from: Step) -> bool {
         self.can_advance_with_writer(from, crate::write::write_available())
     }
@@ -717,26 +273,6 @@ impl ImagerApp {
                     && writer_available
             }
             // Write is in-progress and Done is terminal — neither advances.
-            Step::Write | Step::Done => false,
-        }
-    }
-
-    /// Whether `s` is a completed station (drawn with a green check). A step is
-    /// completed once the flow has moved past it — except a Customize station
-    /// that was *skipped* (a plain ISO carries no profile), which reads as
-    /// not-engaged rather than done.
-    fn step_completed(&self, s: Step) -> bool {
-        s.index() < self.step.index() && (s != Step::Customize || self.customizable())
-    }
-
-    /// Whether a step can be jumped to by clicking its indicator station. The
-    /// execution stations (Write, Done) are never jump targets.
-    fn crumb_reachable(&self, s: Step) -> bool {
-        match s {
-            Step::Source => true,
-            Step::Drive => self.source.is_some(),
-            Step::Customize => self.selected.is_some() && self.customizable(),
-            Step::Confirm => self.selected.is_some(),
             Step::Write | Step::Done => false,
         }
     }
@@ -810,8 +346,8 @@ impl ImagerApp {
             || state.profile.encrypt != self.profile.encrypt;
         if profile_changed {
             self.profile = state.profile.clone();
-            self.customize.sync(&self.profile);
         }
+        self.refresh_view();
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
@@ -844,14 +380,18 @@ impl ImagerApp {
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
     #[doc(hidden)]
     pub fn seed_confirmation_for_shot(&mut self, value: &str) {
-        self.confirm_input.set_text(value);
+        self.confirm_text = value.to_string();
         self.shot_confirmation_ready = true;
+        // The posed review shows the consent the write waits for.
+        self.shot_focus = Some("imager.confirm");
     }
 
     /// Headless-shot only: expose the long, searchable time-zone chooser so
     /// its overlay placement is part of visual review.
     pub fn shot_open_customize_timezone(&mut self) {
-        self.customize.open_timezone_for_shot();
+        self.shot_timezone_open = true;
+        // The open chooser's field is scrolled into view with it.
+        self.shot_focus = Some("imager.profile.timezone");
     }
 
     /// Prime local-only state for deterministic offscreen review. None of this
@@ -867,17 +407,15 @@ impl ImagerApp {
             "drive" => {
                 self.selected = Some(0);
                 self.step = Step::Drive;
-                self.status = "1 removable, 2 total".into();
             }
-            "customize" | "customize-timezone-open" | "export" => {
+            "customize" | "customize-timezone-open" => {
                 self.selected = Some(0);
                 self.step = Step::Customize;
-                self.status = "Pre-configuring Tilo 1.0".into();
             }
             "confirm" => {
                 self.selected = Some(0);
                 self.step = Step::Confirm;
-                self.status = "Ready to write Tilo 1.0 → /dev/sdb".into();
+                self.wifi_psk = "correct horse battery".into();
             }
             "progress" => {
                 self.selected = Some(0);
@@ -889,7 +427,9 @@ impl ImagerApp {
                     rate_bps: 176_000_000,
                     error: None,
                 };
-                self.status = "Writing Tilo 1.0 → /dev/sdb".into();
+                // A running write can be cancelled; the posed frame shows the
+                // control as it is while the helper runs.
+                self.job_control = Some(JobControl::new());
             }
             "done" => {
                 self.selected = Some(0);
@@ -901,7 +441,6 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.status = "Done — Tilo 1.0 written and verified".into();
             }
             "done-failed" => {
                 self.selected = Some(0);
@@ -911,25 +450,18 @@ impl ImagerApp {
                     write_frac: 0.36,
                     verify_frac: 0.0,
                     rate_bps: 0,
-                    error: Some("Write failed — device disappeared mid-write".into()),
+                    error: Some(
+                        "The drive was disconnected while it was being written. Reconnect it, then review and retry."
+                            .into(),
+                    ),
                 };
-                self.status = "Write failed — device disappeared mid-write".into();
             }
-            "drive-empty" => {
+            "drive-empty" | "drive-internal" => {
+                // The Drive step at rest: nothing selected yet.
                 self.step = Step::Drive;
-                self.status = "No removable drives detected".into();
-            }
-            "drive-internal" => {
-                // The Drive step at rest: nothing selected yet, so the card
-                // shows its rest edge rather than the selection ring.
-                self.step = Step::Drive;
-                self.status = "1 removable, 2 total".into();
             }
             _ => {}
         }
-        // The unmeasured bands still describe this posed state (the review
-        // rows, the failure copy) until the renderer measures them.
-        self.estimate_bands();
     }
 
     /// Local demo inventory/catalogue used by `--demo`; the collaborative
@@ -940,7 +472,7 @@ impl ImagerApp {
 
     fn confirm_matches(&self) -> bool {
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        let confirm = self.confirm_input.value();
+        let confirm = self.confirm_text.as_str();
         !confirm.is_empty() && (confirm == want || confirm == format!("/dev/{want}"))
     }
 
@@ -952,582 +484,6 @@ impl ImagerApp {
     }
 }
 
-// =========================================================================
-// Accessibility semantics for the immediate-mode canvas
-// =========================================================================
-impl ImagerApp {
-    fn accessible_step_copy(&self) -> (&'static str, String) {
-        match self.step {
-            Step::Source => (
-                "Choose the source image",
-                if self.releases().is_empty() {
-                    "Pick a local ISO or IMG file to write.".into()
-                } else {
-                    "Pick a local ISO or IMG file, or choose a Tilo release.".into()
-                },
-            ),
-            Step::Drive => (
-                "Select the target drive",
-                "Only external installation media is available here. The selected drive will be erased."
-                    .into(),
-            ),
-            Step::Customize => (
-                "Prepare your setup",
-                if self.customizable() {
-                    "These non-secret choices travel with the installer and shorten setup on the device."
-                        .into()
-                } else {
-                    "This image will be written unchanged.".into()
-                },
-            ),
-            Step::Confirm => (
-                if self.action == Action::Install {
-                    "Confirm and install"
-                } else {
-                    "Confirm and write"
-                },
-                "Review the destructive operation, then type the drive name to unlock it."
-                    .into(),
-            ),
-            Step::Write => (
-                if self.progress.phase == JobPhase::Verifying {
-                    "Verifying the drive"
-                } else {
-                    "Writing the drive"
-                },
-                "Keep the drive connected until writing and verification finish.".into(),
-            ),
-            Step::Done => {
-                let success = self.progress.phase == JobPhase::Success;
-                (
-                    if success {
-                        "Drive is ready"
-                    } else {
-                        "Write failed"
-                    },
-                    if success {
-                        "The image was written and verified. You can safely remove the drive."
-                            .into()
-                    } else {
-                        "The drive may be incomplete. Retry before using it.".into()
-                    },
-                )
-            }
-        }
-    }
-
-    fn hit_target(hit: Hit) -> String {
-        match hit {
-            Hit::PickFile => "imager:hit:pick-file".into(),
-            Hit::Release(index) => format!("imager:hit:release:{index}"),
-            Hit::CancelDownload => "imager:hit:cancel-download".into(),
-            Hit::Recent(index) => format!("imager:hit:recent:{index}"),
-            Hit::Target(index) => format!("imager:hit:target:{index}"),
-            Hit::Rescan => "imager:hit:rescan".into(),
-            Hit::ConfirmField => "imager:hit:confirm-field".into(),
-            Hit::StepJump(step) => format!("imager:hit:step:{}", step.key()),
-            Hit::Back => "imager:hit:back".into(),
-            Hit::Next => "imager:hit:next".into(),
-            Hit::StartWrite => "imager:hit:start-write".into(),
-            Hit::CancelWrite => "imager:hit:cancel-write".into(),
-            Hit::WriteAnother => "imager:hit:write-another".into(),
-        }
-    }
-
-    fn hit_from_target(target: &str) -> Option<Hit> {
-        let suffix = target.strip_prefix("imager:hit:")?;
-        match suffix {
-            "pick-file" => Some(Hit::PickFile),
-            "rescan" => Some(Hit::Rescan),
-            "confirm-field" => Some(Hit::ConfirmField),
-            "back" => Some(Hit::Back),
-            "next" => Some(Hit::Next),
-            "start-write" => Some(Hit::StartWrite),
-            "cancel-write" => Some(Hit::CancelWrite),
-            "cancel-download" => Some(Hit::CancelDownload),
-            "write-another" => Some(Hit::WriteAnother),
-            _ => {
-                let (kind, value) = suffix.split_once(':')?;
-                match kind {
-                    "step" => match value {
-                        "source" => Some(Hit::StepJump(Step::Source)),
-                        "drive" => Some(Hit::StepJump(Step::Drive)),
-                        "customize" => Some(Hit::StepJump(Step::Customize)),
-                        "confirm" => Some(Hit::StepJump(Step::Confirm)),
-                        "write" => Some(Hit::StepJump(Step::Write)),
-                        "done" => Some(Hit::StepJump(Step::Done)),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            }
-        }
-    }
-
-    fn a11y_hit_enabled(&self, hit: Hit) -> bool {
-        match hit {
-            Hit::StepJump(step) => self.crumb_reachable(step),
-            Hit::Next => match self.step {
-                Step::Source | Step::Drive | Step::Customize => self.can_advance(self.step),
-                Step::Confirm | Step::Write | Step::Done => false,
-            },
-            Hit::StartWrite => self.can_advance(Step::Confirm),
-            Hit::CancelWrite => self
-                .job_control
-                .as_ref()
-                .is_some_and(|control| !control.is_cancelled()),
-            Hit::CancelDownload => self
-                .release_control
-                .as_ref()
-                .is_some_and(|control| !control.is_cancelled()),
-            Hit::Release(index) => self.release_rx.is_none() && self.releases.get(index).is_some(),
-            Hit::Recent(index) => self.recent.get(index).is_some(),
-            Hit::Target(index) => self
-                .targets
-                .get(index)
-                .is_some_and(TargetDrive::is_media_target),
-            Hit::PickFile | Hit::Rescan | Hit::ConfirmField | Hit::Back | Hit::WriteAnother => true,
-        }
-    }
-
-    fn focus_accessible_profile_slot(&mut self, slot: usize) {
-        let lay = self.compute_layout();
-        self.keyboard_hit = None;
-        self.confirm_input.set_focus(false);
-        self.customize.focus_keyboard_slot(slot);
-        if let Some(rect) = self.customize.keyboard_slot_rect(lay.content, slot) {
-            self.ensure_visible(rect, lay.viewport_content);
-        }
-        self.dirty = true;
-    }
-
-    fn a11y_control(
-        &self,
-        role: ui::a11y::Role,
-        name: impl Into<String>,
-        rect: Rect,
-        hit: Hit,
-        disabled: bool,
-    ) -> ui::a11y::AccessNode {
-        ui::a11y::AccessNode::new(role)
-            .with_name(name)
-            .with_state(ui::a11y::AccessState {
-                focused: self.keyboard_hit == Some(hit)
-                    || (hit == Hit::ConfirmField && self.confirm_input.is_focused()),
-                focusable: !disabled,
-                disabled,
-                ..Default::default()
-            })
-            .with_bounds(rect)
-            .with_action_target(Self::hit_target(hit))
-    }
-
-    /// A semantic group whose bounds are the union of its children's, so
-    /// assistive technology (and the geometry lint) can locate the group and
-    /// walk into it instead of meeting a bound-less container.
-    fn a11y_group(name: &str, children: Vec<ui::a11y::AccessNode>) -> ui::a11y::AccessNode {
-        let bounds = children
-            .iter()
-            .filter_map(|child| child.bounds.map(ui::a11y::AccessBounds::to_rect))
-            .reduce(|a, b| a.union(b));
-        let node = ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-            .with_name(name)
-            .with_children(children);
-        match bounds {
-            Some(rect) => node.with_bounds(rect),
-            None => node,
-        }
-    }
-
-    fn a11y_step_navigation(&self, lay: &Layout) -> ui::a11y::AccessNode {
-        let children = lay
-            .crumbs
-            .iter()
-            .map(|(rect, step)| {
-                let reachable = self.crumb_reachable(*step);
-                self.a11y_control(
-                    ui::a11y::Role::Button,
-                    format!("Step {} of 6: {}", step.index() + 1, step.title()),
-                    *rect,
-                    Hit::StepJump(*step),
-                    !reachable,
-                )
-                .with_state(ui::a11y::AccessState {
-                    focused: self.keyboard_hit == Some(Hit::StepJump(*step)),
-                    focusable: reachable,
-                    selected: *step == self.step,
-                    disabled: !reachable,
-                    ..Default::default()
-                })
-                .with_position(step.index() + 1, Step::all().len())
-            })
-            .collect();
-        Self::a11y_group("Setup steps", children)
-    }
-
-    fn a11y_source_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
-        lay.hits
-            .iter()
-            .filter_map(|(rect, hit)| match *hit {
-                Hit::PickFile => Some(self.a11y_control(
-                    ui::a11y::Role::Button,
-                    "Browse for an image",
-                    *rect,
-                    *hit,
-                    false,
-                )),
-                Hit::Release(index) => self.releases.get(index).map(|release| {
-                    self.a11y_control(
-                        ui::a11y::Role::Button,
-                        format!("Download {}", release.display_name()),
-                        *rect,
-                        *hit,
-                        false,
-                    )
-                    .with_description(format!(
-                        "{} · {} image",
-                        release.target_label(),
-                        fmt_size(release.size)
-                    ))
-                    .with_action_target(format!("imager:release:{}", release.selection_id()))
-                }),
-                Hit::CancelDownload => Some(
-                    self.a11y_control(
-                        ui::a11y::Role::Button,
-                        "Cancel Tilo installer download",
-                        *rect,
-                        *hit,
-                        self.release_control
-                            .as_ref()
-                            .is_none_or(crate::release::DownloadControl::is_cancelled),
-                    )
-                    .with_description("Keeps the verified partial download for a safe resume"),
-                ),
-                Hit::Recent(index) => self.recent.get(index).map(|source| {
-                    self.a11y_control(
-                        ui::a11y::Role::Button,
-                        format!("Use recent image {}", source.name),
-                        *rect,
-                        *hit,
-                        false,
-                    )
-                    .with_action_target(format!("imager:recent:{}", source.path))
-                }),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn a11y_drive_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
-        lay.hits
-            .iter()
-            .filter_map(|(rect, hit)| match *hit {
-                Hit::Rescan => Some(self.a11y_control(
-                    ui::a11y::Role::Button,
-                    "Rescan drives",
-                    *rect,
-                    *hit,
-                    false,
-                )),
-                Hit::Target(index) => self.targets.get(index).map(|drive| {
-                    self.a11y_control(
-                        ui::a11y::Role::RadioButton,
-                        format!(
-                            "{} on {}, {}",
-                            drive.model,
-                            drive.dev_path(),
-                            fmt_size(drive.size)
-                        ),
-                        *rect,
-                        *hit,
-                        false,
-                    )
-                    .with_description(format!(
-                        "External drive. Erases {}",
-                        drive.contents_summary()
-                    ))
-                    .with_action_target(format!("imager:drive:{}", drive.name))
-                    .with_state(ui::a11y::AccessState {
-                        focused: self.keyboard_hit == Some(*hit),
-                        focusable: true,
-                        checked: Some(self.selected == Some(index)),
-                        selected: self.selected == Some(index),
-                        ..Default::default()
-                    })
-                }),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn a11y_footer_controls(&self, lay: &Layout) -> Vec<ui::a11y::AccessNode> {
-        let mut controls = Vec::new();
-        if let Some(rect) = lay.back {
-            controls.push(self.a11y_control(
-                ui::a11y::Role::Button,
-                "Back",
-                rect,
-                Hit::Back,
-                false,
-            ));
-        }
-        if let Some(rect) = lay.primary {
-            let (hit, name, disabled) = match self.step {
-                Step::Source => (
-                    Hit::Next,
-                    "Continue".into(),
-                    !self.can_advance(Step::Source),
-                ),
-                Step::Drive => (Hit::Next, "Continue".into(), !self.can_advance(Step::Drive)),
-                Step::Customize => (Hit::Next, "Continue".into(), false),
-                Step::Confirm => (
-                    Hit::StartWrite,
-                    self.target().map_or_else(
-                        || "Erase and write selected drive".into(),
-                        |drive| format!("Erase and write {}", drive.dev_path()),
-                    ),
-                    !self.can_advance(Step::Confirm),
-                ),
-                Step::Done => (
-                    Hit::WriteAnother,
-                    if self.progress.phase == JobPhase::Failed {
-                        "Review and retry".into()
-                    } else {
-                        "Start over".into()
-                    },
-                    false,
-                ),
-                Step::Write => (
-                    Hit::CancelWrite,
-                    "Cancel image write".into(),
-                    self.job_control
-                        .as_ref()
-                        .is_none_or(JobControl::is_cancelled),
-                ),
-            };
-            controls.push(self.a11y_control(ui::a11y::Role::Button, name, rect, hit, disabled));
-        }
-        controls
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the semantic tree mirrors the six mutually exclusive immediate-mode wizard screens in one auditable order"
-    )]
-    fn accessibility_tree(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
-
-        let lay = self.compute_layout();
-        let (title, description) = self.accessible_step_copy();
-        let status_lower = self.status.to_ascii_lowercase();
-        let status_is_error = self.progress.phase == JobPhase::Failed
-            || [
-                "failed",
-                "unavailable",
-                "invalid",
-                "refused",
-                "must ",
-                "larger",
-            ]
-            .iter()
-            .any(|word| status_lower.contains(word));
-        // The spoken description always has a band: the painted heading's
-        // wrapped description where the step shows one, otherwise one line of
-        // description type — never a zero-height rect (Write, a plain-ISO
-        // Customize and Done paint no description but still describe the step).
-        let description_line = line_height_px(13.0, self.bands.source.text_scale as f32);
-        let mut children = vec![
-            self.a11y_step_navigation(&lay)
-                .with_hashed_key("step-navigation"),
-            AccessNode::new(Role::Heading { level: 1 })
-                .with_name(title)
-                .with_hashed_key("step-heading")
-                .with_bounds(Rect::new(
-                    lay.content.x0,
-                    lay.content.y0,
-                    lay.content.x1,
-                    lay.content.y0 + self.title_h,
-                )),
-            AccessNode::new(Role::Paragraph)
-                .with_value(description)
-                .with_hashed_key("step-description")
-                .with_bounds(Rect::new(
-                    lay.content.x0,
-                    lay.content.y0 + self.title_h + STEP_SUB_GAP,
-                    lay.content.x1,
-                    lay.content.y0
-                        + (self.step_header_h(lay.content) - self.heading_gap)
-                            .max(self.title_h + STEP_SUB_GAP + description_line),
-                )),
-        ];
-        if !self.status.is_empty() {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name("Status")
-                    .with_value(self.status.clone())
-                    .with_hashed_key("status")
-                    .with_live(if status_is_error {
-                        Politeness::Assertive
-                    } else {
-                        Politeness::Polite
-                    }),
-            );
-        }
-
-        match self.step {
-            Step::Source => {
-                if let Some(source) = &self.source {
-                    children.push(
-                        AccessNode::new(Role::StaticText)
-                            .with_name("Selected image")
-                            .with_value(format!(
-                                "{}, {}, {}",
-                                source.name,
-                                fmt_size(source.size),
-                                if self.source_is_official(source) {
-                                    "Official Tilo release — catalog verified"
-                                } else {
-                                    "Local image — unverified, written as-is"
-                                }
-                            ))
-                            .with_hashed_key("selected-image"),
-                    );
-                }
-                children.push(
-                    Self::a11y_group("Image sources", self.a11y_source_controls(&lay))
-                        .with_hashed_key("source-controls"),
-                );
-            }
-            Step::Drive => children.push(
-                Self::a11y_group(
-                    "External destination drives",
-                    self.a11y_drive_controls(&lay),
-                )
-                .with_hashed_key("drive-controls"),
-            ),
-            Step::Customize if self.customizable() => children.push(
-                Self::a11y_group("Setup profile", self.customize.accessibility(lay.content))
-                    .with_hashed_key("profile-controls"),
-            ),
-            Step::Customize => children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_value("Pre-configuration is only available for Tilo images.")
-                    .with_hashed_key("profile-unavailable"),
-            ),
-            Step::Confirm => {
-                if let (Some(source), Some(target)) = (&self.source, self.target()) {
-                    children.push(
-                        AccessNode::new(Role::Group)
-                            .with_name("Write review")
-                            .with_hashed_key("write-review")
-                            .with_children(vec![
-                                AccessNode::new(Role::StaticText)
-                                    .with_name("Image")
-                                    .with_value(format!("{}, {}", source.name, fmt_size(source.size))),
-                                AccessNode::new(Role::StaticText)
-                                    .with_name("Drive")
-                                    .with_value(format!("{} on {}, {}", target.model, target.dev_path(), fmt_size(target.size))),
-                                AccessNode::new(Role::StaticText)
-                                    .with_name("Warning")
-                                    .with_value("This permanently erases the selected drive and cannot be undone."),
-                            ]),
-                    );
-                }
-                if self.offers_write_setup() {
-                    children.push(
-                        Self::a11y_group(
-                            "Setup on write",
-                            self.write_setup.accessibility(
-                                lay.content,
-                                self.write_setup_top(lay.content),
-                                self.profile.enroll_local_identity,
-                            ),
-                        )
-                        .with_hashed_key("write-setup"),
-                    );
-                }
-                if let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == Hit::ConfirmField)
-                {
-                    let expected = self
-                        .target()
-                        .map_or("the drive name", |drive| drive.name.as_str());
-                    children.push(
-                        AccessNode::new(Role::TextInput)
-                            .with_name("Confirm the target device")
-                            .with_description(format!(
-                                "Type {expected} to unlock the destructive write"
-                            ))
-                            .with_value(self.confirm_input.value())
-                            .with_state(AccessState {
-                                focused: self.confirm_input.is_focused(),
-                                focusable: true,
-                                required: true,
-                                invalid: !self.confirm_input.value().is_empty()
-                                    && !self.confirm_matches(),
-                                ..Default::default()
-                            })
-                            .with_bounds(*rect)
-                            .with_action_target(Self::hit_target(Hit::ConfirmField)),
-                    );
-                }
-            }
-            Step::Write => children.push(
-                AccessNode::new(Role::Group)
-                    .with_name("Write progress")
-                    .with_hashed_key("write-progress")
-                    .with_children(vec![
-                        AccessNode::new(Role::ProgressBar)
-                            .with_name(if self.progress.phase == JobPhase::Verifying {
-                                "Verifying image"
-                            } else {
-                                "Writing image"
-                            })
-                            .with_value(format!("{:.0} percent", self.progress.overall() * 100.0))
-                            .with_state(AccessState::new().busy(true))
-                            .with_hashed_key("overall")
-                            .with_live(Politeness::Polite),
-                        AccessNode::new(Role::ProgressBar)
-                            .with_name("Write phase")
-                            .with_value(format!("{:.0} percent", self.progress.write_frac * 100.0))
-                            .with_hashed_key("write"),
-                        AccessNode::new(Role::ProgressBar)
-                            .with_name("Verify phase")
-                            .with_value(format!("{:.0} percent", self.progress.verify_frac * 100.0))
-                            .with_hashed_key("verify"),
-                    ]),
-            ),
-            Step::Done => children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(if self.progress.phase == JobPhase::Success {
-                        "Write completed and verified"
-                    } else {
-                        "Write failure details"
-                    })
-                    .with_value(
-                        self.progress
-                            .error
-                            .clone()
-                            .unwrap_or_else(|| self.status.clone()),
-                    )
-                    .with_hashed_key("write-result")
-                    .with_live(if self.progress.phase == JobPhase::Success {
-                        Politeness::Polite
-                    } else {
-                        Politeness::Assertive
-                    }),
-            ),
-        }
-        let footer = self.a11y_footer_controls(&lay);
-        if !footer.is_empty() {
-            children
-                .push(Self::a11y_group("Wizard actions", footer).with_hashed_key("wizard-actions"));
-        }
-        AccessNode::new(Role::Window)
-            .with_name("Start Media Creator")
-            .with_children(children)
-    }
-}
-
 /// Whether this process should enumerate real block devices. The live binary
 /// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
 /// document's seeded/posed state is authoritative and no `lsblk` runs.
@@ -1535,2719 +491,652 @@ fn live_probe_enabled() -> bool {
     std::env::var("IMAGER_LIVE").is_ok()
 }
 
-// ---- theme-derived colour helpers --------------------------------------
-
-fn source_color(theme: &Theme, kind: SourceKind) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        SourceKind::TiloImage => c.accent[5],
-        SourceKind::IsoFile => c.semantic.info,
-    }
-}
-
-fn kind_color(theme: &Theme, kind: TargetKind) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        TargetKind::Usb => c.semantic.success,
-        TargetKind::Nvme => c.accent[5],
-        TargetKind::Ssd => c.semantic.info,
-        TargetKind::Hdd => c.neutral[5],
-        TargetKind::SdCard => c.accent[7],
-        TargetKind::Other => c.neutral[4],
-    }
-}
-
-/// A run of wizard text: the string, the style it is shaped with and its ink.
-pub(crate) struct TextRun<'a> {
-    text: &'a str,
-    style: TextStyle,
-    color: Color,
-}
-
-impl<'a> TextRun<'a> {
-    pub(crate) fn new(text: &'a str, style: TextStyle, color: Color) -> Self {
-        Self { text, style, color }
-    }
-
-    /// The run with its line box's top-left at `at`, wrapped at `max_w`.
-    pub(crate) fn draw(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        at: Point,
-        max_w: Option<f32>,
-    ) {
-        tr.draw_style(
-            scene,
-            self.text,
-            self.color,
-            Affine::translate(at.to_vec2()),
-            max_w,
-            &self.style,
-        );
-    }
-
-    fn width(&self, tr: &mut TextRenderer) -> f64 {
-        f64::from(tr.measure_style(self.text, None, &self.style).0)
-    }
-
-    fn draw_right(&self, scene: &mut Scene, tr: &mut TextRenderer, right: f64, top: f64) {
-        let w = self.width(tr);
-        self.draw(scene, tr, Point::new(right - w, top), None);
-    }
-
-    fn draw_center(&self, scene: &mut Scene, tr: &mut TextRenderer, cx: f64, top: f64) {
-        let w = self.width(tr);
-        self.draw(scene, tr, Point::new(cx - w / 2.0, top), None);
-    }
-
-    fn line_top(&self, tr: &mut TextRenderer, band_y0: f64, band_h: f64) -> f64 {
-        ImagerApp::line_top(
-            tr,
-            self.text,
-            self.style.size,
-            self.style.weight,
-            band_y0,
-            band_h,
-        )
-    }
-
-    /// Centred on `cx`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    fn draw_center_v(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        cx: f64,
-        band_y0: f64,
-        band_h: f64,
-    ) {
-        let top = self.line_top(tr, band_y0, band_h);
-        self.draw_center(scene, tr, cx, top);
-    }
-
-    /// Right-aligned at `right`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    fn draw_right_v(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        right: f64,
-        band_y0: f64,
-        band_h: f64,
-    ) {
-        let top = self.line_top(tr, band_y0, band_h);
-        self.draw_right(scene, tr, right, top);
-    }
-
-    /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
-    /// left-aligned block of that width once it does not.
-    fn draw_para_centered(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        cx: f64,
-        top: f64,
-        max_w: f64,
-    ) {
-        if self.width(tr) <= max_w {
-            self.draw_center(scene, tr, cx, top);
-        } else {
-            self.draw(
-                scene,
-                tr,
-                Point::new(cx - max_w / 2.0, top),
-                Some(max_w as f32),
-            );
-        }
-    }
+/// The step titles the stepper shows.
+fn stepper_labels() -> [&'static str; 6] {
+    Step::all().map(|step| step.title())
 }
 
 // =========================================================================
-// Drawing primitives
+// Composition
 // =========================================================================
 impl ImagerApp {
-    /// Wrap a terminal failure into a small, measured block. Error strings can
-    /// contain long device paths or platform diagnostics, so character-count
-    /// truncation is not enough: every returned line is measured in the same
-    /// font used to paint it and is guaranteed to fit `max_width`.
-    fn failure_detail_lines(
-        tr: &mut TextRenderer,
-        detail: &str,
-        max_width: f32,
-        max_lines: usize,
-    ) -> Vec<String> {
-        const SIZE: f32 = 13.5;
-        const WEIGHT: TextWeight = TextWeight::Regular;
-        let mut remaining = detail.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut lines = Vec::new();
-        while !remaining.is_empty() && lines.len() < max_lines {
-            if tr.measure_weighted(&remaining, SIZE, None, WEIGHT).0 <= max_width {
-                lines.push(remaining);
-                break;
-            }
-
-            let last_line = lines.len() + 1 == max_lines;
-            let ellipsis_width = if last_line {
-                tr.measure_weighted("…", SIZE, None, WEIGHT).0
-            } else {
-                0.0
-            };
-            let allowed = (max_width - ellipsis_width).max(1.0);
-            let mut fitting_end = 0;
-            let mut whitespace_end = None;
-            for (index, character) in remaining.char_indices() {
-                let end = index + character.len_utf8();
-                let Some(candidate) = remaining.get(..end) else {
-                    break;
-                };
-                if tr.measure_weighted(candidate, SIZE, None, WEIGHT).0 > allowed {
-                    break;
-                }
-                fitting_end = end;
-                if character.is_whitespace() {
-                    whitespace_end = Some(index);
-                }
-            }
-            if fitting_end == 0 {
-                // Even one glyph does not fit; returning no line is safer than
-                // painting outside the card at extreme accessibility scales.
-                break;
-            }
-            let split_at = whitespace_end
-                .filter(|index| *index > 0)
-                .unwrap_or(fitting_end);
-            let Some(prefix) = remaining.get(..split_at) else {
-                break;
-            };
-            let mut line = prefix.trim_end().to_string();
-            if last_line {
-                line.push('…');
-                lines.push(line);
-                break;
-            }
-            lines.push(line);
-            let Some(rest) = remaining.get(split_at..) else {
-                break;
-            };
-            remaining = rest.trim_start().to_string();
-        }
-        lines
+    fn button(&self, id: &str, label: &str, command: Command) -> Button {
+        command_button(&self.commands, id, label, command)
     }
 
-    fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r, radius),
-        );
-    }
-    /// A crisp stroke on the outermost pixel row of `r` (HIG §9.5).
-    fn stroke_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
-        scene.stroke(
-            &Stroke::new(w),
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r.inset(-w / 2.0), (radius - w / 2.0).max(0.0)),
-        );
-    }
-    fn dashed_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color, w: f64) {
-        let stroke = Stroke::new(w).with_dashes(0.0, [7.0, 6.0]);
-        scene.stroke(
-            &stroke,
-            t,
-            c,
-            None,
-            &RoundedRect::from_rect(r.inset(-w / 2.0), (radius - w / 2.0).max(0.0)),
-        );
-    }
-    /// A zero-state slot: the card fill under a dashed derived edge.
-    fn dashed_card(scene: &mut Scene, t: Affine, r: Rect, radius: f64, fill: Color, w: f64) {
-        Self::fill_rr(scene, t, r, radius, fill);
-        Self::dashed_rr(scene, t, r, radius, surface::edge_on(fill), w);
-    }
-    /// The face of a hoverable list row or card (a release row, a drive
-    /// card): raised at rest, the theme's hover tint under the pointer; its
-    /// edge is `edge_on(face)` through `ui::surface::card`. Buttons are not
-    /// painted here — they are `Button::paint` faces.
-    fn row_face(theme: &Theme, hovered: bool) -> Color {
-        if hovered {
-            theme.bg_hover
-        } else {
-            theme.tokens.colors.surfaces.raised
-        }
-    }
-    /// Ink for a label on a filled badge or button, resolved against the
-    /// fill it sits on rather than assumed white (text: 4.5:1).
-    fn ink_on(theme: &Theme, fill: Color) -> Color {
-        theme
-            .tokens
-            .colors
-            .ink_on(fill, Color::WHITE, ON_FILL_MIN_CONTRAST)
-    }
-    /// Ink for a glyph on a filled disc (a check mark, the failure "!"):
-    /// the non-text bar (3:1), as the toolkit's Toggle knob and Slider thumb.
-    fn glyph_ink(theme: &Theme, fill: Color) -> Color {
-        theme
-            .tokens
-            .colors
-            .ink_on(fill, Color::WHITE, NON_TEXT_MIN_CONTRAST)
-    }
-    fn bar(scene: &mut Scene, t: Affine, r: Rect, frac: f64, track: Color, fill: Color) {
-        let radius = r.height() / 2.0;
-        surface::card(scene, t, r, radius, track);
-        let frac = frac.clamp(0.0, 1.0);
-        if frac > 0.0 {
-            let w = (r.width() * frac).max(radius * 2.0).min(r.width());
-            let fr = Rect::new(r.x0, r.y0, r.x0 + w, r.y1);
-            Self::fill_rr(scene, t, fr, radius, fill);
-        }
-    }
-
-    /// A small check-mark glyph inside a filled disc of radius `rad` at `c`.
-    fn check_disc(scene: &mut Scene, t: Affine, center: Point, rad: f64, disc: Color, tick: Color) {
-        scene.fill(Fill::NonZero, t, disc, None, &Circle::new(center, rad));
-        let mut p = BezPath::new();
-        p.move_to((center.x - rad * 0.42, center.y + rad * 0.02));
-        p.line_to((center.x - rad * 0.10, center.y + rad * 0.34));
-        p.line_to((center.x + rad * 0.46, center.y - rad * 0.34));
-        scene.stroke(&Stroke::new(rad * 0.24), t, tick, None, &p);
-    }
-
-    /// Top of the line box of `s` centred in the band `band_y0 ..= band_y0 +
-    /// band_h` (`ui::text_metrics::centered_text_top`) — text sits on its
-    /// measured line inside its container, never on a hand-tuned offset.
-    fn line_top(
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        weight: TextWeight,
-        band_y0: f64,
-        band_h: f64,
-    ) -> f64 {
-        let (_, h) = tr.measure_weighted(s, size, None, weight);
-        centered_text_top(band_y0, band_h, f64::from(h))
-    }
-
-    /// A kind badge (`Tilo`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
-    /// its label needs, filling the band `at.y ..= at.y + band_h` from `at.x`.
-    /// Returns the badge's rect so the text column can follow it.
-    fn kind_badge(
-        ctx: &mut PaintCtx<'_>,
-        at: Point,
-        band_h: f64,
-        label: &str,
-        fill: Color,
-    ) -> Rect {
-        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let (x, top) = (at.x, at.y);
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-        let (w, _) = tr.measure(label, size, None);
-        let badge = Rect::new(x, top, x + f64::from(w) + 2.0 * RELATED, top + band_h);
-        Badge::paint_at(scene, t, badge, label, fill, tr, theme);
-        badge
-    }
-
-    fn section_label(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        s: &str,
-        x: f64,
-        y: f64,
-    ) {
-        TextRun::new(
-            s,
-            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            theme.tokens.colors.text_dim,
-        )
-        .draw(scene, tr, Point::new(x, y), None);
-    }
-}
-
-// =========================================================================
-// Layout
-// =========================================================================
-impl ImagerApp {
-    /// Whether `content` takes the steps' compact form; see
-    /// [`crate::compact_content`].
-    fn compact_content(&self, content: Rect) -> bool {
-        crate::compact_content(content.width(), self.bands.source.text_scale)
-    }
-
-    /// Title and description painted at the top of the Source step; one
-    /// source for the painter and for the heading measurement.
-    fn source_heading(&self) -> (&'static str, Option<&'static str>) {
-        (
-            "Choose the source image",
-            Some(if self.releases().is_empty() {
-                "The image to write. Pick a local .iso or .img file."
-            } else {
-                "The image to write. Pick a local .iso or .img file, or a Tilo release below."
-            }),
-        )
-    }
-
-    /// Title and description painted at the top of the Drive step.
-    fn drive_heading() -> (&'static str, Option<&'static str>) {
-        (
-            "Select the target drive",
-            Some("The drive to write to — everything on it will be erased."),
-        )
-    }
-
-    /// Title and description painted at the top of the Customize step; a
-    /// plain ISO has no description (its card says it is written unchanged).
-    fn customize_heading(&self) -> (&'static str, Option<&'static str>) {
-        let description = self.customizable().then(|| {
-            if self.action == Action::Install {
-                "Set up the machine Tilo will install — you can change any of this later."
-            } else {
-                "These choices travel with the installer, so setup on the device is shorter."
-            }
-        });
-        ("Prepare your setup", description)
-    }
-
-    /// Title and description painted at the top of the Confirm step.
-    fn confirm_heading(&self) -> (&'static str, Option<&'static str>) {
-        match self.action {
-            Action::Install => (
-                "Confirm & install",
-                Some("Review the install, then type the drive's name to unlock it."),
+    /// Everything the composed page shows that can change while the step
+    /// stays: a change composes the page again. Text the person is typing
+    /// into is left out, so a field keeps its caret while they type.
+    fn view_key(&self) -> String {
+        let profile = match self.step {
+            // The form's own fields show these while they are edited.
+            Step::Customize => String::new(),
+            _ => format!(
+                "{}|{}|{}|{}",
+                self.profile.user.username,
+                self.profile.hostname,
+                self.profile.wifi_ssid.trim().is_empty(),
+                self.profile.enroll_local_identity
             ),
-            Action::Flash => (
-                "Confirm & write",
-                Some("Review the write, then type the drive's name to unlock it."),
-            ),
-        }
-    }
-
-    /// Title painted at the top of the Write step (no description).
-    fn write_heading(&self) -> (&'static str, Option<&'static str>) {
-        let title = match (self.progress.phase == JobPhase::Writing, self.action) {
-            (true, Action::Install) => "Installing…",
-            (true, Action::Flash) => "Writing…",
-            (false, _) => "Verifying…",
         };
-        (title, None)
-    }
-
-    /// The heading group whose measured height positions the step's first
-    /// content block: the title and its optional description. Done is a
-    /// centred hero and has no heading.
-    fn step_heading(&self) -> Option<(&'static str, Option<&'static str>)> {
-        match self.step {
-            Step::Source => Some(self.source_heading()),
-            Step::Drive => Some(Self::drive_heading()),
-            Step::Customize => Some(self.customize_heading()),
-            Step::Confirm => Some(self.confirm_heading()),
-            Step::Write => Some(self.write_heading()),
-            Step::Done => None,
-        }
-    }
-
-    /// The unmeasured 1× floor for the heading group at this content width.
-    fn step_header_floor(&self, content: Rect) -> f64 {
-        if self.compact_content(content) {
-            STEP_HEADER_FLOOR_COMPACT
-        } else {
-            STEP_HEADER_FLOOR
-        }
-    }
-
-    /// Distance from the content top to the first content block: the
-    /// measured heading group when the renderer has supplied one, never less
-    /// than the 1× floor the layout tests pin.
-    fn step_header_h(&self, content: Rect) -> f64 {
-        let floor = self.step_header_floor(content);
-        self.step_heading_h.map_or(floor, |h| h.max(floor))
-    }
-
-    /// The page gutter for a window `width` logical pixels wide.
-    fn gutter_for(width: f64) -> f64 {
-        if width < COMPACT_GUTTER_BELOW {
-            OUTER_COMPACT
-        } else {
-            OUTER
-        }
-    }
-
-    /// The content column width for a window `width` logical pixels wide
-    /// (mirrors [`Self::content_viewport_rect`]).
-    fn content_width_for(width: f64) -> f64 {
-        (width - Self::gutter_for(width) * 2.0)
-            .min(CONTENT_MAX_W)
-            .max(0.0)
-    }
-
-    /// Measure the current heading group at the width the content will get
-    /// for a window `width` logical pixels wide. Returns the title line box
-    /// and the whole group (title, gap, wrapped description, content gap).
-    fn measure_step_heading(&self, tr: &mut TextRenderer, width: f64) -> Option<(f64, f64)> {
-        let (_, sub) = self.step_heading()?;
-        let content_w = Self::content_width_for(width);
-        let title_h = tr.line(19.0);
-        let group = match sub {
-            Some(sub) => {
-                title_h
-                    + STEP_SUB_GAP
-                    + tr.para(sub, 13.0, TextWeight::Regular, content_w)
-                    + self.heading_gap
-            }
-            None => title_h + self.heading_gap,
-        };
-        Some((title_h, group))
-    }
-
-    fn content_viewport_rect(&self) -> Rect {
-        let v = self.rect;
-        let top = CRUMB_TOP + CRUMB_H + REGION;
-        let bottom = v.y1 - FOOTER_H - SIBLING;
-        let w = Self::content_width_for(v.width());
-        let x0 = v.x0 + (v.width() - w) / 2.0;
-        Rect::new(x0, v.y0 + top, x0 + w, v.y0 + bottom)
-    }
-
-    /// The step body's height at `viewport`'s width: every block measured,
-    /// plus the bottom margin, never shorter than the viewport.
-    fn content_extent(&self, viewport: Rect) -> f64 {
-        let requested = match self.step {
-            Step::Source => self.source_extent(viewport),
-            Step::Drive => self.drive_extent(viewport),
-            Step::Customize => self.customize_extent(viewport),
-            Step::Confirm => self.confirm_extent(viewport),
-            Step::Write => self.bands.write.extent(self.step_header_h(viewport)),
-            Step::Done => self.bands.done.extent(),
-        };
-        viewport.height().max(requested)
-    }
-
-    fn max_scroll(&self) -> f64 {
-        let viewport = self.content_viewport_rect();
-        (self.content_extent(viewport) - viewport.height()).max(0.0)
-    }
-
-    fn content_rect(&self) -> Rect {
-        let viewport = self.content_viewport_rect();
-        let extent = self.content_extent(viewport);
-        Rect::new(
-            viewport.x0,
-            viewport.y0 - self.scroll_y,
-            viewport.x1,
-            viewport.y0 - self.scroll_y + extent,
+        let download = self
+            .release_download_progress
+            .map(|(done, total)| done.saturating_mul(100).checked_div(total).unwrap_or(0));
+        format!(
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:.0}|{:?}|{}|{}|{}|{}|{}|{}|{}",
+            self.step,
+            self.source.as_ref().map(|s| (&s.name, &s.path)),
+            self.recent.iter().map(|s| &s.path).collect::<Vec<_>>(),
+            self.releases
+                .iter()
+                .map(TiloRelease::selection_id)
+                .collect::<Vec<_>>(),
+            self.targets
+                .iter()
+                .map(|t| (&t.name, &t.model, t.size))
+                .collect::<Vec<_>>(),
+            self.selected,
+            self.release_download_index,
+            self.release_download_stage,
+            download,
+            self.release_control
+                .as_ref()
+                .map(crate::release::DownloadControl::is_cancelled),
+            self.progress.phase,
+            self.progress.error,
+            self.progress.overall() * 100.0,
+            self.job_control.as_ref().map(JobControl::is_cancelled),
+            self.status,
+            self.status_is_error,
+            self.confirm_matches(),
+            self.customizable(),
+            crate::write::write_available() || self.shot_confirmation_ready,
+            self.shot_timezone_open,
+            profile,
         )
     }
 
-    fn compute_layout(&self) -> Layout {
-        let v = self.rect;
-        let mut hits: Vec<(Rect, Hit)> = Vec::new();
-        let content = self.content_rect();
+    /// Compose the page again when what it shows changed.
+    fn refresh_view(&mut self) {
+        let key = self.view_key();
+        if self.view_key.as_deref() != Some(key.as_str()) {
+            self.view_key = Some(key);
+            self.structure_dirty = true;
+        }
+    }
 
-        // ---- Step-indicator pills ----
-        let steps = Step::all();
-        let full_total = CRUMB_W * steps.len() as f64 + CRUMB_GAP * (steps.len() as f64 - 1.0);
-        let compact_crumbs = v.width() - OUTER * 2.0 < full_total;
-        let rail_margin = if compact_crumbs { OUTER_COMPACT } else { OUTER };
-        let rail_w = (v.width() - rail_margin * 2.0).max(0.0);
-        let (crumb_w, gap, total) = if compact_crumbs {
-            // Six controls remain inside the content margins down to the
-            // supported 320 px compact viewport. Prefer useful hit targets to
-            // labels which cannot fit; the screen heading supplies the name.
-            let gap = if rail_w >= 280.0 { RELATED } else { LABEL };
-            let gaps = gap * (steps.len() as f64 - 1.0);
-            let crumb_w = ((rail_w - gaps) / steps.len() as f64).max(24.0);
-            (crumb_w, gap, crumb_w * steps.len() as f64 + gaps)
+    /// The station the stepper marks: every step before it is done. A
+    /// verified result completes the last station too.
+    fn stepper_current(&self) -> usize {
+        if self.step == Step::Done && self.progress.phase == JobPhase::Success {
+            Step::all().len()
         } else {
-            (CRUMB_W, CRUMB_GAP, full_total)
+            self.step.index()
+        }
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        let body = match self.step {
+            Step::Source => self.source_body(),
+            Step::Drive => self.drive_body(),
+            Step::Customize => self.customize_body(),
+            Step::Confirm => self.confirm_body(),
+            Step::Write => self.write_body(),
+            Step::Done => self.done_body(),
         };
-        let mut cx = v.x0 + (v.width() - total) / 2.0;
-        let cy = v.y0 + CRUMB_TOP;
-        let mut crumbs = Vec::new();
-        for s in steps {
-            let r = Rect::new(cx, cy, cx + crumb_w, cy + CRUMB_H);
-            crumbs.push((r, s));
-            if self.crumb_reachable(s) {
-                hits.push((r, Hit::StepJump(s)));
-            }
-            cx += crumb_w + gap;
+        let notice = (self.status_is_error && !self.status.is_empty())
+            .then(|| Box::new(Banner::error(self.status.clone())) as Box<dyn Widget>);
+        Frame::new(body)
+            .stepper(&stepper_labels(), self.stepper_current())
+            .offset(Rc::clone(&self.scroll))
+            .notice(notice)
+            .actions(self.footer())
+            .build()
+    }
+
+    /// Back at the leading edge, the step's main action at the trailing one.
+    fn footer(&self) -> Row {
+        let mut row = Row::new().no_wrap();
+        if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
+            row = row.push(Box::new(
+                self.button("imager.back", "Back", Command::Back)
+                    .with_icon(Icon::ChevronLeft),
+            ));
         }
-
-        // ---- Per-step content hit-targets ----
-        match self.step {
-            Step::Source => {
-                self.layout_source(content, &mut hits);
-            }
-            Step::Drive => self.layout_drive(content, &mut hits),
-            Step::Confirm => self.layout_confirm(content, &mut hits),
-            // Customize's fields/toggles are owned by `CustomizePanel`, which
-            // hit-tests its own rects in `handle_event`; Write (in progress)
-            // and Done have no interactive content beyond the footer. No app
-            // hits for any of the three.
-            Step::Customize | Step::Write | Step::Done => {}
-        }
-
-        // ---- Footer (Back + primary) ----
-        let fy = v.y1 - FOOTER_H;
-        let by = fy + SECTION;
-        let mut back = None;
-        let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
-        if show_back {
-            let width = if self.compact_content(content) {
-                (content.width() - SIBLING) / 2.0
-            } else {
-                120.0
-            };
-            let r = Rect::new(content.x0, by, content.x0 + width, by + CONTROL_H);
-            hits.push((r, Hit::Back));
-            back = Some(r);
-        }
-        let p = self.primary_button_rect(content, by);
-        let hit = match self.step {
-            Step::Confirm => Hit::StartWrite,
-            Step::Write => Hit::CancelWrite,
-            Step::Done => Hit::WriteAnother,
-            _ => Hit::Next,
-        };
-        hits.push((p, hit));
-        let primary = Some(p);
-
-        Layout {
-            crumbs,
-            compact_crumbs,
-            back,
-            primary,
-            hits,
-            viewport_content: self.content_viewport_rect(),
-            content,
-        }
-    }
-
-    /// The primary action button rect, right-aligned in the footer.
-    fn primary_button_rect(&self, content: Rect, by: f64) -> Rect {
-        let has_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
-        let w = if has_back && self.compact_content(content) {
-            (content.width() - SIBLING) / 2.0
-        } else {
-            match self.step {
-                Step::Confirm => 250.0,
-                Step::Done => 190.0,
-                _ => 170.0,
-            }
-        };
-        Rect::new(content.x1 - w, by, content.x1, by + CONTROL_H)
-    }
-
-    /// Hit targets of the Source step, block by block in the measured bands
-    /// the painters fill ([`SourceMetrics`]). Every block starts at the
-    /// previous block's bottom plus its rhythm step: `SIBLING` between rows
-    /// and between the drop zone and its result card, `GROUP` before a new
-    /// section, whose caption band (`section_h`) then leads its list.
-    /// Returns the y just under the last block.
-    fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) -> f64 {
-        let x0 = content.x0;
-        let x1 = content.x1;
-        let compact = self.compact_content(content);
-        let m = &self.bands.source;
-        let mut y = content.y0 + self.step_header_h(content);
-        // Browse drop-zone.
-        let browse = Rect::new(x0, y, x1, y + m.dropzone_h);
-        hits.push((browse, Hit::PickFile));
-        y = browse.y1;
-        if self.source.is_some() {
-            y += SIBLING + m.card_h(compact); // selected card
-        }
-        // Tilo releases: caption, then the zero-state card or the rows.
-        y += GROUP + m.section_h;
-        if self.releases().is_empty() {
-            y += m.zero_h;
-        }
-        for (i, _) in self.releases().iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(x0, y, x1, y + m.release_row_h);
-            if self.release_download_index == Some(i) {
-                hits.push((r, Hit::CancelDownload));
-            } else if self.release_rx.is_none() {
-                hits.push((r, Hit::Release(i)));
-            }
-            y = r.y1;
-        }
-        // Recent list.
-        if !self.recent.is_empty() {
-            y += GROUP + m.section_h;
-            for (i, _) in self.recent.iter().enumerate().take(3) {
-                if i > 0 {
-                    y += SIBLING;
-                }
-                let r = Rect::new(x0, y, x1, y + m.recent_row_h);
-                if r.y1 > content.y1 {
-                    break;
-                }
-                hits.push((r, Hit::Recent(i)));
-                y = r.y1;
-            }
-        }
-        y
-    }
-
-    /// Height the Source step's blocks need at `viewport`'s width, measured
-    /// with the same arithmetic that places the hits, plus the bottom margin.
-    fn source_extent(&self, viewport: Rect) -> f64 {
-        let unbounded = Rect::new(viewport.x0, 0.0, viewport.x1, f64::INFINITY);
-        self.layout_source(unbounded, &mut Vec::new()) + SECTION
-    }
-
-    /// The Rescan button: top-right on the title line when the content is
-    /// wide, on its own line under the heading when compact.
-    fn drive_rescan_rect(&self, content: Rect) -> Rect {
-        let y = if self.compact_content(content) {
-            content.y0 + self.step_header_h(content)
-        } else {
-            content.y0
-        };
-        Rect::new(
-            content.x1 - self.bands.drive.rescan_w,
-            y,
-            content.x1,
-            y + SMALL_CONTROL_H,
-        )
-    }
-
-    /// Where the first drive card (or the zero-state card) starts.
-    fn drive_cards_top(&self, content: Rect) -> f64 {
-        let head = content.y0 + self.step_header_h(content);
-        if self.compact_content(content) {
-            head + SMALL_CONTROL_H + SIBLING
-        } else {
-            head
-        }
-    }
-
-    fn layout_drive(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        hits.push((self.drive_rescan_rect(content), Hit::Rescan));
-        let card_h = self.bands.drive.card_h;
-        let mut y = self.drive_cards_top(content);
-        for (i, (idx, _)) in self.visible_targets().iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(content.x0, y, content.x1, y + card_h);
-            if r.y1 > content.y1 {
-                break;
-            }
-            hits.push((r, Hit::Target(*idx)));
-            y = r.y1;
-        }
-    }
-
-    fn drive_extent(&self, viewport: Rect) -> f64 {
-        let m = &self.bands.drive;
-        let top = self.drive_cards_top(viewport) - viewport.y0;
-        let n = self.visible_targets().len() as f64;
-        let body = if n == 0.0 {
-            m.empty_h
-        } else {
-            n * m.card_h + (n - 1.0) * SIBLING
-        };
-        top + body + SECTION
-    }
-
-    fn customize_extent(&self, viewport: Rect) -> f64 {
-        let head = self.step_header_h(viewport);
-        if self.customizable() {
-            self.customize.extent(viewport)
-        } else {
-            head + self.bands.plain_card_h + SECTION
-        }
-    }
-
-    fn layout_confirm(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        hits.push((self.confirm_field_rect(content), Hit::ConfirmField));
-    }
-
-    /// The review card's band on the Confirm step.
-    fn confirm_card_rect(&self, content: Rect) -> Rect {
-        let top = content.y0 + self.step_header_h(content);
-        Rect::new(content.x0, top, content.x1, top + self.bands.confirm.card_h)
-    }
-
-    /// The danger banner follows the card as its sibling.
-    fn confirm_banner_rect(&self, content: Rect) -> Rect {
-        let top = self.confirm_card_rect(content).y1 + SIBLING;
-        Rect::new(
-            content.x0,
-            top,
-            content.x1,
-            top + self.bands.confirm.banner_h,
-        )
-    }
-
-    /// Origin of the optional on-write setup form (Wi-Fi / enrollment).
-    fn write_setup_top(&self, content: Rect) -> f64 {
-        self.confirm_banner_rect(content).y1 + GROUP
-    }
-
-    /// The typed device-name confirmation field. It follows the danger banner
-    /// (and optional write-setup form) in reading order — review, warning,
-    /// optional network/identity, type the name, then the footer's primary
-    /// action — a `GROUP` below the previous block, under its caption line.
-    /// One rect for the hit layout and the painter.
-    fn confirm_field_rect(&self, content: Rect) -> Rect {
-        let m = &self.bands.confirm;
-        let after = if self.offers_write_setup() {
-            self.write_setup_top(content)
-                + self
-                    .write_setup
-                    .extent(content, self.write_setup_top(content))
-        } else {
-            self.confirm_banner_rect(content).y1 + GROUP
-        };
-        let top = after + m.label_h + LABEL;
-        Rect::new(content.x0, top, content.x1, top + CONTROL_H)
-    }
-
-    fn confirm_extent(&self, viewport: Rect) -> f64 {
-        let field = self.confirm_field_rect(viewport);
-        field.y1 + RELATED + self.bands.confirm.note_h + SECTION - viewport.y0
-    }
-
-    /// The rows of the Confirm review card, in reading order. Capacity is
-    /// only a row once both ends of the write are known.
-    fn confirm_rows(&self) -> Vec<ConfirmRow> {
-        let src_v = self.source.as_ref().map_or_else(
-            || "—".into(),
-            |s| format!("{}   ({})", s.name, fmt_size(s.size)),
-        );
-        let tgt_v = self.target().map_or_else(
-            || "—".into(),
-            |d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)),
-        );
-        let mut rows = vec![
-            ConfirmRow {
-                key: "Image",
-                value: src_v,
-                size: 14.0,
-                weight: TextWeight::Semibold,
-                tone: if self.source.is_some() {
-                    RowTone::Primary
-                } else {
-                    RowTone::Danger
-                },
-            },
-            ConfirmRow {
-                key: "Drive",
-                value: tgt_v,
-                size: 14.0,
-                weight: TextWeight::Semibold,
-                tone: if self.target().is_some() {
-                    RowTone::Primary
-                } else {
-                    RowTone::Danger
-                },
-            },
-        ];
-        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            let (value, tone) = if tgt.fits(src.size) {
-                (
-                    format!(
-                        "fits — {} free afterwards",
-                        fmt_size(tgt.size.saturating_sub(src.size))
-                    ),
-                    RowTone::Success,
+        row = row.push(Box::new(Spacer::new()));
+        let primary = match self.step {
+            Step::Source | Step::Drive => self
+                .button("imager.next", "Continue", Command::Next)
+                .role(ButtonRole::Primary)
+                .with_enabled(self.can_advance(self.step)),
+            Step::Customize => self
+                .button("imager.next", "Continue", Command::Next)
+                .role(ButtonRole::Primary),
+            Step::Confirm => self
+                .button("imager.write", "Erase and write", Command::StartWrite)
+                .role(ButtonRole::Destructive)
+                .with_accessible_name(&self.target().map_or_else(
+                    || "Erase and write the selected drive".to_string(),
+                    |drive| format!("Erase and write {}", drive.dev_path()),
+                ))
+                .with_enabled(self.can_advance(Step::Confirm) || self.shot_confirmation_ready),
+            Step::Write => {
+                let stopping = self
+                    .job_control
+                    .as_ref()
+                    .is_some_and(JobControl::is_cancelled);
+                self.button(
+                    "imager.cancel-write",
+                    if stopping {
+                        "Stopping…"
+                    } else {
+                        "Cancel write"
+                    },
+                    Command::CancelWrite,
                 )
-            } else {
-                ("image is larger than the drive".into(), RowTone::Danger)
-            };
-            rows.push(ConfirmRow {
-                key: "Capacity",
-                value,
-                size: 13.0,
-                weight: TextWeight::Medium,
-                tone,
+                .with_enabled(self.job_control.is_some() && !stopping)
+            }
+            Step::Done => self
+                .button(
+                    "imager.start-over",
+                    if self.progress.phase == JobPhase::Failed {
+                        "Review and retry"
+                    } else {
+                        "Start over"
+                    },
+                    Command::WriteAnother,
+                )
+                .role(ButtonRole::Primary),
+        };
+        row.push(Box::new(primary))
+    }
+
+    // ---- Image -------------------------------------------------------------
+
+    /// Whether a release or a shown recent entry already presents the
+    /// selected image, so it is not shown twice.
+    fn source_listed(&self, source: &Source) -> bool {
+        self.releases().iter().any(|r| r.matches_source(source))
+            || self.shown_recent().iter().any(|i| {
+                self.recent
+                    .get(*i)
+                    .is_some_and(|r| r.path == source.path && r.name == source.name)
+            })
+    }
+
+    /// The recent images worth offering: the last few that are not one of
+    /// the releases listed above them.
+    fn shown_recent(&self) -> Vec<usize> {
+        self.recent
+            .iter()
+            .enumerate()
+            .filter(|(_, recent)| !self.releases().iter().any(|r| r.matches_source(recent)))
+            .map(|(i, _)| i)
+            .take(3)
+            .collect()
+    }
+
+    /// The one fact under an image's name: what it is and whether it was
+    /// verified.
+    fn source_secondary(&self, source: &Source) -> &'static str {
+        if self.source_is_official(source) {
+            "Official Tilo release, verified"
+        } else {
+            "Local image, written unchanged"
+        }
+    }
+
+    fn release_selected(&self, index: usize) -> bool {
+        self.releases()
+            .get(index)
+            .zip(self.source.as_ref())
+            .is_some_and(|(release, source)| release.matches_source(source))
+    }
+
+    fn recent_selected(&self, index: usize) -> bool {
+        self.recent
+            .get(index)
+            .zip(self.source.as_ref())
+            .is_some_and(|(recent, source)| {
+                recent.path == source.path && recent.name == source.name
+            })
+    }
+
+    fn source_body(&self) -> Column {
+        let sink = Rc::clone(&self.commands);
+        let mut body = page::body("Choose an image").push(Box::new(
+            DropZone::new("imager.drop", DROP_TITLE)
+                .message(DROP_MESSAGE)
+                .icon(Icon::Download)
+                .with_action(self.button("imager.browse", DROP_ACTION, Command::PickFile))
+                .on_files(move |files| {
+                    if let Some(file) = files.into_iter().next() {
+                        sink.borrow_mut().push(Command::Dropped(file));
+                    }
+                }),
+        ));
+        if let Some(source) = &self.source
+            && !self.source_listed(source)
+        {
+            body = body.push(Box::new(Section::titled(
+                "Selected image",
+                vec![Box::new(
+                    ListRow::new("imager.selected", &source.name)
+                        .icon(Icon::File)
+                        .secondary(self.source_secondary(source))
+                        .meta(fmt_size(source.size))
+                        .selected(true),
+                )],
+            )));
+        }
+        let releases: Vec<Box<dyn Widget>> = if self.releases().is_empty() {
+            vec![Box::new(Text::new(NO_RELEASES).dimmed())]
+        } else {
+            (0..self.releases().len())
+                .filter_map(|index| self.release_row(index))
+                .collect()
+        };
+        body = body.push(Box::new(Section::titled("Tilo releases", releases)));
+        let recent = self.shown_recent();
+        if !recent.is_empty() {
+            let rows = recent
+                .into_iter()
+                .filter_map(|index| {
+                    let source = self.recent.get(index)?;
+                    let sink = Rc::clone(&self.commands);
+                    Some(Box::new(
+                        ListRow::new(format!("imager.recent.{index}"), &source.name)
+                            .icon(Icon::File)
+                            .secondary(self.source_secondary(source))
+                            .meta(fmt_size(source.size))
+                            .selected(self.recent_selected(index))
+                            .on_activate(move || sink.borrow_mut().push(Command::Recent(index))),
+                    ) as Box<dyn Widget>)
+                })
+                .collect();
+            body = body.push(Box::new(Section::titled("Recent", rows)));
+        }
+        body
+    }
+
+    /// One release: its name, where it runs, and its size; a download in
+    /// flight says how far it is and can be stopped.
+    fn release_row(&self, index: usize) -> Option<Box<dyn Widget>> {
+        let release = self.releases().get(index)?;
+        let downloading = self.release_download_index == Some(index);
+        let secondary = if downloading {
+            let stage = self.release_download_stage.unwrap_or("Preparing");
+            match self.release_download_progress {
+                Some((done, total)) if total > 0 => format!("{stage}, {}%", done * 100 / total),
+                _ => stage.to_string(),
+            }
+        } else if release.local_path.is_empty() {
+            format!(
+                "{}, {} channel, downloads first",
+                release.target_label(),
+                release.channel
+            )
+        } else {
+            format!("{}, {} channel", release.target_label(), release.channel)
+        };
+        let sink = Rc::clone(&self.commands);
+        let command = if downloading {
+            Command::CancelDownload
+        } else {
+            Command::Release(index)
+        };
+        let mut row = ListRow::new(
+            format!("imager.release.{}", release.selection_id()),
+            release.display_name(),
+        )
+        .icon(if release.local_path.is_empty() {
+            Icon::CloudDownload
+        } else {
+            Icon::File
+        })
+        .secondary(secondary)
+        .meta(fmt_size(release.size))
+        .selected(self.release_selected(index))
+        .on_activate(move || sink.borrow_mut().push(command.clone()));
+        if downloading {
+            let sink = Rc::clone(&self.commands);
+            row = row.action(Icon::X, "Cancel download", move || {
+                sink.borrow_mut().push(Command::CancelDownload);
             });
         }
-        let act = match self.action {
-            Action::Install => format!(
-                "Install Tilo with your settings (host {}, user {})",
-                self.profile.hostname, self.profile.user.username
-            ),
-            Action::Flash => {
-                let mut parts = if self.customizable() {
-                    vec![format!(
-                        "Write Tilo, pre-configured (host {}, user {})",
-                        self.profile.hostname, self.profile.user.username
-                    )]
+        Some(Box::new(row))
+    }
+
+    // ---- Drive -------------------------------------------------------------
+
+    fn drive_body(&self) -> Column {
+        let header = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_child(Box::new(page::title("Choose a drive"))),
+            ))
+            .push(Box::new(
+                self.button("imager.rescan", "Rescan", Command::Rescan)
+                    .with_icon(Icon::Refresh)
+                    .control_size(ControlSize::Small)
+                    .with_accessible_name("Rescan drives"),
+            ));
+        let body = page::body_with(Box::new(header));
+        let visible = self.visible_targets();
+        if visible.is_empty() {
+            return body.push(Box::new(
+                EmptyState::new(EMPTY_DRIVES).with_icon(Icon::HardDrive),
+            ));
+        }
+        let rows = visible
+            .into_iter()
+            .map(|(index, drive)| {
+                let sink = Rc::clone(&self.commands);
+                Box::new(
+                    ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
+                        .icon(Icon::HardDrive)
+                        .secondary(format!(
+                            "{}, {}",
+                            drive.dev_path(),
+                            drive.contents_summary()
+                        ))
+                        .meta(fmt_size(drive.size))
+                        .selected(self.selected == Some(index))
+                        .on_activate(move || sink.borrow_mut().push(Command::Target(index))),
+                ) as Box<dyn Widget>
+            })
+            .collect();
+        body.push(Box::new(Section::new(rows)))
+    }
+
+    // ---- Customize ---------------------------------------------------------
+
+    fn customize_body(&self) -> Column {
+        let body = page::body("Prepare the setup");
+        if !self.customizable() {
+            return body.push(Box::new(Text::new(PLAIN_BODY).dimmed()));
+        }
+        body.push(page::form_block(crate::customize::form(
+            &self.profile,
+            &self.commands,
+            self.shot_timezone_open,
+        )))
+    }
+
+    // ---- Confirm -----------------------------------------------------------
+
+    /// The facts the Confirm step reviews, in reading order.
+    fn review_rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![(
+            "Image",
+            self.source
+                .as_ref()
+                .map_or_else(|| "None selected".into(), |s| s.name.clone()),
+        )];
+        if let Some(source) = &self.source {
+            rows.push(("Image size", fmt_size(source.size)));
+        }
+        rows.push((
+            "Drive",
+            self.target()
+                .map_or_else(|| "None selected".into(), |d| d.model.clone()),
+        ));
+        if let Some(drive) = self.target() {
+            rows.push(("Device", drive.dev_path()));
+        }
+        if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
+            rows.push((
+                "Space",
+                if tgt.fits(src.size) {
+                    format!(
+                        "{} left on the drive afterwards",
+                        fmt_size(tgt.size.saturating_sub(src.size))
+                    )
                 } else {
-                    vec!["Write the image, then read-back verify".to_string()]
-                };
-                if !self.profile.wifi_ssid.trim().is_empty() {
-                    parts.push(format!("Wi-Fi {}", self.profile.wifi_ssid.trim()));
-                }
-                if self.profile.enroll_local_identity {
-                    let label = self.profile.device_label.trim();
-                    if label.is_empty() {
-                        parts.push("enroll identity".into());
-                    } else {
-                        parts.push(format!("enroll as {label}"));
-                    }
-                }
-                parts.join(" · ")
-            }
-        };
-        rows.push(ConfirmRow {
-            key: "Action",
-            value: act,
-            size: 13.0,
-            weight: TextWeight::Medium,
-            tone: RowTone::Primary,
-        });
+                    "The image is larger than the drive".into()
+                },
+            ));
+        }
+        rows.push(("Setup", self.review_setup()));
         rows
     }
 
-    /// The erase warning under the review card — louder for a fixed/internal
-    /// (install) target.
-    fn confirm_warning(&self) -> &'static str {
-        let internal = self.target().is_some_and(|d| !d.removable);
+    /// What the write sets up, as one sentence.
+    fn review_setup(&self) -> String {
+        if self.customizable() {
+            format!(
+                "Pre-configured for {} on {}",
+                self.profile.user.username, self.profile.hostname
+            )
+        } else {
+            "Written unchanged, then verified".to_string()
+        }
+    }
+
+    /// The erase warning: louder for a fixed or system disk.
+    fn confirm_warning(&self) -> (String, &'static str) {
+        let device = self
+            .target()
+            .map_or_else(|| "the drive".to_string(), TargetDrive::dev_path);
         let system = self.target().is_some_and(|d| d.is_system);
-        if system {
-            "⚠  This is your system disk. Everything on it — the running OS included — is erased. This cannot be undone."
-        } else if internal {
-            "⚠  This erases the entire internal disk. This cannot be undone."
-        } else {
-            "⚠  This permanently erases the drive. This cannot be undone."
-        }
-    }
-
-    /// The note under the confirmation field. Shot mode poses the field as
-    /// ready for documentation, but never enables the backend.
-    fn confirm_note(&self) -> &'static str {
-        if crate::write::write_available() || self.shot_confirmation_ready {
-            "Ready to write. Check the selected device before continuing."
-        } else {
-            "Writing is disabled in this preview."
-        }
-    }
-
-    /// Measure the Confirm step's bands for a content column `content_w` wide.
-    fn measure_confirm(&self, m: &mut dyn Measure, content_w: f64) -> ConfirmMetrics {
-        let rows = self.confirm_rows();
-        let key_w = rows
-            .iter()
-            .map(|row| m.width(row.key, 12.0, TextWeight::Semibold))
-            .fold(0.0, f64::max);
-        let value_x = SECTION + key_w + GROUP;
-        let value_w = (content_w - value_x - SECTION).max(1.0);
-        let key_h = m.line(12.0);
-        let mut row_top = Vec::with_capacity(rows.len());
-        let mut y = SECTION;
-        for (i, row) in rows.iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            row_top.push(y);
-            y += key_h.max(m.para(&row.value, row.size, row.weight, value_w));
-        }
-        ConfirmMetrics {
-            value_x,
-            row_top,
-            card_h: y + SECTION,
-            banner_h: m.para(
-                self.confirm_warning(),
-                13.0,
-                TextWeight::Semibold,
-                (content_w - 2.0 * SECTION).max(1.0),
-            ) + 2.0 * SIBLING,
-            label_h: m.line(11.0),
-            note_h: m.line(11.0),
-        }
-    }
-
-    /// Measure the Done step's bands for a content column `content_w` wide,
-    /// in its wide or `compact` form.
-    fn measure_done(&self, m: &mut dyn Measure, content_w: f64, compact: bool) -> DoneMetrics {
-        let ok = self.progress.phase == JobPhase::Success;
-        let headline_h = m.line(26.0);
-        // The success copy wraps to the content width (`txt_para_centered`);
-        // the failure detail is bounded to two measured lines
-        // (`failure_detail_lines`), so the card sits below that band whether
-        // one or both are used and a longer cause never pushes it around.
-        let sub_h = if ok {
-            let (_, sub) = Self::done_ok_copy(self.action == Action::Install, compact);
-            m.para(sub, 14.0, TextWeight::Regular, content_w)
-        } else {
-            2.0 * m.line(13.5)
-        };
-        let value_x = SECTION
-            + ["Image", "Drive"]
-                .iter()
-                .map(|key| m.width(key, 12.0, TextWeight::Semibold))
-                .fold(0.0, f64::max)
-            + GROUP;
-        let row_h = m.line(13.5).max(m.line(12.0));
-        let headline_top = DoneMetrics::headline_top(0.0);
-        let card_top = headline_top + headline_h + RELATED + sub_h + GROUP;
-        DoneMetrics {
-            headline_h,
-            sub_h,
-            value_x,
-            row_h,
-            card_top,
-            card_h: SECTION + row_h + SIBLING + row_h + SECTION,
-        }
-    }
-}
-
-// =========================================================================
-// Header + breadcrumb
-// =========================================================================
-impl ImagerApp {
-    fn draw_scrollbar(&self, scene: &mut Scene, theme: &Theme, t: Affine, lay: &Layout) {
-        let max = self.max_scroll();
-        if max <= 0.0 {
-            return;
-        }
-        let viewport = lay.viewport_content;
-        let track = Rect::new(
-            viewport.x1 + RELATED,
-            viewport.y0,
-            viewport.x1 + RELATED + LABEL,
-            viewport.y1,
-        );
-        let thumb_h = (viewport.height() * viewport.height() / lay.content.height()).max(32.0);
-        let travel = (track.height() - thumb_h).max(0.0);
-        let y = track.y0 + travel * (self.scroll_y / max);
-        Self::fill_rr(
-            scene,
-            t,
-            Rect::new(track.x0, y, track.x1, y + thumb_h),
-            LABEL / 2.0,
-            theme.tokens.colors.text_tertiary,
-        );
-    }
-
-    fn draw_header(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let v = self.rect;
-        // No in-app app-name header: the compositor owns the window chrome and
-        // shows the app's name. The app opens straight into the step indicator,
-        // with a slim status line tucked into the top-right margin.
-        if !self.status.is_empty() {
-            let col = match self.progress.phase {
-                JobPhase::Failed => c.semantic.danger,
-                JobPhase::Success => c.semantic.success,
-                _ => c.text_dim,
-            };
-            TextRun::new(
-                &self.status,
-                TextStyle::new(11.5).with_weight(TextWeight::Medium),
-                col,
-            )
-            .draw_right(scene, tr, v.x1 - OUTER, v.y0 + RELATED);
-        }
-
-        // ---- Step indicator ----
-        let radius = theme.radius_standard;
-        for (i, (r, s)) in lay.crumbs.iter().enumerate() {
-            let done = self.step_completed(*s);
-            let current = *s == self.step;
-            let hov = r.contains(self.last_mouse) && self.crumb_reachable(*s);
-            let bg = if current {
-                with_alpha(c.accent[5], 40)
-            } else if hov {
-                theme.bg_hover
-            } else {
-                Color::TRANSPARENT
-            };
-            if bg != Color::TRANSPARENT {
-                Self::fill_rr(scene, t, *r, radius, bg);
-            }
-            if current {
-                Self::stroke_rr(scene, t, *r, radius, c.accent[5], 1.4);
-            }
-            // Number disc / check, centred on the station's centre line.
-            // Compact layouts center the disc in its station and omit the
-            // label, keeping all six stations on-screen.
-            let disc_r = CRUMB_H / 2.0 - LABEL;
-            let disc_c = Point::new(
-                if lay.compact_crumbs {
-                    f64::midpoint(r.x0, r.x1)
-                } else {
-                    r.x0 + SIBLING + disc_r
-                },
-                f64::midpoint(r.y0, r.y1),
-            );
-            if done {
-                Self::check_disc(
-                    scene,
-                    t,
-                    disc_c,
-                    disc_r,
-                    c.semantic.success,
-                    Self::glyph_ink(theme, c.semantic.success),
-                );
-            } else {
-                let ring = if current { c.accent[5] } else { c.neutral[4] };
-                scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, disc_r));
-                TextRun::new(
-                    &format!("{}", s.index() + 1),
-                    TextStyle::new(12.0).with_weight(TextWeight::Bold),
-                    Self::ink_on(theme, ring),
-                )
-                .draw_center_v(
-                    scene,
-                    tr,
-                    disc_c.x,
-                    disc_c.y - disc_r,
-                    2.0 * disc_r,
-                );
-            }
-            if !lay.compact_crumbs {
-                let label_c = if current || done {
-                    c.text_primary
-                } else {
-                    c.text_dim
-                };
-                let weight = if current {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Medium
-                };
-                let label_top =
-                    Self::line_top(tr, s.title(), 13.5, weight, disc_c.y - disc_r, 2.0 * disc_r);
-                TextRun::new(s.title(), TextStyle::new(13.5).with_weight(weight), label_c).draw(
-                    scene,
-                    tr,
-                    Point::new(disc_c.x + disc_r + RELATED, label_top),
-                    None,
-                );
-            }
-            // Connector to the next pill, inset a step from both stations.
-            if let Some(next) = lay.crumbs.get(i + 1) {
-                let nx0 = next.0.x0;
-                let midy = f64::midpoint(r.y0, r.y1);
-                let cc = if s.index() < self.step.index() {
-                    c.semantic.success
-                } else {
-                    c.neutral[3]
-                };
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    t,
-                    cc,
-                    None,
-                    &Line::new(
-                        Point::new(r.x1 + LABEL, midy),
-                        Point::new(nx0 - LABEL, midy),
-                    ),
-                );
-            }
-        }
-    }
-
-    fn draw_footer(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let v = self.rect;
-        let fy = v.y1 - FOOTER_H;
-        // The footer rule sits on `surfaces.base`, derived against it.
-        scene.fill(
-            Fill::NonZero,
-            t,
-            surface::edge_on(c.surfaces.base),
-            None,
-            &Rect::new(v.x0, fy - 0.5, v.x1, fy + 0.5),
-        );
-
-        // Back: the toolkit's neutral Button face — `Button::paint` shares
-        // `face_colors` with the retained widget, so it matches every other
-        // button. The keyboard focus ring is painted once for every hit by
-        // `draw`, not doubled here.
-        if let Some(r) = lay.back {
-            Button::paint(
-                scene,
-                t,
-                tr,
-                theme,
-                &ButtonFace::new(r, "‹  Back")
-                    .radius(theme.radius_standard)
-                    .hovered(r.contains(self.last_mouse)),
-            );
-        }
-
-        // Primary.
-        if let Some(r) = lay.primary {
-            self.draw_primary(scene, tr, theme, t, r);
-        }
-
-        // A hint between them (center) — e.g. what's still needed.
-        if !self.compact_content(lay.content)
-            && let Some(hint) = self.footer_hint()
-        {
-            TextRun::new(&hint, TextStyle::new(12.0), c.text_dim).draw_center_v(
-                scene,
-                tr,
-                f64::midpoint(v.x0, v.x1),
-                fy,
-                FOOTER_H,
-            );
-        }
-    }
-
-    fn footer_hint(&self) -> Option<String> {
-        match self.step {
-            Step::Source if self.source.is_none() => Some("Choose an image to continue".into()),
-            Step::Drive if self.selected.is_none() => Some("Select a drive to continue".into()),
-            Step::Confirm if !self.confirm_matches() => self
-                .target()
-                .map(|d| format!("Type “{}” to unlock", d.name)),
-            Step::Write => Some("Keep the drive connected until this finishes…".into()),
-            _ => None,
-        }
-    }
-
-    fn draw_primary(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-    ) {
-        let hov = r.contains(self.last_mouse);
-        let (label, enabled, destructive) = match self.step {
-            Step::Source => (
-                "Continue  ›".to_string(),
-                self.can_advance(Step::Source),
-                false,
-            ),
-            Step::Drive => (
-                "Continue  ›".to_string(),
-                self.can_advance(Step::Drive),
-                false,
-            ),
-            Step::Customize => ("Continue  ›".to_string(), true, false),
-            Step::Confirm => {
-                let dev = self
-                    .target()
-                    .map(super::model::TargetDrive::dev_path)
-                    .unwrap_or_default();
-                // "Erase & write /dev/sdb" for a stick; "Erase & install
-                // /dev/nvme0n1" for a disk install — the verb reads plainly.
-                let label = if r.width() < 220.0 {
-                    format!("Erase & {}", self.action.verb().to_ascii_lowercase())
-                } else {
-                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase())
-                };
-                (
-                    label,
-                    self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
-                    true,
-                )
-            }
-            Step::Write => (
-                if self
-                    .job_control
-                    .as_ref()
-                    .is_some_and(JobControl::is_cancelled)
-                {
-                    "Stopping…".to_string()
-                } else {
-                    "Cancel write".to_string()
-                },
-                self.job_control
-                    .as_ref()
-                    .is_some_and(|control| !control.is_cancelled()),
-                false,
-            ),
-            Step::Done => match self.progress.phase {
-                JobPhase::Failed => ("Review & retry".to_string(), true, false),
-                _ => ("Start over".to_string(), true, false),
-            },
-        };
-        // The toolkit Button face (`Button::paint` shares `face_colors` with
-        // the retained widget): a disabled action is one opaque neutral face
-        // with quieter ink, never a dimmed accent that still reads as
-        // actionable; the enabled primary / danger fills carry ink resolved
-        // against them, and hover shifts the fill without touching the ink.
-        let face = ButtonFace::new(r, &label)
-            .radius(theme.radius_standard)
-            .weight(TextWeight::Bold)
-            .hovered(hov)
-            .disabled(!enabled);
-        let face = if destructive {
-            face.danger()
-        } else {
-            face.primary()
-        };
-        Button::paint(scene, t, tr, theme, &face);
-    }
-}
-
-// =========================================================================
-// Step bodies
-// =========================================================================
-impl ImagerApp {
-    fn draw_step_title(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        title: &str,
-        sub: Option<&str>,
-    ) {
-        let c = &theme.tokens.colors;
-        let (_, title_h) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        TextRun::new(
-            title,
-            TextStyle::new(19.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw(scene, tr, Point::new(content.x0, content.y0), None);
-        if let Some(sub) = sub {
-            TextRun::new(sub, TextStyle::new(13.0), c.text_dim).draw(
-                scene,
-                tr,
-                Point::new(content.x0, content.y0 + f64::from(title_h) + STEP_SUB_GAP),
-                Some(content.width() as f32),
-            );
-        }
-    }
-
-    // ---- Source -----------------------------------------------------------
-
-    fn draw_source_step(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let content = lay.content;
-        let (title, sub) = self.source_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        let browse = self.draw_source_dropzone(scene, tr, theme, t, content);
-        let mut bottom = browse.y1;
-        if self.source.is_some() {
-            bottom = self.draw_source_selected_card(scene, tr, theme, t, content, bottom + SIBLING);
-        }
-        let bottom = self.draw_source_releases(scene, tr, theme, t, content, bottom + GROUP);
-        self.draw_source_recent(scene, tr, theme, t, content, bottom);
-    }
-
-    /// Draws the "Browse for an image…" drop-zone and returns its rect (the
-    /// selected-source card below it is anchored off `browse.y1`).
-    fn draw_source_dropzone(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) -> Rect {
-        let c = &theme.tokens.colors;
-        let compact = self.compact_content(content);
-        let m = &self.bands.source;
-        let y = content.y0 + self.step_header_h(content);
-        let browse = Rect::new(content.x0, y, content.x1, y + m.dropzone_h);
-        let hov = browse.contains(self.last_mouse);
-        let radius = theme.radius_standard;
-        Self::fill_rr(
-            scene,
-            t,
-            browse,
-            radius,
-            if hov {
-                theme.bg_hover
-            } else {
-                with_alpha(c.accent[5], 16)
-            },
-        );
-        Self::dashed_rr(
-            scene,
-            t,
-            browse,
-            radius,
-            if hov {
-                c.accent[6]
-            } else {
-                with_alpha(c.accent[5], 160)
-            },
-            1.6,
-        );
-        // Download/arrow glyph in an `ICON` box, inset a gutter from the edge
-        // and centred on the band.
-        let inset = if compact { SECTION } else { GROUP };
-        let gx = browse.x0 + inset + ICON / 2.0;
-        let gy = f64::midpoint(browse.y0, browse.y1);
-        let mut arr = BezPath::new();
-        arr.move_to((gx, gy - 14.0));
-        arr.line_to((gx, gy + 8.0));
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &arr);
-        let mut head = BezPath::new();
-        head.move_to((gx - 7.0, gy + 1.0));
-        head.line_to((gx, gy + 9.0));
-        head.line_to((gx + 7.0, gy + 1.0));
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &head);
-        scene.stroke(
-            &Stroke::new(2.4),
-            t,
-            c.accent[6],
-            None,
-            &Line::new(
-                Point::new(gx - ICON / 2.0, gy + 15.0),
-                Point::new(gx + ICON / 2.0, gy + 15.0),
-            ),
-        );
-        // Title + hint stacked and centred in the band (see `SourceMetrics`),
-        // a `SECTION` after the icon.
-        let text_x = gx + ICON / 2.0 + SECTION;
-        let text_w = (browse.x1 - text_x - SECTION).max(0.0) as f32;
-        TextRun::new(
-            "Browse for an image…",
-            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, browse.y0 + m.dz_title_top),
-            Some(text_w),
-        );
-        TextRun::new(
-            if compact {
-                "Choose an .iso, .img, or .raw file"
-            } else {
-                "Opens the system file picker · .iso, .img, .raw"
-            },
-            TextStyle::new(12.5),
-            c.text_dim,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, browse.y0 + m.dz_sub_top),
-            Some(text_w),
-        );
-        browse
-    }
-
-    /// Draws the selected-source summary card starting at `top`, returning
-    /// its bottom edge.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact and regular source-card variants intentionally share one renderer so their visual state cannot drift"
-    )]
-    fn draw_source_selected_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        top: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let Some(src) = &self.source else {
-            return top;
-        };
-        let compact = self.compact_content(content);
-        let m = &self.bands.source;
-        let card = Rect::new(content.x0, top, content.x1, top + m.card_h(compact));
-        Self::fill_rr(scene, t, card, theme.radius_standard, c.surfaces.raised);
-        Self::stroke_rr(
-            scene,
-            t,
-            card,
-            theme.radius_standard,
-            with_alpha(c.semantic.success, 150),
-            1.4,
-        );
-        // The check disc sits a `SECTION` in; the badge band starts at the
-        // top padding and is as wide as its label needs. The compact check
-        // rides the badge line's centre, the wide one the card's.
-        let badge_top = card.y0 + SECTION;
-        let badge_h = m.card_badge_h;
-        let disc_x = card.x0 + if compact { RELATED } else { SECTION } + CHECK_R;
-        Self::check_disc(
-            scene,
-            t,
-            Point::new(
-                disc_x,
-                if compact {
-                    badge_top + badge_h / 2.0
-                } else {
-                    f64::midpoint(card.y0, card.y1)
-                },
-            ),
-            CHECK_R,
-            c.semantic.success,
-            Self::glyph_ink(theme, c.semantic.success),
-        );
-        let badge_x = disc_x + CHECK_R + if compact { RELATED } else { SIBLING };
-        let badge = Self::kind_badge(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            Point::new(badge_x, badge_top),
-            badge_h,
-            src.kind.tag(),
-            source_color(theme, src.kind),
-        );
-        let title_x = badge.x1 + SIBLING;
-        let detail_x = if compact { badge_x } else { title_x };
-        let (summary_top, tag_top) = if compact {
-            (m.card_summary_top_compact, m.card_tag_top_compact)
-        } else {
-            (m.card_summary_top, m.card_tag_top)
-        };
-        let title_max_w = (card.x1 - title_x - SECTION).max(0.0) as f32;
-        let name = tr.elide_to_width_weighted(&src.name, 15.5, title_max_w, TextWeight::Semibold);
-        // The compact name shares the badge's centre line; the wide one sits
-        // on the card's top padding.
-        let title_top = if compact {
-            Self::line_top(
-                tr,
-                &name,
-                15.5,
-                TextWeight::Semibold,
-                badge.y0,
-                badge.height(),
-            )
-        } else {
-            card.y0 + SECTION
-        };
-        TextRun::new(
-            &name,
-            TextStyle::new(15.5).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(scene, tr, Point::new(title_x, title_top), Some(title_max_w));
-        // One line: a long image path elides against the card instead of
-        // wrapping into the tag line beneath it.
-        let summary = if compact {
-            format!("{}  ·  {}", src.label, fmt_size(src.size))
-        } else {
-            src.summary()
-        };
-        let detail_max_w = (card.x1 - detail_x - SECTION).max(0.0) as f32;
-        let summary = tr.elide_to_width(&summary, 12.0, detail_max_w);
-        TextRun::new(&summary, TextStyle::new(12.0), c.text_dim).draw(
-            scene,
-            tr,
-            Point::new(detail_x, card.y0 + summary_top),
-            Some(detail_max_w),
-        );
-        let (tag, tag_c) = if self.source_is_official(src) {
-            (
-                "● Official Tilo release · catalog verified",
-                c.semantic.success,
-            )
-        } else {
-            ("Local image · unverified · written as-is", c.text_dim)
-        };
-        TextRun::new(
-            tag,
-            TextStyle::new(11.5).with_weight(TextWeight::Medium),
-            tag_c,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(detail_x, card.y0 + tag_top),
-            Some(detail_max_w),
-        );
-        card.y1
-    }
-
-    /// Draws the "Tilo release" caption, its zero-state or the list of known
-    /// releases from `top`, returning the bottom of the block.
-    fn draw_source_releases(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        top: f64,
-    ) -> f64 {
-        // Tilo releases. With none to choose between, the heading names the
-        // section rather than offering a choice that is not there.
-        let heading = if self.releases().is_empty() {
-            "Tilo RELEASES"
-        } else {
-            "OR CHOOSE A Tilo RELEASE"
-        };
-        Self::section_label(scene, tr, theme, heading, content.x0, top);
-        let mut y = top + self.bands.source.section_h;
-        if self.releases().is_empty() {
-            // Nothing is known to be on this machine, so nothing is offered.
-            // The honest zero-state says so rather than leaving a bare heading.
-            y = self.draw_no_releases_card(scene, tr, theme, t, content, y);
-        }
-        for (i, rel) in self.releases().iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let row = Rect::new(
-                content.x0,
-                y,
-                content.x1,
-                y + self.bands.source.release_row_h,
-            );
-            y = self.draw_release_row(&mut PaintCtx::new(scene, t, tr, theme), row, i, rel);
-        }
-        y
-    }
-
-    /// The empty-state card shown in place of the release list when nothing
-    /// is known to be on this machine. Returns its bottom edge.
-    fn draw_no_releases_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        y: f64,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let card = Rect::new(content.x0, y, content.x1, y + self.bands.source.zero_h);
-        Self::dashed_card(
-            scene,
-            t,
-            card,
-            theme.radius_standard,
-            c.surfaces.raised,
-            1.2,
-        );
-        let cx = f64::midpoint(card.x0, card.x1);
-        // Title + hint stack centred in the card's measured band.
-        let title_h = tr.line(14.0);
-        let sub_h = tr.line(12.0);
-        let stack_h = title_h + RELATED + sub_h;
-        let title_top = card.y0 + (card.height() - stack_h) / 2.0;
-        TextRun::new(
-            "No Tilo releases found",
-            TextStyle::new(14.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cx, title_top);
-        TextRun::new(
-            "Releases stored on this machine appear here.",
-            TextStyle::new(12.0),
-            c.text_dim,
-        )
-        .draw_center(scene, tr, cx, title_top + title_h + RELATED);
-        card.y1
-    }
-
-    /// One release row: selection badge, name, channel/size/location, and the
-    /// "installable" tag. Returns its bottom edge.
-    fn draw_release_row(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        r: Rect,
-        index: usize,
-        rel: &TiloRelease,
-    ) -> f64 {
-        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let c = &theme.tokens.colors;
-        let m = &self.bands.source;
-        let selected = self
-            .source
-            .as_ref()
-            .is_some_and(|source| rel.matches_source(source));
-        let hov = r.contains(self.last_mouse);
-        let radius = theme.radius_standard;
-        if selected {
-            Self::fill_rr(scene, t, r, radius, with_alpha(c.accent[5], 34));
-            Self::stroke_rr(scene, t, r, radius, c.accent[5], 1.4);
-        } else {
-            surface::card(scene, t, r, radius, Self::row_face(theme, hov));
-        }
-        // The kind badge on its band, centred in the row and as wide as its
-        // label needs; the text column starts a `SIBLING` after it.
-        let badge = Self::kind_badge(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            Point::new(r.x0 + SECTION, r.y0 + (r.height() - m.card_badge_h) / 2.0),
-            m.card_badge_h,
-            "Tilo",
-            c.accent[5],
-        );
-        let text_x = badge.x1 + SIBLING;
-        let title = format!("Tilo {}", rel.version);
-        let (title_w, title_h) = tr.measure_weighted(&title, 14.5, None, TextWeight::Semibold);
-        let (inst_w, _) = tr.measure_weighted("installable", 11.0, None, TextWeight::Medium);
-        let title_max_w = (r.x1 - SECTION - f64::from(inst_w) - SIBLING - text_x)
-            .max(f64::from(title_w).min(72.0)) as f32;
-        TextRun::new(
-            &rel.display_name(),
-            TextStyle::new(14.5).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, r.y0 + RELATED),
-            Some(title_max_w),
-        );
-        let downloading = self.release_download_index == Some(index);
-        let where_ = if downloading {
-            self.release_download_stage.unwrap_or("preparing")
-        } else if rel.local_path.is_empty() {
-            "download"
-        } else {
-            "on disk"
-        };
-        TextRun::new(
-            &format!(
-                "{}  ·  {}  ·  {}  ·  {}",
-                rel.target_label(),
-                rel.channel,
-                fmt_size(rel.size),
-                where_
-            ),
-            TextStyle::new(11.5),
-            c.text_dim,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(text_x, r.y0 + m.release_detail_top),
-            Some((r.x1 - SECTION - text_x).max(0.0) as f32),
-        );
-        // The tag shares the title's centre line.
-        TextRun::new(
-            if downloading {
-                "Cancel"
-            } else {
-                "official · verified"
-            },
-            TextStyle::new(11.0).with_weight(TextWeight::Medium),
-            if downloading {
-                c.semantic.danger
-            } else {
-                c.semantic.success
-            },
-        )
-        .draw_right_v(scene, tr, r.x1 - 16.0, r.y0 + RELATED, f64::from(title_h));
-        if downloading {
-            let fraction = self
-                .release_download_progress
-                .and_then(|(done, total)| (total > 0).then_some(done as f64 / total as f64))
-                .unwrap_or(0.0)
-                .clamp(0.0, 1.0);
-            let track = Rect::new(r.x0 + 68.0, r.y1 - 5.0, r.x1 - 16.0, r.y1 - 2.0);
-            Self::fill_rr(scene, t, track, 1.5, c.border_standard);
-            if fraction > 0.0 {
-                Self::fill_rr(
-                    scene,
-                    t,
-                    Rect::new(
-                        track.x0,
-                        track.y0,
-                        track.x0 + track.width() * fraction,
-                        track.y1,
-                    ),
-                    1.5,
-                    c.accent[5],
-                );
-            }
-        }
-        r.y0 + 54.0 + 10.0
-    }
-
-    /// Draws the "Recent" section (up to the three most recent sources) a
-    /// `GROUP` below `bottom`.
-    fn draw_source_recent(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        bottom: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        if self.recent.is_empty() {
-            return;
-        }
-        let m = &self.bands.source;
-        let top = bottom + GROUP;
-        Self::section_label(scene, tr, theme, "RECENT", content.x0, top);
-        let mut y = top + m.section_h;
-        for (i, src) in self.recent.iter().take(3).enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(content.x0, y, content.x1, y + m.recent_row_h);
-            if r.y1 > content.y1 {
-                break;
-            }
-            let hov = r.contains(self.last_mouse);
-            if hov {
-                Self::fill_rr(scene, t, r, theme.radius_standard, theme.bg_hover);
-            }
-            // Kind swatch: a `LABEL`-wide bar inset a `RELATED` from the row.
-            let sw = Rect::new(
-                r.x0 + RELATED,
-                r.y0 + RELATED,
-                r.x0 + RELATED + LABEL,
-                r.y1 - RELATED,
-            );
-            Self::fill_rr(scene, t, sw, LABEL / 2.0, source_color(theme, src.kind));
-            let text_x = sw.x1 + SIBLING;
-            let (tag_w, _) = tr.measure_weighted(src.kind.tag(), 10.5, None, TextWeight::Semibold);
-            TextRun::new(
-                &src.name,
-                TextStyle::new(13.0).with_weight(TextWeight::Medium),
-                c.text_primary,
-            )
-            .draw(
-                scene,
-                tr,
-                Point::new(text_x, r.y0 + RELATED),
-                Some((r.x1 - SECTION - f64::from(tag_w) - SIBLING - text_x).max(0.0) as f32),
-            );
-            TextRun::new(&fmt_size(src.size), TextStyle::new(11.0), c.text_dim).draw(
-                scene,
-                tr,
-                Point::new(text_x, r.y0 + m.recent_size_top),
-                None,
-            );
-            // The kind tag is centred on the row.
-            TextRun::new(
-                src.kind.tag(),
-                TextStyle::new(10.5).with_weight(TextWeight::Semibold),
-                c.text_tertiary,
-            )
-            .draw_right_v(scene, tr, r.x1 - SECTION, r.y0, r.height());
-            y = r.y1;
-        }
-    }
-
-    // ---- Drive ------------------------------------------------------------
-
-    fn draw_drive_step(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let c = &theme.tokens.colors;
-        let content = lay.content;
-        let (title, sub) = Self::drive_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        let compact = self.compact_content(content);
-        // Rescan button, with the detected count on its centre line: to its
-        // left when wide, at the content's left edge when compact.
-        let rescan = self.drive_rescan_rect(content);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(rescan, RESCAN_LABEL)
-                .radius(theme.radius_standard)
-                .text_size(12.5)
-                .hovered(rescan.contains(self.last_mouse)),
-        );
-        let detected = format!("{} removable", self.removable_count());
-        if compact {
-            let count_top = Self::line_top(
-                tr,
-                &detected,
-                11.5,
-                TextWeight::Medium,
-                rescan.y0,
-                rescan.height(),
-            );
-            TextRun::new(
-                &detected,
-                TextStyle::new(11.5).with_weight(TextWeight::Medium),
-                c.text_dim,
-            )
-            .draw(scene, tr, Point::new(content.x0, count_top), None);
-        } else {
-            TextRun::new(
-                &detected,
-                TextStyle::new(11.5).with_weight(TextWeight::Medium),
-                c.text_dim,
-            )
-            .draw_right_v(scene, tr, rescan.x0 - SIBLING, rescan.y0, rescan.height());
-        }
-
-        let vis = self.visible_targets();
-        if vis.is_empty() {
-            self.draw_drive_empty(scene, tr, theme, t, content);
-            return;
-        }
-        let card_h = self.bands.drive.card_h;
-        let mut y = self.drive_cards_top(content);
-        for (i, (idx, drive)) in vis.iter().enumerate() {
-            if i > 0 {
-                y += SIBLING;
-            }
-            let r = Rect::new(content.x0, y, content.x1, y + card_h);
-            if r.y1 > content.y1 {
-                break;
-            }
-            self.draw_drive_card(scene, tr, theme, t, r, *idx, drive);
-            y = r.y1;
-        }
-    }
-
-    fn draw_drive_empty(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.drive;
-        let top = self.drive_cards_top(content);
-        let card = Rect::new(content.x0, top, content.x1, top + m.empty_h);
-        Self::dashed_card(
-            scene,
-            t,
-            card,
-            theme.radius_standard,
-            c.surfaces.raised,
-            1.4,
-        );
-        let cx = f64::midpoint(card.x0, card.x1);
-        // A simple USB-stick glyph in the card's own ink tiers.
-        let gy = card.y0 + m.empty_glyph_top;
-        let cap = Rect::new(cx - 10.0, gy, cx + 10.0, gy + GLYPH_CAP_H);
-        Self::fill_rr(scene, t, cap, theme.tokens.radii.sm.into(), c.text_dim);
-        let body = Rect::new(cx - 16.0, cap.y1, cx + 16.0, cap.y1 + GLYPH_BODY_H);
-        Self::fill_rr(
-            scene,
-            t,
-            body,
-            theme.tokens.radii.sm.into(),
-            c.text_tertiary,
-        );
-        TextRun::new(
-            EMPTY_TITLE,
-            TextStyle::new(17.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cx, card.y0 + m.empty_title_top);
-        let para_w = (card.width() - 2.0 * GROUP).max(0.0);
-        TextRun::new(EMPTY_LINE_1, TextStyle::new(13.0), c.text_dim).draw_para_centered(
-            scene,
-            tr,
-            cx,
-            card.y0 + m.empty_line_top,
-            para_w,
-        );
-        TextRun::new(EMPTY_LINE_2, TextStyle::new(12.0), c.text_tertiary).draw_para_centered(
-            scene,
-            tr,
-            cx,
-            card.y0 + m.empty_line2_top,
-            para_w,
-        );
-    }
-
-    fn draw_drive_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-        idx: usize,
-        drive: &TargetDrive,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.drive;
-        let selected = self.selected == Some(idx);
-        let hover = self.hover_target == Some(idx) && !selected;
-        let danger = !drive.removable;
-        let radius = theme.radius_standard;
-        if selected {
-            Self::fill_rr(scene, t, r, radius, with_alpha(c.accent[5], 30));
-            Self::stroke_rr(scene, t, r, radius, c.accent[5], 2.0);
-        } else {
-            surface::card(scene, t, r, radius, Self::row_face(theme, hover));
-            if danger {
-                Self::stroke_rr(scene, t, r, radius, with_alpha(c.semantic.danger, 150), 1.0);
-            }
-        }
-
-        // Selection check on the left, on the card's centre line.
-        if selected {
-            Self::check_disc(
-                scene,
-                t,
-                Point::new(r.x0 + SECTION + CHECK_R, f64::midpoint(r.y0, r.y1)),
-                CHECK_R,
-                c.accent[5],
-                Self::glyph_ink(theme, c.accent[5]),
-            );
-        }
-        let left = if selected {
-            r.x0 + SECTION + 2.0 * CHECK_R + SIBLING
-        } else {
-            r.x0 + SECTION
-        };
-
-        // Kind badge: as wide as its label needs, on the badge band.
-        Self::kind_badge(
-            &mut PaintCtx::new(scene, t, tr, theme),
-            Point::new(left, r.y0 + SECTION),
-            m.badge_h,
-            drive.kind.tag(),
-            kind_color(theme, drive.kind),
-        );
-
-        self.draw_drive_card_details(scene, tr, theme, t, r, drive, left);
-    }
-
-    /// Draws the removable/fixed/system chip, the model + capacity line, and
-    /// the destructive-erase note for a drive card, each on its measured line.
-    fn draw_drive_card_details(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        r: Rect,
-        drive: &TargetDrive,
-        left: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.drive;
-        // Removable / fixed / system chip on the right, on the badge band.
-        let (chip_label, chip_c) = if drive.is_system {
-            ("SYSTEM DISK", c.semantic.danger)
-        } else if drive.removable {
-            ("REMOVABLE", c.semantic.success)
-        } else {
-            ("INTERNAL DISK", c.semantic.warning)
-        };
-        let (cw, _) = tr.measure_weighted(chip_label, 10.5, None, TextWeight::Bold);
-        let chip = Rect::new(
-            r.x1 - SECTION - f64::from(cw) - 2.0 * RELATED,
-            r.y0 + SECTION,
-            r.x1 - SECTION,
-            r.y0 + SECTION + m.badge_h,
-        );
-        Self::fill_rr(
-            scene,
-            t,
-            chip,
-            theme.tokens.radii.sm.into(),
-            with_alpha(chip_c, 40),
-        );
-        TextRun::new(
-            chip_label,
-            TextStyle::new(10.5).with_weight(TextWeight::Bold),
-            chip_c,
-        )
-        .draw_center_v(
-            scene,
-            tr,
-            f64::midpoint(chip.x0, chip.x1),
-            chip.y0,
-            chip.height(),
-        );
-
-        // Model + capacity, then the erase note: three single lines a `LABEL`
-        // apart on the bands `DriveMetrics` measured, each elided to the
-        // column — an unbounded `lsblk` model must never wrap into the line
-        // below it.
-        let max_w = (r.x1 - SECTION - left).max(0.0) as f32;
-        let model = tr.elide_to_width_weighted(&drive.model, 16.0, max_w, TextWeight::Semibold);
-        TextRun::new(
-            &model,
-            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-        )
-        .draw(scene, tr, Point::new(left, r.y0 + m.model_top), None);
-        let device = tr.elide_to_width_weighted(
-            &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)),
-            12.5,
-            max_w,
-            TextWeight::Regular,
-        );
-        TextRun::new(&device, TextStyle::new(12.5), c.text_dim).draw(
-            scene,
-            tr,
-            Point::new(left, r.y0 + m.dev_top),
-            None,
-        );
-        let erase = tr.elide_to_width_weighted(
-            &format!("⚠ Erases {}", drive.contents_summary()),
-            11.5,
-            max_w,
-            TextWeight::Medium,
-        );
-        TextRun::new(
-            &erase,
-            TextStyle::new(11.5).with_weight(TextWeight::Medium),
-            c.semantic.danger,
-        )
-        .draw(scene, tr, Point::new(left, r.y0 + m.erase_top), None);
-    }
-
-    // ---- Customize --------------------------------------------------------
-
-    fn draw_customize_step(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        presence: &PresenceCtx,
-    ) {
-        let c = &theme.tokens.colors;
-        let content = lay.content;
-        let (title, sub) = self.customize_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        if !self.customizable() {
-            let top = content.y0 + self.step_header_h(content);
-            let card = Rect::new(content.x0, top, content.x1, top + self.bands.plain_card_h);
-            surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
-            let cx = f64::midpoint(card.x0, card.x1);
-            let title_h = tr.line(16.0);
-            TextRun::new(
-                PLAIN_TITLE,
-                TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-                c.text_primary,
-            )
-            .draw_center(scene, tr, cx, card.y0 + SECTION);
-            TextRun::new(PLAIN_BODY, TextStyle::new(13.0), c.text_dim).draw_para_centered(
-                scene,
-                tr,
-                cx,
-                card.y0 + SECTION + title_h + RELATED,
-                (card.width() - 2.0 * SECTION).max(0.0),
-            );
-            return;
-        }
-
-        // The whole form is the shared guided-customization panel.
-        self.customize
-            .draw(&mut PaintCtx::new(scene, t, tr, theme), presence, content);
-    }
-
-    // ---- Confirm ----------------------------------------------------------
-
-    fn draw_confirm_step(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        presence: &PresenceCtx,
-    ) {
-        let content = lay.content;
-        let (title, sub) = self.confirm_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        self.draw_confirm_review_card(scene, tr, theme, t, content);
-        self.draw_confirm_danger_banner(scene, tr, theme, t, content);
-        if self.offers_write_setup() {
-            let top = self.write_setup_top(content);
-            self.write_setup.draw(
-                &mut PaintCtx::new(scene, t, tr, theme),
-                presence,
-                content,
-                top,
-                &self.profile,
-            );
-        }
-        self.draw_confirm_field(scene, tr, theme, t, content);
-    }
-
-    /// The review card: key/value rows on the measured bands of
-    /// [`ConfirmMetrics`], key and value sharing one centre line per row.
-    fn draw_confirm_review_card(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.confirm;
-        let card = self.confirm_card_rect(content);
-        surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
-        let value_x = card.x0 + m.value_x;
-        let value_w = (card.x1 - SECTION - value_x).max(0.0) as f32;
-        for (row, top) in self.confirm_rows().iter().zip(m.row_top.iter()) {
-            let y = card.y0 + top;
-            let (_, kh) = tr.measure_weighted(row.key, 12.0, None, TextWeight::Semibold);
-            let (_, vh) = tr.measure_weighted(&row.value, row.size, Some(value_w), row.weight);
-            let key_top = y + (f64::from(vh) - f64::from(kh)).max(0.0) / 2.0;
-            let value_top = y + (f64::from(kh) - f64::from(vh)).max(0.0) / 2.0;
-            TextRun::new(
-                row.key,
-                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                c.text_dim,
-            )
-            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
-            let col = match row.tone {
-                RowTone::Primary => c.text_primary,
-                RowTone::Success => c.semantic.success,
-                RowTone::Danger => c.semantic.danger,
-            };
-            TextRun::new(
-                &row.value,
-                TextStyle::new(row.size).with_weight(row.weight),
-                col,
-            )
-            .draw(scene, tr, Point::new(value_x, value_top), Some(value_w));
-        }
-    }
-
-    /// Danger banner below the review card — louder for a fixed/internal
-    /// (install) target.
-    fn draw_confirm_danger_banner(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
         let internal = self.target().is_some_and(|d| !d.removable);
-        let banner = self.confirm_banner_rect(content);
-        let radius = theme.radius_standard;
-        Self::fill_rr(
-            scene,
-            t,
-            banner,
-            radius,
-            with_alpha(c.semantic.danger, if internal { 40 } else { 28 }),
-        );
-        Self::stroke_rr(
-            scene,
-            t,
-            banner,
-            radius,
-            with_alpha(c.semantic.danger, if internal { 170 } else { 130 }),
-            if internal { 1.4 } else { 1.0 },
-        );
-        TextRun::new(
-            self.confirm_warning(),
-            TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-            c.semantic.danger,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(banner.x0 + SECTION, banner.y0 + SIBLING),
-            Some((banner.width() - 2.0 * SECTION).max(0.0) as f32),
-        );
-    }
-
-    /// The typed confirmation field under its caption, and the write-gate
-    /// note below it.
-    fn draw_confirm_field(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.confirm;
-        let field = self.confirm_field_rect(content);
-        let focused = self.confirm_input.is_focused();
-        let matches = self.confirm_matches();
-        let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        TextRun::new(
-            "CONFIRM THE TARGET DEVICE",
-            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
-            c.text_dim,
-        )
-        .draw(
-            scene,
-            tr,
-            Point::new(field.x0, field.y0 - LABEL - m.label_h),
-            None,
-        );
-        // The field is the toolkit input's face — raised at rest, the active
-        // tint while focused — under the gate's own semantic edge: danger
-        // until the name matches, focus while typing, success once armed.
-        let radius = theme.radius_standard;
-        Self::fill_rr(
-            scene,
-            t,
-            field,
-            radius,
-            if focused {
-                theme.bg_active
-            } else {
-                c.surfaces.raised
-            },
-        );
-        Self::stroke_rr(
-            scene,
-            t,
-            field,
-            radius,
-            if matches {
-                c.semantic.success
-            } else if focused {
-                c.border_focus
-            } else {
-                with_alpha(c.semantic.danger, 160)
-            },
-            if focused || matches { 2.0 } else { 1.0 },
-        );
-        self.confirm_input
-            .set_placeholder(&format!("type “{want}” here"));
-        let (armed_w, _) = tr.measure_weighted("✓ armed", 12.5, None, TextWeight::Bold);
-        let text_right = if matches {
-            field.x1 - SECTION - f64::from(armed_w) - SIBLING
+        let title = if system {
+            "This is your system disk".to_string()
+        } else if internal {
+            format!("Everything on the internal disk {device} is erased")
         } else {
-            field.x1 - SIBLING
+            format!("Everything on {device} is erased")
         };
-        self.confirm_input.apply_layout_external(Rect::new(
-            field.x0 + SIBLING,
-            field.y0 + LABEL,
-            text_right,
-            field.y1 - LABEL,
-        ));
-        self.confirm_input
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
-        if matches {
-            TextRun::new(
-                "✓ armed",
-                TextStyle::new(12.5).with_weight(TextWeight::Bold),
-                c.semantic.success,
-            )
-            .draw_right_v(scene, tr, field.x1 - SECTION, field.y0, field.height());
-        }
-        TextRun::new(self.confirm_note(), TextStyle::new(11.0), c.text_tertiary).draw(
-            scene,
-            tr,
-            Point::new(field.x0, field.y1 + RELATED),
-            None,
-        );
-    }
-
-    // ---- Write ------------------------------------------------------------
-
-    fn draw_write_progress(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
-        let content = lay.content;
-        let (title, sub) = self.write_heading();
-        Self::draw_step_title(scene, tr, theme, content, title, sub);
-        let head = self.step_header_h(content);
-        self.draw_write_ring(scene, tr, theme, t, content, head);
-        self.draw_write_rate_eta(scene, tr, theme, content, head);
-        self.draw_write_phase_bars(scene, tr, theme, t, content, head);
-        self.draw_write_source_target_line(scene, tr, theme, content, head);
-    }
-
-    /// The big overall-progress ring with its percentage and phase caption
-    /// stacked and centred inside it.
-    fn draw_write_ring(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.write;
-        let p = &self.progress;
-        let writing = p.phase == JobPhase::Writing;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let cyp = content.y0 + m.ring_cy(head);
-        let overall = p.overall();
-        scene.stroke(
-            &Stroke::new(RING_W),
-            t,
-            c.neutral[3],
-            None,
-            &Circle::new(Point::new(cxp, cyp), RING_R),
-        );
-        if overall > 0.0 {
-            let mut arc = BezPath::new();
-            let start = -std::f64::consts::FRAC_PI_2;
-            let sweep = overall * std::f64::consts::TAU;
-            let steps = (sweep.abs() / 0.08).ceil().max(1.0) as usize;
-            arc.move_to((cxp + RING_R * start.cos(), cyp + RING_R * start.sin()));
-            for i in 1..=steps {
-                let a = start + sweep * (i as f64 / steps as f64);
-                arc.line_to((cxp + RING_R * a.cos(), cyp + RING_R * a.sin()));
-            }
-            let ring_c = if writing {
-                c.semantic.info
-            } else {
-                c.accent[6]
-            };
-            scene.stroke(&Stroke::new(RING_W), t, ring_c, None, &arc);
-        }
-        let stack_h = m.pct_h + LABEL + m.small_h;
-        let pct_top = cyp - stack_h / 2.0;
-        TextRun::new(
-            &format!("{:.0}%", overall * 100.0),
-            TextStyle::new(30.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cxp, pct_top);
-        let caption = match (writing, self.action) {
-            (true, Action::Install) => "installing",
-            (true, Action::Flash) => "writing",
-            (false, _) => "verifying",
+        let message = if system {
+            "Everything on it, the running system included, is erased. This cannot be undone."
+        } else {
+            "This cannot be undone."
         };
-        TextRun::new(
-            caption,
-            TextStyle::new(12.0).with_weight(TextWeight::Medium),
-            c.text_dim,
-        )
-        .draw_center(scene, tr, cxp, pct_top + m.pct_h + LABEL);
+        (title, message)
     }
 
-    /// The rate + ETA line below the ring, when either is known.
-    fn draw_write_rate_eta(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let p = &self.progress;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let mut meta = String::new();
-        if p.rate_bps > 0 {
-            meta.push_str(&fmt_rate(p.rate_bps));
+    /// The help under the confirmation field. Shot mode poses the field as
+    /// ready for documentation, but never enables the backend.
+    fn confirm_help(&self) -> &'static str {
+        if !(crate::write::write_available() || self.shot_confirmation_ready) {
+            "This computer can't write drives yet."
+        } else if self.confirm_matches() {
+            "The name matches. Erase and write when you are ready."
+        } else {
+            "Type the device name exactly as it is shown in the review."
+        }
+    }
+
+    fn confirm_body(&self) -> Column {
+        let title = match self.action {
+            Action::Install => "Review and install",
+            Action::Flash => "Review and write",
+        };
+        let review = self
+            .review_rows()
+            .into_iter()
+            .map(|(label, value)| Property::new(label, value))
+            .collect();
+        let mut body = page::body(title).push(Box::new(PropertyList::new(review)));
+        if self.offers_write_setup() {
+            body = body.push(page::form_block(crate::write_setup::form(
+                &self.profile,
+                &self.wifi_psk,
+                &self.commands,
+            )));
+        }
+        let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
+        let (warning, consequence) = self.confirm_warning();
+        let sink = Rc::clone(&self.commands);
+        let input = TextInput::local()
+            .with_id("imager.confirm")
+            .with_kind(ui::widget::TextInputKind::Path)
+            .with_initial_value(&self.confirm_text)
+            .with_placeholder(&want)
+            .on_change(move |value| sink.borrow_mut().push(Command::Confirm(value.to_string())));
+        let field = Field::new(format!("Type {want} to confirm"), input);
+        let field = if !self.confirm_text.is_empty() && !self.confirm_matches() {
+            field.with_error(format!("This is not {want}."))
+        } else {
+            field.with_help(self.confirm_help())
+        };
+        body.push(Box::new(
+            page::related()
+                .push(Box::new(Banner::error(warning).with_message(consequence)))
+                .push(Box::new(field)),
+        ))
+    }
+
+    // ---- Write -------------------------------------------------------------
+
+    /// The active phase, its share done, and what it is called.
+    fn phase(&self) -> (f64, &'static str) {
+        match (self.progress.phase, self.action) {
+            (JobPhase::Verifying, _) => (self.progress.verify_frac, "Verifying"),
+            (_, Action::Install) => (self.progress.write_frac, "Installing"),
+            (_, Action::Flash) => (self.progress.write_frac, "Writing"),
+        }
+    }
+
+    fn centred(text: &str, role: TextRole) -> Text {
+        Text::new(text)
+            .with_role(role)
+            .with_align(ParagraphAlign::Center)
+    }
+
+    fn ring_row(ring: ProgressRing) -> Row {
+        Row::new()
+            .with_justify(taffy::JustifyContent::Center)
+            .push(Box::new(ring))
+    }
+
+    fn write_body(&self) -> Column {
+        let (frac, caption) = self.phase();
+        let ring = ProgressRing::new(frac)
+            .value(format!("{:.0}%", frac * 100.0))
+            .caption(caption)
+            .size(ProgressRingSize::Large);
+        let mut meta = Vec::new();
+        if self.progress.rate_bps > 0 {
+            meta.push(fmt_rate(self.progress.rate_bps));
         }
         if let Some(src) = &self.source
-            && let Some(eta) = p.eta_secs(src.size)
+            && let Some(eta) = self.progress.eta_secs(src.size)
         {
-            if !meta.is_empty() {
-                meta.push_str("   ·   ");
-            }
-            let _ = write!(meta, "~{} left", fmt_eta(eta));
+            meta.push(format!("about {} left", fmt_eta(eta)));
         }
+        let next = if self.progress.phase == JobPhase::Verifying {
+            "Reading the drive back to check every byte."
+        } else {
+            "Then the drive is read back and checked."
+        };
+        let mut lines = page::related();
         if !meta.is_empty() {
-            TextRun::new(
-                &meta,
-                TextStyle::new(13.0).with_weight(TextWeight::Medium),
-                c.text_dim,
-            )
-            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.meta_top(head));
+            lines = lines.push(Box::new(
+                Self::centred(&meta.join(", "), TextRole::Body).numeric(),
+            ));
         }
-    }
-
-    /// The Write / Verify phase bars: a label line, its bar a `LABEL` below,
-    /// the next pair a `SIBLING` after.
-    fn draw_write_phase_bars(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.write;
-        let p = &self.progress;
-        let writing = p.phase == JobPhase::Writing;
-        let bx0 = content.x0 + REGION;
-        let bx1 = content.x1 - REGION;
-        let mut yy = content.y0 + m.bars_top(head);
-        for (label, frac, active, fill) in [
-            ("Write", p.write_frac, writing, c.semantic.info),
-            ("Verify", p.verify_frac, !writing, c.semantic.success),
-        ] {
-            TextRun::new(
-                label,
-                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                if active { c.text_primary } else { c.text_dim },
-            )
-            .draw(scene, tr, Point::new(bx0, yy), None);
-            TextRun::new(
-                &format!("{:.0}%", frac * 100.0),
-                TextStyle::new(12.0),
-                c.text_dim,
-            )
-            .draw_right(scene, tr, bx1, yy);
-            let bar_top = yy + m.small_h + LABEL;
-            let bar = Rect::new(bx0, bar_top, bx1, bar_top + BAR_H);
-            Self::bar(scene, t, bar, frac, c.neutral[3], fill);
-            yy += m.bar_pitch();
-        }
-    }
-
-    /// The "image → drive" caption below the phase bars.
-    fn draw_write_source_target_line(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        head: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let cxp = f64::midpoint(content.x0, content.x1);
+        lines = lines.push(Box::new(Self::centred(next, TextRole::Body).dimmed()));
+        let mut body = page::stack()
+            .with_gap(crate::rhythm::px::GROUP)
+            .push(Box::new(Self::ring_row(ring)))
+            .push(Box::new(lines));
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            TextRun::new(
-                &format!("{}  →  {}", src.name, tgt.dev_path()),
-                TextStyle::new(12.0),
-                c.text_tertiary,
-            )
-            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.foot_top(head));
-        }
-    }
-
-    // ---- Done -------------------------------------------------------------
-
-    fn draw_write_done(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        ok: bool,
-    ) {
-        let content = lay.content;
-        let install = self.action == Action::Install;
-        if ok {
-            self.draw_write_done_ok_hero(scene, tr, theme, t, content, install);
-        } else {
-            let headline = if install {
-                "Install failed"
-            } else {
-                "Write failed"
-            };
-            let reason = self
-                .progress
-                .error
-                .as_deref()
-                .unwrap_or("The drive may be incomplete. Review the plan before trying again.");
-            self.draw_write_done_failed_hero(scene, tr, theme, t, content, (headline, reason));
-        }
-        self.draw_write_done_summary(scene, tr, theme, t, content, ok);
-    }
-
-    /// The success hero's headline and sub-copy, shared by the painter and
-    /// the band measurement (`measure_done`).
-    fn done_ok_copy(install: bool, compact: bool) -> (&'static str, &'static str) {
-        match (install, compact) {
-            (true, false) => (
-                "Tilo is installed",
-                "The disk was written and verified — remove the media and reboot.",
-            ),
-            (true, true) => (
-                "Tilo is installed",
-                "Written and verified. Remove the media and reboot.",
-            ),
-            (false, false) => (
-                "Drive is ready",
-                "The image was written and verified — you can safely remove the drive.",
-            ),
-            (false, true) => (
-                "Drive is ready",
-                "Written and verified. You can safely remove the drive.",
-            ),
-        }
-    }
-
-    /// The success hero: check disc + headline + sub for the completed step.
-    fn draw_write_done_ok_hero(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        install: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.done;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let compact = self.compact_content(content);
-        Self::check_disc(
-            scene,
-            t,
-            Point::new(cxp, DoneMetrics::disc_cy(content.y0)),
-            HERO_DISC_R,
-            c.semantic.success,
-            Self::glyph_ink(theme, c.semantic.success),
-        );
-        let (headline, sub) = Self::done_ok_copy(install, compact);
-        TextRun::new(
-            headline,
-            TextStyle::new(26.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
-        TextRun::new(sub, TextStyle::new(14.0), c.text_dim).draw_para_centered(
-            scene,
-            tr,
-            cxp,
-            m.sub_top(content.y0),
-            content.width(),
-        );
-    }
-
-    /// The failure hero: danger disc with an "!", headline + measured detail.
-    fn draw_write_done_failed_hero(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        copy: (&str, &str),
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.done;
-        let cxp = f64::midpoint(content.x0, content.x1);
-        let cyp = DoneMetrics::disc_cy(content.y0);
-        let compact = self.compact_content(content);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.semantic.danger,
-            None,
-            &Circle::new(Point::new(cxp, cyp), HERO_DISC_R),
-        );
-        TextRun::new(
-            "!",
-            TextStyle::new(44.0).with_weight(TextWeight::Bold),
-            Self::glyph_ink(theme, c.semantic.danger),
-        )
-        .draw_center_v(scene, tr, cxp, cyp - HERO_DISC_R, 2.0 * HERO_DISC_R);
-        TextRun::new(
-            copy.0,
-            TextStyle::new(26.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-        )
-        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
-        let max_width =
-            (content.width() - if compact { SECTION } else { 2.0 * HERO }).max(40.0) as f32;
-        let line_h = tr.line(13.5);
-        let sub_top = m.sub_top(content.y0);
-        for (index, line) in Self::failure_detail_lines(tr, copy.1, max_width, 2)
-            .iter()
-            .enumerate()
-        {
-            TextRun::new(line, TextStyle::new(13.5), c.text_dim).draw_center(
-                scene,
-                tr,
-                cxp,
-                sub_top + index as f64 * line_h,
-            );
-        }
-    }
-
-    /// The Image/Drive summary card below the hero, when both are known.
-    fn draw_write_done_summary(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        ok: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let m = &self.bands.done;
-        let (Some(src), Some(tgt)) = (&self.source, self.target()) else {
-            return;
-        };
-        let compact = self.compact_content(content);
-        let inset = if compact { 0.0 } else { HERO };
-        let top = content.y0 + m.card_top;
-        let card = Rect::new(content.x0 + inset, top, content.x1 - inset, top + m.card_h);
-        surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
-        let value_x = card.x0 + m.value_x;
-        let (verified_w, _) = tr.measure_weighted("✓ verified", 12.5, None, TextWeight::Bold);
-        let reserve = if ok {
-            f64::from(verified_w) + SIBLING
-        } else {
-            0.0
-        };
-        for (i, (key, value, reserve)) in [
-            ("Image", src.name.clone(), reserve),
-            ("Drive", format!("{} · {}", tgt.model, tgt.dev_path()), 0.0),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let row_top = card.y0 + SECTION + i as f64 * (m.row_h + SIBLING);
-            let key_top = Self::line_top(tr, key, 12.0, TextWeight::Semibold, row_top, m.row_h);
-            TextRun::new(
-                key,
-                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                c.text_dim,
-            )
-            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
-            let value_top = Self::line_top(tr, &value, 13.5, TextWeight::Medium, row_top, m.row_h);
-            TextRun::new(
-                &value,
-                TextStyle::new(13.5).with_weight(TextWeight::Medium),
-                c.text_primary,
-            )
-            .draw(
-                scene,
-                tr,
-                Point::new(value_x, value_top),
-                Some((card.x1 - SECTION - reserve - value_x).max(0.0) as f32),
-            );
-            if ok && i == 0 {
-                TextRun::new(
-                    "✓ verified",
-                    TextStyle::new(12.5).with_weight(TextWeight::Bold),
-                    c.semantic.success,
+            body = body.push(Box::new(
+                Self::centred(
+                    &format!(
+                        "{} to {}. Keep the drive connected until this finishes.",
+                        src.name, tgt.model
+                    ),
+                    TextRole::Caption,
                 )
-                .draw_right_v(scene, tr, card.x1 - SECTION, row_top, m.row_h);
-            }
+                .dimmed(),
+            ));
         }
+        body
+    }
+
+    // ---- Done --------------------------------------------------------------
+
+    /// The success hero's headline and explanation.
+    fn done_ok_copy(&self) -> (&'static str, String) {
+        let image = self
+            .source
+            .as_ref()
+            .map_or("The image", |s| s.name.as_str());
+        let drive = self.target().map_or("the drive", |d| d.model.as_str());
+        match self.action {
+            Action::Install => (
+                "Tilo is installed",
+                format!(
+                    "{image} was written to {drive} and verified. Remove the installation media and restart."
+                ),
+            ),
+            Action::Flash => (
+                "The drive is ready",
+                format!(
+                    "{image} was written to {drive} and verified. You can safely remove the drive."
+                ),
+            ),
+        }
+    }
+
+    fn done_body(&self) -> Column {
+        let ok = self.progress.phase == JobPhase::Success;
+        let (ring, headline, detail) = if ok {
+            let (headline, detail) = self.done_ok_copy();
+            (
+                ProgressRing::new(1.0)
+                    .value("100%")
+                    .caption("Verified")
+                    .size(ProgressRingSize::Large)
+                    .tone(Tone::Success),
+                headline,
+                detail,
+            )
+        } else {
+            let frac = self.progress.write_frac;
+            (
+                ProgressRing::new(frac)
+                    .value(format!("{:.0}%", frac * 100.0))
+                    .caption("Stopped")
+                    .size(ProgressRingSize::Large)
+                    .tone(Tone::Danger),
+                if self.action == Action::Install {
+                    "The installation failed"
+                } else {
+                    "Writing failed"
+                },
+                self.progress.error.clone().unwrap_or_else(|| {
+                    "The drive may be incomplete. Review the plan before trying again.".into()
+                }),
+            )
+        };
+        page::stack()
+            .with_gap(crate::rhythm::px::GROUP)
+            .push(Box::new(Self::ring_row(ring)))
+            .push(Box::new(
+                page::related()
+                    .push(Box::new(
+                        Self::centred(headline, TextRole::Title).with_heading_level(1),
+                    ))
+                    .push(Box::new(
+                        Self::centred(&detail, TextRole::Body)
+                            .dimmed()
+                            .with_id("imager.result")
+                            .with_live(if ok {
+                                ui::a11y::Politeness::Polite
+                            } else {
+                                ui::a11y::Politeness::Assertive
+                            }),
+                    )),
+            ))
     }
 }
-
-// =========================================================================
-// Interaction / state mutation
-// =========================================================================
 impl ImagerApp {
     fn select_source(&mut self, state: &mut AutoCommit, src: &Source) {
         let previous = self
@@ -4272,22 +1161,10 @@ impl ImagerApp {
             tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
         );
         self.source = Some(src.clone());
-        self.set_status(
-            state,
-            &format!(
-                "Selected {} — {}",
-                src.name,
-                if self.source_is_official(src) {
-                    "official release verified"
-                } else {
-                    "local image, written as-is"
-                }
-            ),
-        );
-        self.dirty = true;
+        self.set_status(state, "");
     }
 
-    fn open_file_picker(&mut self, state: &AutoCommit) {
+    fn open_file_picker(&mut self, _state: &AutoCommit) {
         self.portal_rx = Some(
             PickRequest::open("Choose a disk image", "Choose")
                 .filter(
@@ -4300,8 +1177,6 @@ impl ImagerApp {
                 .thread_name("imager-portal")
                 .send(),
         );
-        self.set_status(state, "Opening the file picker…");
-        self.dirty = true;
     }
 
     /// Drain a pending portal result, if any. Called each `sync`.
@@ -4319,19 +1194,18 @@ impl ImagerApp {
         match outcome {
             PortalOutcome::Opened(path) => match crate::probe::inspect_source(&path) {
                 Some(src) => self.select_source(state, &src),
-                None => self.set_status(state, "That file is not a readable disk image."),
+                None => self.fail("That file is not a readable disk image."),
             },
             PortalOutcome::Cancelled => self.set_status(state, "File selection cancelled."),
             PortalOutcome::Failed(reason) => {
-                self.set_status(state, &format!("File picker unavailable: {reason}"));
+                self.fail(&format!("File picker unavailable: {reason}"));
             }
         }
-        self.dirty = true;
     }
 
     fn download_release(&mut self, state: &AutoCommit, index: usize, release: TiloRelease) {
         if self.release_rx.is_some() {
-            self.set_status(state, "A Tilo installer download is already in progress.");
+            self.fail("A Tilo installer download is already in progress.");
             return;
         }
         self.set_status(
@@ -4343,8 +1217,7 @@ impl ImagerApp {
         self.release_control = Some(job.control);
         self.release_download_index = Some(index);
         self.release_download_progress = None;
-        self.release_download_stage = Some("preparing");
-        self.dirty = true;
+        self.release_download_stage = Some("Preparing");
     }
 
     fn drain_release(&mut self, state: &mut AutoCommit) {
@@ -4374,18 +1247,18 @@ impl ImagerApp {
             match event {
                 crate::release::DownloadEvent::Downloading { received, total } => {
                     self.release_download_progress = Some((received, total));
-                    self.release_download_stage = Some("downloading");
+                    self.release_download_stage = Some("Downloading");
                     let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
                     self.set_status(state, &format!("Downloading Tilo installer… {percent}%"));
                 }
                 crate::release::DownloadEvent::Verifying => {
                     self.release_download_progress = None;
-                    self.release_download_stage = Some("verifying");
+                    self.release_download_stage = Some("Verifying");
                     self.set_status(state, "Cryptographically verifying the Tilo installer…");
                 }
                 crate::release::DownloadEvent::Expanding { written, total } => {
                     self.release_download_progress = Some((written, total));
-                    self.release_download_stage = Some("preparing image");
+                    self.release_download_stage = Some("Preparing the image");
                     self.set_status(state, "Preparing the verified Tilo installer image…");
                 }
                 crate::release::DownloadEvent::Finished(result) => {
@@ -4409,15 +1282,14 @@ impl ImagerApp {
                                 "Tilo installer downloaded and cryptographically verified.",
                             );
                         }
-                        Err(error) => self.set_status(state, &error),
+                        Err(error) => self.fail(&error),
                     }
                 }
             }
         }
-        self.dirty = true;
     }
 
-    fn select_target(&mut self, state: &AutoCommit, idx: usize) {
+    fn select_target(&mut self, _state: &AutoCommit, idx: usize) {
         let Some(drive) = self.targets.get(idx) else {
             return;
         };
@@ -4425,30 +1297,32 @@ impl ImagerApp {
         // collaborative state cannot turn the media creator into an internal-
         // disk raw writer.
         if !drive.is_media_target() {
-            self.set_status(
-                state,
+            self.fail(
                 "Internal and system disks can only be installed from the booted Tilo medium.",
             );
-            self.dirty = true;
             return;
         }
         self.selected = Some(idx);
-        self.confirm_input.set_text("");
-        self.dirty = true;
+        self.confirm_text.clear();
     }
 
+    /// Record what just happened. The agent-facing status reports it; the
+    /// page shows only problems, through [`Self::fail`].
     fn set_status(&mut self, _state: &AutoCommit, s: &str) {
         self.status = s.to_string();
+        self.status_is_error = false;
+    }
+
+    /// Record a problem the person has to act on; the page shows it above
+    /// its actions until the next outcome replaces it.
+    fn fail(&mut self, s: &str) {
+        self.status = s.to_string();
+        self.status_is_error = true;
     }
 
     fn goto(&mut self, _state: &mut AutoCommit, s: Step) {
         self.step = s;
-        self.scroll_y = 0.0;
-        self.keyboard_hit = None;
-        self.confirm_input.set_focus(false);
-        self.customize.clear_focus();
-        self.write_setup.clear_focus();
-        self.dirty = true;
+        self.scroll.set((0.0, 0.0));
     }
 
     fn advance(&mut self, state: &mut AutoCommit) {
@@ -4464,7 +1338,7 @@ impl ImagerApp {
             }
             Step::Customize => match self.profile.validate_media_profile() {
                 Ok(()) => self.goto(state, Step::Confirm),
-                Err(message) => self.set_status(state, &message),
+                Err(message) => self.fail(&message),
             },
             // Confirm advances into the write only when the typed-name gate is
             // armed; that same gesture kicks off the (external) job.
@@ -4486,11 +1360,10 @@ impl ImagerApp {
     fn start_write(&mut self, state: &mut AutoCommit) {
         let operation = crate::actions::ImagerOperation::Write {
             device: self.target().map(TargetDrive::dev_path).unwrap_or_default(),
-            confirmation: self.confirm_input.value().to_string(),
+            confirmation: self.confirm_text.clone(),
         };
         if let Err(reason) = self.perform_operation(&operation, state) {
-            self.set_status(state, &reason);
-            self.dirty = true;
+            self.fail(&reason);
         }
     }
 
@@ -4519,7 +1392,6 @@ impl ImagerApp {
                 state,
                 "Stopping safely… Keep the drive connected until cancellation finishes.",
             );
-            self.dirty = true;
             return Ok(());
         }
         let crate::actions::ImagerOperation::Write {
@@ -4539,7 +1411,6 @@ impl ImagerApp {
                     if self.source.is_none() || self.target().is_none() {
                         Err("Select an image source and target drive first".into())
                     } else {
-                        self.export_config(state);
                         Ok(())
                     }
                 }
@@ -4582,7 +1453,7 @@ impl ImagerApp {
             };
         let req = WriteRequest {
             source: src,
-            target: tgt.clone(),
+            target: tgt,
             action: self.action,
             profile: self.profile.clone(),
             handoff_stage: handoff_stage.clone(),
@@ -4605,25 +1476,17 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.set_status(
-                    state,
-                    &format!(
-                        "{} → {} (writing)",
-                        self.source
-                            .as_ref()
-                            .map(|s| s.name.clone())
-                            .unwrap_or_default(),
-                        tgt.dev_path()
-                    ),
-                );
+                self.set_status(state, "");
                 // The write has begun: move onto the live-progress station.
                 self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                return refuse("Confirmation does not match — write refused.".into());
+                return refuse(
+                    "The confirmation does not match the drive name. Nothing was written.".into(),
+                );
             }
             crate::write::JobStart::TooSmall => {
-                return refuse("Image is larger than the drive — write refused.".into());
+                return refuse("The image is larger than the drive. Nothing was written.".into());
             }
             crate::write::JobStart::UnsafeTarget => {
                 return refuse(
@@ -4642,7 +1505,6 @@ impl ImagerApp {
                 );
             }
         }
-        self.dirty = true;
         Ok(())
     }
 
@@ -4671,7 +1533,6 @@ impl ImagerApp {
                     }
                     self.job_rx = None;
                     self.job_control = None;
-                    self.dirty = true;
                     return;
                 }
             }
@@ -4695,7 +1556,6 @@ impl ImagerApp {
             let terminal_phase = p.phase;
             let terminal_error = p.error.clone();
             self.progress = p;
-            self.dirty = true;
             if matches!(terminal_phase, JobPhase::Success | JobPhase::Failed) {
                 self.job_rx = None;
                 self.job_control = None;
@@ -4705,7 +1565,7 @@ impl ImagerApp {
                     .map(|s| s.name.clone())
                     .unwrap_or_default();
                 let msg = if terminal_phase == JobPhase::Success {
-                    format!("Done — {name} {} and verified", self.action.past())
+                    format!("{name} {} and verified", self.action.past())
                 } else {
                     terminal_error.unwrap_or_else(|| {
                         format!(
@@ -4727,7 +1587,7 @@ impl ImagerApp {
             // retry still requires a fresh peer-local destructive confirmation
             // and passes every target/source validation again in the helper.
             self.progress = Progress::default();
-            self.confirm_input.set_text("");
+            self.confirm_text.clear();
             self.goto(state, Step::Confirm);
             self.set_status(
                 state,
@@ -4736,21 +1596,9 @@ impl ImagerApp {
             return;
         }
         self.progress = Progress::default();
-        self.confirm_input.set_text("");
+        self.confirm_text.clear();
         self.goto(state, Step::Source);
         self.set_status(state, "");
-    }
-
-    fn export_config(&mut self, _state: &mut AutoCommit) {
-        let text = self
-            .profile
-            .to_headless_config(self.source.as_ref(), self.target());
-        self.export_dialog.show(text);
-        self.dirty = true;
-    }
-
-    pub(crate) fn seed_export_for_shot(&mut self) {
-        self.export_after_sync = true;
     }
 
     /// Replace the last probe snapshot without carrying destructive consent
@@ -4765,7 +1613,7 @@ impl ImagerApp {
                 .position(|actual| Self::same_rescanned_target(expected, actual))
         });
         if self.selected.is_none() {
-            self.confirm_input.set_text("");
+            self.confirm_text.clear();
         }
     }
 
@@ -4794,32 +1642,38 @@ impl ImagerApp {
             // A real (possibly empty) result is authoritative and replaces it,
             // so unplugging the selected drive genuinely drops it from the list.
             let Some(t) = crate::probe::probe() else {
-                self.set_status(
-                    state,
-                    "Drive rescan failed. Check the system disk tools and try again.",
-                );
-                self.dirty = true;
+                self.fail("Drive rescan failed. Check the system disk tools and try again.");
                 return false;
             };
             self.apply_drive_inventory(t);
-            let n = self.targets.len();
             let removable = self.removable_count();
             self.set_status(
                 state,
-                &format!("Rescanned — {removable} removable, {n} total"),
+                &match removable {
+                    0 => "No USB drives or SD cards found".to_string(),
+                    1 => "Found 1 drive".to_string(),
+                    count => format!("Found {count} drives"),
+                },
             );
         } else {
             self.set_status(state, "Rescanned drives");
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
-        self.dirty = true;
         true
     }
 
-    fn dispatch_hit(&mut self, state: &mut AutoCommit, hit: Hit) {
-        match hit {
-            Hit::PickFile => self.open_file_picker(state),
-            Hit::Release(i) => {
+    /// Apply what a control on the page asked for.
+    fn apply_command(&mut self, state: &mut AutoCommit, command: Command) {
+        match command {
+            Command::PickFile => self.open_file_picker(state),
+            Command::Dropped(path) => match crate::probe::inspect_source(&path) {
+                Some(src) => self.select_source(state, &src),
+                None => self.fail("That file is not a readable disk image."),
+            },
+            Command::Release(i) => {
+                if self.release_rx.is_some() {
+                    return;
+                }
                 if let Some(release) = self.releases.get(i).cloned() {
                     if release.url.is_empty() {
                         self.select_source(state, &release.to_source());
@@ -4828,43 +1682,92 @@ impl ImagerApp {
                     }
                 }
             }
-            Hit::CancelDownload => {
+            Command::CancelDownload => {
                 if let Some(control) = self.release_control.clone() {
                     control.cancel();
+                    self.release_download_stage = Some("Cancelling");
                     self.set_status(
                         state,
                         "Cancelling safely… The verified partial download will be kept for resume.",
                     );
-                    self.dirty = true;
                 }
             }
-            Hit::Recent(i) => {
+            Command::Recent(i) => {
                 if let Some(src) = self.recent.get(i).cloned() {
                     self.select_source(state, &src);
                 }
             }
-            Hit::Target(i) => self.select_target(state, i),
-            Hit::Rescan => {
+            Command::Target(i) => self.select_target(state, i),
+            Command::Rescan => {
                 self.do_rescan(state);
             }
-            Hit::ConfirmField => {
-                self.confirm_input.set_focus(true);
-                self.customize.clear_focus();
-                self.dirty = true;
-            }
-            Hit::StepJump(s) => {
-                if self.crumb_reachable(s) {
-                    self.goto(state, s);
-                }
-            }
-            Hit::Back => self.back(state),
-            Hit::Next => self.advance(state),
-            Hit::StartWrite => self.start_write(state),
-            Hit::CancelWrite => {
+            Command::Back => self.back(state),
+            Command::Next => self.advance(state),
+            Command::StartWrite => self.start_write(state),
+            Command::CancelWrite => {
                 let _ = self.perform_operation(&crate::actions::ImagerOperation::Cancel, state);
             }
-            Hit::WriteAnother => self.write_another(state),
+            Command::WriteAnother => self.write_another(state),
+            Command::Confirm(value) => {
+                if self.step == Step::Confirm {
+                    self.confirm_text = value;
+                }
+            }
+            Command::Profile(field, shown) => {
+                if self.step != Step::Customize || !self.customizable() {
+                    return;
+                }
+                match crate::customize::profile_value(field, &shown) {
+                    Some(value) => {
+                        self.dispatch(state, &crate::customize::field_action(field, value));
+                    }
+                    None => self.fail(&format!("Choose a listed {}", field.label())),
+                }
+            }
+            Command::WriteSetup(field, value) => {
+                if self.step != Step::Confirm || !self.offers_write_setup() {
+                    return;
+                }
+                match crate::write_setup::field_action(field, value.clone()) {
+                    Some(action) => self.dispatch(state, &action),
+                    None => self.wifi_psk = value,
+                }
+            }
+            Command::Enroll(on) => {
+                if self.step == Step::Confirm && self.offers_write_setup() {
+                    self.dispatch(
+                        state,
+                        &crate::actions::ImagerAction::SetEnrollLocalIdentity { on },
+                    );
+                }
+            }
         }
+    }
+
+    /// Dispatch one profile action through the framework's action host, so it
+    /// is one undo step and replays byte-identically on peers.
+    fn dispatch(&mut self, state: &mut AutoCommit, action: &crate::actions::ImagerAction) {
+        self.actions.dispatch_with_context(
+            state,
+            crate::actions::IMAGER_ACTION_TYPE,
+            action,
+            tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", action),
+        );
+        self.profile = ImagerDoc::profile(state);
+    }
+
+    /// Apply every request the page's controls left since the last call.
+    /// Returns whether there were any.
+    fn drain_commands(&mut self, state: &mut AutoCommit) -> bool {
+        let commands = std::mem::take(&mut *self.commands.borrow_mut());
+        let any = !commands.is_empty();
+        for command in commands {
+            self.apply_command(state, command);
+        }
+        if any {
+            self.refresh_view();
+        }
+        any
     }
 
     /// Jobs are supervised only by this process. A restart cannot make a
@@ -4923,11 +1826,13 @@ impl Widget for ImagerApp {
         if live_probe_enabled() && self.releases.is_empty() {
             match crate::release::bundled_releases() {
                 Ok(releases) => self.releases = releases,
-                Err(error) => self.status = error,
+                Err(error) => self.fail(&error),
             }
         }
 
-        // Fold in any async work before reading the doc back.
+        // Fold in any async work and any request a control left before
+        // reading the doc back.
+        self.drain_commands(state);
         self.drain_portal(state);
         self.drain_release(state);
         self.drain_job(state);
@@ -4941,62 +1846,18 @@ impl Widget for ImagerApp {
                 .get(*i)
                 .is_some_and(TargetDrive::is_media_target)
         });
-
-        // Refresh the shared customization panel's fields from the profile
-        // (each unfocused field mirrors the stored value; a focused one stays
-        // the source of truth).
-        self.customize.sync(&self.profile);
-        self.write_setup.sync(&self.profile, &self.wifi_psk);
-        if self.export_after_sync {
-            self.export_after_sync = false;
-            self.export_config(state);
+        self.refresh_view();
+        if let Some(composed) = &mut self.composed {
+            composed.sync(state, path);
         }
-        self.dirty = true;
     }
 
-    /// Measure the step heading group with the renderer that will paint it,
-    /// so the first content block starts below the real (scaled, wrapped)
-    /// title and description instead of a fixed 44px band.
-    fn adjust_layout_with_measure(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        tr: &mut TextRenderer,
-    ) -> bool {
-        // Prefer the allocation being solved; before the first solve (or on a
-        // probe without one) fall back to the last applied rect rather than
-        // wrapping the description at zero width.
-        let width = taffy
-            .layout(node)
-            .ok()
-            .map(|layout| f64::from(layout.size.width))
-            .filter(|w| *w > 0.0)
-            .unwrap_or(self.rect.width());
-        let content_w = Self::content_width_for(width);
-        let measured = self.measure_step_heading(tr, width);
-        let heading = measured.map(|(_, group)| group);
-        let mut changed = match (self.step_heading_h, heading) {
-            (None, None) => false,
-            (Some(prev), Some(next)) => (prev - next).abs() > 0.5,
-            _ => true,
-        };
-        self.step_heading_h = heading;
-        if let Some((title_h, _)) = measured {
-            changed |= (self.title_h - title_h).abs() > 0.5;
-            self.title_h = title_h;
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (doc, _) = ui::doc::document(state, path);
+        let mut changed = self.drain_commands(doc);
+        if let Some(composed) = &mut self.composed {
+            changed |= composed.update(state, path);
         }
-        // Every step's bands, from the renderer that will paint them: one
-        // comparison, so no band can be left out of the change detection.
-        let text_scale = f64::from(tr.text_scale());
-        let bands = self.measure_bands(tr, content_w, text_scale);
-        changed |= bands != self.bands;
-        self.bands = bands;
-        // The customization panel hangs off the measured heading and measures
-        // its own caption line and Preview button.
-        let probe = Rect::new(0.0, 0.0, content_w, 0.0);
-        let head = self.step_header_h(probe);
-        changed |= self.customize.measure(tr, head);
-        changed |= self.write_setup.measure(tr);
         changed
     }
 
@@ -5006,46 +1867,53 @@ impl Widget for ImagerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The heading-to-content gap is the theme's `s3`; cache it here for
-        // the renderer hook, which measures the heading without a `Theme`.
-        self.heading_gap = f64::from(theme.tokens.spacing.s3);
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see
-        // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so there is
-        // nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
+        // A page composed again keeps keyboard focus on the same control.
+        let focused = self
+            .composed
+            .as_deref()
+            .and_then(page::focused_id)
+            .or_else(|| self.shot_focus.take().map(str::to_string));
+        let mut composed = self.build_composition();
+        if let Some(id) = focused {
+            page::refocus(composed.as_mut(), &id);
+        }
+        let child = composed.build_layout(taffy, theme, node_map);
+        self.composed = Some(composed);
+        self.view_key = Some(self.view_key());
+        self.structure_dirty = false;
         let node = taffy
-            .new_leaf(Style {
-                size: taffy::Size {
-                    width: percent(1.0_f32),
-                    height: percent(1.0_f32),
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    flex_grow: 1.0,
+                    ..Default::default()
                 },
-                flex_grow: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
+                &[child],
+            )
+            .unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // A missing layout entry for our own node would be a taffy bug, not a
-        // recoverable app condition — skip this frame's rect update rather
-        // than panic; the next frame's layout pass will have one.
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
+        let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+            origin.x + f64::from(layout.location.x + layout.size.width),
+            origin.y + f64::from(layout.location.y + layout.size.height),
         );
-        self.scroll_y = self.scroll_y.min(self.max_scroll());
+        if let Some(composed) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&child) = children.first()
+        {
+            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
+        }
     }
 
     fn draw(
@@ -5056,179 +1924,33 @@ impl Widget for ImagerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-        let lay = self.compute_layout();
-        let tr = text_renderer;
-
-        self.draw_header(scene, tr, theme, transform, &lay);
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &lay.viewport_content,
-        );
-        match self.step {
-            Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
-            Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
-            Step::Customize => {
-                self.draw_customize_step(scene, tr, theme, transform, &lay, presence);
-            }
-            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay, presence),
-            Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
-            Step::Done => self.draw_write_done(
-                scene,
-                tr,
-                theme,
-                transform,
-                &lay,
-                self.progress.phase == JobPhase::Success,
-            ),
-        }
-        scene.pop_layer();
-        self.draw_scrollbar(scene, theme, transform, &lay);
-        self.draw_footer(scene, tr, theme, transform, &lay);
-        if let Some(focused) = self.keyboard_hit
-            && let Some((rect, _)) = lay.hits.iter().find(|(_, hit)| *hit == focused)
-        {
-            Self::stroke_rr(
-                scene,
-                transform,
-                rect.inflate(2.0, 2.0),
-                theme.radius_standard + 2.0,
-                theme.tokens.colors.border_focus,
-                2.0,
-            );
-        }
-
-        if self.export_dialog.is_open() {
-            self.export_dialog.layout_in(self.rect, theme, tr);
-            self.export_dialog
-                .draw_detached(scene, transform, tr, theme, presence);
+        // The framework paints the window ground; the page is toolkit widgets.
+        if let Some(composed) = &mut self.composed {
+            composed.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the canvas wizard routes modal, text-field, profile-panel, pointer, scroll and keyboard capture in one explicitly ordered event transaction"
-    )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        use winit::event::{ElementState, KeyEvent, MouseButton};
-
-        let lay = self.compute_layout();
-
-        // The detached shared modal owns capture and dismissal before any
-        // wizard field or shortcut sees the event.
-        if self.export_dialog.handle_detached(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            ctx.path,
-        ) {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
+        if let Some(composed) = &mut self.composed
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
+            && let Some(&child) = children.first()
+        {
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
-
-        if self.handle_tab_event(event, *ctx.modifiers, &lay) {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-
-        // Destructive consent is peer-local and goes through the toolkit's
-        // real editor before any wizard shortcut sees the event. On-write
-        // Wi-Fi / enrollment fields sit above it and take events first.
-        if self.step == Step::Confirm && !self.export_dialog.is_open() {
-            if self.handle_write_setup_event(event, ctx, &lay) {
-                *ctx.handled = true;
-                self.dirty = true;
-                return;
-            }
-            let mut input_handled = false;
-            let mut focus_target = None;
-            self.confirm_input.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    handled: &mut input_handled,
-                    focus_target: &mut focus_target,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            if focus_target.is_some() {
-                self.confirm_input.set_focus(true);
-                self.write_setup.clear_focus();
-            }
-            if self.confirm_input.take_dirty().is_some() {
-                self.dirty = true;
-            }
-            if self.confirm_input.take_submit() {
-                if self.can_advance(Step::Confirm) {
-                    self.start_write(ctx.state);
-                }
-                self.confirm_input.set_focus(false);
-                *ctx.handled = true;
-                self.dirty = true;
-                return;
-            }
-            if input_handled {
-                *ctx.handled = true;
-                self.dirty = true;
-                return;
-            }
-        }
-
-        // The Customize step is delegated in full to the shared customization
-        // panel, which owns its fields, toggles and export affordance. Only
-        // events it does not consume (footer clicks, global keys) fall through
-        // to the wizard chrome below.
-        let consumed = self.handle_customize_event(event, ctx, &lay);
-        if consumed {
-            *ctx.handled = true;
-            self.dirty = true;
-            return;
-        }
-
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, &lay);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.handle_left_click(ctx.state, &lay, ctx.handled);
-            }
-            WindowEvent::MouseWheel { delta, .. }
-                if lay.viewport_content.contains(self.last_mouse) =>
-            {
-                use winit::event::MouseScrollDelta;
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 52.0,
-                    MouseScrollDelta::PixelDelta(point) => point.y / ctx.scale_factor,
-                };
-                let next = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
-                if (next - self.scroll_y).abs() > f64::EPSILON {
-                    self.scroll_y = next;
-                    self.dirty = true;
-                }
-                *ctx.handled = true;
-            }
-            WindowEvent::KeyboardInput {
+        self.drain_commands(ctx.state);
+        if !*ctx.handled
+            && let WindowEvent::KeyboardInput {
                 event:
-                    KeyEvent {
+                    winit::event::KeyEvent {
                         logical_key,
-                        state: ElementState::Pressed,
+                        state: winit::event::ElementState::Pressed,
                         ..
                     },
                 ..
-            } => {
-                self.handle_key_pressed(logical_key, ctx.state, ctx.handled);
-            }
-            _ => {}
+            } = event
+        {
+            self.handle_global_shortcut_key(logical_key, ctx.state, ctx.handled);
+            self.refresh_view();
         }
     }
 
@@ -5244,7 +1966,7 @@ impl Widget for ImagerApp {
         if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        Ok(self
+        let answered = self
             .answer_resource_operation_v2(
                 request.kind,
                 request.type_id,
@@ -5252,7 +1974,25 @@ impl Widget for ImagerApp {
                 doc,
                 path,
             )?
-            .map(ui::widget::ResourceOperationStart::Completed))
+            .map(ui::widget::ResourceOperationStart::Completed);
+        self.refresh_view();
+        Ok(answered)
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.composed
+            .as_ref()
+            .map(|child| child.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.composed
+            .as_mut()
+            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
     }
 
     fn name(&self) -> &'static str {
@@ -5263,229 +2003,27 @@ impl Widget for ImagerApp {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.export_dialog
-            .accessibility()
-            .or_else(|| Some(self.accessibility_tree()))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "this is the single assistive-action router for canvas hits, editable profile fields, and peer-local destructive confirmation"
-    )]
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        use ui::a11y::Action as AccessAction;
-        let (state, _) = ui::doc::document(state, path);
-
-        if self.export_dialog.is_open() {
-            return false;
-        }
-        if let Some(field_key) = target.strip_prefix("imager:write-setup:") {
-            if self.step != Step::Confirm || !self.offers_write_setup() {
-                return false;
-            }
-            return match (field_key, action) {
-                ("enroll-identity", AccessAction::Activate | AccessAction::Focus) => {
-                    let on = !self.profile.enroll_local_identity;
-                    let field_action = crate::actions::ImagerAction::SetEnrollLocalIdentity { on };
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.profile = ImagerDoc::profile(state);
-                    true
-                }
-                ("wifi-ssid", AccessAction::SetValue(value)) => {
-                    let field_action = crate::actions::ImagerAction::SetWifiSsid {
-                        value: value.clone(),
-                    };
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.profile = ImagerDoc::profile(state);
-                    true
-                }
-                ("device-label", AccessAction::SetValue(value)) => {
-                    let field_action = crate::actions::ImagerAction::SetDeviceLabel {
-                        value: value.clone(),
-                    };
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.profile = ImagerDoc::profile(state);
-                    true
-                }
-                ("wifi-psk", AccessAction::SetValue(value)) => {
-                    self.wifi_psk.clone_from(value);
-                    true
-                }
-                _ => false,
-            };
-        }
-        if let Some(field_key) = target.strip_prefix("imager:profile:") {
-            if self.step != Step::Customize || !self.customizable() {
-                return false;
-            }
-            if field_key == "preview" {
-                return match action {
-                    AccessAction::Focus => {
-                        self.focus_accessible_profile_slot(7);
-                        true
-                    }
-                    AccessAction::Activate => {
-                        self.export_config(state);
-                        true
-                    }
-                    _ => false,
-                };
-            }
-            let Some(field) = CzField::from_key(field_key) else {
-                return false;
-            };
-            let Some(slot) = [
-                CzField::Hostname,
-                CzField::FullName,
-                CzField::Username,
-                CzField::Locale,
-                CzField::Timezone,
-                CzField::Keyboard,
-                CzField::Filesystem,
-            ]
-            .iter()
-            .position(|candidate| *candidate == field) else {
-                return false;
-            };
-            return match action {
-                AccessAction::Focus => {
-                    self.focus_accessible_profile_slot(slot);
-                    true
-                }
-                AccessAction::SetValue(value) => {
-                    let Some(value) = self.customize.canonical_value(field, value) else {
-                        self.set_status(state, &format!("Choose a listed {}", field.label()));
-                        return true;
-                    };
-                    let field_action = CustomizePanel::field_action(field, value);
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.focus_accessible_profile_slot(slot);
-                    true
-                }
-                _ => false,
-            };
-        }
-
-        let identity_hit = target
-            .strip_prefix("imager:release:")
-            .and_then(|identity| {
-                self.releases
-                    .iter()
-                    .position(|release| release.selection_id() == identity)
-                    .map(Hit::Release)
-            })
-            .or_else(|| {
-                target.strip_prefix("imager:recent:").and_then(|path| {
-                    self.recent
-                        .iter()
-                        .position(|source| source.path == path)
-                        .map(Hit::Recent)
-                })
-            })
-            .or_else(|| {
-                target.strip_prefix("imager:drive:").and_then(|name| {
-                    self.targets
-                        .iter()
-                        .position(|drive| drive.name == name)
-                        .map(Hit::Target)
-                })
-            });
-        let Some(hit) = identity_hit.or_else(|| Self::hit_from_target(target)) else {
-            return false;
-        };
-        if !self
-            .compute_layout()
-            .hits
-            .iter()
-            .any(|(_, candidate)| *candidate == hit)
-        {
-            return false;
-        }
-        if !self.a11y_hit_enabled(hit) {
-            return false;
-        }
-        match action {
-            AccessAction::Focus => {
-                let lay = self.compute_layout();
-                self.customize.clear_focus();
-                self.keyboard_hit = Some(hit);
-                self.confirm_input.set_focus(hit == Hit::ConfirmField);
-                if let Some((rect, _)) = lay.hits.iter().find(|(_, candidate)| *candidate == hit) {
-                    self.ensure_visible(*rect, lay.viewport_content);
-                }
-                self.dirty = true;
-                true
-            }
-            AccessAction::SetValue(value) if hit == Hit::ConfirmField => {
-                self.confirm_input.set_text(value);
-                self.confirm_input.set_focus(true);
-                self.keyboard_hit = Some(hit);
-                self.dirty = true;
-                true
-            }
-            AccessAction::Activate => {
-                self.dispatch_hit(state, hit);
-                self.dirty = true;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|child| child.take_structure_dirty())
     }
 
     /// Keep the event loop ticking while a job or file picker is in flight, so
-    /// the progress bars animate and the portal result is drained promptly.
+    /// the progress shows and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
+        self.job_rx.is_some()
+            || self.portal_rx.is_some()
+            || self.release_rx.is_some()
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|child| child.needs_animation_frame())
+    }
+
+    fn needs_idle_sync(&self) -> bool {
         self.job_rx.is_some() || self.portal_rx.is_some() || self.release_rx.is_some()
     }
 
@@ -5499,6 +2037,37 @@ impl Widget for ImagerApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ImagerApp {
+    /// Keys that act on the whole wizard when no control took them: Enter
+    /// moves on, Escape stops a running write, R rescans on the Drive step.
+    fn handle_global_shortcut_key(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        use winit::keyboard::{Key, NamedKey};
+
+        match logical_key {
+            Key::Named(NamedKey::Enter) => {
+                self.advance(state);
+                *handled = true;
+            }
+            Key::Named(NamedKey::Escape)
+                if self.step == Step::Write && self.job_control.is_some() =>
+            {
+                let _ = self.perform_operation(&crate::actions::ImagerOperation::Cancel, state);
+                *handled = true;
+            }
+            Key::Character(s) if matches!(s.as_str(), "r" | "R") && self.step == Step::Drive => {
+                self.do_rescan(state);
+                *handled = true;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -5602,8 +2171,6 @@ impl ImagerApp {
                 let text = self
                     .profile
                     .to_headless_config(self.source.as_ref(), self.target());
-                self.export_dialog.show(text.clone());
-                self.dirty = true;
                 return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::Value::String(text)),
                     resources: Vec::new(),
@@ -5616,248 +2183,12 @@ impl ImagerApp {
     }
 }
 
-impl ImagerApp {
-    /// The Customize step's delegated handling. Returns `true` when the panel
-    /// consumed the event, so the caller stops before the wizard chrome below
-    /// ever sees it.
-    fn handle_customize_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        lay: &Layout,
-    ) -> bool {
-        if !(self.step == Step::Customize && self.customizable() && !self.export_dialog.is_open()) {
-            return false;
-        }
-        let removable = self.target().is_some_and(|d| d.removable);
-        let profile = self.profile.clone();
-        let resp = self.customize.handle_event(
-            event,
-            ctx,
-            &mut self.actions,
-            &profile,
-            removable,
-            lay.content,
-        );
-        if resp.export_requested {
-            self.export_config(ctx.state);
-        }
-        resp.handled
-    }
-
-    /// Confirm-step Wi-Fi / enrollment form for the selected image.
-    fn handle_write_setup_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        lay: &Layout,
-    ) -> bool {
-        if !self.offers_write_setup() {
-            return false;
-        }
-        let profile = self.profile.clone();
-        let top = self.write_setup_top(lay.content);
-        let resp = self.write_setup.handle_event(
-            event,
-            ctx,
-            &mut self.actions,
-            &profile,
-            lay.content,
-            top,
-        );
-        if let Some(psk) = resp.wifi_psk {
-            self.wifi_psk = psk;
-        }
-        if resp.handled {
-            self.confirm_input.set_focus(false);
-            self.profile = ImagerDoc::profile(ctx.state);
-        }
-        resp.handled
-    }
-
-    /// Track the pointer and which drive card (if any) is under it.
-    fn handle_cursor_moved(&mut self, px: f64, py: f64, scale_factor: f64, lay: &Layout) {
-        let p = Point::new(px / scale_factor, py / scale_factor);
-        self.last_mouse = p;
-        let hover_now = lay.hits.iter().find_map(|(r, h)| match h {
-            Hit::Target(i) if r.contains(p) => Some(*i),
-            _ => None,
-        });
-        self.hover_target = hover_now;
-        // Repaint on move so buttons/cards light up under the pointer.
-        self.dirty = true;
-    }
-
-    /// A left click in the content area dispatches a hit-tested affordance or,
-    /// on empty space, drops the confirm field's focus.
-    fn handle_left_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
-        self.keyboard_hit = None;
-        let p = self.last_mouse;
-        let hit = lay
-            .hits
-            .iter()
-            .find(|(r, _)| r.contains(p))
-            .map(|(_, h)| *h);
-        if let Some(hit) = hit {
-            self.dispatch_hit(state, hit);
-            *handled = true;
-            self.dirty = true;
-            return;
-        }
-        self.confirm_input.set_focus(false);
-    }
-
-    /// Keyboard handling for the Confirm step's typed device-name field and
-    /// global shortcuts. The export dialog captures input before this path.
-    fn handle_key_pressed(
-        &mut self,
-        logical_key: &winit::keyboard::Key,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
-        use winit::keyboard::{Key, NamedKey};
-
-        if matches!(logical_key, Key::Named(NamedKey::Enter))
-            && let Some(hit) = self.keyboard_hit
-        {
-            self.dispatch_hit(state, hit);
-            *handled = true;
-            self.dirty = true;
-            return;
-        }
-
-        // The Confirm step's typed device-name field (a transient arming
-        // gesture, not a profile edit).
-        if self.confirm_input.is_focused() && self.step == Step::Confirm {
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                self.confirm_input.set_focus(false);
-                *handled = true;
-                self.dirty = true;
-            }
-            return;
-        }
-        self.handle_global_shortcut_key(logical_key, state, handled);
-    }
-
-    fn ensure_visible(&mut self, rect: Rect, viewport: Rect) {
-        let padding = 10.0;
-        if rect.y1 > viewport.y1 - padding {
-            self.scroll_y += rect.y1 - (viewport.y1 - padding);
-        } else if rect.y0 < viewport.y0 + padding {
-            self.scroll_y -= viewport.y0 + padding - rect.y0;
-        }
-        self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll());
-    }
-
-    fn handle_tab_event(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        lay: &Layout,
-    ) -> bool {
-        let WindowEvent::KeyboardInput {
-            event:
-                winit::event::KeyEvent {
-                    logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        self.handle_tab_navigation(modifiers.state().shift_key(), lay);
-        true
-    }
-
-    fn handle_tab_navigation(&mut self, reverse: bool, lay: &Layout) {
-        if self.step == Step::Customize && self.customizable() {
-            const CUSTOM_SLOTS: usize = 7;
-            let back_slot = CUSTOM_SLOTS;
-            let primary_slot = CUSTOM_SLOTS + 1;
-            let current = self.customize.keyboard_slot().or(match self.keyboard_hit {
-                Some(Hit::Back) => Some(back_slot),
-                Some(Hit::Next) => Some(primary_slot),
-                _ => None,
-            });
-            let count = CUSTOM_SLOTS + 2;
-            let next = match (current, reverse) {
-                (Some(0) | None, true) => count - 1,
-                (Some(index), true) => index - 1,
-                (Some(index), false) => (index + 1) % count,
-                (None, false) => 0,
-            };
-            self.customize.clear_focus();
-            self.keyboard_hit = None;
-            if next < CUSTOM_SLOTS {
-                self.customize.focus_keyboard_slot(next);
-                if let Some(rect) = self.customize.keyboard_slot_rect(lay.content, next) {
-                    self.ensure_visible(rect, lay.viewport_content);
-                }
-            } else {
-                self.keyboard_hit = Some(if next == back_slot {
-                    Hit::Back
-                } else {
-                    Hit::Next
-                });
-            }
-            return;
-        }
-
-        let focusable = lay.hits.iter().map(|(_, hit)| *hit).collect::<Vec<_>>();
-        if focusable.is_empty() {
-            return;
-        }
-        let current = self
-            .keyboard_hit
-            .and_then(|selected| focusable.iter().position(|hit| *hit == selected));
-        let next = match (current, reverse) {
-            (Some(0) | None, true) => focusable.len() - 1,
-            (Some(index), true) => index - 1,
-            (Some(index), false) => (index + 1) % focusable.len(),
-            (None, false) => 0,
-        };
-        self.customize.clear_focus();
-        self.confirm_input.set_focus(false);
-        self.keyboard_hit = focusable.get(next).copied();
-        if self.keyboard_hit == Some(Hit::ConfirmField) {
-            self.confirm_input.set_focus(true);
-        }
-        if let Some((rect, _)) = lay.hits.get(next) {
-            self.ensure_visible(*rect, lay.viewport_content);
-        }
-    }
-
-    fn handle_global_shortcut_key(
-        &mut self,
-        logical_key: &winit::keyboard::Key,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
-        use winit::keyboard::{Key, NamedKey};
-
-        match logical_key {
-            Key::Named(NamedKey::Enter) => {
-                self.advance(state);
-                *handled = true;
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                self.back(state);
-                *handled = true;
-            }
-            Key::Character(s) if matches!(s.as_str(), "r" | "R") && self.step == Step::Drive => {
-                self.do_rescan(state);
-                *handled = true;
-            }
-            _ => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::a11y::Action as AccessAction;
+    use ui::accesskit;
+    use ui::headless::{FrameHarness, SemanticExpectation};
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
@@ -5870,6 +2201,43 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    /// The wizard in a real frame: layout, focus, pointer, keys and
+    /// assistive actions all take the host's own routes.
+    fn harness(app: ImagerApp, doc: AutoCommit, viewport: (u32, u32)) -> FrameHarness {
+        let mut state = ui::State::new();
+        state.doc = doc;
+        FrameHarness::for_root(state, app, viewport, Theme::dark())
+    }
+
+    /// The posed `--shots` frame of `scenario`.
+    fn scenario(name: &str, viewport: (u32, u32)) -> FrameHarness {
+        let mut state = ui::State::new();
+        crate::seed_scenario(&mut state.doc, name);
+        FrameHarness::new(state, crate::app_root_for_shot(name), viewport)
+    }
+
+    /// Every control id the page composed for `app`'s current state.
+    fn ids(app: &ImagerApp) -> Vec<String> {
+        fn walk(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(id) = widget.test_id() {
+                out.push(id.to_string());
+            }
+            for child in widget.children() {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(app.build_composition().as_ref(), &mut out);
+        out
+    }
+
+    fn labelled(h: &FrameHarness, label: &str) -> Option<accesskit::Node> {
+        h.a11y_nodes()
+            .into_iter()
+            .map(|(_, node)| node)
+            .find(|node| node.label() == Some(label))
     }
 
     /// Blank start, demo seeding, local state and restart reconciliation.
@@ -5951,6 +2319,7 @@ mod tests {
             assert!(restarted.selected.is_none());
             assert!(restarted.status.is_empty());
             assert!(!restarted.can_advance_with_writer(Step::Drive, true));
+            let _ = &mut doc;
         }
 
         // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
@@ -5958,7 +2327,7 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             app.select_target(&doc, 0);
             app.startup_write_state_reconciled = false;
-            app.confirm_input.set_text("sdb");
+            app.confirm_text = "sdb".into();
 
             assert!(!app.can_advance_with_writer(Step::Confirm, true));
             let error = app
@@ -5994,17 +2363,9 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             assert!(app.releases().is_empty(), "no fabricated Tilo releases");
-
-            // ...and nothing on the Source step is clickable that would select one.
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            let offered = app
-                .compute_layout()
-                .hits
-                .iter()
-                .any(|(_, h)| matches!(h, Hit::Release(_)));
             assert!(
-                !offered,
-                "no release row may be hit-testable on the live path"
+                !ids(&app).iter().any(|id| id.starts_with("imager.release.")),
+                "no release row is offered on the live path"
             );
             assert!(
                 app.source.is_none(),
@@ -6015,144 +2376,13 @@ mod tests {
         // Phase `demo_document_offers_its_seeded_releases`.
         // The gate is a gate, not a deletion: the demo document still offers them.
         {
-            let (mut app, _doc) = seeded_app();
+            let (app, _doc) = seeded_app();
             assert_eq!(app.releases().len(), 2);
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            let offered = app
-                .compute_layout()
-                .hits
+            let offered = ids(&app)
                 .iter()
-                .filter(|(_, h)| matches!(h, Hit::Release(_)))
+                .filter(|id| id.starts_with("imager.release."))
                 .count();
-            assert_eq!(offered, 2, "each seeded release has a row to click");
-        }
-    }
-
-    // ---- synthetic winit events for driving the real event path -----------
-
-    fn char_ev(s: &str) -> WindowEvent {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{Key, SmolStr};
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(s));
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn named_key_ev(key: winit::keyboard::NamedKey) -> WindowEvent {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = winit::event::ElementState::Pressed;
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn wheel_ev(lines: f32) -> WindowEvent {
-        WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
-            phase: winit::event::TouchPhase::Moved,
-        }
-    }
-
-    fn cursor_ev(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    #[cfg(not(feature = "host-media-writer"))]
-    fn click_ev() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-        }
-    }
-
-    /// Feed one event through the real `handle_event` path with throwaway
-    /// framework out-params.
-    fn feed(app: &mut ImagerApp, doc: &mut AutoCommit, ev: &WindowEvent) {
-        let m = winit::event::Modifiers::default();
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
-        let (mut h, mut ft) = (false, None);
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &m,
-                state: doc,
-                path: &automerge::ROOT,
-                handled: &mut h,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-    }
-
-    /// Click at a point: move the pointer there (so hover state settles), then
-    /// press — exactly the real winit sequence the compositor delivers.
-    #[cfg(not(feature = "host-media-writer"))]
-    fn click_at(app: &mut ImagerApp, doc: &mut AutoCommit, p: Point) {
-        feed(app, doc, &cursor_ev(p.x, p.y));
-        feed(app, doc, &click_ev());
-    }
-
-    #[cfg(not(feature = "host-media-writer"))]
-    fn center(r: Rect) -> Point {
-        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
-    }
-
-    /// The rect of the first hit matching `pred`, from this frame's layout.
-    #[cfg(not(feature = "host-media-writer"))]
-    fn hit_rect(app: &ImagerApp, pred: impl Fn(&Hit) -> bool) -> Rect {
-        app.compute_layout()
-            .hits
-            .into_iter()
-            .find(|(_, h)| pred(h))
-            .unwrap_or_else(|| panic!("expected a matching hit target this frame"))
-            .0
-    }
-
-    fn accessible_named<'a>(
-        node: &'a ui::a11y::AccessNode,
-        name: &str,
-    ) -> Option<&'a ui::a11y::AccessNode> {
-        if node.name.as_deref() == Some(name) {
-            return Some(node);
-        }
-        node.children
-            .iter()
-            .find_map(|child| accessible_named(child, name))
-    }
-
-    fn accessible_focus_order(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
-        if node.state.focusable {
-            names.push(node.name.clone().unwrap_or_default());
-        }
-        for child in &node.children {
-            accessible_focus_order(child, names);
+            assert_eq!(offered, 2, "each seeded release has a row to choose");
         }
     }
 
@@ -6163,198 +2393,132 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn wizard_semantics_labels_live_regions_and_keyboard_order() {
-        // Phase `main_canvas_semantics_expose_heading_sources_and_keyboard_order`.
+        // Phase `the_page_exposes_its_heading_stepper_and_keyboard_order`.
         {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-
-            let tree = app.accessibility_tree();
-            assert_eq!(tree.role, ui::a11y::Role::Window);
-            assert_eq!(tree.name.as_deref(), Some("Start Media Creator"));
-            let heading = accessible_named(&tree, "Choose the source image").expect("step heading");
-            assert_eq!(heading.role, ui::a11y::Role::Heading { level: 1 });
-            let selected = accessible_named(&tree, "Selected image").expect("selected image");
-            assert!(
-                selected
-                    .value
-                    .as_deref()
-                    .is_some_and(|value| value.contains("Tilo"))
-            );
+            let (app, doc) = seeded_app();
+            let mut h = harness(app, doc, (1180, 820));
+            let heading = labelled(&h, "Choose an image").expect("step heading");
+            assert_eq!(heading.role(), accesskit::Role::Heading);
+            let stepper = labelled(&h, "Source").expect("stepper");
+            assert_eq!(stepper.role(), accesskit::Role::ProgressIndicator);
 
             let mut order = Vec::new();
-            accessible_focus_order(&tree, &mut order);
-            assert_eq!(
-                order.first().map(String::as_str),
-                Some("Step 1 of 6: Source")
-            );
+            for _ in 0..12 {
+                h.tab(false);
+                if let Some(node) = h.focused_access_node() {
+                    order.push(node.name.unwrap_or_default());
+                }
+            }
             let browse = order
                 .iter()
-                .position(|name| name == "Browse for an image")
+                .position(|name| name == "Browse…")
                 .expect("browse in focus order");
             let continue_button = order
                 .iter()
                 .position(|name| name == "Continue")
                 .expect("continue in focus order");
             assert!(browse < continue_button);
-            assert!(
-                accessible_named(&tree, "Step 3 of 6: Customize")
-                    .expect("future customize step")
-                    .state
-                    .disabled
-            );
         }
 
-        // Phase `hardware_variants_have_distinct_semantic_selection_and_review_labels`.
+        // Phase `hardware_variants_have_distinct_rows_and_review_labels`.
         {
-            use ui::a11y::Action as AccessAction;
-
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let (mut app, doc) = seeded_app();
             let mut generic = crate::model::sample_releases().remove(0);
             generic.architecture = "aarch64".into();
             let mut board = generic.clone();
             board.hardware_profile = "lenovo-83ed".into();
-            let target = format!("imager:release:{}", board.selection_id());
             assert_ne!(generic.selection_id(), board.selection_id());
             app.releases = vec![generic, board.clone()];
-            let tree = app.accessibility_tree();
-            assert!(
-                accessible_named(&tree, &format!("Download {}", board.display_name())).is_some()
-            );
-            assert!(app.perform_semantic_action(
-                &target,
+            let mut h = harness(app, doc, (1180, 820));
+            h.perform_named(
+                &format!("imager.release.{}", board.selection_id()),
                 &AccessAction::Activate,
-                &mut doc,
-                &automerge::ROOT
-            ));
+            )
+            .unwrap();
+            let app = h.root::<ImagerApp>();
             assert!(board.matches_source(app.source.as_ref().unwrap()));
             assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
+            let image = app
+                .review_rows()
+                .into_iter()
+                .find(|(label, _)| *label == "Image")
+                .unwrap()
+                .1;
+            assert!(image.contains("lenovo-83ed only"));
+        }
+
+        // Phase `profile_and_confirmation_controls_are_editable`.
+        {
+            let (mut app, mut doc) = seeded_app();
             app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
-            let tree = app.accessibility_tree();
-            assert!(
-                accessible_named(&tree, "Image")
-                    .unwrap()
-                    .value
-                    .as_deref()
-                    .unwrap()
-                    .contains("lenovo-83ed only")
+            app.goto(&mut doc, Step::Customize);
+            let mut h = harness(app, doc, (1180, 820));
+            for (id, role) in [
+                ("imager.profile.hostname", ui::a11y::Role::TextInput),
+                ("imager.profile.locale", ui::a11y::Role::ComboBox),
+                ("imager.profile.timezone", ui::a11y::Role::ComboBox),
+                ("imager.profile.keyboard", ui::a11y::Role::ComboBox),
+                ("imager.profile.filesystem", ui::a11y::Role::ComboBox),
+            ] {
+                h.expect(&SemanticExpectation::named(id).role(role))
+                    .unwrap_or_else(|error| panic!("{id}: {error}"));
+            }
+            h.perform_named(
+                "imager.profile.hostname",
+                &AccessAction::SetValue("accessible-host".into()),
+            )
+            .unwrap();
+            assert_eq!(
+                ImagerDoc::profile(&h.state().doc).hostname,
+                "accessible-host"
             );
         }
 
-        // Phase `profile_and_confirmation_semantics_are_editable_and_focusable`.
+        // Phase `choices_take_only_listed_values`.
         {
-            use ui::a11y::Action as AccessAction;
-
             let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
             app.select_target(&doc, 0);
             app.goto(&mut doc, Step::Customize);
-
-            let tree = app.accessibility_tree();
-            let mut order = Vec::new();
-            accessible_focus_order(&tree, &mut order);
-            let profile_order = [
-                "Hostname",
-                "Full name",
-                "Username",
-                "Language and locale",
-                "Time zone",
-                "Keyboard layout",
-                "Filesystem",
-                "Preview embedded setup",
-            ];
-            let positions = profile_order.map(|name| {
-                order
-                    .iter()
-                    .position(|candidate| candidate == name)
-                    .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
-            });
-            assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-            for name in [
-                "Language and locale",
-                "Time zone",
-                "Keyboard layout",
-                "Filesystem",
+            for (field, chosen, expected) in [
+                (CzField::Locale, "de_DE.UTF-8", "de_DE.UTF-8"),
+                (CzField::Timezone, "Europe/Berlin", "Europe/Berlin"),
+                (CzField::Keyboard, "German (QWERTZ)", "de"),
             ] {
-                assert_eq!(
-                    accessible_named(&tree, name).expect("profile chooser").role,
-                    ui::a11y::Role::ComboBox,
-                    "{name} is exposed as a chooser, not unrestricted text"
-                );
-            }
-
-            assert!(app.perform_semantic_action(
-                "imager:profile:hostname",
-                &AccessAction::SetValue("accessible-host".into()),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
-
-            for (target, chosen, expected) in [
-                ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
-                ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
-            ] {
-                assert!(app.perform_semantic_action(
-                    target,
-                    &AccessAction::SetValue(chosen.into()),
-                    &mut doc,
-                    &automerge::ROOT,
-                ));
+                app.apply_command(&mut doc, Command::Profile(field, chosen.into()));
                 let profile = ImagerDoc::profile(&doc);
-                let actual = match target {
-                    "imager:profile:locale" => profile.locale,
-                    "imager:profile:timezone" => profile.timezone,
+                let actual = match field {
+                    CzField::Locale => profile.locale,
+                    CzField::Timezone => profile.timezone,
                     _ => profile.keyboard,
                 };
                 assert_eq!(actual, expected);
             }
             let timezone_before = ImagerDoc::profile(&doc).timezone;
-            assert!(app.perform_semantic_action(
-                "imager:profile:timezone",
-                &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
+            app.apply_command(
                 &mut doc,
-                &automerge::ROOT,
-            ));
+                Command::Profile(CzField::Timezone, "Europe/Not_A_Real_Zone".into()),
+            );
             assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
             assert!(app.status.contains("Choose a listed Time zone"));
-
-            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-            app.scroll_y = 0.0;
-            assert!(app.perform_semantic_action(
-                "imager:profile:keyboard",
-                &AccessAction::Focus,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
-
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            app.goto(&mut doc, Step::Confirm);
-            let target_name = app.target().expect("target").name.clone();
-            let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
-                .expect("confirmation input")
-                .clone();
-            assert_eq!(confirm.role, ui::a11y::Role::TextInput);
-            assert!(confirm.state.required);
-            assert!(app.perform_semantic_action(
-                "imager:hit:confirm-field",
-                &AccessAction::SetValue(target_name),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert!(app.confirm_matches());
-            assert!(app.confirm_input.is_focused());
+            assert!(app.status_is_error);
         }
 
-        // Phase `write_progress_and_status_are_live_regions`.
+        // Phase `the_confirmation_field_arms_the_write`.
         {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let (mut app, mut doc) = seeded_app();
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Confirm);
+            let mut h = harness(app, doc, (1180, 820));
+            h.perform_named("imager.confirm", &AccessAction::SetValue("sdb".into()))
+                .unwrap();
+            assert!(h.root::<ImagerApp>().confirm_matches());
+        }
+
+        // Phase `write_progress_is_a_live_progress_indicator`.
+        {
+            let (mut app, doc) = seeded_app();
+            app.selected = Some(0);
             app.step = Step::Write;
-            app.status = "Verifying written data".into();
             app.progress = Progress {
                 phase: JobPhase::Verifying,
                 write_frac: 1.0,
@@ -6362,495 +2526,109 @@ mod tests {
                 rate_bps: 1,
                 error: None,
             };
-
-            let tree = app.accessibility_tree();
-            let status = accessible_named(&tree, "Status").expect("live status");
-            assert_eq!(status.live, Some(ui::a11y::Politeness::Polite));
-            let progress = accessible_named(&tree, "Verifying image").expect("live progress");
-            assert_eq!(progress.role, ui::a11y::Role::ProgressBar);
-            assert!(progress.state.busy);
-            assert_eq!(progress.live, Some(ui::a11y::Politeness::Polite));
-            assert!(
-                progress
-                    .value
-                    .as_deref()
-                    .is_some_and(|value| value.contains("percent"))
-            );
-            assert_eq!(
-                accessible_named(&tree, "Write phase")
-                    .expect("write phase progress")
-                    .value
-                    .as_deref(),
-                Some("100 percent")
-            );
-            assert_eq!(
-                accessible_named(&tree, "Verify phase")
-                    .expect("verify phase progress")
-                    .value
-                    .as_deref(),
-                Some("40 percent")
-            );
+            let h = harness(app, doc, (1180, 820));
+            let ring = labelled(&h, "Verifying").expect("progress ring");
+            assert_eq!(ring.role(), accesskit::Role::ProgressIndicator);
+            assert_eq!(ring.value(), Some("40%"));
         }
 
         // Phase `tab_reaches_every_profile_control_and_both_footer_actions`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-            app.goto(&mut doc, Step::Customize);
-            let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
-
-            for slot in 0..7 {
-                feed(&mut app, &mut doc, &tab);
-                assert_eq!(app.customize.keyboard_slot(), Some(slot));
-            }
-            assert!(app.scroll_y > 0.0, "lower controls are scrolled into view");
-
-            feed(&mut app, &mut doc, &tab);
-            assert_eq!(app.keyboard_hit, Some(Hit::Back));
-            feed(&mut app, &mut doc, &tab);
-            assert_eq!(app.keyboard_hit, Some(Hit::Next));
-            feed(
-                &mut app,
-                &mut doc,
-                &named_key_ev(winit::keyboard::NamedKey::Enter),
-            );
-            assert_eq!(app.step, Step::Confirm, "focused Continue activates");
-        }
-    }
-
-    /// Step stations and headings at compact and wide layouts.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn step_rail_keeps_six_stations_inside_the_viewport() {
-        // Phase `layout_has_six_step_stations`.
-        {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            let lay = app.compute_layout();
-            assert_eq!(lay.crumbs.len(), 6);
-            assert!(!lay.compact_crumbs);
-        }
-
-        // Phase `compact_layout_keeps_every_step_station_inside_the_viewport`.
-        {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-            let lay = app.compute_layout();
-
-            assert!(lay.compact_crumbs);
-            assert_eq!(lay.crumbs.len(), Step::all().len());
-            // A station is a pointer target (HIG §9.6): the token is the floor,
-            // not the layout's own constant.
-            let target = f64::from(Metrics::BASE.min_pointer_target);
-            assert!(lay.crumbs.iter().all(|(rect, _)| {
-                rect.x0 >= app.rect.x0
-                    && rect.x1 <= app.rect.x1
-                    && rect.width() >= 40.0
-                    && rect.height() >= target
-            }));
-            assert_eq!(
-                lay.crumbs.first().map(|(_, step)| *step),
-                Some(Step::Source)
-            );
-            assert_eq!(lay.crumbs.last().map(|(_, step)| *step), Some(Step::Done));
-        }
-
-        // Phase `compact_step_targets_use_the_same_on_screen_rects_as_the_rail`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
             app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
-            let lay = app.compute_layout();
-
-            for (rect, step) in &lay.crumbs {
-                if app.crumb_reachable(*step) {
-                    assert!(lay.hits.iter().any(|(hit_rect, hit)| {
-                        hit_rect == rect
-                            && matches!(hit, Hit::StepJump(hit_step) if hit_step == step)
-                    }));
+            app.goto(&mut doc, Step::Customize);
+            let mut h = harness(app, doc, (320, 480));
+            let mut order = Vec::new();
+            for _ in 0..16 {
+                h.tab(false);
+                if let Some(node) = h.focused_access_node() {
+                    order.push(node.name.unwrap_or_default());
                 }
             }
-        }
-
-        // Phase `step_content_starts_below_the_measured_heading_group`.
-        // The Source drop zone starts below the measured heading group plus the
-        // heading-to-content gap, at 1× and at 2×, and the Confirm review card
-        // follows the same rule; the 1× floors the compact test pins still hold.
-        {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut tr = TextRenderer::new();
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-
-            let browse_top = |app: &ImagerApp| {
-                let lay = app.compute_layout();
-                let browse = lay
-                    .hits
-                    .iter()
-                    .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-                    .unwrap();
-                browse.y0 - lay.content.y0
-            };
-            let unmeasured = browse_top(&app);
-            assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
-
-            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-            let (title, sub) = app.source_heading();
-            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
-            let at_1x = browse_top(&app);
-            assert!(
-                (at_1x - needed).abs() < 1e-6,
-                "drop zone starts after the measured heading"
-            );
-            assert!(
-                at_1x > unmeasured,
-                "the measured group needs more than the 1x floor"
-            );
-
-            tr.set_text_scale(2.0);
-            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-            let at_2x = browse_top(&app);
-            assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
-
-            app.goto(&mut doc, Step::Confirm);
-            tr.set_text_scale(1.0);
-            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-            let (title, sub) = app.confirm_heading();
-            let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-            let (_, sh) = tr.measure(sub.unwrap(), 13.0, Some(CONTENT_MAX_W as f32));
-            let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
-            let lay = app.compute_layout();
-            assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
-            // The scroll extent grows by the same amount, so the bottom-anchored
-            // confirmation field cannot ride up into the review card.
-            let extent = app.content_extent(app.content_viewport_rect());
-            let confirm_field = lay
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
-                .unwrap();
-            let card_bottom = app.confirm_card_rect(lay.content).y1;
-            assert!(
-                lay.content.y0 + extent >= confirm_field.y1 + RELATED + app.bands.confirm.note_h,
-                "the extent covers the field and its note"
-            );
-            assert!(
-                confirm_field.y0 >= card_bottom + SIBLING,
-                "field stays below the review card"
-            );
-        }
-    }
-
-    /// Body blocks, banners, footers, scrolling and failure detail layout.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn step_body_and_footer_reflow_without_overlap() {
-        // Phase `source_blocks_follow_the_text_scale_without_overlapping`.
-        // The Source blocks keep their 1× bands exactly and grow with the type at
-        // 2×: every hit rect is the measured band, consecutive rows never
-        // overlap, and the scroll extent covers the taller content.
-        {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut tr = TextRenderer::new();
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
-
-            let rects = |app: &ImagerApp| {
-                let lay = app.compute_layout();
-                let pick = |f: &dyn Fn(&Hit) -> bool| -> Vec<Rect> {
-                    let mut v: Vec<Rect> = lay
-                        .hits
-                        .iter()
-                        .filter_map(|(r, h)| f(h).then_some(*r))
-                        .collect();
-                    v.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-                    v
-                };
-                (
-                    pick(&|h| matches!(h, Hit::PickFile))[0],
-                    pick(&|h| matches!(h, Hit::Release(_))),
-                    pick(&|h| matches!(h, Hit::Recent(_))),
-                )
-            };
-
-            app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-            // Every band is its measured line boxes plus rhythm steps — a row is
-            // two lines a `LABEL` apart under `RELATED` padding — the hit rects
-            // are exactly the bands the painters fill, and no two neighbouring
-            // blocks come closer than a `LABEL` step at 1×.
-            let m = app.bands.source.clone();
-            let row = RELATED + tr.line(14.5) + LABEL + tr.line(11.5) + RELATED;
-            assert!(
-                (m.release_row_h - row).abs() < 1e-6,
-                "release row is measured"
-            );
-            // The renderer's 1× line boxes are the toolkit's `line_height_px`, so
-            // every measured band equals its unmeasured estimate: the probe frame
-            // and the painted frame place the blocks identically.
-            let floors = SourceMetrics::default();
-            for (got, want) in [
-                (m.dropzone_h, floors.dropzone_h),
-                (m.card_h, floors.card_h),
-                (m.card_h_compact, floors.card_h_compact),
-                (m.release_row_h, floors.release_row_h),
-                (m.recent_row_h, floors.recent_row_h),
-                (m.section_h, floors.section_h),
-                (m.zero_h, floors.zero_h),
+            for name in [
+                "Hostname",
+                "Full name",
+                "Username",
+                "Time zone",
+                "Language and locale",
+                "Keyboard layout",
+                "Filesystem",
+                "Back",
+                "Continue",
             ] {
                 assert!(
-                    (got - want).abs() < 1e-6,
-                    "1× band {got} equals its estimate {want}"
+                    order.iter().any(|candidate| candidate == name),
+                    "{name} is reachable by Tab: {order:?}"
                 );
             }
-            let (browse, releases, recents) = rects(&app);
-            // The 1× bands `after/dark/source.png` shows: the drop zone 91.6 px
-            // (a 16 pt and a 12.5 pt line inside `s6` padding), a release row
-            // 52.5 px, a recent row 50 px — and every block at least a pointer
-            // target tall.
-            let target = f64::from(Metrics::BASE.min_pointer_target);
-            assert!(
-                (browse.height() - 91.625).abs() < 1e-6,
-                "{}",
-                browse.height()
-            );
-            assert!(releases.iter().all(|r| (r.height() - 52.5).abs() < 1e-6));
-            assert!(recents.iter().all(|r| (r.height() - 50.0).abs() < 1e-6));
-            assert!(
-                releases
-                    .iter()
-                    .chain(&recents)
-                    .all(|r| r.height() >= target)
-            );
-            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-            assert!(
-                releases
-                    .iter()
-                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-            );
-            assert!(
-                recents
-                    .iter()
-                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-            );
-            assert!(!releases.is_empty() && !recents.is_empty());
-            let mut blocks: Vec<Rect> = std::iter::once(browse)
-                .chain(releases.iter().copied())
-                .chain(recents.iter().copied())
-                .collect();
-            blocks.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-            for pair in blocks.windows(2) {
-                assert!(
-                    pair[1].y0 - pair[0].y1 >= LABEL - 1e-6,
-                    "Source blocks keep a token gap at 1× ({} → {})",
-                    pair[0].y1,
-                    pair[1].y0
-                );
-            }
-
-            tr.set_text_scale(2.0);
-            assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
-            let m = app.bands.source.clone();
-            assert!(m.dropzone_h > 96.0 && m.release_row_h > 54.0 && m.recent_row_h > 44.0);
-            let (browse, releases, recents) = rects(&app);
-            assert!((browse.height() - m.dropzone_h).abs() < 1e-6);
-            assert!(
-                releases
-                    .iter()
-                    .all(|r| (r.height() - m.release_row_h).abs() < 1e-6)
-            );
-            assert!(
-                recents
-                    .iter()
-                    .all(|r| (r.height() - m.recent_row_h).abs() < 1e-6)
-            );
-            let mut all: Vec<Rect> = std::iter::once(browse)
-                .chain(releases.iter().copied())
-                .chain(recents.iter().copied())
-                .collect();
-            all.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-            for pair in all.windows(2) {
-                assert!(
-                    pair[1].y0 >= pair[0].y1,
-                    "Source blocks never overlap at 2×"
-                );
-            }
-            // The content extent covers the last block plus the bottom margin.
-            let viewport = app.content_viewport_rect();
-            let last = all.last().unwrap();
-            let lay = app.compute_layout();
-            assert!(lay.content.y0 + app.content_extent(viewport) >= last.y1 + SECTION - 1e-6);
-        }
-
-        // Phase `confirm_field_follows_the_danger_banner`.
-        // The Confirm blocks stack on their measured bands at both content
-        // widths: the banner is the card's sibling, the field follows the banner
-        // a group later under its caption, rows never overlap, and the hit rect
-        // is the painted rect — the layout and the painter read one function.
-        {
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut tr = TextRenderer::new();
-            for width in [1200.0, 320.0] {
-                let (mut app, mut doc) = seeded_app();
-                app.rect = Rect::new(0.0, 0.0, width, 800.0);
-                app.select_target(&doc, 0);
-                app.goto(&mut doc, Step::Confirm);
-                app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
-                let lay = app.compute_layout();
-                let field = lay
-                    .hits
-                    .iter()
-                    .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
-                    .unwrap();
-                let m = app.bands.confirm.clone();
-                let card = app.confirm_card_rect(lay.content);
-                let banner = app.confirm_banner_rect(lay.content);
-                assert!((card.y0 - (lay.content.y0 + app.step_header_h(lay.content))).abs() < 1e-6);
-                assert!(
-                    (banner.y0 - (card.y1 + SIBLING)).abs() < 1e-6,
-                    "banner is the card's sibling at width {width}"
-                );
-                let setup = if app.offers_write_setup() {
-                    app.write_setup
-                        .extent(lay.content, app.write_setup_top(lay.content))
-                } else {
-                    0.0
-                };
-                assert!(
-                    (field.y0 - (banner.y1 + GROUP + setup + m.label_h + LABEL)).abs() < 1e-6,
-                    "field follows the banner and write-setup form under its caption at width {width}"
-                );
-                assert!((field.height() - CONTROL_H).abs() < 1e-6);
-                assert_eq!(field, app.confirm_field_rect(lay.content));
-                // Measured rows: one per review line, each at least a key line
-                // and a `SIBLING` apart, the card wrapping the last with padding.
-                assert_eq!(app.confirm_rows().len(), m.row_top.len());
-                assert_eq!(m.row_top.len(), 4, "image, drive, capacity, action");
-                for pair in m.row_top.windows(2) {
-                    assert!(pair[1] - pair[0] >= tr.line(12.0) + SIBLING - 1e-6);
-                }
-                assert!(m.card_h >= m.row_top.last().copied().unwrap_or(0.0) + SECTION);
-                // It still fits inside the step's extent (no scroll needed for
-                // the field itself on a tall window).
-                let extent = app.content_extent(app.content_viewport_rect());
-                assert!(field.y1 + RELATED + m.note_h <= lay.content.y0 + extent);
-            }
-        }
-
-        // Phase `compact_body_controls_reserve_space_for_wrapped_headings`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-            let source = app.compute_layout();
-            let browse = source
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
-                .unwrap();
-            assert!(browse.y0 >= source.content.y0 + 64.0);
-            assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
-
-            app.goto(&mut doc, Step::Drive);
-            let drive = app.compute_layout();
-            let rescan = drive
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::Rescan).then_some(*rect))
-                .unwrap();
-            let target = drive
-                .hits
-                .iter()
-                .find_map(|(rect, hit)| matches!(hit, Hit::Target(_)).then_some(*rect))
-                .unwrap();
-            assert!(rescan.y0 >= drive.content.y0 + 52.0);
-            assert!(target.y0 >= rescan.y1 + 12.0);
-        }
-
-        // Phase `compact_footer_actions_never_overlap`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-
-            for step in [Step::Drive, Step::Customize, Step::Confirm] {
-                app.goto(&mut doc, step);
-                let lay = app.compute_layout();
-                let back = lay.back.unwrap();
-                let primary = lay.primary.unwrap();
-                assert!(back.x0 >= lay.content.x0);
-                assert!(primary.x1 <= lay.content.x1);
-                assert!(back.x1 + 12.0 <= primary.x0);
-                assert!(back.width() >= 130.0 && primary.width() >= 130.0);
-            }
-        }
-
-        // Phase `short_viewport_scrolls_body_without_moving_sticky_footer`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-            app.goto(&mut doc, Step::Customize);
-            let before = app.compute_layout();
-            let footer_before = before.primary.unwrap();
-            assert!(app.max_scroll() > 100.0);
-
-            feed(&mut app, &mut doc, &cursor_ev(160.0, 220.0));
-            feed(&mut app, &mut doc, &wheel_ev(-3.0));
-            assert!(app.scroll_y > 0.0);
-            let after = app.compute_layout();
-            assert!(after.content.y0 < before.content.y0);
-            assert_eq!(after.primary, Some(footer_before));
-            assert_eq!(after.viewport_content, before.viewport_content);
-        }
-
-        // Phase `failure_detail_is_measured_bounded_and_visible_at_compact_width`.
-        {
-            let mut renderer = TextRenderer::new();
-            let detail = "Could not start the authorized writer because the selected removable drive disappeared while the operating system was preparing it. Reconnect it and try again.";
-            let max_width = 280.0;
-            let lines = ImagerApp::failure_detail_lines(&mut renderer, detail, max_width, 2);
-
-            assert_eq!(
-                lines.len(),
-                2,
-                "compact failure copy uses both visible lines"
-            );
-            assert!(
-                lines.iter().all(|line| {
-                    renderer
-                        .measure_weighted(line, 13.5, None, TextWeight::Regular)
-                        .0
-                        <= max_width
-                }),
-                "no failure-detail line paints beyond its content bounds"
-            );
-            assert!(
-                lines.join(" ").contains("authorized writer"),
-                "the actionable cause is visible rather than replaced by generic compact copy"
-            );
-            assert!(
-                lines.last().is_some_and(|line| line.ends_with('…')),
-                "bounded overflow is signalled"
-            );
         }
     }
 
-    /// Selection, capability, profile validity and confirmation gating.
+    /// Every step at a wide, a narrow and a phone-sized window: the stepper
+    /// on top, the actions at the bottom, nothing outside the window and the
+    /// two actions apart.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
+    fn every_step_stays_inside_the_window_at_every_width() {
+        for viewport in [(1280, 800), (800, 600), (320, 640)] {
+            for name in [
+                "source",
+                "drive",
+                "drive-empty",
+                "customize",
+                "confirm",
+                "progress",
+                "done",
+                "done-failed",
+            ] {
+                let h = scenario(name, viewport);
+                let width = f64::from(viewport.0);
+                let mut back = None;
+                let mut primary = None;
+                let mut stepper = None;
+                for (_, node) in h.a11y_nodes() {
+                    let Some(bounds) = node.bounds() else {
+                        continue;
+                    };
+                    if node.role() == accesskit::Role::Window {
+                        continue;
+                    }
+                    assert!(
+                        bounds.x0 >= -0.5 && bounds.x1 <= width + 0.5,
+                        "{name} at {viewport:?}: {:?} {:?} leaves the window: {bounds:?}",
+                        node.role(),
+                        node.label()
+                    );
+                    match (node.role(), node.label()) {
+                        (accesskit::Role::ProgressIndicator, _) if stepper.is_none() => {
+                            stepper = Some(bounds);
+                        }
+                        (accesskit::Role::Button, Some("Back")) => back = Some(bounds),
+                        (
+                            accesskit::Role::Button,
+                            Some("Continue" | "Cancel write" | "Start over" | "Review and retry"),
+                        ) => primary = Some(bounds),
+                        (accesskit::Role::Button, Some(label))
+                            if label.starts_with("Erase and write") =>
+                        {
+                            primary = Some(bounds);
+                        }
+                        _ => {}
+                    }
+                }
+                let stepper = stepper.unwrap_or_else(|| panic!("{name}: stepper"));
+                let primary = primary.unwrap_or_else(|| panic!("{name}: primary action"));
+                assert!(stepper.y1 < primary.y0, "{name}: stepper above the actions");
+                if let Some(back) = back {
+                    assert!(
+                        back.x1 < primary.x0,
+                        "{name} at {viewport:?}: actions apart"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn wizard_advance_and_confirm_require_valid_choices_and_capability() {
         // Phase `advancing_requires_selections`.
         {
@@ -6874,7 +2652,7 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             app.select_target(&doc, 0);
             app.goto(&mut doc, Step::Confirm);
-            app.confirm_input.set_text("sdb");
+            app.confirm_text = "sdb".into();
 
             assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
             assert!(app.can_advance_with_writer(
@@ -6897,11 +2675,12 @@ mod tests {
             app.advance(&mut doc);
             assert_eq!(app.step, Step::Customize);
             assert!(app.status.contains("Hostname"));
+            assert!(app.status_is_error, "the page shows the problem");
 
             // A direct operation dispatch must repeat the gate rather than relying
             // only on wizard navigation.
             app.goto(&mut doc, Step::Confirm);
-            app.confirm_input.set_text("sdb");
+            app.confirm_text = "sdb".into();
             app.start_write(&mut doc);
             assert_eq!(app.step, Step::Confirm);
             assert!(app.job_rx.is_none());
@@ -6931,7 +2710,7 @@ mod tests {
             let official = crate::model::sample_source();
             let mut local = official.clone();
             local.kind = SourceKind::IsoFile;
-            local.path = "/tmp/tilo-official-looking.iso".into();
+            local.path = "/home/ada/Downloads/tilo-official-looking.iso".into();
             local.identity = None;
             app.select_source(&mut doc, &local);
             assert!(!app.customizable());
@@ -6955,7 +2734,7 @@ mod tests {
             );
             app.select_target(&doc, 0);
             app.goto(&mut doc, Step::Confirm);
-            app.confirm_input.set_text("sdb");
+            app.confirm_text = "sdb".into();
             app.profile.wifi_ssid = "studio".into();
             app.wifi_psk = "correct-horse".into();
             let err = app
@@ -6984,7 +2763,7 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             app.select_target(&doc, 0); // sdb
             app.goto(&mut doc, Step::Confirm);
-            app.confirm_input.set_text("wrong");
+            app.confirm_text = "wrong".into();
             app.start_write(&mut doc);
             assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
             assert!(app.job_rx.is_none());
@@ -6995,10 +2774,6 @@ mod tests {
 
     /// Release download job presentation.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_download_is_local_visible_cancellable_and_keeps_the_loop_awake() {
         // Phase `pending_release_download_keeps_the_event_loop_awake`.
         {
@@ -7013,32 +2788,22 @@ mod tests {
             assert!(!app.needs_animation_frame());
         }
 
-        // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
+        // Phase `an_active_download_can_be_stopped_and_blocks_other_releases`.
         {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+            let (mut app, mut doc) = seeded_app();
             let (_tx, rx) = std::sync::mpsc::channel();
+            let control = crate::release::DownloadControl::default();
             app.release_rx = Some(rx);
-            app.release_control = Some(crate::release::DownloadControl::default());
+            app.release_control = Some(control.clone());
             app.release_download_index = Some(0);
             app.release_download_progress = Some((25, 100));
-            app.release_download_stage = Some("downloading");
+            app.release_download_stage = Some("Downloading");
 
-            let layout = app.compute_layout();
-            assert!(
-                layout
-                    .hits
-                    .iter()
-                    .any(|(_, hit)| *hit == Hit::CancelDownload)
-            );
-            assert!(
-                !layout
-                    .hits
-                    .iter()
-                    .any(|(_, hit)| matches!(hit, Hit::Release(_)))
-            );
-            let tree = app.accessibility_tree();
-            assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+            let source = app.source.clone();
+            app.apply_command(&mut doc, Command::Release(1));
+            assert_eq!(app.source, source, "a second release waits for the first");
+            app.apply_command(&mut doc, Command::CancelDownload);
+            assert!(control.is_cancelled());
         }
 
         // Phase `release_progress_is_local_visible_and_terminal_events_clear_the_job`.
@@ -7069,50 +2834,48 @@ mod tests {
     }
 
     /// The primary interaction, proven end to end by clicking the real
-    /// on-screen targets: walk Source → Drive → Customize → Confirm. Every transition
-    /// goes through the actual hit-testing + dispatch path, not a shortcut.
+    /// on-screen controls: walk Source → Drive → Customize → Confirm.
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-        assert_eq!(app.step, Step::Source);
+        let (app, doc) = seeded_app();
+        let mut h = harness(app, doc, (1180, 820));
+        assert_eq!(h.root::<ImagerApp>().step, Step::Source);
 
-        // Source → Drive: click Continue.
-        let primary = app.compute_layout().primary.unwrap();
-        click_at(&mut app, &mut doc, center(primary));
-        assert_eq!(app.step, Step::Drive);
+        h.click_named("imager.next").unwrap();
+        assert_eq!(h.root::<ImagerApp>().step, Step::Drive);
 
-        // Pick the USB stick by clicking its card.
-        let usb = hit_rect(&app, |h| matches!(h, Hit::Target(0)));
-        click_at(&mut app, &mut doc, center(usb));
-        assert_eq!(app.selected, Some(0));
+        h.click_named("imager.drive.sdb").unwrap();
+        assert_eq!(h.root::<ImagerApp>().selected, Some(0));
 
         // Drive → Customize (the seeded Tilo image is customizable).
-        let primary = app.compute_layout().primary.unwrap();
-        click_at(&mut app, &mut doc, center(primary));
-        assert_eq!(app.step, Step::Customize);
+        h.click_named("imager.next").unwrap();
+        assert_eq!(h.root::<ImagerApp>().step, Step::Customize);
 
-        // Customize → Confirm.
-        let primary = app.compute_layout().primary.unwrap();
-        click_at(&mut app, &mut doc, center(primary));
-        assert_eq!(app.step, Step::Confirm);
+        h.click_named("imager.next").unwrap();
+        assert_eq!(h.root::<ImagerApp>().step, Step::Confirm);
 
-        // Arm the write: click the typed-name field, then type the device name.
-        let field = hit_rect(&app, |h| matches!(h, Hit::ConfirmField));
-        click_at(&mut app, &mut doc, center(field));
-        assert!(app.confirm_input.is_focused());
-        app.confirm_input.set_text("wrong target");
-        app.confirm_input.select_all();
-        for s in ["s", "d", "b"] {
-            feed(&mut app, &mut doc, &char_ev(s));
+        // Arm the write: Tab to the typed-name field at the end of the review
+        // (focus scrolls it into view), then type the device name.
+        for _ in 0..30 {
+            if h.focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref()
+                == Some("Type sdb to confirm")
+            {
+                break;
+            }
+            h.tab(false);
         }
+        h.type_text("sdb");
+        h.expect(&SemanticExpectation::named("imager.confirm").focused(true))
+            .unwrap();
         assert!(
-            app.confirm_matches(),
-            "selection replacement through TextInput armed the write"
+            h.root::<ImagerApp>().confirm_matches(),
+            "typing into the field armed the write"
         );
         assert!(
-            automerge::ReadDoc::get(&doc, &automerge::ROOT, "confirm")
+            automerge::ReadDoc::get(&h.state().doc, &automerge::ROOT, "confirm")
                 .unwrap()
                 .is_none(),
             "destructive consent is never written to the shared document"
@@ -7123,10 +2886,12 @@ mod tests {
             return;
         }
 
-        // The primary control stays disabled: a matching phrase cannot turn an
+        // The write stays disabled: a matching phrase cannot turn an
         // unavailable backend into a synthetic success.
-        let primary = app.compute_layout().primary.unwrap();
-        click_at(&mut app, &mut doc, center(primary));
+        h.expect(&SemanticExpectation::named("imager.write").enabled(false))
+            .unwrap();
+        let _ = h.click_named("imager.write");
+        let app = h.root::<ImagerApp>();
         assert_eq!(app.step, Step::Confirm);
         assert_eq!(app.progress.phase, JobPhase::Idle);
         assert!(app.job_rx.is_none());
@@ -7141,7 +2906,7 @@ mod tests {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&doc, 0); // sdb
         app.goto(&mut doc, Step::Confirm);
-        app.confirm_input.set_text("sdb");
+        app.confirm_text = "sdb".into();
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Idle);
         assert_eq!(app.step, Step::Confirm);
@@ -7173,6 +2938,23 @@ mod tests {
             assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
         }
 
+        // Phase `a_dropped_image_is_inspected_like_a_picked_one`.
+        {
+            let (mut app, mut doc) = seeded_app();
+            let f = tempfile::Builder::new().suffix(".img").tempfile().unwrap();
+            std::fs::write(f.path(), b"raw image bytes for the imager test").unwrap();
+            app.apply_command(&mut doc, Command::Dropped(f.path().to_path_buf()));
+            assert_eq!(
+                app.source.as_ref().map(|source| source.path.clone()),
+                Some(f.path().display().to_string())
+            );
+            app.apply_command(
+                &mut doc,
+                Command::Dropped(PathBuf::from("/nonexistent/not-an-image.iso")),
+            );
+            assert!(app.status_is_error, "an unreadable file is reported");
+        }
+
         // Phase `drive_step_only_offers_external_installation_media`.
         {
             let (app, _doc) = seeded_app();
@@ -7185,20 +2967,20 @@ mod tests {
         {
             let (mut app, doc) = seeded_app();
             app.select_target(&doc, 0);
-            app.confirm_input.set_text("sdb");
+            app.confirm_text = "sdb".into();
 
             app.apply_drive_inventory(Vec::new());
 
             assert!(app.targets.is_empty());
             assert_eq!(app.selected, None);
-            assert!(app.confirm_input.value().is_empty());
+            assert!(app.confirm_text.is_empty());
         }
 
         // Phase `rescan_preserves_only_the_same_physical_target`.
         {
             let (mut app, doc) = seeded_app();
             app.select_target(&doc, 0);
-            app.confirm_input.set_text("sdb");
+            app.confirm_text = "sdb".into();
             let selected = app.target().unwrap().clone();
             let mut reordered = crate::model::sample_targets();
             reordered.swap(0, 1);
@@ -7210,7 +2992,7 @@ mod tests {
                 app.target().and_then(|drive| drive.stable_id.as_deref()),
                 selected.stable_id.as_deref()
             );
-            assert_eq!(app.confirm_input.value(), "sdb");
+            assert_eq!(app.confirm_text, "sdb");
 
             let mut replacement = selected;
             replacement.stable_id = Some("different-usb-stick".into());
@@ -7221,7 +3003,7 @@ mod tests {
                 "a reused OS device slot is not the reviewed drive"
             );
             assert!(
-                app.confirm_input.value().is_empty(),
+                app.confirm_text.is_empty(),
                 "consent never carries to replacement hardware"
             );
 
@@ -7229,13 +3011,13 @@ mod tests {
             unidentified_before.stable_id = None;
             app.targets = vec![unidentified_before.clone()];
             app.selected = Some(0);
-            app.confirm_input.set_text(&unidentified_before.name);
+            app.confirm_text.clone_from(&unidentified_before.name);
             app.apply_drive_inventory(vec![unidentified_before]);
             assert_eq!(
                 app.selected, None,
                 "a drive without stable identity must be chosen again after rescan"
             );
-            assert!(app.confirm_input.value().is_empty());
+            assert!(app.confirm_text.is_empty());
         }
 
         // Phase `internal_and_system_disks_can_never_be_selected`.
@@ -7249,86 +3031,47 @@ mod tests {
             ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
             app.sync(&mut doc, &automerge::ROOT);
 
-            app.dispatch_hit(&mut doc, Hit::Target(1));
+            app.apply_command(&mut doc, Command::Target(1));
             assert_eq!(app.selected, None, "the system disk is never selectable");
             assert!(app.status.to_lowercase().contains("system disk"));
+            assert!(app.status_is_error);
         }
     }
 
-    /// Set the Customize step up with one field cleared and focused, ready for
-    /// the shared panel to receive keystrokes through the real event path.
-    fn customize_with_field_focused(field: crate::customize::CzField) -> (ImagerApp, AutoCommit) {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        // Clear the target field so the typed assertion is exact.
-        let mut p = ImagerDoc::profile(&doc);
-        if field == crate::customize::CzField::Hostname {
-            p.hostname.clear();
-        }
-        ImagerDoc::set_profile(&mut doc, &p);
-        app.step = Step::Customize;
-        app.sync(&mut doc, &automerge::ROOT); // reads the profile + step back
-        assert_eq!(
-            app.step,
-            Step::Customize,
-            "the panel only handles events on this step"
-        );
-        assert!(app.customizable(), "the seeded Tilo image is customizable");
-        app.customize.focus_for_test(field);
-        (app, doc)
-    }
-
-    /// Hostname typing, keyboard chooser and preview.
+    /// Typing into the customization form and the profile export.
     #[test]
-    fn profile_panel_edits_persist_through_the_real_event_path() {
-        // Phase `typing_into_hostname_persists_to_profile_through_the_panel`.
+    fn profile_edits_persist_through_the_real_event_path() {
+        // Phase `typing_into_hostname_persists_to_profile`.
         {
-            use crate::customize::CzField;
-            let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
-            for s in ["l", "a", "b", "0", "1"] {
-                feed(&mut app, &mut doc, &char_ev(s));
-            }
+            let (mut app, mut doc) = seeded_app();
+            let mut profile = ImagerDoc::profile(&doc);
+            profile.hostname.clear();
+            ImagerDoc::set_profile(&mut doc, &profile);
+            app.sync(&mut doc, &automerge::ROOT);
+            app.select_target(&doc, 0);
+            app.goto(&mut doc, Step::Customize);
+            let mut h = harness(app, doc, (1280, 800));
+            h.click_named("imager.profile.hostname").unwrap();
+            h.type_text("lab01");
             assert_eq!(
-                ImagerDoc::profile(&doc).hostname,
+                ImagerDoc::profile(&h.state().doc).hostname,
                 "lab01",
                 "persisted to the doc"
             );
-            assert_eq!(
-                app.customize.field_value(CzField::Hostname),
-                "lab01",
-                "the input holds it"
-            );
+            h.expect(&SemanticExpectation::named("imager.profile.hostname").focused(true))
+                .unwrap();
         }
 
-        // Phase `keyboard_chooser_filters_and_commits_through_the_real_event_path`.
+        // Phase `the_export_view_returns_the_secret_free_profile`.
         {
-            use crate::customize::CzField;
-            use winit::keyboard::NamedKey;
-
-            let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
-            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-            for character in ["g", "e", "r", "m", "a", "n"] {
-                feed(&mut app, &mut doc, &char_ev(character));
-            }
-            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-
-            assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
-            assert_eq!(
-                app.customize.field_value(CzField::Keyboard),
-                "German (QWERTZ)"
-            );
-        }
-
-        // Phase `preview_shows_the_embedded_profile`.
-        {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, doc) = seeded_app();
             app.select_target(&doc, 1);
-            app.export_config(&mut doc);
-            let text = app.export_dialog.text();
+            let text = app
+                .profile
+                .to_headless_config(app.source.as_ref(), app.target());
             assert!(text.contains("\"schema\": 1"));
             assert!(text.contains("\"hostname\""));
             assert!(!text.contains("password"));
-            assert!(app.export_dialog.is_open());
         }
     }
 
@@ -7387,23 +3130,18 @@ mod tests {
                 app.status.contains("disconnected"),
                 "the privileged writer's actionable cause reaches the UI"
             );
-            let tree = app.accessibility_tree();
-            let result = accessible_named(&tree, "Write failure details")
-                .expect("accessible terminal result");
-            assert!(
-                result
-                    .value
-                    .as_deref()
-                    .is_some_and(|value| value.contains("disconnected"))
-            );
 
-            app.confirm_input.set_text("sdb");
-            app.write_another(&mut doc);
+            app.confirm_text = "sdb".into();
+            let mut h = harness(app, doc, (1180, 820));
+            h.expect(&SemanticExpectation::named("imager.result").name_contains("disconnected"))
+                .unwrap();
+            h.click_named("imager.start-over").unwrap();
+            let app = h.root::<ImagerApp>();
             assert_eq!(app.step, Step::Confirm, "failure returns to review");
             assert!(app.source.is_some(), "the verified source is preserved");
             assert_eq!(app.selected, Some(0), "the selected drive is preserved");
             assert!(
-                app.confirm_input.value().is_empty(),
+                app.confirm_text.is_empty(),
                 "retry requires fresh destructive consent"
             );
             assert_eq!(app.progress.phase, JobPhase::Idle);
@@ -7421,12 +3159,13 @@ mod tests {
 
             assert!(control.is_cancelled());
             assert!(app.status.contains("Keep the drive connected"));
-            let footer = app.a11y_footer_controls(&app.compute_layout());
-            let cancel = footer
-                .iter()
-                .find(|node| node.name.as_deref() == Some("Cancel image write"))
-                .expect("write screen exposes a cancel button");
-            assert!(cancel.state.disabled);
+            let mut h = harness(app, doc, (1180, 820));
+            h.expect(
+                &SemanticExpectation::named("imager.cancel-write")
+                    .name("Stopping…")
+                    .enabled(false),
+            )
+            .unwrap();
         }
 
         // Phase `cancel_wins_a_race_with_an_already_queued_success`.

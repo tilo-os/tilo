@@ -524,6 +524,9 @@ pub struct BlockEditor {
     text_scale: f64,
     /// Drag-handle geometry captured from the active theme.
     handle: HandleMetrics,
+    /// The text inset of the block lines: where a paragraph's text starts
+    /// inside its line rect, and so the editor's one content edge.
+    text_pad: f64,
     /// Reflow text blocks to the available width instead of giving each
     /// block a horizontally scrolling single line.
     wrap_lines: bool,
@@ -692,7 +695,7 @@ const FORMULA_HEADER_HEIGHT: f64 = 28.0;
 const FORMULA_SOURCE_HEIGHT: f64 = 24.0;
 const FORMULA_PREVIEW_GAP: f64 = 6.0;
 const TABLE_ROW_HEIGHT: f64 = 34.0;
-const TRANSCLUSION_MIN_HEIGHT: f32 = 104.0;
+const TRANSCLUSION_MIN_HEIGHT: f32 = 76.0;
 
 impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
@@ -706,6 +709,7 @@ impl BlockEditor {
             rect: Rect::ZERO,
             text_scale: 1.0,
             handle: HandleMetrics::default(),
+            text_pad: 0.0,
             wrap_lines: false,
             compact_paragraph_spacing: false,
             content_node: None,
@@ -1156,7 +1160,11 @@ impl BlockEditor {
     fn block_paint_rect(&self, index: usize) -> Option<Rect> {
         let block = self.blocks.get(index)?;
         let mut rect = block.line.get_rect();
-        rect.x0 -= prefix_gutter_for(&block.kind) * self.text_scale;
+        rect.x0 = content_edge(
+            rect,
+            prefix_gutter_for(&block.kind) * self.text_scale,
+            block.line.text_inset(&self.layout_theme),
+        );
         rect.y0 -= code_header_height(&self.blocks, index, self.text_scale);
         if matches!(block.kind, BlockKind::Quote) {
             rect.y0 -= 4.0 * self.text_scale;
@@ -2574,13 +2582,11 @@ impl BlockEditor {
             }
             let line_rect = b.line.get_rect();
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
-            let cy = first_row_center(line_rect, b.kind.font_size(), self.text_scale);
-            let cx = line_rect.x0 - gutter + gutter / 2.0;
-            let r = Rect::new(
-                cx - CHECKBOX_SIZE_PX * self.text_scale / 2.0,
-                cy - CHECKBOX_SIZE_PX * self.text_scale / 2.0,
-                cx + CHECKBOX_SIZE_PX * self.text_scale / 2.0,
-                cy + CHECKBOX_SIZE_PX * self.text_scale / 2.0,
+            let r = checklist_box(
+                line_rect,
+                gutter,
+                b.line.text_inset(&self.layout_theme),
+                self.text_scale,
             );
             // ~4px slop so users don't have to land pixel-perfect.
             let slop = 4.0;
@@ -2755,6 +2761,17 @@ impl BlockEditor {
     /// is also the hit target, so it grows to the pointer minimum where the
     /// block itself is that tall — never taller than the block, or two
     /// single-line paragraphs would share one handle.
+    /// The editor's own leading column for the drag handles: enough that a
+    /// handle standing `gap` before the content edge stays inside the
+    /// editor. None when handles are hidden.
+    fn handle_column(&self) -> f64 {
+        if self.block_handles && !self.read_only {
+            (self.handle.width + self.handle.gap - self.text_pad).max(0.0)
+        } else {
+            0.0
+        }
+    }
+
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         if !self.block_handles || self.read_only {
             return None;
@@ -6187,9 +6204,10 @@ fn draw_block(
     let scale = f64::from(ctx.theme.text_scale);
     let indent_px = f64::from(LIST_INDENT_STEP_PX) * f64::from(b.indent()) * scale;
     let gutter = prefix_gutter_for(&b.kind) * scale;
-    let prefix_x0 = line_rect.x0 - gutter;
-    let row_x0 = prefix_x0 - indent_px;
-    let _ = row_x0;
+    let pad = b.line.text_inset(ctx.theme);
+    // Every block starts at the one content edge, where a paragraph's text
+    // starts: a prefix glyph's box, a quote's or a code block's ground.
+    let prefix_x0 = content_edge(line_rect, gutter, pad);
 
     match &b.kind {
         BlockKind::Paragraph => {
@@ -6208,7 +6226,7 @@ fn draw_block(
         BlockKind::Heading(_) => {}
         BlockKind::Quote => {
             let background = Rect::new(
-                line_rect.x0 - gutter,
+                prefix_x0,
                 line_rect.y0 - 4.0 * scale,
                 line_rect.x1,
                 line_rect.y1 + 4.0 * scale,
@@ -6235,18 +6253,19 @@ fn draw_block(
             );
         }
         BlockKind::Bullet { .. } => {
-            draw_bullet_prefix(line_rect, prefix_x0, gutter, ctx);
+            draw_bullet_prefix(line_rect, prefix_x0, ctx);
             let _ = indent_px;
         }
         BlockKind::Numbered { .. } => {
-            draw_numbered_prefix(idx, line_rect, prefix_x0, b.kind.font_size(), ctx);
+            let text_rect = Rect::new(line_rect.x0 + pad, line_rect.y0, line_rect.x1, line_rect.y1);
+            draw_numbered_prefix(idx, text_rect, prefix_x0, b.kind.font_size(), ctx);
             let _ = indent_px;
         }
         BlockKind::Checklist { done, .. } => {
-            draw_checklist_prefix(*done, line_rect, prefix_x0, gutter, ctx);
+            draw_checklist_prefix(*done, checklist_box(line_rect, gutter, pad, scale), ctx);
         }
         BlockKind::CodeBlock { .. } => {
-            draw_code_block_prefix(idx, line_rect, gutter, ctx, formulas);
+            draw_code_block_prefix(idx, line_rect, line_rect.x0 - prefix_x0, ctx, formulas);
             // A block's own line is skipped while its visual formula
             // editor stands in for it — the raw TeX/Typst source
             // behind that editor is still there, just not painted.
@@ -6356,36 +6375,65 @@ fn draw_transclusion_card(
         ("Unavailable note", "The referenced note was removed."),
         |p| (p.title.as_str(), p.excerpt.as_str()),
     );
-    let trim = |value: &str, limit: usize| {
-        let mut out = value.chars().take(limit).collect::<String>();
-        if value.chars().nth(limit).is_some() {
-            out.push('…');
-        }
-        out
-    };
-    text_renderer.draw_text(
-        scene,
-        &trim(title, 72),
-        15.0,
-        tokens.colors.text_primary,
-        translated(transform, rect.x0 + 16.0, rect.y0 + 16.0),
-        None,
+    // An embedded note is an object you open: a note glyph and its title on
+    // the first line with a trailing chevron (the whole card opens it), its
+    // excerpt as the secondary line. No "Embedded note · Open" chain.
+    let pad = f64::from(tokens.spacing.s4);
+    let gap = f64::from(tokens.spacing.s2);
+    let icon_side = f64::from(tokens.metrics.icon_sm * theme.text_scale);
+    let title_style = theme.text(crate::tokens::TextRole::Subheading);
+    let excerpt_style = theme.text(crate::tokens::TextRole::Body);
+    let ink = tokens.colors.on_surface(tokens.colors.surfaces.raised);
+    let (_, title_h) = text_renderer.measure_style("Ag", None, &title_style);
+    let title_h = f64::from(title_h);
+    let title_y = rect.y0 + pad;
+    let chevron_x = rect.x1 - pad - icon_side;
+    let icon_rect = Rect::new(
+        rect.x0 + pad,
+        title_y + (title_h - icon_side) / 2.0,
+        rect.x0 + pad + icon_side,
+        title_y + (title_h + icon_side) / 2.0,
     );
-    text_renderer.draw_text(
+    crate::icons::draw_icon(
         scene,
-        &trim(excerpt, 128),
-        13.0,
-        tokens.colors.text_dim,
-        translated(transform, rect.x0 + 16.0, rect.y0 + 45.0),
-        None,
+        transform,
+        icon_rect,
+        crate::icons::Icon::FileText,
+        ink.ink_dim,
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
-    text_renderer.draw_text(
+    crate::icons::draw_icon(
         scene,
-        "Embedded note · Open",
-        12.0,
-        theme.tokens.colors.intent.inverted,
-        translated(transform, rect.x0 + 16.0, rect.y1 - 24.0),
+        transform,
+        Rect::new(chevron_x, icon_rect.y0, chevron_x + icon_side, icon_rect.y1),
+        crate::icons::Icon::ChevronRight,
+        ink.ink_dim,
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+    let title_x = icon_rect.x1 + gap;
+    let title_w = (chevron_x - gap - title_x).max(1.0);
+    let title = text_renderer.elide_to_width_style(title, title_w as f32, &title_style);
+    text_renderer.draw_style(
+        scene,
+        &title,
+        ink.ink,
+        translated(transform, title_x, title_y),
         None,
+        &title_style,
+    );
+    let excerpt_w = (rect.x1 - pad - title_x).max(1.0);
+    let excerpt = text_renderer.elide_to_width_style(excerpt, excerpt_w as f32, &excerpt_style);
+    text_renderer.draw_style(
+        scene,
+        &excerpt,
+        ink.ink_dim,
+        translated(
+            transform,
+            title_x,
+            title_y + title_h + f64::from(tokens.spacing.s1),
+        ),
+        None,
+        &excerpt_style,
     );
 }
 
@@ -6395,10 +6443,12 @@ fn first_row_center(rect: Rect, size: f32, scale: f64) -> f64 {
 }
 
 /// A filled disc, not a "•" glyph, reads the same across fonts.
-fn draw_bullet_prefix(line_rect: Rect, prefix_x0: f64, gutter: f64, ctx: &mut BlockDrawCtx<'_>) {
-    let cy = first_row_center(line_rect, 16.0, f64::from(ctx.theme.text_scale));
-    let cx = prefix_x0 + gutter / 2.0;
-    let radius = 3.0 * f64::from(ctx.theme.text_scale);
+fn draw_bullet_prefix(line_rect: Rect, prefix_x0: f64, ctx: &mut BlockDrawCtx<'_>) {
+    let scale = f64::from(ctx.theme.text_scale);
+    let cy = first_row_center(line_rect, 16.0, scale);
+    // The disc sits in the same leading glyph box as a checklist's box.
+    let cx = prefix_x0 + CHECKBOX_SIZE_PX * scale / 2.0;
+    let radius = 3.0 * scale;
     let circle = vello::kurbo::Circle::new((cx, cy), radius);
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
@@ -6459,61 +6509,32 @@ fn numbered_prefix_origin(
     )
 }
 
-fn draw_checklist_prefix(
-    done: bool,
-    line_rect: Rect,
-    prefix_x0: f64,
-    gutter: f64,
-    ctx: &mut BlockDrawCtx<'_>,
-) {
-    let scale = f64::from(ctx.theme.text_scale);
-    let cy = first_row_center(line_rect, 16.0, scale);
-    let cx = prefix_x0 + gutter / 2.0;
-    let box_rect = Rect::new(
-        cx - CHECKBOX_SIZE_PX * scale / 2.0,
-        cy - CHECKBOX_SIZE_PX * scale / 2.0,
-        cx + CHECKBOX_SIZE_PX * scale / 2.0,
-        cy + CHECKBOX_SIZE_PX * scale / 2.0,
+fn draw_checklist_prefix(done: bool, box_rect: Rect, ctx: &mut BlockDrawCtx<'_>) {
+    // The toolkit's checkbox face: the inverted fill with its tick when
+    // done, the raised box with its derived edge when not. A checklist item
+    // is the same control as every other checkbox.
+    crate::widget::Checkbox::paint(
+        ctx.scene,
+        ctx.transform,
+        ctx.theme,
+        &crate::widget::CheckboxFace::new(box_rect, done),
     );
-    let shape = vello::kurbo::RoundedRect::from_rect(box_rect, 3.0 * scale);
-    if done {
-        ctx.scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            ctx.theme.tokens.colors.intent.inverted,
-            None,
-            &shape,
-        );
-        // Two lines from lower-left through center to upper-right.
-        let mut path = vello::kurbo::BezPath::new();
-        let pad = CHECKBOX_SIZE_PX * scale * 0.22;
-        path.move_to((
-            box_rect.x0 + pad,
-            box_rect.y0 + CHECKBOX_SIZE_PX * scale * 0.55,
-        ));
-        path.line_to((
-            box_rect.x0 + CHECKBOX_SIZE_PX * scale * 0.42,
-            box_rect.y1 - pad,
-        ));
-        path.line_to((box_rect.x1 - pad, box_rect.y0 + pad));
-        ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(2.0 * scale),
-            ctx.transform,
-            ctx.theme.tokens.colors.text_primary,
-            None,
-            &path,
-        );
-    } else {
-        // An unchecked box is an outline on the page: derived against the
-        // editor surface at the panel-edge strength so it reads as a control.
-        ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(1.5 * scale),
-            ctx.transform,
-            ctx.theme.tokens.colors.text_dim,
-            None,
-            &shape,
-        );
-    }
+}
+
+/// The editor's one content edge for a block whose line rect is `line` and
+/// whose prefix gutter is `gutter`: where a paragraph's text starts. Prefix
+/// glyphs, quote and code grounds, embeds, tables and images all start here.
+fn content_edge(line: Rect, gutter: f64, pad: f64) -> f64 {
+    line.x0 - gutter + pad
+}
+
+/// A checklist item's box: the leading glyph box at the content edge, on
+/// the first row's centre line. Paint and hit-testing share it.
+fn checklist_box(line: Rect, gutter: f64, pad: f64, scale: f64) -> Rect {
+    let side = CHECKBOX_SIZE_PX * scale;
+    let x0 = content_edge(line, gutter, pad);
+    let cy = first_row_center(line, 16.0, scale);
+    Rect::new(x0, cy - side / 2.0, x0 + side, cy + side / 2.0)
 }
 
 /// Paint background + accent bar ONCE per contiguous run of code blocks,
@@ -6571,6 +6592,7 @@ fn draw_code_block_prefix(
             |rect| rect.y1,
         )
         + CODE_PAD_Y;
+    // `gutter` is the distance from the content edge to the line rect.
     let bg_rect = Rect::new(line_rect.x0 - gutter, top, line_rect.x1, bottom);
     let shape = vello::kurbo::RoundedRect::from_rect(bg_rect, 4.0);
     ctx.scene.fill(
@@ -7170,6 +7192,11 @@ impl Widget for BlockEditor {
                 layout_children.push(button_node);
             }
         }
+        // The lines' text inset is known once each line has its wrap mode.
+        self.text_pad = self
+            .blocks
+            .first()
+            .map_or(0.0, |block| block.line.text_inset(theme));
         let find_node = self.find_field.build_layout(taffy, theme, node_map);
         let mut find_style = taffy.style(find_node).cloned().unwrap_or_default();
         find_style.position = taffy::Position::Absolute;
@@ -7188,6 +7215,15 @@ impl Widget for BlockEditor {
                 gap: taffy::Size {
                     width: length(0.0_f32),
                     height: length(0.0_f32),
+                },
+                // The drag handles stand in the editor's own leading column,
+                // so a host leaves no gutter for them and they are never
+                // clipped by the window edge at any text scale.
+                padding: taffy::Rect {
+                    left: length(self.handle_column() as f32),
+                    right: length(0.0_f32),
+                    top: length(0.0_f32),
+                    bottom: length(0.0_f32),
                 },
                 size: Size {
                     width: Dimension::percent(1.0),
@@ -7237,6 +7273,9 @@ impl Widget for BlockEditor {
             .collect();
         for (index, (b, block_rect)) in self.blocks.iter_mut().zip(block_rects).enumerate() {
             b.line.apply_layout_external(block_rect);
+            // Where this line's text starts: the content edge every box on
+            // the block (a table, an image, an embed) starts at too.
+            let pad = b.line.text_inset(&self.layout_theme);
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
@@ -7257,13 +7296,13 @@ impl Widget for BlockEditor {
                 };
                 if let Some(slot) = self.table_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
-                        original.x0,
+                        original.x0 + pad,
                         source_bottom
                             + f64::from(table_toolbar_height(
                                 original.width() as f32,
                                 self.text_scale as f32,
                             )),
-                        original.x1,
+                        original.x1 - pad,
                         original.y1,
                     ));
                 }
@@ -7278,21 +7317,30 @@ impl Widget for BlockEditor {
             if let Some(target) = transclusion_target(b)
                 && let Some(slot) = self.transclusion_rects.get_mut(index)
             {
-                *slot = Some((original, target));
+                // The card's edge is the content edge, where text starts.
+                *slot = Some((
+                    Rect::new(
+                        original.x0 + pad,
+                        original.y0,
+                        original.x1 - pad,
+                        original.y1,
+                    ),
+                    target,
+                ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
                 let source_bottom =
                     (original.y0 + f64::from(b.line.image_source_height())).min(original.y1);
                 if let Some(slot) = self.image_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
-                        original.x0,
+                        original.x0 + pad,
                         source_bottom
                             + if image.editing {
                                 6.0 * self.text_scale
                             } else {
                                 0.0
                             },
-                        original.x1,
+                        original.x1 - pad,
                         original.y1,
                     ));
                 }
@@ -7330,7 +7378,7 @@ impl Widget for BlockEditor {
             if ends_formula {
                 let mode = descriptor.map_or(crate::math::FormulaMode::Source, |value| value.mode);
                 let preview = Rect::new(
-                    original.x0 + 12.0,
+                    original.x0 + pad + 12.0,
                     (if mode == crate::math::FormulaMode::Source {
                         source_bottom + FORMULA_PREVIEW_GAP
                     } else {
@@ -7793,10 +7841,15 @@ impl Widget for BlockEditor {
                         "Code",
                         |value| if value.is_empty() { "Code" } else { value },
                     );
-            let Some(line) = self.blocks.get(*start).map(|block| block.line.get_rect()) else {
+            let Some((line, inset)) = self
+                .blocks
+                .get(*start)
+                .map(|block| (block.line.get_rect(), block.line.text_inset(ctx.theme)))
+            else {
                 continue;
             };
-            let left = line.x0 + 2.0 * self.text_scale;
+            // The language label starts where the code does.
+            let left = line.x0 + inset;
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
             let active = !dragging_this_group
                 && !self.caret_paint_suppressed

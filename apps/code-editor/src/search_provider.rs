@@ -5,16 +5,31 @@
 //! catalogue while collaborative state changes; palette keystrokes only ask
 //! that catalogue for one budgeted continuation page.
 
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+
 use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::search::{
+    CatalogSearchProvider, PagePoll, PendingToken, SearchCatalog, SearchCursor, SearchPage,
+    SearchQuery, SearchResult, SearchRow,
+};
 
 use crate::actions::{SearchResultRef, SymbolRef};
 use crate::model::NodeId;
+use crate::search;
 
 pub const OPEN_KIND: &str = "Open files";
 pub const PROJECT_KIND: &str = "Project files";
 pub const SYMBOL_KIND: &str = "Symbols";
-pub const RESULT_KIND: &str = "Search results";
+pub const RESULT_KIND: &str = "In files";
+
+/// The fewest characters a project text search starts on. One letter matches
+/// nearly every line, which is a walk of the whole tree for no information.
+pub const MIN_TEXT_QUERY_CHARS: usize = 2;
+
+/// How many hits one palette page carries. A broader query is a longer walk,
+/// not a longer list: past this the person narrows the query.
+pub const TEXT_HITS_PER_PAGE: usize = 200;
 
 #[derive(Clone, Debug)]
 pub struct FileEntry {
@@ -106,6 +121,228 @@ impl CatalogSearchProvider for FileSearchProvider {
 
     fn catalog(&self) -> Option<SearchCatalog> {
         Some(self.catalog.clone())
+    }
+}
+
+/// What the project text search is doing, shared between the editor (which
+/// publishes the hits it holds as resources) and the providers the palette
+/// asks (which start walks and read their progress).
+#[derive(Default)]
+struct TextSearchState {
+    /// The project directory walked; `None` while no folder is open.
+    root: Option<PathBuf>,
+    /// Identifies the walk a [`PendingToken`] belongs to.
+    generation: u64,
+    job: Option<search::Job>,
+    hits: Vec<search::Hit>,
+    /// Why the last walk stopped short of the whole project, until the editor
+    /// has told the person.
+    limit: Option<SearchLimit>,
+}
+
+/// Why a project text search did not cover everything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchLimit {
+    /// The list stopped at this many matches.
+    Matches(usize),
+    /// The walk stopped after this many files.
+    Files(usize),
+}
+
+impl TextSearchState {
+    /// Take whatever the worker produced since the last call.
+    fn pump(&mut self) {
+        let Some(job) = self.job.as_mut() else {
+            return;
+        };
+        for msg in job.drain() {
+            match msg {
+                search::Msg::Hits(hits) => self.hits.extend(hits),
+                search::Msg::Done {
+                    files,
+                    truncated: true,
+                } => self.limit = Some(SearchLimit::Files(files)),
+                search::Msg::Done { .. } => {}
+            }
+        }
+        if self.hits.len() >= TEXT_HITS_PER_PAGE {
+            self.hits.truncate(TEXT_HITS_PER_PAGE);
+            self.limit = Some(SearchLimit::Matches(TEXT_HITS_PER_PAGE));
+            if let Some(job) = self.job.take() {
+                job.cancel();
+            }
+        } else if self.job.as_ref().is_some_and(search::Job::is_finished) {
+            self.job = None;
+        }
+    }
+}
+
+/// Code's project text search: a walk of the open project on a worker thread
+/// whose hits the platform search lists as they arrive. Cloning shares the
+/// walk, so the editor and every provider it hands the palette see one
+/// search.
+#[derive(Clone, Default)]
+pub struct ProjectTextSearch {
+    state: Arc<Mutex<TextSearchState>>,
+}
+
+impl ProjectTextSearch {
+    fn state(&self) -> std::sync::MutexGuard<'_, TextSearchState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Search under `root` (the open project), dropping what an earlier
+    /// project found.
+    pub fn set_root(&self, root: Option<PathBuf>) {
+        let mut state = self.state();
+        if state.root != root {
+            if let Some(job) = state.job.take() {
+                job.cancel();
+            }
+            state.hits.clear();
+            state.root = root;
+        }
+    }
+
+    /// Take the worker's progress, once a frame.
+    pub fn pump(&self) {
+        self.state().pump();
+    }
+
+    /// Why the last walk stopped short, once.
+    pub fn take_limit(&self) -> Option<SearchLimit> {
+        self.state().limit.take()
+    }
+
+    /// Whether a walk is still running.
+    pub fn is_running(&self) -> bool {
+        self.state().job.is_some()
+    }
+
+    /// The hits found so far, in the form the editor publishes as resources.
+    pub fn result_refs(&self) -> Vec<(search::Hit, SearchResultRef)> {
+        self.state()
+            .hits
+            .iter()
+            .map(|hit| (hit.clone(), result_ref(hit)))
+            .collect()
+    }
+
+    /// Start walking for `needle`, replacing a walk for another needle.
+    fn begin(&self, needle: &str) -> Option<PendingToken> {
+        let mut state = self.state();
+        let root = state.root.clone()?;
+        if let Some(job) = state.job.take() {
+            job.cancel();
+        }
+        state.hits.clear();
+        state.limit = None;
+        state.generation = state.generation.wrapping_add(1);
+        state.job = Some(search::start(&root, search::Query::new(needle)));
+        Some(PendingToken::new(state.generation))
+    }
+
+    /// The page the walk behind `token` has reached: pending until the walk
+    /// ends, then every hit.
+    fn poll(&self, token: &PendingToken) -> PagePoll {
+        let mut state = self.state();
+        if token.id() != state.generation {
+            // The query moved on; its walk is gone.
+            return PagePoll::Ready(SearchPage::empty());
+        }
+        state.pump();
+        if state.job.is_some() {
+            return PagePoll::Pending;
+        }
+        PagePoll::Ready(SearchPage::of(
+            state.hits.iter().map(hit_result).collect(),
+            None,
+        ))
+    }
+}
+
+/// How the editor addresses a text hit: the reveal action of a search-result
+/// resource at the hit's line and column.
+fn result_ref(hit: &search::Hit) -> SearchResultRef {
+    SearchResultRef {
+        file_id: None,
+        path: hit.rel.clone(),
+        disk_path: Some(hit.path.display().to_string()),
+        preview: hit.preview.clone(),
+        line: hit.line.saturating_sub(1),
+        col: hit.col,
+    }
+}
+
+/// One text hit as a palette row: the file and line, then the matched line
+/// with the match marked.
+fn hit_result(hit: &search::Hit) -> SearchResult {
+    let address = crate::actions::reveal_result_address(&result_ref(hit));
+    let start = hit.col.saturating_sub(hit.preview_offset);
+    let byte_at = |chars: usize| {
+        hit.preview
+            .char_indices()
+            .nth(chars)
+            .map_or(hit.preview.len(), |(at, _)| at)
+    };
+    let row = SearchRow::file_hit(hit.rel.clone(), hit.preview.clone())
+        .line(u32::try_from(hit.line).unwrap_or(u32::MAX))
+        .matched(byte_at(start)..byte_at(start.saturating_add(hit.len)));
+    SearchResult::for_action(RESULT_KIND, hit.preview.clone(), address)
+        .with_icon(Icon::FileCode)
+        .with_row(row)
+}
+
+/// The palette's door onto [`ProjectTextSearch`]: asks the walk to start on
+/// the first page of a query and answers the rest from `poll_page`, so typing
+/// never waits on the filesystem.
+pub struct TextSearchProvider {
+    search: ProjectTextSearch,
+}
+
+impl TextSearchProvider {
+    pub fn new(search: ProjectTextSearch) -> Self {
+        Self { search }
+    }
+}
+
+impl ui::search::SearchProvider for TextSearchProvider {
+    fn name(&self) -> &str {
+        RESULT_KIND
+    }
+
+    fn search(&self, _query: &str) -> Vec<SearchResult> {
+        // Text hits arrive through `search_page`, never in one blocking call.
+        Vec::new()
+    }
+
+    fn search_limited(&self, _query: &str, _limit: usize) -> Vec<SearchResult> {
+        Vec::new()
+    }
+
+    fn search_page(
+        &self,
+        query: &SearchQuery,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        let needle = query.text().trim();
+        if cursor.is_some()
+            || work_budget == 0
+            || result_limit == 0
+            || needle.chars().count() < MIN_TEXT_QUERY_CHARS
+        {
+            return SearchPage::empty();
+        }
+        match self.search.begin(needle) {
+            Some(token) => SearchPage::pending(Vec::new(), token),
+            None => SearchPage::empty(),
+        }
+    }
+
+    fn poll_page(&self, token: &PendingToken) -> PagePoll {
+        self.search.poll(token)
     }
 }
 
@@ -256,25 +493,25 @@ mod tests {
         let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
         assert!(
             provider
-                .search_page("needle", None, 0, 1)
+                .search_page(&SearchQuery::new("needle"), None, 0, 1)
                 .results
                 .is_empty()
         );
-        let first = provider.search_page("common", None, 3, 1);
+        let first = provider.search_page(&SearchQuery::new("common"), None, 3, 1);
         assert!(first.inspected <= 3);
         assert!(first.next.is_some());
 
         let mut cursor = None;
         let mut saw_late = false;
         for _ in 0..600 {
-            let page = provider.search_page("common", cursor.as_ref(), 2, 1);
+            let page = provider.search_page(&SearchQuery::new("common"), cursor.as_ref(), 2, 1);
             assert!(page.inspected <= 2);
             cursor = page.next;
             if cursor.is_none() {
                 break;
             }
         }
-        let needle = provider.search_page("late/needle", None, 1, 1);
+        let needle = provider.search_page(&SearchQuery::new("late/needle"), None, 1, 1);
         saw_late |= needle.results.iter().any(|hit| hit.title == "needle.rs");
         assert!(saw_late, "a late corpus row must remain discoverable");
     }
@@ -289,7 +526,7 @@ mod tests {
             Vec::new(),
         );
         let stale = provider
-            .search_page(".rs", None, 1, 1)
+            .search_page(&SearchQuery::new(".rs"), None, 1, 1)
             .next
             .expect("continuation");
         FileSearchProvider::index_into(
@@ -298,7 +535,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        let restarted = provider.search_page("fresh", Some(&stale), 1, 1);
+        let restarted = provider.search_page(&SearchQuery::new("fresh"), Some(&stale), 1, 1);
         assert_eq!(restarted.results[0].title, "fresh.rs");
         assert!(provider.stats().generation > 0);
     }

@@ -1,7 +1,0 @@
-# The spacing ratchet for apps-code-editor: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/code-editor/src/app.rs pixel_const 7
-apps/code-editor/src/bottom_panel.rs pixel_const 6
-apps/code-editor/src/editor_view.rs pixel_const 4
-apps/code-editor/src/find.rs pixel_const 10

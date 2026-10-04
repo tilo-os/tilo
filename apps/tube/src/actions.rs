@@ -51,7 +51,6 @@ pub const TUBE_OPERATION_TYPE: &str = "tube.operation";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TubeOperation {
     TogglePlayback,
-    ToggleSidebar,
     Share {
         video_id: String,
     },
@@ -103,7 +102,6 @@ pub fn operation_kind(operation: &TubeOperation) -> OperationKind {
         | TubeOperation::RemoveHistory { .. }
         | TubeOperation::ClearHistory => OperationKind::Effect,
         TubeOperation::TogglePlayback
-        | TubeOperation::ToggleSidebar
         | TubeOperation::Navigate { .. }
         | TubeOperation::OpenVideo { .. }
         | TubeOperation::OpenChannel { .. }
@@ -622,7 +620,7 @@ fn view_spec(id: &str, label: &str, operation: &TubeOperation) -> Option<ActionS
     .ok()
 }
 
-fn channel_resource(model: &TubeModel, channel_id: &str) -> Option<Resource> {
+pub(crate) fn channel_resource(model: &TubeModel, channel_id: &str) -> Option<Resource> {
     let channel = model.channel(channel_id)?;
     let mut resource = Resource::new(
         format!("tube.channel:{}", channel.id),
@@ -653,7 +651,7 @@ fn channel_resource(model: &TubeModel, channel_id: &str) -> Option<Resource> {
     )
 }
 
-fn playlist_resource(model: &TubeModel, playlist_id: &str) -> Option<Resource> {
+pub(crate) fn playlist_resource(model: &TubeModel, playlist_id: &str) -> Option<Resource> {
     let playlist = model.playlist(playlist_id)?;
     let mut resource = Resource::new(
         format!("tube.playlist:{}", playlist.id),
@@ -672,7 +670,11 @@ fn playlist_resource(model: &TubeModel, playlist_id: &str) -> Option<Resource> {
     Some(resource)
 }
 
-fn video_resource(model: &TubeModel, video_id: &str, include_comments: bool) -> Option<Resource> {
+pub(crate) fn video_resource(
+    model: &TubeModel,
+    video_id: &str,
+    include_comments: bool,
+) -> Option<Resource> {
     let video = model.video(video_id)?;
     let mut resource = Resource::new(
         format!("tube.video:{video_id}"),
@@ -938,43 +940,35 @@ fn navigation_resource() -> Resource {
             navigation = navigation.with_action(spec);
         }
     }
-    if let Some(spec) = view_spec(
-        "toggle-sidebar",
-        "Show or hide navigation",
-        &TubeOperation::ToggleSidebar,
-    ) {
-        navigation = navigation.with_action(spec);
-    }
-
     navigation
+}
+
+/// The navigation action (and rail item) id of a destination route. Entity
+/// routes require an id and are reached through their entity resource
+/// instead.
+pub fn navigation_id(route: &Route) -> Option<&'static str> {
+    match route {
+        Route::Home => Some("home"),
+        Route::Trending => Some("trending"),
+        Route::Subscriptions => Some("subscriptions"),
+        Route::Queue => Some("queue"),
+        Route::History => Some("history"),
+        Route::Settings => Some("settings"),
+        Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) => None,
+    }
 }
 
 /// Return the exact navigation binding used by Tube's visible rail.  Keeping
 /// this beside `navigation_resource` means a redesign cannot accidentally
-/// leave a pretty custom control on a private callback path while Ctrl+K and
-/// agents use a different operation.
+/// leave a control on a private callback path while the palette and agents
+/// use a different operation.
 pub fn navigation_binding(route: &Route) -> Option<tilo_actions::ActionBinding<()>> {
-    let action_id = match route {
-        Route::Home => "home",
-        Route::Trending => "trending",
-        Route::Subscriptions => "subscriptions",
-        Route::Queue => "queue",
-        Route::History => "history",
-        Route::Settings => "settings",
-        // Entity routes require an id and are therefore reached by their
-        // corresponding entity resource rather than a generic rail button.
-        Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) | Route::Search(_) => {
-            return None;
-        }
-    };
-    tilo_actions::ActionBinding::unit_for(&navigation_resource(), action_id).ok()
+    navigation_binding_for(navigation_id(route)?)
 }
 
-/// Binding for the visible navigation-drawer toggle. The rail state is local
-/// presentation state, but the verb remains an addressable view action so
-/// keyboard users, assistive technology, Ctrl+K, and agents use one route.
-pub fn sidebar_binding() -> Option<tilo_actions::ActionBinding<()>> {
-    tilo_actions::ActionBinding::unit_for(&navigation_resource(), "toggle-sidebar").ok()
+/// The navigation binding for a rail item id ([`navigation_id`]).
+pub fn navigation_binding_for(id: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&navigation_resource(), id).ok()
 }
 
 /// Resolve the canonical queue-membership action used by a visible video

@@ -9,7 +9,7 @@ use ui::tilo_actions::{
     ConfirmationPolicy, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource as PublishedResource, ResultSpec, RetryPolicy, RiskLevel,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp};
@@ -277,7 +277,7 @@ pub(crate) fn effect_operation_spec(
         } else {
             Availability::Unavailable {
                 code: "live_access_disabled".into(),
-                reason: "Live disk access is disabled".into(),
+                reason: "Disk operations are not available in this session".into(),
             }
         },
         permission: PermissionRequirement::Admin,
@@ -323,6 +323,81 @@ impl ResourceApp for DisksShell {
     fn view(cx: &mut ViewCx<Disks>) -> Element {
         cx.surface(DisksApp::new())
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "health",
+            "partitions",
+            "partition",
+            "usb",
+            "failing",
+            "format",
+            "toast",
+            "toast-error",
+            "empty",
+            "narrow",
+            "drawer",
+            "phone",
+            "phone-drawer",
+            "phone-health",
+            "phone-partitions",
+            "phone-format",
+        ]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        match name {
+            "narrow" => Some((800, 600)),
+            // Narrow enough that the drive list collapses into a drawer.
+            "drawer" => Some((640, 600)),
+            _ if name.starts_with("phone") => Some((520, 820)),
+            _ => None,
+        }
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Disks>> {
+        // A phone-sized capture stages the same state as its wide twin.
+        let base = name.map(|name| name.strip_prefix("phone-").unwrap_or(name));
+        let actions: Vec<DisksAction> = match base {
+            Some("health") => vec![DisksAction::SetTab {
+                tab: "smart".into(),
+            }],
+            Some("partitions") => vec![
+                DisksAction::SetTab {
+                    tab: "partitions".into(),
+                },
+                DisksAction::SetSelectedPart { part: 1 },
+            ],
+            Some("partition") => vec![DisksAction::SetSelectedPart { part: 1 }],
+            Some("usb") => vec![DisksAction::SetSelected { index: 3 }],
+            Some("failing") => vec![
+                DisksAction::SetSelected { index: 2 },
+                DisksAction::SetTab {
+                    tab: "smart".into(),
+                },
+            ],
+            Some("format") => vec![
+                DisksAction::SetSelectedPart { part: 2 },
+                DisksAction::SetPending {
+                    pending: "format:0:2".into(),
+                },
+            ],
+            Some("toast") => vec![DisksAction::SetStatus {
+                status: "Mounted /dev/sdc1".into(),
+            }],
+            Some("toast-error") => vec![DisksAction::SetStatus {
+                status: "Mount failed: the device is busy".into(),
+            }],
+            Some("empty") => vec![DisksAction::WriteTopology {
+                json: serde_json::to_string(&Topology::default()).unwrap_or_default(),
+            }],
+            _ => Vec::new(),
+        };
+        actions
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
+    }
 }
 
 impl ResourceSurface<Disks> for DisksApp {
@@ -332,6 +407,10 @@ impl ResourceSurface<Disks> for DisksApp {
 
     fn attach(&mut self, cx: SurfaceCx<Disks>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 

@@ -1,6 +1,7 @@
 //! Stable document actions and resources for palettes, search and automation.
 use crate::{
     doc::ProjectDoc,
+    i18n::t,
     model::{Operation, Project},
 };
 use tilo_actions::{
@@ -284,20 +285,20 @@ pub fn resource(project: &Project) -> Resource {
     let mut r = Resource::new(PROJECT_RESOURCE_ID, "image-editor.project", &project.name);
     if let Ok(open) = ActionSpec::operation(
         "open",
-        "Open image",
+        t("image-editor-open-image"),
         OperationKind::Effect,
         OPERATION_TYPE,
         &EditorOperation::Open,
     ) {
         r = r.with_action(
             open.retry_policy(RetryPolicy::Idempotent)
-                .with_description("Choose a PNG, JPEG or WebP using the system file picker"),
+                .with_description(t("image-editor-action-open-description")),
         );
     }
     if !source_path(project).is_empty()
         && let Ok(export) = ActionSpec::operation(
             "export",
-            "Export PNG",
+            t("image-editor-search-export"),
             OperationKind::Effect,
             OPERATION_TYPE,
             &EditorOperation::Export,
@@ -306,39 +307,20 @@ pub fn resource(project: &Project) -> Resource {
         r = r.with_action(
             export
                 .retry_policy(RetryPolicy::Idempotent)
-                .with_description(
-                    "Render the current non-destructive graph beside its source image",
-                ),
+                .with_description(t("image-editor-action-export-description")),
         );
     }
 
     // Adding is an ordinary document action, not a private toolbar shortcut:
     // collaborators, history and agents all apply the identical graph edit.
-    for (id, label, operation) in [
-        (
-            "exposure",
-            "Add exposure",
-            Operation::Exposure { stops: 0.5 },
-        ),
-        (
-            "contrast",
-            "Add contrast",
-            Operation::Contrast { amount: 0.15 },
-        ),
-        (
-            "colour",
-            "Add colour",
-            Operation::Saturation { amount: 1.2 },
-        ),
-        ("mono", "Add black and white", Operation::Grayscale),
-        (
-            "rotate",
-            "Add rotate",
-            Operation::Rotate { quarter_turns: 1 },
-        ),
+    for (id, operation) in [
+        ("exposure", Operation::Exposure { stops: 0.5 }),
+        ("contrast", Operation::Contrast { amount: 0.15 }),
+        ("colour", Operation::Saturation { amount: 1.2 }),
+        ("mono", Operation::Grayscale),
+        ("rotate", Operation::Rotate { quarter_turns: 1 }),
         (
             "crop",
-            "Add crop",
             Operation::Crop {
                 x: 0.0,
                 y: 0.0,
@@ -347,6 +329,8 @@ pub fn resource(project: &Project) -> Resource {
             },
         ),
     ] {
+        let label = t(&format!("image-editor-action-add-{id}"));
+        let title = crate::app::operation_label(Some(&operation)).unwrap_or_default();
         // An action is constructed before it is dispatched, so mint its
         // permanent identity here. The payload carries the same ID on every
         // retry/replay; it is never inferred from a visible list position.
@@ -357,14 +341,14 @@ pub fn resource(project: &Project) -> Resource {
             ADD_ADJUSTMENT_TYPE,
             &AddAdjustment {
                 id: node_id,
-                title: label.strip_prefix("Add ").unwrap_or(label).into(),
+                title,
                 operation,
             },
         ) {
-            r = r
-                .with_action(spec.reversible().with_description(
-                    "Add a non-destructive adjustment to the shared image graph",
-                ));
+            r = r.with_action(
+                spec.reversible()
+                    .with_description(t("image-editor-action-add-description")),
+            );
         }
     }
 
@@ -375,14 +359,16 @@ pub fn resource(project: &Project) -> Resource {
     );
     if let Ok(select) = ActionSpec::operation(
         "select",
-        "Reveal source",
+        t("image-editor-action-show-original"),
         OperationKind::View,
         OPERATION_TYPE,
         &EditorOperation::Select {
             id: "source".into(),
         },
     ) {
-        source = source.with_action(select.with_description("Reveal the original image source"));
+        source = source.with_action(
+            select.with_description(t("image-editor-action-show-original-description")),
+        );
     }
     r = r.with_child(source);
 
@@ -394,52 +380,56 @@ pub fn resource(project: &Project) -> Resource {
         let mut adjustment = Resource::new(&resource_id, "image-editor.adjustment", &node.title);
         if let Ok(select) = ActionSpec::operation(
             "select",
-            "Reveal adjustment",
+            t("image-editor-action-show-adjustment"),
             OperationKind::View,
             OPERATION_TYPE,
             &EditorOperation::Select { id: id.clone() },
         ) {
             adjustment = adjustment.with_action(
-                select.with_description("Reveal this adjustment and its editable controls"),
+                select.with_description(t("image-editor-action-show-adjustment-description")),
             );
         }
         for edit in adjustment_parameter_actions(id, project.operations.get(id)) {
-            adjustment = adjustment.with_action(edit.with_description(
-                "Set one declared graph parameter without replacing any other adjustment",
-            ));
+            adjustment = adjustment
+                .with_action(edit.with_description(t("image-editor-action-set-description")));
         }
         adjustment = adjustment.with_action(
-            position_action(id)
-                .with_description("Move this graph node using shared document coordinates"),
+            position_action(id).with_description(t("image-editor-action-move-description")),
         );
         if let Ok(spec) = ActionSpec::immediate(
             "remove",
-            "Remove adjustment",
+            t("image-editor-remove"),
             REMOVE_ADJUSTMENT_TYPE,
             &RemoveAdjustment { id: id.clone() },
         ) {
-            adjustment = adjustment.with_action(spec.reversible().with_description(
-                "Remove this step while keeping later steps connected; Undo restores it",
-            ));
+            adjustment = adjustment.with_action(
+                spec.reversible()
+                    .with_description(t("image-editor-action-remove-description")),
+            );
         }
         r = r.with_child(adjustment);
     }
-    let mut export = Resource::new(EXPORT_RESOURCE_ID, "image-editor.export", "Export PNG");
+    let mut export = Resource::new(
+        EXPORT_RESOURCE_ID,
+        "image-editor.export",
+        t("image-editor-search-export"),
+    );
     if let Ok(select) = ActionSpec::operation(
         "reveal",
-        "Reveal export",
+        t("image-editor-action-show-result"),
         OperationKind::View,
         OPERATION_TYPE,
         &EditorOperation::Select {
             id: "output".into(),
         },
     ) {
-        export = export.with_action(select.with_description("Reveal the final export stage"));
+        export = export
+            .with_action(select.with_description(t("image-editor-action-show-result-description")));
     }
     if !source_path(project).is_empty()
         && let Ok(run) = ActionSpec::operation(
             "export",
-            "Export PNG",
+            t("image-editor-search-export"),
             OperationKind::Effect,
             OPERATION_TYPE,
             &EditorOperation::Export,
@@ -447,7 +437,7 @@ pub fn resource(project: &Project) -> Resource {
     {
         export = export.with_action(
             run.retry_policy(RetryPolicy::Idempotent)
-                .with_description("Render the current graph beside its source image"),
+                .with_description(t("image-editor-action-export-description")),
         );
     }
     r.with_child(export)
@@ -464,8 +454,7 @@ fn source_label(project: &Project) -> String {
     std::path::Path::new(source_path(project))
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("No source image")
-        .into()
+        .map_or_else(|| t("image-editor-search-no-source"), str::to_owned)
 }
 
 fn adjustment_parameter_actions(id: &str, operation: Option<&Operation>) -> Vec<ActionSpec> {
@@ -475,15 +464,21 @@ fn adjustment_parameter_actions(id: &str, operation: Option<&Operation>) -> Vec<
             return ["x", "y", "width", "height"]
                 .into_iter()
                 .map(|field| {
-                    numeric_action(id, field, &format!("Set crop {field}"), 0.0, 1.0, false)
+                    let label = t(&format!("image-editor-action-set-crop-{field}"));
+                    numeric_action(id, field, &label, 0.0, 1.0, false)
                 })
                 .collect();
         }
         Some(operation) => match operation {
-            Operation::Exposure { .. } => ("stops", "Set exposure", -8.0, 8.0),
-            Operation::Contrast { .. } => ("amount", "Set contrast", -2.0, 3.0),
-            Operation::Saturation { .. } => ("amount", "Set colour", -2.0, 3.0),
-            Operation::Rotate { .. } => ("quarter_turns", "Set rotation", 0.0, 3.0),
+            Operation::Exposure { .. } => ("stops", "image-editor-action-set-exposure", -8.0, 8.0),
+            Operation::Contrast { .. } => ("amount", "image-editor-action-set-contrast", -2.0, 3.0),
+            Operation::Saturation { .. } => ("amount", "image-editor-action-set-colour", -2.0, 3.0),
+            Operation::Rotate { .. } => (
+                "quarter_turns",
+                "image-editor-action-set-rotation",
+                0.0,
+                3.0,
+            ),
             // Crop was handled by the early return above. Keep this branch
             // harmless if the parameter surface is rearranged later.
             Operation::Crop { .. } => return Vec::new(),
@@ -495,7 +490,7 @@ fn adjustment_parameter_actions(id: &str, operation: Option<&Operation>) -> Vec<
     vec![numeric_action(
         id,
         field,
-        label,
+        &t(label),
         minimum,
         maximum,
         field == "quarter_turns",
@@ -515,17 +510,17 @@ fn numeric_action(
     ActionSpec::typed(
         format!("set-{field}"),
         label,
-        "Value",
+        t("image-editor-action-value"),
         ExecutionLocus::ClientLocal,
         vec![
-            ActionParam::required(
+            ActionParam::required_owned(
                 "value",
                 if integer {
                     ParamType::Integer
                 } else {
                     ParamType::Number
                 },
-                "Exact adjustment value",
+                t("image-editor-action-value-description"),
             )
             .with_schema(
                 serde_json::json!({"type":"number", "minimum":minimum, "maximum":maximum}),
@@ -548,16 +543,18 @@ fn position_action(id: &str) -> ActionSpec {
     let id = id.to_owned();
     ActionSpec::typed(
         "move",
-        "Move node",
-        "X coordinate",
+        t("image-editor-action-move"),
+        t("image-editor-action-move-x"),
         ExecutionLocus::ClientLocal,
         vec![
-            ActionParam::required("x", ParamType::Number, "Graph X coordinate").with_schema(
-                serde_json::json!({"type":"number","minimum":-10000.0,"maximum":10000.0}),
-            ),
-            ActionParam::required("y", ParamType::Number, "Graph Y coordinate").with_schema(
-                serde_json::json!({"type":"number","minimum":-10000.0,"maximum":10000.0}),
-            ),
+            ActionParam::required_owned("x", ParamType::Number, t("image-editor-action-move-x"))
+                .with_schema(
+                    serde_json::json!({"type":"number","minimum":-10000.0,"maximum":10000.0}),
+                ),
+            ActionParam::required_owned("y", ParamType::Number, t("image-editor-action-move-y"))
+                .with_schema(
+                    serde_json::json!({"type":"number","minimum":-10000.0,"maximum":10000.0}),
+                ),
         ],
         move |args: &ActionArgs| {
             let update = UpdateAdjustment {

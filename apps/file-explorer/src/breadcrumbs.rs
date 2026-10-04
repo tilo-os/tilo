@@ -12,10 +12,8 @@ use std::path::{Path, PathBuf};
 /// instead has been told the opposite, that this is scratch space on
 /// somebody's machine. Where the driver put the mount is not the subject.
 ///
-/// Labels are plain text — the leading root is drawn with a themed vector
-/// icon by [`crate::breadcrumb_bar::BreadcrumbBar`], so nothing here depends
-/// on a font glyph (the old `"󰋜 ~"` prefix rendered as tofu with no Nerd
-/// Font loaded).
+/// Labels are plain text: the trail is drawn by the shared breadcrumb, so
+/// nothing here depends on a font glyph.
 pub fn breadcrumb_components(
     cwd: &Path,
     home: Option<&Path>,

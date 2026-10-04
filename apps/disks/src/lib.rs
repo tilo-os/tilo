@@ -1,8 +1,7 @@
 //! Disks — Tilo native disk utility (CRDT-native, built on the `ui` toolkit).
 //!
-//! A drive list on the left, and a detail pane with a proportional
-//! partition map, filesystem usage bars and a SMART health summary on
-//! the right. Topology is parsed from `lsblk` + `smartctl` in the live
+//! A drive list in the sidebar, and a detail page with a proportional
+//! partition map, filesystem usage and a SMART health summary beside it. Topology is parsed from `lsblk` + `smartctl` in the live
 //! binary; `--shots` (and the instant-on seed) use a curated sample so
 //! the screenshot is fully populated offline.
 //!
@@ -36,10 +35,12 @@
 pub mod actions;
 pub mod app;
 pub mod doc;
+pub mod map;
 pub mod model;
 pub mod ops;
 pub mod probe;
 pub mod resource;
+pub mod view;
 
 pub use app::DisksApp;
 pub use model::{Drive, DriveKind, Partition, SmartInfo, Topology};

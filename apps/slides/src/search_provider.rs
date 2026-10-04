@@ -74,7 +74,7 @@ impl SlideSearchProvider {
                         element.kind.label(),
                         actions::open_element_address(&element.id),
                     )
-                    .with_subtitle(format!("{title} · Slide {number}"))
+                    .with_subtitle(format!("Slide {number}"))
                     .with_icon(Icon::Layers),
                 );
                 if element.kind == ElementKind::Text && !element.text.trim().is_empty() {
@@ -87,7 +87,7 @@ impl SlideSearchProvider {
                             Self::preview(&element.text),
                             actions::open_text_address(&element.id),
                         )
-                        .with_subtitle(format!("{title} · Slide {number}"))
+                        .with_subtitle(format!("Slide {number}"))
                         .with_icon(Icon::FileText),
                     );
                 }
@@ -102,7 +102,7 @@ impl SlideSearchProvider {
                         Self::preview(&slide.notes),
                         actions::open_notes_address(&slide.id),
                     )
-                    .with_subtitle(format!("{title} · Slide {number}"))
+                    .with_subtitle(format!("Slide {number}"))
                     .with_icon(Icon::FileText),
                 );
             }
@@ -273,7 +273,12 @@ mod tests {
             let mut cursor = None;
             let mut found = false;
             for _ in 0..240 {
-                let page = provider.search_page("", cursor.as_ref(), 64, 64);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new(""),
+                    cursor.as_ref(),
+                    64,
+                    64,
+                );
                 assert!(page.inspected <= 64);
                 found |= page
                     .results

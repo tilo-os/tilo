@@ -4,16 +4,19 @@
 //!
 //! Modes:
 //!   * default        — framework [`ResourceApp`] (`SheetsShell`).
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
+//!   * `--shots PATH` — render one frame of the live window to a PNG and exit
 //!     (headless screenshot; identical passes to the live app).
 //!
 //! Shots flags:
 //!   * `--viewport WxH`     — override the desktop viewport (e.g. the narrow
-//!     560x720 responsive layout).
-//!   * `--scenario NAME`    — snap a specific surface into view for the frame:
+//!     800x600 responsive layout).
+//!   * `--scenario NAME`    — stage a specific surface for the frame:
 //!     `file`, `format`, `more`, `docsettings`, `editing`,
-//!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `commandpalette`,
-//!     `loading`, `error`, `conflict`, `reducedmotion`.
+//!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `tabcolour`, `tabrename`,
+//!     `commandpalette`, `loading`, `error`, `conflict`, `reducedmotion`.
+//!     `more` opens the overflow menu, which only exists when the command bar
+//!     does not fit: pair it with `--viewport 520x600` or `--text-scale 2`.
+//!     `tabcolour` colours both tabs and opens the colour popover.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
 //! persistence, so a screenshot shows formulas without touching the
@@ -47,10 +50,9 @@
     )
 )]
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
-use ui::theme::Theme;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
+use ui::widget::Widget;
 
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 const APP_ID: &str = "so.tilo.sheets";
 const SCENARIOS: &[&str] = &[
     "file",
@@ -62,6 +64,8 @@ const SCENARIOS: &[&str] = &[
     "summary",
     "multiselect",
     "tabmenu",
+    "tabcolour",
+    "tabrename",
     "fbarselect",
     "commandpalette",
     "fillseries",
@@ -73,6 +77,7 @@ const SCENARIOS: &[&str] = &[
     "reducedmotion",
     "charts",
     "comments",
+    "bold",
 ];
 
 fn configure(app: &mut ui::App) {
@@ -93,7 +98,7 @@ pub fn main() {
     }
     ui::launch::run_or_exit(
         &LaunchSpec::new(APP_ID, sheets::app_root)
-            .shot_handler(render_shot)
+            .shot_root(shot_root)
             .scenarios(SCENARIOS)
             .configure_app(configure),
     );
@@ -123,80 +128,19 @@ fn prepare_room_workbook(
         .prepare_default(definition, instance_id, workbook, None, inputs)
 }
 
-/// Render one `--shots` scenario to a PNG.
-///
-/// # Errors
-///
-/// Returns an error if `--shots` was not given a path, or if
-/// `render_shot_to_png` fails to build the layout or write the file.
-fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
-    type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
-
-    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
-    let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    let scenario = args.scenario.as_deref();
-
+/// The root a `--shots` capture renders: the same window as a live launch,
+/// seeded with the sample workbook and without on-disk persistence, with the
+/// named scenario staged on it. The launcher lays it out, settles it and
+/// captures it, exactly as it does the live window.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by ui::launch::ShotFactory"
+)]
+fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let mut app = sheets::SheetsApp::new();
     app.shots_mode();
-    // The scenario hook runs after the document is seeded (in
-    // `render_shot_to_png`, post-`sync`), because opening a menu, starting an
-    // edit, or driving a fill/paste operates on the live state.
-    let setup: Setup = match scenario {
-        Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
-        Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),
-        Some("more") => Box::new(|a, _d| a.shots_open_more_menu()),
-        Some("docsettings") => Box::new(|a, _d| a.shots_open_doc_settings()),
-        Some("editing") => Box::new(|a, _d| a.shots_begin_edit()),
-        Some("pointmode") => Box::new(|a, _d| a.shots_build_formula()),
-        Some("summary") => Box::new(|a, _d| a.shots_select_summary_range()),
-        Some("multiselect") => Box::new(|a, _d| a.shots_multi_select()),
-        Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
-        Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
-        Some("commandpalette") => Box::new(|a, d| a.shots_open_command_palette(d)),
-        Some("scrollbars") => Box::new(|a, _d| a.shots_scroll_both_axes()),
-        Some("fillseries") => Box::new(sheets::SheetsApp::shots_fill_series),
-        Some("pasteformula") => Box::new(sheets::SheetsApp::shots_paste_formula),
-        Some("loading") => Box::new(|a, _d| a.shots_show_loading()),
-        Some("error") => Box::new(|a, _d| a.shots_show_error()),
-        Some("conflict") => Box::new(|a, _d| a.shots_show_conflict()),
-        Some("reducedmotion") => Box::new(|a, _d| a.shots_show_reduced_motion()),
-        Some("charts" | "comments") => Box::new(sheets::SheetsApp::shots_seed_charts_and_comments),
-        _ => Box::new(|_a, _d| {}),
-    };
-    render_shot_to_png(app, viewport, ui::launch::shot_theme(args), out, setup)
-        .map_err(|error| LaunchError::Operation(format!("Sheets screenshot failed: {error}")))
-}
-
-/// One-shot hook run after `sync` seeds the demo document, before the first
-/// layout/draw pass — used to stage a `--shots` scenario's extra state.
-type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
-
-/// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
-///
-/// # Errors
-///
-/// Returns an error if Taffy fails to build or compute the layout tree.
-fn render_shot_to_png(
-    mut app: sheets::SheetsApp,
-    viewport: (u32, u32),
-    theme: Theme,
-    out: &std::path::Path,
-    setup: ShotSetup,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // `Theme::with_text_scale` has already expanded every token size.  The
-    // custom Sheets canvas passes those token sizes directly to the renderer,
-    // so applying the multiplier a second time here would turn a requested
-    // 2× accessibility size into 4× text and make the interactive chrome
-    // unusable.  (Toolkit widgets hand the renderer their unscaled base
-    // sizes, which is why their harness sets this separately.)
-    let mut frame = ShotFrame::new(viewport, theme).with_unscaled_text();
-    frame.sync(&mut app);
-    // Apply the scenario hook now that the document is seeded; fill/paste
-    // scenarios dispatch actions against the document.
-    setup(&mut app, &mut frame.state.doc);
-    frame.layout(&mut app)?;
-    let scene = frame.draw(&mut app);
-    frame.write_png(&scene, out);
-    println!("sheets: wrote shot to {}", out.display());
-    Ok(())
+    if let Some(scenario) = args.scenario.as_deref() {
+        app.stage_scenario(scenario);
+    }
+    Ok(Box::new(app))
 }

@@ -8,7 +8,8 @@
 //! - [`BadgeContent::Text`] — a short status ("Owner", "Beta").
 //!
 //! A badge takes a [`ChipStyle`], never a colour. A count or a dot is
-//! [`ChipStyle::Live`] by default (something new happened); a text badge is
+//! [`ChipStyle::Live`] by default (something new happened), filled in your
+//! colour like a sidebar's unread count; a text badge is
 //! [`ChipStyle::Neutral`]. A status reads as `ChipStyle::Tinted(Tone::…)`.
 //! Canvas hosts paint the same pill with [`BadgeFace`].
 //!

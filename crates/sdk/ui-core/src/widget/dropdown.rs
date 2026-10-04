@@ -460,20 +460,24 @@ impl Dropdown {
     }
 
     /// Absolute rect of the open list: below the control, or above it when
-    /// opening below would leave the host viewport and there is room above
-    /// — the same flip `ContextMenu`, `Popover` and the tooltip chip make.
+    /// opening below would leave the host viewport and there is more room
+    /// above, placed by `floating_surface::place_anchored` like every
+    /// anchored Panel.
     /// Hit-testing and paint share this, so a flipped list is clickable
     /// where it is drawn.
     fn list_rect(&self, n: usize) -> Rect {
         let h = Self::list_box_height(n);
-        let below = self.rect.y1 + LIST_GAP;
-        let y0 = match self.viewport {
-            Some(vp) if below + h > vp.y1 && self.rect.y0 - LIST_GAP - h >= vp.y0 => {
-                self.rect.y0 - LIST_GAP - h
-            }
-            _ => below,
-        };
-        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + h)
+        let viewport = self
+            .viewport
+            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        crate::widget::floating_surface::place_anchored(
+            self.rect,
+            (self.rect.width(), h),
+            crate::widget::PopoverSide::Below,
+            LIST_GAP,
+            viewport,
+        )
+        .0
     }
 
     fn max_scroll(n: usize) -> f32 {
@@ -969,10 +973,13 @@ impl Widget for Dropdown {
                     .values
                     .get(opt_idx)
                     .is_some_and(|value| *value == self.selected);
-                // The armed row is inverted, as in every menu (HIG §9.3);
+                // The armed row is the panel's strong lift, as in every
+                // menu (HIG §9.3);
                 // the applied value carries a trailing check.
                 let color = if vi == self.highlight {
-                    crate::widget::floating_surface::paint_armed_row(scene, transform, row, theme)
+                    crate::widget::floating_surface::paint_armed_row(
+                        scene, transform, row, LIST_PAD, theme,
+                    )
                 } else {
                     theme.text_primary
                 };
