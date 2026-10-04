@@ -20,7 +20,7 @@
 //! | Part | Face | Look |
 //! |---|---|---|
 //! | check | [`NavRowFace::checked`] | a [`crate::widget::CheckboxFace`]; the whole row toggles it |
-//! | icon or swatch | [`NavRowFace::icon`], [`NavRowFace::swatch`] | a `ui::icons` glyph, or the content colour the row stands for |
+//! | icon, swatch or avatar | [`NavRowFace::icon`], [`NavRowFace::swatch`], [`NavRowFace::avatar`] | a `ui::icons` glyph, the content colour the row stands for, or the person it stands for |
 //! | badge | [`NavRowFace::badge`] | a short classifying code on a quiet pill, in a column shared by its section |
 //! | label | [`NavRowFace::new`] | `Body`; `Body.strong()` while selected |
 //! | secondary | [`NavRowFace::secondary`] | one `Caption` line under the label, in secondary ink |
@@ -46,7 +46,7 @@ use crate::icons::Icon;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::{BadgeFace, ChipStyle, RowStatus, Tone};
+use crate::widget::{AvatarFace, BadgeFace, ChipStyle, RowStatus, Tone};
 
 /// How many items a navigation row stands for, beside its label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +123,9 @@ pub struct NavRowFace<'a> {
     /// The content colour the row stands for (a calendar, a project), in
     /// the icon's place.
     pub swatch: Option<Color>,
+    /// The person the row stands for (a participant in a call), as a small
+    /// avatar in the icon's place.
+    pub avatar: Option<AvatarFace<'a>>,
     /// `Some(checked)`: a checkbox in the leading slot. The whole row is
     /// its target.
     pub checked: Option<bool>,
@@ -155,6 +158,7 @@ impl<'a> NavRowFace<'a> {
             badge: None,
             badge_column: None,
             swatch: None,
+            avatar: None,
             checked: None,
             level: None,
             presence: &[],
@@ -273,6 +277,13 @@ impl<'a> NavRowFace<'a> {
         self
     }
 
+    /// The person the row stands for, as a small avatar in the icon's place.
+    #[must_use]
+    pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
+        self.avatar = Some(avatar);
+        self
+    }
+
     /// A checkbox in the leading slot, toggled by the whole row.
     #[must_use]
     pub fn checked(mut self, checked: bool) -> Self {
@@ -313,7 +324,7 @@ pub struct NavRowLayout {
     pub selection: Rect,
     /// The leading checkbox.
     pub check: Option<Rect>,
-    /// The icon, or the swatch in its place.
+    /// The icon, or the swatch or avatar in its place.
     pub icon: Option<Rect>,
     /// The leading badge column.
     pub badge: Option<Rect>,
@@ -600,7 +611,7 @@ fn list_layout(
         x = rect.x1 + gap;
         rect
     });
-    let icon = (face.icon.is_some() || face.swatch.is_some()).then(|| {
+    let icon = (face.icon.is_some() || face.swatch.is_some() || face.avatar.is_some()).then(|| {
         let rect = slot(x, mid, icon_side);
         x = rect.x1 + gap;
         rect
@@ -836,7 +847,14 @@ pub fn paint_nav_row(
         );
     }
     if let Some(rect) = layout.icon {
-        if let Some(color) = face.swatch {
+        if let Some(avatar) = face.avatar {
+            // The icon slot is the small avatar's side, so a person's row
+            // lines its label up with the icon rows around it.
+            avatar.paint(
+                &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                rect,
+            );
+        } else if let Some(color) = face.swatch {
             paint_swatch(scene, transform, theme, rect, color);
         } else if let Some(icon) = face.icon {
             icon.draw(scene, transform, rect, ink);

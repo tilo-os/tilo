@@ -709,25 +709,10 @@ impl ChatApp {
             }
             let row = Rect::new(side.x0, y, side.x1, y + row_h);
             let name = self.user_name(&stream.user);
-            let face = NavRowFace::new(row, &name).depth(1);
-            let layout = nav_row_layout(theme, tr, &face);
-            // The person's avatar takes the icon's place.
-            let avatar_side = AvatarSize::Small.side(theme);
-            let label = NavRowFace::new(row, &name).depth(1);
-            let avatar = Rect::new(
-                layout.label_x0,
-                row.center().y - avatar_side / 2.0,
-                layout.label_x0 + avatar_side,
-                row.center().y + avatar_side / 2.0,
+            let face = NavRowFace::new(row, &name).depth(1).avatar(
+                AvatarFace::new(&name, &stream.user).presence(self.identity_colour(&stream.user)),
             );
-            self.paint_avatar(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                avatar,
-                &stream.user,
-            );
-            let mut moved = label;
-            moved.rect.x0 += avatar_side + f64::from(theme.tokens.metrics.icon_label_gap);
-            chrome::paint_nav_row(scene, tf, tr, theme, &moved);
+            chrome::paint_nav_row(scene, tf, tr, theme, &face);
             y += row_h;
         }
         y
