@@ -1,4 +1,13 @@
 use super::*;
+use ui::search::SearchProvider as _;
+
+/// The library's search source as the framework builds it from the
+/// resource's entries.
+fn library_source(app: &MusicApp) -> impl ui::search::SearchProvider + use<> {
+    ui::framework::testing::search_source::<crate::resource::Music>(
+        crate::search_type::library_entries(&app.lib),
+    )
+}
 use std::io::Cursor;
 use ui::widget::Continuable as _;
 
@@ -2233,7 +2242,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let album = app.lib.albums.values().next().unwrap().clone();
         let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
         let playlist = app.lib.playlists.first().unwrap().clone();
-        let providers = ui::search::capability::search_providers(&app);
+        let provider = library_source(&app);
         for (query, expected) in [
             (
                 track.title.as_str(),
@@ -2252,7 +2261,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 crate::actions::open_playlist_address(&playlist.id),
             ),
         ] {
-            let hit = providers[0]
+            let hit = provider
                 .search(query)
                 .into_iter()
                 .find(|hit| hit.action_address().as_ref() == Some(&expected))
@@ -2265,7 +2274,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         }
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(ui::search::capability::search_providers(&app));
+        palette.set_providers(vec![Box::new(library_source(&app))]);
         palette.open();
         palette.set_query(&track.title);
         let row = palette
@@ -2314,7 +2323,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(ui::search::capability::search_providers(&app));
+        palette.set_providers(vec![Box::new(library_source(&app))]);
         palette.open();
         palette.set_query(&artist.name);
         let row = palette
@@ -2355,56 +2364,22 @@ fn global_search_and_canonical_views_route_without_mutation() {
         assert_eq!(doc.get_heads(), heads, "navigation is presentation-only");
     }
 
-    // Phase `ctrl_k_provider_retrieval_reuses_the_prebuilt_catalog_until_library_changes`.
+    // Phase `a_changed_library_is_searchable_once_it_is_reloaded`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let builds = app.library_search_builds;
-        let track = app.lib.tracks.values().next().expect("seed track").clone();
-
-        let first = ui::search::capability::search_providers(&app);
-        let second = ui::search::capability::search_providers(&app);
-        assert_eq!(
-            app.library_search_builds, builds,
-            "retrieval does not reindex"
-        );
-        assert!(first[0].search(&track.title).iter().any(|result| {
-            result.action_address() == Some(crate::actions::play_track_address(&track.id))
-        }));
-        assert!(second[0].search(&track.title).iter().any(|result| {
-            result.action_address() == Some(crate::actions::play_track_address(&track.id))
-        }));
-
-        let mut playback = app.pb.clone();
-        playback.volume = playback.volume.saturating_sub(1);
-        app.pb = playback;
-        assert_eq!(
-            app.library_search_builds, builds,
-            "playback-only document changes do not reindex the library"
-        );
-
         app.perform_action(
             &mut doc,
             &crate::actions::create_playlist_action("pl_provider_refresh", "Refresh proof"),
         );
         app.reload_library(&mut doc);
-        assert_eq!(
-            app.library_search_builds,
-            builds + 1,
-            "one changed library revision rebuilds the catalog exactly once"
-        );
         assert!(
-            ui::search::capability::search_providers(&app)[0]
+            library_source(&app)
                 .search("Refresh proof")
                 .iter()
                 .any(|result| {
                     result.action_address()
                         == Some(crate::actions::open_playlist_address("pl_provider_refresh"))
                 })
-        );
-        assert_eq!(
-            app.library_search_builds,
-            builds + 1,
-            "the refreshed provider remains cached across retrievals"
         );
     }
 

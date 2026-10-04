@@ -80,22 +80,9 @@ impl Resource for Music {
         vec![open_local_file_spec()]
     }
 
+    /// Songs, albums, artists, playlists and what each playlist holds.
     fn search(state: &Library) -> Vec<SearchEntry> {
-        let tracks = state.tracks.values().map(|track| SearchEntry {
-            anchor: Some(crate::actions::track_resource_id(&track.id)),
-            title: track.title.clone(),
-            text: state.artist_name(&track.artist_id).to_owned(),
-            action: None,
-            ..Default::default()
-        });
-        let playlists = state.playlists.iter().map(|playlist| SearchEntry {
-            anchor: Some(crate::actions::playlist_resource_id(&playlist.id)),
-            title: playlist.name.clone(),
-            text: String::new(),
-            action: None,
-            ..Default::default()
-        });
-        tracks.chain(playlists).collect()
+        crate::search_type::library_entries(state)
     }
 }
 
@@ -215,6 +202,11 @@ impl ResourceSurface<Music> for MusicApp {
         if let Some(scenario) = scenario {
             self.stage_scenario(scenario);
         }
+    }
+
+    /// The songs the live search found that the library does not hold.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.live_search_entries()
     }
 }
 
