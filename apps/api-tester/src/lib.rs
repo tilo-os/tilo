@@ -54,7 +54,6 @@ mod response;
 mod search_provider;
 mod seed;
 mod sidebar;
-mod swap;
 mod vars;
 
 pub use app::ApiTesterApp;

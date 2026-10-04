@@ -402,13 +402,13 @@ impl CameraApp {
     }
 
     /// The rule-of-thirds grid and the level guide, drawn on the picture.
-    /// The grid is the panel edge measured on media, so it reads on any
-    /// picture without covering it; the level is in media ink.
+    /// The grid is the media guide, translucent media ink, so it reads on
+    /// any picture without covering it; the level is in media ink.
     fn draw_viewfinder_guides(&self, scene: &mut Scene, t: Affine, theme: &Theme, vf: Rect) {
         let media = &theme.tokens.colors.media;
         let hairline = f64::from(theme.tokens.metrics.chrome_rule_px);
         if self.settings.grid {
-            let guide = ui::surface::edge_on_with(media.letterbox, ui::chrome::PANEL_BORDER_ALPHA);
+            let guide = media.guide;
             for k in 1..3 {
                 let x = vf.x0 + vf.width() * f64::from(k) / 3.0;
                 p::line(
@@ -763,54 +763,18 @@ impl CameraApp {
         content: &EmptyStateContent<'_>,
         action: Action,
     ) -> Option<Rect> {
+        // The person's theme on the letterbox: its ink and its primary action
+        // are re-derived to read on the near-black ground.
         let ground = theme.on_ground(theme.tokens.colors.media.letterbox);
-        // Where the stack puts its action, from the empty state itself.
-        let mut probe = Scene::new();
         let slot = EmptyState::paint(
-            &mut PaintCtx::new(&mut probe, t, tr, &ground),
+            &mut PaintCtx::new(scene, t, tr, &ground),
             area,
             content,
-            Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
-        );
-        let Some((label, slot)) = content.action_label.zip(slot) else {
-            let _ = EmptyState::paint(
-                &mut PaintCtx::new(scene, t, tr, &ground),
-                area,
-                content,
-                self.last_mouse,
-            );
-            return None;
-        };
-        // The text without its action, placed exactly as with it.
-        let text_area = Rect::new(
-            area.x0,
-            area.y0,
-            area.x1,
-            area.y1 - slot.height() - f64::from(theme.tokens.spacing.s4),
-        );
-        let text_only = EmptyStateContent {
-            action_label: None,
-            ..*content
-        };
-        let _ = EmptyState::paint(
-            &mut PaintCtx::new(scene, t, tr, &ground),
-            text_area,
-            &text_only,
             self.last_mouse,
         );
-        // The action is a secondary control: its own raised face and ink
-        // read on the letterbox in every theme.
-        let width = ButtonFace::new(Rect::ZERO, label)
-            .role(ButtonRole::Secondary)
-            .intrinsic_width(tr, theme);
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let rect = Rect::from_center_size(slot.center(), (width, height));
-        let face = ButtonFace::new(rect, label).role(ButtonRole::Secondary);
-        let hit = face.hit_rect(theme);
-        let hovered = face.contains(theme, self.last_mouse);
-        Button::paint(scene, t, tr, theme, &face.hovered(hovered));
-        self.push_region(hit, action);
-        Some(rect)
+        let slot = content.action_label.and(slot)?;
+        self.push_region(slot, action);
+        Some(slot)
     }
 
     /// The one recovery a no-feed state offers.

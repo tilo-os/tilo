@@ -243,8 +243,13 @@ fn tab_traverses_every_control_in_order() {
     assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
         roles.get(4),
+        Some(&Role::Separator),
+        "fifth stop is the divider between the request and the response"
+    );
+    assert_eq!(
+        roles.get(5),
         Some(&Role::Group),
-        "fifth stop is the request tabs"
+        "sixth stop is the request tabs"
     );
 
     // Every focusable control is reached exactly once.

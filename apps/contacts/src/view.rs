@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::style_helpers::{auto, length, percent, zero};
+use taffy::style_helpers::{length, zero};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -770,68 +770,6 @@ impl ui::widget::Decorator for Overview {
             style.padding.bottom = step;
             style.flex_shrink = 0.0;
             let _ = taffy.set_style(controls, style);
-        }
-        node
-    }
-}
-
-/// A column bounded to a readable measure and centred in the space it is
-/// given, with the page gutter around it: detail pages and forms do not
-/// stretch across a wide window.
-pub(crate) struct Readable {
-    column: Column,
-    /// Its children are groups of sections (a page title, then a form),
-    /// spaced as such.
-    groups: bool,
-}
-
-impl Readable {
-    pub(crate) fn new(column: Column) -> Self {
-        Self {
-            column,
-            groups: false,
-        }
-    }
-
-    /// A page whose children are groups of sections.
-    pub(crate) fn of_groups(column: Column) -> Self {
-        Self {
-            column,
-            groups: true,
-        }
-    }
-}
-
-impl ui::widget::Decorator for Readable {
-    type Inner = Column;
-
-    fn inner(&self) -> &Column {
-        &self.column
-    }
-
-    fn inner_mut(&mut self) -> &mut Column {
-        &mut self.column
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.column.build_layout(taffy, theme, node_map);
-        if let Ok(style) = taffy.style(node) {
-            let mut style = style.clone();
-            let gutter = theme.tokens.spacing.s6;
-            // The readable measure forms use (`FormPage`), plus its gutters.
-            style.max_size.width = length(720.0 * theme.ui_scale + 2.0 * gutter);
-            style.size.width = percent(1.0_f32);
-            style.margin.left = auto();
-            style.margin.right = auto();
-            if self.groups {
-                style.gap.height = length(theme.tokens.spacing.rhythm.group);
-            }
-            let _ = taffy.set_style(node, style);
         }
         node
     }

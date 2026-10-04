@@ -445,7 +445,7 @@ pub fn content(
     // separate groups of the page, a group step apart.
     let mut page = Column::new()
         .with_intrinsic_height()
-        .with_gap(ui::tokens::Spacing::BASE.rhythm.group);
+        .with_rhythm(ui::tokens::Rhythm::Group);
     if let Some((title, message)) = model.failure {
         page = page.push(failure_banner(title, message, intents));
     }
@@ -703,7 +703,7 @@ fn snapshot_row(
 }
 
 /// How many snapshots each class keeps.
-fn retention_page(states: &[LocalState<f64>; 4]) -> Row {
+fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
     let mut keep = FormSection::new("Snapshots to keep").grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
@@ -727,16 +727,12 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Row {
         .with_no_padding()
         .push(Box::new(keep))
         .push(Box::new(total));
-    // A form is bounded to a readable measure, so each count sits near its
-    // label; the spacer keeps it on the page's leading edge.
-    Row::new()
-        .push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_max_width(ui::tokens::Metrics::BASE.panel_width_sheet)
-                .with_child(Box::new(form)),
-        ))
-        .push(Box::new(Spacer::new()))
+    // A form is bounded to the readable measure, on the page's leading
+    // edge, so each count sits near its label.
+    Container::new()
+        .with_no_padding()
+        .readable()
+        .with_child(Box::new(form))
 }
 
 // ---- the selected snapshot ----------------------------------------------

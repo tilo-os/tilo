@@ -12,12 +12,11 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::search::{SearchRequest, search_button};
-use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Column, Element, EmptyState, Field, Form, FormControl,
-    FormPage, FormSection, ListRow, NavItem, NavList, NavSection, Scrollable, Section,
-    SectionHeader, TextInput, TextInputKind, ToggleGroup, Widget,
+    Actions, Banner, Button, ButtonRole, Element, EmptyState, Field, Form, FormControl, FormPage,
+    FormSection, ListRow, NavItem, NavList, NavSection, Section, SectionHeader, TextInput,
+    TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::app::Action;
@@ -164,21 +163,18 @@ fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
     }
 }
 
-/// A vertical page inside the content gutter, groups `rhythm.group` apart.
-fn page(theme: &Theme, children: Vec<Element>) -> Element {
-    let mut column = Column::new()
-        .with_intrinsic_height()
-        .with_gap(theme.tokens.spacing.rhythm.group);
-    for child in children {
-        column = column.push(child);
-    }
-    Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
+/// A page of sections on the readable column, a group apart.
+fn page(children: Vec<Element>) -> Element {
+    Box::new(
+        children
+            .into_iter()
+            .fold(ui::widget::Page::new(), ui::widget::Page::section),
+    )
 }
 
 /// The connection list for `destination`: the pinned connections first, as
 /// their own group, then the rest.
 pub(crate) fn connection_list(
-    theme: &Theme,
     requests: &Requests,
     destination: Destination,
     rows: &[RowModel],
@@ -222,7 +218,7 @@ pub(crate) fn connection_list(
                 ),
             ]
         };
-    page(theme, sections)
+    page(sections)
 }
 
 /// The text behind each form field, kept across rebuilds of the form.

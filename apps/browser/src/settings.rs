@@ -32,8 +32,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, Container, Field, Form, FormSection, ListRow, Row,
-    ScrollAxis, Scrollable, Section, Spacer, Text, TextInput, Toggle, Widget,
+    Banner, Button, ButtonRole, Container, Field, Form, FormSection, ListRow, Row, Section, Spacer,
+    Text, TextInput, Toggle, Widget,
 };
 
 use crate::actions::BrowserAction;
@@ -434,30 +434,19 @@ impl SettingsPane {
         parts.push(Box::new(header));
         parts.push(Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)));
         parts.push(Box::new(form));
-        page(theme, parts)
+        page(parts)
     }
 }
 
-/// A content page of the browser: its parts in one column, bounded to a
-/// readable width, inset from the window edges and scrolled when the window
-/// is short. Settings and the Library share it, so both sit at the same top
+/// A content page of the browser: its parts as sections of a `Page`, on
+/// the readable column at the leading edge, scrolled when the window is
+/// short. Settings and the Library share it, so both sit at the same top
 /// inset and between the same edges.
-pub(crate) fn page(theme: &Theme, parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
-    let mut column = Column::new().with_intrinsic_height();
-    for part in parts {
-        column = column.push(part);
-    }
+pub(crate) fn page(parts: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
     Box::new(
-        Scrollable::new(ScrollAxis::Vertical)
-            .fill_parent_height()
-            .with_child(Box::new(
-                Container::new()
-                    .with_centered_max_width(
-                        theme.tokens.metrics.panel_width_sheet
-                            + theme.tokens.metrics.panel_width_utility,
-                    )
-                    .with_child(Box::new(column)),
-            )),
+        parts
+            .into_iter()
+            .fold(ui::widget::Page::new(), ui::widget::Page::section),
     )
 }
 

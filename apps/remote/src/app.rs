@@ -1588,7 +1588,7 @@ impl RemoteApp {
     }
 
     /// Put the current screen, its header and the rail into the shell.
-    fn rebuild_views(&mut self, theme: &Theme) {
+    fn rebuild_views(&mut self) {
         let key = self.view_key();
         if self.built == Some(key) {
             return;
@@ -1610,7 +1610,7 @@ impl RemoteApp {
                     _ => "Connections".to_owned(),
                 },
                 view::list_actions(&self.requests, has_connections),
-                view::connection_list(theme, &self.requests, destination, &rows, has_connections),
+                view::connection_list(&self.requests, destination, &rows, has_connections),
             ),
             Content::Form(model) => (
                 String::new(),
@@ -2173,7 +2173,7 @@ impl Widget for RemoteApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.rebuild_views(theme);
+        self.rebuild_views();
         self.layout_dirty = false;
         let child = self.body_mut().build_layout(taffy, theme, node_map);
         let node = fill_node(taffy, child);

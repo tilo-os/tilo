@@ -370,6 +370,6 @@ impl BrowserWidget {
             ),
             self.library_body(theme),
         ]);
-        crate::settings::page(theme, parts)
+        crate::settings::page(parts)
     }
 }

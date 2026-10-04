@@ -12,14 +12,14 @@ use std::rc::Rc;
 use ui::format::bytes_si;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
-use ui::tokens::{SpacingStep, TextRole};
+use ui::tokens::{Rhythm, TextRole};
 use ui::widget::Widget;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Button, ButtonRole, Chip, ChipStyle, Element, EmptyState, ListRow, NavItem, NavList,
-    NavSection, Property, PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer,
-    StatGroup, StatTile, Text, ToggleGroup, Tone,
+    NavSection, Property, PropertyList, Row, Scrollable, Section, SegmentedStyle, StatGroup,
+    StatTile, Text, ToggleGroup, Tone,
 };
 
 use crate::app::{ActionKind, Tab};
@@ -161,28 +161,29 @@ pub(crate) fn detail(
     offset: &Rc<Cell<(f32, f32)>>,
 ) -> Element {
     let drive = model.drive;
-    let mut page = ui::widget::Column::new().with_intrinsic_height();
-    page = page.push(Box::new(badges(drive)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(actions(model, intents)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(tabs(model.tab, intents)));
-    page = page.push(match model.tab {
-        Tab::Overview => overview(model, intents),
-        Tab::Smart => health(drive),
-        Tab::Partitions => partitions(model, intents),
-    });
+    // The drive's state, its actions and the tabbed detail are groups of
+    // the page, a group apart; a tab sits a sibling step over its content.
+    let tab = ui::widget::Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .push(Box::new(tabs(model.tab, intents)))
+        .push(match model.tab {
+            Tab::Overview => overview(model, intents),
+            Tab::Smart => health(drive),
+            Tab::Partitions => partitions(model, intents),
+        });
+    let page = ui::widget::Column::new()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Group)
+        .push(Box::new(badges(drive)))
+        .push(Box::new(actions(model, intents)))
+        .push(Box::new(tab));
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_persisted_offset(Rc::clone(offset))
             .with_child(Box::new(page)),
     )
-}
-
-/// Two sibling gaps either side of nothing: the space between page groups.
-fn group_gap() -> Element {
-    Box::new(Spacer::token(SpacingStep::S0))
 }
 
 fn status_tone(status: SmartStatus) -> Tone {
@@ -300,14 +301,13 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
 
     let mut page = ui::widget::Column::new()
         .with_intrinsic_height()
-        .with_no_padding();
+        .with_no_padding()
+        .with_rhythm(Rhythm::Group);
     page = page.push(Box::new(Section::titled(
         "Partition map",
         vec![Box::new(map)],
     )));
-    page = page.push(group_gap());
     page = page.push(Box::new(filesystems(drive, model.partition, intents)));
-    page = page.push(group_gap());
     page = page.push(Box::new(Section::titled(
         "Details",
         vec![Box::new(PropertyList::new(drive_facts(drive)))],
@@ -414,17 +414,16 @@ fn health(drive: &Drive) -> Element {
 
     let mut page = ui::widget::Column::new()
         .with_intrinsic_height()
-        .with_no_padding();
+        .with_no_padding()
+        .with_rhythm(Rhythm::Group);
     page = page.push(Box::new(Text::new(message).with_role(TextRole::Body)));
 
     if let Some(smart) = &drive.smart {
         let tiles = smart_tiles(smart);
         if !tiles.is_empty() {
-            page = page.push(group_gap());
             page = page.push(Box::new(StatGroup::new(tiles)));
         }
         if !smart.attrs.is_empty() {
-            page = page.push(group_gap());
             page = page.push(Box::new(Section::titled(
                 "Attributes",
                 vec![Box::new(attribute_table(&smart.attrs))],

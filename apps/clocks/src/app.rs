@@ -9,7 +9,7 @@ use std::{
 };
 use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
-use ui::tokens::{Metrics, spacing::Spacing};
+use ui::tokens::{Metrics, Rhythm};
 use ui::widget::{
     Actions, Banner, Button, ButtonRole, Card, CardGrid, CardWidth, Checkbox, Column, Container,
     ControlSize, Dropdown, Element, EmptyState, Field, LabelPlacement, ListRow, ModalDialog,
@@ -30,11 +30,6 @@ use vello::{
 /// pinned time.
 pub(crate) fn now_utc() -> DateTime<Utc> {
     ui::clock::local_now().with_timezone(&Utc)
-}
-
-/// The gap between the groups of one screen.
-fn group_gap() -> f32 {
-    Spacing::BASE.s6
 }
 
 fn text(label: &str, role: TextRole) -> Text {
@@ -270,7 +265,7 @@ fn fields(items: Vec<Element>) -> Column {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(Spacing::BASE.s4),
+            .with_rhythm(Rhythm::Section),
         Column::push,
     )
 }
@@ -278,7 +273,7 @@ fn fields(items: Vec<Element>) -> Column {
 /// The weekday choices of the new alarm form: a strip of seven equal days,
 /// each a checkbox under its short name.
 fn weekday_picker(days: &[ui::LocalState<bool>]) -> Element {
-    let mut picker = Row::new().with_gap(Spacing::BASE.s1);
+    let mut picker = Row::new().with_rhythm(Rhythm::Tight);
     for ((day, label), state) in WEEKDAYS.iter().zip(days) {
         picker = picker.push(Box::new(
             Container::new()
@@ -288,7 +283,7 @@ fn weekday_picker(days: &[ui::LocalState<bool>]) -> Element {
                     Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
-                        .with_gap(Spacing::BASE.s1)
+                        .with_rhythm(Rhythm::Tight)
                         .push(Box::new(text(label, TextRole::Label).dimmed()))
                         .push(Box::new(
                             Checkbox::from_state(state)
@@ -325,7 +320,7 @@ fn local_time_block() -> Column {
     Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(Spacing::BASE.s1)
+        .with_rhythm(Rhythm::Tight)
         .push(Box::new(
             Text::dynamic(|| ui::clock::local_now().format("%H:%M").to_string())
                 .with_role(TextRole::Display)
@@ -412,7 +407,7 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(group_gap())
+            .with_rhythm(Rhythm::Group)
             .push(Box::new(
                 Row::new()
                     .with_justify(taffy::JustifyContent::SpaceBetween)
@@ -483,7 +478,7 @@ fn labelled(label: &str, control: Element) -> Element {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(Spacing::BASE.s2)
+            .with_rhythm(Rhythm::Related)
             .push(Box::new(text(label, TextRole::Label)))
             .push(control),
     )
@@ -494,7 +489,7 @@ fn stepper_row(parts: Vec<NumberInput>) -> Element {
     Box::new(
         parts
             .into_iter()
-            .fold(Row::new().with_gap(Spacing::BASE.s4), |row, part| {
+            .fold(Row::new().with_rhythm(Rhythm::Section), |row, part| {
                 row.push(Box::new(part))
             }),
     )
@@ -509,7 +504,7 @@ fn alarm_card(state: &ui::LocalState<ClockState>, alarm: &Alarm) -> Element {
     let body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(Spacing::BASE.s1)
+        .with_rhythm(Rhythm::Tight)
         .push(Box::new(
             text(
                 &alarm.local_time.format("%H:%M").to_string(),
@@ -744,8 +739,8 @@ fn timer_ring(state: &ui::LocalState<ClockState>, id: Uuid) -> ModelView<RingKey
             Box::new(
                 Row::new()
                     .no_wrap()
-                    .with_padding(0.0, Spacing::BASE.s2)
-                    .with_gap(Spacing::BASE.s6)
+                    .with_padding_rhythm(None, Rhythm::Related)
+                    .with_rhythm(Rhythm::Group)
                     .with_align_items(taffy::AlignItems::Center)
                     .push(Box::new(ring))
                     .push(Box::new(timer_facts(timer))),
@@ -768,7 +763,7 @@ fn timer_facts(timer: &Timer) -> Column {
     Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(Spacing::BASE.s1)
+        .with_rhythm(Rhythm::Tight)
         .push(Box::new(text(&status, TextRole::Body).numeric()))
         .push(Box::new(
             text(
@@ -859,12 +854,11 @@ fn new_timer_dialog(
     let cancel = dialog.clone();
     let dismiss = dialog.clone();
     let error = ModelView::from_state(validation_error, |message| {
-        message.as_ref().map_or_else(
-            || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
-            |message| {
-                Box::new(Banner::error("Timer needs a duration").with_message(message.clone()))
-            },
-        )
+        // No message, no banner and no gap where it would be.
+        ui::widget::optional(message.as_ref().map(|message| {
+            Box::new(Banner::error("Timer needs a duration").with_message(message.clone()))
+                as Element
+        }))
     });
     let form = fields(vec![
         Box::new(
@@ -972,7 +966,7 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(group_gap());
+            .with_rhythm(Rhythm::Group);
         if !s.timers.is_empty() {
             let cards: Vec<Element> = s
                 .timers
@@ -1091,7 +1085,7 @@ fn lap_list(s: &ClockState) -> Column {
     Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(Spacing::BASE.s2)
+        .with_rhythm(Rhythm::Related)
         .push(text_edge(Box::new(Section::new(Vec::new()).with_header(
             SectionHeader::heading("Laps").count(s.stopwatch.laps_ms.len()),
         ))))
@@ -1103,9 +1097,8 @@ fn lap_list(s: &ClockState) -> Column {
 fn text_edge(item: Element) -> Element {
     Box::new(
         Column::new()
-            .with_no_padding()
             .with_intrinsic_height()
-            .with_horizontal_padding(Spacing::BASE.s2, Spacing::BASE.s2)
+            .with_padding_rhythm(Rhythm::Related, None)
             .push(item),
     )
 }
@@ -1118,12 +1111,12 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
         let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(group_gap())
+            .with_rhythm(Rhythm::Group)
             .push(text_edge(Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(group_gap())
+                    .with_rhythm(Rhythm::Group)
                     .push(Box::new(
                         Text::dynamic(move || readout.with(|s| duration(stopwatch_elapsed_ms(s))))
                             .with_role(TextRole::Display)
@@ -1237,11 +1230,11 @@ fn surface(
         // their text, so a page sits `s1` in and sets its text in by `s2`.
         let mut column = Column::new()
             .with_intrinsic_height()
-            .with_horizontal_padding(Spacing::BASE.s1, Spacing::BASE.s1);
+            .with_padding_rhythm(Rhythm::Tight, Rhythm::Group);
         if let Some(notice) = notice {
             column = column
                 .push(text_edge(notice_banner(notice)))
-                .with_gap(group_gap());
+                .with_rhythm(Rhythm::Group);
         }
         let screen = screen_of(selected.as_deref());
         let body = page(screen, &pages_state);
