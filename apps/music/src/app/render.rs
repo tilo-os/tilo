@@ -912,7 +912,6 @@ impl Continuable for MusicApp {
 impl Widget for MusicApp {
     ui::provides!(
         dyn ui::widget::Continuable,
-        dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
     );
@@ -1917,30 +1916,16 @@ impl ui::search::capability::SearchSource for MusicApp {
 }
 
 impl ui::resources::PublishesResources for MusicApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
-    /// library door — keep only device-local player, queue and open-file extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return crate::actions::live_device_resources(&self.music_resource_ctx());
-        }
-        self.publish_resources(doc)
+    /// The live player, queue and open file: device-local rows beside the
+    /// library the framework publishes, carrying view and effect operations.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::actions::live_device_resources(&self.music_resource_ctx())
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "music.library" {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for MusicApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its music action, so it records one undo boundary for it (see
-    /// `MusicApp::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+    /// One row the surface shows, resolved by id where the published page
+    /// leaves it out: a queue entry, a track's playback, a view.
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.publish_resource(id)
     }
 }
 
@@ -5070,7 +5055,7 @@ impl MusicApp {
         }
         let (y, row_h) = (row.y, layout.row_h);
         let (dl_x, dur_x) = (layout.cols.dl, layout.cols.dur);
-        let state = self.lib.cache_state(&tk.id);
+        let state = self.cache_state(&tk.id);
         let downloading = matches!(state, CacheState::Downloading(_));
         let failed = self.offline_errors.get(&tk.id).cloned();
         let remove = downloading || matches!(state, CacheState::Cached);
@@ -6538,13 +6523,13 @@ impl MusicApp {
             .lib
             .tracks
             .keys()
-            .filter(|id| matches!(self.lib.cache_state(id), CacheState::Cached))
+            .filter(|id| matches!(self.cache_state(id), CacheState::Cached))
             .count();
         let active = self
             .lib
             .tracks
             .keys()
-            .filter(|id| matches!(self.lib.cache_state(id), CacheState::Downloading(_)))
+            .filter(|id| matches!(self.cache_state(id), CacheState::Downloading(_)))
             .count()
             .max(self.downloads.len() + self.offline_resolves.len());
         let banner = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 64.0);
@@ -6575,7 +6560,7 @@ impl MusicApp {
             .lib
             .tracks
             .keys()
-            .filter(|id| !matches!(self.lib.cache_state(id), CacheState::Streamed))
+            .filter(|id| !matches!(self.cache_state(id), CacheState::Streamed))
             .cloned()
             .collect::<Vec<_>>();
         let mut ids = ids;

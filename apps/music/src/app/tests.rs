@@ -191,9 +191,6 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         profile.playback.current = Some("sentinel-track".into());
         profile.playback.queue = vec!["sentinel-track".into()];
         profile.playback.position_ms = 42;
-        profile
-            .cache
-            .insert("sentinel-track".into(), CacheState::Cached);
         crate::storage::save_device_profile_to(&path, &profile).unwrap();
 
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -247,17 +244,6 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         assert!(
             doc::is_seeded(&doc),
             "the empty library still initialises the doc structure"
-        );
-    }
-
-    // Phase `seed_has_no_fabricated_in_progress_download`.
-    {
-        let lib = seed::sample_library();
-        assert!(
-            lib.cache
-                .values()
-                .all(|s| !matches!(s, CacheState::Downloading(_))),
-            "the seed no longer parks a track at a perpetual fake download progress",
         );
     }
 }
@@ -1082,7 +1068,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
     // Phase `offline_download_request_is_honest_and_device_local`.
     {
         let (mut app, mut doc) = app_with_doc();
-        assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Streamed);
+        assert_eq!(app.cache_state("tk_g2"), CacheState::Streamed);
         let heads = doc.get_heads();
         let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
             tracks: vec!["tk_g2".into()],
@@ -1104,7 +1090,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             Some(ui::widget::ResourceOperationStart::Accepted)
         ));
         assert!(matches!(
-            app.lib.cache_state("tk_g2"),
+            app.cache_state("tk_g2"),
             CacheState::Downloading(_)
         ));
         assert_eq!(doc.get_heads(), heads);
@@ -1115,7 +1101,6 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         let (mut app, mut doc) = app_with_doc();
         app.device_cache.insert("tk_g1".into(), CacheState::Cached);
         app.device_cache.insert("tk_g2".into(), CacheState::Cached);
-        app.lib.cache.clone_from(&app.device_cache);
         let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
             tracks: vec!["tk_g1".into(), "tk_g2".into()],
             keep: true,
@@ -2144,7 +2129,7 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
         app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
         app.pb.queue_index = 0;
         app.pb.current = Some("tk_g1".into());
-        let resources = ui::resources::resources(&app, &doc);
+        let resources = app.palette_tree(&doc);
         let queue = resources[0]
             .children
             .iter()
@@ -2244,7 +2229,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
         // the legacy app callback.
         let (mut app, mut doc) = app_with_doc();
         let track = app.lib.tracks.values().next().unwrap().clone();
-        let resources = ui::resources::resources(&app, &doc);
+        let resources = app.palette_tree(&doc);
         let album = app.lib.albums.values().next().unwrap().clone();
         let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
         let playlist = app.lib.playlists.first().unwrap().clone();
@@ -2429,8 +2414,8 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let playlist = app.lib.playlists.first().expect("seed playlist").clone();
         let track = playlist.track_ids.first().expect("seed membership").clone();
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
-        let resource = MusicApp::publish_resource(&app, &doc, &resource_id)
-            .expect("membership resolves lazily");
+        let resource =
+            MusicApp::publish_resource(&app, &resource_id).expect("membership resolves lazily");
         assert!(
             resource
                 .actions
@@ -2487,7 +2472,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
     {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
-        let resource = MusicApp::publish_resource(&app, &doc, &resource_id)
+        let resource = MusicApp::publish_resource(&app, &resource_id)
             .expect("published destination resolves at the authority door");
         let open = resource
             .actions
@@ -4173,17 +4158,18 @@ fn canonical_actions_converge_through_the_platform_document() {
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(!doc::load_library(&doc).is_liked("tk_g2"));
-        // Like via the normal action pipeline. This is the same ActionHost
-        // boundary used by pointer controls and Ctrl+K, not a Music-owned
-        // transport or a side-channel mutation.
+        // Like via the normal action pipeline: the framework dispatcher
+        // pointer controls and Ctrl+K share, not a Music-owned transport or
+        // a side-channel mutation.
         app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
         assert!(
             doc::load_library(&doc).is_liked("tk_g2"),
             "the canonical action changed the host-owned app document"
         );
-        assert!(
-            app.actions.take_committed().is_some(),
-            "ActionHost produced the committed canonical action that the platform records and replicates"
+        assert_eq!(
+            last_action_label(&mut doc).as_deref(),
+            Some("Like song"),
+            "the like is a recorded, attributed action the platform replicates"
         );
         // Model the platform's document replication boundary with an exact
         // Automerge message exchange. Music neither opens a socket nor mints a
@@ -4218,28 +4204,28 @@ fn canonical_actions_converge_through_the_platform_document() {
         // The sample library seeds some tracks as already-liked, so assert the
         // membership *flips* rather than assuming a fixed direction.
         let before = doc::load_library(&doc).is_liked(&id);
-        let expected = crate::actions::encode(&crate::actions::set_liked_action(&id, !before));
 
         send(&mut app, &cursor_at(center), &mut doc);
         send(&mut app, &press(MouseButton::Left), &mut doc);
 
         assert_eq!(
-            app.actions.last_dispatched(),
-            Some(&expected),
-            "the like heart and the palette build the identical EncodedAction"
-        );
-        assert_eq!(
             doc::load_library(&doc).is_liked(&id),
             !before,
             "and it actually toggled the track's liked state in the doc"
         );
-        // The heads captured for the host's undo bracket are armed (the host
-        // drains this via `take_committed_action` to record one undo boundary).
-        assert!(
-            app.actions.take_committed().is_some(),
-            "the click armed exactly one undo boundary for the host to record"
+        assert_eq!(
+            last_action_label(&mut doc).as_deref(),
+            Some(if before { "Unlike song" } else { "Like song" }),
+            "the click applied the palette's like action"
         );
     }
+}
+
+/// The history label of the last action applied to `doc`.
+fn last_action_label(doc: &mut AutoCommit) -> Option<String> {
+    let change = doc.get_last_local_change()?;
+    let message = change.message()?;
+    tilo_actions::ActionContext::from_change_message(message).map(|context| context.action_label)
 }
 
 // ---- 22. responsive bottom bar: volume + swipe ------------------------

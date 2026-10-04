@@ -3,11 +3,8 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{
-    Command, Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
-};
-use ui::tilo_actions::{ActionParam, ActionSpec, EncodedAction, ParamType};
+use ui::framework::{Command, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
+use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -79,7 +76,7 @@ impl Resource for Music {
 
     fn local_operations() -> Vec<ActionSpec> {
         // Open-file is a device Effect. Navigation destinations are child
-        // `music.view` resources (same tree `provide_resources` publishes).
+        // `music.view` resources.
         vec![open_local_file_spec()]
     }
 
@@ -206,7 +203,7 @@ impl ResourceSurface<Music> for MusicApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Music>) {
-        self.attach_framework(cx.dispatcher());
+        self.attach_dispatcher(cx.dispatcher());
         if cx.mode().is_live() {
             self.open_launch(&cx.launch());
         }
@@ -215,65 +212,6 @@ impl ResourceSurface<Music> for MusicApp {
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario {
             self.stage_scenario(scenario);
-        }
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Music>>,
-    last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Music>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &MusicAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
         }
     }
 }

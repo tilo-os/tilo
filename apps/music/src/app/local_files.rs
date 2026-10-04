@@ -359,48 +359,35 @@ mod tests {
 
         // Phase `home_picker_is_in_host_focus_order_only_while_visible`.
         {
-            let mut music = MusicApp::without_profile();
-            music.disconnect();
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
-            let mut state = ui::State::new();
-            music.sync(&mut state.doc, &automerge::ROOT);
-            let mut host = ui::App::new(state, Box::new(music));
-            crate::actions::register(host.action_registry_mut());
-            host.init_layout();
-            host.refresh_semantic_tree();
-            assert_eq!(host.focusable_order.len(), 1);
-            for destination in ["songs", "home"] {
-                let resource = crate::actions::view_resource_id(destination);
-                let target = ui::accesskit_bridge::resource_action_node_id(&resource, "open");
-                host.dispatch_a11y_action(target, &ui::a11y::Action::Activate);
-                host.rebuild_structure();
-                host.refresh_focus_order();
-                host.refresh_semantic_tree();
-                let home = destination == "home";
-                assert_eq!(host.focusable_order.len(), usize::from(home));
-                assert_eq!(
-                    host.control_action_coverage()
-                        .iter()
-                        .any(|entry| entry.binding.control_id == "music-open-file"),
-                    home
-                );
-                assert_eq!(
-                    host.semantic_tree().control_paths("music-open-file").len(),
-                    usize::from(home)
-                );
-            }
+            let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+            let on_home = app.harness().focus_order().len();
+            app.call_on(
+                &crate::actions::view_resource_id("songs"),
+                "open",
+                serde_json::json!({}),
+            )
+            .unwrap();
+            app.settle();
+            assert_eq!(
+                app.harness().focus_order().len() + 1,
+                on_home,
+                "the picker leaves the focus order with Home"
+            );
+            app.call_on(
+                &crate::actions::view_resource_id("home"),
+                "open",
+                serde_json::json!({}),
+            )
+            .unwrap();
+            app.settle();
+            assert_eq!(app.harness().focus_order().len(), on_home);
             #[cfg(feature = "audio")]
             {
-                let path = host
-                    .semantic_tree()
-                    .control_paths("music-open-file")
-                    .pop()
-                    .unwrap();
-                let id = path.last().unwrap().clone();
-                assert!(host.invoke_semantic_action(&id, "activate", None).unwrap());
-                host.refresh_focus_order(); // consume the recorded cancellation; never open a dialog
+                app.call("open-file", serde_json::json!({})).unwrap();
+                app.settle();
                 assert_eq!(recorder.pick_requests()[0].title(), "Open audio file");
             }
         }
@@ -643,8 +630,7 @@ mod tests {
                     "canonical" => {
                         let resource_id = crate::actions::queue_item_resource_id(0, &id);
                         let resource =
-                            crate::app::MusicApp::publish_resource(&app, &doc, &resource_id)
-                                .unwrap();
+                            crate::app::MusicApp::publish_resource(&app, &resource_id).unwrap();
                         let action = resource
                             .actions
                             .iter()
@@ -716,7 +702,7 @@ mod tests {
         } else {
             crate::actions::track_resource_id(&id)
         };
-        let resource = crate::app::MusicApp::publish_resource(&app, &doc, &resource_id).unwrap();
+        let resource = crate::app::MusicApp::publish_resource(&app, &resource_id).unwrap();
         let action = resource
             .actions
             .iter()
@@ -910,8 +896,7 @@ mod tests {
             paused.queue.push(next_id.clone());
             app.apply_resource_playback(paused).unwrap();
             let resource_id = crate::actions::queue_item_resource_id(0, &old_id);
-            let resource =
-                crate::app::MusicApp::publish_resource(&app, &doc, &resource_id).unwrap();
+            let resource = crate::app::MusicApp::publish_resource(&app, &resource_id).unwrap();
             let remove = resource
                 .actions
                 .iter()
@@ -945,8 +930,7 @@ mod tests {
         assert_eq!(app.pb.queue, vec![next_id.clone()]);
         assert_eq!(app.pb.queue_index, 0);
         assert_eq!(app.pb.position_ms, if continuation { 500 } else { 0 });
-        let player =
-            crate::app::MusicApp::publish_resource(&app, &doc, "music.player:player").unwrap();
+        let player = crate::app::MusicApp::publish_resource(&app, "music.player:player").unwrap();
         let play = player
             .actions
             .iter()
@@ -1081,7 +1065,6 @@ mod tests {
             assert!(
                 crate::app::MusicApp::publish_resource(
                     &app,
-                    &doc,
                     crate::actions::LOCAL_FILE_RESOURCE_ID
                 )
                 .is_some()
@@ -1097,7 +1080,6 @@ mod tests {
             }
             let resource = crate::app::MusicApp::publish_resource(
                 &app,
-                &doc,
                 crate::actions::LOCAL_FILE_RESOURCE_ID,
             )
             .unwrap();
@@ -1165,7 +1147,7 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             let before = doc.get_heads();
             let invocation = tilo_actions::InvocationId::new();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.palette_tree(&doc);
             let action = resources[0]
                 .actions
                 .iter()
@@ -1209,7 +1191,6 @@ mod tests {
             let profile = crate::storage::DeviceProfile {
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
-                ..Default::default()
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1233,7 +1214,6 @@ mod tests {
                     ..Default::default()
                 },
                 local_file: Some(file),
-                ..Default::default()
             };
             let profile_path = dir.path().join("profile.json");
             crate::storage::save_device_profile_to(&profile_path, &profile).unwrap();
@@ -1249,7 +1229,6 @@ mod tests {
                 app.sync(&mut doc, &automerge::ROOT);
                 let source = crate::app::MusicApp::publish_resource(
                     &app,
-                    &doc,
                     crate::actions::LOCAL_FILE_RESOURCE_ID,
                 )
                 .unwrap();
