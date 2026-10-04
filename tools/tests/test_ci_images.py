@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[2]
 PINS_FILE = ROOT / 'tools/ci/images.toml'
 # Workflows not yet moved onto the shared pins. Only shrink this set.
 PENDING = {
-    ('app-sdk.yml', 'ci-fast'),
     ('os-dev.yml', 'ci-fast'),
     ('os-dev-arm.yml', 'ci-fast'),
 }
