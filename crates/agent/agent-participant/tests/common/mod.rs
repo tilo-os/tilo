@@ -41,10 +41,6 @@ pub const LOCAL_STATE: &[(&str, &str)] = &[
         "so.tilo.pdf-viewer",
         "opens a document the user picks; the record holds nothing until one is open",
     ),
-    (
-        "so.tilo.speed-test",
-        "measurements and their history live in the app instance, not the record",
-    ),
 ];
 
 /// The room the tests' records belong to.

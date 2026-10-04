@@ -590,7 +590,6 @@ mod tests {
                 "Draft",
                 "save",
                 "Save",
-                false,
             )]
         }
     }
@@ -687,7 +686,6 @@ mod tests {
                 "Replacement",
                 "save",
                 "Save",
-                false,
             );
             let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "save");
             let root = crate::widget::resource_actions::immediate(
