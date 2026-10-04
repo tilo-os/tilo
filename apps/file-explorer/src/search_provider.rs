@@ -14,7 +14,7 @@ use std::sync::{Arc, RwLock};
 
 use sha2::{Digest as _, Sha256};
 
-use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
+use ui::tilo_actions::{ActionAddress, Resource};
 use ui::tilo_resource::SearchEntry;
 
 use crate::favorites::Favorite;
@@ -142,9 +142,13 @@ impl PlacesSearch {
         let favorite = self.snapshot.read().ok()?.favorites.get(id)?.clone();
         Some(
             Resource::new(id, "files.place", favorite.label).with_action(
-                ActionSpec::operation(OPEN_ACTION, "Open", OperationKind::View, "files.open", &id)
-                    .ok()?
-                    .with_contract(ActionContract::view()),
+                crate::effects::row_action(
+                    &crate::effects::FilesEffect::OpenItem {
+                        item: id.to_owned(),
+                    },
+                    OPEN_ACTION,
+                    "Open",
+                ),
             ),
         )
     }
@@ -270,19 +274,15 @@ impl CollaborativeRecordSearch {
 
     pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
         let record = self.snapshot.read().ok()?.records.get(id)?.clone();
-        Some(
-            Resource::new(id, "files.record", record.name).with_action(
-                ActionSpec::operation(
-                    REVEAL_ACTION,
-                    "Reveal in Files",
-                    OperationKind::View,
-                    "files.reveal-record",
-                    &record.record_id.to_string(),
-                )
-                .ok()?
-                .with_contract(ActionContract::view()),
+        Some(Resource::new(id, "files.record", record.name).with_action(
+            crate::effects::row_action(
+                &crate::effects::FilesEffect::Reveal {
+                    record: record.record_id.to_string(),
+                },
+                REVEAL_ACTION,
+                "Reveal in Files",
             ),
-        )
+        ))
     }
 }
 
@@ -345,18 +345,15 @@ impl RemoteAccountSearch {
 
     pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
         let account = self.snapshot.read().ok()?.accounts.get(id)?.clone();
-        let payload = vec!["details".to_string(), account.id.to_string()];
         Some(
             Resource::new(id, "files.remote-account", account.label).with_action(
-                ActionSpec::operation(
+                crate::effects::row_action(
+                    &crate::effects::FilesEffect::AccountDetails {
+                        account: account.id.to_string(),
+                    },
                     REMOTE_ACCOUNT_OPEN_ACTION,
                     "Show connection details",
-                    OperationKind::View,
-                    "files.remote-account",
-                    &payload,
-                )
-                .ok()?
-                .with_contract(ActionContract::view()),
+                ),
             ),
         )
     }
@@ -537,7 +534,6 @@ mod tests {
         // --- phase: widget_hooks_find_then_navigate_to_the_place ---
         {
             use automerge::{AutoCommit, ROOT};
-            use ui::widget::Widget;
 
             // Build the app against real temp dirs so navigation actually loads.
             let base = std::env::temp_dir().join(format!("tilo-fe-search-{}", std::process::id()));
@@ -573,7 +569,8 @@ mod tests {
                 ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                     .expect("search address is exported");
             assert!(matches!(
-                app.start_operation(
+                crate::files_app::published::start(
+                    &mut app,
                     &ui::widget::ResourceOperation::local(
                         ui::tilo_actions::InvocationId::new(),
                         kind,

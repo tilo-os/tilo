@@ -13,10 +13,10 @@ impl CodeApp {
     /// is the only way to skip the freshness check, and it is never set by the
     /// app on its own.
     pub fn save_buffer(&mut self, doc: &AutoCommit, node: TreeId, force: bool) -> bool {
-        let Some(idx) = self.session.open.iter().position(|b| b.node == node) else {
+        if self.session.buffer_of(node).is_none() {
             return false;
-        };
-        let Some(path) = self.session.open.get(idx).and_then(|b| b.path.clone()) else {
+        }
+        let Some(path) = self.session.buffer_of(node).and_then(|b| b.path.clone()) else {
             // No file yet: a scratch buffer needs a destination first, which
             // only the user (through the picker) can choose.
             self.request_save_as(node);
@@ -26,21 +26,20 @@ impl CodeApp {
         let expected = if force {
             None
         } else {
-            self.session.open.get(idx).and_then(|b| b.stamp.clone())
+            self.session.buffer_of(node).and_then(|b| b.stamp.clone())
         };
 
         match disk::save(&path, &text, expected.as_ref()) {
             Ok(stamp) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
-                if let Some(buf) = self.session.open.get_mut(idx) {
+                if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, Some(stamp));
                 }
                 self.note(format!("Saved {name}"), false);
-                self.reconcile_tabs();
+                self.refresh_header();
                 // Tell the language server the file is on disk now; rustc-based
                 // diagnostics only refresh on save.
                 if let (Some(c), Some(uri)) = (self.lsp.as_mut(), self.lsp_uri.clone()) {
@@ -49,15 +48,14 @@ impl CodeApp {
                 true
             }
             Err(disk::SaveError::Conflict) => {
-                if let Some(buf) = self.session.open.get_mut(idx) {
+                if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.stale = true;
                 }
                 self.conflict = Some(Conflict {
                     node,
                     name: self
                         .session
-                        .open
-                        .get(idx)
+                        .buffer_of(node)
                         .map_or_else(String::new, |b| b.name.clone()),
                 });
                 false
@@ -65,8 +63,7 @@ impl CodeApp {
             Err(e) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not save {name}: {e}"), true);
                 false
@@ -87,7 +84,7 @@ impl CodeApp {
     pub(super) fn save_all(&mut self, doc: &AutoCommit) -> usize {
         let dirty: Vec<TreeId> = self
             .session
-            .open
+            .buffer
             .iter()
             .filter(|b| b.dirty && b.path.is_some())
             .map(|b| b.node)
@@ -113,15 +110,14 @@ impl CodeApp {
 
     /// Throw away this buffer's edits and take what is on disk.
     pub(super) fn reload_buffer(&mut self, doc: &mut AutoCommit, node: TreeId) {
-        let Some(idx) = self.session.open.iter().position(|b| b.node == node) else {
+        if self.session.buffer_of(node).is_none() {
             return;
-        };
+        }
         match self.session.project.file_seed(node) {
             Ok((text, stamp)) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 // Disk reload is still a visible buffer edit, so it uses the
                 // same action-owned splice path as a keystroke or replace.
@@ -132,18 +128,17 @@ impl CodeApp {
                     self.note(format!("Reload was refused: {error}"), true);
                     return;
                 }
-                if let Some(buf) = self.session.open.get_mut(idx) {
+                if let Some(buf) = self.session.buffer_of_mut(node) {
                     buf.mark_saved(text, stamp);
                 }
                 self.note(format!("Reloaded {name} from disk"), false);
                 self.bound_node = None;
-                self.reconcile_tabs();
+                self.refresh_header();
             }
             Err(e) => {
                 let name = self
                     .session
-                    .open
-                    .get(idx)
+                    .buffer_of(node)
                     .map_or_else(String::new, |b| b.name.clone());
                 self.note(format!("Could not reload {name}: {e}"), true);
             }
@@ -153,9 +148,9 @@ impl CodeApp {
     /// Notice files that changed on disk since we read them, so a tab can warn
     /// before the user tries to save over someone else's work.
     pub(super) fn check_disk_staleness(&mut self) {
-        for buf in &mut self.session.open {
+        if let Some(buf) = self.session.buffer.as_mut() {
             let (Some(path), Some(stamp)) = (buf.path.as_ref(), buf.stamp.as_ref()) else {
-                continue;
+                return;
             };
             if !buf.stale && disk::changed_on_disk(path, stamp) {
                 buf.stale = true;
@@ -431,7 +426,7 @@ impl CodeApp {
                 self.editor.unbind();
                 self.reset_language_server();
                 self.clear_search();
-                self.reconcile_tabs();
+                self.refresh_header();
                 self.refresh_palette_entries();
                 self.note(format!("Opened {name}"), false);
                 Ok(())
@@ -444,7 +439,7 @@ impl CodeApp {
         }
     }
 
-    /// Open a real file into a tab, revealing it in the tree when it lives
+    /// Show a real file, revealing it in the tree when it lives
     /// under the open project and adopting it as a one-file project when not.
     pub(super) fn open_disk_file(&mut self, path: &std::path::Path) -> Result<(), String> {
         let path = disk::canonical(path);

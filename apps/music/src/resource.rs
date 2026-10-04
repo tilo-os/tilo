@@ -3,14 +3,17 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Command, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
+use ui::framework::{
+    Command, EffectAnswer, EffectCx, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
+    SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    MUSIC_ACTION_TYPE, MusicAction, MusicResourceCtx, create_playlist_action, document_children,
-    new_playlist_id, open_local_file_spec, register,
+    MUSIC_ACTION_TYPE, MusicAction, MusicEffect, MusicResourceCtx, create_playlist_action,
+    document_children, new_playlist_id, register,
 };
 use crate::app::MusicApp;
 use crate::doc;
@@ -74,10 +77,9 @@ impl Resource for Music {
         document_children(&MusicResourceCtx::from_library(state))
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Open-file is a device Effect. Navigation destinations are child
-        // `music.view` resources.
-        vec![open_local_file_spec()]
+    fn child(state: &Library, id: &str) -> Option<tilo_actions::Resource> {
+        let ctx = MusicResourceCtx::for_document_id(state, id)?;
+        crate::actions::resource_by_id(&ctx, id)
     }
 
     /// Songs, albums, artists, playlists and what each playlist holds.
@@ -186,7 +188,7 @@ impl ResourceApp for MusicShell {
     }
 }
 
-impl ResourceSurface<Music> for MusicApp {
+impl ResourceSurface<Music, MusicEffect> for MusicApp {
     fn present(&mut self, state: &Rc<Library>) {
         self.adopt_resource_state(state);
     }
@@ -207,6 +209,25 @@ impl ResourceSurface<Music> for MusicApp {
     /// The songs the live search found that the library does not hold.
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.live_search_entries()
+    }
+
+    fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Music, Self>) -> EffectAnswer {
+        let invocation = cx.invocation().unwrap_or_default();
+        let answer = self.begin_effect(invocation, effect)?;
+        if matches!(answer, ui::framework::Effected::Pending) {
+            self.await_effect(invocation, cx.reply());
+        }
+        Ok(answer)
+    }
+
+    /// This device's player, queue and open file, and the tracks it keeps
+    /// offline: rows beside the library, carrying their effects.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.device_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.device_row(id)
     }
 }
 
@@ -239,6 +260,56 @@ mod tests {
             monthly_listeners: 0,
         };
         crate::actions::import_track_action(&track, &album, &artist)
+    }
+
+    #[test]
+    fn effects_reach_the_surface_through_the_door_and_ride_their_rows() {
+        let mut app = TestApp::<MusicShell>::new().unwrap();
+        for action in crate::seed::sample_actions() {
+            app.invoke(Invoke::apply(&action).unwrap()).unwrap();
+        }
+        app.settle();
+
+        let surface = app.agent_surface().to_string();
+        assert!(surface.contains("music.player:player"), "{surface}");
+        assert!(surface.contains("toggle-shuffle"));
+        assert!(surface.contains("open-file"));
+
+        let album = crate::actions::album_resource_id("al_glasslight");
+        app.effect_on(
+            &album,
+            &MusicEffect::Open {
+                place: crate::actions::Place::Album("al_glasslight".into()),
+            },
+        )
+        .expect("the album row opens its page");
+        assert!(
+            app.effect_on(
+                &crate::actions::album_resource_id("al_gone"),
+                &MusicEffect::Open {
+                    place: crate::actions::Place::Album("al_gone".into()),
+                },
+            )
+            .is_err(),
+            "an album that is not in the library has no row to open"
+        );
+        assert!(
+            app.effect(&MusicEffect::QueueAdd {
+                track: "music.track:not-in-the-library".into(),
+            })
+            .is_err(),
+            "a stale track is refused at the handler"
+        );
+        app.effect(&MusicEffect::QueueAdd {
+            track: crate::actions::track_resource_id("tk_g1"),
+        })
+        .expect("a library track joins this device's queue");
+        assert!(
+            app.agent_surface()
+                .to_string()
+                .contains(&crate::actions::queue_item_resource_id(0, "tk_g1")),
+            "the queue row is published once it holds the track"
+        );
     }
 
     #[test]

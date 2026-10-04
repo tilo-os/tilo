@@ -220,10 +220,7 @@ impl CodeApp {
             let nothing_open = |effect| {
                 EffectStatus::unavailable(effect, "code_editor.no_file", "No file is open")
             };
-            statuses.extend([
-                nothing_open(CodeEditorEffect::REVERT_FILE),
-                nothing_open(CodeEditorEffect::CLOSE_TAB),
-            ]);
+            statuses.extend([nothing_open(CodeEditorEffect::REVERT_FILE)]);
         }
         statuses
     }
@@ -233,7 +230,12 @@ impl CodeApp {
     /// its id with the file the project publishes, so its effects join that
     /// file.
     pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
-        let open: Vec<TreeId> = self.session.open.iter().map(|buffer| buffer.node).collect();
+        let open: Vec<TreeId> = self
+            .session
+            .buffer
+            .iter()
+            .map(|buffer| buffer.node)
+            .collect();
         let files = open
             .iter()
             .copied()

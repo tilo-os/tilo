@@ -1056,14 +1056,13 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         let mut shown = Vec::new();
         self.surfaces(&mut |surface| shown.extend(surface.search_entries()));
         let indexed = self.current_search_index(revision, shown);
-        let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
+        // The app's one search source: what its content widgets show beside
+        // the resource reaches it as their surfaces' entries, never as a
+        // provider of their own.
+        vec![Box::new(ResourceSearch {
             name: R::LABEL,
             indexed,
-        })];
-        providers.extend(ui_core::search::capability::search_providers(
-            self.content.as_ref(),
-        ));
-        providers
+        })]
     }
 }
 
@@ -1144,10 +1143,13 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
-        if address.resource == self.dispatch.resource_id()
-            && super::history::is_edit(&address.action)
-        {
-            return super::history::result(&address.action, doc, changes);
+        if address.resource == self.dispatch.resource_id() {
+            if super::history::is_edit(&address.action) {
+                return super::history::result(&address.action, doc, changes);
+            }
+            if let Some(answer) = R::answer(doc, &address.action, changes) {
+                return Some(answer);
+            }
         }
         ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
     }
@@ -1155,9 +1157,15 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.dispatch
-            .take()
-            .or_else(|| ui_core::widget::controls::take_control_invocation(self.content.as_mut()))
+        self.take_attributed_control_invocation()
+            .map(|(invocation, _)| invocation)
+    }
+    fn take_attributed_control_invocation(
+        &mut self,
+    ) -> Option<ui_core::widget::controls::AttributedControlInvocation> {
+        self.dispatch.take_attributed().or_else(|| {
+            ui_core::widget::controls::take_attributed_control_invocation(self.content.as_mut())
+        })
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a

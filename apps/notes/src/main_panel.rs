@@ -711,6 +711,11 @@ impl MainPanel {
         self.editor.editor_mut().set_transclusion_previews(previews);
     }
 
+    /// The store the editor draws images from.
+    pub(crate) fn image_store(&self) -> Option<&ui::ImageStore> {
+        self.image_store.as_ref()
+    }
+
     pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
         self.image_store.clone_from(&store);
         self.editor.editor_mut().set_image_store(store);
@@ -737,6 +742,11 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
+    }
+
+    /// Images pasted into the open note since the last call.
+    pub fn take_pasted_images(&mut self) -> Vec<ui::clipboard::ClipboardImage> {
+        self.editor.editor_mut().take_pasted_images()
     }
 
     pub fn set_bottom_inset(&mut self, inset: f64) {

@@ -392,6 +392,8 @@ type SyncWorkerResult = (caldav::SyncResult, SyncOutcome);
 pub struct CalendarApp {
     model: Model,
     today: NaiveDate,
+    /// The moment shown as now, when a capture pins it; else the clock's.
+    pinned_now: Option<chrono::NaiveDateTime>,
     anchor: NaiveDate,
     view: View,
     /// `None` shows every visible collection; a stable local/remote calendar
@@ -600,6 +602,7 @@ impl CalendarApp {
             model,
             today,
             anchor: today,
+            pinned_now: None,
             view: View::Month,
             calendar_filter: None,
             list_sel: ListSel::Today,
@@ -683,6 +686,24 @@ impl CalendarApp {
 
     /// Attach the framework dispatcher, with the accounts the window shows
     /// (`None` keeps none); `sample` when they are a capture's sample ones.
+    /// Show `now` as the present: a capture's fixed day and time, the same
+    /// on every run.
+    pub(crate) fn pin_now(&mut self, now: chrono::NaiveDateTime) {
+        let today = now.date();
+        self.pinned_now = Some(now);
+        self.today = today;
+        self.anchor = today;
+        self.event_popovers = EventPopovers::new(today);
+        self.task_due_picker = DatePicker::new(today).with_accessible_name("Task due date");
+        self.dirty = true;
+    }
+
+    /// The present: the pinned moment of a capture, else the clock's.
+    fn now(&self) -> chrono::NaiveDateTime {
+        self.pinned_now
+            .unwrap_or_else(|| Local::now().naive_local())
+    }
+
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Calendar>,
@@ -2641,7 +2662,7 @@ impl CalendarApp {
         let area = self.view_rect();
         let days = self.timeline_days();
         let focus_hour = if days.contains(&self.today) {
-            let now = Local::now().naive_local();
+            let now = self.now();
             (f64::from(now.hour()) + f64::from(now.minute()) / 60.0 - 1.0).max(0.0)
         } else {
             TIMELINE_INITIAL_HOUR
@@ -6082,7 +6103,7 @@ impl Widget for CalendarApp {
                 View::Week | View::Day => {
                     let days = self.timeline_days();
                     let events = self.timeline_render_events(&days);
-                    let now = Local::now().naive_local();
+                    let now = self.now();
                     let model = TimelineRenderModel {
                         days: &days,
                         events: &events,

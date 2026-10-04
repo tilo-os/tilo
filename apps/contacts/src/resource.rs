@@ -365,6 +365,19 @@ mod tests {
             "the staged duplicate is published for review"
         );
 
+        let mut groups = TestApp::<ContactsShell>::capture(Some("groups")).unwrap();
+        let options = groups
+            .with_surface::<crate::app::ContactsApp, _>(|app| app.group_filter_options())
+            .unwrap();
+        assert_eq!(
+            options
+                .iter()
+                .filter(|option| *option == "Favorites")
+                .count(),
+            1,
+            "the group menu lists Favorites once: {options:?}"
+        );
+
         let mut detail = TestApp::<ContactsShell>::capture(Some("detail")).unwrap();
         assert_eq!(detail.harness().inspection().viewport, [390, 844]);
     }

@@ -58,6 +58,42 @@ pub const MAX_CLIPBOARD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 /// Largest RGBA buffer accepted for a clipboard image.
 pub const MAX_CLIPBOARD_IMAGE_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Largest encoded image read from another app's clipboard. A larger one is
+/// not read at all.
+pub const MAX_PASTED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Encoded image types read from the clipboard, most preferred first.
+pub const PASTED_IMAGE_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// An encoded image on the clipboard: what a screenshot tool or an image
+/// viewer copied.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ClipboardImage {
+    /// One of [`PASTED_IMAGE_TYPES`].
+    pub mime: &'static str,
+    /// The image file's bytes, as the copying app offered them.
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ClipboardImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardImage")
+            .field("mime", &self.mime)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// The most preferred image type among `offered`, if any.
+pub fn preferred_image_type<'a>(
+    offered: impl IntoIterator<Item = &'a str>,
+) -> Option<&'static str> {
+    let offered: Vec<&str> = offered.into_iter().collect();
+    PASTED_IMAGE_TYPES
+        .into_iter()
+        .find(|mime| offered.contains(mime))
+}
+
 /// Which selection a clipboard operation refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardTarget {
@@ -90,6 +126,13 @@ pub trait ClipboardBackend: Send + Sync {
     fn set_image(&self, width: usize, height: usize, rgba: &[u8]) -> bool {
         let _ = (width, height, rgba);
         false
+    }
+
+    /// The image on the Ctrl+V clipboard, when it holds one: a screenshot,
+    /// an image copied in a viewer or a browser. Optional: the default reads
+    /// none, which is right for backends that only carry text.
+    fn image(&self) -> Option<ClipboardImage> {
+        None
     }
 
     /// Offer `text` only where other processes can read it. Returns `false`

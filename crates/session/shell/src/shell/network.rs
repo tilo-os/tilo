@@ -9001,6 +9001,7 @@ mod tests {
                 user_public_key: hex::encode(user_public_key),
                 device_cert: None,
                 relay_workspace_ids: vec![personal_continuity_topic_id(&user_public_key)],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             };
             std::fs::write(
                 &registry,
@@ -11544,6 +11545,7 @@ mod tests {
                     user_public_key: hex::encode(own_user),
                     device_cert: None,
                     relay_workspace_ids: vec![42],
+                    environments: tilo_relay_protocol::RelayEnvironments::default(),
                 },
                 tilo_relay_protocol::HomePeerRegistration {
                     schema_version: tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
@@ -11554,6 +11556,7 @@ mod tests {
                     user_public_key: hex::encode(own_user),
                     device_cert: None,
                     relay_workspace_ids: vec![42],
+                    environments: tilo_relay_protocol::RelayEnvironments::default(),
                 },
             ];
             std::fs::write(
