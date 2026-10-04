@@ -49,13 +49,13 @@ mod metrics;
 mod mini_month;
 pub mod model;
 pub mod resource;
-pub mod search_provider;
 mod sidebar;
 pub mod store;
 mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;
 mod topbar;
+mod tree;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;

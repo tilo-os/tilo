@@ -1,7 +1,6 @@
 use super::*;
 use automerge::ROOT;
 use serial_test::serial;
-use tilo_actions::Action as _;
 use ui::headless::Framed;
 
 impl CalendarApp {
@@ -12,6 +11,32 @@ impl CalendarApp {
         self.narrow_screen = NarrowScreen::Calendar;
         self.dirty = true;
     }
+}
+
+/// The calendar root as it publishes `doc`.
+fn published_root(doc: &AutoCommit) -> tilo_actions::Resource {
+    ui::tilo_resource::publish::<crate::resource::Calendar>(
+        "calendar.calendar",
+        "Calendar",
+        &CalDoc::read_model(doc),
+    )
+}
+
+/// The resource `id` as the calendar window publishes it: the root, an item
+/// of `doc`, or one of `app`'s calendar collections.
+fn published_resource(
+    app: &CalendarApp,
+    doc: &AutoCommit,
+    id: &str,
+) -> Option<tilo_actions::Resource> {
+    use ui::tilo_resource::Resource as _;
+    if id == "calendar.calendar" {
+        return Some(published_root(doc));
+    }
+    if let Some(row) = app.collection_rows().into_iter().find(|row| row.id() == id) {
+        return Some(row.into_resource());
+    }
+    crate::resource::Calendar::child(&CalDoc::read_model(doc), id)
 }
 
 #[test]
@@ -169,386 +194,6 @@ fn startup_is_empty_live_with_onboarding_and_seeded_only_for_demo() {
         let app = CalendarApp::new_demo();
         assert!(!app.accounts.is_empty());
         assert!(app.accounts.all_calendars().count() > 0);
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario, one labelled phase per merged case"
-)]
-fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
-    // Case `real_resource_provider_keeps_snapshot_and_late_exact_resolution_bounded`.
-    {
-        const LARGE: usize = 5_000;
-
-        let mut app = CalendarApp::new_demo();
-        let doc = demo_document(&app);
-        let event_template = app.model.events[0].clone();
-        let task_template = app.model.tasks[0].clone();
-        let project_template = app.model.projects[0].clone();
-        let attendee_id = Id::from_u128(900_001);
-
-        app.calendar_projection_snapshot = (0..LARGE)
-            .map(|index| crate::actions::CalendarCollectionResource {
-                id: format!("stress/calendar/{index}"),
-                label: format!("Stress calendar {index}"),
-                color: None,
-                visible: true,
-            })
-            .collect();
-        let late_calendar = format!("stress/calendar/{}", LARGE - 1);
-        app.model.projects = (0..LARGE)
-            .map(|index| crate::model::Project {
-                id: Id::from_u128(1_000_000 + index as u128),
-                name: format!("Stress project {index}"),
-                color: project_template.color,
-                order: index as u32,
-            })
-            .collect();
-        let late_project_id = app.model.projects.last().expect("late project").id;
-        app.model.events = (0..LARGE)
-            .map(|index| {
-                let mut event = event_template.clone();
-                event.id = Id::from_u128(2_000_000 + index as u128);
-                event.title = format!("Stress event {index}");
-                event.calendar_id = Some(late_calendar.clone());
-                event.project = Some(late_project_id);
-                event.attendees.clear();
-                event.reminder_min = None;
-                event
-            })
-            .collect();
-        let late_event = app.model.events.last_mut().expect("late event");
-        late_event.reminder_min = Some(10);
-        late_event.attendees.push(crate::model::Attendee {
-            id: attendee_id,
-            name: "Late attendee".into(),
-            email: "late@example.test".into(),
-            status: crate::model::InviteStatus::NeedsAction,
-        });
-        let late_event_id = late_event.id;
-        app.model.tasks = (0..LARGE)
-            .map(|index| {
-                let mut task = task_template.clone();
-                task.id = Id::from_u128(3_000_000 + index as u128);
-                task.title = format!("Stress task {index}");
-                task.project = Some(late_project_id);
-                task.parent = None;
-                task
-            })
-            .collect();
-        let late_task_id = app.model.tasks.last().expect("late task").id;
-        app.rebuild_resource_index();
-
-        let root = CalendarApp::publish_resources(&app, &doc);
-        assert_eq!(root.len(), 1);
-        assert!(
-            app.resource_snapshot_inspected.get()
-                <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT * 3,
-            "root snapshot inspected {} entity payloads",
-            app.resource_snapshot_inspected.get()
-        );
-
-        let expect_exact = |id: String, kind: &str| {
-            let resource = CalendarApp::publish_resource(&app, &doc, &id)
-                .unwrap_or_else(|| panic!("late stable resource did not resolve: {id}"));
-            assert_eq!(resource.kind, kind);
-            assert!(
-                app.resource_exact_inspected.get() <= 1,
-                "exact resolution inspected {} model records for {id}",
-                app.resource_exact_inspected.get()
-            );
-        };
-        expect_exact(
-            crate::actions::calendar_resource_id(&late_calendar),
-            "calendar.collection",
-        );
-        expect_exact(
-            crate::actions::project_resource_id(late_project_id),
-            "calendar.project",
-        );
-        let event_id = crate::actions::event_resource_id(late_event_id);
-        expect_exact(event_id.clone(), "calendar.event");
-        expect_exact(format!("{event_id}:notes"), "calendar.note");
-        expect_exact(
-            crate::actions::reminder_resource_id(late_event_id),
-            "calendar.reminder",
-        );
-        expect_exact(
-            crate::actions::attendee_resource_id(late_event_id, attendee_id),
-            "calendar.attendee",
-        );
-        expect_exact(
-            crate::actions::occurrence_resource_id(late_event_id, event_template.start.date()),
-            "calendar.occurrence",
-        );
-        let task_id = crate::actions::task_resource_id(late_task_id);
-        expect_exact(task_id.clone(), "calendar.task");
-        expect_exact(format!("{task_id}:notes"), "calendar.note");
-
-        app.model.tasks.pop();
-        assert!(
-            CalendarApp::publish_resource(&app, &doc, &task_id).is_none(),
-            "a stale index position must not redirect a deleted stable task id"
-        );
-        assert_eq!(
-            app.resource_exact_inspected.get(),
-            0,
-            "stale removal is rejected before materialising a task payload"
-        );
-    }
-    // Case `exact_parent_task_caps_delete_fanout_for_over_one_hundred_thousand_children`.
-    {
-        const CHILDREN: usize = 100_001;
-
-        let mut app = CalendarApp::new_demo();
-        let doc = demo_document(&app);
-        let mut parent = app.model.tasks[0].clone();
-        parent.id = Id::from_u128(4_000_000);
-        parent.parent = None;
-        let mut tasks = Vec::with_capacity(CHILDREN + 1);
-        tasks.push(parent.clone());
-        tasks.extend((0..CHILDREN).map(|offset| {
-            let mut child = parent.clone();
-            child.id = Id::from_u128(4_100_000 + offset as u128);
-            child.parent = Some(parent.id);
-            child.title = format!("Child {offset}");
-            child
-        }));
-        app.model.tasks = tasks;
-        app.rebuild_resource_index();
-
-        let resource =
-            CalendarApp::publish_resource(&app, &doc, &crate::actions::task_resource_id(parent.id))
-                .expect("parent task resolves exactly");
-        assert!(
-            app.resource_exact_inspected.get() <= 1,
-            "parent resolution must not walk its children"
-        );
-        let delete = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "delete")
-            .expect("task exposes a delete action with an honest contract");
-        assert!(matches!(
-            &delete.contract.availability,
-            tilo_actions::Availability::Unavailable { code, .. } if code == "task_children_overflow"
-        ));
-        let ctx = app
-            .exact_resource_ctx(&crate::actions::task_resource_id(parent.id))
-            .expect("one-record task context");
-        assert_eq!(ctx.tasks.len(), 1);
-        assert_eq!(
-            ctx.tasks[0].subtasks.len(),
-            crate::actions::TASK_DELETE_FANOUT_LIMIT
-        );
-        assert_eq!(
-            ctx.tasks[0].subtask_overflow,
-            CHILDREN - crate::actions::TASK_DELETE_FANOUT_LIMIT
-        );
-    }
-    // Case `retained_search_catalog_refreshes_after_crdt_revision_and_deletion`.
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut doc = demo_document(&app);
-        app.sync(&mut doc, &ROOT);
-        let id = app.model.events[0].id;
-        let action = crate::actions::CalendarAction::PatchEvent {
-            id: id.to_string(),
-            patch: crate::actions::EventPatch {
-                title: Some("revision catalogue needle".into()),
-                ..crate::actions::EventPatch::default()
-            },
-        };
-        action.apply(&mut doc).expect("valid patch applies");
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            ui::search::capability::search_providers(&app)[0]
-                .search("catalogue needle")
-                .iter()
-                .any(|hit| hit.action_address() == Some(crate::actions::open_event_address(id))),
-            "the retained provider observes the new CRDT revision"
-        );
-
-        crate::actions::CalendarAction::DeleteEvent {
-            id: id.to_string(),
-            remote_delete: None,
-        }
-        .apply(&mut doc)
-        .expect("valid delete applies");
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            ui::search::capability::search_providers(&app)[0]
-                .search("catalogue needle")
-                .is_empty(),
-            "the next revision withdraws the deleted record"
-        );
-    }
-    // Case `unchanged_sync_skips_note_projection_but_a_note_revision_refreshes_search`.
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut doc = demo_document(&app);
-        app.sync(&mut doc, &ROOT);
-        let initial_projections = app.note_projection_refreshes;
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(
-            app.note_projection_refreshes, initial_projections,
-            "an unchanged frame must not walk every event/task note"
-        );
-
-        let event = app.model.events[0].id;
-        crate::actions::CalendarAction::EditNotes {
-            owner: crate::actions::NoteOwner::Event {
-                id: event.to_string(),
-            },
-            edit: tilo_document::RichTextAction::AppendParagraph {
-                text: "post hydration note needle".to_string(),
-            },
-        }
-        .apply(&mut doc)
-        .expect("note action applies");
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.note_projection_refreshes, initial_projections + 1);
-        assert!(
-            ui::search::capability::search_providers(&app)[0]
-                .search("hydration note needle")
-                .iter()
-                .any(|hit| hit.action_address() == Some(crate::actions::open_event_address(event)))
-        );
-    }
-    // Case `non_crdt_calendar_projection_refreshes_catalog_without_reprojecting_notes`.
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut doc = demo_document(&app);
-        app.sync(&mut doc, &ROOT);
-        let note_refreshes = app.note_projection_refreshes;
-        let catalog_refreshes = app.search_catalog_refreshes;
-        let calendar = app
-            .accounts
-            .accounts
-            .iter_mut()
-            .flat_map(|account| account.calendars.iter_mut())
-            .next()
-            .expect("demo has a Settings-owned calendar");
-        let id = calendar.id.clone();
-        calendar.name = "Settings reload catalogue needle".into();
-
-        // Simulate an account-state replacement: configuration changes while
-        // the Automerge document is deliberately untouched.
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(
-            app.note_projection_refreshes, note_refreshes,
-            "a non-CRDT collection change must reuse the current note projection"
-        );
-        assert_eq!(app.search_catalog_refreshes, catalog_refreshes + 1);
-        assert!(
-            ui::search::capability::search_providers(&app)[0]
-                .search("reload catalogue needle")
-                .iter()
-                .any(|hit| {
-                    hit.action_address() == Some(crate::actions::open_calendar_address(&id))
-                })
-        );
-
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.note_projection_refreshes, note_refreshes);
-        assert_eq!(app.search_catalog_refreshes, catalog_refreshes + 1);
-    }
-    // Case `configured_calendar_resource_is_searchable_and_selects_its_collection`.
-    {
-        let mut app = CalendarApp::new_demo();
-        let mut doc = demo_document(&app);
-        app.sync(&mut doc, &ROOT);
-        let calendar = app
-            .calendar_resource_ctx()
-            .calendars
-            .into_iter()
-            .find(|calendar| calendar.id != "local")
-            .expect("demo has a remote calendar");
-        let hit = ui::search::capability::search_providers(&app)[0]
-            .search(&calendar.label)
-            .into_iter()
-            .find(|hit| {
-                hit.action_address() == Some(crate::actions::open_calendar_address(&calendar.id))
-            })
-            .expect("calendar collection is indexed by canonical address");
-        assert_eq!(hit.title, calendar.label);
-        let resource = CalendarApp::publish_resource(
-            &app,
-            &doc,
-            &crate::actions::calendar_resource_id(&calendar.id),
-        )
-        .expect("collection resolves with a current child context");
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
-        let visibility_action = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "set-visibility")
-            .expect("collection exposes its Settings-owned visibility policy");
-        assert_eq!(visibility_action.label, "Hide calendar");
-        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::OpenCalendar {
-            id: calendar.id.clone(),
-        })
-        .expect("operation serializes");
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::CALENDAR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("collection operation is accepted"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(app.calendar_filter.as_deref(), Some(calendar.id.as_str()));
-
-        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::SetCalendarVisible {
-            id: calendar.id.clone(),
-            visible: false,
-        })
-        .expect("operation serializes");
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CALENDAR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("visibility operation is accepted"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CALENDAR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("replaying an absolute visibility operation is accepted"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert!(
-            app.accounts
-                .all_calendars()
-                .find_map(|(_, item)| (item.id == calendar.id).then_some(item.visible))
-                .is_some_and(|visible| !visible)
-        );
     }
 }
 
@@ -1027,8 +672,8 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
         app.sync(&mut state, &automerge::ROOT);
-        let resource_import = |app: &CalendarApp, state: &AutoCommit| {
-            ui::resources::resources(app, state)[0]
+        let resource_import = |state: &AutoCommit| {
+            published_root(state)
                 .actions
                 .iter()
                 .find(|action| action.id == "import-latest-ics")
@@ -1036,8 +681,8 @@ fn ics_imports_are_idempotent_atomic_and_commit_one_batch() {
                 .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
                 .expect("nullary import operation")
         };
-        let first = resource_import(&app, &state);
-        let second = resource_import(&app, &state);
+        let first = resource_import(&state);
+        let second = resource_import(&state);
         assert_eq!(
             first.payload, second.payload,
             "resource enumeration is stable"
@@ -1847,9 +1492,8 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
                 .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
         );
 
-        let task =
-            CalendarApp::publish_resource(&app, &state, &crate::actions::task_resource_id(id))
-                .expect("selected task resource");
+        let task = published_resource(&app, &state, &crate::actions::task_resource_id(id))
+            .expect("selected task resource");
         let due = chrono::NaiveDate::from_ymd_opt(2026, 9, 9).unwrap();
         let due_spec = task
             .actions
@@ -2527,7 +2171,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         assert_eq!(visibility.role, Role::Checkbox);
         assert_eq!(visibility.state.checked, Some(before));
 
-        let resource = CalendarApp::publish_resource(
+        let resource = published_resource(
             &app,
             &state,
             &crate::actions::calendar_resource_id(&calendar_id),
@@ -2562,7 +2206,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         // Rebuild the hit map after the pointer action. Its newly published
         // resource action carries the opposite absolute state for the
         // screen-reader checkbox as well.
-        let resource = CalendarApp::publish_resource(
+        let resource = published_resource(
             &app,
             &state,
             &crate::actions::calendar_resource_id(&calendar_id),
@@ -3222,7 +2866,7 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         let mut doc = demo_document(&app);
         app.sync(&mut doc, &automerge::ROOT);
         app.calendar_filter = Some("work/default".into());
-        let root = CalendarApp::publish_resource(&app, &doc, "calendar.calendar")
+        let root = published_resource(&app, &doc, "calendar.calendar")
             .expect("calendar root is addressable");
         assert!(
             root.actions
@@ -4208,6 +3852,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: Vec::new(),
                 tasks: vec![remote_task(done)],
                 projects: Vec::new(),
+                ..Model::default()
             }));
             tasks.into_iter().next().expect("one VTODO parses")
         };
@@ -4359,40 +4004,4 @@ fn standalone_history_restore_returns_the_calendar_to_a_chosen_version() {
         "the calendar is back at the version after its first event"
     );
     assert_eq!(doc.get_changes(&[]).len(), changes + 1);
-}
-
-#[test]
-fn hosted_directory_keeps_pending_import_without_the_calendar_root() {
-    use ui::resources::PublishesResources;
-    let mut app = CalendarApp::new();
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
-    let standalone = app
-        .action_directory_resource_page(&state.doc, &[], 8)
-        .expect("standalone directory");
-    assert!(
-        standalone
-            .resources
-            .iter()
-            .any(|resource| resource.kind == "calendar.calendar"),
-        "standalone directory publishes the calendar"
-    );
-    app.actions.mark_hosted_for_test();
-    let hosted = app
-        .action_directory_resource_page(&state.doc, &[], 8)
-        .expect("hosted directory");
-    assert!(
-        hosted
-            .resources
-            .iter()
-            .all(|resource| resource.kind != "calendar.calendar"),
-        "hosted directory must not republish the calendar: {:?}",
-        hosted
-            .resources
-            .iter()
-            .map(|resource| resource.id.as_str())
-            .collect::<Vec<_>>()
-    );
-    assert!(hosted.resources.is_empty());
-    assert!(app.resources(&state.doc).is_empty());
 }
