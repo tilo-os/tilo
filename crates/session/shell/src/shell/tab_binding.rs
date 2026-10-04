@@ -487,6 +487,21 @@ pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, 
     Some((strip_id, group_id, tab.id))
 }
 
+/// Where a tab placed in `group` goes: the exact index a placement names,
+/// else right of the tab the user was on, not at the end of the bar.
+fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
+    match placement {
+        Placement::TabAt(_, index) | Placement::BackgroundTabAt(_, index) => {
+            index.min(group.tabs.len())
+        }
+        _ => group
+            .tabs
+            .iter()
+            .position(|t| t.id == group.active_tab)
+            .map_or(group.tabs.len(), |i| i.saturating_add(1)),
+    }
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -571,18 +586,9 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         let Some(group) = strip.window_groups.get_mut(idx) else {
             return tab_id;
         };
-        let insert_at = match placement {
-            Placement::TabAt(_, index) | Placement::BackgroundTabAt(_, index) => {
-                index.min(group.tabs.len())
-            }
-            // Right of the tab the user was on, not at the end of the bar.
-            _ => group
-                .tabs
-                .iter()
-                .position(|t| t.id == group.active_tab)
-                .map_or(group.tabs.len(), |i| i.saturating_add(1)),
-        };
-        group.tabs.insert(insert_at, new_tab);
+        group
+            .tabs
+            .insert(tab_insert_index(group, placement), new_tab);
         if matches!(placement, Placement::BackgroundTabAt(..)) {
             // Behind the tab the person is reading: nothing moves.
             return tab_id;
