@@ -151,14 +151,13 @@ fn every_view_mode_renders_legibly() {
 )]
 #[test]
 fn search_and_open_operations_reveal_their_target() {
-    // --- phase: search_provider_row_invokes_the_exported_open_action ---
-    // Contacts folds its address book into the unified Ctrl+K palette. A
-    // field-only query ensures the selected row is the provider hit (not the
-    // separately listed action), then activation leaves the palette as the
-    // same brokered `open` view operation agents and accessibility consume.
+    // --- phase: search_hit_invokes_the_exported_open_action ---
+    // Contacts folds its address book into the unified search through its
+    // resource's entries. A field-only query finds the contact, and the hit
+    // invokes the same published `open` view operation agents and
+    // accessibility consume.
     {
-        let mut app = sampled();
-        app.selected = None;
+        let mut app = Live::sample(1280, 800);
         let id = app
             .store
             .contacts
@@ -166,53 +165,23 @@ fn search_and_open_operations_reveal_their_target() {
             .find(|contact| contact.display_name() == "Grace Hopper")
             .expect("Grace is seeded")
             .id;
-        let mut doc = AutoCommit::new();
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&published(&app));
-        palette.set_providers(ui::search::capability::search_providers(&app));
-        palette.open();
-        palette.set_query("navy");
-        assert_eq!(palette.result_labels(), vec!["Grace Hopper"]);
-
-        assert!(app.selected.is_none(), "nothing selected yet");
-        palette.activate_selected();
-        let operation = palette
-            .take_operation()
-            .expect("canonical search hit queued a broker operation");
-        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
-        assert_eq!(
-            operation
-                .context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some(crate::actions::contact_resource_id(id).as_str())
+        app.selected = None;
+        let entries = <crate::resource::Contacts as ui::tilo_resource::Resource>::search(
+            &crate::resource::ContactsState {
+                contacts: app.book(),
+            },
         );
-        assert!(
-            palette.take_navigation().is_none(),
-            "legacy navigation was not used"
-        );
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("open operation succeeds"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        let hits: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.text.to_lowercase().contains("navy"))
+            .collect();
+        assert_eq!(hits.len(), 1, "the organisation finds one contact");
+        assert_eq!(hits[0].title, "Grace Hopper");
+        let address = hits[0].action.clone().expect("the hit invokes an action");
+        assert_eq!(address, crate::actions::open_contact_address(id));
+        app.app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .expect("the open operation succeeds");
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
     }
 
