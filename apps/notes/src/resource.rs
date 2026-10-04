@@ -145,6 +145,10 @@ impl ResourceApp for NotesShell {
         .collect()
     }
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::metadata::CATALOG)
+    }
+
     fn scenarios() -> &'static [&'static str] {
         crate::scenario::SCENARIOS
     }

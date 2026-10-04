@@ -7,13 +7,22 @@ use automerge::{AutoCommit, ChangeHash};
 use std::collections::{HashMap, HashSet};
 use ui::history_source::{SchemaObjectId, schema_operations_since};
 
-const CATALOG: &str = include_str!("../locales/en-US.ftl");
+/// Notes' messages. Every host loads them before the app's view is built;
+/// a widget built on its own loads them as it is made.
+pub static CATALOG: ui::i18n::EmbeddedCatalog = ui::i18n::EmbeddedCatalog::new(
+    "en-US",
+    &[
+        ("en-US", include_str!("../locales/en-US.ftl")),
+        ("de", include_str!("../locales/de.ftl")),
+    ],
+    "notes-view-editor",
+)
+.with_system_locale();
 
+/// Load the toolkit's widget messages and [`CATALOG`] on this thread.
 pub fn register_messages() {
-    use ui::i18n::I18nManager;
-    I18nManager::register_widget_messages();
-    I18nManager::add_resource("en-US", CATALOG.to_owned());
-    I18nManager::add_resource("de", include_str!("../locales/de.ftl").to_owned());
+    ui::i18n::I18nManager::register_widget_messages();
+    CATALOG.ensure();
 }
 
 impl NoteDates {
