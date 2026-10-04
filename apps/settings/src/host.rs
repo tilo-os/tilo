@@ -109,10 +109,19 @@ impl PaneCx {
         self.mode
     }
 
-    /// Whether panes may probe and drive this device's hardware.
+    /// Whether panes may start work that reaches outside the process.
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.mode.is_live()
+    }
+
+    /// Whether the areas probe and drive this device's hardware and
+    /// services, rather than the stand-ins a screenshot shows. The crate's
+    /// own tests drive the stand-ins too, so they never touch the machine
+    /// running them.
+    #[must_use]
+    pub fn reaches_devices(&self) -> bool {
+        self.is_live() && !cfg!(test)
     }
 
     /// The stand-ins a screenshot shows in place of this device's hardware
@@ -136,6 +145,18 @@ impl PaneCx {
         }
     }
 
+    /// The binding of `effect` for a control the toolkit does not know: a
+    /// pane's own widget that emits a value. `None` outside a host.
+    #[must_use]
+    pub fn binding<I: 'static>(
+        &self,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> Option<ui::tilo_actions::ActionBinding<I>> {
+        self.door
+            .as_ref()
+            .and_then(|door| door.actions.effect_binding(effect))
+    }
+
     /// `control` (a button), invoking one fully specified effect.
     #[must_use]
     pub fn bind_invocation<C: ActionControl<()>>(
@@ -154,12 +175,6 @@ impl PaneCx {
         if let Some(door) = &self.door {
             door.dispatcher.effect(&effect.into());
         }
-    }
-
-    /// The door's dispatcher, when the pane is hosted.
-    #[must_use]
-    pub(crate) fn dispatcher(&self) -> Option<Dispatcher<Settings>> {
-        self.door.as_ref().map(|door| door.dispatcher.clone())
     }
 
     /// The last effect the door refused and why, for a pane to show beside
