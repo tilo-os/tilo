@@ -517,7 +517,8 @@ impl PeerSyncOverlay {
             Key::Named(NamedKey::Backspace)
                 if connect_open || (composer_open && !self.state.invite_review_open) =>
             {
-                self.active_input_mut(connect_open).map(String::pop);
+                self.active_input_mut(connect_open)
+                    .map(ui::delete_last_grapheme);
                 EventOutcome::consumed()
             }
             Key::Character(s)

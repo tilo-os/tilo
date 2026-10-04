@@ -51,3 +51,7 @@ notes-a11y-new-child-under = New child note under
 notes-a11y-more-actions-for = More actions for
 
 notes-view-editor = Editor
+
+notes-help-block-duplicate = Duplicate blocks and their children
+
+notes-help-block-move = Move focused or selected blocks

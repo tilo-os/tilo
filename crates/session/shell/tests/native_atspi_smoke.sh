@@ -5,9 +5,10 @@
 set -euo pipefail
 
 mode=${1:-}
-usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|clipboard-is TEXT|clipboard-keeps TEXT SECRET|desktop|copy-image|established|lock|auth}"
+usage="usage: $0 {oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|oobe-text TEXT...|post-identity|clipboard-is TEXT|clipboard-keeps TEXT SECRET|copy-image|desktop|established|lock|auth}"
 case "$mode" in
-  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|copy-image|desktop|established|lock|auth) ;;
+  oobe|oobe-actions|oobe-copy-plain|oobe-copy-secret|oobe-nearby|oobe-nearby-done|post-identity|copy-image|desktop|established|lock|auth) ;;
+  oobe-text) (($# > 1)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-is) (($# == 2)) || { echo "$usage" >&2; exit 2; } ;;
   clipboard-keeps) (($# == 3)) || { echo "$usage" >&2; exit 2; } ;;
   *) echo "$usage" >&2; exit 2 ;;
@@ -154,6 +155,36 @@ wait_for_names() {
     sleep 0.05
   done
   echo "AT-SPI $mode tree never exposed:$missing" >&2
+  printf '%s\n' "$names" >&2
+  return 1
+}
+
+# Status lines interpolate runtime values (a pairing code, an error detail),
+# so these match a fragment of a node's spoken name rather than all of it.
+node_containing() {
+  local fragment=$1 path
+  for path in "${!node_names[@]}"; do
+    [[ ${node_names[$path]} == *"$fragment"* ]] && {
+      printf '%s\n' "$path"
+      return 0
+    }
+  done
+  return 1
+}
+
+wait_for_fragments() {
+  local missing fragment
+  for _ in $(seq 1 400); do
+    if collect_tree; then
+      missing=""
+      for fragment in "$@"; do
+        node_containing "$fragment" >/dev/null || missing+=" '$fragment'"
+      done
+      [[ -z "$missing" ]] && return 0
+    fi
+    sleep 0.05
+  done
+  echo "AT-SPI $mode tree never exposed a name containing:$missing" >&2
   printf '%s\n' "$names" >&2
   return 1
 }
@@ -341,8 +372,10 @@ clipboard_sentinel=tilo-clipboard-sentinel
 # identity choice: focus and write the field solely over AT-SPI and observe
 # the value through that same bus.
 oobe_to_connect_field() {
-  wait_for_names "Use existing" "Create identity"
-  click_named "Use existing"
+  wait_for_names "Use my existing Tilo identity" "Create a new identity"
+  click_named "Use my existing Tilo identity"
+  wait_for_names "Restore from a backup" "Back"
+  click_named "Restore from a backup"
   wait_for_names "Identity backup file" "Back"
   focus_named "Identity backup file"
   set_text_named "Identity backup file" "tilo-atspi-edit-probe"
@@ -356,9 +389,11 @@ oobe_to_connect_field() {
 oobe_to_backup() {
   if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then
     click_named "Back"
+    wait_for_names "Restore from a backup" "Back"
+    click_named "Back"
   fi
-  wait_for_names "Use existing" "Create identity"
-  click_named "Create identity"
+  wait_for_names "Use my existing Tilo identity" "Create a new identity"
+  click_named "Create a new identity"
   wait_for_names \
     "I understand that losing this device without a backup means losing this identity." \
     "Create local identity"
@@ -427,7 +462,7 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       oobe_to_connect_field
       oobe_to_backup
     elif [[ $mode == oobe ]]; then
-      wait_for_names "Use existing" "Create identity"
+      wait_for_names "Use my existing Tilo identity" "Create a new identity"
     fi
     if [[ $mode == oobe-actions ]]; then
       # No backup in a disposable release VM; say so explicitly, as a person
@@ -451,6 +486,74 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       wait_for_names "Your identity is ready"
     fi
     ;;
+  oobe-nearby)
+    # Use my existing Tilo identity -> Connect a nearby device, as a person
+    # does; choosing it starts pairing. A retry after a failed attempt is
+    # already on the pairing screen and asks again with Try again.
+    for _ in $(seq 1 400); do
+      collect_tree || { sleep 0.05; continue; }
+      if node_named "Try again" >/dev/null; then
+        click_named "Try again"
+        exit 0
+      fi
+      if node_named "Restore from a backup" >/dev/null; then
+        click_named "Connect a nearby device"
+        exit 0
+      fi
+      if node_named "Use my existing Tilo identity" >/dev/null; then
+        click_named "Use my existing Tilo identity"
+      fi
+      sleep 0.05
+    done
+    echo "AT-SPI $mode tree never offered nearby pairing" >&2
+    printf '%s\n' "$names" >&2
+    exit 1
+    ;;
+  oobe-nearby-done)
+    # Joining an identity ends first use on its ready screen. The media codecs
+    # step appears first only where the codec pack is offered.
+    for _ in $(seq 1 1200); do
+      collect_tree || { sleep 0.05; continue; }
+      node_containing "identity is ready" >/dev/null && break
+      if node_named "Not now" >/dev/null; then
+        click_named "Not now"
+      fi
+      sleep 0.05
+    done
+    wait_for_fragments "identity is ready"
+    if node_named "Try again" >/dev/null; then
+      echo "AT-SPI $mode tree still offers to try pairing again" >&2
+      exit 1
+    fi
+    ;;
+  oobe-text)
+    wait_for_fragments "${@:2}"
+    ;;
+  post-identity)
+    # A session started after the identity exists shows the desktop, or the
+    # first-use steps that follow the identity. It never asks for an identity
+    # again and never lands on identity recovery.
+    for _ in $(seq 1 1200); do
+      collect_tree || { sleep 0.05; continue; }
+      node_named "Tilo workspace" >/dev/null && break
+      node_containing "identity is ready" >/dev/null && break
+      node_containing "needs recovery" >/dev/null && break
+      node_named "Use my existing Tilo identity" >/dev/null && break
+      sleep 0.05
+    done
+    for refused in "Use my existing Tilo identity" "Create a new identity" "Create your local" "needs recovery"; do
+      if node_containing "$refused" >/dev/null; then
+        echo "AT-SPI $mode tree shows '$refused' after the identity was established" >&2
+        printf '%s\n' "$names" >&2
+        exit 1
+      fi
+    done
+    node_named "Tilo workspace" >/dev/null || node_containing "identity is ready" >/dev/null || {
+      echo "AT-SPI $mode tree shows neither the desktop nor the post-identity first-use step" >&2
+      printf '%s\n' "$names" >&2
+      exit 1
+    }
+    ;;
   desktop)
     wait_for_names "Tilo workspace"
     ;;
@@ -458,7 +561,7 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
     # A session for an identity this device already holds: the desktop, with
     # neither identity setup nor identity recovery in front of it.
     wait_for_names "Tilo workspace"
-    for refused in "Use existing" "Create identity" "Your existing identity needs recovery"; do
+    for refused in "Use my existing Tilo identity" "Create a new identity" "Your existing identity needs recovery"; do
       if node_named "$refused" >/dev/null; then
         echo "AT-SPI $mode tree shows '$refused' for an established identity" >&2
         printf '%s\n' "$names" >&2

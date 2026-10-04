@@ -12,43 +12,27 @@
 //! after which window creation fails and no toplevel ever maps — advertising the main device is
 //! the difference between GPU clients working and not starting.
 //!
-//! The compositor imports a client's dmabuf by **CPU-mapping its plane fd** (see
-//! [`crate::compositor::foreign::import_dmabuf_rgba`]), which only works when the exporting
-//! driver implements `mmap` — Mesa/DRM drivers (amdgpu, i915, xe, nouveau, …) do; NVIDIA's
-//! proprietary `nvidia` module doesn't (export-only fds), so steering a client onto it would turn every tile into an import error.
+//! The compositor reads a client's dmabuf back either by **CPU-mapping its plane fd** (see
+//! [`crate::compositor::foreign::import_dmabuf_rgba`]) or, where the CPU can't map it, through a GL
+//! import ([`crate::compositor::gpu_import`]). Whether a node's buffers survive that trip is asked
+//! of the node itself, not looked up by driver name: GBM allocates a small linear buffer there,
+//! exports it as a dmabuf, and the compositor imports it the way it would a client's. A name
+//! table missed `msm_dpu` — the platform driver a Snapdragon X render node reports — and every
+//! app on that laptop rendered on lavapipe instead of its GPU; a GPU nobody listed now works the
+//! moment its buffers do.
 //!
 //! The probe: (1) honours `TILO_DMABUF_DEVICE` if set, (2) otherwise walks `/dev/dri/renderD*` in
-//! numeric order for the first node that's openable and bound to a driver known to support
-//! dma-buf CPU mapping, (3) reports `None` when nothing qualifies, so the caller falls back to `wl_shm` rather than negotiating a buffer it would have to reject.
+//! name order for the first node whose buffers can be exchanged, (3) reports every node's reason
+//! when nothing qualifies, so the caller falls back to `wl_shm` loudly rather than negotiating a
+//! buffer it would have to reject. Buffer exchange loads the GPU driver, so it runs where
+//! [`launcher::gpu::in_isolation`] puts it: a forked child while the compositor is still
+//! single-threaded.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Env override: absolute path to the DRM render node to advertise as the dmabuf main device — pin clients to a specific GPU on a multi-GPU box, or force a node the driver allow-list below declines.
+/// Env override: absolute path to the DRM render node to advertise as the dmabuf main device — pin clients to a specific GPU on a multi-GPU box, or force a node whose buffer exchange check fails.
 pub const DEVICE_ENV: &str = "TILO_DMABUF_DEVICE";
-
-/// Kernel DRM drivers whose exported dma-bufs can be CPU-mapped.
-///
-/// Every entry routes `dma_buf_ops->mmap` through the DRM GEM prime helpers, which
-/// [`crate::compositor::foreign::import_dmabuf_rgba`] relies on. Allow-list, not deny-list, on
-/// purpose: an unknown driver producing unreadable buffers would show up as import errors on every tile, while one that falls back to `wl_shm` merely renders more slowly.
-const MAPPABLE_DRIVERS: &[&str] = &[
-    "amdgpu",
-    "i915",
-    "xe",
-    "radeon",
-    "nouveau",
-    "msm",
-    "v3d",
-    "vc4",
-    "lima",
-    "panfrost",
-    "panthor",
-    "etnaviv",
-    "virtio_gpu",
-    "vgem",
-    "vkms",
-];
 
 /// A DRM render node the compositor is willing to advertise.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,11 +92,6 @@ pub fn driver_for(path: &Path) -> Option<String> {
     launcher::gpu::driver_for(path)
 }
 
-/// Whether `driver` is known to support CPU-mapping its exported dma-bufs. Public so the boot log (and tests) can explain a rejection without duplicating the table.
-pub fn driver_supports_cpu_map(driver: &str) -> bool {
-    MAPPABLE_DRIVERS.contains(&driver)
-}
-
 #[cfg(target_os = "linux")]
 fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
     use std::os::unix::fs::MetadataExt as _;
@@ -149,16 +128,26 @@ fn render_nodes() -> Vec<PathBuf> {
     nodes
 }
 
-/// Pick the render node to advertise as the dmabuf main device; see the module docs for the selection rules. Called once at [`crate::compositor::state::State::new`].
+/// Pick the render node to advertise as the dmabuf main device; see the module docs for the selection rules.
+///
+/// The first answer is kept for the life of the process: it is asked from `main` (see
+/// [`pin_process`]) and again by [`crate::compositor::state::State::new`], and both must name the
+/// same node.
 ///
 /// # Errors
 ///
 /// Returns [`ProbeError::OverrideUnusable`] when `TILO_DMABUF_DEVICE` is set
 /// but the node it names can't be stat'd or opened; [`ProbeError::NoRenderNodes`]
 /// when `/dev/dri` has no `renderD*` entries; [`ProbeError::NoneUsable`] when
-/// nodes exist but none has a driver on the CPU-mappable allow-list, or opening/stat'ing the ones that do fails.
+/// nodes exist but none can exchange a buffer with the compositor, each with its reason.
 #[cfg(target_os = "linux")]
 pub fn probe() -> Result<RenderNode, ProbeError> {
+    static PROBED: OnceLock<Result<RenderNode, ProbeError>> = OnceLock::new();
+    PROBED.get_or_init(probe_uncached).clone()
+}
+
+#[cfg(target_os = "linux")]
+fn probe_uncached() -> Result<RenderNode, ProbeError> {
     if let Some(raw) = std::env::var_os(DEVICE_ENV) {
         let path = PathBuf::from(raw);
         if path.as_os_str().is_empty() {
@@ -180,38 +169,134 @@ pub fn probe() -> Result<RenderNode, ProbeError> {
             }),
         };
     }
+    choose(render_nodes(), |path| {
+        opens(path).map_err(|e| format!("cannot open: {e}"))?;
+        let dev = dev_of(path).map_err(|e| format!("stat failed: {e}"))?;
+        let exchange = launcher::gpu::in_isolation(|| exchange::check(path))
+            .and_then(std::convert::identity)?;
+        tracing::info!(
+            target: "shell::compositor::dmabuf",
+            node = %path.display(),
+            driver = driver_for(path).as_deref().unwrap_or("<unknown>"),
+            "{exchange}"
+        );
+        Ok(dev)
+    })
+}
 
-    let nodes = render_nodes();
+/// The first of `nodes` that `usable` accepts, or every node's reason.
+/// Split from the host so tests can stand in for `/dev/dri`.
+fn choose(
+    nodes: Vec<PathBuf>,
+    usable: impl Fn(&Path) -> Result<libc::dev_t, String>,
+) -> Result<RenderNode, ProbeError> {
     if nodes.is_empty() {
         return Err(ProbeError::NoRenderNodes);
     }
     let mut rejected = Vec::new();
     for path in nodes {
-        let driver = driver_for(&path);
-        match driver.as_deref() {
-            Some(name) if !driver_supports_cpu_map(name) => {
-                rejected.push((
+        match usable(&path) {
+            Ok(dev) => {
+                return Ok(RenderNode {
+                    driver: driver_name(&path),
                     path,
-                    format!("driver `{name}` does not support CPU-mapping its dma-bufs"),
-                ));
-                continue;
+                    dev,
+                });
             }
-            None => {
-                rejected.push((path, "no driver reported in sysfs".to_string()));
-                continue;
+            Err(why) => {
+                let why = match driver_name(&path) {
+                    Some(driver) => format!("{why} (driver `{driver}`)"),
+                    None => why,
+                };
+                rejected.push((path, why));
             }
-            Some(_) => {}
-        }
-        if let Err(e) = opens(&path) {
-            rejected.push((path, format!("cannot open: {e}")));
-            continue;
-        }
-        match dev_of(&path) {
-            Ok(dev) => return Ok(RenderNode { path, dev, driver }),
-            Err(e) => rejected.push((path, format!("stat failed: {e}"))),
         }
     }
     Err(ProbeError::NoneUsable(rejected))
+}
+
+#[cfg(target_os = "linux")]
+fn driver_name(path: &Path) -> Option<String> {
+    driver_for(path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn driver_name(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Can a buffer this node's driver allocates reach the compositor's pixels?
+#[cfg(target_os = "linux")]
+mod exchange {
+    use smithay::backend::allocator::dmabuf::AsDmabuf as _;
+    use smithay::backend::allocator::gbm::{GbmBuffer, GbmBufferFlags, GbmDevice};
+    use smithay::backend::allocator::{Fourcc, Modifier};
+    use std::path::Path;
+
+    /// Allocate a small linear ARGB buffer on `path`, export it as a dmabuf and import it the
+    /// way a client's would be: CPU-mapped first, then through the GL importer. `Ok` names the
+    /// path that worked; `Err` says why neither did.
+    pub(super) fn check(path: &Path) -> Result<String, String> {
+        const SIDE: u32 = 16;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|e| format!("cannot open: {e}"))?;
+        let device = GbmDevice::new(file).map_err(|e| format!("gbm_create_device: {e}"))?;
+        let usage = GbmBufferFlags::RENDERING;
+        let (bo, implicit) = match device.create_buffer_object_with_modifiers2::<()>(
+            SIDE,
+            SIDE,
+            Fourcc::Argb8888,
+            std::iter::once(Modifier::Linear),
+            usage,
+        ) {
+            Ok(bo) => (bo, false),
+            Err(explicit) => (
+                device
+                    .create_buffer_object::<()>(
+                        SIDE,
+                        SIDE,
+                        Fourcc::Argb8888,
+                        usage | GbmBufferFlags::LINEAR,
+                    )
+                    .map_err(|implicit| {
+                        format!(
+                            "cannot allocate a linear ARGB8888 buffer (explicit modifier: \
+                             {explicit}; implicit: {implicit})"
+                        )
+                    })?,
+                true,
+            ),
+        };
+        let dmabuf = GbmBuffer::from_bo(bo, implicit)
+            .export()
+            .map_err(|e| format!("cannot export the buffer as a dmabuf: {e}"))?;
+        let mut pixels = Vec::new();
+        let cpu = match crate::compositor::foreign::import_dmabuf_rgba(
+            &dmabuf,
+            &mut pixels,
+            None,
+            &mut None,
+        ) {
+            Ok(_) => return Ok("dmabuf exchange works: buffers are CPU-mappable".to_string()),
+            Err(e) => e.to_string(),
+        };
+        let gl = crate::compositor::gpu_import::GpuImporter::new(path)
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|mut importer| {
+                importer
+                    .import(&dmabuf, &mut pixels)
+                    .map_err(|e| format!("{e:?}"))
+            });
+        match gl {
+            Ok(_) => Ok("dmabuf exchange works: buffers import through GL".to_string()),
+            Err(gl) => Err(format!(
+                "its buffers reach the compositor neither by CPU map ({cpu}) nor by GL import ({gl})"
+            )),
+        }
+    }
 }
 
 /// The node the running compositor advertised, published by [`crate::compositor::state::State::new`].
@@ -279,12 +364,16 @@ pub fn pin_process() -> Option<ProcessPin> {
         Err(e) => {
             // Nothing to pin to. Not fatal: `State::new` logs the same rejection in prose and the compositor falls back to shm.
             tracing::debug!(target: "shell::compositor::gpu", "no render node to pin to: {e}");
+            if matches!(e, ProbeError::NoneUsable(_)) {
+                crate::compositor::gpu_health::record_probe_failure(&e.to_string());
+            }
             return None;
         }
     };
     let _ = PINNED.set(node.path.clone());
     let selection =
         launcher::gpu::select_for_node(&node.path, &launcher::gpu::IcdSearch::default());
+    crate::compositor::gpu_health::record_selection(&selection);
     let mut applied = Vec::new();
     let mut notes = selection.notes.clone();
     for (key, value) in selection.env() {
@@ -315,15 +404,44 @@ mod tests {
 
     #[test]
     fn render_node_driver_advertisement_is_self_describing() {
-        // Phase `nvidia_proprietary_is_not_advertised_for_cpu_import`.
-        // The whole point of the allow-list: `nvidia` exports dma-bufs that cannot be mmap'd, so steering a client there would make every foreign tile an import error.
-        assert!(!driver_supports_cpu_map("nvidia"));
-        assert!(!driver_supports_cpu_map("nvidia-drm"));
-        // Phase `mesa_drm_drivers_are_advertised`.
-        for d in ["amdgpu", "i915", "xe", "nouveau", "virtio_gpu"] {
-            assert!(
-                driver_supports_cpu_map(d),
-                "`{d}` exports CPU-mappable dma-bufs and must be advertisable"
+        // Phase `the_first_node_whose_buffers_exchange_is_chosen`.
+        // A node is judged by what its buffers do, whatever its driver is
+        // called: here a display-only node fails the exchange and the GPU
+        // behind it is chosen, as on a Snapdragon X laptop.
+        {
+            let nodes = vec![
+                PathBuf::from("/fake/dri/renderD128"),
+                PathBuf::from("/fake/dri/renderD129"),
+                PathBuf::from("/fake/dri/renderD130"),
+            ];
+            let chosen = choose(nodes.clone(), |path| match path.file_name() {
+                Some(name) if name == "renderD128" => Err(
+                    "its buffers reach the compositor neither by CPU map nor by GL import"
+                        .to_string(),
+                ),
+                Some(name) if name == "renderD129" => Ok(0xe281),
+                _ => panic!("the probe must stop at the first usable node"),
+            })
+            .expect("renderD129 exchanges buffers");
+            assert_eq!(chosen.path, nodes[1]);
+            assert_eq!(chosen.dev, 0xe281);
+        }
+        // Phase `every_rejected_node_says_why`.
+        {
+            let nodes = vec![
+                PathBuf::from("/fake/dri/renderD128"),
+                PathBuf::from("/fake/dri/renderD129"),
+            ];
+            let Err(ProbeError::NoneUsable(rejected)) = choose(nodes, |path| {
+                Err(format!("no exchange on {}", path.display()))
+            }) else {
+                panic!("no usable node must be an error");
+            };
+            assert_eq!(rejected.len(), 2);
+            assert!(rejected[1].1.contains("renderD129"), "{rejected:?}");
+            assert_eq!(
+                choose(Vec::new(), |_| Ok(0)),
+                Err(ProbeError::NoRenderNodes)
             );
         }
         // Phase `probe_result_is_self_describing`.
@@ -352,7 +470,7 @@ mod tests {
         fn probe_reports_a_stat_consistent_device_number() {
             // Env-independent: skip when the box genuinely has no mappable GPU rather than asserting hardware into existence.
             let Ok(node) = probe() else {
-                eprintln!("skipping: no CPU-mappable render node on this machine");
+                eprintln!("skipping: no render node exchanges buffers on this machine");
                 return;
             };
             let expected = dev_of(&node.path).expect("probe returned a node that no longer stats");
@@ -360,11 +478,7 @@ mod tests {
                 node.dev, expected,
                 "main_device must be the node's st_rdev; clients resolve the GPU from it"
             );
-            let driver = node.driver.as_deref().unwrap_or("<none>");
-            assert!(
-                driver_supports_cpu_map(driver),
-                "probe returned `{driver}`, which cannot CPU-map its dma-bufs"
-            );
+            assert_eq!(probe(), Ok(node), "the probe answers once per process");
         }
         // Phase `driver_lookup_rejects_paths_without_a_sysfs_entry`.
         assert_eq!(driver_for(Path::new("/dev/null")), None);

@@ -23,10 +23,11 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
+use ui::text_edit::{Edit, EditCore, Motion};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::text_selection::{
-    clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
-    word_boundaries_chars,
+    TextPosition, clipboard_copy, clipboard_paste, grapheme_boundary_at_or_before,
+    next_word_boundary_chars, prev_word_boundary_chars, word_boundaries_chars,
 };
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
@@ -34,7 +35,7 @@ use ui::widget::{EmptyState, EmptyStateContent, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::bottom_panel::Severity;
@@ -144,6 +145,67 @@ impl Caret {
         let c = (self.line, self.col);
         if a <= c { Some((a, c)) } else { Some((c, a)) }
     }
+
+    /// This caret as a shared-core selection over the flat buffer `text`.
+    fn core(&self, text: &str) -> EditCore {
+        let cursor = byte_of(text, self.line, self.col);
+        let anchor = self.anchor.map_or(cursor, |(l, c)| byte_of(text, l, c));
+        let mut core = EditCore::new();
+        core.set_selection(anchor, cursor);
+        core
+    }
+
+    /// The caret a shared-core selection over `text` describes.
+    fn from_core(text: &str, core: &EditCore) -> Self {
+        let (line, col) = line_col_of(text, core.caret());
+        Caret {
+            line,
+            col,
+            anchor: core
+                .has_selection()
+                .then(|| line_col_of(text, core.anchor())),
+        }
+    }
+}
+
+/// The byte offset of `(line, col)` — `col` in characters — in `text`,
+/// clamped to the end of the line (and of the buffer).
+fn byte_of(text: &str, line: usize, col: usize) -> usize {
+    let mut start = 0;
+    for _ in 0..line {
+        match text.get(start..).and_then(|rest| rest.find('\n')) {
+            Some(nl) => start += nl + 1,
+            None => return text.len(),
+        }
+    }
+    let row = text
+        .get(start..)
+        .and_then(|rest| rest.split('\n').next())
+        .unwrap_or_default();
+    start + row.char_indices().nth(col).map_or(row.len(), |(b, _)| b)
+}
+
+/// The `(line, col)` — `col` in characters — of byte `byte` in `text`.
+fn line_col_of(text: &str, byte: usize) -> (usize, usize) {
+    let head = text.get(..byte.min(text.len())).unwrap_or(text);
+    let line_start = head.rfind('\n').map_or(0, |nl| nl + 1);
+    (
+        head.matches('\n').count(),
+        head.get(line_start..).map_or(0, |row| row.chars().count()),
+    )
+}
+
+/// `col` (characters) pulled back onto the start of the grapheme cluster it
+/// falls in, so a caret never sits between a base and its combining mark.
+fn snap_col(row: &str, col: usize) -> usize {
+    let byte = byte_of(row, 0, col);
+    let snapped = grapheme_boundary_at_or_before(row, byte);
+    row.get(..snapped).map_or(0, |head| head.chars().count())
+}
+
+/// The column (characters) display byte `byte` of `shown` is drawn at.
+fn display_col(shown: &str, byte: usize) -> usize {
+    shown.get(..byte).map_or(0, |head| head.chars().count())
 }
 
 #[allow(
@@ -241,6 +303,10 @@ pub struct EditorView {
     horizontal_scroll_reset_rect: Rect,
     /// One optimistic UI edit awaiting the app's authoritative action dispatch.
     pending_text_edit: Option<PendingTextEdit>,
+    /// The input method's composition in progress. It is shown at the
+    /// primary caret (see [`Self::composition_on_line`]) and becomes text
+    /// only when committed, at every caret.
+    composition: EditCore,
 }
 
 impl EditorView {
@@ -279,6 +345,7 @@ impl EditorView {
             empty_action: false,
             horizontal_scroll_reset_rect: Rect::ZERO,
             pending_text_edit: None,
+            composition: EditCore::new(),
         }
     }
 
@@ -342,6 +409,7 @@ impl EditorView {
         self.language = language;
         self.indent_width = language.indent_width();
         self.carets = vec![Caret::at(0, 0)];
+        self.composition.clear_preedit();
         self.scroll_y = 0.0;
         self.scroll_x = 0.0;
         self.cached_text.clear(); // force rebuild on next sync
@@ -355,6 +423,7 @@ impl EditorView {
         self.spans = vec![Vec::new()];
         self.highlight_cache = IncrementalHighlights::default();
         self.carets = vec![Caret::at(0, 0)];
+        self.composition.clear_preedit();
         self.cached_text.clear();
         self.dirty = true;
     }
@@ -428,18 +497,16 @@ impl EditorView {
         self.dirty = true;
     }
 
+    /// Clamp every caret into the buffer and onto a grapheme boundary.
     fn clamp_carets(&mut self) {
         let last_line = self.lines.len().saturating_sub(1);
-        let line_len = |lines: &[String], l: usize| lines.get(l).map_or(0, |s| s.chars().count());
+        let clamp = |lines: &[String], (l, c): (usize, usize)| {
+            let l = l.min(last_line);
+            (l, lines.get(l).map_or(0, |row| snap_col(row, c)))
+        };
         for c in &mut self.carets {
-            c.line = c.line.min(last_line);
-            let cols = line_len(&self.lines, c.line);
-            c.col = c.col.min(cols);
-            if let Some((al, ac)) = c.anchor {
-                let al = al.min(last_line);
-                let ac = ac.min(line_len(&self.lines, al));
-                c.anchor = Some((al, ac));
-            }
+            (c.line, c.col) = clamp(&self.lines, (c.line, c.col));
+            c.anchor = c.anchor.map(|a| clamp(&self.lines, a));
         }
     }
 
@@ -813,127 +880,123 @@ impl EditorView {
         self.rebuild(next);
     }
 
-    /// Insert a string at the primary caret (replacing any selection),
-    /// requesting one compact action-owned replacement. Updates the caret. For simplicity multi-caret
-    /// inserts apply the same text at each caret, processed bottom-up so
-    /// earlier indices stay valid.
+    /// Run one shared-core edit at every caret over a local copy of the
+    /// buffer and request the result as one action-owned replacement. Carets
+    /// are edited from the end of the buffer backwards so an edit never moves
+    /// a caret still waiting for its own; the ones already edited shift by
+    /// the edit's length change. A caret whose span an edit already consumed
+    /// merges into it.
+    fn edit_at_carets(&mut self, mut edit_one: impl FnMut(&mut EditCore, &str) -> Edit) {
+        if self.text_obj.is_none() {
+            return;
+        }
+        let mut next = self.cached_text.clone();
+        let mut cores: Vec<EditCore> = self.carets.iter().map(|c| c.core(&next)).collect();
+        let mut order: Vec<usize> = (0..cores.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(cores.get(i).map_or(0, |c| c.range().start)));
+        // Start of the lowest edit made so far.
+        let mut floor = next.len();
+        let mut done: Vec<usize> = Vec::with_capacity(cores.len());
+        for i in order {
+            let Some(core) = cores.get_mut(i) else {
+                continue;
+            };
+            let edit = if core.range().end > floor {
+                core.set_caret(floor);
+                Edit::default()
+            } else {
+                edit_one(core, &next)
+            };
+            if !edit.is_noop() && edit.apply(&mut next) {
+                floor = edit.at;
+                let shift = |byte: usize| {
+                    if byte >= edit.range().end {
+                        byte - edit.removed + edit.inserted.len()
+                    } else {
+                        byte.min(edit.caret_after())
+                    }
+                };
+                for &j in &done {
+                    if let Some(core) = cores.get_mut(j) {
+                        let (anchor, caret) = (shift(core.anchor()), shift(core.caret()));
+                        core.set_selection(anchor, caret);
+                    }
+                }
+            }
+            done.push(i);
+        }
+        let mut carets: Vec<Caret> = Vec::with_capacity(cores.len());
+        for core in &cores {
+            let caret = Caret::from_core(&next, core);
+            if !carets.contains(&caret) {
+                carets.push(caret);
+            }
+        }
+        self.carets = carets;
+        self.request_text_edit(&next);
+        self.scroll_to_caret();
+    }
+
+    /// Insert a string at every caret, replacing its selection.
     fn insert(&mut self, _doc: &mut AutoCommit, s: &str) {
-        if self.text_obj.is_none() {
-            return;
-        }
-        let mut next = self.cached_text.clone();
-        // Process carets bottom-to-top so a splice doesn't shift the indices
-        // of carets we haven't handled yet.
-        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
-        for (i, _) in order {
-            self.apply_insert_at(&mut next, i, s);
-        }
-        self.request_text_edit(&next);
-        self.scroll_to_caret();
+        self.edit_at_carets(|core, _| core.insert(s));
     }
 
-    fn apply_insert_at(&mut self, next: &mut String, i: usize, s: &str) {
-        let Some(caret) = self.carets.get(i).copied() else {
-            return;
-        };
-        // Delete selection first if present.
-        let start = if let Some((sel_s, sel_e)) = caret.selection() {
-            let s_idx = self.char_index(sel_s.0, sel_s.1);
-            let e_idx = self.char_index(sel_e.0, sel_e.1);
-            Self::splice_local(next, s_idx, e_idx - s_idx, "");
-            if let Some(c) = self.carets.get_mut(i) {
-                c.anchor = None;
-            }
-            sel_s
-        } else {
-            (caret.line, caret.col)
-        };
-        let idx = self.char_index(start.0, start.1);
-        Self::splice_local(next, idx, 0, s);
-        // Recompute caret position after the inserted text.
-        let inserted_lines = s.split('\n').count();
-        let Some(c) = self.carets.get_mut(i) else {
-            return;
-        };
-        if inserted_lines == 1 {
-            *c = Caret::at(start.0, start.1 + s.chars().count());
-        } else {
-            let last = s.rsplit('\n').next().unwrap_or("");
-            *c = Caret::at(start.0 + inserted_lines - 1, last.chars().count());
-        }
-    }
-
-    /// Backspace at every caret. With a selection, deletes it; otherwise
-    /// removes the char before the caret (or joins with the previous line).
+    /// Backspace at every caret: the selection, else the character (grapheme
+    /// cluster) before the caret — joining lines at a line start.
     fn backspace(&mut self, _doc: &mut AutoCommit) {
-        if self.text_obj.is_none() {
-            return;
-        }
-        let mut next = self.cached_text.clone();
-        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
-        for (i, caret) in order {
-            if let Some((s, e)) = caret.selection() {
-                let s_idx = self.char_index(s.0, s.1);
-                let e_idx = self.char_index(e.0, e.1);
-                Self::splice_local(&mut next, s_idx, e_idx - s_idx, "");
-                if let Some(c) = self.carets.get_mut(i) {
-                    *c = Caret::at(s.0, s.1);
-                }
-            } else {
-                let idx = self.char_index(caret.line, caret.col);
-                if idx == 0 {
-                    continue;
-                }
-                Self::splice_local(&mut next, idx - 1, 1, "");
-                // Position recomputed after sync from the new flat text; we
-                // estimate here and clamp later.
-                if caret.col > 0 {
-                    if let Some(c) = self.carets.get_mut(i) {
-                        *c = Caret::at(caret.line, caret.col - 1);
-                    }
-                } else if caret.line > 0 {
-                    let prev_len = self
-                        .lines
-                        .get(caret.line - 1)
-                        .map_or(0, |l| l.chars().count());
-                    if let Some(c) = self.carets.get_mut(i) {
-                        *c = Caret::at(caret.line - 1, prev_len);
-                    }
-                }
-            }
-        }
-        self.request_text_edit(&next);
-        self.scroll_to_caret();
+        self.edit_at_carets(|core, text| core.delete_backward(text, false));
     }
 
-    /// Forward-delete at every caret.
+    /// Forward-delete at every caret: the selection, else the character
+    /// (grapheme cluster) after the caret.
     fn delete_forward(&mut self, _doc: &mut AutoCommit) {
-        if self.text_obj.is_none() {
-            return;
+        self.edit_at_carets(|core, text| core.delete_forward(text, false));
+    }
+
+    /// The input method committed `text`: the composition ends and the text
+    /// is typed at every caret.
+    fn commit_composition(&mut self, text: &str) {
+        self.composition.clear_preedit();
+        self.edit_at_carets(|core, _| core.commit(text));
+    }
+
+    /// The primary line's composition as a core whose caret sits at the
+    /// primary caret within that line, so the core's display mapping places
+    /// the preedit there. `None` while nothing is being composed.
+    fn composition_on_line(&self) -> Option<(usize, EditCore)> {
+        if !self.composition.has_preedit() {
+            return None;
         }
-        let mut next = self.cached_text.clone();
-        let mut order: Vec<(usize, Caret)> = self.carets.iter().copied().enumerate().collect();
-        order.sort_by_key(|(_, c)| std::cmp::Reverse((c.line, c.col)));
-        for (i, caret) in order {
-            if let Some((s, e)) = caret.selection() {
-                let s_idx = self.char_index(s.0, s.1);
-                let e_idx = self.char_index(e.0, e.1);
-                Self::splice_local(&mut next, s_idx, e_idx - s_idx, "");
-                if let Some(c) = self.carets.get_mut(i) {
-                    *c = Caret::at(s.0, s.1);
-                }
-            } else {
-                let idx = self.char_index(caret.line, caret.col);
-                let total: usize = self.cached_text.chars().count();
-                if idx >= total {
-                    continue;
-                }
-                Self::splice_local(&mut next, idx, 1, "");
+        let primary = self.primary();
+        let row = self.lines.get(primary.line)?;
+        let mut core = self.composition.clone();
+        core.set_caret(byte_of(row, 0, primary.col));
+        Some((primary.line, core))
+    }
+
+    /// The column the primary caret is drawn at: inside the composition at
+    /// the input method's cursor while composing.
+    fn primary_display_col(&self) -> usize {
+        match self.composition_on_line() {
+            Some((line, core)) => {
+                let row = self.lines.get(line).map_or("", String::as_str);
+                display_col(&core.display_text(row), core.display_caret(row))
             }
+            None => self.primary().col,
         }
-        self.request_text_edit(&next);
+    }
+
+    fn handle_ime(&mut self, ime: &Ime, handled: &mut bool) {
+        match ime {
+            Ime::Preedit(text, _) if text.is_empty() => self.composition.clear_preedit(),
+            Ime::Preedit(text, cursor) => self.composition.set_preedit(text, *cursor),
+            Ime::Commit(text) => self.commit_composition(text),
+            Ime::Disabled => self.composition.clear_preedit(),
+            Ime::Enabled => return,
+        }
+        self.dirty = true;
+        *handled = true;
     }
 
     /// Re-read the buffer from the CRDT and rebuild caches. Called after every
@@ -948,57 +1011,39 @@ impl EditorView {
 
     // ---- caret movement ----
 
+    /// Arrow motion of the primary caret: `dx` characters (grapheme
+    /// clusters, crossing line ends) and `dy` lines at the same column.
+    /// `extend` grows the selection; a plain arrow collapses multi-carets to
+    /// the primary and a live selection to its near edge.
     fn move_caret(&mut self, dx: isize, dy: isize, extend: bool) {
-        // Collapse multi-carets to primary on plain arrow (matches editor UX).
         if !extend {
             self.carets.truncate(1);
         }
-        // A plain horizontal arrow with a live selection collapses to the
-        // selection edge instead of moving one character past it — every
-        // native editor does this, and so does `TextInput`.
-        if dx != 0
-            && dy == 0
-            && !extend
-            && let Some((s, e)) = self.primary().selection()
-        {
-            let target = if dx < 0 { s } else { e };
-            self.carets = vec![Caret::at(target.0, target.1)];
-            self.scroll_to_caret();
-            return;
-        }
-        if self.carets.is_empty() {
-            self.carets.push(Caret::at(0, 0));
-        }
-        let Some(c) = self.carets.first_mut() else {
-            return;
-        };
-        if extend && c.anchor.is_none() {
-            c.anchor = Some((c.line, c.col));
-        }
-        if !extend {
-            c.anchor = None;
+        let primary = self.primary();
+        let text = self.cached_text.as_str();
+        let mut core = primary.core(text);
+        let horizontal = if dx < 0 { Motion::Left } else { Motion::Right };
+        for _ in 0..dx.unsigned_abs() {
+            core.motion(text, horizontal, extend);
         }
         if dy != 0 {
-            let new_line = (c.line as isize + dy).clamp(0, self.lines.len() as isize - 1) as usize;
-            c.line = new_line;
-            let cols = self.lines.get(new_line).map_or(0, |l| l.chars().count());
-            c.col = c.col.min(cols);
+            let last = self.lines.len().saturating_sub(1) as isize;
+            let line = (primary.line as isize + dy).clamp(0, last) as usize;
+            let col = self
+                .lines
+                .get(line)
+                .map_or(0, |row| snap_col(row, primary.col));
+            let motion = if dy < 0 {
+                Motion::LineUp
+            } else {
+                Motion::LineDown
+            };
+            core.motion_to(motion, TextPosition::new(byte_of(text, line, col)), extend);
         }
-        if dx != 0 {
-            let cols = self.lines.get(c.line).map_or(0, |l| l.chars().count());
-            if dx > 0 {
-                if c.col < cols {
-                    c.col += 1;
-                } else if c.line + 1 < self.lines.len() {
-                    c.line += 1;
-                    c.col = 0;
-                }
-            } else if c.col > 0 {
-                c.col -= 1;
-            } else if c.line > 0 {
-                c.line -= 1;
-                c.col = self.lines.get(c.line).map_or(0, |l| l.chars().count());
-            }
+        let moved = Caret::from_core(text, &core);
+        match self.carets.first_mut() {
+            Some(c) => *c = moved,
+            None => self.carets.push(moved),
         }
         self.scroll_to_caret();
     }
@@ -1061,10 +1106,12 @@ impl EditorView {
     /// Add a caret on the line below the lowest current caret (multi-cursor).
     fn add_caret_below(&mut self) {
         if let Some(last) = self.carets.iter().max_by_key(|c| c.line).copied()
-            && let Some(cols) = self.lines.get(last.line + 1).map(|l| l.chars().count())
+            && let Some(col) = self
+                .lines
+                .get(last.line + 1)
+                .map(|row| snap_col(row, last.col))
         {
-            self.carets
-                .push(Caret::at(last.line + 1, last.col.min(cols)));
+            self.carets.push(Caret::at(last.line + 1, col));
             self.dirty = true;
         }
     }
@@ -1367,9 +1414,11 @@ impl EditorView {
         let line = ((rel_y / self.line_height()).floor() as isize)
             .clamp(0, self.lines.len() as isize - 1) as usize;
         let rel_x = p.x - self.rect.x0 - gutter - self.code_pad_left() + self.scroll_x;
-        let max_col = self.lines.get(line).map_or(0, |l| l.chars().count());
-        let col = ((rel_x / self.cell_w).round().max(0.0) as usize).min(max_col);
-        (line, col)
+        let col = (rel_x / self.cell_w).round().max(0.0) as usize;
+        (
+            line,
+            self.lines.get(line).map_or(0, |row| snap_col(row, col)),
+        )
     }
 
     // ---- draw helpers (split out of `Widget::draw`, which orchestrates them) ----
@@ -1555,6 +1604,7 @@ impl EditorView {
             self.rect.x1,
             self.rect.y1,
         );
+        let composition = self.composition_on_line();
         for vi in 0..rows.n_visible {
             let line_idx = rows.first_line + vi;
             let Some(line) = self.lines.get(line_idx) else {
@@ -1591,58 +1641,125 @@ impl EditorView {
                 transform,
                 &code_clip,
             );
-            let empty: Vec<Span> = Vec::new();
-            let spans = self.spans.get(line_idx).unwrap_or(&empty);
-            let base_x = rows.code_x0 - self.scroll_x;
-            if spans.is_empty() && !line.is_empty() {
-                // Fallback for a line the highlighter produced no spans for —
-                // draw it plain so no characters are ever dropped.
-                text_renderer.draw_style(
-                    scene,
-                    line,
-                    c.text_primary,
-                    transform * Affine::translate((base_x, y + self.text_dy)),
-                    None,
-                    &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
-                );
-            } else {
-                for span in spans {
-                    // Byte offsets → char offset for x positioning.
-                    let prefix = line
-                        .as_bytes()
-                        .get(..span.range.start.min(line.len()))
-                        .unwrap_or(&[]);
-                    let char_col = std::str::from_utf8(prefix).map_or(0, |s| s.chars().count());
-                    let seg = line
-                        .get(span.range.start..span.range.end.min(line.len()))
-                        .unwrap_or("");
-                    if seg.is_empty() {
-                        continue;
-                    }
-                    let x = base_x + char_col as f64 * self.cell_w;
-                    // Skip fully off-screen-left segments.
-                    if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + rows.gutter_w {
-                        continue;
-                    }
-                    let color = theme.tokens.syntax.color(span.kind);
-                    let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
-                        TextWeight::Semibold
-                    } else {
-                        TextWeight::Regular
-                    };
-                    text_renderer.draw_style(
-                        scene,
-                        seg,
-                        color,
-                        transform * Affine::translate((x, y + self.text_dy)),
-                        None,
-                        &TextStyle::new(Self::font_size())
-                            .with_weight(weight)
-                            .with_family(FontChoice::Monospace),
-                    );
-                }
-            }
+            let composing = composition
+                .as_ref()
+                .filter(|(l, _)| *l == line_idx)
+                .map(|(_, core)| core);
+            self.draw_code_row(
+                &mut PaintCtx::new(&mut *scene, transform, &mut *text_renderer, theme),
+                rows,
+                (line_idx, line.as_str()),
+                y,
+                composing,
+            );
             scene.pop_layer();
+        }
+    }
+
+    /// Draw one row's highlighted code, span by span. On the composing row
+    /// the preedit is spliced in at the caret through the shared core's
+    /// display mapping: text after the caret is drawn shifted past it.
+    fn draw_code_row(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        rows: &VisibleRows,
+        (line_idx, line): (usize, &str),
+        y: f64,
+        composing: Option<&EditCore>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let c = &theme.tokens.colors;
+        let empty: Vec<Span> = Vec::new();
+        let spans = self.spans.get(line_idx).unwrap_or(&empty);
+        let base_x = rows.code_x0 - self.scroll_x;
+        let shown = composing.map_or(std::borrow::Cow::Borrowed(line), |core| {
+            core.display_text(line)
+        });
+        let preedit = composing.and_then(|core| core.preedit_display_range(line));
+        // The display column committed byte `byte` starts at; a run
+        // starting at the caret begins after the composition.
+        let col_at = |byte: usize| {
+            let shown_byte = match (composing, &preedit) {
+                (Some(_), Some(range)) if byte == range.start => range.end,
+                (Some(core), _) => core.to_display(line, byte),
+                (None, _) => byte,
+            };
+            display_col(&shown, shown_byte)
+        };
+        // A line the highlighter produced no spans for draws plain, so no
+        // characters are ever dropped; a span the composition falls
+        // inside is drawn as two runs.
+        let plain = [(0..line.len(), None)];
+        let highlighted = spans
+            .iter()
+            .map(|span| (span.range.clone(), Some(span.kind)));
+        let caret = preedit.as_ref().map(|range| range.start);
+        let runs = if spans.is_empty() {
+            Box::new(plain.into_iter()) as Box<dyn Iterator<Item = _>>
+        } else {
+            Box::new(highlighted)
+        }
+        .flat_map(|(range, kind)| {
+            let end = range.end.min(line.len());
+            let start = range.start.min(end);
+            match caret {
+                Some(at) if start < at && at < end => [(start..at, kind), (at..end, kind)],
+                _ => [(start..end, kind), (end..end, kind)],
+            }
+        });
+        for (range, kind) in runs {
+            let seg = line.get(range.clone()).unwrap_or("");
+            if seg.is_empty() {
+                continue;
+            }
+            let x = base_x + col_at(range.start) as f64 * self.cell_w;
+            // Skip fully off-screen-left segments.
+            if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + rows.gutter_w {
+                continue;
+            }
+            let color = kind.map_or(c.text_primary, |kind| theme.tokens.syntax.color(kind));
+            let weight = if kind == Some(ui::widget::code_editor::TokenKind::Keyword) {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            };
+            text_renderer.draw_style(
+                scene,
+                seg,
+                color,
+                transform * Affine::translate((x, y + self.text_dy)),
+                None,
+                &TextStyle::new(Self::font_size())
+                    .with_weight(weight)
+                    .with_family(FontChoice::Monospace),
+            );
+        }
+        if let (Some(core), Some(range)) = (composing, &preedit) {
+            // The composition, underlined until the input method commits it.
+            let x0 = base_x + display_col(&shown, range.start) as f64 * self.cell_w;
+            let x1 = base_x + display_col(&shown, range.end) as f64 * self.cell_w;
+            text_renderer.draw_style(
+                scene,
+                core.preedit(),
+                c.text_primary,
+                transform * Affine::translate((x0, y + self.text_dy)),
+                None,
+                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
+            );
+            let uy = y + self.line_h - 2.0;
+            let underline = Line::new(Point::new(x0, uy), Point::new(x1, uy));
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                c.text_primary,
+                None,
+                &underline,
+            );
         }
     }
 
@@ -1724,12 +1841,17 @@ impl EditorView {
             return;
         }
         let c = &theme.tokens.colors;
-        for caret in &self.carets {
+        for (i, caret) in self.carets.iter().enumerate() {
             if caret.line < first_line || caret.line >= first_line + n_visible {
                 continue;
             }
+            let col = if i == 0 {
+                self.primary_display_col()
+            } else {
+                caret.col
+            };
             let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * self.line_h;
-            let x = code_x0 + caret.col as f64 * self.cell_w - self.scroll_x;
+            let x = code_x0 + col as f64 * self.cell_w - self.scroll_x;
             if x < self.rect.x0 + gutter_w {
                 continue;
             }
@@ -2483,8 +2605,8 @@ impl Widget for EditorView {
         );
 
         // Caret pixel, reused by the completion popup + hover tooltip.
-        let (caret_line, caret_col) = self.primary_caret();
-        let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
+        let (caret_line, _) = self.primary_caret();
+        let caret_x = code_x0 + self.primary_display_col() as f64 * self.cell_w - self.scroll_x;
         let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_h;
 
         self.draw_completion_popup(
@@ -2571,6 +2693,7 @@ impl Widget for EditorView {
             } if key_event.state == ElementState::Pressed => {
                 self.handle_key_press(key_event, mods, ctx.state, ctx.handled);
             }
+            WindowEvent::Ime(ime) => self.handle_ime(ime, ctx.handled),
             _ => {}
         }
     }
@@ -2602,6 +2725,21 @@ impl Widget for EditorView {
 
     fn is_focusable(&self) -> bool {
         true
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.is_bound().then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.is_focused || !self.is_bound() {
+            return None;
+        }
+        let rows = self.visible_rows();
+        let (line, _) = self.primary_caret();
+        let x = rows.code_x0 + self.primary_display_col() as f64 * self.cell_w - self.scroll_x;
+        let y = self.rect.y0 + (line as f64 - self.scroll_y) * self.line_h;
+        Some(Rect::new(x, y, x + 2.0, y + self.line_h))
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -2943,6 +3081,115 @@ mod tests {
                 taffy: &taffy,
             },
         );
+    }
+
+    fn ime(ev: &mut EditorView, doc: &mut AutoCommit, ime: Ime) {
+        let m = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = TaffyTree::<()>::new();
+        ev.handle_event(
+            &WindowEvent::Ime(ime),
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
+        );
+        assert!(handled, "the editor consumes input-method events");
+    }
+
+    fn named(ev: &mut EditorView, doc: &mut AutoCommit, k: NamedKey, shift: bool) {
+        key(ev, doc, Key::Named(k), false, shift);
+    }
+
+    #[test]
+    fn arrows_and_deletes_step_over_whole_grapheme_clusters() {
+        let line = "ae\u{301}👍🏽🇩🇪z";
+        let (mut ev, mut doc) = bound_editor(line);
+        ev.set_caret_for_test(0, 1);
+        // Right steps over "e\u{301}" (2 chars), then the thumb (2), the flag (2).
+        named(&mut ev, &mut doc, NamedKey::ArrowRight, false);
+        assert_eq!(ev.primary_caret(), (0, 3));
+        named(&mut ev, &mut doc, NamedKey::ArrowRight, false);
+        assert_eq!(ev.primary_caret(), (0, 5));
+        named(&mut ev, &mut doc, NamedKey::ArrowLeft, false);
+        assert_eq!(ev.primary_caret(), (0, 3));
+        // A caret placed inside a cluster is pulled back onto its start.
+        ev.set_caret_for_test(0, 2);
+        assert_eq!(ev.primary_caret(), (0, 1));
+
+        // Shift+Right selects the whole thumb; typing replaces it.
+        ev.set_caret_for_test(0, 3);
+        named(&mut ev, &mut doc, NamedKey::ArrowRight, true);
+        assert_eq!(ev.selected_text_for_test().as_deref(), Some("👍🏽"));
+        ime(&mut ev, &mut doc, Ime::Commit("ok".into()));
+        assert_eq!(ev.text_for_test(), "ae\u{301}ok🇩🇪z");
+        assert_eq!(ev.primary_caret(), (0, 5));
+
+        // Delete removes the flag whole; Backspace takes "k", "o", then the
+        // whole combined "e\u{301}".
+        named(&mut ev, &mut doc, NamedKey::Delete, false);
+        assert_eq!(ev.text_for_test(), "ae\u{301}okz");
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        assert_eq!(ev.text_for_test(), "az");
+        assert_eq!(ev.primary_caret(), (0, 1));
+
+        // Up/Down keep the column but never land inside a cluster.
+        let (mut ev, mut doc) = bound_editor("abcd\ne\u{301}e\u{301}");
+        ev.set_caret_for_test(0, 3);
+        named(&mut ev, &mut doc, NamedKey::ArrowDown, false);
+        assert_eq!(ev.primary_caret(), (1, 2));
+        named(&mut ev, &mut doc, NamedKey::ArrowUp, true);
+        assert_eq!(ev.selection_for_test(), Some(((0, 2), (1, 2))));
+    }
+
+    #[test]
+    fn every_caret_edits_whole_clusters_and_takes_the_ime_commit() {
+        let (mut ev, mut doc) = bound_editor("x👍🏽\ny🇩🇪\nz");
+        ev.set_caret_for_test(0, 3);
+        key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
+        key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
+        assert_eq!(ev.caret_count(), 3);
+        // The third caret is clamped to the end of "z".
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        assert_eq!(ev.text_for_test(), "x\ny\n");
+        assert_eq!(ev.caret_count(), 3);
+
+        // The composition shows at the primary caret only; nothing is typed
+        // until the input method commits, then it lands at every caret.
+        ime(&mut ev, &mut doc, Ime::Preedit("漢字".into(), Some((3, 3))));
+        assert_eq!(ev.text_for_test(), "x\ny\n");
+        assert_eq!(ev.primary_display_col(), 2, "caret inside the preedit");
+        ime(&mut ev, &mut doc, Ime::Preedit("e\u{301}".into(), None));
+        ime(&mut ev, &mut doc, Ime::Commit("e\u{301}".into()));
+        assert_eq!(ev.text_for_test(), "xe\u{301}\nye\u{301}\ne\u{301}");
+        assert_eq!(ev.primary_display_col(), 3);
+        assert!(!ev.composition.has_preedit());
+
+        // One Backspace removes the whole combined letter at each caret.
+        named(&mut ev, &mut doc, NamedKey::Backspace, false);
+        assert_eq!(ev.text_for_test(), "x\ny\n");
+        // Delete at the end of each line joins it with the next.
+        named(&mut ev, &mut doc, NamedKey::Delete, false);
+        assert_eq!(ev.text_for_test(), "xy");
+        assert_eq!(ev.caret_count(), 2, "carets that meet merge");
+
+        // A multi-line commit at two carets keeps both carets after it.
+        let (mut ev, mut doc) = bound_editor("a\nb");
+        ev.set_caret_for_test(0, 1);
+        key(&mut ev, &mut doc, Key::Character("d".into()), true, false);
+        ime(&mut ev, &mut doc, Ime::Commit("1\n2".into()));
+        assert_eq!(ev.text_for_test(), "a1\n2\nb1\n2");
+        assert_eq!(ev.carets[0], Caret::at(1, 1));
+        assert_eq!(ev.carets[1], Caret::at(3, 1));
     }
 
     fn double_click_selects_word() {

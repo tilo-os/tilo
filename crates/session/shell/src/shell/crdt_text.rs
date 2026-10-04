@@ -21,7 +21,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transac
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::TypingRun;
 use ui::presence::{PathSegment, PresenceKey};
-use ui::text_selection::{next_char_boundary, prev_char_boundary};
+use ui::text_selection::grapheme_boundary_at_or_before;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
@@ -178,42 +178,39 @@ impl CrdtTextBody {
         range: Range<usize>,
         s: &str,
     ) -> usize {
+        self.apply(
+            state,
+            root,
+            &ui::Edit {
+                at: range.start,
+                removed: range.len(),
+                inserted: s.to_owned(),
+            },
+        )
+    }
+
+    /// Apply `edit` to both mirror and CRDT; returns the offset just past
+    /// the inserted text.
+    pub fn apply(&mut self, state: &mut AutoCommit, root: &ObjId, edit: &ui::Edit) -> usize {
         let Some(body) = self.resolve(state, root) else {
-            return range.start;
+            return edit.at;
         };
-        let edit = ui::Edit {
-            at: range.start,
-            removed: range.len(),
-            inserted: s.to_owned(),
-        };
-        // A `range` that doesn't land on char boundaries would be an
-        // upstream bug (Automerge itself would then splice at the wrong
-        // char), so treat it the same as "resolve failed": skip the edit.
+        // An edit that doesn't land on char boundaries would be an upstream
+        // bug (Automerge itself would then splice at the wrong char), so
+        // treat it the same as "resolve failed": skip the edit.
         if edit.splice_automerge(state, &body, &self.text).is_none() {
-            return range.start;
+            return edit.at;
         }
         edit.apply(&mut self.text);
         self.typing.touch();
-        range.start.saturating_add(s.len())
+        edit.caret_after()
     }
 
-    /// Nearest char boundary at or below `pos`, clamped to the buffer.
+    /// The nearest boundary between whole characters as a person sees them
+    /// at or below `pos`, clamped to the buffer: where a caret may sit after
+    /// a peer's edit moved the text under it.
     pub fn clamp(&self, pos: usize) -> usize {
-        let mut p = pos.min(self.text.len());
-        while p > 0 && !self.text.is_char_boundary(p) {
-            p = p.saturating_sub(1);
-        }
-        p
-    }
-
-    /// Char boundary before `pos`, saturating at the start of the buffer.
-    pub fn prev_boundary(&self, pos: usize) -> usize {
-        prev_char_boundary(&self.text, pos)
-    }
-
-    /// Char boundary after `pos`, saturating at the end of the buffer.
-    pub fn next_boundary(&self, pos: usize) -> usize {
-        next_char_boundary(&self.text, pos)
+        grapheme_boundary_at_or_before(&self.text, pos)
     }
 
     /// Char index (the unit `PresenceCtx::carets` speaks) to a byte offset
@@ -434,15 +431,13 @@ mod tests {
     fn crdt_text_char_boundaries_commit_debounce_and_presence_key() {
         fn boundaries_step_whole_chars() {
             let b = CrdtTextBody::with_seed(KEY, "aβc");
-            // β occupies bytes 1..3.
-            assert_eq!(b.next_boundary(1), 3);
-            assert_eq!(b.prev_boundary(3), 1);
-            // Ends are saturating, not wrapping.
-            assert_eq!(b.prev_boundary(0), 0);
-            assert_eq!(b.next_boundary(4), 4);
             // Clamp snaps into the middle of a char, and past the end.
             assert_eq!(b.clamp(2), 1);
             assert_eq!(b.clamp(99), 4);
+            // A caret never lands inside an accented letter or an emoji.
+            let b = CrdtTextBody::with_seed(KEY, "ae\u{301}👍🏽");
+            assert_eq!(b.clamp(2), 1);
+            assert_eq!(b.clamp("ae\u{301}👍".len()), "ae\u{301}".len());
         }
 
         fn char_index_to_byte_handles_multibyte_and_overrun() {

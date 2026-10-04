@@ -43,7 +43,8 @@ bin = "bin/canvas"
 type = "gui"
 splash-budget = 250
 
-# Files opens a saved artwork in Canvas.
+# Files opens a saved artwork in Canvas; a picture opens as an artwork the
+# size of the picture, one per file.
 [providers]
-mime = ["application/vnd.tilo.artwork+json"]
-ext = ["artwork"]
+mime = ["application/vnd.tilo.artwork+json", "image/png", "image/jpeg", "image/webp"]
+ext = ["artwork", "png", "jpg", "jpeg", "webp"]
