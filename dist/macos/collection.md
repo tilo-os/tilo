@@ -234,3 +234,9 @@ Apple references checked 2026-10-04:
 [notarization requirements](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution),
 [notarization/stapling workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow),
 [nested code and requirements](https://developer.apple.com/library/archive/technotes/tn2206/_index.html).
+
+## Private local runtime adapter
+
+For a separately reviewed, pinned macOS 27 helper closure, see
+[private runtime staging](local-runtime.md). This produces an unsigned payload;
+it does not relax the general collection's macOS 13 or nested-code validation.
