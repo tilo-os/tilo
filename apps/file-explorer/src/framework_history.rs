@@ -203,7 +203,9 @@ struct FilePreview {
     clippy::unnecessary_wraps,
     reason = "signature is fixed by `HistoryPresentation::CheckedFiles::create`"
 )]
-fn preview(input: FilePreviewInput) -> Result<Box<dyn ui::history_mode::HistoryPreview>, String> {
+pub(crate) fn preview(
+    input: FilePreviewInput,
+) -> Result<Box<dyn ui::history_mode::HistoryPreview>, String> {
     let content = match input.snapshot.content {
         FileHistoricalContent::Bytes(bytes) => match std::str::from_utf8(&bytes) {
             Ok(text) if !text.contains('\0') => {
