@@ -52,7 +52,9 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 # The framework's launch installs the resource's replay decoder
 # (`Resource::register`) into the component registry itself.
-FRAMEWORK_LAUNCH = re.compile(r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<")
+FRAMEWORK_LAUNCH = re.compile(
+    r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\bui\s*::\s*main\s*!\s*\("
+)
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -819,8 +821,11 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app builds no runtime Resource value (an empty provider is not a protocol)",
                     )
                 )
+            # A framework app's effects are answered by the framework root,
+            # which routes them to the view or surface that handles them.
             if (
                 not toolkit_host
+                and not framework_host
                 and OPERATION_KIND.search(combined)
                 and not OPERATION_HANDLER.search(combined)
             ):
@@ -833,6 +838,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
+                and not framework_host
                 and OPERATION_KIND.search(combined)
                 and not OPERATION_HANDLER_REGISTRY.search(combined)
             ):
