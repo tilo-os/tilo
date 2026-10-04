@@ -230,6 +230,12 @@ impl ResourceSurface<PdfViewer> for PdfApp {
         self.adopt_resource_state(state);
     }
 
+    /// What the open document says — its pages' text, its outline, the
+    /// current find hits — beside the markup the resource holds.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.shown_search_entries()
+    }
+
     fn attach(&mut self, cx: SurfaceCx<PdfViewer>) {
         self.attach_framework(cx.dispatcher());
         self.attach_people(cx.people());
