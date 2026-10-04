@@ -81,6 +81,10 @@
 //!   keystroke is a splice action.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//!   A surface whose window should reopen as it was left (the open note,
+//!   the caret) also provides
+//!   [`ApplicationViewState`](ui_core::application_view::ApplicationViewState):
+//!   the root saves and restores it with the window.
 //! * **Launching on something** — a path or URL on the command line, a file
 //!   a host hands over — asks the app which record that is
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
@@ -183,8 +187,10 @@
 //!   and collaborators shown where they are. The resource is staged with
 //!   actions ([`ResourceApp::scenario`]), and view state where it lives,
 //!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
-//!   state, `ResourceSurface::stage` for a custom surface's. The capture
-//!   then waits until no surface reports unfinished visual work (an async
+//!   state, `ResourceSurface::stage` for a custom surface's. What a person
+//!   does in the scene (typing, a drag held over its target) is
+//!   [`ResourceApp::scenario_input`], driven through the window's own event
+//!   path. The capture then waits until no surface reports unfinished visual work (an async
 //!   page render, a decode). [`stage`] runs a scenario on any harness, and
 //!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.

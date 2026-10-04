@@ -41,3 +41,5 @@ pub mod scenarios;
 pub mod settings;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;
+#[path = "window_view.rs"]
+pub mod window_view;
