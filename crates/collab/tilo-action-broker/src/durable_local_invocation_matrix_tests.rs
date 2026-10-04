@@ -949,4 +949,5 @@ mod durable_local_matrix {
     }
 
     include!("admitted_local_host_tests.rs");
+    include!("certified_launch_tests.rs");
 }

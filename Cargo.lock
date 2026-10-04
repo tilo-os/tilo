@@ -16474,6 +16474,7 @@ dependencies = [
  "package-store",
  "postcard",
  "rand_core 0.10.0",
+ "runtime-collab",
  "runtime-fs",
  "runtime-identity",
  "serde",
