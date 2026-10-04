@@ -891,7 +891,7 @@ Its import libraries link directly; no `.lib` conversion is required. Configure
 the current PowerShell process for your installation:
 
 ```powershell
-$gstPrefix = 'C:/Users/user/msys64/clangarm64' # Replace with your installation.
+$gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"

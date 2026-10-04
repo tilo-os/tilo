@@ -14,6 +14,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tilo_app_package::PackageId;
@@ -21,7 +22,7 @@ use tilo_app_package::PackageId;
 use crate::index::{Entry, LocalIndex, ToolLookup};
 use crate::key::CacheKey;
 use crate::resolve::{self, Resolution, ResolveError};
-use crate::sandbox::{BuildSandbox, SandboxError};
+use crate::sandbox::{BuildEgress, BuildSandbox, SandboxError};
 use crate::seal::{self, SealError, SealReport};
 
 /// dnf options every resolve and build uses; part of [`crate::key::RECIPE`].
@@ -137,7 +138,7 @@ pub struct Builder<S, C> {
     state: PathBuf,
     index: LocalIndex,
     timeouts: Timeouts,
-    bwrap: Option<PathBuf>,
+    sandbox: SandboxOptions,
 }
 
 impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
@@ -151,7 +152,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
             catalog,
             state,
             timeouts: Timeouts::default(),
-            bwrap: None,
+            sandbox: SandboxOptions::default(),
         }
     }
 
@@ -163,7 +164,15 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
 
     #[must_use]
     pub fn with_bwrap(mut self, bwrap: PathBuf) -> Self {
-        self.bwrap = Some(bwrap);
+        self.sandbox.bwrap = Some(bwrap);
+        self
+    }
+
+    /// Route the builds' package downloads through `egress` instead of the
+    /// caller's network.
+    #[must_use]
+    pub fn with_egress(mut self, egress: Arc<dyn BuildEgress>) -> Self {
+        self.sandbox.egress = Some(egress);
         self
     }
 
@@ -272,8 +281,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         let result = resolve_in(
             tree,
             &scratch,
-            Some(self.dnf_cache(runtime)),
-            self.bwrap.as_deref(),
+            &self.options(runtime),
             packages,
             self.timeouts.resolve,
         );
@@ -302,8 +310,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
             nevras,
             scratch,
             out,
-            Some(self.dnf_cache(runtime)),
-            self.bwrap.as_deref(),
+            &self.options(runtime),
             self.timeouts.install,
         )
     }
@@ -319,8 +326,12 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         }
     }
 
-    fn dnf_cache(&self, runtime: &PackageId) -> PathBuf {
-        self.state.join("dnf-cache").join(runtime.to_hex())
+    /// The sandbox options for a build on `runtime`: its own metadata cache.
+    fn options(&self, runtime: &PackageId) -> SandboxOptions {
+        SandboxOptions {
+            dnf_cache: Some(self.state.join("dnf-cache").join(runtime.to_hex())),
+            ..self.sandbox.clone()
+        }
     }
 
     fn scratch(&self, what: &str) -> Result<PathBuf, BuildError> {
@@ -344,18 +355,31 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
     }
 }
 
+/// How a build's sandbox is set up beyond its runtime and scratch.
+#[derive(Clone, Debug, Default)]
+pub struct SandboxOptions {
+    /// dnf's metadata cache, kept across builds on one runtime.
+    pub dnf_cache: Option<PathBuf>,
+    /// A bubblewrap other than `bwrap` on `PATH`.
+    pub bwrap: Option<PathBuf>,
+    /// Where package downloads go; the caller's network when `None`.
+    pub egress: Option<Arc<dyn BuildEgress>>,
+}
+
 fn sandbox(
     tree: &Path,
     scratch: &Path,
-    dnf_cache: Option<PathBuf>,
-    bwrap: Option<&Path>,
+    options: &SandboxOptions,
 ) -> Result<BuildSandbox, SandboxError> {
     let mut sandbox = BuildSandbox::create(tree, scratch)?;
-    if let Some(cache) = dnf_cache {
-        sandbox = sandbox.with_dnf_cache(cache);
+    if let Some(cache) = &options.dnf_cache {
+        sandbox = sandbox.with_dnf_cache(cache.clone());
     }
-    if let Some(bwrap) = bwrap {
-        sandbox = sandbox.with_bwrap(bwrap.to_owned());
+    if let Some(bwrap) = &options.bwrap {
+        sandbox = sandbox.with_bwrap(bwrap.clone());
+    }
+    if let Some(egress) = &options.egress {
+        sandbox = sandbox.with_egress(Arc::clone(egress));
     }
     Ok(sandbox)
 }
@@ -379,15 +403,14 @@ fn dnf_argv<'a>(head: &[&'a str], packages: &'a [String]) -> Vec<&'a str> {
 pub fn resolve_in(
     tree: &Path,
     scratch: &Path,
-    dnf_cache: Option<PathBuf>,
-    bwrap: Option<&Path>,
+    options: &SandboxOptions,
     packages: &[String],
     timeout: Duration,
 ) -> Result<Resolution, BuildError> {
     if packages.is_empty() {
         return Err(BuildError::Empty);
     }
-    let sandbox = sandbox(tree, scratch, dnf_cache, bwrap)?;
+    let sandbox = sandbox(tree, scratch, options)?;
     let ran = sandbox.run(&dnf_argv(&["--assumeno", "install"], packages), timeout)?;
     let output = format!("{}\n{}", ran.stdout, ran.stderr);
     let resolution = resolve::parse_assumeno(&output)?;
@@ -416,14 +439,13 @@ pub fn build_tree(
     nevras: &[String],
     scratch: &Path,
     out: &Path,
-    dnf_cache: Option<PathBuf>,
-    bwrap: Option<&Path>,
+    options: &SandboxOptions,
     timeout: Duration,
 ) -> Result<SealedTree, BuildError> {
     if nevras.is_empty() {
         return Err(BuildError::Empty);
     }
-    let sandbox = sandbox(tree, scratch, dnf_cache, bwrap)?;
+    let sandbox = sandbox(tree, scratch, options)?;
     let before = installed(&sandbox)?;
     let ran = sandbox.run(&dnf_argv(&["-y", "install"], nevras), timeout)?;
     if !ran.success {

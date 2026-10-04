@@ -12,7 +12,6 @@
 - No per-app edits, aliases, package allowlist, alternate broker or automatic client installation.
 - Preserve inherited Tilo connections and detached non-live modes. No UI global environment mutation.
 - Preserve concurrent History/Photos launch.rs setter/tests and Browser work. Stage only owned hunks.
-- No push/merge. Existing linked codex/macos-shell worktree is retained.
 
 ### Task 1: Shared bootstrap and background runtime
 **Files:** runtime-portal new native bootstrap module/tests and narrow lib export; shell/runtime_host new daemon module/tests and narrow module export, unix connection refactor, tilo-runtime-mcp binary CLI extension; disjoint ui/src/launch.rs native-dispatch hook plus focused tests. Existing dependency manifests only if necessary; no new framework crate.
