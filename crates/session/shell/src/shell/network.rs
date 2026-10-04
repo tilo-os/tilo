@@ -1016,6 +1016,27 @@ fn personal_continuity_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("personal-continuity.postcard")
 }
 
+/// The governing endpoints of rooms `tree` holds now but did not hold as
+/// `before`, for rooms someone else governs.
+fn governors_before_and_after(
+    tree: &WorkspaceTreeHandle,
+    before: &[RoomId],
+) -> Vec<iroh::EndpointId> {
+    let tree = tree.read();
+    tree.desktop
+        .rooms()
+        .into_iter()
+        .filter(|room| !before.contains(room))
+        .filter_map(|room| match tree.room_authority(room) {
+            crate::shell::state::RoomAuthority::Peer(origin) => origin
+                .as_str()
+                .strip_prefix("iroh:")
+                .and_then(|endpoint| endpoint.parse().ok()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn personal_workspaces_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("personal-workspaces.postcard")
 }
@@ -1609,6 +1630,7 @@ impl ShellNetwork {
             ))
             .ok()
         });
+        tree.write().local_person = personal_continuity_user;
         let personal_workspaces = host_identity.as_ref().map(|identity| {
             Mutex::new(crate::shell::personal_workspaces::PersonalWorkspaces::open(
                 identity.device_cert.user_public_key,
@@ -4873,6 +4895,20 @@ impl ShellNetwork {
         }
     }
 
+    /// Tell the tree which person stands behind each authenticated peer, so
+    /// room admission can let any device of a room's owner govern it. Rebuilt
+    /// from the identity store, so a revoked or expired device drops out on
+    /// the next refresh.
+    fn refresh_authenticated_persons(&self) {
+        let persons = self.peer_identities.authenticated_persons(now_unix_nanos());
+        let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
+            return;
+        };
+        if tree.read().authenticated_persons != persons {
+            tree.write().authenticated_persons = persons;
+        }
+    }
+
     /// The person this device acts as in the owner field of their own
     /// workspaces; `None` on a device certified for no person.
     fn personal_person(&self) -> Option<crate::shell::state::UserId> {
@@ -4995,6 +5031,7 @@ impl ShellNetwork {
         let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
             return true;
         };
+        let rooms_before = tree.read().desktop.rooms();
         let (adopted, answer) = {
             let mut tree = tree.write();
             let Ok(mut workspaces) = workspaces.lock() else {
@@ -5014,6 +5051,13 @@ impl ShellNetwork {
             (adopted, answer)
         };
         if adopted {
+            // Reach the governor of each room someone else owns directly, so
+            // its answer does not depend on another device relaying it.
+            for governor in governors_before_and_after(&tree, &rooms_before) {
+                let _ = self.cmd_tx.try_send(NetCmd::Connect {
+                    addr: iroh::EndpointAddr::new(governor),
+                });
+            }
             // Join each new workspace's room and ask for its content now
             // rather than at the next periodic round.
             self.publish_sync_requests();
@@ -5039,6 +5083,7 @@ impl ShellNetwork {
         }
         *last = Some(now);
         drop(last);
+        self.refresh_authenticated_persons();
         self.publish_sync_requests();
     }
 
@@ -5773,6 +5818,7 @@ impl ShellNetwork {
                 routes.remove(&(ws, peer));
             }
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
+            self.refresh_authenticated_persons();
             if self.peer_identities.get(&origin).is_some()
                 && let Ok(mut direct) = self.workspace_control_direct.lock()
             {
@@ -5878,6 +5924,7 @@ impl ShellNetwork {
                 revocations,
             } => {
                 self.handle_identity_announcement(&peer, &room, &device_cert, &revocations);
+                self.refresh_authenticated_persons();
             }
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
             NeighbourMsg::PresenceMoved {
@@ -8019,11 +8066,12 @@ mod tests {
     fn personal_workspaces_network_for_test(
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
-        tree: WorkspaceTree,
+        mut tree: WorkspaceTree,
     ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let user = root.verifying_key().to_bytes();
+        tree.local_person = Some(user);
         let mut cert = DeviceCert {
             user_public_key: user,
             device_public_key: *device.public().as_bytes(),
