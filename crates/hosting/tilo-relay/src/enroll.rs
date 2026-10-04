@@ -508,16 +508,39 @@ fn project_personal_device(
     Ok(bytes)
 }
 
-/// Record the fleet that now lists the approved device. The person's own
-/// account writes it, so it belongs to them without any ownership change.
+/// Record the approved device in the person's fleet. The fleet is read again
+/// here rather than reusing the copy sent to the device, so a revocation the
+/// session recorded while the device was acknowledging is kept. The person's
+/// own account writes it, so it belongs to them without any ownership change.
 fn commit_personal_device(
     home: &PersonHome,
     identity_dir: &std::path::Path,
-    user: [u8; 32],
-    fleet: &[u8],
+    cert: &DeviceCert,
 ) -> anyhow::Result<()> {
-    home.write_fleet(identity_dir, user, fleet)
+    let fleet = project_personal_device(home, identity_dir, cert)?;
+    home.write_fleet(identity_dir, cert.user_public_key, &fleet)
         .context("record the approved device in the person's fleet")
+}
+
+/// The home-peer registry's bytes: its directory is writable by the identity
+/// group, so a link, FIFO or oversized file planted there is refused rather
+/// than followed, waited on or read whole.
+fn read_registry_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "home-peer registry is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn bounded_home_peer_registry(
@@ -525,7 +548,7 @@ fn bounded_home_peer_registry(
     user: [u8; 32],
 ) -> anyhow::Result<Vec<u8>> {
     let path = tilo_relay::home_peer_registry_path(identity_root);
-    match std::fs::read(path) {
+    match read_registry_file(&path) {
         Ok(bytes) if bytes.len() <= 1024 * 1024 => {
             let entries: Vec<HomePeerRegistration> = serde_json::from_slice(&bytes)?;
             if entries.len() > 128
@@ -2238,6 +2261,17 @@ fn load_approval_root(options: &ApprovalOptions<'_>) -> anyhow::Result<Box<dyn R
             .context(MISSING_ROOT)?;
         return Ok(Box::new(root));
     };
+    if !options.home.is_delegated() && person_home::local::own_uid() == 0 {
+        // Root acting for itself opens only an identity directory root owns;
+        // a person's directory and anything linked from it are theirs to open.
+        person_home::local::open_owned_dir(identity_dir, 0).with_context(|| {
+            format!(
+                "{MISSING_ROOT}: {} is not root's own identity directory; run this as the \
+                 account that owns it",
+                identity_dir.display()
+            )
+        })?;
+    }
     if options.home.is_delegated() {
         bail!(
             "{MISSING_ROOT}: without a seed under {}, approval signs with the person's identity \
@@ -2716,13 +2750,7 @@ fn commit_approval(
             options
                 .identity_dir
                 .context("identity directory is required")?,
-            identity.user_public_key,
-            prepared
-                .signed
-                .payload
-                .fleet_json
-                .as_deref()
-                .context("fleet is required")?,
+            &prepared.signed.payload.cert,
         )?,
     }
     consume_nonce(
@@ -2919,6 +2947,12 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
+    }
+    // Whatever umask the invoking account passed through pkexec, files root
+    // creates under /var/lib/tilo are never group- or world-writable.
+    if person_home::local::own_uid() == 0 {
+        // SAFETY: umask has no preconditions.
+        unsafe { libc::umask(0o022) };
     }
     run().map(|()| std::process::ExitCode::SUCCESS)
 }
@@ -3123,6 +3157,30 @@ mod tests {
     use tilo_user_identity::{
         DeviceCapabilities, RevocationEntry, RevocationReason, sign_revocation_entry,
     };
+
+    #[test]
+    fn a_planted_home_peer_registry_is_not_followed_or_waited_on() {
+        let identity_root = tempfile::tempdir().unwrap();
+        let path = tilo_relay::home_peer_registry_path(identity_root.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let user = [3; 32];
+        assert_eq!(
+            bounded_home_peer_registry(identity_root.path(), user).unwrap(),
+            b"[]"
+        );
+        let secret = identity_root.path().join("secret");
+        std::fs::write(&secret, b"[]").unwrap();
+        std::os::unix::fs::symlink(&secret, &path).unwrap();
+        assert!(bounded_home_peer_registry(identity_root.path(), user).is_err());
+        std::fs::remove_file(&path).unwrap();
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `fifo` is NUL-terminated.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(bounded_home_peer_registry(identity_root.path(), user).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, vec![b' '; 1024 * 1024 + 1]).unwrap();
+        assert!(bounded_home_peer_registry(identity_root.path(), user).is_err());
+    }
 
     #[test]
     fn an_out_of_band_certificate_joins_its_identity() {

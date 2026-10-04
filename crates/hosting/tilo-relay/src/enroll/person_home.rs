@@ -197,10 +197,26 @@ fn child_command(program: &Path, person: Person, args: &[OsString]) -> std::proc
 }
 
 /// Give up root for `uid`/`gid` irrevocably. Runs between fork and exec.
+///
+/// Until exec this child is a copy of the approving process, secrets
+/// included, yet the person may signal it once its uid is theirs. Every
+/// catchable signal is blocked and core dumps are off first, so nothing the
+/// person sends can make it dump that memory; the exec'd child unblocks them.
 fn drop_to(uid: libc::uid_t, gid: libc::gid_t) -> std::io::Result<()> {
     const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
-    // SAFETY: plain syscalls with value arguments; `groups` outlives the call.
+    // SAFETY: plain syscalls on stack values that outlive each call.
     unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::sigfillset(&raw mut all) != 0
+            || libc::sigprocmask(libc::SIG_SETMASK, &raw const all, std::ptr::null_mut()) != 0
+            || libc::setrlimit(libc::RLIMIT_CORE, &raw const no_core) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
         if libc::syscall(
             libc::SYS_close_range,
             3 as libc::c_uint,
@@ -282,6 +298,13 @@ pub fn serve_child(
     path: &Path,
     user: Option<&str>,
 ) -> anyhow::Result<()> {
+    // The parent blocked every signal across the credential change.
+    // SAFETY: an empty set is a valid mask and the call has no other inputs.
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut none);
+        libc::sigprocmask(libc::SIG_SETMASK, &raw const none, std::ptr::null_mut());
+    }
     let uid = local::own_uid();
     let user = || -> anyhow::Result<[u8; 32]> {
         hex::decode(user.context("--user is required")?)
@@ -439,7 +462,7 @@ pub mod local {
                 Ok(fd) => return checked(fd, libc::S_IFDIR, owner, name).map(Some),
                 Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
                     // SAFETY: `dir` is open and `c` is NUL-terminated.
-                    if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), 0o777) } != 0 {
+                    if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), 0o755) } != 0 {
                         let error = io::Error::last_os_error();
                         if error.kind() != io::ErrorKind::AlreadyExists {
                             return Err(error);

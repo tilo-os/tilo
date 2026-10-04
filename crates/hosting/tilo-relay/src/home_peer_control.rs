@@ -700,6 +700,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
 fn run() -> anyhow::Result<()> {
     require_root()?;
+    // The requester's umask reaches this helper through pkexec; nothing it
+    // or its children create is group- or world-writable because of it.
+    // SAFETY: umask has no preconditions.
+    unsafe { libc::umask(0o022) };
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
         BrokerCommand::ApproveEnrollment {
