@@ -61,6 +61,44 @@ pub struct ContinuityPolicySnapshot {
     app_continuations: bool,
 }
 
+/// The switches the section holds, besides `audit`.
+const SWITCHES: [&str; 10] = [
+    "enabled",
+    "clipboard",
+    "notifications",
+    "wifi_settings",
+    "media",
+    "display_input",
+    "file_transfer",
+    "realtime_sessions",
+    "typed_gamepad",
+    "app_continuations",
+];
+
+/// Whether `section` is one Settings reads as written: only known fields,
+/// switches that are booleans, and an audit list of entries. Settings shows
+/// any other section as switched off, so the session reads it so too.
+fn well_formed(section: &Map<String, Value>) -> bool {
+    section.iter().all(|(name, value)| match name.as_str() {
+        "audit" => value.as_array().is_some_and(|entries| {
+            entries.iter().all(|entry| {
+                entry.as_object().is_some_and(|entry| {
+                    entry.get("recorded_at_secs").is_some_and(Value::is_u64)
+                        && entry.get("enabled").is_some_and(Value::is_boolean)
+                        && entry
+                            .get("capability")
+                            .is_none_or(|capability| capability.is_null() || capability.is_string())
+                        && entry.keys().all(|key| {
+                            matches!(key.as_str(), "recorded_at_secs" | "capability" | "enabled")
+                        })
+                })
+            })
+        }),
+        name if SWITCHES.contains(&name) => value.is_boolean(),
+        _ => false,
+    })
+}
+
 impl ContinuityPolicySnapshot {
     /// Parse the settings document. Only literal booleans opt a capability in.
     #[must_use]
@@ -72,7 +110,7 @@ impl ContinuityPolicySnapshot {
                     ..Self::default()
                 };
             }
-            Some(Value::Object(section)) => section,
+            Some(Value::Object(section)) if well_formed(section) => section,
             Some(_) => return Self::default(),
         };
         let flag = |name: &str| section.get(name).and_then(Value::as_bool).unwrap_or(false);
@@ -230,6 +268,19 @@ mod tests {
                 (json!({"continuity": {}}), true),
                 (json!({"continuity": true}), false),
                 (json!({"continuity": {"enabled": "yes"}}), false),
+                (
+                    json!({"continuity": {"enabled": true, "unknown": 1}}),
+                    false,
+                ),
+                (json!({"continuity": {"clipboard": "yes"}}), false),
+                (json!({"continuity": {"audit": [{"enabled": true}]}}), false),
+                (
+                    json!({"continuity": {"audit": [
+                        {"recorded_at_secs": 4, "capability": "clipboard", "enabled": true},
+                        {"recorded_at_secs": 5, "capability": null, "enabled": false}
+                    ]}}),
+                    true,
+                ),
                 (json!({"continuity": {"enabled": true}}), true),
             ] {
                 let policy = ContinuityPolicySnapshot::from_document(&document(&value));

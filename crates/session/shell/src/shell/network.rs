@@ -1615,9 +1615,11 @@ impl ShellNetwork {
             Arc::clone(&listen_addrs),
         );
         let lan_discovery = lan_endpoint.map(|endpoint| {
+            let seed = zeroize::Zeroizing::new(keypair.to_bytes());
             crate::network::lan_discovery::spawn(
                 endpoint,
-                &ed25519_dalek::SigningKey::from_bytes(&keypair.to_bytes()),
+                &ed25519_dalek::SigningKey::from_bytes(&seed),
+                Some(keypair_path.with_file_name("linked-device-epochs.json")),
                 cmd_tx.clone(),
             )
         });

@@ -7,8 +7,8 @@
 //! 1. A session broadcasts a [`Probe`] to [`super::NEARBY_PORT`] from a
 //!    socket of its own, on every interface.
 //! 2. A session listening there that finds a slot made for it among the
-//!    probe's slots knows which linked device asked. It answers that socket
-//!    with a [`Reply`] sealed to the asking device's key.
+//!    probe's slots knows which linked device asked. It answers that socket,
+//!    once per probe, with a reply sealed to the asking device's key.
 //! 3. The asker opens the reply, checks it came from a device it trusts,
 //!    and dials that device's endpoint at the addresses the reply names.
 //!
@@ -19,10 +19,10 @@
 //!
 //! # Probe
 //!
-//! `"TLOLINK1" || epoch (u32 LE) || salt (16) || slot[0] … slot[7] (12 each)`.
-//! `epoch` is Unix time in [`EPOCH_SECS`] steps; `salt` is fresh random bytes
-//! for every probe. For each linked device `P` the asking device `A` wants to
-//! reach:
+//! `"TLOLINK1" || epoch (u32 LE) || salt (16) || slot[0] … slot[7] (12 each)
+//! || zero padding`, [`DATAGRAM_LEN`] bytes. `epoch` counts [`EPOCH_SECS`]
+//! steps (see *Freshness*); `salt` is fresh random bytes for every probe. For
+//! each linked device `P` the asking device `A` wants to reach:
 //!
 //! ```text
 //! K_AP     = tilo_seal::agreement::shared_key(X25519(A), X25519(P), LanDiscovery)
@@ -44,29 +44,47 @@
 //! redistributed. `A→P` and `P→A` slots differ (the sender is hashed in), so
 //! two of a person's devices never show an observer a common value.
 //!
-//! # Replay
-//!
-//! A recipient whose clock is synchronised accepts a probe only within one
-//! epoch of its own, so a recorded probe is useless elsewhere after about
-//! half an hour. A board without a battery-backed clock or network time
-//! cannot judge time and accepts any epoch: a replayed probe can then make it
-//! answer (sealed, to the device the probe names), which shows that one of
-//! that device's linked devices is present, but nothing more.
-//!
 //! # Reply
 //!
-//! `"TLOLINKR" || salt || HPKE box`. The box is sealed to `X25519(A)` with
+//! `"TLOLINKR" || salt || HPKE box`, also [`DATAGRAM_LEN`] bytes, so neither
+//! direction's size says anything about the device and a reply is no larger
+//! than the probe that caused it. The box is sealed to `X25519(A)` with
 //! [`tilo_seal::Label::LanDiscoveryReply`] and associated data
-//! `"TLOLINKR" || salt || A`; inside is the answering device's key `P`, its
-//! endpoint's local addresses, and `BLAKE3-keyed(K_AP, "tilo-linked-reply-v1\0"
-//! || salt || P || addresses)[..16]`, which proves to `A` that `P` itself
-//! answered this probe and is not a stranger redirecting `A`'s dial.
+//! `"TLOLINKR" || salt || A`; inside, zero-padded to a fixed length, are the
+//! answering device's key `P`, its endpoint's local addresses, and
+//! `BLAKE3-keyed(K_AP, "tilo-linked-reply-v1\0" || salt || P || addresses)[..16]`,
+//! which proves to `A` that `P` itself answered this probe and is not a
+//! stranger redirecting `A`'s dial.
+//!
+//! # Freshness
+//!
+//! A recorded probe replayed later, or on another network, must not make a
+//! linked device answer and so give away that it is there. [`Freshness`]
+//! decides which epochs a device sends and accepts:
+//!
+//! - A device whose clock is synchronised to a time source sends its own
+//!   epoch and accepts probes within one epoch of it (about half an hour).
+//! - A device without one (a board with no battery-backed clock on a network
+//!   with no time source) does not send its own clock, which may be the
+//!   image's build date and would single it out. It sends the newest epoch
+//!   it learned from a linked device's probe, advanced by the time since, or
+//!   0 when it has learned none.
+//! - Every device remembers, per linked device and across restarts, the
+//!   newest epoch it accepted from it, and refuses older probes from it.
+//! - Each probe is answered once.
+//!
+//! What remains: a probe recorded from a device that has never been heard
+//! from at a newer epoch, replayed to a linked device with no time source,
+//! still gets one answer per recording. The answer is sealed to the device
+//! that made the probe and comes from the answering device's own address.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Label, PublicKey, SecretKey, SymmetricKey};
+use zeroize::Zeroizing;
 
 /// First bytes of a probe.
 pub const PROBE_MAGIC: [u8; 8] = *b"TLOLINK1";
@@ -77,19 +95,24 @@ pub const EPOCH_SECS: u64 = 10 * 60;
 /// Slots in every probe, used or not.
 pub const SLOTS: usize = 8;
 /// Most addresses a reply carries.
-pub const MAX_REPLY_ADDRS: usize = 16;
+pub const MAX_REPLY_ADDRS: usize = 8;
 const SALT_LEN: usize = 16;
-/// Where a reply's sealed box starts.
-const REPLY_HEADER_LEN: usize = REPLY_MAGIC.len() + SALT_LEN;
 const SLOT_LEN: usize = 12;
 const MAC_LEN: usize = 16;
-const PROBE_LEN: usize = 8 + 4 + SALT_LEN + SLOTS * SLOT_LEN;
+/// The sealed body of a reply, padded: version, device key, up to
+/// [`MAX_REPLY_ADDRS`] addresses (at most 20 bytes each as postcard IPv6),
+/// MAC, and length prefixes.
+const REPLY_BODY_LEN: usize = 256;
+/// HPKE sealed-box overhead: version byte, encapsulated key, AEAD tag.
+const SEALED_OVERHEAD: usize = 1 + 32 + 16;
+/// Where a reply's sealed box starts.
+const REPLY_HEADER_LEN: usize = REPLY_MAGIC.len() + SALT_LEN;
+/// Length of every probe and every reply.
+pub const DATAGRAM_LEN: usize = REPLY_HEADER_LEN + SEALED_OVERHEAD + REPLY_BODY_LEN;
+const PROBE_BODY_LEN: usize = PROBE_MAGIC.len() + 4 + SALT_LEN + SLOTS * SLOT_LEN;
 const PROBE_CONTEXT: &[u8] = b"tilo-linked-probe-v1\0";
 const REPLY_CONTEXT: &[u8] = b"tilo-linked-reply-v1\0";
 const REPLY_VERSION: u8 = 1;
-/// Upper bound on a reply datagram: header, HPKE overhead and a body with
-/// [`MAX_REPLY_ADDRS`] IPv6 addresses.
-const MAX_REPLY_LEN: usize = 1024;
 
 /// The salt that ties a reply to the probe it answers.
 pub type Salt = [u8; SALT_LEN];
@@ -105,9 +128,10 @@ impl LinkKeys {
     /// Keys of the device whose Ed25519 key is `device`.
     #[must_use]
     pub fn new(device: &ed25519_dalek::SigningKey) -> Self {
+        let scalar = Zeroizing::new(device.to_scalar_bytes());
         Self {
             local: device.verifying_key().to_bytes(),
-            secret: SecretKey::from_bytes(device.to_scalar_bytes()),
+            secret: SecretKey::from_bytes(*scalar),
             pairs: HashMap::new(),
         }
     }
@@ -224,26 +248,37 @@ impl Probe {
         &self.salt
     }
 
+    /// The epoch the probe was made for.
+    #[must_use]
+    pub const fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     /// The datagram.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(PROBE_LEN);
+        let mut bytes = Vec::with_capacity(DATAGRAM_LEN);
         bytes.extend_from_slice(&PROBE_MAGIC);
         bytes.extend_from_slice(&self.epoch.to_le_bytes());
         bytes.extend_from_slice(&self.salt);
         for slot in &self.slots {
             bytes.extend_from_slice(slot);
         }
+        bytes.resize(DATAGRAM_LEN, 0);
         bytes
     }
 
     /// Parse a datagram; `None` unless it is exactly a probe.
     #[must_use]
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != PROBE_LEN {
+        if bytes.len() != DATAGRAM_LEN {
             return None;
         }
-        let rest = bytes.strip_prefix(&PROBE_MAGIC)?;
+        let (body, padding) = bytes.split_at(PROBE_BODY_LEN);
+        if padding.iter().any(|byte| *byte != 0) {
+            return None;
+        }
+        let rest = body.strip_prefix(&PROBE_MAGIC)?;
         let (epoch, rest) = rest.split_first_chunk::<4>()?;
         let (salt, rest) = rest.split_first_chunk::<SALT_LEN>()?;
         let mut slots = [[0_u8; SLOT_LEN]; SLOTS];
@@ -258,22 +293,92 @@ impl Probe {
     }
 
     /// The device among `candidates` that made this probe for this device.
-    /// With `now` (this device's epoch, when its clock can be trusted) a
-    /// probe more than one epoch away is refused.
+    /// Whether the probe is fresh is [`Freshness::accepts`]'s question.
     pub fn sender<'a>(
         &self,
         keys: &mut LinkKeys,
         candidates: impl IntoIterator<Item = &'a [u8; 32]>,
-        now: Option<u32>,
     ) -> Option<[u8; 32]> {
-        if now.is_some_and(|now| now.abs_diff(self.epoch) > 1) {
-            return None;
-        }
         candidates.into_iter().copied().find(|candidate| {
             keys.pair(*candidate)
                 .map(|key| slot(key, self.epoch, &self.salt, candidate))
                 .is_some_and(|expected| self.slots.contains(&expected))
         })
+    }
+}
+
+/// Which probe epochs a device sends and accepts (see the module docs).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Freshness {
+    /// Per linked device (hex key), the newest epoch accepted from it.
+    floors: BTreeMap<String, u32>,
+    /// The newest epoch accepted from any linked device.
+    learned: Option<u32>,
+    #[serde(skip)]
+    learned_at: Option<Instant>,
+}
+
+impl Freshness {
+    /// Restore remembered epochs; anything unreadable starts afresh.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Self {
+        let mut freshness: Self = serde_json::from_slice(bytes).unwrap_or_default();
+        freshness.learned_at = freshness.learned.map(|_| Instant::now());
+        freshness
+    }
+
+    /// What to persist.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    /// The learned epoch, advanced by the time since it was learned.
+    fn estimate(&self) -> Option<u32> {
+        let learned = self.learned?;
+        let elapsed = self
+            .learned_at
+            .map_or(0, |at| at.elapsed().as_secs() / EPOCH_SECS);
+        Some(learned.saturating_add(u32::try_from(elapsed).unwrap_or(u32::MAX)))
+    }
+
+    /// The epoch to put in this device's probes. `synced` is this device's
+    /// own epoch when its clock is synchronised to a time source.
+    #[must_use]
+    pub fn outgoing(&self, synced: Option<u32>) -> u32 {
+        synced.or_else(|| self.estimate()).unwrap_or(0)
+    }
+
+    /// Whether a probe from `asker` at `epoch` is fresh enough to answer.
+    #[must_use]
+    pub fn accepts(&self, asker: &[u8; 32], epoch: u32, synced: Option<u32>) -> bool {
+        let floor = self.floors.get(&hex::encode(asker)).copied().unwrap_or(0);
+        synced.is_none_or(|now| now.abs_diff(epoch) <= 1) && epoch.saturating_add(1) >= floor
+    }
+
+    /// Remember an accepted probe from `asker` at `epoch`. Returns whether
+    /// anything to persist changed.
+    pub fn record(&mut self, asker: &[u8; 32], epoch: u32) -> bool {
+        let floor = self.floors.entry(hex::encode(asker)).or_insert(0);
+        let mut changed = false;
+        if epoch > *floor {
+            *floor = epoch;
+            changed = true;
+        }
+        if self.learned.is_none_or(|learned| epoch > learned) {
+            self.learned = Some(epoch);
+            self.learned_at = Some(Instant::now());
+            changed = true;
+        }
+        changed
+    }
+
+    /// Forget devices not in `peers`.
+    pub fn retain(&mut self, peers: &BTreeSet<[u8; 32]>) -> bool {
+        let before = self.floors.len();
+        let keep: BTreeSet<String> = peers.iter().map(hex::encode).collect();
+        self.floors.retain(|peer, _| keep.contains(peer));
+        self.floors.len() != before
     }
 }
 
@@ -300,7 +405,8 @@ fn reply_mac(
 }
 
 /// Seal the answer to `asker`'s probe with `salt`: this device and the
-/// addresses its endpoint can be dialled at.
+/// addresses its endpoint can be dialled at (the first
+/// [`MAX_REPLY_ADDRS`] of them).
 ///
 /// # Errors
 ///
@@ -317,13 +423,17 @@ pub fn seal_reply(
         .pair(asker)
         .and_then(|key| reply_mac(key, salt, &device, &addrs))
         .ok_or(tilo_seal::Error::InvalidKey)?;
-    let body = postcard::to_stdvec(&ReplyBody {
+    let mut body = postcard::to_stdvec(&ReplyBody {
         version: REPLY_VERSION,
         device,
         addrs,
         mac,
     })
     .map_err(|_| tilo_seal::Error::Seal)?;
+    if body.len() > REPLY_BODY_LEN {
+        return Err(tilo_seal::Error::Seal);
+    }
+    body.resize(REPLY_BODY_LEN, 0);
     let recipient = sealing_public(asker).ok_or(tilo_seal::Error::InvalidKey)?;
     let sealed = tilo_seal::hpke::seal(
         &recipient,
@@ -338,7 +448,7 @@ pub fn seal_reply(
 /// probe before opening it.
 #[must_use]
 pub fn reply_salt(bytes: &[u8]) -> Option<Salt> {
-    if bytes.len() > MAX_REPLY_LEN {
+    if bytes.len() != DATAGRAM_LEN {
         return None;
     }
     let rest = bytes.strip_prefix(&REPLY_MAGIC)?;
@@ -359,16 +469,17 @@ pub fn open_reply(
     }
     let sealed = bytes.get(REPLY_HEADER_LEN..)?;
     let local = *keys.local();
-    let body = tilo_seal::hpke::open_bytes(
+    let plaintext = tilo_seal::hpke::open_bytes(
         &keys.secret,
         Label::LanDiscoveryReply,
         &reply_aad(salt, &local),
         sealed,
     )
     .ok()?;
-    let body: ReplyBody = postcard::from_bytes(&body).ok()?;
+    let (body, padding) = postcard::take_from_bytes::<ReplyBody>(&plaintext).ok()?;
     if body.version != REPLY_VERSION
         || body.addrs.len() > MAX_REPLY_ADDRS
+        || padding.iter().any(|byte| *byte != 0)
         || !trusted.contains(&body.device)
     {
         return None;
@@ -429,28 +540,29 @@ mod tests {
 
         let mut board_keys = LinkKeys::new(&board);
         assert_eq!(
-            probe.sender(&mut board_keys, &set(&[&laptop, &phone]), None),
+            probe.sender(&mut board_keys, &set(&[&laptop, &phone])),
             Some(id(&laptop))
         );
         let mut phone_keys = LinkKeys::new(&phone);
-        assert_eq!(probe.sender(&mut phone_keys, &set(&[&laptop]), None), None);
+        assert_eq!(probe.sender(&mut phone_keys, &set(&[&laptop])), None);
         let mut stranger_keys = LinkKeys::new(&stranger);
         assert_eq!(
-            probe.sender(&mut stranger_keys, &set(&[&laptop, &board, &phone]), None),
+            probe.sender(&mut stranger_keys, &set(&[&laptop, &board, &phone])),
             None
         );
         // A device does not take its own probe for another's.
         let own = Probe::build(&mut board_keys, &set(&[&laptop]), 7).unwrap();
-        assert_eq!(own.sender(&mut board_keys, &set(&[&laptop]), None), None);
+        assert_eq!(own.sender(&mut board_keys, &set(&[&laptop])), None);
     }
 
     /// Every probe has a fresh salt, so none of its slots appears in the
-    /// next; the two directions of a pair never share a value; a probe's size
-    /// does not depend on how many devices it is for.
+    /// next; the two directions of a pair never share a value; probes and
+    /// replies have one size whatever the fleet or the device's addresses.
     #[test]
-    fn probes_are_unlinkable_and_do_not_reveal_fleet_size() {
+    fn datagrams_are_unlinkable_and_of_one_size() {
         let (laptop, board, phone) = (device(1), device(2), device(3));
         let mut laptop_keys = LinkKeys::new(&laptop);
+        let mut board_keys = LinkKeys::new(&board);
         let first = Probe::build(&mut laptop_keys, &set(&[&board, &phone]), 7).unwrap();
         let second = Probe::build(&mut laptop_keys, &set(&[&board, &phone]), 7).unwrap();
         assert_ne!(first.salt, second.salt);
@@ -463,39 +575,57 @@ mod tests {
         );
 
         let none = Probe::build(&mut laptop_keys, &BTreeSet::new(), 7).unwrap();
-        assert_eq!(none.encode().len(), first.encode().len());
+        assert_eq!(none.encode().len(), DATAGRAM_LEN);
+        assert_eq!(first.encode().len(), DATAGRAM_LEN);
         assert!(first.slots.is_sorted());
+        let many: Vec<SocketAddr> = (0..20)
+            .map(|n| format!("[fd00::{n}]:4433").parse().unwrap())
+            .collect();
+        for addrs in [&[][..], &many[..1], &many[..]] {
+            let reply = seal_reply(&mut board_keys, id(&laptop), first.salt(), addrs).unwrap();
+            assert_eq!(reply.len(), DATAGRAM_LEN);
+        }
     }
 
-    /// A device with a trustworthy clock refuses probes from other epochs;
-    /// one without accepts them.
+    /// A device with a synchronised clock refuses probes from other
+    /// epochs; every device refuses a probe older than one it already
+    /// accepted from the same device, across restarts; a device without a
+    /// time source sends what it learned, not its own clock.
     #[test]
-    fn stale_probes_are_refused_when_the_clock_can_tell() {
+    fn freshness_refuses_stale_and_replayed_probes() {
         let (laptop, board) = (device(1), device(2));
+        let asker = id(&laptop);
+        let mut freshness = Freshness::default();
+        assert_eq!(freshness.outgoing(None), 0);
+        assert_eq!(freshness.outgoing(Some(500)), 500);
+        for (epoch, synced, fresh) in [
+            (99, Some(100), true),
+            (101, Some(100), true),
+            (102, Some(100), false),
+            (50, Some(100), false),
+            (7, None, true),
+        ] {
+            assert_eq!(freshness.accepts(&asker, epoch, synced), fresh, "{epoch}");
+        }
+        assert!(freshness.record(&asker, 100));
+        assert!(!freshness.record(&asker, 90));
+        assert_eq!(freshness.outgoing(None), 100);
+        let restored = Freshness::decode(&freshness.encode());
+        for (epoch, fresh) in [(98, false), (99, true), (100, true), (4000, true)] {
+            assert_eq!(restored.accepts(&asker, epoch, None), fresh, "{epoch}");
+        }
+        // Another device's floor is its own.
+        assert!(restored.accepts(&id(&board), 5, None));
+        assert!(Freshness::decode(b"not json").learned.is_none());
+
+        // The epoch is bound into the slot: rewriting it breaks recognition.
         let mut laptop_keys = LinkKeys::new(&laptop);
         let mut board_keys = LinkKeys::new(&board);
         let probe = Probe::build(&mut laptop_keys, &set(&[&board]), 100).unwrap();
-        for (now, recognised) in [
-            (Some(99), true),
-            (Some(100), true),
-            (Some(101), true),
-            (Some(102), false),
-            (Some(50), false),
-            (None, true),
-        ] {
-            assert_eq!(
-                probe
-                    .sender(&mut board_keys, &set(&[&laptop]), now)
-                    .is_some(),
-                recognised,
-                "{now:?}"
-            );
-        }
-        // The epoch is bound into the slot: rewriting it breaks recognition.
         let mut bytes = probe.encode();
         bytes[8] ^= 1;
         let moved = Probe::decode(&bytes).unwrap();
-        assert_eq!(moved.sender(&mut board_keys, &set(&[&laptop]), None), None);
+        assert_eq!(moved.sender(&mut board_keys, &set(&[&laptop])), None);
     }
 
     /// Once a device is no longer trusted it gets no slot and its probes and
@@ -506,21 +636,14 @@ mod tests {
         let mut laptop_keys = LinkKeys::new(&laptop);
         let mut revoked_keys = LinkKeys::new(&revoked);
         let before = Probe::build(&mut laptop_keys, &set(&[&board, &revoked]), 7).unwrap();
-        assert!(
-            before
-                .sender(&mut revoked_keys, &set(&[&laptop]), None)
-                .is_some()
-        );
+        assert!(before.sender(&mut revoked_keys, &set(&[&laptop])).is_some());
 
         let trusted = set(&[&board]);
         laptop_keys.retain(&trusted);
         let after = Probe::build(&mut laptop_keys, &trusted, 7).unwrap();
-        assert_eq!(
-            after.sender(&mut revoked_keys, &set(&[&laptop]), None),
-            None
-        );
+        assert_eq!(after.sender(&mut revoked_keys, &set(&[&laptop])), None);
         let from_revoked = Probe::build(&mut revoked_keys, &set(&[&laptop]), 7).unwrap();
-        assert_eq!(from_revoked.sender(&mut laptop_keys, &trusted, None), None);
+        assert_eq!(from_revoked.sender(&mut laptop_keys, &trusted), None);
         let reply = seal_reply(&mut revoked_keys, id(&laptop), after.salt(), &[]).unwrap();
         assert_eq!(
             open_reply(&mut laptop_keys, &reply, after.salt(), &trusted),
@@ -540,7 +663,7 @@ mod tests {
             let probe = Probe::build(&mut laptop_keys, &all, 7).unwrap();
             for other in &others {
                 let mut keys = LinkKeys::new(other);
-                if probe.sender(&mut keys, &set(&[&laptop]), None).is_some() {
+                if probe.sender(&mut keys, &set(&[&laptop])).is_some() {
                     seen.insert(id(other));
                 }
             }
@@ -562,7 +685,7 @@ mod tests {
         assert_eq!(reply_salt(&reply), Some(*probe.salt()));
         assert_eq!(
             open_reply(&mut laptop_keys, &reply, probe.salt(), &trusted),
-            Some((id(&board), addrs.clone()))
+            Some((id(&board), addrs))
         );
         // Another probe's salt.
         let other = Probe::build(&mut laptop_keys, &trusted, 7).unwrap();
@@ -578,13 +701,14 @@ mod tests {
         );
         // A stranger who knows the laptop's and the board's public keys
         // claims to be the board, to redirect the laptop's dial.
-        let body = postcard::to_stdvec(&ReplyBody {
+        let mut body = postcard::to_stdvec(&ReplyBody {
             version: REPLY_VERSION,
             device: id(&board),
             addrs: vec!["10.0.0.66:4433".parse().unwrap()],
             mac: [0; MAC_LEN],
         })
         .unwrap();
+        body.resize(REPLY_BODY_LEN, 0);
         let forged = tilo_seal::hpke::seal(
             &sealing_public(id(&laptop)).unwrap(),
             Label::LanDiscoveryReply,
@@ -611,7 +735,12 @@ mod tests {
         let mut other_magic = good.clone();
         other_magic[7] = b'2';
         assert!(Probe::decode(&other_magic).is_none());
+        let mut dirty_padding = good.clone();
+        if let Some(last) = dirty_padding.last_mut() {
+            *last = 1;
+        }
+        assert!(Probe::decode(&dirty_padding).is_none());
         assert!(reply_salt(&good).is_none());
-        assert!(reply_salt(&vec![0; MAX_REPLY_LEN + 1]).is_none());
+        assert!(reply_salt(&[0; DATAGRAM_LEN + 1]).is_none());
     }
 }
