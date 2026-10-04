@@ -303,23 +303,13 @@ pub(super) fn draw_toggle_button(
     hovered: bool,
 ) {
     let theme = ctx.theme;
-    let ground = theme.tokens.colors.surfaces.content;
-    if on {
-        ui::chrome::paint_row_selection(
-            ctx.scene,
-            ctx.transform,
-            rect,
-            ui::chrome::SelectionState::new(true, false, false),
-            ground,
-            theme,
-        );
-    }
     let face = match content {
         ToggleContent::Icon(icon, name) => ButtonFace::icon_only(rect, icon, name),
         ToggleContent::Label(label) => ButtonFace::new(rect, label).role(ButtonRole::Plain),
     }
     .control_size(control_size_for(rect, theme))
-    .hovered(hovered && !on);
+    .toggled(on)
+    .hovered(hovered);
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
 }
 
@@ -624,10 +614,6 @@ pub(super) fn title_edit_verdict(
 
 /// The three positions each anchor axis can take, in source uv.
 pub(super) const ANCHOR_STOPS: [f64; 3] = [0.0, 0.5, 1.0];
-
-/// The glyph for each anchor cell, reading left to right, top to bottom —
-/// the direction the picture stays put in while the rest of it moves.
-pub(super) const ANCHOR_GLYPHS: [&str; 9] = ["↖", "↑", "↗", "←", "•", "→", "↙", "↓", "↘"];
 
 /// What a clip's tone curves amount to, in one line — or `None` when they
 /// amount to nothing.

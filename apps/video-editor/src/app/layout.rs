@@ -118,7 +118,9 @@ impl VideoEditorApp {
             menu_btn.x1
         } + gap;
         let middle_x1 = import_btn.x0 - gap;
-        let chip_w = EXPORT_CHIP_W.min((middle_x1 - middle_x0).max(0.0));
+        let chip_w = self
+            .export_chip_width()
+            .min((middle_x1 - middle_x0).max(0.0));
         let chip_h = self.topbar_small_height();
         let chip_y = topbar.center().y - chip_h / 2.0;
         let export_chip = Rect::new(middle_x1 - chip_w, chip_y, middle_x1, chip_y + chip_h);

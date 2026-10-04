@@ -841,11 +841,12 @@ impl VideoEditorApp {
     )]
     pub(super) fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
         // The fixed identity card is context, not a hidden control surface.
-        // Do not let a translated row behind it receive a click.
-        if !self.inspector_viewport(r).contains(p) {
+        // Do not let a translated row behind it receive a click, nor a row
+        // the body leaves out because it is only part-way in view.
+        let l = self.inspector_layout(r);
+        if !self.inspector_shown_body(r, &l).contains(p) {
             return;
         }
-        let l = self.inspector_layout(r);
         // The markers section and the section folds are project-level, so
         // they answer to a press whether or not a clip is selected. Every
         // control below this point edits the selection and needs one.

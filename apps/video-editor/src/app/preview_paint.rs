@@ -65,7 +65,11 @@ impl VideoEditorApp {
             // Nothing was composited, so there is no picture. Say why in
             // words on the letterbox, in the media inks — text only, never an
             // invented picture or a glyph that looks like a control.
-            let (title, hint) = if self.project.top_video_clip_at(self.playhead).is_none() {
+            let (title, hint) = if self.project.clips.is_empty() {
+                // An empty project: the timeline below already says what to
+                // do, so the picture only says why it is blank.
+                ("Nothing to preview yet", "")
+            } else if self.project.top_video_clip_at(self.playhead).is_none() {
                 (PREVIEW_EMPTY_TITLE, PREVIEW_EMPTY_HINT)
             } else {
                 // Not an empty state — a capability the box does not have.
@@ -79,7 +83,11 @@ impl VideoEditorApp {
             let title_style = theme.text(TextRole::Body).strong();
             let hint_style = theme.text(TextRole::Caption);
             let th = line_height(tr, &title_style);
-            let hh = line_height(tr, &hint_style);
+            let hh = if hint.is_empty() {
+                -S1
+            } else {
+                line_height(tr, &hint_style)
+            };
             let top = canvas.center().y - (th + S1 + hh) / 2.0;
             let room = (canvas.width() - S6) as f32;
             let title = elide_at(title, room, &title_style, tr);
@@ -171,15 +179,31 @@ impl VideoEditorApp {
             }
         }
         // Safe-area guide: a faint line in the media ink, as every monitor
-        // draws it, over the footage and the letterbox alike.
-        stroke_round(
-            scene,
-            tf,
-            canvas.inset(-canvas.width() * 0.05),
-            0.0,
-            with_alpha(c.media.ink, 0.14),
-            1.0,
-        );
+        // draws it, over the footage and the letterbox alike. Shown while
+        // something is being placed in the frame — a title, or a clip moved
+        // off full frame — which is what the guide is for; over a plain
+        // full-frame shot it would only be a line across the picture.
+        let placing = self
+            .selection
+            .primary()
+            .and_then(|id| self.project.clip(id))
+            .is_some_and(|clip| {
+                !clip.transform.is_identity()
+                    || self
+                        .project
+                        .media(clip.media)
+                        .is_some_and(|m| m.kind == MediaKind::Text)
+            });
+        if placing {
+            stroke_round(
+                scene,
+                tf,
+                canvas.inset(-canvas.width() * 0.05),
+                0.0,
+                with_alpha(c.media.ink, 0.14),
+                1.0,
+            );
+        }
         scene.pop_layer();
     }
 
@@ -250,7 +274,14 @@ impl VideoEditorApp {
         // Dropping the part is the honest narrow-window answer, and the parts
         // go in order of what the user cannot get elsewhere.
         let big = timecode(self.playhead, self.project.fps);
-        let total = format!("/ {}", timecode(self.project.duration(), self.project.fps));
+        // An empty timeline is no time long, whatever floor the scrubber's
+        // arithmetic keeps under its length.
+        let length = if self.project.clips.is_empty() {
+            0.0
+        } else {
+            self.project.duration()
+        };
+        let total = format!("/ {}", timecode(length, self.project.fps));
         // Project format — the app's own content area, rather than the OS's
         // title slot.
         let meta = format!(

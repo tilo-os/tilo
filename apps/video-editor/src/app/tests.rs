@@ -1102,7 +1102,7 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
             "Ctrl+D",
             "Ctrl+A",
             "Ctrl+Z",
-            "Tab",
+            "Tab / Shift+Tab",
             "G",
             "?",
         ] {
@@ -1121,21 +1121,19 @@ fn shortcut_sheet_opens_lists_and_fits_every_shortcut() {
             .iter()
             .flat_map(|(_, rows)| rows.iter().copied())
             .collect();
-        for key in ["Shift+I / O", "Shift+X", "Ctrl+Shift+Z"] {
+        for key in ["Shift+I / O", "Shift+X", "Ctrl+Shift+Z", "Ctrl+Y"] {
             assert!(
                 rows.iter().any(|(k, _)| *k == key),
                 "the sheet lists {key}: {rows:?}",
             );
         }
-        let redo = rows
-            .iter()
-            .find(|(k, _)| *k == "Ctrl+Shift+Z")
-            .expect("redo is listed");
-        assert!(
-            redo.1.contains("Ctrl+Y"),
-            "and says the other spelling that works: {}",
-            redo.1,
-        );
+        // Both spellings of redo say what they do.
+        for key in ["Ctrl+Shift+Z", "Ctrl+Y"] {
+            assert!(
+                rows.iter().any(|(k, what)| *k == key && *what == "Redo"),
+                "{key} is listed as redo: {rows:?}",
+            );
+        }
     }
     // Case `the_shortcut_sheet_has_room_for_every_shortcut_it_lists`.
     {
@@ -3558,7 +3556,8 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         // A compact header row keeps the button as its icon alone — a whole
         // control, never a clipped name — and a row with no room for even
         // that drops it.
-        app.rect = Rect::new(0.0, 0.0, 500.0, 640.0);
+        app.rect = Rect::new(0.0, 0.0, 460.0, 640.0);
+        assert!(app.topbar_is_compact(), "460 is a compact header row");
         let compact = app.regions();
         assert!(
             compact.project_btn.width() == 0.0
@@ -3566,7 +3565,7 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
             "a compact row shows the icon or nothing: {:?}",
             compact.project_btn
         );
-        app.rect = Rect::new(0.0, 0.0, 300.0, 640.0);
+        app.rect = Rect::new(0.0, 0.0, 220.0, 640.0);
         let narrow = app.regions();
         assert_eq!(narrow.project_btn.width(), 0.0, "no room, so no button");
         assert!(
@@ -6318,6 +6317,8 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             (500.0, 640.0),
             (620.0, 700.0),
             (720.0, 820.0),
+            (800.0, 600.0),
+            (900.0, 700.0),
         ] {
             let (mut app, _doc) = app_sized(w, h);
             app.navigation.flap_settled = true;
@@ -6341,7 +6342,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
             }
         }
         // Wide windows are unchanged: the inspector keeps its column.
-        for (w, h) in [(900.0_f64, 700.0_f64), (1280.0, 800.0), (1920.0, 1080.0)] {
+        for (w, h) in [(1000.0_f64, 700.0_f64), (1280.0, 800.0), (1920.0, 1080.0)] {
             let (mut app, _doc) = app_sized(w, h);
             app.navigation.flap_settled = true;
             let r = app.regions();
@@ -7324,9 +7325,13 @@ where
         .take_while(|&offset| offset <= max + 1.0);
     for offset in offsets {
         app.inspector_scroll = offset.min(max);
-        if let Some(rect) = find(&app.inspector_layout(&r))
-            && rect.y0 > r.inspector.y0 + 8.0
-            && rect.y1 < r.inspector.y1 - 8.0
+        let layout = app.inspector_layout(&r);
+        // Visible means drawn: inside the part of the body the panel shows,
+        // which leaves out a row only part-way in view.
+        let shown = app.inspector_shown_body(&r, &layout);
+        if let Some(rect) = find(&layout)
+            && rect.y0 >= shown.y0
+            && rect.y1 <= shown.y1
         {
             best = Some(rect);
             break;
