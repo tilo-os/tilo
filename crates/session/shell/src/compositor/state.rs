@@ -1999,15 +1999,35 @@ impl State {
     /// `encode_next_frame` on every commit; replaces any prior session and
     /// announces the new stream before its first frame.
     pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
+        let replaced = self.active_sessions.remove(&session.surface_id);
+        self.install_share_session(session, replaced);
+    }
+
+    /// Put `session` in place of the window's `replaced` one. The window
+    /// stays shared, so its new start alone announces the change (receivers
+    /// rebuild on it): an end first would have them drop the window, and
+    /// the input they send it, until the start arrives. Only viewers the
+    /// new session no longer has lose their focus on it.
+    fn install_share_session(
+        &mut self,
+        session: Arc<SharedFlatpakSession>,
+        replaced: Option<Arc<SharedFlatpakSession>>,
+    ) {
         let surface = session.surface_id;
-        if self.active_sessions.contains_key(&surface) {
-            self.unregister_share_session(surface);
-        }
         if self.legacy_stream_publisher.is_some() {
             let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
         self.sync_share_authority(&session);
+        let viewers = session.viewer_ids();
         self.active_sessions.insert(surface, session);
+        let left = replaced
+            .map(|old| old.viewer_ids())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|peer| !viewers.contains(peer));
+        for peer in left {
+            self.release_remote_focus_for_surface(peer, surface);
+        }
     }
 
     /// Mirror the stream session's actual viewer permissions into the
@@ -2274,7 +2294,9 @@ impl State {
                 continue;
             }
 
-            self.unregister_share_session(surface);
+            // The window is still shared: its stream is replaced, not ended,
+            // unless the new one cannot start.
+            let replaced = self.active_sessions.remove(&surface);
             let started = if paint {
                 SharedFlatpakSession::start_paint(host_peer, app_id, surface, width, height, config)
             } else {
@@ -2290,6 +2312,10 @@ impl State {
                     height,
                     "legacy share encoder failed to start"
                 );
+                if let Some(replaced) = replaced {
+                    self.active_sessions.insert(surface, replaced);
+                    self.unregister_share_session(surface);
+                }
                 continue;
             };
             let session = Arc::new(session.with_tab(*tab));
@@ -2305,7 +2331,7 @@ impl State {
                     );
                 }
             }
-            self.register_share_session(Arc::clone(&session));
+            self.install_share_session(Arc::clone(&session), replaced);
             if paint {
                 self.seed_paint_share(&session, surface);
             } else {
@@ -6905,6 +6931,76 @@ mod tick_hook_tests {
                 .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
             assert!(!state.tick_share_session_for_surface(SURFACE));
         }
+    }
+
+    /// A shared window that resizes gets a new encoder, but stays shared:
+    /// receivers learn it from the new start alone, and its viewer keeps
+    /// driving it. An end first had a host bridging the window to web
+    /// members forget it, and refuse their input, until the start came.
+    #[test]
+    fn a_resized_shared_window_is_restarted_without_ending_its_stream() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        let frames = crate::compositor::foreign::store();
+        frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
+        let desired = HashMap::from([(
+            SURFACE,
+            LegacyShare {
+                app_id: "app".into(),
+                viewers: [VIEWER].into_iter().collect(),
+                ..LegacyShare::default()
+            },
+        )]);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+        sent.lock().unwrap().clear();
+
+        frames.publish_rgba(SURFACE, &[0x80; 48 * 32 * 4], 48, 32);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let messages = std::mem::take(&mut *sent.lock().unwrap());
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, crate::network::NeighbourMsg::SurfaceStreamEnd { .. })),
+            "the window is still shared: {messages:?}"
+        );
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            crate::network::NeighbourMsg::SurfaceStreamStart {
+                surface: SURFACE,
+                width: 48,
+                ..
+            }
+        )));
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            Some(SURFACE),
+            "its viewer keeps its focus"
+        );
+
+        state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
+        assert!(
+            sent.lock().unwrap().iter().any(|m| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceStreamEnd {
+                    surface: SURFACE,
+                    ..
+                }
+            )),
+            "a window no longer shared ends its stream"
+        );
+        frames.forget(SURFACE);
     }
 
     #[test]
