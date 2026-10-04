@@ -8,13 +8,7 @@
 //!
 //! ## What the agent supplies, and what it must not
 //!
-//! A resource tree is a function of the document **and** of what is open:
-//! the word processor's sections come from the document, but which block its
-//! structural inserts anchor on is a caret. [`View`] is that half, and it is
-//! the agent's own — deliberately not read off anybody's screen, and
-//! carrying no coordinates.
-//!
-//! Everything else comes from the app: the resource ids, the action ids, the
+//! Nothing but the arguments it fills in. Everything comes from the app: the resource ids, the action ids, the
 //! labels a person would see, whether an operation takes text, and the
 //! encoded action itself. The agent never mints any of it.
 //!
@@ -35,7 +29,6 @@
 //! survey is a snapshot and acting on a stale one must not happen.
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
 
 use automerge::AutoCommit;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
@@ -112,46 +105,6 @@ pub fn opens(address: &ActionAddress) -> Option<&str> {
     (tail == APP_RESOURCE).then_some(namespace)
 }
 
-/// Where the agent is looking.
-///
-/// Its own view state. Nothing here is a screen position: a block id and a
-/// directory path are addresses, and both keep meaning the same thing on a
-/// machine with no display at all. The trees the agent surveys are the ones
-/// the apps publish from their documents alone; an edit that names a place
-/// names it in its own arguments.
-#[derive(Clone, Debug)]
-pub struct View {
-    /// The block the agent's caret is on, for an app whose subject is a
-    /// document.
-    pub focus_block: Option<String>,
-    /// The blocks the agent is pointing at — the instruction it answers, or
-    /// a picture it was asked about.
-    pub target_blocks: Vec<String>,
-    /// The resource a request named, when it named one. An address, like
-    /// everything else here: the gesture that produces it is somebody
-    /// pointing at an object and saying something about *that*, so the app
-    /// that owns the object minted the id.
-    pub subject: Option<String>,
-    /// The directory the agent is browsing, for an app whose subject is the
-    /// filesystem.
-    pub directory: Option<PathBuf>,
-    /// The agent's content store: where content one operation produced (an
-    /// image to place) is read from when the next one consumes it.
-    pub content: tilo_content::ContentStore,
-}
-
-impl Default for View {
-    fn default() -> Self {
-        Self {
-            focus_block: None,
-            target_blocks: Vec::new(),
-            subject: None,
-            directory: None,
-            content: tilo_content::ContentStore::memory(),
-        }
-    }
-}
-
 /// One app the agent speaks to.
 ///
 /// What the app does is its resource kind's: the kind is registered once
@@ -171,75 +124,12 @@ pub struct AppContract {
     /// The namespace the app's nested resource ids start with, and the key
     /// the agent holds its document under.
     pub namespace: &'static str,
-    /// What this app's document currently *denotes*, as something another
-    /// app's operation could be handed — or `None` for an app whose subject
-    /// is not transferable.
-    pub product: fn(&View, &AutoCommit) -> Option<Product>,
 }
 
 impl AppContract {
     /// What a launched copy of this app announces to the broker.
     pub fn app_id(&self) -> &'static str {
         self.kind.app_id().unwrap_or_else(|| self.kind.kind())
-    }
-}
-
-/// What one operation left behind for the next one.
-///
-/// Carrying a result forward means the second operation receives the first
-/// one's outcome, or nothing at all, rather than re-deriving it by reading the
-/// document again.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Product {
-    /// Bytes, in this machine's content store, addressed by their content hash.
-    /// The hash is the whole of what travels: a document referencing it
-    /// carries the descriptor and a peer fetches the bytes when it wants
-    /// them, so a picture never becomes a change too large to cross the
-    /// wire.
-    Content { hash: String },
-}
-
-impl Product {
-    /// The one-string form an operation that collects content is invoked
-    /// with.
-    pub fn argument(&self) -> &str {
-        match self {
-            Product::Content { hash } => hash,
-        }
-    }
-}
-
-/// Nothing an app's document denotes can be handed to another operation.
-fn nothing(_view: &View, _doc: &AutoCommit) -> Option<Product> {
-    None
-}
-
-/// The picture in the open document, as content another application could
-/// be handed.
-///
-/// A rich-text document denotes its prose, which is not transferable — but
-/// a picture *in* it is exactly the kind of thing another application could
-/// be asked to work on. The block already holds the content hash, so nothing
-/// is derived here and nothing is re-encoded.
-///
-/// The one the agent's view targets, and otherwise the document's only one.
-/// Several with nothing said about which denotes **nothing**: picking the
-/// first would answer a question nobody asked.
-fn rich_text_product(view: &View, doc: &AutoCommit) -> Option<Product> {
-    let c = tilo_doc::model::open(doc, &automerge::ROOT).ok()?;
-    let snap = tilo_doc::model::materialize(doc, &c);
-    let images: Vec<&tilo_doc::snapshot::BlockView> =
-        snap.blocks.iter().filter(|b| b.kind == "image").collect();
-    let blob_of = |b: &tilo_doc::snapshot::BlockView| match b.attrs.get("blob") {
-        Some(tilo_doc::AttrVal::Str(h)) if !h.is_empty() => Some(h.clone()),
-        _ => None,
-    };
-    if let Some(b) = images.iter().find(|b| view.target_blocks.contains(&b.id)) {
-        return blob_of(b).map(|hash| Product::Content { hash });
-    }
-    match images.as_slice() {
-        [only] => blob_of(only).map(|hash| Product::Content { hash }),
-        _ => None,
     }
 }
 
@@ -250,7 +140,6 @@ pub const WORD_PROCESSOR: AppContract = AppContract {
     kind: ui::framework::resource_kind::<word_processor::framework::WordProcessorApp>(),
     title: "the word processor",
     namespace: "word-processor",
-    product: rich_text_product,
 };
 
 /// Every app the agent can speak to: a rich-text document, a conversation, a
@@ -267,13 +156,11 @@ pub static CONTRACTS: &[AppContract] = &[
         kind: ui::framework::resource_kind::<chat::ChatShell>(),
         title: "the conversation",
         namespace: "chat",
-        product: nothing,
     },
     AppContract {
         kind: ui::framework::resource_kind::<photos::PhotosShell>(),
         title: "the photo editor",
         namespace: "photos",
-        product: nothing,
     },
 ];
 
@@ -376,6 +263,16 @@ impl Offer {
     /// produced some.
     pub fn wants_content(&self) -> bool {
         self.descriptor.input.wants_content()
+    }
+
+    /// Whether performing it answers with content another operation takes:
+    /// its declared result is a `tilo.content` resource.
+    pub fn produces_content(&self) -> bool {
+        matches!(
+            &self.descriptor.contract.result,
+            tilo_actions::ResultSpec::Resource { resource_kind }
+                if resource_kind == tilo_actions::CONTENT_RESOURCE_KIND
+        )
     }
 
     /// Deterministic floor for the common one-text-parameter action. Richer
@@ -616,9 +513,12 @@ pub fn tree(contract: &AppContract, doc: &AutoCommit) -> Vec<Resource> {
 ///
 /// The union across every document it holds, in the order the apps are
 /// declared and then depth-first within each.
+///
+/// An open is offered onto content when an operation here, or one `beside`
+/// says the room offers elsewhere, produces some.
 pub fn offers(
     held: &[(&'static AppContract, &AutoCommit)],
-    view: &View,
+    beside: &[Offer],
     perms: &PermissionContext,
 ) -> Vec<Offer> {
     let mut out = Vec::new();
@@ -636,7 +536,8 @@ pub fn offers(
             });
         }
     }
-    out.extend(openable(held, view, perms));
+    let onto = out.iter().chain(beside).any(Offer::produces_content);
+    out.extend(openable(held, onto, perms));
     out
 }
 
@@ -675,14 +576,13 @@ pub fn surveyable(held: &[(&'static AppContract, &AutoCommit)], namespace: &str)
 /// the request. An app with resources of its own stays excluded.
 fn openable(
     held: &[(&'static AppContract, &AutoCommit)],
-    view: &View,
+    onto: bool,
     perms: &PermissionContext,
 ) -> Vec<Offer> {
-    // Whether anything in this room denotes content an application could be
-    // opened onto, asked through the same `product` an ordinary hand-off
-    // between two steps goes through — so an open is offered content on
-    // exactly the terms every other operation is.
-    let onto = if held.iter().any(|(c, doc)| (c.product)(view, doc).is_some()) {
+    // An open is offered content when an operation in the room produces
+    // some, on the terms every other content-taking operation is: the
+    // content is that operation's typed result, never read off a document.
+    let onto = if onto {
         tilo_actions::InputSpec::Text {
             prompt: "The content to open it onto".to_string(),
             placeholder: String::new(),
@@ -824,11 +724,10 @@ impl Catalogue {
 /// Everything the room exports and everything it says, in one survey.
 pub fn catalogue(
     held: &[(&'static AppContract, &AutoCommit)],
-    view: &View,
     perms: &PermissionContext,
 ) -> Catalogue {
     Catalogue {
-        offers: offers(held, view, perms),
+        offers: offers(held, &[], perms),
         facts: facts(held),
         held: held.iter().map(|(c, _)| c.namespace).collect(),
     }
@@ -1256,35 +1155,6 @@ mod tests {
             );
         }
 
-        // Case `photos_requires_an_explicit_export_result_for_cross_app_content`.
-        {
-            let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
-            let hash = tilo_content::hash_bytes(&png);
-            let mut doc = automerge::AutoCommit::new();
-            let photo = photos::model::LibraryPhoto::from_image(
-                photos::OpenImage::from_path("/tmp/source.png", 64, 32).with_content(&hash),
-            );
-            let photo_id = photo.id.clone();
-            for action in [
-                photos::actions::PhotosAction::ImportPhoto { photo },
-                photos::actions::PhotosAction::set(
-                    &photo_id,
-                    &photos::Edits::default().rotated_right(),
-                ),
-            ] {
-                tilo_actions::Action::apply(&action, &mut doc).expect("the photograph is edited");
-            }
-            doc.commit();
-
-            assert!(
-                (for_app_id("so.tilo.photos")
-                    .expect("Photos contract")
-                    .product)(&View::default(), &doc)
-                .is_none(),
-                "holding a Photos replica must not silently rerender content; only the explicit export action may produce tilo.content"
-            );
-        }
-
         // Case `the_grants_that_open_an_application_and_the_one_that_does_not`.
         {
             let open = open_address("chat");
@@ -1334,12 +1204,37 @@ mod tests {
             assert!(permitted(&any, &open_address("word-processor")));
         }
 
+        // Case `an_open_takes_content_only_when_an_operation_produces_some`.
+        {
+            let perms = granting(vec![grant(Scope::Workspace)]);
+            let mut producer = openable(&[], false, &perms)
+                .into_iter()
+                .next()
+                .expect("an empty room offers an open");
+            assert!(!producer.produces_content());
+            assert!(
+                offers(&[], &[producer.clone()], &perms)
+                    .iter()
+                    .all(|o| !o.wants_content()),
+                "nothing in the room produces content to open onto"
+            );
+            producer.descriptor.contract.result = tilo_actions::ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_string(),
+            };
+            assert!(producer.produces_content());
+            let onto = offers(&[], &[producer], &perms);
+            assert!(
+                !onto.is_empty() && onto.iter().all(Offer::wants_content),
+                "an operation elsewhere in the room that produces content \
+                 makes every open take it as its typed input"
+            );
+        }
+
         // Case `only_the_apps_this_room_is_missing_are_offered_as_openable`.
         {
             let perms = granting(vec![grant(Scope::Workspace)]);
-            let view = View::default();
 
-            let empty = openable(&[], &View::default(), &perms);
+            let empty = openable(&[], false, &perms);
             let missing: Vec<&str> = empty.iter().map(|o| o.app.as_str()).collect();
             assert_eq!(
                 missing,
@@ -1362,7 +1257,7 @@ mod tests {
                 !surveyable(&held, "chat"),
                 "this half is about an application with nothing open in it"
             );
-            let empty_app = openable(&held, &view, &perms);
+            let empty_app = openable(&held, false, &perms);
             assert!(
                 empty_app.iter().any(|o| o.app == "chat"),
                 "an application here but with nothing open exports no \
@@ -1378,7 +1273,7 @@ mod tests {
                 surveyable(&held, "chat"),
                 "the fixture has to publish something, or this proves nothing"
             );
-            let now = openable(&held, &view, &perms);
+            let now = openable(&held, false, &perms);
             assert!(
                 !now.iter().any(|o| o.app == "chat"),
                 "an app that is here *and* has something open must stop being \
@@ -1386,7 +1281,7 @@ mod tests {
             );
             assert_eq!(now.len(), empty.len() - 1, "and nothing else may change");
 
-            let all = offers(&held, &view, &perms);
+            let all = offers(&held, &[], &perms);
             assert!(
                 all.iter().any(|o| opens(o.address()).is_some()),
                 "the survey has to carry the openable apps"
@@ -1395,7 +1290,6 @@ mod tests {
 
         // Case `an_application_that_is_here_and_empty_is_not_yet_surveyable`.
         {
-            let view = View::default();
             let chat = chat_contract();
 
             let doc = empty_chat();
@@ -1422,7 +1316,7 @@ mod tests {
             );
             let perms = granting(vec![grant(Scope::Workspace)]);
             assert!(
-                offers(&held, &view, &perms)
+                offers(&held, &[], &perms)
                     .iter()
                     .any(|o| o.id().ends_with("#new-channel")),
                 "and creating a channel is among them, or this proves nothing \

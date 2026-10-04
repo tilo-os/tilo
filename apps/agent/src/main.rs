@@ -160,7 +160,6 @@ fn main() -> anyhow::Result<()> {
         model_timeout: Duration::from_millis(model_timeout_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
         settle: Duration::from_millis(cli.settle_ms),
-        directory: None,
         permissions,
         content: tilo_content::ContentStore::for_app(),
     };
