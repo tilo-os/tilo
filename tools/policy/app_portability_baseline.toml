@@ -50,7 +50,7 @@ D2 = 3
 
 [apps.containers]
 D1 = 2
-D2 = 4
+D2 = 3
 
 [apps.db-client]
 D2 = 2
