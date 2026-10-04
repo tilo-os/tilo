@@ -2644,6 +2644,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "on_screen_keyboard": {
                 "connected": self.fb.osk_connected(),
                 "commits": self.fb.osk_commits(),
+                "serves_shell_field": self.fb.osk_serves_shell(),
                 "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
                     "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
                 })),
@@ -7714,6 +7715,12 @@ pub fn run() {
     let mut input_methods =
         crate::compositor::input_method_service::InputMethodServices::start(&event_loop.handle());
     input_methods.reload(&mut state);
+    // The shell's own fields' stand-in for the input method, connected the
+    // first time one takes text.
+    let mut shell_text_input: Option<crate::compositor::shell_text_input::ShellTextInput> = None;
+    // Touch contacts that landed on the on-screen keyboard: they are the
+    // keyboard's alone, even over chrome that otherwise captures input.
+    let mut osk_touch_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     // A second Wayland socket for clients the session trusts with
     // authority-bearing protocols — clipboard-manager access and session
@@ -8888,7 +8895,15 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
-                        if !to_client {
+                        // A finger on the on-screen keyboard types; the chrome
+                        // under the keyboard never sees it.
+                        let keyboard_contact = matches!(
+                            wev,
+                            WindowEvent::Touch(touch)
+                                if u32::try_from(touch.id)
+                                    .is_ok_and(|slot| osk_touch_slots.contains(&slot))
+                        );
+                        if !to_client && !keyboard_contact {
                             session_changed |= client_input::finish_chrome_drag_into_shell(
                                 &mut state,
                                 &mut frame_builder,
@@ -9025,11 +9040,26 @@ pub fn run() {
                     // client. Its mandatory `wl_touch.cancel` must still get
                     // through even if that gesture also opened chrome which
                     // now captures ordinary input.
-                    if matches!(
-                        touch,
-                        crate::compositor::backend::TouchEvent::Cancel
-                            | crate::compositor::backend::TouchEvent::Frame
-                    ) || (!session.is_locked() && client_input_allowed(&frame_builder))
+                    use crate::compositor::backend::TouchEvent as Contact;
+                    let on_keyboard = match touch {
+                        Contact::Down { slot, x, y } => {
+                            let hit = frame_builder.osk_surface_hit((x, y)).is_some();
+                            if hit {
+                                osk_touch_slots.insert(slot);
+                            }
+                            hit
+                        }
+                        Contact::Motion { slot, .. } => osk_touch_slots.contains(&slot),
+                        Contact::Up { slot } => osk_touch_slots.remove(&slot),
+                        Contact::Cancel => {
+                            osk_touch_slots.clear();
+                            false
+                        }
+                        Contact::Frame => false,
+                    };
+                    if matches!(touch, Contact::Cancel | Contact::Frame)
+                        || on_keyboard
+                        || (!session.is_locked() && client_input_allowed(&frame_builder))
                     {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
                         if let Some((surface_id, _)) = target
@@ -9776,9 +9806,40 @@ pub fn run() {
         let awake_holders =
             inhibit_registry.active_reasons_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE);
         frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
+        // A chrome field with the focus, while no client holds the keyboard,
+        // is served to the seat's input method like an application field.
+        let shell_field = (!session.is_locked() && state.client_input.keyboard_focus().is_none())
+            .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
+            .flatten();
+        if shell_field.is_some() && shell_text_input.is_none() {
+            match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
+                Ok(proxy) => shell_text_input = Some(proxy),
+                Err(error) => {
+                    tracing::warn!(target: "tilo::input_method", %error, "the shell's fields cannot reach the input method");
+                }
+            }
+        }
+        if let Some(proxy) = shell_text_input.as_mut() {
+            let mut typed = proxy.sync(&mut state, shell_field);
+            state.shell_field_active = proxy.holds_focus(&state);
+            typed.append(&mut state.shell_field_keys);
+            for event in &typed {
+                frame_builder.dispatch_event(
+                    event,
+                    &test_control_ctx.modifiers,
+                    &mut test_control_ctx.doc,
+                    &test_control_ctx.root_obj,
+                    &mut test_control_ctx.focus,
+                );
+            }
+            if !typed.is_empty() {
+                injected_redraw_pending = true;
+            }
+        }
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
+            state.shell_field_active.then_some(shell_field).flatten(),
             state.text_input_active() && input_methods.osk_shown(),
         );
         frame_builder.set_osk_commits(state.osk_commits);
