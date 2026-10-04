@@ -1540,7 +1540,6 @@ pub struct WordProcessorWidget {
     toast: Option<(String, ToastKind)>,
     canonical: bool,
     ime_rect: Option<Rect>,
-    ime_preedit: String,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -1730,7 +1729,6 @@ impl WordProcessorWidget {
             toast: None,
             canonical: false,
             ime_rect: None,
-            ime_preedit: String::new(),
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             participant_host: false,
@@ -4375,19 +4373,44 @@ impl WordProcessorWidget {
                 rl.origin.x + f64::from(cx) + CARET_WIDTH,
                 rl.origin.y + f64::from(cy) + f64::from(ch),
             );
+            let c = self.draw_preedit(scene, ctf, tr, c, 12.0, PAPER_INK);
             self.ime_rect = Some(ctf.transform_rect_bbox(c));
             scene.fill(Fill::NonZero, ctf, self.chrome.paper_accent, None, &c);
-            if !self.ime_preedit.is_empty() {
-                tr.draw_text(
-                    scene,
-                    &self.ime_preedit,
-                    12.0,
-                    PAPER_INK,
-                    ctf * Affine::translate((c.x0, c.y0)),
-                    None,
-                );
-            }
         }
+    }
+
+    /// Draw the input method's composition at `caret`, underlined, and
+    /// return the caret moved to the composition's own cursor. The caret is
+    /// unchanged while nothing is being composed.
+    fn draw_preedit(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        tr: &mut TextRenderer,
+        caret: Rect,
+        size: f32,
+        ink: Color,
+    ) -> Rect {
+        let preedit = self.inner.preedit();
+        if preedit.is_empty() {
+            return caret;
+        }
+        tr.draw_text(
+            scene,
+            preedit,
+            size,
+            ink,
+            ctf * Affine::translate((caret.x0, caret.y0)),
+            None,
+        );
+        let (width, _) = tr.measure(preedit, size, None);
+        let under = vello::kurbo::Line::new(
+            (caret.x0, caret.y1),
+            (caret.x0 + f64::from(width), caret.y1),
+        );
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, ink, None, &under);
+        let (before, _) = tr.measure(self.inner.preedit_before_cursor(), size, None);
+        caret + vello::kurbo::Vec2::new(f64::from(before), 0.0)
     }
 
     /// The per-side measurement the active mode edits (the page margins).
@@ -8192,6 +8215,7 @@ impl WordProcessorWidget {
                     l.text_x + f64::from(cx) + CARET_WIDTH,
                     ly + f64::from(cy) + f64::from(ch),
                 );
+                let caret = self.draw_preedit(scene, fg.ctf, text_renderer, caret, l.size, l.ink);
                 self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
                 scene.fill(
                     Fill::NonZero,
@@ -8200,16 +8224,6 @@ impl WordProcessorWidget {
                     None,
                     &caret,
                 );
-                if !self.ime_preedit.is_empty() {
-                    text_renderer.draw_text(
-                        scene,
-                        &self.ime_preedit,
-                        l.size,
-                        l.ink,
-                        fg.ctf * Affine::translate((caret.x0, caret.y0)),
-                        None,
-                    );
-                }
             }
             if clipped {
                 scene.pop_layer();
@@ -11042,7 +11056,7 @@ impl Widget for WordProcessorWidget {
                 ..
             } => self.handle_left_release(ctx.state, ctx.handled),
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                self.ime_preedit.clear();
+                self.inner.clear_preedit();
                 self.handle_key_press(
                     ctx.state,
                     &Key::Character(text.as_str().into()),
@@ -11052,13 +11066,17 @@ impl Widget for WordProcessorWidget {
                     ctx.handled,
                 );
             }
-            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
-                self.ime_preedit.clone_from(text);
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if text.is_empty() {
+                    self.inner.clear_preedit();
+                } else {
+                    self.inner.set_preedit(text, *cursor);
+                }
                 self.lifecycle.dirty = true;
                 *ctx.handled = true;
             }
             WindowEvent::Ime(winit::event::Ime::Disabled) => {
-                self.ime_preedit.clear();
+                self.inner.clear_preedit();
                 self.lifecycle.dirty = true;
             }
             WindowEvent::KeyboardInput {

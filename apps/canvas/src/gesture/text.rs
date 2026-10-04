@@ -2,6 +2,9 @@
 //! changing as they are typed, and one `draw` or `edit-marks` when the
 //! typing is done.
 
+use std::borrow::Cow;
+
+use ui::winit::event::Ime;
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
 use ui::{EditCore, Motion};
 
@@ -89,12 +92,42 @@ impl TextSession {
         }
     }
 
+    /// The text as shown: what is typed, with any input-method composition
+    /// at the caret.
+    pub fn shown_text(&self) -> Cow<'_, str> {
+        self.caret.display_text(self.text())
+    }
+
+    /// The text shape as shown, composition included.
+    pub fn shown_shape(&self) -> Shape {
+        let mut shape = self.shape.clone();
+        if self.caret.has_preedit()
+            && let Shape::Text { text, .. } = &mut shape
+        {
+            *text = self.caret.display_text(text).into_owned();
+        }
+        shape
+    }
+
+    /// An input-method event: the composition shows at the caret and is
+    /// typed in only when committed.
+    pub fn ime(&mut self, ime: &Ime) {
+        match ime {
+            Ime::Preedit(text, cursor) if !text.is_empty() => {
+                self.caret.set_preedit(text, *cursor);
+            }
+            Ime::Commit(text) => {
+                self.caret.clear_preedit();
+                self.insert(text);
+            }
+            Ime::Preedit(..) | Ime::Disabled => self.caret.clear_preedit(),
+            Ime::Enabled => {}
+        }
+    }
+
     fn apply(&mut self, edit: &ui::Edit) {
         if let Shape::Text { text, .. } = &mut self.shape {
-            let end = edit.at.saturating_add(edit.removed).min(text.len());
-            if text.is_char_boundary(edit.at) && text.is_char_boundary(end) && edit.at <= end {
-                text.replace_range(edit.at..end, &edit.inserted);
-            }
+            edit.apply(text);
         }
     }
 
@@ -247,5 +280,55 @@ mod tests {
 
         let empty = TextSession::new("t-2".into(), (0.0, 0.0), 10.0, "#000000".into(), None);
         assert!(empty.commit(&art).is_none(), "nothing typed draws nothing");
+    }
+
+    #[test]
+    fn composition_shows_until_committed_and_clusters_delete_whole() {
+        let mut session = TextSession::new("t-1".into(), (0.0, 0.0), 12.0, "#000000".into(), None);
+        let none = ModifiersState::empty();
+        session.key(&Key::Character("a".into()), Some("a"), none);
+        session.ime(&Ime::Preedit("かな".into(), Some((3, 3))));
+        assert_eq!(session.text(), "a", "a composition is not typed yet");
+        assert_eq!(session.shown_text(), "aかな");
+        assert!(matches!(
+            session.shown_shape(),
+            Shape::Text { ref text, .. } if text == "aかな"
+        ));
+        assert_eq!(session.caret.display_caret(session.text()), "aか".len());
+        session.ime(&Ime::Commit("仮名".into()));
+        assert_eq!(session.text(), "a仮名");
+        assert_eq!(session.shown_text(), "a仮名");
+
+        for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+            session.ime(&Ime::Commit(typed.into()));
+        }
+        assert_eq!(session.text(), "a仮名e\u{301}👍🏽🇩🇪");
+        let backspace = Key::Named(NamedKey::Backspace);
+        session.key(&backspace, None, none);
+        assert_eq!(session.text(), "a仮名e\u{301}👍🏽");
+        session.key(&backspace, None, none);
+        session.key(&backspace, None, none);
+        assert_eq!(session.text(), "a仮名");
+
+        // A commit replaces the selection, as typing does.
+        session.key(
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            ModifiersState::SHIFT,
+        );
+        session.key(
+            &Key::Named(NamedKey::ArrowLeft),
+            None,
+            ModifiersState::SHIFT,
+        );
+        session.ime(&Ime::Preedit("x".into(), None));
+        session.ime(&Ime::Disabled);
+        assert_eq!(
+            session.shown_text(),
+            "a仮名",
+            "an abandoned composition leaves nothing"
+        );
+        session.ime(&Ime::Commit("x".into()));
+        assert_eq!(session.text(), "ax");
     }
 }
