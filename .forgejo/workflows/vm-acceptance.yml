@@ -323,6 +323,9 @@ jobs:
           # The toolchain is the builder's, installed for root; the cargo cache
           # and the runner's compiler cache settings carry over.
           chown -R "$RUN_USER:" "$CARGO_HOME"
+          # The compiler cache server root started for tilo-vm writes outputs
+          # as root; the run user's builds start their own.
+          [[ -z ${RUSTC_WRAPPER:-} ]] || "$RUSTC_WRAPPER" --stop-server >/dev/null 2>&1 || true
           keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|ACTIONS_[A-Z0-9_]*\|AWS_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' | paste -sd, -)
           {
             echo "RUN_UID=$uid"
