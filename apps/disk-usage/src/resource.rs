@@ -104,9 +104,7 @@ impl Resource for DiskUsage {
                     "disk-usage.recent",
                     &name,
                 );
-                resource
-                    .actions
-                    .push(analyze(path).operation(format!("Analyze {name}")));
+                resource.actions.push(analyze(path).bound());
                 resource
             })
             .collect()
@@ -135,7 +133,7 @@ pub(crate) fn folder_row(label: &str, path: &std::path::Path) -> LiveRow {
         "disk-usage.folder",
         label,
     )
-    .operation(analyze(path).operation(format!("Analyze {label}")))
+    .effect(&analyze(path))
 }
 
 /// Framework app.

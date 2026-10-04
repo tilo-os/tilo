@@ -1,20 +1,17 @@
 //! Root widget for the Disks app.
 //!
-//! `DisksApp` is a single self-drawing "canvas" widget: it owns a parsed
-//! cache of the [`Topology`] (the source of truth lives in the CRDT) and
-//! paints the whole UI — drive list, partition map, capacity bars, SMART
-//! summary and the action confirm modal — directly into the Vello scene.
-//! All mutable UI state (selection, active tab, pending confirmation) is
-//! written back into the Automerge document so it is undoable and
-//! collaborative.
+//! `DisksApp` is a single self-drawing "canvas" widget: it holds this
+//! machine's probed [`Topology`] and paints the whole UI — drive list,
+//! partition map, capacity bars and SMART summary — directly into the Vello
+//! scene. The selection, the tab and the status line are this window's own;
+//! the devices are live state, published as rows whose effects the app
+//! answers ([`crate::resource::DisksEffect`]).
 
-use std::collections::HashMap;
-use std::sync::mpsc;
-use std::thread;
+use std::collections::{BTreeMap, HashMap};
 use ui::widget::{AppModel, ModelPath};
 
-use ui::automerge::{AutoCommit, ObjId};
 use ui::format::bytes_si;
+use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, RunMode};
 use ui::taffy::style_helpers::percent;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::vello::Scene;
@@ -33,18 +30,13 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-#[cfg(test)]
-use ui::tilo_actions::{ConfirmationPolicy, ExecutionMode, ResultSpec};
-use ui::tilo_actions::{OperationKind, Resource};
-use ui::widget::{
-    Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
-};
+use ui::widget::{Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
 
-use crate::doc::DisksDoc;
 use crate::model::{
     AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartAttr, SmartInfo, SmartStatus,
     Topology, fmt_hours,
 };
+use crate::resource::{Disks, DisksEffect};
 
 /// Panic-free leaf construction for [`Widget::build_layout`]. `new_leaf`
 /// always inserts and returns `Ok`; `Widget::build_layout` returns a bare
@@ -56,14 +48,6 @@ fn leaf_node(taffy: &mut TaffyTree<()>, style: Style) -> NodeId {
     taffy.new_leaf(style).unwrap()
 }
 use crate::ops::{self, Op};
-
-/// Result of a background action thread, drained in `update`.
-struct ActionResult {
-    text: String,
-    error: Option<String>,
-    /// Whether the topology changed and should be re-probed.
-    refresh: bool,
-}
 
 impl ActionKind {
     /// The real operation this action maps to, if any (Eject/Mount/… all do;
@@ -85,6 +69,28 @@ impl ActionKind {
             ActionKind::Format => "Formatting",
             ActionKind::Benchmark => "Benchmarking",
             ActionKind::Eject => "Ejecting",
+        }
+    }
+    /// The action's name, for a status line.
+    fn title(self) -> &'static str {
+        self.label().trim_end_matches('…')
+    }
+    /// What the action would run on `dev`, reported on the sample machine.
+    fn plan(self, dev: &str) -> String {
+        match self {
+            ActionKind::Mount => {
+                format!("Sample machine: would run udisks2 Filesystem.Mount on {dev}")
+            }
+            ActionKind::Unmount => {
+                format!("Sample machine: would run udisks2 Filesystem.Unmount on {dev}")
+            }
+            ActionKind::Format => {
+                format!("Sample machine: would run udisks2 Block.Format on {dev}")
+            }
+            ActionKind::Benchmark => {
+                format!("Sample machine: would run a read/seek benchmark on {dev}")
+            }
+            ActionKind::Eject => format!("Sample machine: would power off {dev} via udisks2"),
         }
     }
     /// Does completing this action change the mount/partition topology?
@@ -288,46 +294,6 @@ impl ActionKind {
     pub(crate) fn destructive(self) -> bool {
         matches!(self, ActionKind::Format)
     }
-    fn confirm_title(self, target: &str) -> String {
-        match self {
-            ActionKind::Format => format!("Format {target}?"),
-            ActionKind::Unmount => format!("Unmount {target}?"),
-            ActionKind::Mount => format!("Mount {target}?"),
-            ActionKind::Benchmark => format!("Benchmark {target}?"),
-            ActionKind::Eject => format!("Eject {target}?"),
-        }
-    }
-    fn confirm_body(self, target: &str, live: bool) -> String {
-        match self {
-            // In the live binary Format really erases the device; only the
-            // hermetic demo/--shots build is a no-op, so the "nothing is
-            // written" reassurance must never appear when we can actually
-            // destroy data.
-            ActionKind::Format if live => {
-                format!("Formatting erases ALL data on {target}. This cannot be undone.")
-            }
-            ActionKind::Format => format!(
-                "Formatting erases ALL data on {target}. This cannot be undone. \
-                 (Demo build — no changes are written to disk.)"
-            ),
-            ActionKind::Unmount => {
-                format!("Detach {target} from the filesystem. Programs using it may lose access.")
-            }
-            ActionKind::Mount => format!("Attach {target} so its files become available."),
-            ActionKind::Benchmark => format!(
-                "Run a read/write throughput benchmark on {target}. May briefly slow the system."
-            ),
-            ActionKind::Eject => format!("Power down and detach {target} so it is safe to unplug."),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Pending {
-    action: ActionKind,
-    drive: usize,
-    /// Partition the action targets, or `None` for the whole disk.
-    part: Option<usize>,
 }
 
 /// Computed interactive rectangles for one frame. Pure function of the
@@ -364,16 +330,6 @@ struct Layout {
     part_rows: Vec<(Rect, usize)>,
     /// Rescan button in the empty state (only present when no drives exist).
     empty_rescan: Option<Rect>,
-    modal: Option<ModalLayout>,
-}
-
-#[derive(Clone, Copy)]
-struct ModalLayout {
-    card: Rect,
-    /// Type-to-confirm input box (destructive actions only).
-    input: Rect,
-    cancel: Rect,
-    confirm: Rect,
 }
 
 /// One partition's slot in the partitions table: its position in the list,
@@ -400,25 +356,22 @@ struct PartitionColumns {
 }
 
 pub struct DisksApp {
+    /// This machine's block devices, as last probed (or the sample machine).
     topo: Topology,
-    topo_json_cache: String,
+    /// Where the topology comes from and where operations run.
+    backend: Backend,
+    /// Drive names from the document, by serial number.
+    names: BTreeMap<String, String>,
+    /// Where effects and invocations go once hosted.
+    dispatcher: Option<Dispatcher<Disks>>,
+    /// The device operation running now, if any: one at a time.
+    running: Option<ActionKind>,
     selected: usize,
     /// Selected partition within the current drive, or `None` for the whole
     /// disk. Drives every partition-scoped action + detail highlight.
     selected_part: Option<usize>,
     tab: Tab,
-    pending: Option<Pending>,
-    /// Typed confirmation text for a destructive (Format) action. The Erase
-    /// button only unlocks once this matches the target device name.
-    confirm_input: TextInput,
     status: String,
-    /// True in the live binary (`DISKS_LIVE`): actions actually execute.
-    /// False for `--shots` and unit tests, which stay inert.
-    live: bool,
-    /// Receiver for the currently-running background action, if any.
-    action_rx: Option<mpsc::Receiver<ActionResult>>,
-    action_invocation: Option<tilo_actions::InvocationId>,
-    completed_action: Option<tilo_actions::InvocationUpdate>,
     /// One-time first-frame setup: the live seed and the initial layout
     /// settle. Grouped so they don't pile up as same-shaped bools next to
     /// `dirty` and `live`.
@@ -453,13 +406,21 @@ pub struct DisksApp {
     /// Hamburger-toggle and whole-disk-pill hover, checked together each
     /// frame when resolving the overlay's hit targets.
     hover_toggle: HoverToggles,
-    shared: crate::resource::ActionSink,
+}
+
+/// Where a [`DisksApp`]'s devices come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// This machine: probed with `lsblk` + `smartctl`, operated through
+    /// udisks2.
+    System,
+    /// A fixed sample machine: operations report what they would run.
+    Sample,
 }
 
 /// One-time first-frame setup flags for [`DisksApp`] (part of `DisksApp`).
 #[derive(Default)]
 struct InitState {
-    seeded: bool,
     /// `false` until the first layout pass resolves the width. Used to settle
     /// the flap to its resolved default on the very first frame (so a cold
     /// start at a narrow width opens straight to the detail, with no flash of
@@ -487,90 +448,28 @@ impl Default for DisksApp {
 type ContentRects = (Rect, Vec<(Rect, usize)>, Vec<(Rect, usize)>);
 
 impl DisksApp {
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Disks>,
-    ) {
-        self.shared.attach(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.shared.is_hosted()
-    }
-
-    /// Test-only: mark the surface hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.shared.mark_hosted_for_test();
-    }
-
-    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`].
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        use ui::tilo_resource::Resource as _;
-        let mut state = crate::resource::Disks::read(doc).unwrap_or_default();
-        // Prefer the widget's live topology when the document has not been
-        // seeded yet (first-frame tests before sync).
-        if state.topology.drives.is_empty() && !self.topo.drives.is_empty() {
-            state.topology = self.topo.clone();
-        }
-        state.live = self.live;
-        vec![ui::tilo_resource::publish::<crate::resource::Disks>(
-            "disks",
-            "Storage devices",
-            &state,
-        )]
-    }
-
-    pub(crate) fn adopt_shared(&mut self, state: &crate::resource::DisksState) {
-        if let Ok(json) = serde_json::to_string(&state.topology)
-            && json != self.topo_json_cache
-        {
-            self.topo = state.topology.clone();
-            self.topo_json_cache = json;
-            self.dirty = true;
-        }
-        if self.selected != state.selected {
-            self.selected = state.selected;
-            self.dirty = true;
-        }
-        if self.selected_part != state.selected_part {
-            self.selected_part = state.selected_part;
-            self.dirty = true;
-        }
-        let tab = Tab::from_key(&state.tab);
-        if self.tab != tab {
-            self.tab = tab;
-            self.dirty = true;
-        }
-        if self.status != state.status {
-            self.status.clone_from(&state.status);
-            self.dirty = true;
-        }
-    }
-
-    fn commit_shared(&mut self, doc: &mut AutoCommit, action: &crate::resource::DisksAction) {
-        self.shared.dispatch(doc, action);
-    }
-
-    fn commit_topology(&mut self, doc: &mut AutoCommit, topo: &Topology) {
-        let json = serde_json::to_string(topo).unwrap_or_else(|_| "{\"drives\":[]}".into());
-        self.commit_shared(doc, &crate::resource::DisksAction::WriteTopology { json });
-    }
-
+    /// Disks over this machine's devices.
     pub fn new() -> Self {
+        Self::with_backend(Backend::System, Topology::default())
+    }
+
+    /// Disks over the sample machine: fully populated, and operations only
+    /// report what they would run.
+    pub fn sample() -> Self {
+        Self::with_backend(Backend::Sample, Topology::sample())
+    }
+
+    fn with_backend(backend: Backend, topo: Topology) -> Self {
         Self {
-            topo: Topology::default(),
-            topo_json_cache: String::new(),
+            topo,
+            backend,
+            names: BTreeMap::new(),
+            dispatcher: None,
+            running: None,
             selected: 0,
             selected_part: None,
             tab: Tab::Overview,
-            pending: None,
-            confirm_input: TextInput::local().with_font_size(14.0),
             status: String::new(),
-            live: std::env::var("DISKS_LIVE").is_ok(),
-            action_rx: None,
-            action_invocation: None,
-            completed_action: None,
             init: InitState::default(),
             rect: Rect::ZERO,
             dirty: true,
@@ -586,8 +485,217 @@ impl DisksApp {
             flap: FlapState::open_when_docked(),
             k: 1.0,
             hover_toggle: HoverToggles::default(),
-            shared: crate::resource::ActionSink::default(),
         }
+    }
+
+    /// Hosted: edits and effects go through `dispatcher`. Only a live window
+    /// probes this machine; a capture shows `fixture` (or the sample
+    /// machine) and a past version shows no devices.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: Dispatcher<Disks>,
+        mode: RunMode,
+        fixture: Option<Topology>,
+    ) {
+        self.dispatcher = Some(dispatcher);
+        match mode {
+            RunMode::Live => {
+                if self.backend == Backend::System {
+                    self.topo = crate::probe::probe().unwrap_or_default();
+                }
+            }
+            RunMode::Capture => {
+                self.backend = Backend::Sample;
+                self.topo = fixture.unwrap_or_else(Topology::sample);
+            }
+            RunMode::Past => {
+                self.backend = Backend::Sample;
+                self.topo = Topology::default();
+            }
+        }
+        self.clamp_selection();
+        self.dirty = true;
+    }
+
+    pub(crate) fn adopt_names(&mut self, names: &BTreeMap<String, String>) {
+        if self.names != *names {
+            self.names.clone_from(names);
+            self.dirty = true;
+        }
+    }
+
+    /// The name the person gave `drive`, else its model.
+    fn display_name<'a>(&'a self, drive: &'a Drive) -> &'a str {
+        drive
+            .serial
+            .as_ref()
+            .and_then(|serial| self.names.get(serial))
+            .map_or(drive.model.as_str(), String::as_str)
+    }
+
+    /// `drive` as the person sees it: under the name they gave it.
+    fn shown(&self, drive: &Drive) -> Drive {
+        let mut shown = drive.clone();
+        self.display_name(drive).clone_into(&mut shown.model);
+        shown
+    }
+
+    /// The selected drive's serial number, which names it in the document.
+    pub(crate) fn selected_serial(&self) -> Option<String> {
+        self.drive()?.serial.clone()
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// Every drive, with its partitions, as published rows.
+    pub(crate) fn drive_rows(&self) -> Vec<LiveRow> {
+        self.topo
+            .drives
+            .iter()
+            .map(|drive| crate::resource::drive_row(drive, &self.names))
+            .collect()
+    }
+
+    /// Keep the selection on a drive and partition that exist.
+    fn clamp_selection(&mut self) {
+        self.selected = self.selected.min(self.topo.drives.len().saturating_sub(1));
+        self.selected_part = self.part_index();
+    }
+
+    /// Stage a screenshot scenario over the sample machine.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        let usb = self.topo.drives.iter().position(|drive| drive.removable);
+        match scenario {
+            Some("smart") => self.set_tab(Tab::Smart),
+            Some("partitions") => self.set_tab(Tab::Partitions),
+            Some("partition") => self.select_part(Some(2)),
+            Some("removable") => {
+                if let Some(usb) = usb {
+                    self.select(usb);
+                }
+            }
+            Some("status-ok") => {
+                self.status = "Mounted /dev/sdb1 at /run/media/sdb1".into();
+            }
+            Some("status-fail") => {
+                self.status = "Format failed — device is busy".into();
+            }
+            Some("narrow") => self.snap_sidebar(true),
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    /// Answer `effect`, from a control, the palette, an agent or a script.
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: DisksEffect,
+        cx: &mut EffectCx<Disks, Self>,
+    ) -> EffectAnswer {
+        let operation = match effect {
+            DisksEffect::Rescan => {
+                self.rescan();
+                return Ok(Effected::value(&self.status));
+            }
+            DisksEffect::Select { device } => {
+                self.select_device(&device)?;
+                return Ok(Effected::done());
+            }
+            DisksEffect::ShowTab { tab } => {
+                let tab = Tab::all()
+                    .into_iter()
+                    .find(|known| known.key() == tab)
+                    .ok_or_else(|| format!("there is no tab `{tab}`"))?;
+                self.set_tab(tab);
+                return Ok(Effected::done());
+            }
+            DisksEffect::Mount { device } => (ActionKind::Mount, device),
+            DisksEffect::Unmount { device } => (ActionKind::Unmount, device),
+            DisksEffect::Format { device } => (ActionKind::Format, device),
+            DisksEffect::Benchmark { device } => (ActionKind::Benchmark, device),
+            DisksEffect::Eject { device } => (ActionKind::Eject, device),
+        };
+        self.run_operation(operation.0, operation.1, cx)
+    }
+
+    /// Select the drive or partition named `device`.
+    fn select_device(&mut self, device: &str) -> Result<(), String> {
+        for (index, drive) in self.topo.drives.iter().enumerate() {
+            if drive.name == device {
+                self.select(index);
+                self.selected_part = None;
+                return Ok(());
+            }
+            if let Some(part) = drive.partitions.iter().position(|part| part.name == device) {
+                self.select(index);
+                self.selected_part = Some(part);
+                return Ok(());
+            }
+        }
+        Err(format!("/dev/{device} is not present"))
+    }
+
+    /// Run `kind` on `device`: checked against the latest probe, then on
+    /// this machine in the background, or described on the sample machine.
+    fn run_operation(
+        &mut self,
+        kind: ActionKind,
+        device: String,
+        cx: &mut EffectCx<Disks, Self>,
+    ) -> EffectAnswer {
+        if self.running.is_some() {
+            return Err("another disk operation is still running".into());
+        }
+        // A caller's device name is no authority to touch an arbitrary
+        // `/dev` node, and the filesystem type comes from the probe.
+        let fstype = self.revalidate_operation_target(kind, &device)?;
+        let dev = format!("/dev/{device}");
+        self.dirty = true;
+        if self.backend == Backend::Sample {
+            self.status = kind.plan(&dev);
+            return Ok(Effected::value(&self.status));
+        }
+        self.running = Some(kind);
+        self.status = format!("{} {dev}…", kind.gerund());
+        Ok(cx.thread(
+            move |_| ops::run(kind.op(), &device, fstype.as_deref()),
+            move |app: &mut Self, result: Result<String, String>, _| {
+                app.running = None;
+                app.dirty = true;
+                if kind.changes_topology() {
+                    app.reprobe();
+                }
+                match result {
+                    Ok(message) => {
+                        app.status.clone_from(&message);
+                        Ok(Effected::value(message))
+                    }
+                    Err(error) => {
+                        app.status = format!("{} failed — {error}", kind.title());
+                        Err(error)
+                    }
+                }
+            },
+        ))
+    }
+
+    /// Probe this machine again, keeping the selection where it still
+    /// exists. The sample machine stays as it is.
+    fn reprobe(&mut self) {
+        if self.backend == Backend::System {
+            self.topo = crate::probe::probe().unwrap_or_default();
+            self.clamp_selection();
+            self.dirty = true;
+        }
+    }
+
+    /// Rescan storage devices: the Rescan button, `r`, and the effect.
+    fn rescan(&mut self) {
+        self.reprobe();
+        self.status = format!("Rescanned — {} devices", self.topo.drives.len());
+        self.dirty = true;
     }
 
     /// The drive-list layout at the current width: a docked column beside the
@@ -597,8 +705,8 @@ impl DisksApp {
     }
 
     /// Force the drive-list flap to a settled open/closed state with no
-    /// animation. The single-frame `--shots` renderer calls this so a narrow
-    /// capture shows the overlay flap fully revealed over its scrim (rather
+    /// animation. The narrow screenshot scenario stages this so its capture
+    /// shows the overlay flap fully revealed over its scrim (rather
     /// than a frame caught mid-slide).
     pub fn snap_sidebar(&mut self, open: bool) {
         self.flap.snap(open);
@@ -683,7 +791,6 @@ impl DisksApp {
         let (tabs, tab_top) = Self::compute_tabs_layout(dx0, action_bar, self.k);
         let content = Rect::new(dx0, tab_top + (TAB_H * self.k) + PAD, dx1, v.y1 - PAD);
         let (whole_disk_pill, part_segments, part_rows) = self.compute_content_rects(content);
-        let modal = self.compute_modal_layout(v);
 
         // Empty-state Rescan button, only when there is nothing to show.
         let empty_rescan = if self.topo.drives.is_empty() {
@@ -710,7 +817,6 @@ impl DisksApp {
             part_segments,
             part_rows,
             empty_rescan,
-            modal,
         }
     }
 
@@ -865,37 +971,6 @@ impl DisksApp {
             }
         }
         (whole_disk_pill, part_segments, part_rows)
-    }
-
-    /// The confirm-modal rects (type-to-confirm for destructive actions), if
-    /// a [`Pending`] action is awaiting confirmation (part of
-    /// [`Self::compute_layout`]).
-    fn compute_modal_layout(&self, v: Rect) -> Option<ModalLayout> {
-        self.pending.map(|_| {
-            // A fixed desktop dialog made the card overflow on phone-width
-            // windows. Keep a comfortable 12px edge gutter while allowing the
-            // same confirmation workflow at every supported viewport width.
-            let w = (v.width() - 24.0).clamp(1.0, 480.0);
-            let h = 258.0;
-            let cx = f64::midpoint(v.x0, v.x1);
-            let cy = f64::midpoint(v.y0, v.y1);
-            let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-            let input = Rect::new(
-                card.x0 + 22.0,
-                card.y0 + 128.0,
-                card.x1 - 22.0,
-                card.y0 + 128.0 + 36.0,
-            );
-            let by = card.y1 - 18.0 - 36.0;
-            let confirm = Rect::new(card.x1 - 18.0 - 130.0, by, card.x1 - 18.0, by + 36.0);
-            let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + 36.0);
-            ModalLayout {
-                card,
-                input,
-                cancel,
-                confirm,
-            }
-        })
     }
 
     // ---- drawing primitives -------------------------------------------
@@ -1088,7 +1163,7 @@ impl DisksApp {
             Self::draw_drive_row(
                 &mut PaintCtx::new(scene, t, tr, theme),
                 r,
-                drive,
+                &self.shown(drive),
                 selected,
                 hover,
                 self.k,
@@ -2765,172 +2840,6 @@ impl DisksApp {
         Self::draw_partitions_row_usage(ctx.scene, ctx.text, ctx.theme, ctx.transform, cols, ry, p);
     }
 
-    // ---- modal ---------------------------------------------------------
-    fn draw_modal(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        ml: &ModalLayout,
-        pending: Pending,
-    ) {
-        let c = &theme.tokens.colors;
-        // `surfaces.overlay` is intentionally opaque in the high-contrast
-        // palette, which previously erased all surrounding context whenever a
-        // confirmation opened. A translucent, theme-neutral scrim keeps the
-        // target storage screen visible while preserving modal separation.
-        scene.fill(
-            Fill::NonZero,
-            t,
-            with_alpha(c.surfaces.scrim, 172),
-            None,
-            &self.rect,
-        );
-        // Panel role (HIG §9.5): the shared floating-panel ground and its
-        // derived border, so the confirm sheet matches every other dialog.
-        Self::fill_rr(scene, t, ml.card, 16.0, ui::chrome::panel_ground(theme));
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(ml.card, 16.0),
-        );
-        let danger = pending.action.destructive();
-
-        self.draw_modal_card_text(scene, tr, theme, ml.card, pending, danger);
-        let ready = self.draw_modal_input(scene, tr, theme, t, ml, pending);
-        self.draw_modal_buttons(scene, tr, theme, t, ml, danger, ready);
-    }
-
-    /// The title + body text on the confirm card (part of
-    /// [`Self::draw_modal`]).
-    fn draw_modal_card_text(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        pending: Pending,
-        danger: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let target = self.pending_target_name(pending);
-        let title_c = if danger {
-            c.semantic.danger
-        } else {
-            c.text_primary
-        };
-        Self::txt(
-            scene,
-            tr,
-            &pending.action.confirm_title(&target),
-            &TextStyle::new(ty().xl).with_weight(TextWeight::Bold),
-            title_c,
-            Point::new(card.x0 + 22.0, card.y0 + 22.0),
-            None,
-        );
-        Self::txt(
-            scene,
-            tr,
-            &pending.action.confirm_body(&target, self.live),
-            &TextStyle::new(ty().sm),
-            c.text_dim,
-            Point::new(card.x0 + 22.0, card.y0 + 54.0),
-            Some((card.width() - 44.0) as f32),
-        );
-    }
-
-    /// The type-to-confirm gate: the user must type the device name exactly
-    /// (part of [`Self::draw_modal`]). Returns whether the typed text
-    /// currently matches.
-    fn draw_modal_input(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        ml: &ModalLayout,
-        pending: Pending,
-    ) -> bool {
-        let c = &theme.tokens.colors;
-        let card = ml.card;
-        let inp = ml.input;
-        let expected = self.pending_target_leaf(pending);
-        let ready = self.confirm_ready();
-        Self::txt(
-            scene,
-            tr,
-            &format!("Type “{expected}” to confirm:"),
-            &TextStyle::new(ty().sm).with_weight(TextWeight::Medium),
-            c.text_dim,
-            Point::new(card.x0 + 22.0, inp.y0 - 20.0),
-            None,
-        );
-        self.confirm_input.set_placeholder(&expected);
-        self.confirm_input.apply_layout_external(inp);
-        self.confirm_input
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
-        if ready {
-            // Keep the modal's positive match feedback around the shared field.
-            Self::stroke_rr(scene, t, inp, 8.0, c.semantic.success, 1.4);
-            Self::txt_right(
-                scene,
-                tr,
-                "✓ match",
-                &TextStyle::new(ty().sm).with_weight(TextWeight::Semibold),
-                c.semantic.success,
-                Point::new(inp.x1 - 12.0, inp.y0 + 10.0),
-            );
-        }
-        ready
-    }
-
-    /// The Cancel + Confirm buttons — Confirm is locked (dimmed, inert)
-    /// until the typed name matches (part of [`Self::draw_modal`]).
-    fn draw_modal_buttons(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        ml: &ModalLayout,
-        danger: bool,
-        ready: bool,
-    ) {
-        let cancel_hov = ml.cancel.contains(self.last_mouse);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(ml.cancel, "Cancel")
-                .radius(9.0)
-                .hovered(cancel_hov),
-        );
-
-        // Confirm — locked (dimmed, inert) until the typed name matches.
-        let confirm_hov = ready && ml.confirm.contains(self.last_mouse);
-        let label = if danger { "Erase" } else { "Confirm" };
-        let face = if danger {
-            ButtonFace::new(ml.confirm, label).danger()
-        } else {
-            ButtonFace::new(ml.confirm, label).primary()
-        };
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &face
-                .radius(9.0)
-                .weight(TextWeight::Semibold)
-                .hovered(confirm_hov)
-                .disabled(!ready),
-        );
-    }
-
     // ---- empty state ---------------------------------------------------
     /// Shown when the live probe reports no block devices (or the tools are
     /// missing). It is deliberately honest: no fabricated drives, just an
@@ -2969,7 +2878,7 @@ impl DisksApp {
             c.text_primary,
             Point::new(cx, card.y0 + 96.0),
         );
-        let line = if std::env::var("DISKS_LIVE").is_ok() {
+        let line = if self.backend == Backend::System {
             "The system reported no block devices. Attach a drive, then Rescan."
         } else {
             "No devices to display."
@@ -3047,37 +2956,10 @@ impl DisksApp {
         );
     }
 
-    // ---- interaction ---------------------------------------------------
-    /// The `/dev/…` name a *pending* action targets (partition if one was
-    /// captured with the action, else the whole disk).
-    fn pending_target_name(&self, p: Pending) -> String {
-        format!("/dev/{}", self.pending_target_leaf(p))
-    }
-
-    /// The bare kernel leaf name (`nvme0n1p3`, `sdc`) a pending action targets.
-    /// This is also the string the user must type to unlock a destructive op.
-    fn pending_target_leaf(&self, p: Pending) -> String {
-        let Some(d) = self.topo.drives.get(p.drive) else {
-            return String::new();
-        };
-        match p.part.and_then(|i| d.partitions.get(i)) {
-            Some(part) => part.name.clone(),
-            None => d.name.clone(),
-        }
-    }
-
-    /// True once the typed confirmation matches the target — gates Erase.
-    fn confirm_ready(&self) -> bool {
-        match self.pending {
-            Some(p) => {
-                !self.confirm_input.value().trim().is_empty()
-                    && self.confirm_input.value().trim() == self.pending_target_leaf(p)
-            }
-            None => false,
-        }
-    }
-
-    fn trigger_action(&mut self, state: &mut AutoCommit, action: ActionKind) {
+    /// An action-bar button: invoke the operation on the drive or partition
+    /// it targets, as that row offers it — formatting asks for the device's
+    /// name before anything runs.
+    fn trigger_action(&mut self, action: ActionKind) {
         let Some(drive) = self.drive() else { return };
         if !self.action_enabled(drive, action) {
             return; // inapplicable buttons are inert
@@ -3089,151 +2971,30 @@ impl DisksApp {
             ActionKind::Eject => None,
             ActionKind::Format | ActionKind::Benchmark => self.part_index(),
         };
-
-        if action.destructive() {
-            // Open the type-to-confirm modal — nothing executes until the user
-            // types the device name and confirms.
-            self.pending = Some(Pending {
-                action,
-                drive: self.selected,
-                part,
-            });
-            self.confirm_input.set_text("");
-            self.confirm_input.set_focus(true);
-            self.commit_shared(
-                state,
-                &crate::resource::DisksAction::SetPending {
-                    pending: format!(
-                        "{}:{}:{}",
-                        action.key(),
-                        self.selected,
-                        part.map_or(-1, |i| i as i64)
-                    ),
-                },
-            );
-            self.dirty = true;
-        } else {
-            self.dispatch_action(state, action, part);
-        }
-    }
-
-    /// Actually perform (or, in hermetic mode, describe) an action. Live runs
-    /// spawn a worker thread whose result is drained in `sync`.
-    fn dispatch_action(&mut self, state: &mut AutoCommit, action: ActionKind, part: Option<usize>) {
-        // Snapshot the target as owned strings so the drive borrow ends before
-        // we mutate `self` / spawn a thread.
-        let (leaf, fstype) = {
-            let Some(drive) = self.drive() else { return };
-            let p = part.and_then(|i| drive.partitions.get(i));
-            let leaf = p.map_or_else(|| drive.name.clone(), |p| p.name.clone());
-            let fstype = p.and_then(|p| p.fstype.clone());
-            (leaf, fstype)
+        let (row, leaf) = match part.and_then(|i| drive.partitions.get(i)) {
+            Some(part) => (
+                crate::resource::partition_row_id(&part.name),
+                part.name.clone(),
+            ),
+            None => (
+                crate::resource::drive_row_id(&drive.name),
+                drive.name.clone(),
+            ),
         };
-        let dev = format!("/dev/{leaf}");
-
-        if self.live {
-            let (tx, rx) = mpsc::channel();
-            let op = action.op();
-            let refresh = action.changes_topology();
-            let done_label = action.label().trim_end_matches('…').to_string();
-            thread::spawn(move || {
-                let (text, error) = match ops::run(op, &leaf, fstype.as_deref()) {
-                    Ok(msg) => (msg, None),
-                    Err(e) => {
-                        let text = format!("{done_label} failed — {e}");
-                        (text, Some(e))
-                    }
-                };
-                let _ = tx.send(ActionResult {
-                    text,
-                    error,
-                    refresh,
-                });
-            });
-            self.action_rx = Some(rx);
-            let msg = format!("{} {dev}…", action.gerund());
-            self.status.clone_from(&msg);
-            self.commit_shared(
-                state,
-                &crate::resource::DisksAction::SetStatus {
-                    status: msg.clone(),
-                },
-            );
-        } else {
-            // Hermetic build / --shots: state what *would* run, no side effects.
-            let plan = match action {
-                ActionKind::Mount => format!(
-                    "Would run udisks2 Filesystem.Mount on {dev} (set DISKS_LIVE to execute)"
-                ),
-                ActionKind::Unmount => format!(
-                    "Would run udisks2 Filesystem.Unmount on {dev} (set DISKS_LIVE to execute)"
-                ),
-                ActionKind::Format => {
-                    format!("Would run udisks2 Block.Format on {dev} (set DISKS_LIVE to execute)")
-                }
-                ActionKind::Benchmark => {
-                    format!("Would run a read/seek benchmark on {dev} (set DISKS_LIVE to execute)")
-                }
-                ActionKind::Eject => {
-                    format!("Would power off {dev} via udisks2 (set DISKS_LIVE to execute)")
-                }
-            };
-            self.status.clone_from(&plan);
-            self.commit_shared(
-                state,
-                &crate::resource::DisksAction::SetStatus {
-                    status: plan.clone(),
-                },
-            );
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(&row, &DisksEffect::operation(action, &leaf));
         }
         self.dirty = true;
     }
 
-    fn confirm_pending(&mut self, state: &mut AutoCommit) {
-        // Locked until the typed name matches the target device.
-        if !self.confirm_ready() {
-            return;
-        }
-        let Some(p) = self.pending.take() else { return };
-        self.confirm_input.set_text("");
-        self.confirm_input.set_focus(false);
-        self.commit_shared(
-            state,
-            &crate::resource::DisksAction::SetPending {
-                pending: String::new(),
-            },
-        );
-        self.dispatch_action(state, p.action, p.part);
-    }
-
-    fn cancel_pending(&mut self, state: &mut AutoCommit) {
-        self.pending = None;
-        self.confirm_input.set_text("");
-        self.confirm_input.set_focus(false);
-        self.commit_shared(
-            state,
-            &crate::resource::DisksAction::SetPending {
-                pending: String::new(),
-            },
-        );
-    }
-
-    fn select(&mut self, state: &mut AutoCommit, idx: usize) {
+    fn select(&mut self, idx: usize) {
         if idx < self.topo.drives.len() {
             let changed = idx != self.selected;
             self.selected = idx;
-            self.commit_shared(
-                state,
-                &crate::resource::DisksAction::SetSelected { index: idx as u64 },
-            );
             // A new drive resets the partition focus to the whole disk so the
             // detail + action bar can never point at a stale partition.
             if changed {
                 self.selected_part = None;
-                self.commit_shared(
-                    state,
-                    &crate::resource::DisksAction::SetSelectedPart { part: -1 },
-                );
                 self.content_scroll = 0.0;
             }
             self.dirty = true;
@@ -3242,40 +3003,28 @@ impl DisksApp {
 
     /// Select a partition within the current drive, or the whole disk (`None`).
     /// Clicking the already-selected partition toggles back to whole-disk.
-    fn select_part(&mut self, state: &mut AutoCommit, part: Option<usize>) {
+    fn select_part(&mut self, part: Option<usize>) {
         let next = match part {
             Some(i) if self.selected_part == Some(i) => None,
             other => other,
         };
         self.selected_part = next;
-        self.commit_shared(
-            state,
-            &crate::resource::DisksAction::SetSelectedPart {
-                part: next.map_or(-1, |index| index as i64),
-            },
-        );
         self.dirty = true;
     }
 
-    fn set_tab(&mut self, state: &mut AutoCommit, tab: Tab) {
+    fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
-        self.commit_shared(
-            state,
-            &crate::resource::DisksAction::SetTab {
-                tab: tab.key().to_string(),
-            },
-        );
         self.content_scroll = 0.0;
         self.dirty = true;
     }
 
-    /// Resolve an operation payload against the latest locally-probed
-    /// topology. Resource invocations may arrive after a collaborator's
-    /// document snapshot or a search result has gone stale, so a leaf name in
-    /// a payload is never authority to touch an arbitrary `/dev/*` node.
+    /// Resolve an operation's target against the latest locally-probed
+    /// topology. An invocation may arrive after a search result or an
+    /// agent's view has gone stale, so a device name is never authority to
+    /// touch an arbitrary `/dev/*` node.
     ///
-    /// The return value deliberately derives the filesystem type from the
-    /// current probe instead of trusting the serialized payload.
+    /// The return value derives the filesystem type from the current probe
+    /// instead of trusting the caller.
     fn revalidate_operation_target(
         &self,
         action: ActionKind,
@@ -3427,8 +3176,6 @@ fn status_color(theme: &Theme, status: SmartStatus) -> Color {
 }
 
 impl Widget for DisksApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
     fn measure(
         &mut self,
         _known: ui::taffy::Size<Option<f32>>,
@@ -3439,208 +3186,6 @@ impl Widget for DisksApp {
         // means the event path never lays out 1× bands under a 200 % frame.
         self.k = renderer_scale(text_renderer);
         ui::taffy::Size::ZERO
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["disks.operation"]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self
-            .completed_action
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.completed_action.take();
-        }
-        None
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered reconciliation pass keeps the CRDT projection and operation lifecycle atomic"
-    )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        if !self.init.seeded {
-            if DisksDoc::is_empty(state) {
-                // Live: reflect the real system only. If the probe finds
-                // nothing (or the tools are missing) we seed an *empty*
-                // topology and show an honest empty state — never the curated
-                // sample, which would fabricate devices that don't exist.
-                // The sample is reserved for `--shots`/demo (non-live) builds.
-                let topo = if std::env::var("DISKS_LIVE").is_ok() {
-                    crate::probe::probe().unwrap_or_default()
-                } else {
-                    Topology::sample()
-                };
-                self.commit_topology(state, &topo);
-                self.commit_shared(
-                    state,
-                    &crate::resource::DisksAction::SetTab {
-                        tab: "overview".into(),
-                    },
-                );
-                self.commit_shared(
-                    state,
-                    &crate::resource::DisksAction::SetSelected { index: 0 },
-                );
-                self.commit_shared(
-                    state,
-                    &crate::resource::DisksAction::SetSelectedPart { part: -1 },
-                );
-                self.commit_shared(
-                    state,
-                    &crate::resource::DisksAction::SetPending {
-                        pending: String::new(),
-                    },
-                );
-                self.commit_shared(
-                    state,
-                    &crate::resource::DisksAction::SetStatus {
-                        status: String::new(),
-                    },
-                );
-            }
-            self.init.seeded = true;
-        }
-
-        if let Some(json) = DisksDoc::topology_json(state)
-            && json != self.topo_json_cache
-            && let Ok(t) = serde_json::from_str::<Topology>(&json)
-        {
-            self.topo = t;
-            self.topo_json_cache = json;
-            self.dirty = true;
-        }
-
-        let sel = DisksDoc::selected(state).min(self.topo.drives.len().saturating_sub(1));
-        if sel != self.selected {
-            self.selected = sel;
-            self.dirty = true;
-        }
-        // Partition selection, clamped against the current drive's partitions.
-        let part = DisksDoc::selected_part(state)
-            .filter(|&i| self.drive().is_some_and(|d| i < d.partitions.len()));
-        if part != self.selected_part {
-            self.selected_part = part;
-            self.dirty = true;
-        }
-        let tab = Tab::from_key(&DisksDoc::tab(state));
-        if tab != self.tab {
-            self.tab = tab;
-            self.dirty = true;
-        }
-        let pending = DisksDoc::pending(state);
-        let parsed = parse_pending(&pending);
-        if parsed.is_some() != self.pending.is_some() {
-            if parsed.is_some() {
-                self.confirm_input.set_text("");
-                self.confirm_input.set_focus(true);
-            } else {
-                self.confirm_input.set_focus(false);
-            }
-            self.pending = parsed;
-            self.dirty = true;
-        }
-        let status = DisksDoc::status(state);
-        if status != self.status {
-            self.status = status;
-            self.dirty = true;
-        }
-
-        // Drain a completed background action (the root widget's `update` is
-        // not pumped by the runtime, so we poll here — `sync` runs every frame
-        // while `needs_animation_frame` holds).
-        let mut result = None;
-        let mut clear = false;
-        if let Some(rx) = &self.action_rx {
-            match rx.try_recv() {
-                Ok(res) => {
-                    result = Some(res);
-                    clear = true;
-                }
-                Err(mpsc::TryRecvError::Disconnected) => clear = true,
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        let had_result = result.is_some();
-        if let Some(res) = result {
-            if let Some(invocation) = self.action_invocation.take() {
-                self.completed_action = Some(match &res.error {
-                    Some(error) => tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "disks.operation_failed".into(),
-                            message: error.clone(),
-                            details: None,
-                            retryable: false,
-                        },
-                    },
-                    None => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    },
-                });
-            }
-            self.status.clone_from(&res.text);
-            self.commit_shared(
-                state,
-                &crate::resource::DisksAction::SetStatus {
-                    status: res.text.clone(),
-                },
-            );
-            // A mount/format/unmount/eject changed the on-disk topology.
-            if res.refresh
-                && self.live
-                && let Some(topo) = crate::probe::probe()
-            {
-                self.commit_topology(state, &topo);
-            }
-            self.dirty = true;
-        }
-        if clear {
-            self.action_rx = None;
-            if !had_result && let Some(invocation) = self.action_invocation.take() {
-                self.completed_action = Some(tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "disks.worker_disconnected".into(),
-                        message: "disk operation worker disconnected without a result".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                });
-            }
-        }
     }
 
     fn build_layout(
@@ -3698,9 +3243,7 @@ impl Widget for DisksApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames (and thus `sync` polling) coming while a background
-        // action is in flight, so its result surfaces promptly.
-        self.flap.is_animating(self.split_layout()) || self.action_rx.is_some()
+        self.flap.is_animating(self.split_layout())
     }
 
     fn draw(
@@ -3752,7 +3295,15 @@ impl Widget for DisksApp {
 
         // Detail pane (drawn first; in overlay mode the flap sits on top).
         if let Some(drive) = self.drive() {
-            Self::draw_header(scene, tr, theme, transform, &lay, drive, self.k);
+            Self::draw_header(
+                scene,
+                tr,
+                theme,
+                transform,
+                &lay,
+                &self.shown(drive),
+                self.k,
+            );
             self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
             self.draw_tabs(scene, tr, theme, transform, &lay);
             // Content scrolls within its own clip so it stays usable when the
@@ -3820,57 +3371,10 @@ impl Widget for DisksApp {
 
         // Top bar last so the hamburger + title stay above the flap panel.
         self.draw_topbar(scene, tr, theme, transform, &lay);
-
-        if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
-            self.draw_modal(scene, tr, theme, transform, &ml, p);
-        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let lay = self.compute_layout();
-
-        // The confirmation text is deliberately local-only: it gates a
-        // machine-local destructive operation and must never enter the CRDT.
-        // Forward the complete event stream so selection, clipboard, IME and
-        // drag behavior come from the shared editor rather than a key shim.
-        if self.pending.is_some() {
-            if let WindowEvent::CursorMoved { position, .. } = event {
-                self.handle_cursor_moved(*position, ctx.scale_factor, &lay);
-            }
-            if let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-                && matches!(logical_key, Key::Named(NamedKey::Escape | NamedKey::Enter))
-            {
-                self.handle_key_press(logical_key, ctx.state, &lay, ctx.handled);
-                return;
-            }
-            self.confirm_input.handle_event(event, ctx);
-            if self.confirm_input.take_dirty().is_some() {
-                self.dirty = true;
-            }
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                }
-            ) {
-                self.handle_mouse_click(ctx.state, &lay, ctx.handled);
-            } else {
-                // The open modal is fully blocking, including IME events and
-                // clicks/releases that the editor itself did not consume.
-                *ctx.handled = true;
-            }
-            return;
-        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -3884,7 +3388,7 @@ impl Widget for DisksApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_click(ctx.state, &lay, ctx.handled);
+                self.handle_mouse_click(&lay, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3895,7 +3399,7 @@ impl Widget for DisksApp {
                     },
                 ..
             } => {
-                self.handle_key_press(logical_key, ctx.state, &lay, ctx.handled);
+                self.handle_key_press(logical_key, &lay, ctx.handled);
             }
             _ => {}
         }
@@ -3923,213 +3427,161 @@ impl Widget for DisksApp {
         // discover. Mirror every visible, meaningful control as a stable
         // synthetic node so keyboard users, screen readers and agent driving
         // all address the exact same operations as pointer input.
-        if let (Some(ml), Some(pending)) = (lay.modal, self.pending) {
-            let expected = self.pending_target_leaf(pending);
-            let ready = self.confirm_ready();
-            let mut dialog = AccessNode::new(Role::Dialog)
-                .with_name(pending.action.confirm_title(&format!("/dev/{expected}")))
-                .with_description(
-                    pending
-                        .action
-                        .confirm_body(&format!("/dev/{expected}"), self.live),
-                )
-                .with_bounds(ml.card)
-                .with_hashed_key("disks.confirmation-dialog")
-                .with_state(AccessState::new().modal(true));
-            dialog.children.push(
-                AccessNode::new(Role::TextInput)
-                    .with_name(format!("Type {expected} to confirm"))
-                    .with_description("The erase button unlocks only after an exact match.")
-                    .with_value(self.confirm_input.value())
-                    .with_bounds(ml.input)
-                    .with_action_target("disks.modal.confirm-input")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.confirm_input.is_focused()),
-                    ),
-            );
-            dialog.children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Cancel")
-                    .with_bounds(ml.cancel)
-                    .with_action_target("disks.modal.cancel")
-                    .with_state(AccessState::new().focusable(true)),
-            );
-            dialog.children.push(
-                AccessNode::new(Role::Button)
-                    .with_name(if pending.action.destructive() {
-                        "Erase"
-                    } else {
-                        "Confirm"
-                    })
-                    .with_description(if ready {
-                        "Confirmation text matches the target device."
-                    } else {
-                        "Type the exact device name to enable this action."
-                    })
-                    .with_bounds(ml.confirm)
-                    .with_action_target("disks.modal.confirm")
-                    .with_state(AccessState::new().focusable(true).disabled(!ready)),
-            );
-            root.children.push(dialog);
-        } else {
-            // Grouping nodes carry their painted bounds too: a geometry audit
-            // (and a screen reader's spatial navigation) only descends into
-            // a container it can place, so bounded controls under an
-            // unbounded Toolbar / List / TabBar were invisible to both.
-            let mut toolbar = AccessNode::new(Role::Toolbar)
-                .with_name("Storage controls")
-                .with_hashed_key("disks.toolbar")
-                .with_bounds(Rect::new(
-                    self.rect.x0,
-                    self.rect.y0,
-                    self.rect.x1,
-                    self.rect.y0 + TOPBAR_H * self.k,
-                ));
-            if let Some(menu) = lay.hamburger {
-                toolbar.children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(if self.list_open() {
-                            "Hide drives"
-                        } else {
-                            "Show drives"
-                        })
-                        .with_bounds(menu)
-                        .with_action_target("disks.menu")
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
+        // Grouping nodes carry their painted bounds too: a geometry audit
+        // (and a screen reader's spatial navigation) only descends into
+        // a container it can place, so bounded controls under an
+        // unbounded Toolbar / List / TabBar were invisible to both.
+        let mut toolbar = AccessNode::new(Role::Toolbar)
+            .with_name("Storage controls")
+            .with_hashed_key("disks.toolbar")
+            .with_bounds(Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y0 + TOPBAR_H * self.k,
+            ));
+        if let Some(menu) = lay.hamburger {
             toolbar.children.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Rescan storage devices")
-                    .with_description("Refresh the local block-device inventory.")
-                    .with_bounds(lay.refresh)
-                    .with_action_target("disks.rescan")
+                    .with_name(if self.list_open() {
+                        "Hide drives"
+                    } else {
+                        "Show drives"
+                    })
+                    .with_bounds(menu)
+                    .with_action_target("disks.menu")
                     .with_state(AccessState::new().focusable(true)),
             );
-            root.children.push(toolbar);
+        }
+        toolbar.children.push(
+            AccessNode::new(Role::Button)
+                .with_name("Rescan storage devices")
+                .with_description("Refresh the local block-device inventory.")
+                .with_bounds(lay.refresh)
+                .with_action_target("disks.rescan")
+                .with_state(AccessState::new().focusable(true)),
+        );
+        root.children.push(toolbar);
 
-            if self.list_open() {
-                let mut list = AccessNode::new(Role::List)
-                    .with_name("Drives")
-                    .with_hashed_key("disks.drives")
-                    .with_bounds(lay.list_header.union(lay.list_body));
-                let n = self.topo.drives.len();
-                for (i, drive) in self.topo.drives.iter().enumerate() {
-                    let Some(&bounds) = lay.cards.get(i) else {
-                        continue;
-                    };
-                    if bounds.y1 < lay.list_body.y0 || bounds.y0 > lay.list_body.y1 {
-                        continue;
-                    }
-                    list.children.push(
-                        AccessNode::new(Role::ListItem)
-                            .with_name(format!("{} /dev/{}", drive.model, drive.name))
-                            // The painted detail header elides a long serial to
-                            // its line; the unelided serial stays reachable here
-                            // for assistive technology and automation.
-                            .with_description(format!(
-                                "{}; {}; {}{}",
-                                drive.kind.long(),
-                                bytes_si(drive.size),
-                                drive.smart_status().label(),
-                                drive
-                                    .serial
-                                    .as_ref()
-                                    .map(|s| format!("; S/N {s}"))
-                                    .unwrap_or_default()
-                            ))
-                            .with_position(i + 1, n)
-                            .with_bounds(bounds)
-                            .with_action_target(format!("disks.drive:{}", drive.name))
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .selected(i == self.selected),
-                            ),
-                    );
+        if self.list_open() {
+            let mut list = AccessNode::new(Role::List)
+                .with_name("Drives")
+                .with_hashed_key("disks.drives")
+                .with_bounds(lay.list_header.union(lay.list_body));
+            let n = self.topo.drives.len();
+            for (i, drive) in self.topo.drives.iter().enumerate() {
+                let Some(&bounds) = lay.cards.get(i) else {
+                    continue;
+                };
+                if bounds.y1 < lay.list_body.y0 || bounds.y0 > lay.list_body.y1 {
+                    continue;
                 }
-                root.children.push(list);
-            }
-
-            let mut tabs = AccessNode::new(Role::TabBar)
-                .with_name("Drive details")
-                .with_hashed_key("disks.drive-details");
-            if let Some(strip) = lay.tabs.iter().map(|(r, _)| *r).reduce(|a, b| a.union(b)) {
-                tabs = tabs.with_bounds(strip);
-            }
-            for (bounds, tab) in &lay.tabs {
-                tabs.children.push(
-                    AccessNode::new(Role::Tab)
-                        .with_name(tab.title())
-                        .with_bounds(*bounds)
-                        .with_action_target(format!("disks.tab:{}", tab.key()))
+                list.children.push(
+                    AccessNode::new(Role::ListItem)
+                        .with_name(format!("{} /dev/{}", self.display_name(drive), drive.name))
+                        // The painted detail header elides a long serial to
+                        // its line; the unelided serial stays reachable here
+                        // for assistive technology and automation.
+                        .with_description(format!(
+                            "{}; {}; {}{}",
+                            drive.kind.long(),
+                            bytes_si(drive.size),
+                            drive.smart_status().label(),
+                            drive
+                                .serial
+                                .as_ref()
+                                .map(|s| format!("; S/N {s}"))
+                                .unwrap_or_default()
+                        ))
+                        .with_position(i + 1, n)
+                        .with_bounds(bounds)
+                        .with_action_target(format!("disks.drive:{}", drive.name))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
-                                .selected(*tab == self.tab),
+                                .selected(i == self.selected),
                         ),
                 );
             }
-            root.children.push(tabs);
+            root.children.push(list);
+        }
 
-            if let Some(drive) = self.drive() {
-                let mut actions = AccessNode::new(Role::Group)
-                    .with_name(format!("Actions for /dev/{}", drive.name))
-                    .with_hashed_key("disks.drive-actions")
-                    .with_bounds(lay.action_bar);
-                for (bounds, action, enabled) in &lay.action_buttons {
-                    actions.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(action.label())
-                            .with_description(action.describe())
-                            .with_bounds(*bounds)
-                            .with_action_target(format!("disks.action:{}", action.key()))
-                            .with_state(AccessState::new().focusable(*enabled).disabled(!enabled)),
-                    );
-                }
-                root.children.push(actions);
+        let mut tabs = AccessNode::new(Role::TabBar)
+            .with_name("Drive details")
+            .with_hashed_key("disks.drive-details");
+        if let Some(strip) = lay.tabs.iter().map(|(r, _)| *r).reduce(|a, b| a.union(b)) {
+            tabs = tabs.with_bounds(strip);
+        }
+        for (bounds, tab) in &lay.tabs {
+            tabs.children.push(
+                AccessNode::new(Role::Tab)
+                    .with_name(tab.title())
+                    .with_bounds(*bounds)
+                    .with_action_target(format!("disks.tab:{}", tab.key()))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(*tab == self.tab),
+                    ),
+            );
+        }
+        root.children.push(tabs);
 
-                if self.tab == Tab::Overview {
-                    root.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name("Select whole disk")
-                            .with_bounds(lay.whole_disk_pill)
-                            .with_action_target("disks.part:whole")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .selected(self.part_index().is_none()),
-                            ),
-                    );
-                }
-                let parts: &[(Rect, usize)] = match self.tab {
-                    Tab::Overview => lay.part_segments.as_slice(),
-                    Tab::Partitions => lay.part_rows.as_slice(),
-                    Tab::Smart => &[],
+        if let Some(drive) = self.drive() {
+            let mut actions = AccessNode::new(Role::Group)
+                .with_name(format!("Actions for /dev/{}", drive.name))
+                .with_hashed_key("disks.drive-actions")
+                .with_bounds(lay.action_bar);
+            for (bounds, action, enabled) in &lay.action_buttons {
+                actions.children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(action.label())
+                        .with_description(action.describe())
+                        .with_bounds(*bounds)
+                        .with_action_target(format!("disks.action:{}", action.key()))
+                        .with_state(AccessState::new().focusable(*enabled).disabled(!enabled)),
+                );
+            }
+            root.children.push(actions);
+
+            if self.tab == Tab::Overview {
+                root.children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Select whole disk")
+                        .with_bounds(lay.whole_disk_pill)
+                        .with_action_target("disks.part:whole")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(self.part_index().is_none()),
+                        ),
+                );
+            }
+            let parts: &[(Rect, usize)] = match self.tab {
+                Tab::Overview => lay.part_segments.as_slice(),
+                Tab::Partitions => lay.part_rows.as_slice(),
+                Tab::Smart => &[],
+            };
+            for (bounds, i) in parts {
+                let Some(part) = drive.partitions.get(*i) else {
+                    continue;
                 };
-                for (bounds, i) in parts {
-                    let Some(part) = drive.partitions.get(*i) else {
-                        continue;
-                    };
-                    root.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(format!("Select partition /dev/{}", part.name))
-                            .with_description(format!(
-                                "{}; {}",
-                                part.display_label(),
-                                bytes_si(part.size)
-                            ))
-                            .with_bounds(*bounds)
-                            .with_action_target(format!("disks.part:{}", part.name))
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .selected(self.part_index() == Some(*i)),
-                            ),
-                    );
-                }
+                root.children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(format!("Select partition /dev/{}", part.name))
+                        .with_description(format!(
+                            "{}; {}",
+                            part.display_label(),
+                            bytes_si(part.size)
+                        ))
+                        .with_bounds(*bounds)
+                        .with_action_target(format!("disks.part:{}", part.name))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(self.part_index() == Some(*i)),
+                        ),
+                );
             }
         }
         if !self.status.is_empty() {
@@ -4147,19 +3599,9 @@ impl Widget for DisksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
-        if let A11yAction::SetValue(value) = action
-            && target == "disks.modal.confirm-input"
-            && self.pending.is_some()
-        {
-            self.confirm_input.set_text(value);
-            self.confirm_input.set_focus(true);
-            self.dirty = true;
-            return true;
-        }
         if !matches!(action, A11yAction::Activate) {
             return matches!(action, A11yAction::Focus);
         }
@@ -4167,19 +3609,17 @@ impl Widget for DisksApp {
             "disks.menu" if self.compute_layout().hamburger.is_some() => {
                 self.flap.toggle(self.split_layout());
             }
-            "disks.rescan" if self.pending.is_none() => self.do_refresh(state),
-            "disks.modal.cancel" if self.pending.is_some() => self.cancel_pending(state),
-            "disks.modal.confirm" if self.pending.is_some() => self.confirm_pending(state),
-            "disks.part:whole" if self.pending.is_none() => self.select_part(state, None),
-            _ if self.pending.is_none() => {
+            "disks.rescan" => self.rescan(),
+            "disks.part:whole" => self.select_part(None),
+            _ => {
                 if let Some(name) = target.strip_prefix("disks.drive:") {
                     if let Some(i) = self.topo.drives.iter().position(|drive| drive.name == name) {
-                        self.select(state, i);
+                        self.select(i);
                     } else {
                         return false;
                     }
                 } else if let Some(key) = target.strip_prefix("disks.tab:") {
-                    self.set_tab(state, Tab::from_key(key));
+                    self.set_tab(Tab::from_key(key));
                 } else if let Some(key) = target.strip_prefix("disks.action:") {
                     let Some(kind) = ActionKind::from_key(key) else {
                         return false;
@@ -4190,19 +3630,18 @@ impl Widget for DisksApp {
                     {
                         return false;
                     }
-                    self.trigger_action(state, kind);
+                    self.trigger_action(kind);
                 } else if let Some(name) = target.strip_prefix("disks.part:") {
                     let Some(i) = self.drive().and_then(|drive| {
                         drive.partitions.iter().position(|part| part.name == name)
                     }) else {
                         return false;
                     };
-                    self.select_part(state, Some(i));
+                    self.select_part(Some(i));
                 } else {
                     return false;
                 }
             }
-            _ => return false,
         }
         self.dirty = true;
         true
@@ -4226,86 +3665,6 @@ impl Widget for DisksApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
-    }
-}
-
-impl ui::resources::PublishesResources for DisksApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the topology door — keep only live extras (none today).
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if self.is_hosted() && id == "disks" {
-            return None;
-        }
-        find(&self.publish_resources(doc), id)
-    }
-}
-
-impl DisksApp {
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != "disks.operation" {
-            return Ok(None);
-        }
-        if self.action_rx.is_some() {
-            return Err("another disk operation is still running".into());
-        }
-        let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let action = ActionKind::from_key(args.first().map_or("", String::as_str))
-            .ok_or_else(|| "unknown disk operation".to_string())?;
-        let leaf = args
-            .get(1)
-            .ok_or_else(|| "missing device".to_string())?
-            .clone();
-        if !self.live {
-            return Err("live disk access is disabled".into());
-        }
-        // Re-check against the locally probed inventory immediately before
-        // execution. This rejects stale remote/search invocations and ignores
-        // a caller-supplied filesystem type in favour of current system data.
-        let fstype = self.revalidate_operation_target(action, &leaf)?;
-        let (tx, rx) = mpsc::channel();
-        let refresh = action.changes_topology();
-        thread::spawn(move || {
-            let (text, error) = match ops::run(action.op(), &leaf, fstype.as_deref()) {
-                Ok(text) => (text, None),
-                Err(error) => (format!("{} failed — {error}", action.label()), Some(error)),
-            };
-            let _ = tx.send(ActionResult {
-                text,
-                error,
-                refresh,
-            });
-        });
-        self.action_rx = Some(rx);
-        self.action_invocation = Some(invocation);
-        self.dirty = true;
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -4406,24 +3765,12 @@ impl DisksApp {
         self.dirty = true;
     }
 
-    /// A left click: modal buttons, the hamburger, the overlay scrim, the
+    /// A left click: the hamburger, the overlay scrim, the
     /// list rows, the tabs, the action bar, and content-scoped hit targets
     /// (whole-disk pill / partition map / partition rows), in priority
     /// order (part of [`Widget::handle_event`]).
-    fn handle_mouse_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
+    fn handle_mouse_click(&mut self, lay: &Layout, handled: &mut bool) {
         let p = self.last_mouse;
-        // Modal first — it is fully blocking.
-        if let Some(ml) = lay.modal {
-            if ml.confirm.contains(p) {
-                self.confirm_pending(state);
-            } else if ml.cancel.contains(p) {
-                self.cancel_pending(state);
-            }
-            // Clicks anywhere else while modal is open are swallowed.
-            *handled = true;
-            self.dirty = true;
-            return;
-        }
         // Hamburger toggles the overlay flap (narrow window only).
         if lay.hamburger.is_some_and(|hb| hb.contains(p)) {
             self.flap.toggle(self.split_layout());
@@ -4444,14 +3791,14 @@ impl DisksApp {
             return;
         }
         if lay.refresh.contains(p) {
-            self.do_refresh(state);
+            self.rescan();
             *handled = true;
             self.dirty = true;
             return;
         }
         // Empty-state Rescan (only present when no drives are listed).
         if lay.empty_rescan.is_some_and(|b| b.contains(p)) {
-            self.do_refresh(state);
+            self.rescan();
             *handled = true;
             self.dirty = true;
             return;
@@ -4460,7 +3807,7 @@ impl DisksApp {
         if self.list_open()
             && let Some(i) = lay.cards.iter().position(|r| r.contains(p))
         {
-            self.select(state, i);
+            self.select(i);
             // Selecting from the overlay flap dismisses it so the
             // detail is immediately visible (single-pane feel).
             if lay.split == SplitLayout::Overlay {
@@ -4471,7 +3818,7 @@ impl DisksApp {
             return;
         }
         if let Some((_, tab)) = lay.tabs.iter().find(|(r, _)| r.contains(p)) {
-            self.set_tab(state, *tab);
+            self.set_tab(*tab);
             *handled = true;
             return;
         }
@@ -4481,7 +3828,7 @@ impl DisksApp {
             .iter()
             .find(|(r, _, en)| *en && r.contains(p))
         {
-            self.trigger_action(state, *a);
+            self.trigger_action(*a);
             *handled = true;
             self.dirty = true;
             return;
@@ -4490,7 +3837,7 @@ impl DisksApp {
         // partition table row. Test in content space (unshift scroll).
         let pc = Point::new(p.x, p.y + self.content_scroll);
         if self.tab == Tab::Overview && lay.whole_disk_pill.contains(pc) {
-            self.select_part(state, None);
+            self.select_part(None);
             *handled = true;
             self.dirty = true;
             return;
@@ -4498,49 +3845,23 @@ impl DisksApp {
         if lay.content.contains(p) {
             if self.tab == Tab::Overview {
                 if let Some((_, i)) = lay.part_segments.iter().find(|(r, _)| r.contains(pc)) {
-                    self.select_part(state, Some(*i));
+                    self.select_part(Some(*i));
                     *handled = true;
                     self.dirty = true;
                 }
             } else if self.tab == Tab::Partitions
                 && let Some((_, i)) = lay.part_rows.iter().find(|(r, _)| r.contains(pc))
             {
-                self.select_part(state, Some(*i));
+                self.select_part(Some(*i));
                 *handled = true;
                 self.dirty = true;
             }
         }
     }
 
-    /// A key press: while a destructive action is pending, Escape cancels and
-    /// Enter confirms; the shared [`TextInput`] owns every editing key.
-    /// Otherwise Escape dismisses an open overlay flap and the rest are
+    /// A key press: Escape dismisses an open overlay flap and the rest are
     /// navigation shortcuts (part of [`Widget::handle_event`]).
-    fn handle_key_press(
-        &mut self,
-        logical_key: &Key,
-        state: &mut AutoCommit,
-        lay: &Layout,
-        handled: &mut bool,
-    ) {
-        // Modal key handling — editing keys were already routed through the
-        // shared field by `handle_event`.
-        if self.pending.is_some() {
-            match logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    self.cancel_pending(state);
-                    *handled = true;
-                    self.dirty = true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.confirm_pending(state);
-                    *handled = true;
-                    self.dirty = true;
-                }
-                _ => {}
-            }
-            return;
-        }
+    fn handle_key_press(&mut self, logical_key: &Key, lay: &Layout, handled: &mut bool) {
         // Esc dismisses an open overlay flap before any other binding.
         if matches!(logical_key, Key::Named(NamedKey::Escape))
             && lay.split == SplitLayout::Overlay
@@ -4555,14 +3876,14 @@ impl DisksApp {
             Key::Named(NamedKey::ArrowDown) => {
                 let n = self.topo.drives.len();
                 if n > 0 {
-                    self.select(state, (self.selected + 1) % n);
+                    self.select((self.selected + 1) % n);
                     *handled = true;
                 }
             }
             Key::Named(NamedKey::ArrowUp) => {
                 let n = self.topo.drives.len();
                 if n > 0 {
-                    self.select(state, (self.selected + n - 1) % n);
+                    self.select((self.selected + n - 1) % n);
                     *handled = true;
                 }
             }
@@ -4573,7 +3894,7 @@ impl DisksApp {
                 // non-empty `tabs`, but `.get` degrades to a no-op
                 // instead of indexing blindly.
                 if let Some(&next) = tabs.get((i + 1) % tabs.len()) {
-                    self.set_tab(state, next);
+                    self.set_tab(next);
                     *handled = true;
                 }
             }
@@ -4581,25 +3902,25 @@ impl DisksApp {
                 let tabs = Tab::all();
                 let i = tabs.iter().position(|t| *t == self.tab).unwrap_or(0);
                 if let Some(&prev) = tabs.get((i + tabs.len() - 1) % tabs.len()) {
-                    self.set_tab(state, prev);
+                    self.set_tab(prev);
                     *handled = true;
                 }
             }
             Key::Character(s) => match s.as_str() {
                 "1" => {
-                    self.set_tab(state, Tab::Overview);
+                    self.set_tab(Tab::Overview);
                     *handled = true;
                 }
                 "2" => {
-                    self.set_tab(state, Tab::Smart);
+                    self.set_tab(Tab::Smart);
                     *handled = true;
                 }
                 "3" => {
-                    self.set_tab(state, Tab::Partitions);
+                    self.set_tab(Tab::Partitions);
                     *handled = true;
                 }
                 "r" | "R" => {
-                    self.do_refresh(state);
+                    self.rescan();
                     *handled = true;
                 }
                 _ => {}
@@ -4607,53 +3928,6 @@ impl DisksApp {
             _ => {}
         }
     }
-
-    /// Re-probe the live system (no-op fallback to sample). Used by the
-    /// Rescan button + `r` key.
-    fn do_refresh(&mut self, state: &mut AutoCommit) {
-        let topo = if std::env::var("DISKS_LIVE").is_ok() {
-            crate::probe::probe().unwrap_or_else(|| self.topo.clone())
-        } else {
-            // In demo/offscreen mode, just confirm on the status line.
-            self.status = "Rescanned storage devices".to_string();
-            self.commit_shared(
-                state,
-                &crate::resource::DisksAction::SetStatus {
-                    status: self.status.clone(),
-                },
-            );
-            return;
-        };
-        self.commit_topology(state, &topo);
-        self.status = format!("Rescanned — {} devices", topo.drives.len());
-        self.commit_shared(
-            state,
-            &crate::resource::DisksAction::SetStatus {
-                status: self.status.clone(),
-            },
-        );
-        self.dirty = true;
-    }
-}
-
-fn parse_pending(s: &str) -> Option<Pending> {
-    // Format: "<action>:<drive>[:<part|-1>]". The partition field is optional
-    // so older docs (drive-only) still parse.
-    let mut it = s.split(':');
-    let action = ActionKind::from_key(it.next()?)?;
-    let drive = it.next()?.parse::<usize>().ok()?;
-    let part = match it.next() {
-        Some(p) => match p.parse::<i64>().ok()? {
-            n if n < 0 => None,
-            n => Some(n as usize),
-        },
-        None => None,
-    };
-    Some(Pending {
-        action,
-        drive,
-        part,
-    })
 }
 
 #[cfg(test)]
@@ -4662,12 +3936,8 @@ mod tests {
     use super::*;
     use ui::headless::Framed;
 
-    fn seeded_app() -> (DisksApp, AutoCommit) {
-        let mut app = DisksApp::new();
-        let mut doc = AutoCommit::new();
-        let root = ui::automerge::ROOT;
-        app.sync(&mut doc, &root);
-        (app, doc)
+    fn seeded_app() -> (DisksApp, ui::automerge::AutoCommit) {
+        (DisksApp::sample(), ui::automerge::AutoCommit::new())
     }
 
     fn target_exists(node: &AccessNode, target: &str) -> bool {
@@ -4676,178 +3946,6 @@ mod tests {
                 .children
                 .iter()
                 .any(|child| target_exists(child, target))
-    }
-
-    /// Sync seeds the sample topology and drive selection round-trips through the CRDT.
-    #[test]
-    fn sync_and_selection_persist_through_the_document() {
-        // --- phase: sync_seeds_sample_topology ---
-        {
-            let (app, _doc) = seeded_app();
-            assert_eq!(app.topo.drives.len(), 4);
-            assert_eq!(app.selected, 0);
-            assert_eq!(app.tab, Tab::Overview);
-        }
-
-        // --- phase: select_persists_to_doc_and_back ---
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.select(&mut doc, 2);
-            assert_eq!(DisksDoc::selected(&doc), 2);
-            // A fresh app syncing the same doc adopts the selection.
-            let mut app2 = DisksApp::new();
-            let root = ui::automerge::ROOT;
-            app2.sync(&mut doc, &root);
-            assert_eq!(app2.selected, 2);
-        }
-    }
-
-    /// A disk operation from request (modal or direct) through confirmation and the worker result to the reported status.
-    #[test]
-    fn disk_operation_lifecycle_from_request_to_status() {
-        // --- phase: destructive_action_opens_modal ---
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.trigger_action(&mut doc, ActionKind::Format);
-            assert!(app.pending.is_some());
-            assert!(DisksDoc::pending(&doc).starts_with("format:"));
-        }
-
-        // --- phase: non_destructive_action_sets_status_no_modal ---
-        {
-            let (mut app, mut doc) = seeded_app();
-            // Benchmark always applies, so it reports on the status line with no modal.
-            app.trigger_action(&mut doc, ActionKind::Benchmark);
-            assert!(app.pending.is_none());
-            assert!(!DisksDoc::status(&doc).is_empty());
-        }
-
-        // --- phase: confirm_requires_typed_name_then_clears_pending ---
-        {
-            let (mut app, mut doc) = seeded_app();
-            app.trigger_action(&mut doc, ActionKind::Format); // whole nvme disk
-            // The Erase gate is locked until the exact device name is typed.
-            assert!(!app.confirm_ready(), "empty input does not unlock");
-            app.confirm_pending(&mut doc);
-            assert!(app.pending.is_some(), "confirm is a no-op while locked");
-
-            app.confirm_input.set_text("wrong");
-            assert!(!app.confirm_ready());
-            app.confirm_pending(&mut doc);
-            assert!(app.pending.is_some(), "a mismatched name stays locked");
-
-            app.confirm_input.set_text("nvme0n1"); // the whole-disk device name
-            assert!(app.confirm_ready(), "the exact name unlocks Erase");
-            app.confirm_pending(&mut doc);
-            assert!(app.pending.is_none(), "confirming clears the modal");
-            assert_eq!(DisksDoc::pending(&doc), "");
-            // Hermetic build reports the plan rather than executing.
-            assert!(DisksDoc::status(&doc).contains("Block.Format"));
-        }
-
-        // --- phase: worker_result_becomes_terminal_lifecycle_update ---
-        {
-            let (mut app, mut doc) = seeded_app();
-            let invocation = tilo_actions::InvocationId::new();
-            let (tx, rx) = mpsc::channel();
-            app.action_invocation = Some(invocation);
-            app.action_rx = Some(rx);
-            tx.send(ActionResult {
-                text: "mounted".into(),
-                error: None,
-                refresh: false,
-            })
-            .unwrap();
-            app.sync(&mut doc, &ui::automerge::ROOT);
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &ui::automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ));
-        }
-
-        // --- phase: root_accessibility_reports_disk_operation_status ---
-        {
-            let (mut app, _doc) = seeded_app();
-            app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-            app.status = "Rescan complete".into();
-            let node = app.accessibility().expect("disks exports a window");
-            assert_eq!(node.role, Role::Window);
-            assert!(
-                node.children
-                    .iter()
-                    .any(|child| child.name.as_deref() == Some("Rescan complete"))
-            );
-        }
-    }
-
-    /// Exported disk resources publish their operations as background jobs whose targets are revalidated against the live topology.
-    #[test]
-    fn exported_disk_resources_declare_revalidated_background_actions() {
-        // --- phase: exported_disk_actions_declare_background_jobs ---
-        {
-            let (app, doc) = seeded_app();
-            for action in ui::resources::resources(&app, &doc)
-                .iter()
-                .flat_map(|root| root.children.iter())
-                .flat_map(|drive| {
-                    drive
-                        .actions
-                        .iter()
-                        .chain(drive.children.iter().flat_map(|p| p.actions.iter()))
-                })
-                .filter(|action| action.kind == OperationKind::Effect)
-            {
-                assert!(matches!(
-                    action.contract.execution,
-                    ExecutionMode::Background { cancellable: false }
-                ));
-                assert_eq!(action.contract.result, ResultSpec::Job);
-            }
-        }
-
-        // --- phase: disk_resources_publish_whole_drive_format_and_benchmark ---
-        {
-            let (app, doc) = seeded_app();
-            let resources = ui::resources::resources(&app, &doc);
-            let disk = resources
-                .first()
-                .and_then(|root| root.children.first())
-                .expect("sample exposes its first disk resource");
-            for id in ["format", "benchmark"] {
-                assert!(
-                    disk.actions.iter().any(|action| action.id == id),
-                    "whole-drive resource must publish {id}"
-                );
-            }
-            let format = disk
-                .actions
-                .iter()
-                .find(|action| action.id == "format")
-                .expect("format action");
-            assert!(matches!(
-                format.contract.confirmation,
-                ConfirmationPolicy::Phrase { .. }
-            ));
-        }
-
-        // --- phase: resource_operation_targets_are_revalidated_against_current_topology ---
-        {
-            let (app, _doc) = seeded_app();
-            assert!(
-                app.revalidate_operation_target(ActionKind::Benchmark, "nvme0n1")
-                    .is_ok()
-            );
-            assert!(
-                app.revalidate_operation_target(ActionKind::Mount, "nvme0n1")
-                    .unwrap_err()
-                    .contains("whole disk")
-            );
-            assert!(
-                app.revalidate_operation_target(ActionKind::Format, "no-longer-present")
-                    .unwrap_err()
-                    .contains("no longer present")
-            );
-        }
     }
 
     /// Canvas-drawn controls are exposed to accessibility with spoken names and route activation.
@@ -4885,6 +3983,37 @@ mod tests {
                 "Rescan"
             );
         }
+    }
+
+    /// The status line is announced, and an operation's target is checked
+    /// against the latest probe before anything runs.
+    #[test]
+    fn status_is_announced_and_targets_are_revalidated() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.status = "Rescan complete".into();
+        let node = app.accessibility().expect("disks exports a window");
+        assert_eq!(node.role, Role::Window);
+        assert!(
+            node.children
+                .iter()
+                .any(|child| child.name.as_deref() == Some("Rescan complete"))
+        );
+
+        assert!(
+            app.revalidate_operation_target(ActionKind::Benchmark, "nvme0n1")
+                .is_ok()
+        );
+        assert!(
+            app.revalidate_operation_target(ActionKind::Mount, "nvme0n1")
+                .unwrap_err()
+                .contains("whole disk")
+        );
+        assert!(
+            app.revalidate_operation_target(ActionKind::Format, "no-longer-present")
+                .unwrap_err()
+                .contains("no longer present")
+        );
     }
 
     /// The detail pane lays out one card per drive on a shared left edge and inset.
@@ -4937,7 +4066,11 @@ mod tests {
 
     /// Mount a seeded app over its document in the shared frame harness and
     /// run its first frame at `w`x`h`.
-    fn framed((app, doc): (DisksApp, AutoCommit), w: f64, h: f64) -> Framed<DisksApp> {
+    fn framed(
+        (app, doc): (DisksApp, ui::automerge::AutoCommit),
+        w: f64,
+        h: f64,
+    ) -> Framed<DisksApp> {
         let mut state = ui::State::new();
         assert!(state.adopt_doc(doc));
         Framed::new(state, app, ui::headless::viewport((w, h)), Theme::dark())
@@ -5098,17 +4231,6 @@ mod tests {
                 .expect("layout settles");
         }
 
-        /// The app's live document.
-        fn doc(&self) -> &AutoCommit {
-            &Framed::harness(&self.app).state().doc
-        }
-
-        /// The app and its live document, for calls that take both.
-        fn app_and_doc(&mut self) -> (&mut DisksApp, &mut AutoCommit) {
-            let (app, state) = Framed::split(&mut self.app);
-            (app, &mut state.doc)
-        }
-
         /// A real draw pass — settles `content_h` / `list_h` for scroll clamps.
         fn draw(&mut self) {
             let theme = Theme::dark();
@@ -5168,23 +4290,6 @@ mod tests {
         Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
-    fn char_key(text: &str) -> WindowEvent {
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character(text.into());
-        event.physical_key = ui::winit::keyboard::PhysicalKey::Unidentified(
-            ui::winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = ui::winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.repeat = false;
-        event.text = Some(text.into());
-        WindowEvent::KeyboardInput {
-            device_id: device_id(),
-            event,
-            is_synthetic: false,
-        }
-    }
-
     /// Clicking drives, tabs, partition segments, rows and the whole-disk pill repoints the detail and scopes which actions apply.
     #[allow(
         clippy::too_many_lines,
@@ -5204,11 +4309,6 @@ mod tests {
                 h.app.selected_part, None,
                 "a fresh drive resets to whole-disk"
             );
-            assert_eq!(
-                DisksDoc::selected(h.doc()),
-                2,
-                "selection persisted to the CRDT"
-            );
         }
 
         // --- phase: smart_tab_activation_persists_and_draws_its_full_content ---
@@ -5225,7 +4325,6 @@ mod tests {
 
             assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
             assert_eq!(h.app.tab, Tab::Smart);
-            assert_eq!(DisksDoc::tab(h.doc()), Tab::Smart.key());
             assert_eq!(
                 h.app.selected, selected_before,
                 "changing detail tabs must not retarget the selected drive"
@@ -5260,11 +4359,6 @@ mod tests {
                 Some(1),
                 "the segment becomes the partition selection"
             );
-            assert_eq!(
-                DisksDoc::selected_part(h.doc()),
-                Some(1),
-                "persisted to the CRDT"
-            );
             // Actions now target that mounted partition.
             let drive = h.app.drive().unwrap();
             assert!(
@@ -5280,8 +4374,7 @@ mod tests {
         // --- phase: clicking_a_partition_row_in_the_table_selects_it ---
         {
             let mut h = Harness::new(1280.0, 800.0);
-            let (app, doc) = h.app_and_doc();
-            app.set_tab(doc, Tab::Partitions);
+            h.app.set_tab(Tab::Partitions);
             h.relayout();
             let row = h
                 .lay()
@@ -5320,7 +4413,7 @@ mod tests {
 
         // --- phase: multipartition_whole_disk_gates_mount_unmount ---
         {
-            let (mut app, mut doc) = seeded_app(); // nvme (4 partitions) selected
+            let (mut app, _doc) = seeded_app(); // nvme (4 partitions) selected
             let d = app.drive().unwrap();
             assert!(
                 !app.action_enabled(d, ActionKind::Mount),
@@ -5331,7 +4424,7 @@ mod tests {
                 "no partition chosen → Unmount inert"
             );
             // Choosing the EFI partition (mounted) enables Unmount.
-            app.select_part(&mut doc, Some(0));
+            app.select_part(Some(0));
             let d = app.drive().unwrap();
             assert!(app.action_enabled(d, ActionKind::Unmount));
             assert!(!app.action_enabled(d, ActionKind::Mount));
@@ -5339,8 +4432,8 @@ mod tests {
 
         // --- phase: single_filesystem_disk_targets_its_sole_partition ---
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select(&mut doc, 3); // USB stick: one mounted partition, removable
+            let (mut app, _doc) = seeded_app();
+            app.select(3); // USB stick: one mounted partition, removable
             let d = app.drive().unwrap();
             assert!(
                 app.action_enabled(d, ActionKind::Unmount),
@@ -5351,159 +4444,8 @@ mod tests {
                 "removable → Eject applies"
             );
             // A fixed, non-removable disk cannot be ejected.
-            app.select(&mut doc, 1); // SATA SSD
+            app.select(1); // SATA SSD
             assert!(!app.action_enabled(app.drive().unwrap(), ActionKind::Eject));
-        }
-    }
-
-    /// The format confirmation modal targets the partition, is honest about live vs demo, and gates confirmation on the typed name through shared input.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-    )]
-    #[test]
-    fn format_confirmation_modal_gates_the_destructive_action() {
-        // --- phase: clicking_format_prompts_confirmation_targeting_the_partition ---
-        {
-            let mut h = Harness::new(1280.0, 800.0);
-            // Select the home partition, then click the Format button.
-            let seg = h
-                .lay()
-                .part_segments
-                .iter()
-                .find(|(_, i)| *i == 2)
-                .map(|(r, _)| *r)
-                .unwrap();
-            h.click(center(seg));
-            let fmt = h
-                .lay()
-                .action_buttons
-                .iter()
-                .find(|(_, a, _)| *a == ActionKind::Format)
-                .map(|(r, _, _)| *r)
-                .unwrap();
-            assert!(h.click(center(fmt)), "Format is clickable");
-            let pending = h.app.pending.expect("format opens a confirm modal");
-            assert_eq!(pending.action, ActionKind::Format);
-            assert_eq!(
-                pending.part,
-                Some(2),
-                "the confirmation targets the selected partition"
-            );
-            assert_eq!(DisksDoc::pending(h.doc()), "format:0:2");
-            // The modal is now part of the layout and blocks the app.
-            assert!(h.lay().modal.is_some());
-        }
-
-        // --- phase: format_confirm_body_is_honest_about_live_vs_demo ---
-        {
-            // The reassurance that nothing is written must appear ONLY in the
-            // hermetic demo/--shots build. In the live binary Format really
-            // erases the device, so the confirm must never claim it is inert.
-            let demo = ActionKind::Format.confirm_body("/dev/sdz1", false);
-            assert!(
-                demo.contains("no changes are written to disk"),
-                "the demo build reassures the reader it is inert: {demo}"
-            );
-            let live = ActionKind::Format.confirm_body("/dev/sdz1", true);
-            assert!(
-                !live.contains("no changes are written to disk"),
-                "the live build must not claim the format is inert: {live}"
-            );
-            assert!(
-                live.contains("erases ALL data") && live.contains("cannot be undone"),
-                "the live build still warns the format is destructive: {live}"
-            );
-        }
-
-        // --- phase: disabled_action_button_does_not_fire ---
-        {
-            let mut h = Harness::new(1280.0, 800.0);
-            // Whole nvme selected → Mount is disabled; clicking it is a no-op.
-            let lay = h.lay();
-            let mount = *lay
-                .action_buttons
-                .iter()
-                .find(|(_, a, _)| *a == ActionKind::Mount)
-                .unwrap();
-            assert!(
-                !mount.2,
-                "Mount is disabled for the multi-partition whole disk"
-            );
-            drop(lay);
-            h.click(center(mount.0));
-            assert!(
-                DisksDoc::status(h.doc()).is_empty(),
-                "a disabled button reports nothing"
-            );
-            assert!(h.app.pending.is_none());
-        }
-
-        // --- phase: modal_confirm_face_and_hit_target_share_the_type_gate ---
-        {
-            let mut h = Harness::new(1280.0, 800.0);
-            let (app, doc) = h.app_and_doc();
-            app.trigger_action(doc, ActionKind::Format);
-            h.relayout();
-            let confirm = h.lay().modal.unwrap().confirm;
-
-            assert!(h.click(center(confirm)), "the modal consumes the click");
-            assert!(
-                h.app.pending.is_some(),
-                "the disabled shared face remains inert until the name matches"
-            );
-
-            let target = h.app.pending_target_leaf(h.app.pending.unwrap());
-            h.app.confirm_input.set_text(&target);
-            assert!(h.app.confirm_ready());
-            assert!(h.click(center(confirm)));
-            assert!(
-                h.app.pending.is_none(),
-                "the same rect activates once the shared face is enabled"
-            );
-        }
-
-        // --- phase: format_modal_routes_pointer_selection_and_ime_through_shared_input ---
-        {
-            let mut h = Harness::new(1280.0, 800.0);
-            let (app, doc) = h.app_and_doc();
-            app.trigger_action(doc, ActionKind::Format);
-            h.relayout();
-            let modal = h.lay().modal.unwrap();
-
-            // Moving then clicking Cancel must use the current modal pointer, not
-            // the position cached before the overlay opened.
-            assert!(h.click(center(modal.cancel)));
-            assert!(h.app.pending.is_none());
-
-            let (app, doc) = h.app_and_doc();
-            app.trigger_action(doc, ActionKind::Format);
-            h.relayout();
-            let modal = h.lay().modal.unwrap();
-            let expected = h.app.pending_target_leaf(h.app.pending.unwrap());
-
-            assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Preedit(
-                expected.clone(),
-                Some((0, expected.len())),
-            ))));
-            assert_eq!(h.app.confirm_input.value(), "", "preedit is not committed");
-            assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(
-                expected.clone(),
-            ))));
-            assert!(h.app.confirm_ready());
-
-            let control = Modifiers::from(ui::winit::keyboard::ModifiersState::CONTROL);
-            assert!(h.dispatch_with_modifiers(&char_key("a"), control));
-            assert_eq!(
-                h.app.confirm_input.selection_range_public(),
-                Some((0, expected.len()))
-            );
-            assert!(h.dispatch(&WindowEvent::Ime(ui::winit::event::Ime::Commit(expected,))));
-            assert!(h.click(center(modal.confirm)));
-            assert!(
-                h.app.pending.is_none(),
-                "Erase runs only after an exact match"
-            );
         }
     }
 
@@ -5513,9 +4455,7 @@ mod tests {
     fn real_or_sample_harness() -> (Harness, bool) {
         let mut h = Harness::new(1280.0, 800.0);
         let live = if let Some(topo) = crate::probe::probe() {
-            DisksDoc::write_topology(h.app_and_doc().1, &topo);
-            let (app, doc) = h.app_and_doc();
-            app.sync(doc, &ui::automerge::ROOT);
+            h.app.topo = topo;
             h.relayout();
             true
         } else {
@@ -5549,11 +4489,9 @@ mod tests {
             }
 
             // Inspect each tab on the first device — real render passes must not panic.
-            let (app, doc) = h.app_and_doc();
-            app.select(doc, 0);
+            h.app.select(0);
             for tab in [Tab::Overview, Tab::Smart, Tab::Partitions] {
-                let (app, doc) = h.app_and_doc();
-                app.set_tab(doc, tab);
+                h.app.set_tab(tab);
                 h.relayout(); // includes a full draw pass
                 assert_eq!(h.app.tab, tab);
             }
@@ -5561,8 +4499,7 @@ mod tests {
             // Mount/Unmount enablement must mirror the real mount state, and Eject
             // only where the device is genuinely removable.
             for i in 0..h.app.topo.drives.len() {
-                let (app, doc) = h.app_and_doc();
-                app.select(doc, i);
+                h.app.select(i);
                 let d = h.app.drive().unwrap().clone();
                 if d.partitions.len() == 1 {
                     let mounted = d.partitions[0].mountpoint.is_some();
@@ -5581,9 +4518,7 @@ mod tests {
             // Simulate the live path finding nothing: an empty topology must NOT
             // fall back to fabricated devices, and the empty-state Rescan hit
             // target must exist.
-            let (mut app, mut doc) = seeded_app();
-            DisksDoc::write_topology(&mut doc, &Topology::default());
-            app.sync(&mut doc, &ui::automerge::ROOT);
+            let mut app = DisksApp::with_backend(Backend::Sample, Topology::default());
             assert!(
                 app.topo.drives.is_empty(),
                 "empty topology stays empty — no sample"

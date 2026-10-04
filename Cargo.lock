@@ -14785,6 +14785,7 @@ dependencies = [
  "fluent-syntax",
  "hex",
  "image",
+ "launcher",
  "libc",
  "notify",
  "proc-macro2",
@@ -15958,6 +15959,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-oci-images"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tilo-app-package",
+ "tilo-net",
+ "tokio",
+ "toml 1.0.6+spec-1.1.0",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ocr"
 version = "0.1.0"
 dependencies = [
@@ -16134,6 +16155,7 @@ dependencies = [
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "env-tools",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "hex",
@@ -16154,6 +16176,7 @@ dependencies = [
  "private-fs",
  "rand 0.10.1",
  "runtime-identity",
+ "runtime-portal",
  "rustls",
  "sd-notify",
  "serde",
@@ -16172,6 +16195,7 @@ dependencies = [
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-doc",
+ "tilo-environment",
  "tilo-files",
  "tilo-fs",
  "tilo-identity-host",
@@ -16190,6 +16214,7 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "ush",
  "uuid",
  "web-time",
  "wire-frame",
@@ -18268,6 +18293,7 @@ dependencies = [
  "tilo-egress",
  "tilo-environment",
  "tilo-files",
+ "tilo-oci-images",
  "tilo-resource",
  "tilo-sandbox-core",
  "tilo-test-env",

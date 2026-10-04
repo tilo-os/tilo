@@ -140,9 +140,7 @@
 //!   finishes on the UI thread, changing the document with ordinary actions
 //!   and answering its caller. Effects never run in History mode. An effect
 //!   that changes only what the window shows (open a page) is declared
-//!   `#[effect(view)]`, a view operation any participant may invoke; one
-//!   bound to a single thing a live row names (analyze this folder) is
-//!   offered on the row as [`Effect::operation`](tilo_resource::Effect::operation).
+//!   `#[effect(view)]`, a view operation any participant may invoke.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
@@ -172,6 +170,11 @@
 //!   resource's publication and nothing beside it that changes the document:
 //!   a document action a content widget publishes through its own
 //!   `PublishesResources` is dropped (a debug build stops at it).
+//! * **A participant without a window** — an agent, a service, a script —
+//!   holds a replica of a record and edits it through the same door as a
+//!   person: a [`Participant`] of the record's kind (each app's kind is
+//!   [`resource_kind`]), checked against its permissions, attributed to it
+//!   and recorded in history with the task it belongs to.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
 //!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
 //!   in three parts. What the resource does not hold is the scenario's
@@ -198,8 +201,10 @@ mod dispatch;
 mod each;
 mod effect;
 pub mod history;
+mod kinds;
 mod launch;
 mod live;
+mod participant;
 mod preview;
 mod root;
 mod rows;
@@ -224,8 +229,10 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
+pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
 pub use live::Live;
+pub use participant::Participant;
 pub use preview::PastVersion;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
