@@ -1672,9 +1672,11 @@ ActionSpec::operation(
 ```
 
 For a small widget root with one launchable resource,
-`ui::widget::resource_actions::immediate` or `background` owns the forwarding
-widget, operation dispatch, pending-job bookkeeping, and failure conversion;
-the app supplies only its resource contract and operation closure.
+`ui::widget::resource_actions::immediate` owns the forwarding widget,
+operation dispatch and failure conversion; the app supplies only its resource
+contract and operation closure. An app on the framework declares its effects
+with `#[derive(Effect)]` instead, and runs long work as a job through the
+`EffectCx` its handler receives.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
 effect and view type in `Widget::start_operation`, the single entry: return
