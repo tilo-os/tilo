@@ -1298,10 +1298,11 @@ impl FileExplorerWidget {
         // The places list and the file view are swapped in on the first
         // `build_layout`; the toolbar is the content header's one action and
         // stays for the window's lifetime.
-        let (toolbar_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
         let nav = NavShell::new()
             .with_id("files.shell")
-            .content_header("", vec![Box::new(toolbar_widget)]);
+            .content_header("", vec![Box::new(actions_widget)])
+            .content_header_leading(Box::new(path_widget));
         let thumbs = match &services {
             FileServices::Legacy => build_thumb_service(config_dir.as_deref()).map(Arc::new),
             FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
@@ -2089,24 +2090,11 @@ impl FileExplorerWidget {
             .paint(scene, transform, tr, theme, self.rect, now);
     }
 
-    /// The shell puts its sidebar toggle (and, in a narrow window, Back) at the
-    /// leading edge of the content header when the sidebar is not beside it;
-    /// the toolbar starts after them.
-    fn keep_shell_controls_clear(&self) {
-        let geometry = self.nav.geometry();
-        let column = geometry.content_column;
-        let gap = f64::from(ui::tokens::spacing::Spacing::BASE.s2);
-        let inset = [geometry.toggle, geometry.back]
-            .into_iter()
-            .filter(|control| {
-                control.width() > 0.0
-                    && control.x0 >= column.x0
-                    && control.x0 < column.x1
-                    && control.y0 < column.y0 + geometry.header_height
-            })
-            .map(|control| control.x1 - column.x0 + gap)
-            .fold(0.0, f64::max);
-        self.toolbar.set_leading_inset(inset);
+    /// Whether the content column is narrower than the direct toolbar
+    /// controls need; they move into the overflow when it is.
+    fn sync_toolbar_compact(&self) {
+        let column = self.nav.geometry().content_column;
+        self.toolbar.set_content_width(column.width());
     }
 
     /// Whether `point` is over the places list (docked or drawn as a drawer).
@@ -8514,7 +8502,7 @@ impl Widget for FileExplorerWidget {
             && let Some(&nav_n) = children.first()
         {
             self.nav.apply_layout(taffy, nav_n, base);
-            self.keep_shell_controls_clear();
+            self.sync_toolbar_compact();
         }
     }
 
@@ -8587,12 +8575,12 @@ impl Widget for FileExplorerWidget {
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
             self.context_menu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         if self.submenu.is_open() {
             layout_menu_widget(&mut self.submenu);
             self.submenu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.
