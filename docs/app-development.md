@@ -664,6 +664,13 @@ complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 30 ms quiet period.
+When the debug build is too slow to judge what you are changing (painting,
+video, large documents), `tilo-app dev --release` builds the app with the
+`thin-app` profile thin Tilo builds ship with: release optimisation without
+LTO, so it still links quickly and reloads in place. `--profile NAME` picks any
+Cargo profile; one other than `dev` or `thin-app` restarts the app on each
+change instead, as an LTO profile cannot link the toolkit dynamically.
+`scripts/agent-loop/session.py start APP --release` passes it on.
 `tilo-app dev --platform web` runs the same loop in the browser
 ([The web](#the-web)).
 

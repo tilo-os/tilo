@@ -510,7 +510,20 @@ pub struct DevRequest {
     pub debounce: Duration,
     /// Report where each reload spent its time.
     pub timings: bool,
+    /// Cargo profile every build of the app uses; `None` is Cargo's `dev`.
+    pub profile: Option<String>,
 }
+
+impl DevRequest {
+    fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+}
+
+/// The profile `tilo-app dev --release` picks: release optimisation without
+/// LTO, the profile thin Tilo builds ship with. It links the toolkit
+/// dynamically, so the app still reloads in place.
+pub const DEV_RELEASE_PROFILE: &str = "thin-app";
 
 /// Quiet period `tilo-app dev` waits after a save before it builds.
 pub const DEV_DEBOUNCE_MS: u64 = 30;
@@ -5670,7 +5683,7 @@ static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// `request.timings` is set.
 pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Value>> {
     let app_dir = resolve_app_dir(start)?;
-    let initial = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)?;
+    let initial = dev_run_plan(&app_dir, request)?;
     let roots = dev_watch_roots(&app_dir, request.watch_ui)?;
     let (event_tx, event_rx) = mpsc::channel();
     let source_revision = Arc::new(AtomicU64::new(0));
@@ -5710,17 +5723,18 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Val
         dev_session_dir(&app_dir),
         request.timings,
         Arc::clone(&source_revision),
+        request.profile.clone(),
     );
     // The first process has to be the prefer-dynamic host. A static binary
     // links its own `ui`, so the library built on the next save cannot run
     // inside those windows.
-    let mut child = if reloads_in_place(&app_dir) {
+    let mut child = if reloads_in_place(&app_dir, request.profile()) {
         None
     } else {
         spawn_dev_child_reported(&initial)
     };
     if child.is_none()
-        && reloads_in_place(&app_dir)
+        && reloads_in_place(&app_dir, request.profile())
         && rebuild_running_dev_app(
             &initial,
             request,
@@ -5787,7 +5801,7 @@ fn rebuild_running_dev_app(
     dev: &mut dev_reload::DevLoop,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
-    if reload_catalogs_without_build(plan, child.as_ref(), roots, sources) {
+    if reload_catalogs_without_build(plan, request.profile(), child.as_ref(), roots, sources) {
         dev.changed_at = None;
         return false;
     }
@@ -5807,7 +5821,7 @@ fn rebuild_running_dev_app(
         let building_revision = dev.source_revision.load(Ordering::Acquire);
         // The startup plan already passed preflight. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
-        let in_place = reloads_in_place(&plan.app_dir);
+        let in_place = reloads_in_place(&plan.app_dir, request.profile());
         let candidate = if in_place {
             build_in_place_dev_app_for_loop(
                 plan,
@@ -5820,9 +5834,15 @@ fn rebuild_running_dev_app(
                 &mut timings,
             )
         } else {
-            build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
-                watcher.observe(event);
-            })
+            build_dev_candidate_interruptible(
+                plan,
+                request.profile(),
+                Some(events),
+                roots,
+                |event| {
+                    watcher.observe(event);
+                },
+            )
         };
         let queued_restart = drain_pending_restart_events(events, roots, |event| {
             watcher.observe(event);
@@ -5887,6 +5907,7 @@ fn rebuild_running_dev_app(
 /// was handled that way.
 fn reload_catalogs_without_build(
     plan: &CargoPlan,
+    profile: Option<&str>,
     child: Option<&Child>,
     roots: &[PathBuf],
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
@@ -5894,7 +5915,7 @@ fn reload_catalogs_without_build(
     let Some(running) = child else {
         return false;
     };
-    if !reloads_in_place(&plan.app_dir) {
+    if !reloads_in_place(&plan.app_dir, profile) {
         return false;
     }
     let Some(next) = snapshot_restart_sources(roots) else {
@@ -5992,7 +6013,7 @@ enum DevPick {
 
 #[cfg(test)]
 fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
-    match build_dev_candidate_interruptible(plan, None, &[], |_| {})? {
+    match build_dev_candidate_interruptible(plan, None, None, &[], |_| {})? {
         DevCandidate::Built(executable) => Ok(executable),
         DevCandidate::Superseded => bail!("development build was cancelled without a watcher"),
     }
@@ -6003,26 +6024,29 @@ fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
 /// a binary that will be discarded.
 fn build_dev_candidate_interruptible(
     plan: &CargoPlan,
+    profile: Option<&str>,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
     observe: impl FnMut(&Event),
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_binary = dev_binary_name(&manifest)?;
+    let mut args = vec![
+        OsString::from("build"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--bin"),
+        OsString::from(&expected_binary),
+    ];
+    args.extend(cargo_profile_args(profile));
+    args.push(OsString::from("--message-format=json-render-diagnostics"));
     run_dev_cargo(
         plan,
         events,
         roots,
         observe,
         &DevCargo {
-            args: vec![
-                OsString::from("build"),
-                OsString::from("--manifest-path"),
-                manifest.as_os_str().to_os_string(),
-                OsString::from("--bin"),
-                OsString::from(&expected_binary),
-                OsString::from("--message-format=json-render-diagnostics"),
-            ],
+            args,
             env: Vec::new(),
             pick: DevPick::Executable(expected_binary),
         },
@@ -6951,8 +6975,43 @@ fn report_child_exit(child: &mut Option<Child>) {
 
 /// Whether `dev` reloads the app inside its windows: it supports that, and
 /// this machine can build the shared toolkit it links.
-fn reloads_in_place(app_dir: &Path) -> bool {
-    app_supports_in_place_reload(app_dir) && native_libs::thin_runtime_available()
+fn reloads_in_place(app_dir: &Path, profile: Option<&str>) -> bool {
+    profile_reloads_in_place(profile)
+        && app_supports_in_place_reload(app_dir)
+        && native_libs::thin_runtime_available()
+}
+
+/// Reloading in place links the toolkit and `libstd` dynamically, which an
+/// LTO profile such as `release` refuses. `dev` and `thin-app` have no LTO;
+/// any other profile restarts the app instead, whatever its settings.
+fn profile_reloads_in_place(profile: Option<&str>) -> bool {
+    matches!(profile, None | Some("dev" | DEV_RELEASE_PROFILE))
+}
+
+/// `--profile <name>` for Cargo, or nothing for its default `dev` profile.
+fn cargo_profile_args(profile: Option<&str>) -> Vec<OsString> {
+    profile
+        .map(|profile| vec![OsString::from("--profile"), OsString::from(profile)])
+        .unwrap_or_default()
+}
+
+/// The first `cargo run` of a restarting dev loop, in the requested profile.
+/// Says so when that profile keeps an app that could reload in place from it.
+fn dev_run_plan(app_dir: &Path, request: &DevRequest) -> Result<CargoPlan> {
+    if let Some(profile) = request.profile() {
+        validate_profile_name(profile)?;
+    }
+    if !profile_reloads_in_place(request.profile()) && app_supports_in_place_reload(app_dir) {
+        eprintln!(
+            "[tilo-app] the {:?} profile cannot link the toolkit dynamically; restarting the app on each change instead of reloading it in place",
+            request.profile().unwrap_or("dev")
+        );
+    }
+    let mut plan = plan_app_task(app_dir, AppTask::Run, &request.forwarded)?;
+    // `run --manifest-path <manifest>`, then the forwarded arguments.
+    plan.args
+        .splice(3..3, cargo_profile_args(request.profile()));
+    Ok(plan)
 }
 
 /// An app can reload Rust inside the windows it already has when it links the
@@ -6984,7 +7043,7 @@ fn build_in_place_dev_app(
     observe: impl FnMut(&Event),
     need_host: bool,
 ) -> Result<DevCandidate> {
-    build_in_place_dev_app_with_cargo(plan, events, roots, observe, need_host, &mut None)
+    build_in_place_dev_app_with_cargo(plan, None, events, roots, observe, need_host, &mut None)
 }
 
 /// The watch loop's in-place build. Once the app is running and every edit
@@ -7035,8 +7094,10 @@ fn build_in_place_dev_app_for_loop(
     // What Cargo is about to compile. Later edits are compared against it.
     dev.baseline.clone_from(sources);
     let session = dev.session().to_path_buf();
+    let profile = dev.profile.clone();
     build_in_place_dev_app_with_cargo(
         plan,
+        profile.as_deref(),
         Some(events),
         roots,
         |event| watcher.observe(event),
@@ -7057,6 +7118,7 @@ fn elapsed_ms(since: SystemTime) -> f64 {
 /// command is recorded there for the next edit, and each step is timed.
 fn build_in_place_dev_app_with_cargo(
     plan: &CargoPlan,
+    profile: Option<&str>,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
@@ -7072,7 +7134,7 @@ fn build_in_place_dev_app_with_cargo(
     };
     let library_crate = cargo_library_name(&manifest);
     let mut executable = PathBuf::new();
-    for mut step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
+    for mut step in thin_dev_steps(&manifest, &binary, &linkage, profile, need_host) {
         eprintln!("[tilo-app] building {}", step.label);
         if let (DevPick::DynamicLibrary, Some((session, _)), Some(name)) = (
             &step.cargo.pick,
@@ -7220,6 +7282,7 @@ fn thin_dev_steps(
     manifest: &Path,
     binary: &str,
     linkage: &ThinDevLinkage,
+    profile: Option<&str>,
     need_host: bool,
 ) -> Vec<ThinDevStep> {
     let (target_args, env) = match linkage {
@@ -7237,6 +7300,7 @@ fn thin_dev_steps(
         ];
         args.extend(target.iter().map(OsString::from));
         args.extend(target_args.iter().cloned());
+        args.extend(cargo_profile_args(profile));
         args.extend(
             [
                 "--features",

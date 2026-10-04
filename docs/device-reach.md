@@ -100,6 +100,47 @@ rolled back, and the next boot either keeps or drops it on purpose.
   from the registry by digest. A local build streams its layer from the
   builder to the device, so the dev machine's disk never holds the binaries.
 
+## Unlocking it after a reboot
+
+An encrypted disk that waits for a passphrase at the machine's keyboard
+undoes everything above: an update reboots, and nobody can reach the machine
+until someone types it in. Unlock has three factors. Each one is optional, and
+the recovery key always remains (`tilo-disk-encrypt`).
+
+- **TPM2 with a signed PCR policy**, where the machine has a TPM Linux can
+  drive. The policy is PCR 4 + PCR 7 with a signed prediction per generation,
+  as `docs/security/boot-chain.md` describes, so an OS update does not fall
+  back to the recovery key. The machine unlocks by itself, and only into a
+  boot chain Tilo signed.
+- **A sibling's consent over the network.** A LUKS slot opens with a key
+  derived from two halves:
+  - The device half lives on the machine, sealed to the TPM where there is
+    one, otherwise in the boot partition.
+  - The sibling half is sealed to the person's root-derived secret-sync key
+    and held by their other devices.
+
+  Early boot brings up the network and asks the person's devices for the
+  sibling half over the peer network (relay fallback included). It
+  authenticates with a boot-only key pair whose public half the person's
+  devices certified when the slot was enrolled. A sibling releases its half
+  only after the owner approves the typed `device.unlock` action, which works
+  like any other action from their own identity: a prompt on their phone or
+  laptop, or an admin invoking it, a developer's tilo-vm among them. Policy can
+  auto-approve a request from a machine whose TPM attested the expected boot
+  chain. A stolen machine can ask, but it cannot unlock without the owner. A
+  copied boot partition alone gets nothing.
+- **The passphrase or recovery key** at the keyboard, as today.
+
+Wi-Fi-only machines need the network in early boot: the image's
+NetworkManager in the initramfs, plus the credentials of the networks the
+machine last used, stored beside the device half. Those credentials unlock
+nothing on their own.
+
+The Lenovo Yoga Slim 7x has no TPM Linux can use yet. Its firmware TPM sits
+behind Qualcomm's TEE, and the driver for it (`tpm_qcom` on QCOMTEE) is still
+in review. So on that machine the sibling factor is what replaces typing the
+passphrase.
+
 ## Verification
 
 - Unit tests cover how logind locks map onto the registry, lease expiry and
@@ -114,3 +155,6 @@ rolled back, and the next boot either keeps or drops it on purpose.
   5. B's link is cut and restored, and the action route reconnects.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a
   rollback through the `device` slot, then sleep and are woken by name.
+- A VM with an encrypted disk reboots and is unlocked by its paired sibling
+  after `device.unlock` is approved. A request that is denied, or comes from
+  a boot key that was never certified, leaves it at the passphrase prompt.
