@@ -1682,3 +1682,16 @@ fn shared_owner_child() {
     serve_shared_until_idle();
     std::fs::write(profile.join("served"), b"").unwrap();
 }
+
+#[test]
+fn the_engine_host_does_not_inherit_the_app_runtime_library_path() {
+    let command = host_command(Path::new(
+        "/run/tilo-runtime/x/lib/chromium/tilo-chromium-host",
+    ));
+    assert!(
+        command
+            .get_envs()
+            .any(|(key, value)| key == "LD_LIBRARY_PATH" && value.is_none()),
+        "the host must start without the app runtime's LD_LIBRARY_PATH"
+    );
+}

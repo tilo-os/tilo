@@ -535,13 +535,24 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, String>>()
 }
 
+/// The engine host process. It is not one of the toolkit's thin binaries: it
+/// loads CEF from beside itself and the rest from the system. The library path
+/// the launcher points at the app's own runtime bundle would otherwise put that
+/// bundle's copies of glib, libdrm and friends ahead of the system's under
+/// libcef.so, and the mixed versions corrupt the host's heap at start.
+fn host_command(host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command.env_remove("LD_LIBRARY_PATH");
+    command
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
     extensions: &[String],
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
-    let mut command = Command::new(host);
+    let mut command = host_command(host);
     if private_root.is_some() {
         command.arg("--private");
     }
