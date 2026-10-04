@@ -1,0 +1,250 @@
+//! What the app is built for — a window someone uses, a past version, a
+//! screenshot — and what a screenshot shows that the resource does not hold.
+//!
+//! A view is built in one [`RunMode`]. Only a [`Live`](RunMode::Live) view
+//! starts work that reaches outside the process: a mail engine, a socket, a
+//! journal reader, a hardware probe. History rebuilds the same view for every
+//! past version it previews ([`Past`](RunMode::Past)), and a screenshot
+//! ([`Capture`](RunMode::Capture)) must come out the same on every machine,
+//! so neither may.
+//!
+//! A capture's scene is prepared before its view is built, by
+//! [`ResourceApp::fixture`](super::ResourceApp::fixture): typed values that
+//! stand in for live sources (a scan result, a fake backend, a fetched
+//! page), a scratch directory, blobs in the content store, versions of the
+//! resource written by other people at other times, and collaborators shown
+//! where they are in it. Views read the values with
+//! [`ViewCx::fixture`](super::ViewCx::fixture), surfaces with
+//! [`SurfaceCx::fixture`](super::SurfaceCx::fixture).
+
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use tilo_resource::{Doc, Invoke, Resource};
+
+use super::surface::ResourceSelection;
+
+/// What a view is built for. See the [module docs](self).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunMode {
+    /// A window someone uses: real sources, and the work that keeps them
+    /// current.
+    Live,
+    /// A past version, previewed read-only in History mode. The view is
+    /// built again for every version shown; it starts nothing.
+    Past,
+    /// A screenshot (`--shots`, `--shots-dir`, `--responsive-matrix`): the
+    /// scenario's fixtures instead of devices, networks and clocks, and
+    /// nothing that reaches outside the process.
+    Capture,
+}
+
+impl RunMode {
+    /// Whether the view may start work that reaches outside the process.
+    pub fn is_live(self) -> bool {
+        self == Self::Live
+    }
+}
+
+/// The values a capture's views and surfaces read in place of live sources.
+#[derive(Default)]
+pub(crate) struct Fixtures {
+    values: HashMap<TypeId, Rc<dyn Any>>,
+    collaborators: Vec<(String, ResourceSelection)>,
+    content: Option<tilo_content::ContentStore>,
+    /// Kept for as long as anything built from the capture is.
+    _directory: Option<tempfile::TempDir>,
+}
+
+/// The mode a root was built in, and what its views read in it.
+#[derive(Clone)]
+pub(crate) struct Run {
+    pub(crate) mode: RunMode,
+    pub(crate) fixtures: Rc<Fixtures>,
+}
+
+impl Run {
+    pub(crate) fn live(content: Option<tilo_content::ContentStore>) -> Self {
+        Self {
+            mode: RunMode::Live,
+            fixtures: Rc::new(Fixtures {
+                content,
+                ..Fixtures::default()
+            }),
+        }
+    }
+
+    pub(crate) fn past() -> Self {
+        Self {
+            mode: RunMode::Past,
+            fixtures: Rc::default(),
+        }
+    }
+
+    pub(crate) fn fixture<T: 'static>(&self) -> Option<Rc<T>> {
+        let value = self.fixtures.values.get(&TypeId::of::<T>())?;
+        Rc::clone(value).downcast::<T>().ok()
+    }
+    pub(crate) fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.fixtures.content.clone()
+    }
+
+    /// The collaborators a capture shows, where they are in the resource.
+    pub(crate) fn collaborators(&self) -> &[(String, ResourceSelection)] {
+        &self.fixtures.collaborators
+    }
+}
+
+/// A version of the resource another person wrote before the capture.
+struct Version<R: Resource> {
+    author: String,
+    at_ms: i64,
+    invoke: Invoke<R>,
+}
+
+/// The scene of one screenshot scenario that its actions cannot stage:
+/// handed to [`ResourceApp::fixture`](super::ResourceApp::fixture) before
+/// the view is built.
+pub struct Fixture<R: Resource> {
+    scenario: Option<String>,
+    values: HashMap<TypeId, Rc<dyn Any>>,
+    history: Vec<Version<R>>,
+    collaborators: Vec<(String, ResourceSelection)>,
+    content: Option<tilo_content::ContentStore>,
+    directory: Option<tempfile::TempDir>,
+}
+
+impl<R: Resource> Fixture<R> {
+    pub(crate) fn new(scenario: Option<&str>, content: Option<tilo_content::ContentStore>) -> Self {
+        Self {
+            scenario: scenario.map(str::to_owned),
+            values: HashMap::new(),
+            history: Vec::new(),
+            collaborators: Vec::new(),
+            content,
+            directory: None,
+        }
+    }
+
+    /// The scenario being captured; `None` for a plain `--shots`.
+    pub fn scenario(&self) -> Option<&str> {
+        self.scenario.as_deref()
+    }
+
+    /// Stand `value` in for a live source: the views and surfaces of this
+    /// capture read it with `cx.fixture::<T>()`. One value per type; a
+    /// second replaces the first.
+    pub fn provide<T: 'static>(&mut self, value: T) {
+        self.values.insert(TypeId::of::<T>(), Rc::new(value));
+    }
+
+    /// A private scratch directory for files the scene shows (a folder to
+    /// browse, a repository to diff), removed after the capture.
+    ///
+    /// # Errors
+    /// Returns why the directory could not be created.
+    pub fn directory(&mut self) -> std::io::Result<&std::path::Path> {
+        if self.directory.is_none() {
+            self.directory = Some(
+                tempfile::Builder::new()
+                    .prefix("tilo-scenario-")
+                    .tempdir()?,
+            );
+        }
+        match &self.directory {
+            Some(directory) => Ok(directory.path()),
+            None => Err(std::io::Error::other("no scenario directory")),
+        }
+    }
+
+    /// The content store the capture's views read from
+    /// ([`ViewCx::content`](super::ViewCx::content)), for the blobs a scene
+    /// shows: photos, attachments, thumbnails. A private one when the host
+    /// lent none.
+    pub fn content(&mut self) -> &tilo_content::ContentStore {
+        self.content
+            .get_or_insert_with(tilo_content::ContentStore::memory)
+    }
+
+    /// A version of the resource `author` wrote at `at_ms` (milliseconds
+    /// since the Unix epoch), before the capture: it arrives as their
+    /// change does over sync, attributed to them in history and on no one's
+    /// undo stack here. Versions are written in the order given, before the
+    /// scenario's own actions.
+    pub fn version(&mut self, author: &str, at_ms: i64, invoke: Invoke<R>) {
+        self.history.push(Version {
+            author: author.to_owned(),
+            at_ms,
+            invoke,
+        });
+    }
+
+    /// A collaborator named `name`, shown where they are in the resource
+    /// (a selected item, a caret) the way their presence arrives in a
+    /// shared window.
+    pub fn collaborator(&mut self, name: &str, at: ResourceSelection) {
+        self.collaborators.push((name.to_owned(), at));
+    }
+
+    /// Write the other people's versions into `doc`.
+    pub(crate) fn write_history(
+        &self,
+        doc: &mut Doc,
+        registry: &tilo_actions::ActionRegistry,
+    ) -> Result<(), String> {
+        for version in &self.history {
+            write_version::<R>(doc, registry, version)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_history(&self) -> bool {
+        !self.history.is_empty()
+    }
+
+    /// What the capture's views read.
+    pub(crate) fn into_run(self) -> Run {
+        Run {
+            mode: RunMode::Capture,
+            fixtures: Rc::new(Fixtures {
+                values: self.values,
+                collaborators: self.collaborators,
+                content: self.content,
+                _directory: self.directory,
+            }),
+        }
+    }
+
+    /// The content store the capture lends, once the fixture is prepared.
+    pub(crate) fn lent_content(&self) -> Option<&tilo_content::ContentStore> {
+        self.content.as_ref()
+    }
+}
+
+/// Apply one version as its author's change at its time: the envelope a
+/// collaborator's device would have sent, replayed as sync replays it.
+fn write_version<R: Resource>(
+    doc: &mut Doc,
+    registry: &tilo_actions::ActionRegistry,
+    version: &Version<R>,
+) -> Result<(), String> {
+    use tilo_actions::Action as _;
+    let action = version.invoke.build(version.at_ms)?;
+    let encoded = tilo_resource::encode::<R>(&action).map_err(|error| error.to_string())?;
+    let label =
+        tilo_resource::action_label::<R>(&action).unwrap_or_else(|| version.invoke.id.to_owned());
+    let context = tilo_actions::ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL)
+        .with_change(action.change_kind())
+        .with_host_invoker(version.author.clone(), None);
+    let envelope = tilo_actions::ActionEnvelope {
+        id: tilo_actions::ActionId::new(),
+        action: encoded,
+        base_heads: doc.get_heads().iter().map(|head| head.0).collect(),
+        timestamp: version.at_ms.div_euclid(1000),
+        locus: action.locus(),
+        actor: Some(version.author.as_bytes().to_vec()),
+        context: Some(context),
+    };
+    tilo_actions::replay(doc, &envelope, registry).map_err(|error| error.to_string())
+}

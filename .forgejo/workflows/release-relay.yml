@@ -89,6 +89,7 @@ on:
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
       - "os/containers/tilo-relay/**"
+      - "os/dev/await-rpm-snapshot.sh"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/resolve-rpm-snapshot.sh"
@@ -181,6 +182,7 @@ on:
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
       - "os/containers/tilo-relay/**"
+      - "os/dev/await-rpm-snapshot.sh"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/resolve-rpm-snapshot.sh"
@@ -227,9 +229,10 @@ jobs:
   ensure-rpms:
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
     # build-rpms.yml owns all signing as a standalone main workflow. Resolve
-    # only its exact content fingerprint here; never fall back to a stale tag.
+    # only its exact content fingerprint here, waiting while a build-rpms.yml
+    # main run builds it; never fall back to a stale tag.
     runs-on: runner-quality
-    timeout-minutes: 40
+    timeout-minutes: 180
     container:
       image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
@@ -253,25 +256,15 @@ jobs:
               sudo -n dnf install -y "${missing[@]}"
             fi
           fi
-      # build-rpms.yml publishes the snapshot for a new package set on the same
-      # push; wait for it rather than fail.
       - name: Resolve the exact signed RPM snapshot fingerprint
         id: resolve
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
-          deadline=$((SECONDS + 1800))
-          while :; do
-            status=0
-            ./os/dev/resolve-rpm-snapshot.sh --exists || status=$?
-            [ "$status" -eq 0 ] && break
-            if [ "$status" -ne 1 ] || [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
-              exit 1
-            fi
-            sleep 30
-          done
-          ./os/dev/resolve-rpm-snapshot.sh
+          ./os/dev/await-rpm-snapshot.sh || {
+            echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
+            exit 1
+          }
 
   build-and-push:
     needs: [signing-preflight, ensure-rpms]

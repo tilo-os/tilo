@@ -60,8 +60,16 @@ pub struct Dispatcher<R: Resource> {
     read_only: LocalState<bool>,
     refused: LocalState<Option<Refused>>,
     host: Rc<RefCell<ui_core::ActionHost>>,
-    /// The last immediate action, to tell whether the next continues it.
-    last: Rc<RefCell<Option<R::Action>>>,
+    /// Applies one immediate action: the resource's own, or for a child
+    /// resource its parent's action carrying it.
+    submit_now: SubmitNow<R>,
+    /// Counts the immediate actions of the resource and its children, so a
+    /// dispatcher can tell that nothing came between its last action and
+    /// its next.
+    serial: Rc<Cell<u64>>,
+    /// The last immediate action and its serial, to tell whether the next
+    /// continues it.
+    last: Rc<RefCell<Option<Serialed<R>>>>,
     /// Every immediate action since the last undo boundary continued the one
     /// before it ([`Resource::coalesces`]): one step, still open.
     continuing: Rc<Cell<bool>>,
@@ -71,6 +79,19 @@ pub struct Dispatcher<R: Resource> {
     opened: Rc<Cell<bool>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
+
+/// An immediate action and the serial it was applied at.
+type Serialed<R> = (u64, <R as Resource>::Action);
+
+/// Applies one typed action to a document through the host.
+type SubmitNow<R> = Rc<
+    dyn Fn(
+        &mut ui_core::ActionHost,
+        &mut Doc,
+        &<R as Resource>::Action,
+        ActionContext,
+    ) -> Result<(), ActionError>,
+>;
 
 impl<R: Resource> Clone for Dispatcher<R> {
     fn clone(&self) -> Self {
@@ -83,6 +104,8 @@ impl<R: Resource> Clone for Dispatcher<R> {
             read_only: self.read_only.clone(),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
+            submit_now: Rc::clone(&self.submit_now),
+            serial: Rc::clone(&self.serial),
             last: Rc::clone(&self.last),
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
@@ -108,6 +131,10 @@ impl<R: Resource> Dispatcher<R> {
             read_only: LocalState::new(read_only),
             refused: LocalState::new(None),
             host: Rc::default(),
+            submit_now: Rc::new(|host, doc, action, context| {
+                host.try_dispatch_with_context(doc, R::ACTION_TYPE, action, context)
+            }),
+            serial: Rc::default(),
             last: Rc::default(),
             continuing: Rc::default(),
             applied: Rc::default(),
@@ -311,26 +338,73 @@ impl<R: Resource> Dispatcher<R> {
             named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
         }
         let context = context.enriched_by(&named);
-        self.host
-            .borrow_mut()
-            .try_dispatch_with_context(doc, R::ACTION_TYPE, action, context)?;
+        (self.submit_now)(&mut self.host.borrow_mut(), doc, action, context)?;
         // Content from outside is nobody's step: it neither continues the
         // open one nor ends it.
         if R::annotates(action) || !tilo_actions::Action::change_kind(action).is_step() {
             return Ok(());
         }
+        // Only an action right after this dispatcher's last one, with nothing
+        // in between, can continue it.
+        let serial = self.serial.get();
         let continues = self
             .last
             .borrow()
             .as_ref()
-            .is_some_and(|previous| R::coalesces(previous, action));
-        *self.last.borrow_mut() = Some(action.clone());
+            .is_some_and(|(at, previous)| *at == serial && R::coalesces(previous, action));
+        let serial = serial.wrapping_add(1);
+        self.serial.set(serial);
+        *self.last.borrow_mut() = Some((serial, action.clone()));
         // The event continues the open step only if every action it applied
         // did.
         let first_of_event = !self.applied.replace(true);
         self.continuing
             .set(continues && (first_of_event || self.continuing.get()));
         Ok(())
+    }
+
+    /// The dispatcher of a resource nested in this one at `id` — a note's
+    /// rich-text body, a draft's SQL — whose every edit is this resource's
+    /// action `wrap(edit)`.
+    ///
+    /// The child is edited like a root: its named actions,
+    /// [`apply`](Self::apply), [`group`](Self::group) and
+    /// [`apply_now`](Self::apply_now) take `C`'s own actions, coalesce into
+    /// undo steps by `C`'s [`Resource::coalesces`], and history names them
+    /// after `C`'s labels. Underneath, each applies as this resource's
+    /// action: the same permission check, history, undo and replay. Queued
+    /// invocations are addressed to the child resource `id`, so this
+    /// resource publishes the child at the same id with the same `wrap`
+    /// ([`tilo_resource::publish_child`] in [`Resource::children`]), which
+    /// is also what lets the palette, agents and scripts reach it.
+    #[must_use]
+    pub fn child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: impl Fn(C::Action) -> R::Action + 'static,
+    ) -> Dispatcher<C> {
+        let parent = Rc::clone(&self.submit_now);
+        Dispatcher {
+            app_id: self.app_id,
+            me: self.me.clone(),
+            resource_id: Rc::from(id),
+            queue: Rc::clone(&self.queue),
+            group: Rc::default(),
+            read_only: self.read_only.clone(),
+            refused: self.refused.clone(),
+            host: Rc::clone(&self.host),
+            // History names the child and its edit; what applies is the
+            // parent's action carrying it.
+            submit_now: Rc::new(move |host, doc, action: &C::Action, context| {
+                parent(host, doc, &wrap(action.clone()), context)
+            }),
+            serial: Rc::clone(&self.serial),
+            last: Rc::default(),
+            continuing: Rc::clone(&self.continuing),
+            applied: Rc::clone(&self.applied),
+            opened: Rc::clone(&self.opened),
+            marker: std::marker::PhantomData,
+        }
     }
 
     /// End the gesture the last immediate actions belonged to: the pointer

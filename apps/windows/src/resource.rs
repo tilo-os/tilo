@@ -129,6 +129,7 @@ impl Resource for Windows {
                 anchor: Some(format!("windows.app:{app_id}")),
                 title: app_id.clone(),
                 text: route.label().to_owned(),
+                action: None,
             })
             .collect()
     }
@@ -166,7 +167,9 @@ impl ResourceApp for WindowsShell {
     const ID: &'static str = "so.tilo.windows";
     const TITLE: &'static str = "Windows Apps";
     const ICON: Option<&'static str> = Some("windows");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Windows>) -> Element {
         cx.surface(WindowsApp::new_live())

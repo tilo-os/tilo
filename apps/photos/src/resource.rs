@@ -79,6 +79,7 @@ impl Resource for Photos {
                     .cloned()
                     .collect::<Vec<_>>()
                     .join(" "),
+                action: None,
             })
             .collect()
     }
@@ -92,7 +93,9 @@ impl ResourceApp for PhotosShell {
     const ID: &'static str = "so.tilo.photos";
     const TITLE: &'static str = "Photos";
     const ICON: Option<&'static str> = Some("photos");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Photos>) -> Element {
         cx.surface(PhotosApp::new_persistent(ContentStore::for_app()))

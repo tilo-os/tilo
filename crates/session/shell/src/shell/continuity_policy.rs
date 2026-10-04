@@ -154,10 +154,7 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. } => ContinuityCapability::Media,
-            PersonalFabricAction::DisplayMirrorRequest { .. }
-            | PersonalFabricAction::DisplayMirrorDecision { .. }
-            | PersonalFabricAction::DisplayMirrorStop { .. }
-            | PersonalFabricAction::SetDisplayPlacement { .. }
+            PersonalFabricAction::SetDisplayPlacement { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
             | PersonalFabricAction::DeviceHealthReport { .. }
             | PersonalFabricAction::InputLeaseGranted { .. }
