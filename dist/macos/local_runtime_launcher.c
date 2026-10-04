@@ -11,6 +11,11 @@
 #include <unistd.h>
 #include "local_runtime_config.h"
 
+#ifndef TILO_LAUNCH_NAME
+#define TILO_LAUNCH_NAME "tilo-runtime-mcp"
+#define TILO_EXEC_NAME "tilo-runtime-mcp.real"
+#endif
+
 static void fail(void) {
     fputs("Tilo local runtime: invalid bundle or cache path\n", stderr);
     exit(126);
@@ -38,9 +43,9 @@ int main(int argc, char **argv) {
     uint32_t size = sizeof(raw);
     if (_NSGetExecutablePath(raw, &size) || !realpath(raw, executable)) fail();
     char *slash = strrchr(executable, '/');
-    if (!slash || strcmp(slash + 1, "tilo-runtime-mcp")) fail();
+    if (!slash || strcmp(slash + 1, TILO_LAUNCH_NAME)) fail();
     *slash = 0;
-    join(next, executable, "tilo-runtime-mcp.real");
+    join(next, executable, TILO_EXEC_NAME);
     slash = strrchr(executable, '/');
     if (!slash || strcmp(slash + 1, "MacOS")) fail();
     *slash = 0;
