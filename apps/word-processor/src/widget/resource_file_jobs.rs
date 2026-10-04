@@ -34,11 +34,6 @@ impl WordProcessorWidget {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
-        if self.file_choice.is_some()
-            && !matches!(operation, WordProcessorOperation::ResolveFileChoice { .. })
-        {
-            return Err("Resolve the selected file choice before another operation".into());
-        }
         if self.scoped_file_results.len() + self.file_job_scopes.len() >= 32 {
             return Err("unconsumed file operation results reached the bound".into());
         }
@@ -46,30 +41,11 @@ impl WordProcessorWidget {
             scope.check()?;
         }
         let (destination, force_picker) = match operation {
-            WordProcessorOperation::ResolveFileChoice {
-                generation,
-                use_selected,
-            } => {
-                if self.pending_file_choice.is_some()
-                    || self
-                        .file_choice
-                        .as_ref()
-                        .is_none_or(|offer| offer.generation != generation)
-                {
-                    return Err("selected file choice is no longer current".into());
-                }
-                self.retain_file_job(invocation, scope)?;
-                self.pending_file_choice = Some((invocation, generation, use_selected));
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
             WordProcessorOperation::Open { path } => {
                 if scope.is_some() {
                     return Err("scoped Open requires an admitted destination record mount".into());
                 }
-                if self.portal_rx.is_some()
-                    || self.pending_resource_open.is_some()
-                    || self.pending_replacement.is_some()
-                {
+                if self.portal_rx.is_some() || self.pending_resource_open.is_some() {
                     return Err("another file operation is already running".into());
                 }
                 if let Some(path) = path {
@@ -94,10 +70,7 @@ impl WordProcessorWidget {
             }
         };
 
-        if self.portal_rx.is_some()
-            || self.pending_resource_open.is_some()
-            || self.pending_replacement.is_some()
-        {
+        if self.portal_rx.is_some() || self.pending_resource_open.is_some() {
             return Err("another file operation is already running".into());
         }
         if let Some(destination) = destination {
@@ -169,19 +142,9 @@ impl WordProcessorWidget {
             {
                 self.pending_resource_open = None;
             }
-            if self
-                .pending_file_choice
-                .as_ref()
-                .is_some_and(|(id, _, _)| *id == invocation)
-            {
-                self.pending_file_choice = None;
-            }
             if self.resource_file_invocation == Some(invocation) {
                 self.portal_rx = None;
                 self.portal_purpose = None;
-                self.pending_replacement = None;
-                self.replace_after_save = false;
-                self.unsaved_changes.close();
                 self.resource_file_invocation = None;
             }
             self.finish_file_operation(tilo_actions::InvocationUpdate::Failed {
@@ -193,22 +156,6 @@ impl WordProcessorWidget {
                     retryable: false,
                 },
             });
-        }
-    }
-
-    pub(super) fn resolve_file_job(
-        &mut self,
-        state: &mut AutoCommit,
-        invocation: tilo_actions::InvocationId,
-        generation: u64,
-        use_selected: bool,
-    ) -> Result<(), String> {
-        let scope = self.file_job_scopes.get(&invocation).cloned();
-        match scope {
-            Some(scope) => scope.with_document_mutation(state, |state| {
-                self.resolve_file_choice_for_job(state, generation, use_selected, Some(&scope))
-            }),
-            None => self.resolve_file_choice(state, generation, use_selected),
         }
     }
 }

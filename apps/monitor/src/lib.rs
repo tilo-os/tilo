@@ -16,7 +16,7 @@
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
 //! - [`doc`]        — the shared table layout (sort, tree mode) stored in
 //!   Automerge.
-//! - [`prefs`]      — the person's cadence, kernel-thread and kill-confirmation
+//! - [`prefs`]      — the person's cadence and kernel-thread
 //!   preferences (a personal settings section, outside Automerge and
 //!   collaborative history) and the window's sampling switch.
 //! - [`responsive`] — width-driven Processes push navigation + dashboard reflow.

@@ -650,11 +650,9 @@ cargo test --locked -p file-explorer --lib -- --test-threads=1
 cargo test --locked -p file-explorer --test it -- --test-threads=1
 ```
 
-Word Processor uses `%LOCALAPPDATA%/tilo/word-processor/recovery` for crash recovery
-unless `TILO_WP_RECOVERY_DIR` is explicitly set. Its recovery key stays stable
-when a new file is first saved and Windows starts returning a canonical verbatim
-path. Native tests cover editing, DOCX/ODT/HTML round trips, PDF/RTF/EPUB export,
-recovery cleanup and merging independently edited documents:
+Word Processor keeps every document in its framework record, so there is no
+separate crash-recovery copy. Native tests cover editing, DOCX/ODT/HTML round
+trips through a launch on the file and Save As, and PDF/RTF/EPUB export:
 
 ```powershell
 cargo test --locked -p word-processor --all-targets -- --test-threads=1
