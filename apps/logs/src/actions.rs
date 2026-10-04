@@ -142,10 +142,10 @@ pub fn live_entry_resources(entries: &[LogEntry], filter: &Filter) -> Vec<Resour
                 id.clone(),
                 "logs.entry",
                 format!(
-                    "{} · {} · {}",
-                    entry.time_hms(),
+                    "{} from {} at {}",
                     entry.priority.long(),
-                    entry.unit_short()
+                    entry.unit_short(),
+                    entry.time_hms()
                 ),
             )
             .with_action(operation(
