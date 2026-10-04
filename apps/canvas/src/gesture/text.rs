@@ -201,7 +201,7 @@ impl TextSession {
         (before.shape != self.shape).then(|| {
             CanvasAction::edit(EditMarks {
                 ids: vec![self.id.clone()],
-                shape: Some(self.shape.clone()),
+                shape: Some(crate::actions::Taught(self.shape.clone())),
                 ..EditMarks::default()
             })
         })
