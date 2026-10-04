@@ -32,7 +32,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Checkbox, ChoiceSection, Column, FilePicker, FilePickerMode, IconWidget,
+    Banner, Button, Card, Checkbox, ChoiceCard, Column, FilePicker, FilePickerMode, IconWidget,
     ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
@@ -2243,14 +2243,14 @@ impl OnboardingView {
             .with_on_change_path(KEY_CONNECT_PATH)
             .with_accessible_name(t("onboarding-connect-file"))
             .with_placeholder(&t("onboarding-connect-file-placeholder"))
-            .with_font_size(theme.tokens.typography.size(TextRole::Body));
+            .with_text_role(ui::tokens::typography::TextRole::Body);
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             &t("onboarding-connect-passphrase"),
             &t("onboarding-connect-passphrase-placeholder"),
         )
-        .with_font_size(theme.tokens.typography.size(TextRole::Body));
+        .with_text_role(ui::tokens::typography::TextRole::Body);
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
