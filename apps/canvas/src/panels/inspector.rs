@@ -69,7 +69,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 }
 
 /// Groups of controls, kept apart so each reads as one thing.
-fn spaced(groups: Vec<Element>) -> Element {
+pub(super) fn spaced(groups: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -81,7 +81,7 @@ fn spaced(groups: Vec<Element>) -> Element {
 }
 
 /// A label and the control it names, close together.
-fn tight(children: Vec<Element>) -> Element {
+pub(super) fn tight(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -92,7 +92,7 @@ fn tight(children: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-fn section(children: Vec<Element>) -> Element {
+pub(super) fn section(children: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -104,7 +104,7 @@ fn section(children: Vec<Element>) -> Element {
 }
 
 /// A label on the left and its value on the right.
-fn labelled(label: &str, value: Element) -> Element {
+pub(super) fn labelled(label: &str, value: Element) -> Element {
     Box::new(
         Row::new()
             .with_gap(8.0)
@@ -137,7 +137,7 @@ fn field(label: &str, control: Element) -> Element {
 }
 
 /// A control taking the width a row leaves.
-fn grow(control: Element) -> Element {
+pub(super) fn grow(control: Element) -> Element {
     Box::new(
         Container::new()
             .with_no_padding()
@@ -162,11 +162,73 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             })
         })
     };
+    let layer = {
+        let tools = tools.clone();
+        cx.switch(&tools.layer.clone(), move |cx, layer| {
+            layer_adjust(cx, &tools, layer)
+        })
+    };
     section(vec![
         brush,
         Box::new(ui::widget::Divider::horizontal()),
         artwork(cx),
+        Box::new(ui::widget::Divider::horizontal()),
+        layer,
     ])
+}
+
+/// The chosen layer's colour and tone, folded away until asked for.
+fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
+    let chosen = layer.to_owned();
+    let state = cx.value(move |art: &Artwork| {
+        let layer = art
+            .layer(&chosen)
+            .or_else(|| art.layers.last())
+            .map(|layer| (layer.id.clone(), layer.adjust.clone().unwrap_or_default()));
+        layer.unwrap_or_default()
+    });
+    let tools = tools.clone();
+    cx.switch(&state, move |cx, (id, adjust)| {
+        let open = tools.layer_adjust.clone();
+        let tools = tools.clone();
+        let id = id.clone();
+        let adjust = adjust.clone();
+        cx.switch(&open.clone(), move |cx, shown| {
+            tools.live.borrow_mut().clear();
+            let flip = open.clone();
+            let (icon, name) = if *shown {
+                (Icon::ChevronUp, "canvas-layer-adjust-hide")
+            } else {
+                (Icon::ChevronDown, "canvas-layer-adjust-show")
+            };
+            let name = ui::i18n::I18nManager::lookup_plain(name);
+            let header = Row::new()
+                .with_gap(8.0)
+                .no_wrap()
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(heading("canvas-layer-adjust"))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(
+                    Button::new("canvas-layer-adjust-fold", "", None)
+                        .with_icon(icon)
+                        .ghost()
+                        .with_accessible_name(&name)
+                        .tooltip(name.clone())
+                        .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
+                        .on_view(move || flip.set(!flip.with(|on| *on))),
+                ));
+            let mut parts: Vec<Element> = vec![Box::new(header)];
+            if *shown {
+                parts.push(super::picture::adjustments(
+                    cx,
+                    &super::picture::Target::Layer(id.clone()),
+                    &adjust,
+                    &tools,
+                ));
+            }
+            section(parts)
+        })
+    })
 }
 
 /// The brush on `layer`: the paints its medium offers, its size and load.
@@ -540,15 +602,13 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
             .filter_map(|id| art.mark(id).cloned())
             .collect::<Vec<Mark>>()
     });
-    let stop = tools.stop.clone();
-    cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &stop))
+    let tools = tools.clone();
+    cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &tools))
 }
 
-fn marks_inspector(
-    cx: &ViewCx<ArtworkResource>,
-    marks: &[Mark],
-    stop: &LocalState<usize>,
-) -> Element {
+fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) -> Element {
+    tools.live.borrow_mut().clear();
+    let stop = &tools.stop;
     let Some(first) = marks.first() else {
         return Box::new(Spacer::fixed(0.0));
     };
@@ -578,7 +638,14 @@ fn marks_inspector(
             .push(Box::new(Spacer::new()))
             .push(caption(&summary)),
     )];
-    let lines_only = matches!(first.shape, Shape::Line { .. } | Shape::Stroke { .. });
+    let picture = matches!(first.shape, Shape::Image { .. });
+    if picture {
+        parts.push(super::picture::panel(cx, &ids, first, tools));
+    }
+    let lines_only = matches!(
+        first.shape,
+        Shape::Line { .. } | Shape::Stroke { .. } | Shape::Image { .. }
+    );
     if !lines_only {
         let mut fill = vec![
             heading("canvas-fill"),

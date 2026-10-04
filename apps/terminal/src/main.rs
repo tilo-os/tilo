@@ -87,6 +87,9 @@ fn launch_spec_with_root(
             "empty",
             "empty-menu",
             "ended",
+            "targets",
+            "environments",
+            "host",
         ])
 }
 
@@ -165,6 +168,18 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some(_) => TerminalWidget::spawn_headless(),
     }
     .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    // The target chip takes its header before the first layout, as a live
+    // tab's does at its first sync.
+    match scenario {
+        Some("host") => {
+            widget.show_target(terminal::target::SessionTarget::Host, demo_environments());
+        }
+        Some("targets" | "environments") => widget.show_target(
+            terminal::target::SessionTarget::environment("work"),
+            demo_environments(),
+        ),
+        _ => {}
+    }
     let viewport = args
         .viewport
         .or_else(|| args.value("--size").and_then(parse_size))
@@ -278,6 +293,55 @@ fn apply_demo_selection(widget: &mut TerminalWidget) {
     }
 }
 
+/// The target shots: the chip, the picker it opens, and the environments
+/// panel, over a session in one environment (or on the device itself).
+fn stage_target_scenario(
+    widget: &mut TerminalWidget,
+    doc: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+    name: &str,
+) {
+    let prompt = if name == "host" {
+        "you@laptop:~$ podman ps\r\nCONTAINER ID  IMAGE  COMMAND  CREATED  STATUS\r\nyou@laptop:~$ "
+    } else {
+        "[work ~]$ pandoc --version | head -1\r\npandoc 3.1.11\r\n[work ~]$ "
+    };
+    widget.feed(doc, root, prompt.as_bytes());
+    match name {
+        "targets" => widget.open_target_menu(),
+        "environments" => {
+            widget.open_environments_panel();
+            widget.set_environment_name_input("Writing");
+        }
+        _ => {}
+    }
+}
+
+/// The environments the target shots show.
+fn demo_environments() -> Vec<terminal::target::EnvironmentSummary> {
+    use terminal::target::EnvironmentSummary;
+    vec![
+        EnvironmentSummary {
+            key: "default".into(),
+            name: "Default".into(),
+            tools: vec!["git".into(), "ripgrep".into()],
+            grants: vec![],
+        },
+        EnvironmentSummary {
+            key: "work".into(),
+            name: "Work".into(),
+            tools: vec!["pandoc".into(), "python3".into(), "jq".into()],
+            grants: vec![
+                ("~/src".into(), true),
+                ("~/Documents".into(), false),
+                ("~/Projects/website".into(), true),
+                ("~/Projects/thesis/figures".into(), true),
+                ("~/Downloads/datasets".into(), false),
+            ],
+        },
+    ]
+}
+
 /// Feed a named demo scenario's VT byte sequences through the widget's
 /// production `feed` path. Used only by `--shots --scenario`.
 fn run_scenario(
@@ -287,6 +351,8 @@ fn run_scenario(
     name: &str,
 ) {
     match name {
+        // Where the session runs: the target chip and the picker it opens.
+        "targets" | "environments" | "host" => stage_target_scenario(widget, doc, root, name),
         // A palette of SGR effects: 16 ANSI colors, a 256-cube strip, a
         // truecolor gradient, and the four style bits.
         "colors" => {
