@@ -1546,7 +1546,8 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
 /// app in its own process: the terminal on its tab's record, opening
 /// sessions through the session's process supervisor; Files on the room's
 /// record of places, starting where the shell says and opening documents
-/// through the shell.
+/// through the shell; the browser on the room's record of its bookmarks and
+/// settings.
 fn mount_in_process(
     request: &tilo_desktop::resolver::TileRequest<'_>,
     inputs: &hosted_inputs::HostedTileInputs,
@@ -1596,6 +1597,13 @@ fn mount_in_process(
                 },
             )
         }
+        ShellKind::Browser => apps.borrow_mut().mount(
+            browser::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |_| {},
+        ),
         _ => return None,
     };
     Some(match mounted {
