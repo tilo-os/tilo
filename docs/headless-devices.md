@@ -60,8 +60,8 @@ Service when one answers, otherwise in a private file under
 ## Pair a new device with an existing identity
 
 Both devices must be on the same network segment: pairing finds the other
-device with a UDP broadcast on port 23831, and their clocks must be roughly
-right.
+device with a UDP broadcast on port 23831. Neither needs internet access, and
+their clocks may differ by up to ten minutes.
 
 On the **new** device:
 
@@ -158,14 +158,19 @@ device you are using; do it from another one.
 
 ## Known limits
 
-- Without internet access the two devices find each other only after one of
-  them has connected to the other: device ids are resolved through iroh's
-  public address lookup, and LAN-only mDNS discovery is off by default.
+- Linked devices on one network find each other there without internet,
+  through the same port 23831 rendezvous, within a few seconds of their
+  sessions starting. Nothing they broadcast names the identity or a device;
+  see `crates/hosting/tilo-relay/src/nearby/linked.rs`. The continuity switch
+  in Settings > Devices & Sync turns this off. A board with no reachable time
+  source starts its session about ten seconds after boot, with its own clock.
 - A device enrolled by another device holds only the identity's public record;
   apps that need to sign as the identity (authored launches) do not start on
   it yet, so a continued app may stay "Available elsewhere" there.
 - Revoking a device does not yet remove it from the other devices' direct-peer
-  lists; the revoked device is refused when it connects.
+  lists. A device that knows the revocation stops dialling, answering and
+  recognising the revoked device at once; the revoked device is refused when
+  it connects.
 
 See also [Device sync, remote control and serving mesh](device-mesh.md) and
 [Identity signing boundary](identity-security.md).
