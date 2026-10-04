@@ -102,11 +102,10 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
         assert!((text_y_naive - text_y_correct - (line_height - body_size()) / 2.0).abs() < 0.01);
     }
 
-    // Case `single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line`.
-    // The single-line band is the shipped 40 px at 1× (a 20 px line has
-    // 10 px of slack a side) and grows to line + `ML_PAD_Y` a side once
-    // the scaled line no longer fits: at 2× text the 40 px line sat edge
-    // to edge in a 40 px band.
+    // Case `single_line_band_is_the_control_height_and_grows_with_the_scaled_line`.
+    // The single-line band is a Regular control (32) at 1×, the height of a
+    // button beside it, and grows to line + `spacing.s1` a side once the
+    // scaled line no longer fits.
     {
         fn band_height(theme: &Theme) -> Dimension {
             let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
@@ -116,18 +115,24 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
             let node = ti.build_layout(&mut taffy, theme, &mut node_map);
             taffy.style(node).unwrap().size.height
         }
-        assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
+        let theme = Theme::dark();
+        assert_eq!(
+            band_height(&theme),
+            Dimension::length(32.0),
+            "a field is as tall as a Regular button"
+        );
         let scaled_line = f64::from(body_size() * LINE_HEIGHT_RATIO) * 2.0;
+        let pads = 2.0 * f64::from(theme.tokens.spacing.s1);
         assert!(
-            scaled_line + ML_PAD_Y * 2.0 > 40.0,
-            "fixture: the 2× body line and its pads outgrow the shipped band"
+            scaled_line + pads > 32.0,
+            "fixture: the 2× body line and its pads outgrow the control band"
         );
         #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
-        let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
+        let expected = (scaled_line + pads).ceil() as f32;
         assert_eq!(
             band_height(&Theme::dark().with_text_scale(2.0)),
             Dimension::length(expected),
-            "2× band = scaled line + 2×ML_PAD_Y"
+            "2× band = scaled line + 2×spacing.s1"
         );
     }
 }
@@ -3790,5 +3795,198 @@ fn field_kinds_set_their_text_kind_while_typing() {
         assert_eq!(kind.text_kind(), text, "{kind:?}");
         let input = TextInput::local().with_kind(kind);
         assert_eq!(input.multiline_style(1.0).kind, text, "{kind:?}");
+    }
+}
+
+#[test]
+fn fields_share_rows_with_buttons_and_state_what_they_are() {
+    fn layout_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let size = Widget::measure(
+            ti,
+            taffy::Size {
+                width: Some(width),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut tr,
+        );
+        match taffy.style(node).unwrap().size.height.into_option() {
+            Some(fixed) => fixed,
+            None => size.height,
+        }
+    }
+
+    // Case `a_small_field_is_as_tall_as_a_small_button`.
+    {
+        let theme = Theme::dark();
+        let mut small = TextInput::local().control_size(ControlSize::Small);
+        assert_eq!(layout_height(&mut small, &theme, 200.0), 28.0);
+        assert!(
+            (FieldFace::height(ControlSize::Regular, &theme) - 32.0).abs() < 1e-9,
+            "the painted face agrees with the retained field"
+        );
+    }
+
+    // Case `min_lines_holds_a_wrapping_field_open_with_the_field_inset`.
+    {
+        let theme = Theme::dark();
+        let mut notes = TextInput::local().with_min_lines(4);
+        let height = layout_height(&mut notes, &theme, 300.0);
+        let line = body_size() * LINE_HEIGHT_RATIO;
+        assert!(
+            height >= 4.0 * line,
+            "four lines tall while empty: {height} vs line {line}"
+        );
+        let mut one = TextInput::local().multiline(true);
+        assert!(
+            layout_height(&mut one, &theme, 300.0) >= 32.0,
+            "a wrapping field is never shorter than a single-line one"
+        );
+        let single = TextInput::local();
+        assert!(
+            (notes.text_inset_x(&theme) - single.text_inset_x(&theme)).abs() < 1e-9,
+            "wrapping and single-line fields start their text at one inset"
+        );
+    }
+
+    // Case `a_plain_field_leaves_the_gutter_to_its_parent`.
+    {
+        let theme = Theme::dark();
+        let plain = TextInput::local().multiline(true).with_plain_chrome();
+        assert_eq!(plain.text_inset_x(&theme), 0.0);
+        let mut document = TextInput::local().multiline(true).with_plain_chrome();
+        document.keep_document_inset();
+        assert_eq!(document.text_inset_x(&theme), ML_PAD_X);
+    }
+
+    // Case `the_role_sets_the_family_and_the_placeholder_follows_it`.
+    {
+        let reading = TextInput::local().with_text_role(TextRole::Reading);
+        assert_eq!(reading.placeholder_style(16.0).family, FontChoice::Serif);
+        let code = TextInput::local().with_text_role(TextRole::Code);
+        assert_eq!(code.placeholder_style(13.0).family, FontChoice::Monospace);
+        let body = TextInput::local();
+        assert_eq!(body.placeholder_style(14.0).family, FontChoice::SansSerif);
+    }
+
+    // Case `set_text_parks_the_caret_at_the_end`.
+    {
+        let mut ti = TextInput::local().with_initial_value("abc");
+        ti.set_cursor_pos(1);
+        ti.set_text("hello");
+        assert_eq!(ti.cursor_pos(), 5);
+    }
+
+    // Case `content_sized_text_does_not_grow_with_the_text_scale`.
+    {
+        let big = Theme::dark().with_text_scale(2.0);
+        let mut document = TextInput::local().with_content_size(12.0);
+        let mut chrome = TextInput::local();
+        assert!(
+            layout_height(&mut document, &big, 200.0) < layout_height(&mut chrome, &big, 200.0),
+            "a document-space field keeps its size under a large text scale"
+        );
+        assert!((document.scale_for(2.0) - 1.0).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn submit_accessory_and_span_highlighting() {
+    // Case `on_submit_reports_the_text_on_enter`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local()
+            .with_initial_value("https://tilo.so")
+            .on_submit(move |text| sink.borrow_mut().push(text.to_string()));
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        assert!(drive(
+            &mut ti,
+            &mut doc,
+            &named_key_event(NamedKey::Enter),
+            mods(false, false)
+        ));
+        assert_eq!(seen.borrow().as_slice(), ["https://tilo.so"]);
+        assert!(ti.take_submit(), "the polled signal still fires");
+    }
+
+    // Case `the_clear_accessory_empties_the_field_as_an_edit`.
+    {
+        let mut ti = TextInput::local()
+            .with_initial_value("query")
+            .with_clear_button();
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].name.as_deref(), Some("Clear"));
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        assert!(rect.x1 <= 240.0 && rect.x0 > 120.0, "{rect:?}");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &left_press(), mods(false, false)));
+        assert_eq!(ti.value(), "");
+        assert_eq!(
+            ti.take_dirty().as_deref(),
+            Some(""),
+            "clearing is a user edit"
+        );
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert!(
+            node.children.is_empty(),
+            "an empty field hides its clear button"
+        );
+    }
+
+    // Case `a_span_highlighter_colours_the_single_line`.
+    {
+        let mut ti = TextInput::local()
+            .with_initial_value("=A1+B2")
+            .with_span_highlighter(|text, theme| {
+                text.match_indices("A1")
+                    .map(|(at, m)| (at..at + m.len(), theme.tokens.colors.semantic.danger))
+                    .collect()
+            });
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let spans = &ti.single_attributes.as_ref().expect("highlighted").spans;
+        assert_eq!(
+            spans.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(),
+            ["=", "A1", "+B2"]
+        );
+        assert!(spans[1].color.is_some() && spans[0].color.is_none());
+    }
+
+    // Case `the_painted_field_matches_the_retained_one`.
+    {
+        let theme = Theme::dark();
+        let mut face = Scene::new();
+        FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "")
+            .focused(true)
+            .paint_chrome(&mut face, Affine::IDENTITY, &theme);
+        let mut tr = TextRenderer::new();
+        FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "")
+            .placeholder("Search")
+            .paint(&mut face, Affine::IDENTITY, &mut tr, &theme);
+        let text_rect = FieldFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), "").text_rect(&theme);
+        assert!(
+            (text_rect.x0 - TextInput::local().text_inset_x(&theme)).abs() < 1e-9,
+            "a painted field insets its text like a retained one"
+        );
     }
 }

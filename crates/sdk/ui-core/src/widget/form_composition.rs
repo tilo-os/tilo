@@ -722,6 +722,14 @@ impl Widget for Field {
             } else {
                 taffy::AlignItems::Start
             });
+            // A control narrower than the shared column (a dropdown sized to
+            // its own options) keeps to the column's trailing edge beside its
+            // label, and to its leading edge once stacked.
+            style.justify_items = Some(if beside {
+                taffy::AlignItems::End
+            } else {
+                taffy::AlignItems::Start
+            });
             if *current != style {
                 body_changed = tree.set_style(body, style).is_ok();
             }
