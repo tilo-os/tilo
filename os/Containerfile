@@ -298,7 +298,12 @@ ARG BOOTC_VERSION=1.16.13
 ARG BOOTC_SOURCE=bootc-fa0d3f9.tar.gz
 ARG BOOTC_SHA256=e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac
 ARG BOOTC_BUILD_PACKAGES="ostree-devel patch"
-COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch /patches/
+COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
+    os/external-assets/bootc-runtime/0002-zlink-macros-from-tilo-vendor.patch /patches/
+# zlink-macros with its generated enum variants in a fixed order (0002 patches
+# bootc's build onto it): the release emits them in HashMap order, so no two
+# bootc builds matched and the image was not reproducible.
+COPY vendor/zlink-macros /tilo-vendor/zlink-macros
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     dnf install -y ${BOOTC_BUILD_PACKAGES} \
     && dnf clean all \
