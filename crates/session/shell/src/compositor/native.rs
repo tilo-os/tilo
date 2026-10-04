@@ -6049,6 +6049,9 @@ fn install_device_fabric_bridge(
             }
             match action {
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
+                DeviceFabricUiAction::WakeDevice { device } => {
+                    crate::shell::device_wake::request_wake(&fabric_net, &device)?;
+                }
                 DeviceFabricUiAction::HandoffMedia { session_id, target } => {
                     let _ = crate::shell::device_fabric_runtime::request_media_handoff(
                         &fabric_net,
@@ -6433,6 +6436,7 @@ fn install_session_peer_sync(
     let net = Arc::new(handle);
     net.join_at_boot();
     net.follow_host_rooms();
+    net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);

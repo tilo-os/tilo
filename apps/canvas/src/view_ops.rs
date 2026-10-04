@@ -118,8 +118,19 @@ pub fn render_rgba(
     pixels_per_unit: f64,
     options: &Options,
 ) -> Result<(Vec<u8>, u32, u32), String> {
+    // A picture is drawn at its own detail: a painted layer is simulated as
+    // finely as the picture's pixels need (up to its finest level), not
+    // enlarged from the coarser simulation a whole view shows.
+    let options = Options {
+        detail: Some(options.detail.unwrap_or(crate::detail::Detail {
+            visible: region,
+            pixels_per_unit,
+            wait: true,
+        })),
+        ..options.clone()
+    };
     pixels(region, pixels_per_unit, options.bare, |scene, to| {
-        renderer.draw(art, scene, to, text, options);
+        renderer.draw(art, scene, to, text, &options);
     })
 }
 
@@ -524,6 +535,7 @@ pub fn look(
         wet: None,
         marks: None,
         selection: true,
+        detail: None,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
