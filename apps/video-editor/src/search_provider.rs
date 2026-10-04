@@ -11,7 +11,7 @@ use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use ui::icons::Icon;
 
-use crate::model::{Clip, ClipEffect, Marker, MediaItem, Project, Track};
+use crate::model::{Clip, ClipEffect, Marker, MediaItem, MediaKind, Project, Track};
 use crate::timecode;
 
 /// Result-group headers. Separate kinds make a mixed query readable rather
@@ -114,7 +114,7 @@ impl ProjectSearchProvider {
                 title,
                 crate::actions::reveal_marker_address(marker.id),
             )
-            .with_subtitle(format!("{} · {}", timecode::clock(at), media.name))
+            .with_subtitle(format!("{} in {}", timecode::clock(at), media.name))
             .with_icon(Icon::Star),
         );
     }
@@ -140,7 +140,11 @@ impl ProjectSearchProvider {
                 media.name.clone(),
                 crate::actions::reveal_clip_address(clip.id),
             )
-            .with_subtitle(format!("{} · {}", track.name, timecode::clock(clip.start)))
+            .with_subtitle(format!(
+                "On {} at {}",
+                track.name,
+                timecode::clock(clip.start)
+            ))
             .with_icon(Icon::Film),
         );
     }
@@ -155,10 +159,10 @@ impl ProjectSearchProvider {
                 crate::actions::reveal_effect_address(clip.id, effect.id),
             )
             .with_subtitle(format!(
-                "{} · {} · {:.0}%",
+                "{:.0}% on {} in {}",
+                effect.amount * 100.0,
                 media.name,
                 track.name,
-                effect.amount * 100.0
             ))
             .with_icon(Icon::Sparkles),
         );
@@ -166,11 +170,11 @@ impl ProjectSearchProvider {
 
     fn index_media(&self, item: &MediaItem, uses: usize) {
         let subtitle = if uses == 0 {
-            format!("{} · in the bin", item.kind.as_str())
+            format!("{}, in the bin", kind_words(item.kind))
         } else {
             format!(
-                "{} · used {uses} time{}",
-                item.kind.as_str(),
+                "{}, used {uses} time{}",
+                kind_words(item.kind),
                 if uses == 1 { "" } else { "s" }
             )
         };
@@ -217,7 +221,17 @@ fn marker_subtitle(at: f64, marker: &Marker) -> String {
         // the index above avoids a hidden discovery cap while keeping palette
         // rows compact and responsive.
         let note: String = marker.note.chars().take(160).collect();
-        format!("{} · {}", timecode::clock(at), note)
+        format!("{}: {}", timecode::clock(at), note)
+    }
+}
+
+/// What a source is, at the head of a subtitle.
+fn kind_words(kind: MediaKind) -> &'static str {
+    match kind {
+        MediaKind::Video => "Video",
+        MediaKind::Audio => "Audio",
+        MediaKind::Image => "Image",
+        MediaKind::Text => "Title",
     }
 }
 
@@ -316,7 +330,7 @@ mod tests {
             let provider = ProjectSearchProvider::new(&project);
             assert!(
                 provider
-                    .search_page("DEN FL", None, 8, 8)
+                    .search_page(&"DEN FL".into(), None, 8, 8)
                     .results
                     .iter()
                     .any(|hit| {
@@ -326,7 +340,7 @@ mod tests {
             );
             assert!(
                 provider
-                    .search_page("東京の夜", None, 8, 8)
+                    .search_page(&"東京の夜".into(), None, 8, 8)
                     .results
                     .iter()
                     .any(|hit| {
@@ -347,7 +361,7 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
+            let page = provider.search_page(&LATE_HIT_NEEDLE.into(), None, 4, 4);
             assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
             assert_eq!(provider.stats().records, 3_000);
         }
@@ -365,7 +379,7 @@ mod tests {
             let mut cursor = None;
             let mut seen = 0;
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(&"common".into(), cursor.as_ref(), 17, 5);
                 assert!(page.inspected <= 17);
                 assert!(page.results.len() <= 5);
                 seen += page.results.len();
