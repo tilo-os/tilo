@@ -83,7 +83,10 @@ fn chords_keycaps(chords: &[KeyChord]) -> Box<dyn Widget> {
     if chords.is_empty() {
         return Box::new(Text::new(&t("settings-shortcut-unassigned")).dimmed());
     }
-    let mut row = Row::new().no_wrap();
+    // The caps end on the column's trailing edge, where a recorder's do.
+    let mut row = Row::new()
+        .no_wrap()
+        .with_justify(taffy::JustifyContent::FlexEnd);
     for (index, chord) in chords.iter().enumerate() {
         if index > 0 {
             row = row.push(Box::new(Text::new(&t("settings-shortcut-or")).dimmed()));

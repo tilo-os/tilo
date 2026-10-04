@@ -11,7 +11,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::chrome::RowJoin;
 use ui::icons::Icon;
@@ -20,8 +20,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, PressOutcome, RowAction,
-    RowLeading, ScrollMetrics, Scrollbar, SwipeAction, TaffyTreeExt, Widget,
+    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowAction, RowLeading,
+    ScrollRegion, SwipeAction, TaffyTreeExt, Widget,
 };
 
 use crate::model::{Folder, MessageId};
@@ -98,6 +98,8 @@ struct Slot {
     /// The painted row inside it.
     rect: Rect,
     starred: bool,
+    /// How many messages the conversation holds.
+    messages: usize,
     actions: Vec<Rect>,
 }
 
@@ -153,14 +155,6 @@ impl RowFrame {
     }
 }
 
-/// The track the scroll bar's thumb runs in: the middle of the gutter on the
-/// list's trailing edge.
-fn scroll_track(list: Rect, theme: &Theme) -> Rect {
-    let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-    let margin = (gutter - f64::from(theme.tokens.spacing.s2)) / 2.0;
-    Rect::new(list.x1 - gutter, list.y0, list.x1, list.y1).inset(-margin)
-}
-
 /// A press on a row that may still become a swipe.
 #[derive(Clone, Copy, Debug)]
 struct Press {
@@ -178,6 +172,8 @@ struct RowText<'a> {
     preview: String,
     when: String,
     unread: bool,
+    starred: bool,
+    attachments: bool,
 }
 
 impl<'a> RowText<'a> {
@@ -202,6 +198,8 @@ impl<'a> RowText<'a> {
             preview: message.snippet(),
             when,
             unread: !message.read,
+            starred: message.starred,
+            attachments: message.has_attachments(),
         })
     }
 }
@@ -209,15 +207,14 @@ impl<'a> RowText<'a> {
 pub struct MessageList {
     shared: Shared,
     rect: Rect,
-    scroll: f64,
-    content_h: f64,
+    /// The rows' viewport: wheel, keyboard, bar and accessible scrolling.
+    region: ScrollRegion,
+    /// The theme the list was last drawn with, for the region's lanes.
+    theme: Theme,
     row_h: f64,
     slots: Vec<Slot>,
     pointer: Option<Point>,
     press: Option<Press>,
-    scrollbar: Scrollbar,
-    /// Where the scroll bar runs, while the list scrolls.
-    track: Option<Rect>,
     /// The selection the list last scrolled into view.
     revealed: Option<MessageId>,
     dirty: bool,
@@ -228,14 +225,12 @@ impl MessageList {
         Self {
             shared,
             rect: Rect::ZERO,
-            scroll: 0.0,
-            content_h: 0.0,
+            region: ScrollRegion::vertical(),
+            theme: Theme::dark(),
             row_h: 0.0,
             slots: Vec::new(),
             pointer: None,
             press: None,
-            scrollbar: Scrollbar::vertical(),
-            track: None,
             revealed: None,
             dirty: true,
         }
@@ -264,58 +259,6 @@ impl MessageList {
             })
     }
 
-    /// Drag the scroll bar's thumb, or page by pressing its track. `true`
-    /// when the bar took the event.
-    fn scrollbar_event(&mut self, event: &WindowEvent, scale: f64) -> bool {
-        let Some(track) = self.track else {
-            return false;
-        };
-        let metrics = self.scroll_metrics();
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale, position.y / scale);
-                let Some(offset) = self.scrollbar.drag_to(track, metrics, point) else {
-                    return false;
-                };
-                self.pointer = Some(point);
-                self.scroll = offset;
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let Some(point) = self.pointer.filter(|point| track.contains(*point)) else {
-                    return false;
-                };
-                match self.scrollbar.press(track, metrics, point) {
-                    PressOutcome::Miss => false,
-                    PressOutcome::Thumb => true,
-                    PressOutcome::Page(offset) => {
-                        self.scroll = offset;
-                        true
-                    }
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => self.scrollbar.release(),
-            _ => false,
-        }
-    }
-
-    fn scroll_metrics(&self) -> ScrollMetrics {
-        ScrollMetrics::new(self.content_h, self.rect.height(), self.scroll)
-    }
-
-    fn clamp_scroll(&mut self) {
-        let max = (self.content_h - self.rect.height()).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, max);
-    }
-
     /// Keep the selected conversation in view when the selection moves
     /// (arrow keys, a search hit, an agent opening a message).
     fn reveal(
@@ -333,12 +276,8 @@ impl MessageList {
             return;
         };
         let band = frame.band(index, 0.0);
-        let (top, bottom) = (band.y0 - self.rect.y0, band.y1 - self.rect.y0);
-        if top < self.scroll {
-            self.scroll = top;
-        } else if bottom > self.scroll + self.rect.height() {
-            self.scroll = bottom - self.rect.height();
-        }
+        self.region
+            .scroll_into_view(band - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0));
     }
 
     fn press(&mut self, doc: &mut AutoCommit, point: Point) -> bool {
@@ -435,6 +374,15 @@ impl MessageList {
                 hovered: hovered.is_some(),
                 ..Interaction::default()
             });
+        if text.starred {
+            face = face.mark(Icon::Star);
+        }
+        if text.attachments {
+            face = face.mark(Icon::Paperclip);
+        }
+        if slot.messages > 1 {
+            face = face.count(slot.messages);
+        }
         if let Some(p) = hovered {
             face = face.hovered_action(slot.actions.iter().position(|r| r.contains(p)));
         }
@@ -474,7 +422,8 @@ impl Widget for MessageList {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        self.clamp_scroll();
+        let theme = self.theme.clone();
+        self.region.set_viewport(self.rect, &theme);
     }
 
     fn draw(
@@ -489,10 +438,12 @@ impl Widget for MessageList {
         let shared = self.shared.clone();
         let state = shared.borrow();
         let rows = state.list_rows();
+        self.theme = theme.clone();
+        self.region.set_viewport(r, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         if rows.is_empty() {
             self.slots.clear();
-            self.content_h = 0.0;
+            self.region.set_content_size(r.width(), 0.0);
             let (icon, title, message) = zero_state(
                 !state.mailbox.messages.is_empty(),
                 !state.accounts.is_empty(),
@@ -516,14 +467,12 @@ impl Widget for MessageList {
             .secondary("Ag")
             .height(ctx.text, theme);
         let unscrolled = RowFrame::new(r, self.row_h, false, theme);
-        self.content_h = unscrolled.content_height(rows.len(), theme);
-        let metrics = ScrollMetrics::new(self.content_h, r.height(), self.scroll);
+        self.region
+            .set_content_size(r.width(), unscrolled.content_height(rows.len(), theme));
         // Rows stop short of the scroll bar when the list overflows.
-        let frame = RowFrame::new(r, self.row_h, metrics.overflows(), theme);
-        self.clamp_scroll();
+        let frame = RowFrame::new(r, self.row_h, self.region.overflows_vertically(), theme);
         self.reveal(&rows, state.selected, frame);
-        self.clamp_scroll();
-        let metrics = ScrollMetrics::new(self.content_h, r.height(), self.scroll);
+        let scroll = self.region.offset().y;
 
         let selected_rows: Vec<bool> = rows
             .iter()
@@ -538,15 +487,16 @@ impl Widget for MessageList {
         ctx.scene
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
         let mut slots = Vec::with_capacity(rows.len());
-        for (index, (id, _len)) in rows.iter().enumerate() {
-            let band = frame.band(index, self.scroll);
-            let rect = frame.row(index, self.scroll);
+        for (index, (id, len)) in rows.iter().enumerate() {
+            let band = frame.band(index, scroll);
+            let rect = frame.row(index, scroll);
             let starred = state.mailbox.get(*id).is_some_and(|m| m.starred);
             let slot = Slot {
                 id: *id,
                 band,
                 rect,
                 starred,
+                messages: *len,
                 actions: action_rects(starred, rect, theme),
             };
             if band.y1 >= r.y0 && band.y0 <= r.y1 {
@@ -567,14 +517,7 @@ impl Widget for MessageList {
             slots.push(slot);
         }
         ctx.scene.pop_layer();
-        // The bar shows while the person is in the list, as an overlay bar
-        // does; an idle list is only its rows.
-        self.track = metrics.overflows().then(|| scroll_track(r, theme));
-        let present = self.scrollbar.is_dragging() || self.pointer.is_some_and(|p| r.contains(p));
-        if let Some(track) = self.track.filter(|_| present) {
-            self.scrollbar
-                .draw(ctx.scene, t, track, metrics, theme, false);
-        }
+        self.region.paint_bars(ctx.scene, t, theme);
         self.slots = slots;
     }
 
@@ -582,9 +525,11 @@ impl Widget for MessageList {
         if *ctx.handled {
             return;
         }
-        if self.scrollbar_event(event, ctx.scale_factor) {
+        let theme = self.theme.clone();
+        if self.region.handle_event(event, ctx, &theme) {
             self.dirty = true;
-            *ctx.handled = true;
+        }
+        if *ctx.handled {
             return;
         }
         match event {
@@ -592,10 +537,6 @@ impl Widget for MessageList {
                 let point =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.pointer = Some(point);
-                if let Some(track) = self.track {
-                    self.scrollbar
-                        .update_hover(track, self.scroll_metrics(), point);
-                }
                 if let Some(press) = self.press.as_mut() {
                     press.offset = (press.at.x - point.x).max(0.0);
                 }
@@ -603,7 +544,6 @@ impl Widget for MessageList {
             }
             WindowEvent::CursorLeft { .. } => {
                 self.pointer = None;
-                self.scrollbar.set_hover(false);
                 self.dirty = true;
             }
             WindowEvent::MouseInput {
@@ -652,18 +592,6 @@ impl Widget for MessageList {
                     *ctx.handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.pointer.is_some_and(|p| self.rect.contains(p)) =>
-            {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_h,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                self.scroll -= dy;
-                self.clamp_scroll();
-                self.dirty = true;
-                *ctx.handled = true;
-            }
             _ => {}
         }
     }
@@ -693,6 +621,14 @@ impl Widget for MessageList {
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.shared.borrow().dirty
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.region.needs_animation_frame(&self.theme)
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.region.next_wake_deadline(&self.theme)
     }
 
     fn mark_drawn(&mut self) {

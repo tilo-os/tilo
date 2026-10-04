@@ -2,13 +2,12 @@
 //! select, refresh, new message; or the selection's actions) and the open
 //! message's (reply, archive, star, …).
 //!
-//! Each is the toolkit [`Toolbar`], rebuilt from [`MailState`] whenever what
-//! it offers changes; a command only queues a [`Command`], which the app
-//! applies with the document in hand.
+//! Each is a row of the shell's header buttons, rebuilt from [`MailState`]
+//! whenever what it offers changes; a command only queues a [`Command`],
+//! which the app applies with the document in hand.
 
 use ui::icons::Icon;
-use ui::widget::toolbar::Orientation;
-use ui::widget::{AppModel, ModelPath, Toolbar};
+use ui::widget::{Button, ButtonRole, Element};
 
 use crate::model::Folder;
 use crate::state::{BulkAction, Command, CtxAction, MailState, Shared};
@@ -42,10 +41,10 @@ impl BarItem {
         }
     }
 
-    fn toggle(label: impl Into<String>, on: bool, command: Command) -> Self {
+    fn icon_toggle(icon: Icon, label: impl Into<String>, on: bool, command: Command) -> Self {
         Self {
             label: label.into(),
-            icon: None,
+            icon: Some(icon),
             toggle: Some(on),
             command,
         }
@@ -73,18 +72,21 @@ fn bulk_actions(state: &MailState) -> BarSpec {
     };
     vec![
         vec![
-            BarItem::button(
+            BarItem::icon(
+                Icon::Archive,
                 BulkAction::Archive.label(),
                 Command::Bulk(BulkAction::Archive),
             ),
-            BarItem::button(delete.label(), Command::Bulk(delete)),
+            BarItem::icon(Icon::Trash, delete.label(), Command::Bulk(delete)),
         ],
         vec![
-            BarItem::button(
+            BarItem::icon(
+                Icon::MailOpen,
                 BulkAction::MarkRead.label(),
                 Command::Bulk(BulkAction::MarkRead),
             ),
-            BarItem::button(
+            BarItem::icon(
+                Icon::Mail,
                 BulkAction::MarkUnread.label(),
                 Command::Bulk(BulkAction::MarkUnread),
             ),
@@ -97,15 +99,16 @@ fn bulk_actions(state: &MailState) -> BarSpec {
 /// column, or here when that column is not beside the list.
 pub(crate) fn list_bar(state: &MailState) -> BarSpec {
     if state.bulk_selecting {
-        let choosing = vec![
-            BarItem::button("Select all", Command::SelectAllVisible),
-            BarItem::button("Done", Command::ToggleBulk),
-        ];
+        let select_all = BarItem::button("Select all", Command::SelectAllVisible);
+        let done = BarItem::button("Done", Command::ToggleBulk);
         if !state.narrow {
-            return vec![choosing];
+            return vec![vec![select_all, done]];
         }
-        let mut groups = bulk_actions(state);
-        groups.push(choosing);
+        // A narrow header moves its last commands into the More menu first:
+        // Done stays, the selection's own actions follow it.
+        let mut groups = vec![vec![done]];
+        groups.extend(bulk_actions(state));
+        groups.push(vec![select_all]);
         return groups;
     }
     vec![vec![
@@ -153,31 +156,52 @@ pub(crate) fn reader_bar(state: &MailState) -> BarSpec {
             BarItem::icon(Icon::MoreHorizontal, "More actions", Command::MessageMenu),
         ]];
     }
-    let mut triage = vec![BarItem::button(
+    let mut triage = vec![BarItem::icon(
+        Icon::Archive,
         "Archive",
         Command::Message(CtxAction::Archive),
     )];
     if message.folder != Folder::Inbox && message.folder != Folder::Drafts {
-        triage.push(BarItem::button(
+        triage.push(BarItem::icon(
+            Icon::Inbox,
             "Move to Inbox",
             Command::Message(CtxAction::MoveToInbox),
         ));
     }
-    triage.push(BarItem::button(delete, Command::Message(CtxAction::Delete)));
+    triage.push(BarItem::icon(
+        Icon::Trash,
+        delete,
+        Command::Message(CtxAction::Delete),
+    ));
+    let read_icon = if message.read {
+        Icon::Mail
+    } else {
+        Icon::MailOpen
+    };
     vec![
         vec![
-            BarItem::button("Reply", Command::Message(CtxAction::Reply)),
-            BarItem::button("Reply all", Command::Message(CtxAction::ReplyAll)),
-            BarItem::button("Forward", Command::Message(CtxAction::Forward)),
+            BarItem::icon(Icon::Reply, "Reply", Command::Message(CtxAction::Reply)),
+            BarItem::icon(
+                Icon::ReplyAll,
+                "Reply all",
+                Command::Message(CtxAction::ReplyAll),
+            ),
+            BarItem::icon(
+                Icon::Forward,
+                "Forward",
+                Command::Message(CtxAction::Forward),
+            ),
         ],
         triage,
         vec![
-            BarItem::toggle(
+            BarItem::icon_toggle(
+                Icon::Star,
                 "Star",
                 message.starred,
                 Command::Message(CtxAction::ToggleStar),
             ),
-            BarItem::button(
+            BarItem::icon(
+                read_icon,
                 CtxAction::ToggleRead.label(message.read, message.starred),
                 Command::Message(CtxAction::ToggleRead),
             ),
@@ -185,95 +209,30 @@ pub(crate) fn reader_bar(state: &MailState) -> BarSpec {
     ]
 }
 
-fn build(spec: &BarSpec, shared: &Shared) -> Toolbar {
-    let mut bar = Toolbar::new(Orientation::Horizontal);
-    for (index, group) in spec.iter().enumerate() {
-        if index > 0 {
-            bar = bar.push_separator();
-        }
-        for item in group {
+/// The header's actions for `spec`: one button per command, in order, so
+/// the shell collapses labels to icons and moves what does not fit into
+/// its More menu one command at a time. `column` names the header in the
+/// buttons' ids.
+pub(crate) fn header_actions(spec: &BarSpec, shared: &Shared, column: &str) -> Vec<Element> {
+    spec.iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, item)| {
             let command = item.command.clone();
             let shared = shared.clone();
             let on_click = move || shared.borrow_mut().push_command(command.clone());
-            bar = match (item.icon, item.toggle) {
-                (_, Some(on)) => bar.push_toggle(&item.label, on, on_click),
-                (Some(icon), None) => bar.push_icon(icon, &item.label, on_click),
-                (None, None) => bar.push_button(&item.label, on_click),
+            let id = format!("mail-{column}-action-{index}");
+            let button = match item.icon {
+                Some(icon) => Button::icon_only(&id, icon, &item.label),
+                None => Button::new(&id, &item.label, None).role(ButtonRole::Plain),
             };
-        }
-    }
-    bar
-}
-
-/// A header toolbar kept in step with the mail state.
-pub struct CommandBar {
-    bar: Toolbar,
-    shared: Shared,
-    spec: BarSpec,
-    of: fn(&MailState) -> BarSpec,
-    rebuilt: bool,
-}
-
-impl CommandBar {
-    fn new(shared: Shared, of: fn(&MailState) -> BarSpec) -> Self {
-        let spec = of(&shared.borrow());
-        Self {
-            bar: build(&spec, &shared),
-            shared,
-            spec,
-            of,
-            rebuilt: false,
-        }
-    }
-
-    /// The message list's header actions.
-    pub fn list(shared: Shared) -> Self {
-        Self::new(shared, list_bar)
-    }
-
-    /// The open message's header actions.
-    pub fn reader(shared: Shared) -> Self {
-        Self::new(shared, reader_bar)
-    }
-
-    fn refresh(&mut self) {
-        let next = (self.of)(&self.shared.borrow());
-        if next != self.spec {
-            self.bar = build(&next, &self.shared);
-            self.spec = next;
-            self.rebuilt = true;
-        }
-    }
-}
-
-impl ui::widget::Decorator for CommandBar {
-    type Inner = Toolbar;
-
-    fn inner(&self) -> &Toolbar {
-        &self.bar
-    }
-
-    fn inner_mut(&mut self) -> &mut Toolbar {
-        &mut self.bar
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.refresh();
-        ui::widget::Widget::sync(&mut self.bar, state, path);
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let rebuilt = std::mem::take(&mut self.rebuilt);
-        ui::widget::Widget::take_structure_dirty(&mut self.bar) || rebuilt
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rebuilt || ui::widget::Widget::is_layout_dirty(&self.bar)
-    }
-
-    fn name(&self) -> &'static str {
-        "MailCommandBar"
-    }
+            let button = match item.toggle {
+                Some(on) => button.toggled(on),
+                None => button,
+            };
+            Box::new(button.on_click(on_click)) as Element
+        })
+        .collect()
 }
 
 #[cfg(test)]

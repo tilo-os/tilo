@@ -71,6 +71,7 @@ pub mod reader;
 pub mod resource;
 pub mod sample;
 pub mod search_provider;
+mod setup_sheet;
 pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod state;

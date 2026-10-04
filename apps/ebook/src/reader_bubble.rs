@@ -88,20 +88,17 @@ impl ReaderBubble {
         (rect != Rect::ZERO).then(|| rect.center())
     }
 
-    /// Draw the bubble centred in the reading `column`, standing on its
-    /// bottom edge (the slot the page's foot keeps for it), and refresh the
-    /// geometry consumed by [`Self::hit_test`].
-    pub(crate) fn draw(
+    /// Follow the reading position and the pointer before the page's foot
+    /// paints, and return how far the bubble holds the foot's band (0
+    /// hidden, 1 shown). The bubble and the progress slider share that band:
+    /// a new page shows the bubble, the pointer on it keeps it, and
+    /// reaching for the slider (`slider_active`) gives the band back at once.
+    pub(crate) fn advance(
         &mut self,
-        ctx: &mut PaintCtx<'_>,
-        column: Rect,
-        cursor: Point,
         position: ReaderPosition,
-    ) {
-        self.rect = Rect::ZERO;
-        self.previous_rect = Rect::ZERO;
-        self.next_rect = Rect::ZERO;
-
+        slider_active: bool,
+        cursor: Point,
+    ) -> f32 {
         let now = ui::time::now();
         let current = (position.chapter, position.page);
         if self
@@ -111,31 +108,39 @@ impl ReaderBubble {
             self.animation.poke(now);
         }
         self.shown_position = Some(current);
+        let on_pill = self.rect != Rect::ZERO && self.rect.contains(cursor);
+        if slider_active && !on_pill && !self.force_open {
+            self.animation = ui::StatusBubble::new();
+        } else {
+            self.animation.set_hover(self.force_open || on_pill, now);
+        }
+        self.animation.alpha(now)
+    }
 
-        let theme = ctx.theme;
-        let slot = control_slot(theme);
-        let label = label(ctx.text, theme, column.x0, column.x1, position);
-        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, ctx.text, theme, slot);
-        let cx = f64::midpoint(column.x0, column.x1);
-        let by = column.y1 - pill_h;
-        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
+    /// Draw the bubble centred in the foot's `band` at the opacity
+    /// [`Self::advance`] settled on, and refresh the geometry consumed by
+    /// [`Self::hit_test`].
+    pub(crate) fn draw(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        band: Rect,
+        cursor: Point,
+        position: ReaderPosition,
+    ) {
+        self.rect = Rect::ZERO;
+        self.previous_rect = Rect::ZERO;
+        self.next_rect = Rect::ZERO;
 
-        let zone = f64::from(theme.tokens.spacing.s8);
-        let reveal_zone = Rect::new(
-            rect.x0 - zone,
-            column.y1 - (pill_h + zone),
-            rect.x1 + zone,
-            column.y1,
-        );
-        self.animation.set_hover(
-            self.force_open || reveal_zone.contains(cursor) || rect.contains(cursor),
-            now,
-        );
-
-        let alpha = self.animation.alpha(now);
+        let alpha = self.animation.alpha(ui::time::now());
         if alpha <= 0.0 {
             return;
         }
+
+        let theme = ctx.theme;
+        let slot = control_slot(theme);
+        let label = label(ctx.text, theme, band.x0, band.x1, position);
+        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, ctx.text, theme, slot);
+        let rect = Rect::from_center_size(band.center(), (pill_w, pill_h));
 
         self.rect = rect;
         self.previous_rect = Rect::new(rect.x0, rect.y0, rect.x0 + slot, rect.y1);

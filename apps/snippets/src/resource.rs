@@ -52,13 +52,17 @@ impl Resource for Snippets {
         vec![
             ActionDecl::new(
                 "new-snippet",
-                "New snippet",
+                crate::tr("snippets-new-snippet"),
                 vec![
-                    ActionParam::required("title", ParamType::Text, "Title"),
-                    ActionParam::optional(
+                    ActionParam::required_owned(
+                        "title",
+                        ParamType::Text,
+                        crate::tr("snippets-action-title"),
+                    ),
+                    ActionParam::optional_owned(
                         "folder",
                         ParamType::Text,
-                        "Folder to file it under (blank = All Snippets)",
+                        crate::tr("snippets-action-folder-hint"),
                     ),
                 ],
                 |args, _| {
@@ -213,14 +217,20 @@ mod tests {
             "the overlay sidebar is open"
         );
 
-        for (scenario, label) in [
-            ("expand", "Fill in variables"),
-            ("language", "Set language to Rust"),
-            ("more", "Duplicate"),
-        ] {
+        for (scenario, label) in [("expand", "Fill in variables"), ("more", "Duplicate")] {
             let mut staged = TestApp::<SnippetsShell>::capture(Some(scenario)).unwrap();
             assert!(has_control(&mut staged, label), "{scenario} shows {label}");
         }
+        let mut language = TestApp::<SnippetsShell>::capture(Some("language")).unwrap();
+        assert!(
+            language
+                .harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some("Language")
+                    && node.is_expanded() == Some(true)),
+            "the language picker is open"
+        );
     }
 
     /// Agents and the palette reach every snippet, tag and folder through the

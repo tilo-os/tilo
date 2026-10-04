@@ -9,9 +9,9 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -20,8 +20,8 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::webview::{SharedEngine, WebViewCommand};
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ControlSize,
-    EmptyState, EmptyStateContent, ScrollMetrics, Scrollbar, TaffyTreeExt, WebView, Widget,
+    AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, ChipFace, ChipLead, EmptyState,
+    EmptyStateContent, ScrollRegion, TaffyTreeExt, WebView, Widget,
 };
 use ui::{TextKind, TextRole};
 
@@ -225,12 +225,12 @@ impl Flow<'_, '_> {
 pub struct MessageReader {
     shared: Shared,
     rect: Rect,
-    scroll: f64,
-    content_h: f64,
+    /// The conversation's viewport: wheel, keyboard, bar and accessible
+    /// scrolling.
+    region: ScrollRegion,
+    /// The theme the reader was last drawn with, for the region's lanes.
+    theme: Theme,
     pointer: Point,
-    /// One line of body text, the step a wheel notch scrolls.
-    line: f64,
-    scrollbar: Scrollbar,
     /// Attachment chips `(rect, message, index)` as last painted.
     attachments: Vec<(Rect, MessageId, usize)>,
     /// The "Load images" / "Block images" button as last painted.
@@ -262,11 +262,9 @@ impl MessageReader {
         Self {
             shared,
             rect: Rect::ZERO,
-            scroll: 0.0,
-            content_h: 0.0,
+            region: ScrollRegion::vertical(),
+            theme: Theme::dark(),
             pointer: Point::new(-1.0, -1.0),
-            line: 0.0,
-            scrollbar: Scrollbar::vertical(),
             attachments: Vec::new(),
             remote_button: None,
             shown: None,
@@ -341,11 +339,6 @@ impl MessageReader {
         self.remote_button
     }
 
-    fn clamp_scroll(&mut self) {
-        let max = (self.content_h - self.rect.height()).max(0.0);
-        self.scroll = self.scroll.clamp(0.0, max);
-    }
-
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
         let count = state.selected_bulk_ids().len();
         let title = if state.bulk_selecting {
@@ -368,55 +361,34 @@ impl MessageReader {
         );
     }
 
-    /// Paint the remote-content line for an HTML body at the flow's cursor:
-    /// what is blocked and the button that changes it.
+    /// Paint the remote-content banner for an HTML body at the flow's
+    /// cursor: what is blocked and the button that changes it.
     fn paint_remote_line(&mut self, flow: &mut Flow<'_, '_>, interactive: bool) {
         let theme = flow.ctx.theme;
-        let caption = theme.text(TextRole::Caption);
-        let size = ControlSize::Small;
-        let button_h = ButtonFace::height(size, theme);
-        let (text, button) = if !interactive {
-            ("Showing the plain text of this message.", None)
+        let (icon, title, action) = if !interactive {
+            (Icon::Info, "Showing the plain text of this message.", None)
         } else if self.html_load_remote {
-            ("Remote images are shown.", Some("Block images"))
+            (
+                Icon::Image,
+                "Remote images are shown.",
+                Some("Block images"),
+            )
         } else {
             (
+                Icon::Shield,
                 "Remote images are blocked to protect your privacy.",
                 Some("Load images"),
             )
         };
-        let row_h = button_h.max(flow.line(TextRole::Caption));
-        let mut text_w = flow.width;
-        self.remote_button = None;
-        if let Some(label) = button {
-            let probe = ButtonFace::new(Rect::ZERO, label).control_size(size);
-            let w = probe.intrinsic_width(flow.ctx.text, theme);
-            let rect = Rect::from_center_size(
-                Point::new(flow.x + flow.width - w / 2.0, flow.y + row_h / 2.0),
-                (w, button_h),
-            );
-            Button::paint(
-                flow.ctx.scene,
-                flow.ctx.transform,
-                flow.ctx.text,
-                theme,
-                &ButtonFace::new(rect, label)
-                    .role(ButtonRole::Secondary)
-                    .control_size(size)
-                    .hovered(rect.contains(flow.pointer)),
-            );
-            self.remote_button = Some(rect);
-            text_w -= w + f64::from(theme.tokens.spacing.s3);
+        let mut content = BannerContent::new(BannerKind::Neutral, title).with_icon(icon);
+        if let Some(label) = action {
+            content = content.action(label);
         }
-        let caption_h = flow.line(TextRole::Caption);
-        flow.line_at(
-            text,
-            &caption,
-            theme.text_dim,
-            Point::new(flow.x, flow.y + (row_h - caption_h) / 2.0),
-            text_w,
-        );
-        flow.y += row_h;
+        let height = Banner::height(&content, flow.width, flow.ctx.text, theme);
+        let rect = Rect::new(flow.x, flow.y, flow.x + flow.width, flow.y + height);
+        let hit = Banner::paint(&mut flow.ctx, rect, &content, flow.pointer);
+        self.remote_button = hit.action;
+        flow.y += height;
     }
 
     #[expect(
@@ -447,18 +419,18 @@ impl MessageReader {
         let head_id = head.id;
         if self.shown != Some(head_id) {
             self.shown = Some(head_id);
-            self.scroll = 0.0;
+            self.region.set_offset(Vec2::ZERO);
         }
         let spacing = theme.tokens.spacing;
         let gutter = f64::from(spacing.s6);
         let r = self.rect;
-        self.line = ctx.line_box(TextRole::Body);
         let head_html = head.html_body.clone();
         // An HTML body takes the rest of the reader, so the thread above it
         // does not scroll.
         if head_html.is_some() {
-            self.scroll = 0.0;
+            self.region.set_offset(Vec2::ZERO);
         }
+        let scroll = self.region.offset().y;
         ctx.scene
             .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &r);
         let mut flow = Flow {
@@ -466,7 +438,7 @@ impl MessageReader {
             state: &state,
             x: r.x0 + gutter,
             width: (r.width() - 2.0 * gutter).max(1.0),
-            y: r.y0 + gutter - self.scroll,
+            y: r.y0 + gutter - scroll,
             pointer: self.pointer,
             attachments: Vec::new(),
         };
@@ -567,19 +539,13 @@ impl MessageReader {
         let content_h = if webview_rect.is_some() {
             r.height()
         } else {
-            flow.y + self.scroll - r.y0
+            flow.y + scroll - r.y0
         };
         let attachments = std::mem::take(&mut flow.attachments);
         flow.ctx.scene.pop_layer();
         self.attachments = attachments;
-        self.content_h = content_h;
-        let metrics = ScrollMetrics::new(self.content_h, r.height(), self.scroll);
-        if metrics.overflows() {
-            let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-            let track = Rect::new(r.x1 - gutter, r.y0, r.x1, r.y1);
-            self.scrollbar
-                .draw(flow.ctx.scene, t, track, metrics, theme, false);
-        }
+        self.region.set_content_size(r.width(), content_h);
+        self.region.paint_bars(flow.ctx.scene, t, theme);
         drop(flow);
         drop(state);
 
@@ -667,7 +633,8 @@ impl Widget for MessageReader {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        self.clamp_scroll();
+        let theme = self.theme.clone();
+        self.region.set_viewport(self.rect, &theme);
     }
 
     fn draw(
@@ -687,7 +654,8 @@ impl Widget for MessageReader {
             self.paint_empty(&mut PaintCtx::new(scene, t, tr, theme), &state);
             return;
         }
-        self.clamp_scroll();
+        self.theme = theme.clone();
+        self.region.set_viewport(self.rect, theme);
         self.paint_thread(scene, t, tr, theme, presence);
     }
 
@@ -696,6 +664,13 @@ impl Widget for MessageReader {
             return;
         }
         self.forward_to_html(event, ctx);
+        if *ctx.handled {
+            return;
+        }
+        let theme = self.theme.clone();
+        if self.region.handle_event(event, ctx, &theme) {
+            self.dirty = true;
+        }
         if *ctx.handled {
             return;
         }
@@ -710,16 +685,6 @@ impl Widget for MessageReader {
                 button: MouseButton::Left,
                 ..
             } if self.rect.contains(self.pointer) && self.press(self.pointer) => {
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.pointer) => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.line,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
-                };
-                self.scroll -= dy;
-                self.clamp_scroll();
-                self.dirty = true;
                 *ctx.handled = true;
             }
             _ => {}
@@ -758,9 +723,28 @@ impl Widget for MessageReader {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.html_view
-            .as_ref()
-            .is_some_and(ui::Widget::needs_animation_frame)
+        self.region.needs_animation_frame(&self.theme)
+            || self
+                .html_view
+                .as_ref()
+                .is_some_and(ui::Widget::needs_animation_frame)
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.region.next_wake_deadline(&self.theme)
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.region.primary_vertical_scroll()
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        let result = self.region.apply_primary_vertical_scroll(action);
+        self.dirty = true;
+        result
     }
 
     fn mark_drawn(&mut self) {

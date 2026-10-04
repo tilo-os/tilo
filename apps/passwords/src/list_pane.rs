@@ -55,6 +55,21 @@ fn star_rect(row: Rect, favorite: bool, theme: &Theme) -> Option<Rect> {
         .copied()
 }
 
+/// Reserve the star's slot on a row that shows it, so a long title ends
+/// before the star instead of running under it.
+fn hold_star_slot<'a>(
+    face: ListRowFace<'a>,
+    row: Rect,
+    shown: bool,
+    favorite: bool,
+    theme: &Theme,
+) -> ListRowFace<'a> {
+    match shown.then(|| star_rect(row, favorite, theme)).flatten() {
+        Some(star) => face.trailing_width(star.width()),
+        None => face,
+    }
+}
+
 /// The scroll bar's gutter at the list's trailing edge: rows end before it,
 /// and the thumb runs in its middle lane, clear of the rows and of the
 /// column's edge.
@@ -203,6 +218,7 @@ impl Core {
                     hovered,
                     ..Interaction::default()
                 });
+            let face = hold_star_slot(face, rect, favorite || hovered, favorite, theme);
             let face = match visible.get(i.saturating_add(1)) {
                 Some(next) => face.separator(Some(&next.id) == open.as_ref()),
                 None => face,

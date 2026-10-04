@@ -2159,6 +2159,21 @@ impl Grid {
         self.draw_active_highlight(scene, transform, theme, body);
         self.draw_fill_handle(scene, transform, theme, body);
         self.draw_reference_outlines(scene, transform, theme, body);
+        // A column the body's edge cuts fades out there, so a number cut
+        // short reads as running on past the edge rather than as a shorter
+        // number.
+        if cols
+            .last()
+            .is_some_and(|&c| self.cell_screen_rect(c, 0).x1 > body.x1 + 0.5)
+        {
+            ui::surface::content_edge_fade(
+                scene,
+                transform,
+                body,
+                ui::surface::ContentEdge::Trailing,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
         scene.pop_layer();
 
         // --- headers (painted on top, never clipped by the body) ---

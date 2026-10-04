@@ -10,10 +10,10 @@
 //! the status bubble.
 
 use super::{
-    Affine, AutoCommit, BAR_COMMANDS, ContextMenu, Currency, DATE_STYLES, ElementState, MenuItem,
-    MouseButton, OpenMenu, Point, PresenceCtx, Rect, Scene, SettingChip, SettingKind,
-    SettingsPanel, SheetsApp, TAB_MENU_ACTIONS, TAB_PALETTE_LEN, TIME_STYLES, TabAction,
-    TextRenderer, TextRole, Theme, Widget, WindowEvent, count_f64, tab_action_label,
+    Affine, AutoCommit, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx,
+    Rect, Scene, SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS,
+    TAB_PALETTE_LEN, TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent,
+    count_f64, tab_action_label,
 };
 use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::{
@@ -56,74 +56,38 @@ const SETTINGS_NOTE: &str =
 impl SheetsApp {
     // --- the command menus ---------------------------------------------------
 
-    /// The rows of a command menu, in order: the label, the action it runs
-    /// (`None` for a separator), and its check state when it has one.
-    fn menu_rows_for(&self, menu: OpenMenu) -> Vec<(String, Option<MenuItem>, Option<bool>)> {
-        let row = |label: &str, item: MenuItem, checked: Option<bool>| {
-            (label.to_owned(), Some(item), checked)
-        };
-        let rule = || (String::new(), None, None);
-        match menu {
-            OpenMenu::None => Vec::new(),
-            OpenMenu::File => {
-                let items = Self::file_menu_items();
-                let mut rows = Vec::new();
-                for (index, (label, item)) in items.into_iter().enumerate() {
-                    // New sheet, then the three imports, then the three exports.
-                    if index == 1 || index == 4 {
-                        rows.push(rule());
-                    }
-                    rows.push(row(label, item, None));
-                }
-                rows
+    /// The File menu's rows: New sheet, then the three imports, then the
+    /// three exports.
+    pub(super) fn file_menu_rows() -> Vec<MenuRow> {
+        let mut rows = Vec::new();
+        for (index, (label, item)) in Self::file_menu_items().into_iter().enumerate() {
+            if index == 1 || index == 4 {
+                rows.push((String::new(), None, None));
             }
-            OpenMenu::Format => {
-                let active = self.current_active_format.category();
-                let mut rows = Vec::new();
-                for (label, item) in self.format_menu_items() {
-                    if item == MenuItem::ClearFormat {
-                        rows.push(rule());
-                        rows.push(row(label, item, None));
-                    } else {
-                        let on = matches!(&item, MenuItem::SetFormat(f) if f.category() == active);
-                        rows.push(row(label, item, Some(on)));
-                    }
-                }
-                rows
-            }
-            OpenMenu::More => {
-                let shown = self
-                    .menu_buttons
-                    .iter()
-                    .filter(|button| button.opens != Some(OpenMenu::More))
-                    .count();
-                BAR_COMMANDS
-                    .into_iter()
-                    .skip(shown)
-                    .filter_map(|(label, _, item)| {
-                        let item = item?;
-                        let checked =
-                            matches!(item, MenuItem::ToggleBold | MenuItem::ToggleFormulaView)
-                                .then(|| self.command_state(&item));
-                        Some((label.to_owned(), Some(item), checked))
-                    })
-                    .collect()
-            }
+            rows.push((label.to_owned(), Some(item), None));
         }
+        rows
     }
 
-    /// Whether a toggle command is on right now.
-    pub(super) fn command_state(&self, item: &MenuItem) -> bool {
-        match item {
-            MenuItem::ToggleBold => self.active_cell_bold,
-            MenuItem::ToggleFormulaView => self.grid.formula_view(),
-            _ => false,
+    /// The Format menu's rows, the active cell's format checked.
+    pub(super) fn format_menu_rows(&self) -> Vec<MenuRow> {
+        let active = self.current_active_format.category();
+        let mut rows = Vec::new();
+        for (label, item) in self.format_menu_items() {
+            if item == MenuItem::ClearFormat {
+                rows.push((String::new(), None, None));
+                rows.push((label.to_owned(), Some(item), None));
+            } else {
+                let on = matches!(&item, MenuItem::SetFormat(f) if f.category() == active);
+                rows.push((label.to_owned(), Some(item), Some(on)));
+            }
         }
+        rows
     }
 
     /// Where a floating surface may stand: the window, kept `s2` off every
     /// edge so a menu never touches it.
-    fn float_bounds(&self) -> Rect {
+    pub(super) fn float_bounds(&self) -> Rect {
         self.rect.inset(-self.metrics.s2)
     }
 
@@ -133,48 +97,8 @@ impl SheetsApp {
         Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap)
     }
 
-    /// Open `menu` anchored under its button, closing whatever else floats.
-    pub(super) fn open_command_menu(&mut self, menu: OpenMenu) {
-        self.close_overlays();
-        let Some(anchor) = self
-            .menu_buttons
-            .iter()
-            .find(|button| button.opens == Some(menu))
-            .map(|button| button.rect)
-        else {
-            return;
-        };
-        let mut context = ContextMenu::new();
-        self.menu_items.clear();
-        for (label, item, checked) in self.menu_rows_for(menu) {
-            match item {
-                None => {
-                    context.push(Row::separator());
-                    self.menu_items.push(None);
-                }
-                Some(item) => {
-                    let mut row = Row::selection(label);
-                    if let Some(on) = checked {
-                        row = row.with_checked(on);
-                    }
-                    context.push(row);
-                    self.menu_items.push(Some(item));
-                }
-            }
-        }
-        context.open_anchored(
-            Self::float_anchor(anchor, self.metrics.s1),
-            self.float_bounds(),
-        );
-        self.menu = context;
-        self.open_menu = menu;
-        self.pending.redraw = true;
-    }
-
     /// Close every floating surface.
     pub(super) fn close_overlays(&mut self) {
-        self.menu.close();
-        self.open_menu = OpenMenu::None;
         self.tab_menu.close();
         self.tab_menu_target = None;
         self.tab_colour.close();
@@ -185,22 +109,6 @@ impl SheetsApp {
     /// Re-anchor whatever is open after a reflow, so a menu follows its button
     /// and the tab menu follows its tab.
     pub(super) fn relayout_overlays(&mut self) {
-        if self.menu.is_open() {
-            let anchor = self
-                .menu_buttons
-                .iter()
-                .find(|button| button.opens == Some(self.open_menu))
-                .map(|button| button.rect);
-            if let Some(anchor) = anchor {
-                self.menu.reanchor(
-                    Self::float_anchor(anchor, self.metrics.s1),
-                    self.float_bounds(),
-                );
-            } else {
-                self.menu.close();
-                self.open_menu = OpenMenu::None;
-            }
-        }
         if let Some(target) = self.tab_menu_target {
             let tab = self.tab_anchor(target);
             self.tab_menu.reanchor(
@@ -219,20 +127,6 @@ impl SheetsApp {
             .iter()
             .find(|(_, i)| *i == idx)
             .map_or(self.add_tab_rect, |(rect, _)| *rect)
-    }
-
-    /// Run the row the open command menu just reported, if any.
-    fn drain_command_menu(&mut self, doc: &mut AutoCommit) {
-        if let Some(row) = self.menu.take_selection() {
-            self.open_menu = OpenMenu::None;
-            if let Some(Some(item)) = self.menu_items.get(row).cloned() {
-                self.run_menu_item(doc, &item);
-            }
-        }
-        if !self.menu.is_open() {
-            self.open_menu = OpenMenu::None;
-        }
-        self.pending.redraw = true;
     }
 
     // --- the sheet-tab menu --------------------------------------------------
@@ -383,43 +277,10 @@ impl SheetsApp {
     // --- routing -------------------------------------------------------------
 
     /// Route an event to whatever floats over the sheet. A floating surface is
-    /// modal: while one is open it takes every event, except a press on a
-    /// command button, which closes the menu and then acts as usual (so one
-    /// click moves from File to Format). Returns whether the event was
-    /// consumed.
+    /// modal: while one is open it takes every event. The command bar's own
+    /// menus go with the bar, which takes the event first. Returns whether
+    /// the event was consumed.
     pub(super) fn route_overlays(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        let left_press = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        );
-        if self.menu.is_open() {
-            if left_press
-                && let Some(opens) = self
-                    .menu_buttons
-                    .iter()
-                    .find(|button| button.rect.contains(self.last_mouse))
-                    .map(|button| button.opens)
-            {
-                let same = opens == Some(self.open_menu);
-                self.menu.close();
-                self.open_menu = OpenMenu::None;
-                self.pending.redraw = true;
-                if same {
-                    *ctx.handled = true;
-                    return true;
-                }
-                return false;
-            }
-            self.menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-            self.drain_command_menu(ctx.state);
-            *ctx.handled = true;
-            return true;
-        }
         if self.tab_colour.is_open() {
             self.tab_colour
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -434,7 +295,10 @@ impl SheetsApp {
             *ctx.handled = true;
             return true;
         }
-        false
+        // The palette and the settings sheet are modal over the bar too.
+        !self.palette.is_open()
+            && self.settings_panel == SettingsPanel::None
+            && self.route_command_bar(event, ctx)
     }
 
     // --- the document-settings sheet ------------------------------------------
@@ -721,8 +585,12 @@ impl SheetsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.menu.draw(scene, transform, tr, theme, presence);
-        self.tab_menu.draw(scene, transform, tr, theme, presence);
+        let outer = presence.push_viewport(self.float_bounds());
+        self.toolbar
+            .draw_overlay(scene, transform, tr, theme, presence);
+        presence.pop_viewport(outer);
+        self.tab_menu
+            .draw_overlay(scene, transform, tr, theme, presence);
         if self.tab_colour.is_open() {
             self.sync_tab_colour_picker(theme);
             self.tab_colour

@@ -201,6 +201,12 @@ pub struct MapsApp {
     place_search: PlaceSearch,
     /// Opens the platform search from the painted search buttons.
     search_opener: ui::search::SearchOpener,
+    /// The window's History control, which heads the map control column:
+    /// the full-bleed map is the window's header row.
+    history: ui::widget::HistoryOpener,
+    /// Where the listed search results were ranked from: their distances
+    /// read from there, so moving the camera to a result never changes them.
+    results_anchor: Option<LatLon>,
     /// The floating surfaces drawn over the map this frame (the panel, the
     /// controls, the cards, the footer); the markers keep clear of them.
     chrome_rects: Vec<Rect>,
@@ -399,7 +405,7 @@ impl MapsApp {
         let gap = self.gap();
         let controls = self.controls();
         let nav = self.navigation_rect();
-        let column_h = margin + controls.column_height();
+        let column_h = margin + self.map_controls.column_height();
         let column = Rect::new(
             self.rect.x1 - margin - controls.size,
             self.rect.y0,
@@ -531,6 +537,8 @@ impl MapsApp {
             map_controls: MapControls::default(),
             place_search,
             search_opener: ui::search::SearchOpener::new(),
+            history: ui::widget::HistoryOpener::new(),
+            results_anchor: None,
             chrome_rects: Vec::new(),
             status_bubble: ui::StatusBubble::new(),
             endpoints: EndpointEditor::new(),
@@ -588,17 +596,10 @@ impl MapsApp {
         }
     }
 
-    /// Open the overflow menu above the button, its trailing edge on the
-    /// button's, a token gap above it. Opened once to measure, then
-    /// re-anchored so it grows up from the corner.
+    /// Open the overflow menu at its button; the toolkit flips it up from
+    /// the bottom corner.
     fn open_overflow(&mut self) {
-        let b = self.overflow_rect();
-        self.overflow.open_at([b.x1 as f32, b.y0 as f32]);
-        let mr = self.overflow.get_rect();
-        self.overflow.open_at([
-            (b.x1 - mr.width()) as f32,
-            (b.y0 - mr.height() - f64::from(self.spacing.s2)) as f32,
-        ]);
+        self.overflow.open_anchored(self.overflow_rect(), self.rect);
     }
 
     /// An offline (no-worker, no-network) app that mirrors the live first-run
@@ -1250,6 +1251,7 @@ impl MapsApp {
             return;
         }
         let results = self.ranked_matches(&q);
+        self.results_anchor = Some(self.search_anchor());
         if let Some(first) = results.first() {
             let id = first.id.clone();
             self.model.center = first.pos;
@@ -1890,6 +1892,7 @@ impl MapsApp {
                             places: ranked.clone(),
                         });
                         self.rank_results(&mut ranked, &query);
+                        self.results_anchor = Some(self.search_anchor());
                         // A committed search: list the results in the panel
                         // and centre on the top (nearest) match.
                         if let Some(first) = ranked.first() {
@@ -2158,6 +2161,7 @@ impl MapsApp {
 
     fn dispatch_map_control(&mut self, action: MapControlAction) {
         match action {
+            MapControlAction::History => self.history.activate(),
             MapControlAction::ZoomIn => self.zoom_by(1.0, self.view_center()),
             MapControlAction::ZoomOut => self.zoom_by(-1.0, self.view_center()),
             MapControlAction::Locate => self.use_my_location(),
@@ -2231,13 +2235,12 @@ fn bounds_contains(outer: GeoBounds, inner: GeoBounds) -> bool {
 fn navigation_card_size(theme: &Theme) -> vello::kurbo::Size {
     let sp = &theme.tokens.spacing;
     let line = |role: TextRole| f64::from(theme.text(role).line_height_px());
-    let instruction_row =
-        ButtonFace::height(ControlSize::Small, theme).max(line(TextRole::Heading));
+    let summary_row = ButtonFace::height(ControlSize::Small, theme).max(line(TextRole::Heading));
     let height = f64::from(sp.s3) * 2.0
-        + instruction_row
+        + line(TextRole::Heading)
         + line(TextRole::Body)
         + f64::from(sp.s3) * 2.0
-        + line(TextRole::Heading);
+        + summary_row;
     let grow = f64::from(theme.text_scale.clamp(1.0, 4.0));
     vello::kurbo::Size::new(
         (f64::from(theme.tokens.metrics.panel_width_list) * grow).ceil(),
@@ -2278,7 +2281,7 @@ impl MapsApp {
         let face = ButtonFace::icon_only(rect, icon, name)
             .role(role)
             .hovered(self.hovered(rect))
-            .pressed(on);
+            .toggled(on);
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
         self.click_targets.push((face.hit_rect(ctx.theme), hit));
     }
@@ -2461,7 +2464,8 @@ impl MapsApp {
         // The chrome that belongs to the map: under the drawer's scrim when
         // the drawer is open.
         self.map_controls.draw(scene, t, tr, theme);
-        for rect in self.map_controls.rects() {
+        let controls: Vec<Rect> = self.map_controls.rects().collect();
+        for rect in controls {
             self.floats(rect);
         }
         if !drawer_open {
@@ -2505,8 +2509,6 @@ impl MapsApp {
         }
         self.draw_top_row(scene, t, tr, theme);
         if self.overflow.is_open() {
-            self.overflow
-                .draw(scene, t, tr, theme, &PresenceCtx::empty());
             self.floats(self.overflow.get_rect());
         }
         self.draw_status(scene, t, tr, theme);
@@ -2734,50 +2736,31 @@ impl MapsApp {
         ui::widget::floating_surface::paint(scene, visual, rect, theme);
         let ink = on_panel(theme);
         let sp = &theme.tokens.spacing;
-        let (s1, s2, s3) = (f64::from(sp.s1), f64::from(sp.s2), f64::from(sp.s3));
+        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
         let pad = s3;
         let numeric_caption = theme.text(TextRole::Caption).numeric();
         let heading = theme.text(TextRole::Heading);
         let body_numeric = theme.text(TextRole::Body).numeric();
         let heading_h = draw::line_h(tr, &heading);
 
-        // The next instruction: its manoeuvre icon and the instruction, with
-        // End on its line; the distance to it on the line below.
+        // The next instruction: its manoeuvre icon and the instruction across
+        // the card's width; the distance to it on the line below.
         let end_face = ButtonFace::new(Rect::ZERO, "End").control_size(ControlSize::Small);
         let end_w = end_face.intrinsic_width(tr, theme);
         let end_h = ButtonFace::height(ControlSize::Small, theme);
-        let row_h = heading_h.max(end_h);
         let row = Rect::new(
             rect.x0 + pad,
             rect.y0 + pad,
             rect.x1 - pad,
-            rect.y0 + pad + row_h,
+            rect.y0 + pad + heading_h,
         );
-        let end = Rect::new(
-            row.x1 - end_w,
-            row.center().y - end_h / 2.0,
-            row.x1,
-            row.center().y + end_h / 2.0,
-        );
-        self.navigation_end_rect = end;
-        // The instruction row is the drag handle; End stays a plain press.
-        self.navigation_drag_handle = Rect::new(rect.x0, rect.y0, end.x0 - s1, row.y1);
-        Button::paint(
-            scene,
-            visual,
-            tr,
-            &ink,
-            &ButtonFace::new(end, "End")
-                .control_size(ControlSize::Small)
-                .hovered(self.navigation_end_hovered),
-        );
+        // The instruction rows are the drag handle; End stays a plain press.
         let mut ctx = PaintCtx::new(scene, visual, tr, &ink);
         ui::surface::floating_drag_grip(ctx.scene, visual, rect, ink.text_tertiary);
         let instruction = route.steps.first();
         let icon = instruction.map_or(Icon::ArrowUp, |step| step.maneuver.icon());
         let text = instruction.map_or("Continue on the route", |step| step.instruction.as_str());
         let icon_side = f64::from(theme.tokens.metrics.icon_lg);
-        let instr_y = row.center().y - heading_h / 2.0;
         let icon_rect = Rect::new(
             row.x0,
             row.center().y - icon_side / 2.0,
@@ -2789,10 +2772,10 @@ impl MapsApp {
         draw::text_clip(
             &mut ctx,
             text,
-            Point::new(text_x, instr_y),
+            Point::new(text_x, row.y0),
             &heading,
             ink.text_primary,
-            end.x0 - s2 - text_x,
+            row.x1 - text_x,
         );
         let next_distance = instruction.map_or(route.distance_m, |step| step.distance_m);
         let dist_y = row.y1;
@@ -2804,6 +2787,7 @@ impl MapsApp {
             ink.text_dim,
         );
         let rule_y = dist_y + draw::line_h(ctx.text, &body_numeric) + s3;
+        self.navigation_drag_handle = Rect::new(rect.x0, rect.y0, rect.x1, rule_y);
         ui::surface::separator(
             ctx.scene,
             visual,
@@ -2814,27 +2798,50 @@ impl MapsApp {
             ink.tokens.colors.surfaces.content,
         );
 
-        // The summary: the time to go and, on its baseline, the distance left.
-        let summary_y = rule_y + s3;
+        // The summary: the time to go and, on its baseline, the distance
+        // left; End at its trailing edge.
+        let summary = Rect::new(
+            rect.x0 + pad,
+            rule_y + s3,
+            rect.x1 - pad,
+            rule_y + s3 + heading_h.max(end_h),
+        );
         let duration = geo::fmt_duration(route.duration_s);
         let duration_style = heading.clone().numeric();
+        let summary_y = summary.center().y - heading_h / 2.0;
         draw::text(
             &mut ctx,
             &duration,
-            Point::new(rect.x0 + pad, summary_y),
+            Point::new(summary.x0, summary_y),
             &duration_style,
             ink.text_primary,
         );
         let remaining = format!("{} to go", geo::fmt_distance(route.distance_m));
         let rem_top = summary_y + draw::baseline(ctx.text, &duration, &duration_style)
             - draw::baseline(ctx.text, &remaining, &numeric_caption);
-        draw::text_right(
+        let rem_x = summary.x0 + draw::measure_w(ctx.text, &duration, &duration_style) + s2;
+        draw::text(
             &mut ctx,
             &remaining,
-            rect.x1 - pad,
-            rem_top,
+            Point::new(rem_x, rem_top),
             &numeric_caption,
             ink.text_dim,
+        );
+        let end = Rect::new(
+            summary.x1 - end_w,
+            summary.center().y - end_h / 2.0,
+            summary.x1,
+            summary.center().y + end_h / 2.0,
+        );
+        self.navigation_end_rect = end;
+        Button::paint(
+            ctx.scene,
+            visual,
+            ctx.text,
+            &ink,
+            &ButtonFace::new(end, "End")
+                .control_size(ControlSize::Small)
+                .hovered(self.navigation_end_hovered),
         );
     }
 
@@ -3324,6 +3331,9 @@ impl MapsApp {
         let (s2, s3, s4) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
         let anchor = self.search_anchor();
         let distance = |pos: LatLon| geo::fmt_distance(geo::haversine_m(pos, anchor));
+        let results_anchor = self.results_anchor.unwrap_or(anchor);
+        let result_distance =
+            |pos: LatLon| geo::fmt_distance(geo::haversine_m(pos, results_anchor));
 
         // First run: nothing selected, searched, saved, recent, or fetched for
         // the viewport — one sentence and the one action that changes that.
@@ -3393,7 +3403,7 @@ impl MapsApp {
                 let br = Rect::new(bx, by, bx + bw, by + button_h);
                 let mut face = ButtonFace::new(br, label).role(role);
                 if matches!(hit, Hit::ToggleSave) {
-                    face = face.icon(Icon::Star).pressed(saved);
+                    face = face.icon(Icon::Star).toggled(saved);
                 }
                 self.text_button(&mut PaintCtx::new(scene, t, tr, theme), face, br, Some(hit));
             }
@@ -3414,7 +3424,7 @@ impl MapsApp {
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             let last = results.len() - 1;
             for (i, p) in results.iter().enumerate() {
-                let meta = distance(p.pos);
+                let meta = result_distance(p.pos);
                 let secondary = if p.address.is_empty() {
                     p.category.label()
                 } else {
@@ -4349,6 +4359,17 @@ impl MapsApp {
 
         let mut targets = vec![
             AccessibilityTarget {
+                rect: self.map_controls.rect(MapControlAction::History),
+                label: "History".to_string(),
+                target: ui::widget::HISTORY_CONTROL_ID.to_string(),
+                role: Role::ToggleButton,
+                state: AccessState::new().focusable(true).checked(
+                    self.history
+                        .control()
+                        .is_some_and(ui::widget::HistoryControl::is_open),
+                ),
+            },
+            AccessibilityTarget {
                 rect: self.map_controls.rect(MapControlAction::ZoomIn),
                 label: "Zoom in".to_string(),
                 target: "maps.control:zoom-in".to_string(),
@@ -4531,6 +4552,7 @@ impl Widget for MapsApp {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::search::capability::SearchSource,
+        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -4672,6 +4694,10 @@ impl Widget for MapsApp {
                     pointer: self.last_mouse,
                 },
             );
+        }
+        if self.overflow.is_open() {
+            self.overflow
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         self.info_sheet
             .draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -5055,6 +5081,9 @@ impl Widget for MapsApp {
         ) {
             return false;
         }
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
         let control = match target {
             "maps.control:zoom-in" => Some(MapControlAction::ZoomIn),
             "maps.control:zoom-out" => Some(MapControlAction::ZoomOut),
@@ -5166,9 +5195,20 @@ impl ui::search::capability::SearchSource for MapsApp {
 }
 
 impl ui::widget::controls::ActionControls for MapsApp {
-    /// Search opened from the painted search buttons and recent searches.
+    /// History opened from the control column; search opened from the
+    /// painted search buttons and recent searches.
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.search_opener.take()
+        self.history.take().or_else(|| self.search_opener.take())
+    }
+}
+
+/// The map is the window's header row: the History control the host offers
+/// heads the map control column, so the window draws no History bar above
+/// the map.
+impl ui::widget::WindowHeader for MapsApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        self.history.set_control(control);
+        self.map_controls.set_history(control);
     }
 }
 /// A location request answered by a recording host with `outcome` — the

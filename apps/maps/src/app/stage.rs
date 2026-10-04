@@ -149,6 +149,7 @@ impl MapsApp {
         self.model.panel = Panel::Explore;
         self.model.query = "café".to_string();
         let results = self.ranked_matches("café");
+        self.results_anchor = Some(self.search_anchor());
         self.model.selected = results.first().map(|place| place.id.clone());
         if let Some(first) = results.first() {
             self.center_on(first.pos);

@@ -2266,6 +2266,15 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
             app.reader_bubble.needs_frame(ui::time::now()),
             "the visible bubble schedules its own fade-out frames"
         );
+        // The bubble shares the foot's band with the progress slider:
+        // reaching for the slider gives the band back to it at once.
+        let track = app.progress_slider_track;
+        app.cursor = Point::new(track.x0 + 2.0, track.center().y);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
+            "the pointer on the slider hides the page bubble"
+        );
     }
 
     // --- phase: page_for_block_maps_a_block_to_its_page ---
@@ -3189,7 +3198,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
             &ids[0],
             &Progress {
                 chapter: 9,
-                page: 9,
+                block: 9,
                 fraction: 1.0,
                 opened: 100,
             },
@@ -4330,12 +4339,51 @@ fn reading_position_persists_across_reopen() {
         );
     }
 
+    // --- phase: the_position_is_a_passage_not_a_page_number ---
+    // Reopened in a narrower window, the reader lands on the page that holds
+    // the passage it left, not on the same page number.
+    {
+        let mut first = app_with_sample();
+        first.book_idx = 1;
+        let mut doc = AutoCommit::new();
+        frame(&mut first, &mut doc, 1000.0, 700.0);
+        for _ in 0..2 {
+            first.dispatch(Action::NextPage, &mut doc);
+            frame(&mut first, &mut doc, 1000.0, 700.0);
+        }
+        let saved = BooksDoc::read_progress(&doc, &first.book_id());
+        assert_eq!(saved.block, first.reading_block());
+
+        let mut reopened = app_with_sample();
+        reopened.book_idx = 1;
+        frame(&mut reopened, &mut doc, 600.0, 900.0);
+        let layout = reopened.layout.as_ref().expect("laid out");
+        let top = layout
+            .blocks
+            .iter()
+            .find(|b| b.index == saved.block)
+            .expect("saved block")
+            .top;
+        let start = layout.pages.get(reopened.page).copied().unwrap_or(0.0);
+        let end = layout
+            .pages
+            .get(reopened.page + 1)
+            .copied()
+            .unwrap_or(f32::MAX);
+        assert_eq!(reopened.chapter, saved.chapter);
+        assert!(
+            (start - 0.5..end).contains(&top),
+            "page {} ({start}..{end}) holds the saved block's top {top}",
+            reopened.page
+        );
+    }
+
     // --- phase: continuation_round_trip_reopens_the_same_book_and_reading_position ---
     {
         let mut sender = app_with_sample();
         sender.book_idx = 1;
         sender.chapter = 1;
-        sender.page = 7;
+        sender.pending_jump_block = Some(3);
         let source = AutoCommit::new();
         let metadata = sender
             .continuation_metadata(&source, &automerge::ROOT)
@@ -4348,7 +4396,11 @@ fn reading_position_persists_across_reopen() {
             receiver.library[receiver.book_idx].id,
             sender.library[sender.book_idx].id
         );
-        assert_eq!((receiver.chapter, receiver.page), (1, 7));
+        // The position is a passage, so it survives a different window size.
+        assert_eq!(
+            (receiver.chapter, receiver.pending_jump_block),
+            (1, Some(3))
+        );
     }
 }
 

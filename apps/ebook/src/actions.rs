@@ -239,7 +239,7 @@ pub enum EbookAction {
     SetProgress {
         book_id: String,
         chapter: usize,
-        page: usize,
+        block: usize,
         fraction: f32,
         /// `0` preserves the existing last-opened time. A nonzero timestamp
         /// is minted by the caller and makes an explicit open replayable.
@@ -526,13 +526,13 @@ impl EbookAction {
             Self::SetProgress {
                 book_id,
                 chapter,
-                page,
+                block,
                 fraction,
                 opened,
             } => {
                 Self::validate_book_id(book_id)?;
                 if *chapter > i64::MAX as usize
-                    || *page > i64::MAX as usize
+                    || *block > i64::MAX as usize
                     || !fraction.is_finite()
                     || !(0.0..=1.0).contains(fraction)
                     || *opened > i64::MAX as u64
@@ -710,7 +710,7 @@ impl EbookAction {
         doc: &mut Doc,
         book_id: &str,
         chapter: usize,
-        page: usize,
+        block: usize,
         fraction: f32,
         opened: u64,
     ) {
@@ -719,7 +719,7 @@ impl EbookAction {
             book_id,
             &Progress {
                 chapter,
-                page,
+                block,
                 fraction: fraction.clamp(0.0, 1.0),
                 opened,
             },
@@ -1022,11 +1022,11 @@ impl Action for EbookAction {
             EbookAction::SetProgress {
                 book_id,
                 chapter,
-                page,
+                block,
                 fraction,
                 opened,
             } => {
-                Self::apply_set_progress(doc, book_id, *chapter, *page, *fraction, *opened);
+                Self::apply_set_progress(doc, book_id, *chapter, *block, *fraction, *opened);
                 Ok(())
             }
             EbookAction::EditAnnotationNote { id, note } => Self::apply_edit_note(doc, id, note),
@@ -1295,7 +1295,7 @@ pub fn set_progress_action(book_id: &str, progress: Progress) -> EbookAction {
     EbookAction::SetProgress {
         book_id: book_id.to_string(),
         chapter: progress.chapter,
-        page: progress.page,
+        block: progress.block,
         fraction: progress.fraction.clamp(0.0, 1.0),
         opened: progress.opened,
     }
@@ -2504,7 +2504,7 @@ mod tests {
     fn reading_progress() -> Progress {
         Progress {
             chapter: 2,
-            page: 7,
+            block: 7,
             fraction: 0.625,
             opened: 1_700_000_000_000,
         }

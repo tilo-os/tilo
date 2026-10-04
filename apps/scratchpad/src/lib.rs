@@ -63,6 +63,7 @@ impl ResourceApp for Scratchpad {
             .with_accessible_name("Note")
             .with_plain_chrome()
             .with_text_role(TextRole::Reading)
+            .with_placeholder("Start writing…")
             .multiline(true);
         // Saving is automatic and quick, so a save in flight is not worth
         // announcing; say something only when the note is not being kept.
