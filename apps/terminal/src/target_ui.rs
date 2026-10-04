@@ -2,6 +2,10 @@
 // the target picker it opens, and the environments panel. Included into the
 // widget's module next to `main_body.rs`.
 
+use ui::icons::draw_icon;
+use ui::widget::{ChipFace, ChipLead, TextInput};
+use vello::kurbo::RoundedRect;
+
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, SessionTarget};
 
@@ -350,20 +354,13 @@ impl TerminalWidget {
             self.rect.y0 + self.header_h(),
         );
         let pad = f64::from(theme.tokens.spacing.s2);
-        let inner = f64::from(theme.tokens.spacing.s3);
-        let size = tr
-            .renderer_input_style(&theme.text(ui::tokens::TextRole::Caption))
-            .size;
         let label = format!("{label}  ▾");
-        let max_w = (header.width() - pad * 2.0 - inner * 2.0).max(0.0) as f32;
-        let label = tr.elide_to_width(&label, size, max_w);
-        let (w, h) = tr.measure(&label, size, None);
-        let chip_h = (f64::from(h) + pad).min(header.height() - 4.0).max(0.0);
-        let chip = Rect::new(
-            header.x0 + pad,
-            header.center().y - chip_h / 2.0,
-            header.x0 + pad + f64::from(w) + inner * 2.0,
-            header.center().y + chip_h / 2.0,
+        let width = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme)
+            .min((header.width() - pad * 2.0).max(0.0));
+        let height = ChipFace::height(theme);
+        let chip = Rect::from_origin_size(
+            (header.x0 + pad, header.center().y - height / 2.0),
+            (width, height),
         );
         self.chip_rect = chip;
         let host = self
@@ -371,26 +368,10 @@ impl TerminalWidget {
             .target
             .as_ref()
             .is_some_and(SessionTarget::is_host);
-        let (fill, border) = ui::surface::chip_colors(theme, host);
-        let fill = if chip.contains(self.last_cursor_pos) && !host {
-            theme.tokens.colors.overlay_medium
-        } else {
-            fill
-        };
-        ui::surface::pill(scene, transform, chip, fill, border, None);
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            size,
-            theme.text_primary,
-            transform
-                * Affine::translate((
-                    chip.x0 + inner,
-                    chip.y0 + (chip.height() - f64::from(h)) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
+        ChipFace::new(chip, &label)
+            .selected(host)
+            .hovered(chip.contains(self.last_cursor_pos))
+            .paint(scene, transform, tr, theme);
     }
 
     /// Drop the picker's rows once its menu has closed.
@@ -991,6 +972,53 @@ impl TerminalWidget {
                     .unwrap_or(true),
             ),
             other => Err(format!("unknown environment operation `{other}`")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod target_chrome_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn target_chip_stays_inside_header_and_above_grid_at_large_type() {
+        for scale in [1.0, 2.0] {
+            for target in [SessionTarget::Host, SessionTarget::default_environment()] {
+                let mut widget = TerminalWidget::spawn_headless().expect("null backend");
+                widget.show_target(target, Vec::new());
+                widget.set_geometry(Rect::new(0.0, 0.0, 390.0, 844.0));
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                widget.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let header = Rect::new(
+                    widget.rect.x0,
+                    widget.rect.y0,
+                    widget.rect.x1,
+                    widget.rect.y0 + widget.header_h(),
+                );
+                assert!(
+                    header.contains_rect(widget.chip_rect),
+                    "{scale}x: {header:?}"
+                );
+                assert_eq!(widget.chip_rect.height(), ChipFace::height(&theme));
+                assert!(widget.header_h() >= f64::from(theme.tokens.spacing.s8));
+                assert!(
+                    widget.chip_rect.y0 - header.y0 >= f64::from(theme.tokens.spacing.s1)
+                        && header.y1 - widget.chip_rect.y1 >= f64::from(theme.tokens.spacing.s1),
+                    "scaled labels keep both header insets"
+                );
+                assert!(
+                    widget.grid_rect.y0 >= header.y1,
+                    "chrome cannot cover terminal cells"
+                );
+            }
         }
     }
 }

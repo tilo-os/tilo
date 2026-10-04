@@ -1787,7 +1787,10 @@ impl TerminalWidget {
         let sp = &theme.tokens.spacing;
         self.chrome_body_pad = f64::from(sp.s3);
         self.chrome_scrollbar_w = f64::from(sp.s2);
-        self.chrome_header_h = f64::from(sp.s8);
+        // Target chrome uses the shared chip's label role, which grows with
+        // text scale. Reserve its full height before sizing the PTY grid.
+        self.chrome_header_h =
+            f64::from(sp.s8).max(ChipFace::height(theme) + 2.0 * f64::from(sp.s1));
     }
 
     /// Row pitch of the cell grid from the renderer's measured line box for
