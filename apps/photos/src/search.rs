@@ -924,7 +924,7 @@ mod tests {
                     .any(|action| action.id == address.action)
             );
             assert!(
-                opened(&doc, &ActionAddress::new(address.resource, "remove")).is_some(),
+                opened(&doc, &ActionAddress::new(address.resource, "remove-photo")).is_some(),
                 "all actions on the materialized photograph remain agent-addressable"
             );
         }

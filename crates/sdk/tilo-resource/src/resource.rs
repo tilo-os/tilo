@@ -1060,15 +1060,13 @@ pub(crate) fn publish_parts<R: Resource>(
     state: Option<&R::State>,
 ) -> tilo_actions::Resource {
     let children = state.map(R::children).unwrap_or_default();
-    let on_items: std::collections::HashSet<&str> = children
-        .iter()
-        .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
-        .flat_map(|child| child.actions.iter().map(|spec| spec.id.as_str()))
-        .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
         let spec = declaration_spec(&decl);
-        resource = resource.with_action(if on_items.contains(decl.id) {
+        // Offered on the items it acts on, with some of its arguments bound
+        // ([`items::bound`](crate::items::bound)), it stays published here
+        // for scripts that name the item, out of the palette's way.
+        resource = resource.with_action(if crate::items::offered_bound(&children, &decl) {
             spec.programmatic()
         } else {
             spec
