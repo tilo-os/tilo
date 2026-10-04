@@ -577,10 +577,9 @@ pub struct PdfApp {
     resource_page_imports: Vec<Option<crate::doc::ImportedPage>>,
     /// Original text-backend pages, used to materialise a remote plan.
     source_pages: Vec<model::Page>,
-    /// Retained global-search namespace. Opening/typing in the palette only
-    /// clones this handle; projection happens during state sync.
-    search_catalog: ui::search::SearchCatalog,
-    search_catalog_ids: HashSet<String>,
+    /// What the open document says, for search: rebuilt during state sync
+    /// when the document or the find results change, never on a keystroke.
+    search_entries: Vec<ui::tilo_resource::SearchEntry>,
     search_projection_revision: Option<SearchProjectionRevision>,
     #[cfg(test)]
     search_projection_refreshes: usize,
@@ -1132,8 +1131,7 @@ impl PdfApp {
             resource_page_sources: (1..=page_count).collect(),
             resource_page_imports: vec![None; page_count],
             source_pages,
-            search_catalog: ui::search::SearchCatalog::new(crate::search_provider::PDF_SEARCH_KIND),
-            search_catalog_ids: HashSet::new(),
+            search_entries: Vec::new(),
             search_projection_revision: None,
             #[cfg(test)]
             search_projection_refreshes: 0,
@@ -1424,10 +1422,10 @@ impl PdfApp {
         })
     }
 
-    /// Refresh global search only when the shared document or durable page
-    /// occurrence projection changed. Palette opening and keystrokes never
-    /// traverse document text or markup.
-    fn refresh_search_catalog(&mut self, state: &mut AutoCommit) {
+    /// Rebuild the search entries only when the shared document or durable
+    /// page occurrence projection changed. Searching never traverses
+    /// document text or markup.
+    fn refresh_search_entries(&mut self, state: &mut AutoCommit) {
         let Some(ctx) = self.pdf_resource_ctx() else {
             return;
         };
@@ -1442,21 +1440,7 @@ impl PdfApp {
         if self.search_projection_revision.as_ref() == Some(&revision) {
             return;
         }
-        let ids = match crate::search_provider::PdfSearchProvider::index_into(
-            &self.search_catalog,
-            &ctx,
-            &self.source_pages,
-        ) {
-            Ok(ids) => ids,
-            Err(error) => {
-                self.status_note = Some(format!("Search index unavailable: {error}"));
-                return;
-            }
-        };
-        for stale in self.search_catalog_ids.difference(&ids) {
-            let _ = self.search_catalog.remove(stale);
-        }
-        self.search_catalog_ids = ids;
+        self.search_entries = crate::search::surface_entries(&ctx, &self.source_pages);
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
@@ -4974,10 +4958,7 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::resources::PublishesResources);
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
@@ -5079,7 +5060,7 @@ impl Widget for PdfApp {
         }
         self.reload(state);
         self.sync_reader_markup(state);
-        self.refresh_search_catalog(state);
+        self.refresh_search_entries(state);
     }
 
     fn build_layout(
@@ -5909,16 +5890,14 @@ impl Widget for PdfApp {
     }
 }
 
-impl ui::search::capability::SearchSource for PdfApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.has_document
-            .then(|| {
-                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
-                    self.search_catalog.clone(),
-                )) as Box<dyn ui::search::SearchProvider>
-            })
-            .into_iter()
-            .collect()
+impl PdfApp {
+    /// The search entries of the open document; none without one.
+    pub(crate) fn shown_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        if self.has_document {
+            self.search_entries.clone()
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -6112,6 +6091,13 @@ mod links_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider as _;
+
+    /// The app's search source as the framework builds it from what the open
+    /// document says.
+    fn searched(app: &PdfApp) -> impl ui::search::SearchProvider + use<> {
+        ui::framework::testing::search_source::<crate::PdfViewer>(app.shown_search_entries())
+    }
     use crate::model::Reply;
     use serial_test::serial;
     use ui::headless::{Framed, viewport};
@@ -6466,10 +6452,7 @@ mod tests {
         eprintln!("phase global_search_pages_canonically_and_stale_page_hits_fail_closed");
         {
             let (mut app, mut state) = app_with_state();
-            let provider = ui::search::capability::search_providers(&app)
-                .into_iter()
-                .next()
-                .expect("the open PDF contributes a global search provider");
+            let provider = searched(&app);
             assert!(provider.search_page("", None, 0, 1).results.is_empty());
             let first = provider.search_page("", None, 1, 1);
             assert_eq!(first.inspected, 1);
@@ -6529,10 +6512,7 @@ mod tests {
             app.search_input.set_text("sandbox");
             app.recompute_matches();
             app.sync(&mut state.doc, &state.root);
-            let find_provider = ui::search::capability::search_providers(&app)
-                .into_iter()
-                .next()
-                .expect("find projection is retained in global search");
+            let find_provider = searched(&app);
             let find_address = find_provider
                 .search("match 1")
                 .into_iter()
@@ -6567,12 +6547,7 @@ mod tests {
             let action = crate::actions::delete_page_plan_action("source-1");
             app.perform_action(&mut state.doc, &action);
             app.sync(&mut state.doc, &state.root);
-            let restarted = ui::search::capability::search_providers(&app)[0].search_page(
-                "",
-                Some(&stale_cursor),
-                1,
-                1,
-            );
+            let restarted = searched(&app).search_page("", Some(&stale_cursor), 1, 1);
             assert!(
                 restarted.results.len() <= 1,
                 "a stale cursor restarts against the new generation"
@@ -6629,12 +6604,11 @@ mod tests {
             a.sync(&mut state_a.doc, &state_a.root);
             b.sync(&mut state_b.doc, &state_b.root);
             assert_eq!(a.resource_page_ids, b.resource_page_ids);
-            let source_two_hits: Vec<tilo_actions::ActionAddress> =
-                ui::search::capability::search_providers(&a)[0]
-                    .search("Per-cluster sandboxing")
-                    .into_iter()
-                    .filter_map(|result| result.action_address())
-                    .collect();
+            let source_two_hits: Vec<tilo_actions::ActionAddress> = searched(&a)
+                .search("Per-cluster sandboxing")
+                .into_iter()
+                .filter_map(|result| result.action_address())
+                .collect();
             assert!(
                 source_two_hits
                     .iter()

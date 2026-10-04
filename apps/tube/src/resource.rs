@@ -323,6 +323,11 @@ impl ResourceSurface<Tube, TubeEffect> for TubeApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         crate::rows::live_row(self.model_ref(), self.device_sync_view(), id)
     }
+
+    /// The videos, creators, playlists and watch history shown here.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.search_entries_of_model()
+    }
 }
 
 #[cfg(test)]

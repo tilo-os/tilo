@@ -700,11 +700,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/photos/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "slides"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/slides/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]

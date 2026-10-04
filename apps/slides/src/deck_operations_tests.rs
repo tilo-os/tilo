@@ -117,7 +117,6 @@ fn the_deck_publishes_its_typed_operations_eagerly_and_by_id() {
             // Bound document ops ride publish via bound_actions.
             ADD_SLIDE,
             "theme-emerald",
-            "present",
         ] {
             assert!(ids.contains(&id), "`{id}` is published: {ids:?}");
         }

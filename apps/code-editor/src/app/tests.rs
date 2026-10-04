@@ -64,10 +64,14 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
         let after_document = app.search_refresh_stats();
         assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
         assert!(
-            ui::search::capability::search_providers(app)[0]
-                .search("revision_gate_needle")
-                .iter()
-                .any(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
+            ui::search::SearchProvider::search(
+                &ui::framework::testing::search_source::<crate::resource::CodeEditor>(
+                    app.code_search_entries()
+                ),
+                "revision_gate_needle"
+            )
+            .iter()
+            .any(|hit| hit.kind == crate::search_entries::SYMBOL_KIND)
         );
 
         let root = app.session.project.root;
@@ -100,10 +104,14 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
             after_project.rebuilds.saturating_add(1)
         );
         assert!(
-            ui::search::capability::search_providers(app)[0]
-                .search("result_revision_needle")
-                .iter()
-                .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
+            ui::search::SearchProvider::search(
+                &ui::framework::testing::search_source::<crate::resource::CodeEditor>(
+                    app.code_search_entries()
+                ),
+                "result_revision_needle"
+            )
+            .iter()
+            .any(|hit| hit.kind == crate::search_entries::RESULT_KIND)
         );
     });
 }
@@ -115,8 +123,8 @@ fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor()
         app.invalidate_search_projection();
         assert_eq!(app.search_projection_local_generation, None);
         let before = app.search_refresh_stats().rebuilds;
-        app.refresh_search_catalog(doc);
-        app.refresh_search_catalog(doc);
+        app.refresh_search_entries(doc);
+        app.refresh_search_entries(doc);
         assert_eq!(
             app.search_refresh_stats().rebuilds,
             before.saturating_add(2),

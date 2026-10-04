@@ -1,15 +1,14 @@
 //! Tube search sources.
 //!
-//! [`TubeSearchProvider`] is the real [`ui::search::SearchProvider`] used by
-//! the host-wide action palette. Its rows name the exact resource/action that
-//! opens a video, creator, playlist, or local watch-history entry. The older
-//! [`VideoSearchProvider`] remains the small, backend-facing projection used
-//! by Tube's visual Ctrl+K overlay while it is open.
+//! [`model_entries`] are what the host-wide search finds in Tube: each names
+//! the exact resource/action that opens a video, creator, playlist, or local
+//! watch-history entry. [`VideoSearchProvider`] remains the small,
+//! backend-facing projection used by Tube's visual Ctrl+K overlay while it is
+//! open.
 
 use crate::backend::{BackendResult, YtBackend};
 use tilo_actions::ActionAddress;
-use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::tilo_resource::SearchEntry;
 
 /// Hard projection budget for one provider query. The UI may render fewer;
 /// global search must never materialise a backend-sized catalogue in one turn.
@@ -28,7 +27,6 @@ pub const PLAYLIST_TYPE_ID: &str = "tube.playlist";
 /// Stable id for device-local watch-history entries contributed to search.
 pub const HISTORY_TYPE_ID: &str = "tube.history";
 
-const TUBE_SEARCH_KIND: &str = "Tube";
 const MAX_INDEXED_ENTITIES: usize = 100;
 
 /// A static descriptor of a result type an app contributes to global search.
@@ -75,91 +73,73 @@ pub fn history_searchable_type() -> SearchableType {
     }
 }
 
-/// Bounded snapshot of the resources Tube currently publishes. Keeping the
-/// catalogue and resource tree on the same 100-item ceiling means every
-/// canonical hit remains activatable; no search result gains authority merely
-/// because it was indexed.
-#[derive(Clone)]
-pub struct TubeSearchProvider {
-    catalog: SearchCatalog,
-}
-
-impl TubeSearchProvider {
-    pub fn new(model: &crate::model::TubeModel) -> Self {
-        let provider = Self {
-            catalog: SearchCatalog::new(TUBE_SEARCH_KIND),
+/// The videos, creators, playlists and watch history Tube shows, as search
+/// entries, each naming the exact resource and action that opens it. Kept to
+/// the same 100-item ceiling as the published rows, so every hit stays
+/// activatable; no entry gains authority merely because it is searchable.
+pub fn model_entries(model: &crate::model::TubeModel) -> Vec<SearchEntry> {
+    let dearrow = model.settings.dearrow_titles_on();
+    let mut entries = Vec::new();
+    for video in model.videos.iter().take(MAX_INDEXED_ENTITIES) {
+        entries.push(
+            SearchEntry::new(
+                video.display_title(dearrow),
+                format!("{} {}", video.title, video.id),
+            )
+            .invoking(ActionAddress::new(
+                format!("tube.video:{}", video.id),
+                "open-video",
+            ))
+            .grouped("Videos")
+            .subtitled(video.channel_name.clone())
+            .with_icon("play"),
+        );
+    }
+    for channel in model.channels.iter().take(MAX_INDEXED_ENTITIES) {
+        entries.push(
+            SearchEntry::new(channel.name.clone(), channel.id.clone())
+                .invoking(ActionAddress::new(
+                    format!("tube.channel:{}", channel.id),
+                    "open-creator",
+                ))
+                .grouped("Creators")
+                .subtitled(channel.handle.clone())
+                .with_icon("users"),
+        );
+    }
+    for playlist in model.playlists.iter().take(MAX_INDEXED_ENTITIES) {
+        entries.push(
+            SearchEntry::new(playlist.title.clone(), playlist.id.clone())
+                .invoking(ActionAddress::new(
+                    format!("tube.playlist:{}", playlist.id),
+                    "open-playlist",
+                ))
+                .grouped("Playlists")
+                .subtitled(playlist.channel_name.clone())
+                .with_icon("list-video"),
+        );
+    }
+    for video_id in model.history.iter().take(MAX_INDEXED_ENTITIES) {
+        let Some(video) = model.video(video_id) else {
+            continue;
         };
-        for video in model.videos.iter().take(MAX_INDEXED_ENTITIES) {
-            let address = ActionAddress::new(format!("tube.video:{}", video.id), "open-video");
-            let result = SearchResult::for_action(
-                "Videos",
-                video.display_title(model.settings.dearrow_titles_on()),
-                address.clone(),
+        entries.push(
+            SearchEntry::new(
+                video.display_title(dearrow),
+                format!("{} {video_id}", video.title),
             )
-            .with_subtitle(&video.channel_name)
-            .with_icon(Icon::Play);
-            let searchable = format!("{}\0{}\0{}", video.title, video.channel_name, video.id);
-            let _ = provider
-                .catalog
-                .upsert(address.resource, searchable, result);
-        }
-        for channel in model.channels.iter().take(MAX_INDEXED_ENTITIES) {
-            let address =
-                ActionAddress::new(format!("tube.channel:{}", channel.id), "open-creator");
-            let result = SearchResult::for_action("Creators", &channel.name, address.clone())
-                .with_subtitle(&channel.handle)
-                .with_icon(Icon::Users);
-            let searchable = format!("{}\0{}\0{}", channel.name, channel.handle, channel.id);
-            let _ = provider
-                .catalog
-                .upsert(address.resource, searchable, result);
-        }
-        for playlist in model.playlists.iter().take(MAX_INDEXED_ENTITIES) {
-            let address =
-                ActionAddress::new(format!("tube.playlist:{}", playlist.id), "open-playlist");
-            let result = SearchResult::for_action("Playlists", &playlist.title, address.clone())
-                .with_subtitle(&playlist.channel_name)
-                .with_icon(Icon::ListVideo);
-            let searchable = format!(
-                "{}\0{}\0{}",
-                playlist.title, playlist.channel_name, playlist.id
-            );
-            let _ = provider
-                .catalog
-                .upsert(address.resource, searchable, result);
-        }
-        for video_id in model.history.iter().take(MAX_INDEXED_ENTITIES) {
-            let Some(video) = model.video(video_id) else {
-                continue;
-            };
-            let address = ActionAddress::new(format!("tube.history:{video_id}"), "open-video");
-            let result = SearchResult::for_action(
-                "Watch history",
-                video.display_title(model.settings.dearrow_titles_on()),
-                address.clone(),
-            )
-            .with_subtitle(&video.channel_name)
-            .with_icon(Icon::History);
-            let searchable = format!("{}\0{}\0{}", video.title, video.channel_name, video_id);
-            let _ = provider
-                .catalog
-                .upsert(address.resource, searchable, result);
-        }
-        provider
+            .invoking(ActionAddress::new(
+                format!("tube.history:{video_id}"),
+                "open-video",
+            ))
+            .grouped("Watch history")
+            .subtitled(video.channel_name.clone())
+            .with_icon("history"),
+        );
     }
+    entries
 }
 
-impl CatalogSearchProvider for TubeSearchProvider {
-    fn provider_name(&self) -> &str {
-        TUBE_SEARCH_KIND
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-}
-
-/// A single global-search result row contributed by Tube.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     /// [`VIDEO_TYPE_ID`] or [`CHANNEL_TYPE_ID`].
@@ -282,7 +262,6 @@ pub fn palette_hits(
 mod tests {
     use super::*;
     use crate::backend::offline::OfflineBackend;
-    use ui::search::SearchProvider;
 
     #[test]
     fn search_type_descriptor_and_deep_links_are_stable() {
@@ -355,18 +334,22 @@ mod tests {
                 video_count: 1,
                 video_ids: vec![video_id],
             });
-            let provider = TubeSearchProvider::new(&model);
+            let provider = ui::framework::testing::search_source::<crate::resource::Tube>(
+                model_entries(&model),
+            );
             for (query, resource, open) in [
                 ("compositor", "tube.video:", "open-video"),
                 ("watchlist", "tube.playlist:", "open-playlist"),
                 ("compositor", "tube.history:", "open-video"),
             ] {
                 assert!(
-                    provider.search(query).iter().any(|hit| {
-                        hit.action_address().is_some_and(|address| {
-                            address.resource.starts_with(resource) && address.action == open
-                        })
-                    }),
+                    ui::search::SearchProvider::search(&provider, query)
+                        .iter()
+                        .any(|hit| {
+                            hit.action_address().is_some_and(|address| {
+                                address.resource.starts_with(resource) && address.action == open
+                            })
+                        }),
                     "{query:?} exposes a canonical {resource} open action"
                 );
             }

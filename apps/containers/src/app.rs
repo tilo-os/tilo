@@ -298,7 +298,6 @@ pub struct ContainersApp {
     pub(crate) engine: Engine,
     /// Retained, revision-gated search projection. Queries page this index
     /// instead of rescanning the engine snapshot on every keystroke.
-    search_index: crate::search_provider::ContainerSearchIndex,
     rect: Rect,
     /// Mouse position in logical coords (for hover + hit-testing).
     pub(crate) cursor: Point,
@@ -429,7 +428,6 @@ impl ContainersApp {
     }
 
     fn with_engine(engine: Engine, inputs: InputFactories) -> Self {
-        let search_index = crate::search_provider::ContainerSearchIndex::new(&engine);
         let create_inputs = CreateField::ALL.map(|field| {
             let input = (inputs.text)()
                 .with_id(&format!("container_create_{}", field.key()))
@@ -440,7 +438,6 @@ impl ContainersApp {
         });
         Self {
             engine,
-            search_index,
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             hits: Vec::new(),
@@ -496,7 +493,6 @@ impl ContainersApp {
     /// Show `engine` in place of the current snapshot.
     pub(crate) fn show_engine(&mut self, engine: Engine) {
         self.engine = engine;
-        self.search_index.sync(&self.engine);
         self.structure_dirty = true;
     }
 
@@ -819,7 +815,6 @@ impl ContainersApp {
                 }
             }
             self.engine = fresh;
-            self.search_index.sync(&self.engine);
         }
     }
 
@@ -848,7 +843,6 @@ impl ContainersApp {
             if !logs.is_empty() {
                 c.logs = logs;
             }
-            self.search_index.sync(&self.engine);
         }
     }
 
@@ -909,7 +903,6 @@ impl ContainersApp {
                 }
             }
         }
-        self.search_index.sync(&self.engine);
         self.structure_dirty = true;
     }
 
@@ -1004,7 +997,6 @@ impl ContainersApp {
             self.show_toast(format!("Remove {reference} requested"), false);
         } else if !self.live {
             self.engine.images.retain(|i| i.reference() != reference);
-            self.search_index.sync(&self.engine);
             self.show_toast(format!("Removed {reference}"), false);
             self.structure_dirty = true;
         } else {
@@ -1078,7 +1070,6 @@ impl ContainersApp {
                 in_use_by: 0,
             });
             self.engine.volumes.sort_by(|a, b| a.name.cmp(&b.name));
-            self.search_index.sync(&self.engine);
             self.show_toast(format!("Created volume {name}"), false);
             self.structure_dirty = true;
         }
@@ -1094,7 +1085,6 @@ impl ContainersApp {
             self.show_toast(format!("Remove volume {name} requested"), false);
         } else if !self.live {
             self.engine.volumes.retain(|v| v.name != name);
-            self.search_index.sync(&self.engine);
             self.show_toast(format!("Removed volume {name}"), false);
             self.structure_dirty = true;
         } else {
@@ -1881,10 +1871,7 @@ impl ContainersApp {
 }
 
 impl Widget for ContainersApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
@@ -2571,12 +2558,6 @@ impl Widget for ContainersApp {
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
-    }
-}
-
-impl ui::search::capability::SearchSource for ContainersApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -3350,7 +3331,6 @@ mod tests {
                 container.name = format!("Container {index:03}");
                 app.engine.containers.push(container);
             }
-            app.search_index.sync(&app.engine);
 
             let rows = app.engine_rows();
             assert_eq!(rows.len(), RESOURCE_SNAPSHOT_LIMIT);
@@ -3364,14 +3344,18 @@ mod tests {
             app.engine
                 .containers
                 .retain(|container| format!("container:{}", container.id) != omitted);
-            app.search_index.sync(&app.engine);
             assert!(
                 app.engine_row(&omitted).is_none(),
                 "a stale palette address cannot recreate removed authority"
             );
             assert!(
-                ui::search::SearchProvider::search(&app.search_index.provider(), &omitted,)
-                    .is_empty()
+                crate::search::engine_entries(&app.engine)
+                    .iter()
+                    .all(|entry| entry
+                        .action
+                        .as_ref()
+                        .is_none_or(|action| action.resource != omitted)),
+                "a removed container is no longer a search hit"
             );
         }
     }

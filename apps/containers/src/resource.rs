@@ -384,6 +384,12 @@ impl ResourceSurface<Containers, ContainersEffect> for ContainersApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.engine_row(id)
     }
+
+    /// Containers with their recent logs, images, volumes and distroboxes:
+    /// what the engine holds, not the document.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::engine_entries(&self.engine)
+    }
 }
 
 impl ContainersApp {

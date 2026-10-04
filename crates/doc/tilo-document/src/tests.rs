@@ -659,3 +659,148 @@ fn a_reply_is_written_as_its_paragraphs_marks_and_attributes() {
         Some(&tilo_doc::AttrVal::Bool(true))
     );
 }
+
+/// Apply `action` as a window does for `writer`: the envelope pins who
+/// invoked it.
+fn apply_as(
+    replica: &mut Replica<RichText>,
+    action: &RichTextAction,
+    writer: &str,
+) -> tilo_actions::ActionEnvelope {
+    let encoded = tilo_actions::EncodedAction::encode(RICH_TEXT_ACTION_TYPE, action).unwrap();
+    let context = tilo_actions::ActionContext::for_resource(
+        "Type",
+        RichText::KIND,
+        RichText::KIND,
+        RichText::LABEL,
+    )
+    .with_invoker(tilo_actions::ActionInvoker::actor(writer));
+    tilo_actions::apply_local_with_context(
+        replica.doc_mut(),
+        action,
+        encoded,
+        Some(b"writer-device"),
+        context,
+    )
+    .unwrap()
+}
+
+/// Every author run in the body: the paragraph's position, the run, whose.
+fn author_runs(replica: &Replica<RichText>) -> Vec<(usize, usize, usize, String)> {
+    let doc = replica.doc();
+    let c = model::open(doc, &automerge::ROOT).unwrap();
+    model::materialize(doc, &c)
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(index, block)| {
+            tilo_doc::author_runs(&block.marks)
+                .into_iter()
+                .map(move |(start, end, author)| (index, start, end, author))
+        })
+        .collect()
+}
+
+#[test]
+fn text_typed_in_carries_its_invokers_name_from_the_one_change_that_wrote_it() {
+    type Case = (fn(&[String]) -> RichTextAction, (usize, usize, usize));
+    let paragraph = "Paragraph 0 of the document.".chars().count();
+    let cases: [Case; 5] = [
+        (
+            |ids| RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: ids[1].clone(),
+                at: 10,
+                del: 0,
+                ins: "zero ".into(),
+            },
+            (1, 10, 15),
+        ),
+        (
+            |ids| RichTextAction::ReplaceSelection {
+                region: RegionKind::Body,
+                start_block: ids[1].clone(),
+                start: 0,
+                end_block: ids[1].clone(),
+                end: 9,
+                ins: "Section".into(),
+            },
+            (1, 0, 7),
+        ),
+        (
+            |ids| RichTextAction::InsertParagraph {
+                after: ids[1].clone(),
+                text: "Next".into(),
+            },
+            (2, 0, 4),
+        ),
+        (
+            |_| RichTextAction::AppendParagraph { text: "End".into() },
+            (2, 0, 3),
+        ),
+        (
+            |_| RichTextAction::ContinueParagraph {
+                text: " More.".into(),
+            },
+            (1, paragraph, paragraph + 6),
+        ),
+    ];
+    for (action, (index, start, end)) in cases {
+        let mut origin = document(1);
+        let mut peer = origin.fork();
+        let action = action(&body_ids(&origin.state().unwrap()));
+        let changes = origin.doc_mut().get_changes(&[]).len();
+        let envelope = apply_as(&mut origin, &action, "ada");
+        assert_eq!(
+            origin.doc_mut().get_changes(&[]).len(),
+            changes + 1,
+            "{action:?} and its authorship are one change"
+        );
+        assert_eq!(
+            author_runs(&origin),
+            [(index, start, end, "ada".to_owned())],
+            "{action:?} marks exactly what it typed"
+        );
+
+        // The peer replays the envelope into the very same change.
+        peer.replay(&envelope).unwrap();
+        assert_eq!(
+            origin.heads(),
+            peer.heads(),
+            "{action:?} replays identically"
+        );
+        assert_eq!(author_runs(&peer), author_runs(&origin));
+    }
+}
+
+#[test]
+fn text_nobody_invoked_and_text_taken_away_stay_unattributed() {
+    let mut replica = document(1);
+    let ids = body_ids(&replica.state().unwrap());
+    replica
+        .apply_action(
+            &RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: ids[1].clone(),
+                at: 0,
+                del: 0,
+                ins: "Unsigned ".into(),
+            },
+            "Type",
+        )
+        .unwrap();
+    assert!(author_runs(&replica).is_empty());
+
+    apply_as(
+        &mut replica,
+        &RichTextAction::SpliceText {
+            region: RegionKind::Body,
+            block: ids[1].clone(),
+            at: 0,
+            del: 9,
+            ins: String::new(),
+        },
+        "ada",
+    );
+    assert!(author_runs(&replica).is_empty());
+}

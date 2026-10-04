@@ -14,6 +14,8 @@
 mod click_link_navigates;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
+#[path = "effects.rs"]
+mod effects;
 #[path = "framework_body.rs"]
 mod framework_body;
 #[path = "framework_new_note.rs"]

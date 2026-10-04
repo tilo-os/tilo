@@ -52,11 +52,9 @@
 "apps/hex-editor/src/view.rs" = 2
 "apps/mail/src/app.rs" = 3
 "apps/music/src/app/render.rs" = 3
-"apps/notes/src/app.rs" = 3
 "apps/pdf-viewer/src/app.rs" = 3
-"apps/photos/src/app.rs" = 3
+"apps/photos/src/app.rs" = 2
 "apps/settings/src/settings_app.rs" = 3
-"apps/slides/src/app.rs" = 3
 "apps/terminal/src/main_body.rs" = 2
 "apps/video-editor/src/app.rs" = 3
 "apps/word-processor/src/widget.rs" = 3

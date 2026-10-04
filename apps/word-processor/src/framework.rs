@@ -69,10 +69,6 @@ impl Resource for Document {
         <RichText as Resource>::coalesces(previous, next)
     }
 
-    fn annotates(action: &Self::Action) -> bool {
-        <RichText as Resource>::annotates(action)
-    }
-
     fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
         <RichText as Resource>::permission(action)
     }
