@@ -97,6 +97,9 @@ pub struct HostContext {
     open_file: Option<OpenFile>,
     capture: Option<Capture>,
     settings: crate::storage::SettingsDocument,
+    /// Where the app keeps the person's own records on this device, when
+    /// the host keeps them ([`Self::provide_person_records`]).
+    person: Option<crate::record::person::PersonRecords>,
     launch_arguments: Vec<String>,
 }
 
@@ -292,6 +295,7 @@ impl HostContext {
             open_file: None,
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
+            person: None,
             launch_arguments: Vec::new(),
         })
     }
@@ -416,6 +420,15 @@ impl HostContext {
     /// session document: a test or capture profile's own.
     pub fn provide_settings(&mut self, document: crate::storage::SettingsDocument) {
         self.settings = document;
+    }
+    /// Give the component the person's own records of this app
+    /// ([`crate::record::person`]), kept beside the record it shows.
+    pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
+        self.person = Some(records);
+    }
+    /// The person's own records of this app, when the host keeps them.
+    pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
+        self.person.as_ref()
     }
     /// Read/project an existing or initialized document. No untracked sync mutation.
     /// # Errors
