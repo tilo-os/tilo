@@ -302,10 +302,10 @@ pub(crate) fn container_list(
 }
 
 /// A list in the list column: its rows' text on the column's content edge
-/// (the shell's `s3` inset, where the column's title starts), their lift
+/// (the column gutter, where the column's title starts), their lift
 /// bleeding into the inset.
 fn list_column(list: Element) -> Element {
-    Box::new(Stack::new(SpacingStep::S0, vec![list]).inset(SpacingStep::S3, SpacingStep::S0))
+    Box::new(Stack::new(SpacingStep::S0, vec![list]).on_column_edge())
 }
 
 fn containers_empty(live: bool, intents: &Intents) -> Element {
@@ -351,6 +351,8 @@ struct Stack {
     gap: SpacingStep,
     inset_x: SpacingStep,
     inset_y: SpacingStep,
+    /// Inset sideways by the column gutter instead of `inset_x`.
+    column_edge: bool,
     /// As wide as its widest child instead of its parent.
     hug: bool,
 }
@@ -366,6 +368,7 @@ impl Stack {
             gap,
             inset_x: SpacingStep::S0,
             inset_y: SpacingStep::S0,
+            column_edge: false,
             hug: false,
         }
     }
@@ -379,6 +382,13 @@ impl Stack {
     fn inset(mut self, x: SpacingStep, y: SpacingStep) -> Self {
         self.inset_x = x;
         self.inset_y = y;
+        self
+    }
+
+    /// Stand the content on the column's content edge, where the shell
+    /// starts the column's title.
+    fn on_column_edge(mut self) -> Self {
+        self.column_edge = true;
         self
     }
 
@@ -408,7 +418,12 @@ impl ui::widget::Decorator for Stack {
         node_map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         let spacing = &theme.tokens.spacing;
-        let (x, y) = (spacing.step(self.inset_x), spacing.step(self.inset_y));
+        let x = if self.column_edge {
+            ui::num::f32_of_f64(ui::chrome::column_gutter(theme))
+        } else {
+            spacing.step(self.inset_x)
+        };
+        let y = spacing.step(self.inset_y);
         self.column = std::mem::take(&mut self.column).with_horizontal_padding(x, x);
         self.column.set_vertical_padding(y);
         self.column.set_gap(spacing.step(self.gap));

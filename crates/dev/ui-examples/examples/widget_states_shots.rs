@@ -895,9 +895,16 @@ fn stamp_block(scene: &mut Scene, theme: &Theme, cell: Rect, widget: &mut dyn Wi
     widget.set_motion_reduced(true);
     let mut frame = ShotFrame::new((cell.width() as u32, cell.height() as u32), theme.clone());
     frame.sync(widget);
-    if let Err(error) = frame.layout(widget) {
-        eprintln!("widget_states: layout failed: {error:?}");
-        return;
+    // A widget that learns its room in one pass (a table's sideways bar
+    // gutter) asks for another, as a window's next frame would give it.
+    for _ in 0..3 {
+        if let Err(error) = frame.layout(widget) {
+            eprintln!("widget_states: layout failed: {error:?}");
+            return;
+        }
+        if !widget.is_layout_dirty() {
+            break;
+        }
     }
     let mut drawn = frame.draw(widget);
     frame.draw_overlay(widget, &mut drawn);
