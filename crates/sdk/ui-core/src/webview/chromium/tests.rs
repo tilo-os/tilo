@@ -1684,14 +1684,16 @@ fn shared_owner_child() {
 }
 
 #[test]
-fn the_engine_host_does_not_inherit_the_app_runtime_library_path() {
+fn the_engine_host_does_not_inherit_the_app_loader_environment() {
     let command = host_command(Path::new(
         "/run/tilo-runtime/x/lib/chromium/tilo-chromium-host",
     ));
-    assert!(
-        command
-            .get_envs()
-            .any(|(key, value)| key == "LD_LIBRARY_PATH" && value.is_none()),
-        "the host must start without the app runtime's LD_LIBRARY_PATH"
-    );
+    for name in ["LD_LIBRARY_PATH", "LD_PRELOAD"] {
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == name && value.is_none()),
+            "the host must start without the app's {name}"
+        );
+    }
 }
