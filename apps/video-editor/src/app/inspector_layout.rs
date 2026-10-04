@@ -289,11 +289,8 @@ impl VideoEditorApp {
         (key, up, down, slider, remove)
     }
 
-    /// One segmented row across `x0..x1`, `h` tall at `y`, in the panel's
-    /// logical pixels: each segment its label's width plus an equal share of
-    /// the room the labels leave, so "Dissolve" or "1080p" is never elided
-    /// beside a two-letter neighbour. Equal segments when the labels cannot
-    /// be measured, or would not all fit.
+    /// One segmented strip across `x0..x1`, its segments sized to their
+    /// labels the way every segmented control partitions itself.
     pub(super) fn segment_rects(
         &self,
         labels: &[String],
@@ -302,36 +299,17 @@ impl VideoEditorApp {
         y: f64,
         h: f64,
     ) -> Vec<Rect> {
-        let n = labels.len().max(1) as f64;
-        let avail = (x1 - x0).max(0.0);
-        let scale = self.inspector_ui_scale();
-        // Each label at the weight a chosen segment is set in, so choosing
-        // one never makes it elide.
-        let labelled: Vec<f64> = self.with_dialog_layout(|_, tr, theme| {
-            let style = theme.text(TextRole::Label).strong();
-            labels
-                .iter()
-                .map(|label| text_width(tr, label, &style) / scale)
-                .collect()
-        });
-        let total: f64 = labelled.iter().sum();
-        let widths: Vec<f64> = if total < avail {
-            // The room the labels leave, shared equally: every segment gets
-            // the same padding around its own label.
-            let spare = (avail - total) / n;
-            labelled.iter().map(|w| w + spare).collect()
-        } else {
-            vec![avail / n; labels.len()]
-        };
-        let mut x = x0;
-        widths
-            .into_iter()
-            .map(|w| {
-                let rect = Rect::new(x, y, x + w, y + h);
-                x += w;
-                rect
-            })
-            .collect()
+        let strip = Rect::new(x0, y, x1.max(x0), y + h);
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        self.with_dialog_layout(|_, tr, theme| {
+            ui::widget::SegmentedFace::partition(
+                strip,
+                &labels,
+                control_size_for(strip, theme),
+                tr,
+                theme,
+            )
+        })
     }
 
     /// The part of the inspector's scroll body that is drawn: the viewport
