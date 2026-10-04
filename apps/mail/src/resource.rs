@@ -689,6 +689,33 @@ mod tests {
             );
         }
 
+        /// A message the engine loaded that has no row in the document yet
+        /// still opens from a search hit: its address resolves to the
+        /// window's live row and its open view.
+        #[test]
+        fn a_loaded_message_without_a_document_row_opens_from_a_hit() {
+            ui::i18n::I18nManager::init("en-US");
+            let app = crate::app::MailApp::new_sample();
+            let message = app
+                .shared_mailbox()
+                .messages
+                .values()
+                .next()
+                .expect("the sample has mail")
+                .clone();
+            let id = format!("mail.message:{}", message.id);
+            let row = app
+                .live_row(&id)
+                .expect("a loaded message resolves to a live row")
+                .into_resource();
+            assert!(row.actions.iter().any(|action| action.id == "open"));
+            assert!(
+                app.live_row("mail.message:00000000-0000-0000-0000-000000000000")
+                    .is_none(),
+                "a message that is not loaded resolves to nothing"
+            );
+        }
+
         /// The purge confirmation shows messages that really are in Trash:
         /// staging moved them there through the resource's own action.
         #[test]
