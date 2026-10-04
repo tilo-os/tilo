@@ -1186,7 +1186,7 @@ impl BrowserWidget {
             }
             WKey::Named(WNamedKey::Backspace) => {
                 self.address.update(|address| {
-                    address.pop();
+                    ui::text_edit::delete_last_grapheme(address);
                 });
                 true
             }
@@ -7838,6 +7838,26 @@ mod tests {
         let root = automerge::ROOT;
         widget.sync(&mut state, &root);
         (state, root)
+    }
+
+    /// Keys typed into a new tab's address before its field exists: one
+    /// Backspace removes one character as a person sees it.
+    #[test]
+    fn typed_ahead_address_backspace_removes_a_whole_character() {
+        let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
+        let typed = |widget: &mut BrowserWidget, key: WKey, replace: bool| {
+            assert!(widget.buffer_tab_address(&key, replace));
+            widget.address.with(Clone::clone)
+        };
+        typed(&mut widget, WKey::Character("a👍🏽".into()), true);
+        assert_eq!(
+            typed(&mut widget, WKey::Character("e\u{301}".into()), false),
+            "a👍🏽e\u{301}"
+        );
+        let backspace = || WKey::Named(WNamedKey::Backspace);
+        assert_eq!(typed(&mut widget, backspace(), false), "a👍🏽");
+        assert_eq!(typed(&mut widget, backspace(), false), "a");
+        assert_eq!(typed(&mut widget, backspace(), false), "");
     }
 
     /// Page actions, as an agent reaches them: published on `browser.page`,

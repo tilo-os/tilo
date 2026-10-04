@@ -1,0 +1,5 @@
+# Audited ceilings of apps/file-explorer (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/file-explorer/src/resource.rs" = 2
