@@ -106,13 +106,18 @@ settings_effects! {
     SpeakerFlow(crate::panes::speakers::SpeakerFlow) => crate::panes::speakers::answer_flow,
     AgentModels(crate::panes::agent_models::AgentModelsEffect) => crate::panes::agent_models::answer,
     DeviceMesh(crate::panes::device_mesh::DeviceMeshEffect) => crate::panes::device_mesh::answer,
+    Audio(crate::panes::audio::AudioEffect) => crate::panes::audio::answer,
+    Accounts(crate::panes::accounts::AccountsEffect) => crate::panes::accounts::answer,
+    Displays(crate::panes::display::DisplayEffect) => crate::panes::display::answer,
+    Network(crate::panes::network::NetworkEffect) => crate::panes::network::answer,
 }
 
 /// The live rows of every area — the devices, networks, accounts and other
 /// entities outside any document that Settings shows — with the effects each
 /// offers bound to it.
 pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
-    let mut rows = app.notifications().rows();
+    let mut rows = pane_rows();
+    rows.extend(app.notifications().rows());
     rows.extend(app.default_apps().rows());
     rows.extend(app.input().rows());
     rows.extend(app.printers().rows());
@@ -121,6 +126,10 @@ pub(crate) fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
     rows.extend(app.speakers().rows());
     rows.extend(app.agent_models().rows());
     rows.extend(app.device_mesh().rows());
+    rows.extend(app.audio().rows());
+    rows.extend(app.accounts().rows());
+    rows.extend(app.displays().rows());
+    rows.extend(app.network().rows());
     rows
 }
 
@@ -145,6 +154,42 @@ pub const fn effect<E, A: serde::Serialize>(
     effect: ActionRef<E, A>,
 ) -> ActionRef<SettingsEffect, A> {
     ActionRef::new(effect.id, effect.params)
+}
+
+/// The live row of `category`'s pane.
+#[must_use]
+pub fn pane_row_id(category: Category) -> String {
+    format!("settings.section:{}", category.slug())
+}
+
+/// What opens `category`'s pane, for search, agents and accessibility: its
+/// row's [`NavigationEffect::OpenPane`].
+#[must_use]
+pub fn open_pane_address(category: Category) -> tilo_actions::ActionAddress {
+    let open = NavigationEffect::OpenPane {
+        pane: category.slug().to_owned(),
+    };
+    tilo_actions::ActionAddress::new(pane_row_id(category), open.id())
+}
+
+/// One row per pane, each opening it.
+fn pane_rows() -> Vec<ui::framework::LiveRow> {
+    Category::ALL
+        .iter()
+        .map(|category| {
+            ui::framework::LiveRow::new(
+                pane_row_id(*category),
+                "settings.section",
+                category.label(),
+            )
+            .operation(
+                SettingsEffect::from(NavigationEffect::OpenPane {
+                    pane: category.slug().to_owned(),
+                })
+                .bound(),
+            )
+        })
+        .collect()
 }
 
 /// Moving between the panes of Settings.

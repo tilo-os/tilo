@@ -191,21 +191,22 @@ pub struct Command {
 /// [`ViewCx::open_here`](super::ViewCx::open_here) does, kept by a custom
 /// surface for the input that later asks for it (a file chosen in a picker).
 #[derive(Clone)]
-pub struct OpenHere(std::rc::Rc<dyn Fn(Vec<String>) -> Result<(), ui_core::launch::LaunchError>>);
+pub struct OpenHere(std::rc::Rc<dyn Fn(Vec<String>) -> ui_core::application::ReplacementOutcome>);
 
 impl OpenHere {
     pub(crate) fn new(
-        open: impl Fn(Vec<String>) -> Result<(), ui_core::launch::LaunchError> + 'static,
+        open: impl Fn(Vec<String>) -> ui_core::application::ReplacementOutcome + 'static,
     ) -> Self {
         Self(std::rc::Rc::new(open))
     }
 
-    /// Open what a launch naming `arguments` opens, in the window's place.
-    ///
-    /// # Errors
-    /// Returns why the record cannot be opened.
-    pub fn open(&self, arguments: &[String]) -> Result<(), String> {
-        (self.0)(arguments.to_vec()).map_err(|error| error.to_string())
+    /// Ask for what a launch naming `arguments` opens, in the window's
+    /// place. The host opens it after the event that asked; the outcome
+    /// answers whether the window shows it, or why not — the record is
+    /// unavailable, the file unreadable — so the asker can answer the
+    /// operation that asked and tell the person.
+    pub fn open(&self, arguments: &[String]) -> ui_core::application::ReplacementOutcome {
+        (self.0)(arguments.to_vec())
     }
 }
 

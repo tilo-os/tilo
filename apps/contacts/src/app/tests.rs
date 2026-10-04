@@ -27,9 +27,6 @@ fn published(app: &ContactsApp) -> Vec<tilo_actions::Resource> {
     )]
 }
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// Sample seeding, view, edit, popup and importing frames render without panicking and with legible chips and a busy announcement.
 #[test]
 fn every_view_mode_renders_legibly() {
@@ -758,6 +755,13 @@ impl Harness {
     fn new(w: u32, h: u32) -> Self {
         Harness {
             app: Live::sample(w, h),
+        }
+    }
+
+    /// The sample book in a window someone uses, where effects and jobs run.
+    fn live(w: u32, h: u32) -> Self {
+        Harness {
+            app: Live::live_sample(w, h),
         }
     }
 
@@ -2667,6 +2671,7 @@ fn scratch_export() -> (PathBuf, PathBuf) {
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
+    std::fs::create_dir_all(&dir).expect("scratch export directory");
     let vcf = dir.join("out.vcf");
     (dir, vcf)
 }
@@ -2678,7 +2683,7 @@ fn vcf_export_writes_the_selected_book() {
     // --- phase: export_selection_parks_then_save_portal_path_writes_the_vcf ---
     {
         let (dir, vcf) = scratch_export();
-        let mut h = Harness::new(1280, 800);
+        let mut h = Harness::live(1280, 800);
         // Open the export dialog via the toolbar Export button.
         h.press_left(h.app.hit.export.center());
         assert!(
@@ -2707,12 +2712,11 @@ fn vcf_export_writes_the_selected_book() {
         assert_eq!(h.app.export_dialog.selection().len(), 1);
         assert!(h.app.export_dialog.selection().contains(&first_id));
 
-        // Export 3.0 → closes the dialog and parks the selection for the Save
-        // dialog. It must NOT write anything before the user chooses a path.
-        // A recording host stands in for the desktop and will answer the Save
-        // dialog with `vcf`.
+        // Export 3.0 → closes the dialog and asks where to save. A recording
+        // host stands in for the desktop and answers the Save dialog with
+        // `vcf`.
         let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ExportOutcome::Opened(vcf.clone()));
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
         let _host = ui::host::enter(&services);
         let g = h
             .app
@@ -2723,48 +2727,45 @@ fn vcf_export_writes_the_selected_book() {
             !h.app.export_dialog.is_open(),
             "choosing a version closes the dialog"
         );
-        {
-            let (ids, version) = h.app.pending_export.as_ref().expect("selection is parked");
-            assert_eq!(ids, &vec![first_id], "the one ticked contact is parked");
-            assert_eq!(*version, VCardVersion::V3, "the chosen version is parked");
-        }
-        assert!(h.app.portal_in_flight(), "the Save dialog is in flight");
-        assert!(
-            !vcf.exists(),
-            "nothing is written until a destination is chosen"
-        );
+        assert!(h.app.portal_in_flight(), "the export runs");
 
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1, "exactly one Save dialog was requested");
         assert_eq!(picks[0].title(), "Export contacts");
 
-        // Drain the destination the Save dialog returned through one real
-        // frame's sync — which writes the file.
-        h.app.settle();
-        assert!(
-            h.app.pending_export.is_none(),
-            "the parked selection was consumed"
-        );
-        assert!(!h.app.portal_in_flight(), "draining clears the request");
+        // The file is written off the UI thread; the export ends on the
+        // frame after.
+        let deadline = ui::time::now() + std::time::Duration::from_secs(30);
+        while h.app.portal_in_flight() && ui::time::now() < deadline {
+            h.app.settle();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!h.app.portal_in_flight(), "the export ended");
         let body = std::fs::read_to_string(&vcf).expect("export wrote a vcf to the chosen path");
         assert_eq!(
             body.matches("BEGIN:VCARD").count(),
             1,
             "exactly the ticked contact"
         );
+        assert!(body.contains("VERSION:3.0"), "as the chosen version");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: write_export_round_trips_every_contact ---
+    // --- phase: exporting_everything_writes_every_contact ---
     {
-        // The hermetic write core: hand it every visible id + a version and it
-        // writes a matching .vcf to the given path.
+        // The export effect, as the palette or an agent invokes it, saves
+        // every contact as vCard 4.0 where the person chooses.
         let (dir, vcf) = scratch_export();
-        let mut h = Harness::new(1280, 800);
-        let ids = h.app.store.filtered_sorted("", None, h.app.sort);
-        let total = ids.len();
-        h.app.write_export(&ids, VCardVersion::V4, &vcf);
+        let mut h = Harness::live(1280, 800);
+        let total = h.app.store.filtered_sorted("", None, h.app.sort).len();
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
+        let _host = ui::host::enter(&services);
+        h.app
+            .app
+            .effect_confirmed(&crate::actions::ContactsEffect::ExportAllVcard)
+            .expect("the export runs");
         let body = std::fs::read_to_string(&vcf).unwrap();
         assert_eq!(
             body.matches("BEGIN:VCARD").count(),
@@ -2792,14 +2793,17 @@ fn scratch_book() -> (PathBuf, PathBuf) {
 
 /// Run the live Import action under a recording host whose multi-select
 /// chooser answers `outcome`, and check the app asked for that chooser.
-fn import_with(app: &mut ContactsApp, outcome: ImportOutcome) {
+fn import_with(app: &mut Live, outcome: ui::portal::MultiOutcome) {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick_multiple(outcome);
-    ui::host::scoped(&services, || app.request_import());
+    let result = ui::host::scoped(&services, || {
+        app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
+    });
     let picks = recorder.pick_requests();
     assert_eq!(picks.len(), 1, "one file chooser was requested");
     assert_eq!(picks[0].title(), "Import contacts");
     assert!(picks[0].is_multiple(), "Import picks several files at once");
+    result.expect("the import runs");
 }
 
 /// A live launch with no saved book is empty, and the first-run state is actionable by pointer, keyboard and assistive tech.
@@ -3155,8 +3159,8 @@ fn imports_recognise_identities_without_duplicating() {
 
         // Empty selection.
         assert!(!app.import_paths(&[]).completed());
-        // A cancelled picker drained through the real path.
-        import_with(&mut app, ImportOutcome::Cancelled);
+        // A cancelled picker, through the import effect.
+        import_with(&mut app, ui::portal::MultiOutcome::Cancelled);
         app.settle();
 
         assert!(app.store.is_empty(), "import of nothing adds nothing");
@@ -3168,167 +3172,52 @@ fn imports_recognise_identities_without_duplicating() {
     }
 }
 
-/// Import/export jobs are portal-brokered, merge through sync, and parser generations fence stale or exhausted workers.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
+/// Importing reads the chosen files off the UI thread and merges them as
+/// one step; an export with nothing chosen asks for no file.
 #[test]
-fn import_export_jobs_are_brokered_and_generation_fenced() {
-    // --- phase: import_drain_merges_selected_files_through_sync ---
-    {
-        // The live plumbing end to end: an ImportOutcome::Selected on the
-        // channel is drained by `sync` (the per-frame drain) and merged into
-        // the book — exactly what the portal worker feeds after the user picks
-        // files. Only the host dialog is stood in for by a recording host; the
-        // request, drain, parse and merge are real.
-        let (dir, path) = scratch_book();
-        std::fs::create_dir_all(&dir).unwrap();
-        let vcf = dir.join("incoming.vcf");
-        std::fs::write(
-        &vcf,
-        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Drained Person\r\nN:Person;Drained;;;\r\nEND:VCARD\r\n",
-    )
-    .unwrap();
-
-        let mut app = Live::empty(1280, 800);
-        let _ = &path;
-        assert!(app.store.is_empty());
-
-        // Run the live Import action with the host's chooser picking `vcf`,
-        // then run one real frame's sync — which drains it.
-        import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
-        assert!(
-            app.portal_in_flight(),
-            "a request is in flight until drained"
-        );
-        // The picker is drained on this frame; parsing happens on a worker so
-        // a slow vCard cannot block rendering. Drive a few frames instead of
-        // assuming the scheduler has already run that worker.
-        let deadline = ui::time::now() + HANG_BOUND;
-        while ui::time::now() < deadline {
-            app.settle();
-            if !app.portal_in_flight() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            !app.portal_in_flight(),
-            "draining the outcome clears the request"
-        );
-        app.settle();
-        assert_eq!(app.book().len(), 1, "the drained selection was imported");
-        assert_eq!(app.book()[0].first, "Drained");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // --- phase: stale_background_parser_cannot_apply_or_leave_an_accepted_import_pending ---
-    {
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        let mut stale = Contact::new();
-        stale.first = "Stale worker".into();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        app.import_generation = 2;
-        app.import_parse_rx = Some(receiver);
-        sender
-            .send(ParsedImport {
-                generation: 1,
-                contacts: vec![stale],
-                errors: 0,
-            })
-            .unwrap();
-
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            app.store.is_empty(),
-            "wrong-generation data never reaches the book"
-        );
-        assert!(app.import_parse_rx.is_none());
-        assert!(matches!(app.file_outcome.take(), Some(Err(_))));
-    }
-
-    // --- phase: exhausted_parser_generation_refuses_a_new_import_and_settles_the_job ---
+fn import_and_export_run_through_the_file_chooser() {
+    // --- phase: chosen_files_import_through_the_import_effect ---
     {
         let (dir, _path) = scratch_book();
         std::fs::create_dir_all(&dir).unwrap();
-        let vcf = dir.join("generation-limit.vcf");
-        std::fs::write(&vcf, "BEGIN:VCARD\r\nFN:Never Parsed\r\nEND:VCARD\r\n").unwrap();
+        let vcf = dir.join("incoming.vcf");
+        std::fs::write(
+            &vcf,
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Drained Person\r\nN:Person;Drained;;;\r\nEND:VCARD\r\n",
+        )
+        .unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.import_generation = u64::MAX;
-        import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
+        let mut app = Live::empty(1280, 800);
+        assert!(app.store.is_empty());
+        import_with(&mut app, ui::portal::MultiOutcome::Selected(vec![vcf]));
+        assert!(!app.portal_in_flight(), "the import ended");
+        assert_eq!(app.book().len(), 1, "the chosen file was imported");
+        assert_eq!(app.book()[0].first, "Drained");
+        assert!(app.app.undo(), "the import is one undo step");
+        assert!(app.book().is_empty());
 
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            app.store.is_empty(),
-            "no wrapped parser generation can apply data"
-        );
-        assert!(app.import_parse_rx.is_none());
-        assert_eq!(
-            app.import_generation,
-            u64::MAX,
-            "the exhausted token is never reused"
-        );
-        assert!(
-            app.toast
-                .as_ref()
-                .is_some_and(|(message, _)| message.contains("generation exhausted"))
-        );
-        assert!(matches!(app.file_outcome.take(), Some(Err(_))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: cancelling_at_generation_max_invalidates_the_worker_without_wrapping ---
+    // --- phase: a_running_import_refuses_a_second ---
     {
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        app.import_parse_rx = Some(receiver);
-        app.import_generation = u64::MAX;
-
-        app.cancel_file_effect();
-        assert!(
-            matches!(app.file_outcome.take(), Some(Err(message)) if message.contains("cancelled")),
-            "accepted import is settled when cancelled"
-        );
-        assert!(
-            app.import_parse_rx.is_none(),
-            "the worker result is detached"
-        );
-        assert_eq!(
-            app.import_generation,
-            u64::MAX,
-            "cancellation never wraps to 0"
-        );
-        assert!(
-            app.toast
-                .as_ref()
-                .is_some_and(|(message, _)| message.contains("generation exhausted"))
-        );
-        // The worker can still finish in the background, but its disconnected
-        // receiver means no stale contacts can reach this app instance.
-        let _ = sender.send(ParsedImport {
-            generation: u64::MAX,
-            contacts: vec![Contact::new()],
-            errors: 0,
+        let mut app = Live::empty(1280, 800);
+        let _running = app.begin_file_work(FileWork::Import).unwrap();
+        let (services, _recorder) = ui::host::HostServices::recording();
+        let refused = ui::host::scoped(&services, || {
+            app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
         });
-        app.sync(&mut doc, &ROOT);
-        assert!(app.store.is_empty());
+        assert!(refused.is_err(), "one file operation runs at a time");
     }
 
     // --- phase: export_with_empty_selection_never_opens_the_portal ---
     {
         // Choosing a version with nothing ticked must not spin up a Save
-        // dialog or park anything — it guides the user instead.
-        let mut h = Harness::new(1280, 800);
-        let opened = h.app.request_export(Vec::new(), VCardVersion::V3);
+        // dialog — it guides the user instead.
+        let mut h = Harness::live(1280, 800);
+        let opened = h.app.request_export(&[], VCardVersion::V3);
         assert!(!opened, "an empty selection does not open the Save dialog");
-        assert!(h.app.pending_export.is_none(), "nothing is parked");
-        assert!(!h.app.portal_in_flight(), "no portal request is in flight");
+        assert!(!h.app.portal_in_flight(), "no export runs");
         match &h.app.toast {
             Some((msg, _)) => assert!(msg.to_lowercase().contains("select")),
             None => panic!("an empty export must surface a guiding toast"),

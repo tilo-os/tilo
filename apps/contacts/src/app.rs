@@ -15,15 +15,15 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::framework::Dispatcher;
+use ui::framework::{ChosenFile, Dispatcher};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -35,10 +35,7 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::chrome::{GLOW_ALPHA, SelectionState, SelectionTier};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
-use ui::portal::{
-    FileFilter, MultiChannel as ImportChannel, MultiOutcome as ImportOutcome, PickRequest,
-    PortalChannel as ExportChannel, PortalOutcome as ExportOutcome,
-};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::surface::{card, edge_on, edge_outline, separator, shadow};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -430,7 +427,6 @@ struct ImportConflict {
 }
 
 struct ParsedImport {
-    generation: u64,
     contacts: Vec<Contact>,
     errors: usize,
 }
@@ -1299,24 +1295,12 @@ pub struct ContactsApp {
     /// its first contact.
     seeded: bool,
 
-    /// In-flight import file-chooser: the portal worker's receiver, drained
-    /// once per frame. `Some` ⇒ the host's multi-select Open dialog is up.
-    import_rx: Option<ImportChannel>,
-    import_parse_rx: Option<Receiver<ParsedImport>>,
-    import_generation: u64,
+    /// The import or export running, from its file chooser until its
+    /// cards are in or its file is written.
+    file_work: Rc<Cell<Option<FileWork>>>,
     /// The vCards of a file the app was opened with, imported once the
     /// address book is presented.
     opened_cards: Option<String>,
-    /// In-flight export Save dialog: the portal worker's receiver.
-    export_rx: Option<ExportChannel>,
-    /// The contacts + vCard version parked while the export Save dialog is up,
-    /// written to the chosen destination when the portal returns a path.
-    pending_export: Option<(Vec<ContactId>, VCardVersion)>,
-    /// The answer owed to the import or export effect still running.
-    resource_reply: Option<ui::framework::EffectReply>,
-    /// How the last import or export ended, as its caller was told.
-    #[cfg(test)]
-    file_outcome: Option<Result<(), String>>,
     /// Pending untrusted UID collisions. These never enter the document until
     /// the user explicitly chooses a safe resolution.
     import_conflicts: Vec<ImportConflict>,
@@ -1327,6 +1311,9 @@ pub struct ContactsApp {
     /// path the palette, agents and scripts take. `None` until the framework
     /// attaches the surface; a detached widget edits nothing.
     dispatcher: Option<Dispatcher<Contacts>>,
+    /// The surface's own jobs: an export of the contacts chosen in the
+    /// export dialog runs here.
+    pub(crate) jobs: Option<ui::framework::Jobs<Contacts>>,
     /// The form of the last save, until the book presents it: a save the
     /// door refuses reopens it with the person's text intact.
     unconfirmed_save: Option<EditForm>,
@@ -1391,18 +1378,12 @@ impl ContactsApp {
             dirty: true,
             relayout: true,
             seeded: false,
-            import_rx: None,
-            import_parse_rx: None,
+            file_work: Rc::default(),
             opened_cards: None,
-            import_generation: 0,
-            export_rx: None,
-            pending_export: None,
-            resource_reply: None,
-            #[cfg(test)]
-            file_outcome: None,
             import_conflicts: Vec::new(),
             pending_conflict_resolution: None,
             dispatcher: None,
+            jobs: None,
             unconfirmed_save: None,
         }
     }
@@ -1534,9 +1515,8 @@ impl ContactsApp {
 
     /// An import in progress: an inert parser receiver keeps the toolbar's
     /// busy copy and accessibility state up without opening a host portal.
-    fn stage_loading(&mut self) {
-        let (_sender, receiver) = mpsc::channel();
-        self.import_parse_rx = Some(receiver);
+    fn stage_loading(&self) {
+        self.file_work.set(Some(FileWork::Import));
     }
 
     /// The right-click context menu on the selected contact row. Its anchor
@@ -2067,16 +2047,16 @@ impl ContactsApp {
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
     }
 
-    /// Live Import action: open the host's native multi-select file chooser
-    /// (XDG portal) filtered to vCard files. Non-blocking — the D-Bus
-    /// round-trip and the host dialog run on a worker thread; the chosen paths
-    /// arrive over a channel drained by [`drain_portal`]. An in-flight request
-    /// is not restarted.
-    fn request_import(&mut self) {
-        if self.import_rx.is_some() || self.import_parse_rx.is_some() {
+    /// Import vCard files the person chooses, as the import effect does
+    /// for anyone who invokes it. A running import or export is not
+    /// restarted.
+    fn request_import(&self) {
+        if self.file_work.get().is_some() {
             return;
         }
-        self.import_rx = Some(contacts_import_request().send_multiple());
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&crate::actions::ContactsEffect::ImportVcard);
+        }
     }
 
     /// Read and parse every vCard file in `paths` into the address
@@ -2190,7 +2170,6 @@ impl ContactsApp {
         let overflow = contacts.len().saturating_sub(MAX_IMPORT_TOTAL_CARDS);
         contacts.truncate(MAX_IMPORT_TOTAL_CARDS);
         self.apply_parsed_import(ParsedImport {
-            generation: self.import_generation,
             contacts,
             errors: report.skipped_cards + usize::from(report.limit_reached) + overflow,
         });
@@ -2228,70 +2207,110 @@ impl ContactsApp {
         summary
     }
 
-    fn start_import_parse(&mut self, paths: Vec<PathBuf>) -> Result<(), String> {
-        if paths.len() > MAX_IMPORT_FILES {
+    /// Parse the chosen vCard `files` off the UI thread, then absorb them
+    /// as one undo step. Nothing chosen imports nothing.
+    fn import_chosen(
+        files: Vec<ChosenFile>,
+        work: FileWorkGuard,
+        cx: &mut ui::framework::EffectCx<Contacts, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if files.is_empty() {
+            return Ok(ui::framework::Effected::done());
+        }
+        if files.len() > MAX_IMPORT_FILES {
             return Err(format!(
                 "select at most {MAX_IMPORT_FILES} vCard files at once"
             ));
         }
-        let mut total = 0_u64;
-        for path in &paths {
-            let metadata = file_metadata(path)?;
-            if metadata.kind != tilo_files::Kind::File {
-                return Err("selected path is not a regular file".into());
-            }
-            total = total.saturating_add(metadata.len);
-            if total > MAX_IMPORT_TOTAL_BYTES {
-                return Err(format!(
-                    "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
-                ));
-            }
+        let total = files
+            .iter()
+            .map(|file| file.bytes.len() as u64)
+            .sum::<u64>();
+        if total > MAX_IMPORT_TOTAL_BYTES {
+            return Err(format!(
+                "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
+            ));
         }
-        let generation = self.advance_import_generation()?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        ui::rt::spawn_thread("contacts-vcard-parser", move || {
-            let mut contacts = Vec::new();
-            let mut errors = 0;
-            for path in paths {
-                match Self::read_import_file(&path) {
-                    Ok(text) => {
-                        let report = vcard::parse_vcards_report(&text);
-                        errors += report.skipped_cards + usize::from(report.limit_reached);
-                        for c in report.contacts {
-                            if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
-                                contacts.push(c);
-                            } else {
-                                errors += 1;
-                                break;
-                            }
-                        }
-                    }
-                    Err(_) => errors += 1,
+        Ok(cx.thread(
+            move |_| parse_chosen(files),
+            move |app: &mut Self, parsed, _| {
+                drop(work);
+                let summary = app.apply_parsed_import(parsed);
+                if summary.completed() {
+                    Ok(ui::framework::Effected::done())
+                } else {
+                    Err(summary.failure_message())
                 }
-            }
-            let _ = sender.send(ParsedImport {
-                generation,
-                contacts,
-                errors,
-            });
-        })
-        .map_err(|error| error.to_string())?;
-        self.import_parse_rx = Some(receiver);
-        Ok(())
+            },
+        ))
     }
 
-    /// Allocate a parser generation without ever reusing the initial or a
-    /// previously-issued value.  A wrap would let a delayed worker from an
-    /// ancient import look current, so exhaustion permanently closes imports
-    /// for this app instance instead of silently returning to generation 0.
-    fn advance_import_generation(&mut self) -> Result<u64, String> {
-        let generation = self.import_generation.checked_add(1).ok_or_else(|| {
-            "import generation exhausted; restart Contacts before importing again".to_string()
-        })?;
-        self.import_generation = generation;
-        Ok(generation)
+    /// Claim the one running file import or export, until the guard drops.
+    fn begin_file_work(&self, work: FileWork) -> Result<FileWorkGuard, String> {
+        if self.file_work.get().is_some() {
+            return Err("another contact file operation is running".into());
+        }
+        self.file_work.set(Some(work));
+        Ok(FileWorkGuard(Rc::clone(&self.file_work)))
     }
 
+    /// The vCard file of `ids` as `version`, and how many cards it holds.
+    fn export_bytes(
+        &self,
+        ids: &[ContactId],
+        version: VCardVersion,
+    ) -> Result<(Vec<u8>, usize), String> {
+        let contacts: Vec<Contact> = ids
+            .iter()
+            .filter_map(|id| self.store.get(*id).cloned())
+            .collect();
+        if contacts.is_empty() {
+            return Err("there are no contacts to export".into());
+        }
+        Ok((
+            vcard::to_vcards(&contacts, version).into_bytes(),
+            contacts.len(),
+        ))
+    }
+
+    /// Save `ids` as a `version` vCard file where the person chooses.
+    fn export_to_chosen_file(
+        &self,
+        ids: &[ContactId],
+        version: VCardVersion,
+        cx: &mut ui::framework::EffectCx<Contacts, Self>,
+    ) -> ui::framework::EffectAnswer {
+        let (bytes, count) = self.export_bytes(ids, version)?;
+        let work = self.begin_file_work(FileWork::Export)?;
+        Ok(Self::save_export(bytes, count, version, work, cx))
+    }
+
+    /// Ask where to save the exported `bytes` and save them there.
+    fn save_export(
+        bytes: Vec<u8>,
+        count: usize,
+        version: VCardVersion,
+        work: FileWorkGuard,
+        cx: &mut ui::framework::EffectCx<Contacts, Self>,
+    ) -> ui::framework::Effected {
+        cx.save_file(
+            contacts_export_request(EXPORT_FILE_NAME),
+            bytes,
+            move |app, saved, _| {
+                drop(work);
+                if saved {
+                    app.show_toast(format!(
+                        "Exported {count} contact{} ({})",
+                        if count == 1 { "" } else { "s" },
+                        version.label()
+                    ));
+                }
+                Ok(ui::framework::Effected::done())
+            },
+        )
+    }
+
+    #[cfg(test)]
     fn read_import_file(path: &std::path::Path) -> Result<String, String> {
         let metadata = file_metadata(path)?;
         if metadata.kind != tilo_files::Kind::File {
@@ -2338,119 +2357,10 @@ impl ContactsApp {
         self.show_toast(parts.join("; "));
     }
 
-    /// Whether a file-chooser portal (import or export) is currently awaiting
-    /// the user's choice. Keeps the host loop pumping frames so the outcome is
-    /// drained promptly once the dialog closes.
+    /// Whether an import or export is running. Keeps the host loop pumping
+    /// frames so its end shows promptly.
     fn portal_in_flight(&self) -> bool {
-        self.import_rx.is_some() || self.import_parse_rx.is_some() || self.export_rx.is_some()
-    }
-
-    fn finish_resource_file(&mut self, success: bool, error: Option<String>) {
-        let outcome = if success {
-            Ok(tilo_actions::ActionOutput::default())
-        } else {
-            Err(error.unwrap_or_else(|| "the contact file operation was cancelled".into()))
-        };
-        #[cfg(test)]
-        {
-            self.file_outcome = Some(outcome.clone().map(|_| ()));
-        }
-        if let Some(reply) = self.resource_reply.take() {
-            reply.finish(outcome);
-        }
-    }
-
-    /// Drain any in-flight import/export portal request. Called once per frame
-    /// from [`Widget::sync`]; a `try_recv` never blocks the UI thread. When an
-    /// outcome arrives the receiver is dropped (idle again).
-    fn drain_portal(&mut self) {
-        if let Some(rx) = &self.import_rx {
-            match rx.try_recv() {
-                Ok(ImportOutcome::Selected(paths)) => {
-                    self.import_rx = None;
-                    if let Err(error) = self.start_import_parse(paths) {
-                        self.show_toast(format!("Couldn't start import: {error}"));
-                        self.finish_resource_file(false, Some(error));
-                    }
-                }
-                Ok(ImportOutcome::Cancelled) => {
-                    // A dismissed picker is a silent no-op — nothing to say.
-                    self.import_rx = None;
-                    self.finish_resource_file(false, None);
-                }
-                Ok(ImportOutcome::Failed(reason)) => {
-                    self.import_rx = None;
-                    self.show_toast(format!("Import unavailable: {reason}"));
-                    self.finish_resource_file(false, Some(reason));
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.import_rx = None;
-                    self.finish_resource_file(
-                        false,
-                        Some("import picker stopped unexpectedly".into()),
-                    );
-                }
-            }
-        }
-        if let Some(rx) = &self.import_parse_rx {
-            match rx.try_recv() {
-                Ok(parsed) => {
-                    self.import_parse_rx = None;
-                    if parsed.generation == self.import_generation {
-                        let imported = self.apply_parsed_import(parsed);
-                        let success = imported.completed();
-                        self.finish_resource_file(
-                            success,
-                            (!success).then(|| imported.failure_message()),
-                        );
-                    } else {
-                        // A superseded parser is never allowed to apply its
-                        // contacts.  It must still settle a previously
-                        // accepted broker invocation rather than leaving that
-                        // job pending forever.
-                        self.finish_resource_file(
-                            false,
-                            Some("import was superseded before parsing finished".into()),
-                        );
-                    }
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.import_parse_rx = None;
-                    self.finish_resource_file(
-                        false,
-                        Some("import parser stopped unexpectedly".into()),
-                    );
-                }
-            }
-        }
-        if let Some(rx) = &self.export_rx {
-            match rx.try_recv() {
-                Ok(ExportOutcome::Opened(path)) => {
-                    self.export_rx = None;
-                    if let Some((ids, version)) = self.pending_export.take() {
-                        self.write_export(&ids, version, &path);
-                        self.finish_resource_file(
-                            path.is_file(),
-                            (!path.is_file()).then(|| "vCard export was not written".into()),
-                        );
-                    }
-                }
-                Ok(ExportOutcome::Cancelled) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.export_rx = None;
-                    self.pending_export = None;
-                    self.finish_resource_file(false, None);
-                }
-                Ok(ExportOutcome::Failed(reason)) => {
-                    self.export_rx = None;
-                    self.pending_export = None;
-                    self.show_toast(format!("Export unavailable: {reason}"));
-                    self.finish_resource_file(false, Some(reason));
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
+        self.file_work.get().is_some()
     }
 
     /// Open the export-selection dialog, pre-ticking every contact currently
@@ -2464,21 +2374,33 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Live Export action: park the chosen `ids` + vCard `version`, then open
-    /// the host's native Save dialog (XDG portal) with a suggested file name.
-    /// Non-blocking — when the portal returns a destination, [`drain_portal`]
-    /// writes the file via [`write_export`]. An in-flight request is not
-    /// restarted. Returns `false` (nothing parked) when the selection is empty.
-    fn request_export(&mut self, ids: Vec<ContactId>, version: VCardVersion) -> bool {
+    /// Export the contacts chosen in the export dialog to a file the
+    /// person chooses. A running import or export is not restarted.
+    /// Returns `false` when nothing was started.
+    fn request_export(&mut self, ids: &[ContactId], version: VCardVersion) -> bool {
         if ids.is_empty() {
             self.show_toast("Select at least one contact to export");
             return false;
         }
-        if self.export_rx.is_some() {
+        if self.file_work.get().is_some() {
             return false;
         }
-        self.pending_export = Some((ids, version));
-        self.export_rx = Some(contacts_export_request(EXPORT_FILE_NAME).send());
+        let Some(jobs) = self.jobs.clone() else {
+            return false;
+        };
+        let (bytes, count) = match self.export_bytes(ids, version) {
+            Ok(export) => export,
+            Err(error) => {
+                self.show_toast(format!("Export failed: {error}"));
+                return false;
+            }
+        };
+        let Ok(work) = self.begin_file_work(FileWork::Export) else {
+            return false;
+        };
+        jobs.start::<Self>("export", move |cx| {
+            Ok(Self::save_export(bytes, count, version, work, cx))
+        });
         true
     }
 
@@ -2491,8 +2413,7 @@ impl ContactsApp {
         if self.store.get(id).is_none() {
             return Err("contact no longer exists".into());
         }
-        if self.export_dialog.is_open() || self.export_rx.is_some() || self.resource_reply.is_some()
-        {
+        if self.export_dialog.is_open() || self.file_work.get().is_some() {
             return Err("a contact export is already in progress".into());
         }
         self.export_dialog.open([id]);
@@ -2523,35 +2444,6 @@ impl ContactsApp {
         let effect = crate::actions::open_duplicate_review_operation(candidate);
         self.perform_effect(effect)?;
         Ok(true)
-    }
-
-    /// Write the chosen `ids` out as a `.vcf` of `version` to `path`, reporting
-    /// the real destination. Hermetic core shared by the live portal drain and
-    /// the tests — it takes an explicit path and never consults the picker or
-    /// an env var.
-    fn write_export(&mut self, ids: &[ContactId], version: VCardVersion, path: &std::path::Path) {
-        let contacts: Vec<Contact> = ids
-            .iter()
-            .filter_map(|id| self.store.get(*id).cloned())
-            .collect();
-        if contacts.is_empty() {
-            self.show_toast("Select at least one contact to export");
-            return;
-        }
-        let body = vcard::to_vcards(&contacts, version);
-        let written = tilo_files::file_at(path).and_then(|(dir, name)| {
-            tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
-            tilo_files::blocking::save_document(&dir, &name, body.as_bytes())
-        });
-        match written {
-            Ok(()) => self.show_toast(format!(
-                "Exported {} ({}) → {}",
-                contacts.len(),
-                version.label(),
-                path.display()
-            )),
-            Err(e) => self.show_toast(format!("Export failed: {e}")),
-        }
     }
 }
 
@@ -3700,8 +3592,8 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let compact = self.toolbar_is_compact();
         let toolbar_h = self.toolbar_h();
-        let importing = self.import_rx.is_some() || self.import_parse_rx.is_some();
-        let exporting = self.export_rx.is_some();
+        let importing = self.file_work.get() == Some(FileWork::Import);
+        let exporting = self.file_work.get() == Some(FileWork::Export);
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -6307,15 +6199,11 @@ impl Widget for ContactsApp {
     ui::provides!(dyn ui::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.settle_cancelled_file_effect();
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(&token, import_as_new)
         {
             self.show_toast(format!("Couldn't resolve import review: {error}"));
         }
-        // Drain any in-flight file-chooser portal request first, so a chosen
-        // import/export is submitted before this frame lays out.
-        self.drain_portal();
         self.import_opened_cards();
         self.announce_refusal();
 
@@ -6645,8 +6533,8 @@ impl Widget for ContactsApp {
             return Some(dialog);
         }
 
-        let importing = self.import_rx.is_some() || self.import_parse_rx.is_some();
-        let exporting = self.export_rx.is_some();
+        let importing = self.file_work.get() == Some(FileWork::Import);
+        let exporting = self.file_work.get() == Some(FileWork::Export);
         let mut toolbar_actions = vec![
             AccessNode::new(Role::Button)
                 .with_name(if importing {
@@ -6993,7 +6881,7 @@ impl Widget for ContactsApp {
                 self.sort,
             );
             if let Some(request) = request {
-                self.request_export(request.ids, request.version);
+                self.request_export(&request.ids, request.version);
             }
             if consumed {
                 self.dirty = true;
@@ -7564,33 +7452,22 @@ impl ContactsApp {
         use crate::actions::ContactsEffect;
         match effect {
             ContactsEffect::ImportVcard => {
-                if self.resource_reply.is_some()
-                    || self.import_rx.is_some()
-                    || self.import_parse_rx.is_some()
-                {
-                    return Err("another contact file operation is running".into());
-                }
-                self.request_import();
+                let work = self.begin_file_work(FileWork::Import)?;
+                Ok(
+                    cx.choose_files(contacts_import_request(), move |_, files, cx| {
+                        Self::import_chosen(files, work, cx)
+                    }),
+                )
             }
             ContactsEffect::ExportAllVcard => {
-                if self.store.contacts.is_empty() {
-                    return Err("there are no contacts to export".into());
-                }
-                if self.resource_reply.is_some() || self.export_rx.is_some() {
-                    return Err("another contact file operation is running".into());
-                }
-                let ids = self.store.contacts.iter().map(|c| c.id).collect();
-                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                    return Err("contact export could not be started".into());
-                }
+                let ids: Vec<ContactId> = self.store.contacts.iter().map(|c| c.id).collect();
+                self.export_to_chosen_file(&ids, VCardVersion::V4, cx)
             }
             other => {
                 self.perform_effect(other)?;
-                return Ok(ui::framework::Effected::done());
+                Ok(ui::framework::Effected::done())
             }
         }
-        self.resource_reply = Some(cx.reply());
-        Ok(ui::framework::Effected::Pending)
     }
 
     /// Settle the pending import review `token` on the next sync.
@@ -7608,43 +7485,6 @@ impl ContactsApp {
         }
         self.pending_conflict_resolution = Some((token, import_as_new));
         Ok(())
-    }
-
-    /// Drop the import or export its caller cancelled, before it changed the
-    /// book or wrote a file.
-    fn settle_cancelled_file_effect(&mut self) {
-        if self
-            .resource_reply
-            .as_ref()
-            .is_some_and(ui::framework::EffectReply::is_cancelled)
-        {
-            self.cancel_file_effect();
-        }
-    }
-
-    /// Detach the running import or export and answer its caller cancelled.
-    fn cancel_file_effect(&mut self) {
-        self.import_rx = None;
-        self.import_parse_rx = None;
-        let exhausted = self.advance_import_generation().is_err();
-        self.export_rx = None;
-        self.pending_export = None;
-        if exhausted {
-            self.show_toast(
-                "Import cancelled; restart Contacts before importing again (generation exhausted)",
-            );
-        }
-        self.finish_resource_file(
-            false,
-            Some(
-                if exhausted {
-                    "contact file operation cancelled; import generation exhausted"
-                } else {
-                    "contact file operation cancelled"
-                }
-                .into(),
-            ),
-        );
     }
 
     /// Do what an effect that answers at once asks.
@@ -8956,7 +8796,7 @@ impl ContactsApp {
             self.dirty = true;
         }
         if let Some(request) = request {
-            self.request_export(request.ids, request.version);
+            self.request_export(&request.ids, request.version);
         }
     }
 
@@ -9482,7 +9322,52 @@ impl ContactsApp {
 // Tests
 // =====================================================================
 
+/// Parse the vCards of `files`, bounded so one large or malformed import
+/// cannot flood the book.
+fn parse_chosen(files: Vec<ChosenFile>) -> ParsedImport {
+    let mut contacts = Vec::new();
+    let mut errors = 0;
+    for file in files {
+        let Ok(text) = String::from_utf8(file.bytes) else {
+            errors += 1;
+            continue;
+        };
+        if text.len() as u64 > MAX_IMPORT_FILE_BYTES {
+            errors += 1;
+            continue;
+        }
+        let report = vcard::parse_vcards_report(&text);
+        errors += report.skipped_cards + usize::from(report.limit_reached);
+        for c in report.contacts {
+            if contacts.len() < MAX_IMPORT_TOTAL_CARDS {
+                contacts.push(c);
+            } else {
+                errors += 1;
+                break;
+            }
+        }
+    }
+    ParsedImport { contacts, errors }
+}
+
+/// The one import or export running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileWork {
+    Import,
+    Export,
+}
+
+/// Holds the running [`FileWork`] until the work ends, however it ends.
+struct FileWorkGuard(Rc<Cell<Option<FileWork>>>);
+
+impl Drop for FileWorkGuard {
+    fn drop(&mut self) {
+        self.0.set(None);
+    }
+}
+
 /// Size and kind of a file a chooser named.
+#[cfg(test)]
 fn file_metadata(path: &std::path::Path) -> Result<tilo_files::Meta, String> {
     tilo_files::file_at(path)
         .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name))

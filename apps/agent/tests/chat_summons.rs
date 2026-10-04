@@ -62,7 +62,7 @@ fn config(path: std::path::PathBuf) -> Config {
     }
 }
 fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: tilo_doc::model::open(doc, &automerge::ROOT)
                 .map(|c| {
@@ -181,8 +181,8 @@ fn scenario_outcome(
                 text: text.into(),
                 reference: wait_for_owner.then(|| {
                     tilo_reference::ResourceRef::whole(
-                        "word-processor.document",
-                        "word-processor.document",
+                        "tilo.rich-text",
+                        "tilo.rich-text",
                         "Owner document",
                     )
                 }),

@@ -193,10 +193,48 @@ pub struct PreparedComponentInputs {
 /// A component an app built to show another record in the place of the one
 /// it shows now, and the launch that names that record (the path a person
 /// chose to open). The host closes the current component and mounts this
-/// one in the same window ([`AppComponent::take_replacement`]).
+/// one in the same window ([`AppComponent::take_replacement`]), then answers
+/// the request ([`Self::into_parts`]).
 pub struct ComponentReplacement {
     pub component: AppComponent,
     pub arguments: Vec<String>,
+    outcome: ReplacementOutcome,
+}
+
+impl ComponentReplacement {
+    /// `component`, opened on the launch naming `arguments`.
+    pub fn new(component: AppComponent, arguments: Vec<String>) -> Self {
+        Self {
+            component,
+            arguments,
+            outcome: ReplacementOutcome::default(),
+        }
+    }
+
+    /// The component to mount, and where the host answers whether the
+    /// window shows it now.
+    pub fn into_parts(self) -> (AppComponent, ReplacementOutcome) {
+        (self.component, self.outcome)
+    }
+}
+
+/// What became of a request to show another record in a window: nothing
+/// yet, shown, or refused with the reason. The asking component reads it on
+/// its next frame, before the host closes it, so the operation that asked
+/// is answered and a refusal is shown to the person.
+#[derive(Clone, Default)]
+pub struct ReplacementOutcome(Rc<RefCell<Option<Result<(), String>>>>);
+
+impl ReplacementOutcome {
+    /// The answer, once there is one.
+    pub fn get(&self) -> Option<Result<(), String>> {
+        self.0.borrow().clone()
+    }
+
+    /// Answer the request.
+    pub fn answer(&self, result: Result<(), String>) {
+        *self.0.borrow_mut() = Some(result);
+    }
 }
 
 /// A replacement asked for, built now or when the host takes it.
@@ -205,17 +243,23 @@ enum PendingReplacement {
     /// Built when the host takes it, outside the frame that asked: the
     /// record store the request opens is busy while the asking component
     /// handles an event or an operation.
-    Deferred(Box<dyn FnOnce() -> Result<ComponentReplacement, LaunchError>>),
+    Deferred(
+        Box<dyn FnOnce() -> Result<ComponentReplacement, LaunchError>>,
+        ReplacementOutcome,
+    ),
 }
 
 impl PendingReplacement {
     fn take(self) -> Option<ComponentReplacement> {
         match self {
             Self::Built(replacement) => Some(replacement),
-            Self::Deferred(build) => match build() {
-                Ok(replacement) => Some(replacement),
+            Self::Deferred(build, outcome) => match build() {
+                Ok(mut replacement) => {
+                    replacement.outcome = outcome;
+                    Some(replacement)
+                }
                 Err(error) => {
-                    tracing::warn!(%error, "the record asked for could not be opened");
+                    outcome.answer(Err(error.to_string()));
                     None
                 }
             },
@@ -223,8 +267,15 @@ impl PendingReplacement {
     }
 
     fn discard(self) {
-        if let Self::Built(mut replacement) = self {
-            let _ = replacement.component.close();
+        match self {
+            Self::Built(replacement) => {
+                let (mut component, outcome) = replacement.into_parts();
+                let _ = component.close();
+                outcome.answer(Err("another record was asked for instead".into()));
+            }
+            Self::Deferred(_, outcome) => {
+                outcome.answer(Err("another record was asked for instead".into()));
+            }
         }
     }
 }
@@ -303,11 +354,11 @@ impl Reopener {
 
     /// Ask the host to show `component` in this one's place. A request the
     /// host has not taken yet is replaced, and its component closed.
-    pub fn replace(&self, component: AppComponent, arguments: Vec<String>) {
-        self.request(PendingReplacement::Built(ComponentReplacement {
-            component,
-            arguments,
-        }));
+    pub fn replace(&self, component: AppComponent, arguments: Vec<String>) -> ReplacementOutcome {
+        let replacement = ComponentReplacement::new(component, arguments);
+        let outcome = replacement.outcome.clone();
+        self.request(PendingReplacement::Built(replacement));
+        outcome
     }
 
     /// Ask the host to show the component `build` makes in this one's
@@ -317,11 +368,14 @@ impl Reopener {
     pub fn replace_with(
         &self,
         build: impl FnOnce(&Self) -> Result<ComponentReplacement, LaunchError> + 'static,
-    ) {
+    ) -> ReplacementOutcome {
         let reopener = self.clone();
-        self.request(PendingReplacement::Deferred(Box::new(move || {
-            build(&reopener)
-        })));
+        let outcome = ReplacementOutcome::default();
+        self.request(PendingReplacement::Deferred(
+            Box::new(move || build(&reopener)),
+            outcome.clone(),
+        ));
+        outcome
     }
 
     fn request(&self, pending: PendingReplacement) {

@@ -240,26 +240,32 @@ pub struct FileHistory {
 }
 
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
-/// app's host — its settings, files and secrets on this device.
+/// app's host — its settings, files and secrets on this device — when the
+/// record is created in a window. A participant without one (an agent, a
+/// room service: [`seed_record`](super::seed_record)) creates it with no
+/// host: what a seed imports from the device is the device's own to seed.
 pub struct SeedCx<'a> {
-    context: &'a HostContext,
+    pub(crate) me: &'a str,
+    pub(crate) device: &'a str,
+    pub(crate) host: Option<&'a HostContext>,
 }
 
 impl SeedCx<'_> {
     /// Who is creating the record: the id their views read as
     /// [`ViewCx::me`] and the seed's actions read as their author.
     pub fn me(&self) -> &str {
-        &self.context.author().0
+        self.me
     }
 
     /// The device creating the record.
     pub fn device(&self) -> &str {
-        self.context.device_id()
+        self.device
     }
 
-    /// The app's host on this device.
-    pub fn host(&self) -> &HostContext {
-        self.context
+    /// The app's host on this device; `None` for a participant without a
+    /// window.
+    pub fn host(&self) -> Option<&HostContext> {
+        self.host
     }
 }
 
@@ -296,7 +302,14 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 
 /// The toolkit application definition of `A`, created once per process.
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
-    leaked(TypeId::of::<DefinitionKey<A>>(), || ApplicationDefinition {
+    leaked(TypeId::of::<DefinitionKey<A>>(), || {
+        super::kinds::register::<A>();
+        definition_of::<A>()
+    })
+}
+
+fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
+    ApplicationDefinition {
         app_id: A::ID,
         title: A::TITLE,
         icon: icon::<A>(),
@@ -306,7 +319,7 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         opens: A::OPENS,
         room_record: A::ROOM_RECORD,
         create: create::<A>,
-    })
+    }
 }
 
 fn icon<A: ResourceApp>() -> IconDescriptor {
@@ -395,7 +408,7 @@ pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry 
 /// Apply a new record's [`ResourceApp::seed`] through the replayable
 /// executor: attributed to `author` as their edits are, and recorded as
 /// content from outside, which no undo takes back.
-fn apply_seed<A: ResourceApp>(
+pub(crate) fn apply_seed<A: ResourceApp>(
     doc: &mut tilo_resource::Doc,
     author: &str,
     seed: &[Invoke<A::Resource>],
@@ -450,8 +463,12 @@ fn create<A: ResourceApp>(
     // (`ResourceApp::ROOM_RECORD`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
     if created {
-        let seed = A::seed(&SeedCx { context: &context });
         let author = context.author().0.clone();
+        let seed = A::seed(&SeedCx {
+            me: &author,
+            device: context.device_id(),
+            host: Some(&context),
+        });
         context
             .initialize_new_record_seeded(
                 |doc| <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string()),
@@ -468,10 +485,7 @@ fn create<A: ResourceApp>(
     // capture shows the one it staged.
     let opener = (!capture).then(|| {
         let reopener = context.reopener();
-        super::launch::OpenHere::new(move |arguments| {
-            open_in_place::<A>(&reopener, arguments);
-            Ok(())
-        })
+        super::launch::OpenHere::new(move |arguments| open_in_place::<A>(&reopener, arguments))
     });
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
@@ -746,11 +760,12 @@ fn hand_launch_to(
 /// `arguments` opens ([`ResourceApp::launch_record`], [`ResourceApp::launch`]):
 /// the component built for that record takes the window, its own record and
 /// history with it. The store's refusal of the record, an unreadable file
-/// or the app's refusal to build leaves the window as it is.
+/// or the app's refusal to build leaves the window as it is, and is the
+/// answer the returned outcome gives.
 fn open_in_place<A: ResourceApp>(
     reopener: &ui_core::application::Reopener,
     arguments: Vec<String>,
-) {
+) -> ui_core::application::ReplacementOutcome {
     // Built when the host takes it: the record store is busy while the
     // asking view handles the event or operation that asked.
     reopener.replace_with(move |reopener| {
@@ -760,11 +775,10 @@ fn open_in_place<A: ResourceApp>(
         let (mut context, target) = reopener.prepare(definition, record)?;
         hand_launch_to(definition, &arguments, &mut context)?;
         let component = definition.instantiate(context, target, RestoreInput::None)?;
-        Ok(ui_core::application::ComponentReplacement {
-            component,
-            arguments,
-        })
-    });
+        Ok(ui_core::application::ComponentReplacement::new(
+            component, arguments,
+        ))
+    })
 }
 
 /// The file at `path` to hand the component, when `definition` opens its

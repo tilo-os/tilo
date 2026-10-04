@@ -752,19 +752,22 @@ fn select_range(wp: &mut WordProcessorWidget, start: usize, end: usize) {
     wp.model_mut().set_caret(Caret { block, offset: end });
 }
 
-/// The `EncodedAction` a resource's immediate `ActionSpec` carries.
-fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::EncodedAction {
-    let spec = res
-        .actions
-        .iter()
-        .find(|a| a.id == id)
-        .unwrap_or_else(|| panic!("spec {id}"));
-    match &spec.input {
-        tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
-            panic!("{id} is immediate")
-        }
-    }
+/// The action the edit `id` bound to the window's view builds, as the
+/// palette or an agent would invoke it without arguments.
+fn bound_encoded(
+    wp: &mut WordProcessorWidget,
+    doc: &AutoCommit,
+    id: &str,
+) -> tilo_actions::EncodedAction {
+    wp.resolve_bound_edits(doc);
+    let edit = wp
+        .bound_edits()
+        .into_iter()
+        .find(|edit| edit.id == id)
+        .unwrap_or_else(|| panic!("edit {id} is bound to the view"));
+    let action = (edit.build)(&tilo_actions::ActionArgs::none(), 0).expect("the edit builds");
+    tilo_actions::EncodedAction::encode(crate::actions::WORD_PROCESSOR_ACTION_TYPE, &action)
+        .unwrap()
 }
 
 /// The toolbar's insert-table matches the palette spec; panel align dispatches the action; find and replace all works; the styles panel toggles off; the link button requests the
@@ -787,8 +790,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.refresh_blocks(&mut state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
-        let resources = ui::resources::resources(&wp, &state.doc);
-        let from_palette = spec_encoded(&resources[0], "insert-table");
+        let from_palette = bound_encoded(&mut wp, &state.doc, "insert-table");
 
         // The toolbar button drives the same operation.
         wp.apply_tool(&mut state.doc, ToolAction::InsertTable);
@@ -835,8 +837,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
 
         // It is the same EncodedAction the palette's align-center spec builds.
-        let resources = ui::resources::resources(&wp, &state.doc);
-        let from_palette = spec_encoded(&resources[0], "align-center");
+        let from_palette = bound_encoded(&mut wp, &state.doc, "align-center");
         assert_eq!(
             dispatched.payload, from_palette.payload,
             "panel align and palette spec build the same EncodedAction"
@@ -5579,53 +5580,51 @@ fn hosted_lookup_offers_caret_edits_not_a_second_document() {
             .all(|resource| resource.id.as_str() != "word-processor.document"),
         "a hosted window does not publish a second document root"
     );
+    assert!(
+        hosted.iter().all(|resource| resource
+            .actions
+            .iter()
+            .all(|action| action.kind != tilo_actions::OperationKind::Document)),
+        "the window's own rows carry no document edits"
+    );
     let caret = hosted
         .iter()
         .find(|resource| resource.id.as_str() == "word-processor.caret")
-        .expect("caret edits stay addressable");
-    assert!(
-        caret.actions.iter().any(|action| action.id == "type-text"),
-        "typing is a caret action, not only a keypress"
-    );
-    assert!(
-        caret
-            .actions
-            .iter()
-            .any(|action| action.id == "place-image"),
-        "placing an image is a caret action, not only a toolbar click"
-    );
-    assert!(
-        caret
-            .actions
-            .iter()
-            .any(|action| action.id == "insert-table"),
-        "inserting a table is a caret action"
-    );
+        .expect("the caret's view operations stay addressable");
     assert!(
         caret.actions.iter().any(|action| action.id == "move-caret"),
         "moving the caret is a view action"
     );
+    let edits: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
+    for (id, what) in [
+        (
+            "type-text",
+            "typing is bound to the caret, not only a keypress",
+        ),
+        (
+            "place-image",
+            "placing an image is bound to the caret, not only a toolbar click",
+        ),
+        ("insert-table", "inserting a table is bound to the caret"),
+    ] {
+        assert!(edits.contains(&id), "{what}: {edits:?}");
+    }
 }
 
 #[test]
-fn hosted_selection_publishes_set_hyperlink_on_the_caret() {
+fn a_selection_binds_set_hyperlink() {
     let (mut state, mut wp) = bound();
     wp.inner.insert_str(&mut state.doc, "hello");
     wp.sync(&mut state.doc, &state.root);
     wp.inner.caret.offset = 0;
     wp.inner.set_anchor();
     wp.inner.caret.offset = 5;
-    let hosted = ui::resources::resources(&wp, &state.doc);
-    let caret = hosted
-        .iter()
-        .find(|resource| resource.id.as_str() == "word-processor.caret")
-        .expect("caret actions stay addressable");
+    wp.resolve_bound_edits(&state.doc);
     assert!(
-        caret
-            .actions
+        wp.bound_edits()
             .iter()
-            .any(|action| action.id == "set-hyperlink"),
-        "a hosted selection publishes set-hyperlink on the caret"
+            .any(|edit| edit.id == "set-hyperlink"),
+        "a selection binds set-hyperlink to the document"
     );
 }
 
@@ -6611,8 +6610,8 @@ fn semantic_text_anchor(block: &str, start: u64, end: u64) -> tilo_actions::Inte
 }
 
 fn semantic_text_fixture(text: &str) -> Framed<WordProcessorWidget> {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, text);
     mount(state, wp, 1100, 760)
@@ -6743,8 +6742,8 @@ fn semantic_text_geometry_refuses_invalid_or_unretained_targets() {
 
 #[test]
 fn semantic_text_geometry_never_turns_an_image_hit_test_layout_into_a_caret() {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
     let framed = mount(state, wp, 1100, 760);
