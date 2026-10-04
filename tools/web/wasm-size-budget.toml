@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 83427328
+bytes = 84344832
 
 [bundles.desktop.rebaseline]
-run = 61359
-measured = 82551833
-reason = "feature growth: snippets runs on the framework, with its body as a text child (#2417)"
+run = 63538
+measured = 83451268
+reason = "feature growth: canvas paints close views and large exports of painted layers finer, in tiles (#2339)"
