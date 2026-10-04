@@ -86,6 +86,14 @@ macro_rules! settings_effects {
 
 settings_effects! {
     Navigation(NavigationEffect) => answer_navigation,
+    Appearance(crate::panes::appearance::AppearanceEffect) => crate::panes::appearance::answer,
+    Accessibility(crate::panes::accessibility::AccessibilityEffect) => crate::panes::accessibility::answer,
+}
+
+/// The effects that differ from their declaration on this device now.
+pub(crate) fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
+    let software = app.software();
+    crate::panes::accessibility::statuses(software.on_screen_keyboard, software.speech.is_some())
 }
 
 /// `effect` of one area, named as part of [`SettingsEffect`], for binding a

@@ -570,6 +570,11 @@ impl Default for AppearancePrefs {
     }
 }
 
+/// The person's look, read by the compositor and every app's toolkit.
+impl ui::storage::SettingsSchema for AppearancePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+}
+
 impl AppearancePrefs {
     /// The named theme presets the Appearance pane offers, in display order.
     /// Each maps to a real constructor on [`ui::Theme`] via [`theme_by_name`].
@@ -1009,6 +1014,12 @@ impl Default for AccessibilityPrefs {
             screen_reader_voice: ScreenReaderVoice::System,
         }
     }
+}
+
+/// The person's assists, read by the compositor's input and accessibility
+/// layer.
+impl ui::storage::SettingsSchema for AccessibilityPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
 }
 
 impl AccessibilityPrefs {

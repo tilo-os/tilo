@@ -1375,9 +1375,7 @@ pub(super) fn choice_prompt_spec(
 pub(crate) fn is_document_door_category(category: Category) -> bool {
     matches!(
         category,
-        Category::Appearance
-            | Category::Accessibility
-            | Category::Notifications
+        Category::Notifications
             | Category::RegionFormats
             | Category::KeyboardShortcuts
             | Category::About
@@ -1411,8 +1409,6 @@ fn document_section_resource(
     prefs: &SystemPrefs,
 ) -> Resource {
     let mut pane = match category {
-        Category::Appearance => appearance_section(doc, prefs),
-        Category::Accessibility => accessibility_section(doc, prefs),
         Category::Notifications => notifications_portable_section(doc, prefs),
         Category::RegionFormats => region_section(doc, prefs),
         Category::KeyboardShortcuts => shortcuts_section(doc),
@@ -1519,8 +1515,6 @@ fn section_resource(
         Category::Displays => displays_section(doc, prefs),
         Category::MouseKeyboard => input_section(doc, prefs),
         Category::Power => power_section(doc, prefs),
-        Category::Appearance => appearance_section(doc, prefs),
-        Category::Accessibility => accessibility_section(doc, prefs),
         Category::Notifications => notifications_section(doc, prefs),
         Category::RegionFormats => region_section(doc, prefs),
         Category::TimeDate => time_date_section(doc, prefs),
@@ -1881,15 +1875,6 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         sec = sec.with_child(resource);
     }
     sec
-}
-
-fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    let sec = Resource::new(
-        "settings.section:appearance",
-        "settings.section",
-        "Appearance",
-    );
-    portable::attach_portable_preferences(sec, Category::Appearance, doc, d)
 }
 
 #[allow(
@@ -4150,44 +4135,6 @@ pub fn power_charge_binding(
 
 #[allow(
     clippy::too_many_lines,
-    reason = "the ordered declaration mirrors the visible Accessibility pane and keeps every resource action auditable in one place"
-)]
-fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
-    let sec = Resource::new(
-        "settings.section:accessibility",
-        "settings.section",
-        "Accessibility",
-    );
-    portable::attach_portable_preferences(sec, Category::Accessibility, doc, d)
-}
-
-/// Bind an Accessibility switch to the value-carrying action exported by the
-/// real Accessibility resource. The widget still reads its checked state from
-/// the canonical CRDT key; it merely emits through this brokered door instead
-/// of writing the document itself.
-pub fn accessibility_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
-    let resource = accessibility_section(&AutoCommit::new(), &SystemPrefs::default());
-    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
-    tilo_actions::ActionBinding::new(&resource, spec, |value| {
-        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
-    })
-    .ok()
-}
-
-/// Bind an Accessibility chooser to its exact typed resource action. The
-/// choices are validated by the same `ActionSpec` used for Ctrl+K before a
-/// control invocation reaches the host.
-pub fn accessibility_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
-    let resource = accessibility_section(&AutoCommit::new(), &SystemPrefs::default());
-    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
-    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
-        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
-    })
-    .ok()
-}
-
-#[allow(
-    clippy::too_many_lines,
     reason = "the ordered local-operation declarations mirror the Updates pane"
 )]
 fn updates_section() -> Resource {
@@ -5901,11 +5848,16 @@ mod tests {
                 "resolving the root must not enumerate live account inventories"
             );
 
-            let appearance = app
-                .publish_resource(&doc, &pane_resource_id(Category::Appearance))
+            let notifications = app
+                .publish_resource(&doc, &pane_resource_id(Category::Notifications))
                 .expect("one section resolves without rebuilding every other section");
-            assert_eq!(appearance.label, Category::Appearance.label());
-            assert!(appearance.actions.iter().any(|action| action.id == "theme"));
+            assert_eq!(notifications.label, Category::Notifications.label());
+            assert!(
+                notifications
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "dnd")
+            );
         }
 
         // Case `adversarial_account_inventory_is_hard_bounded`.
@@ -6060,8 +6012,6 @@ mod tests {
         let resources = provide_resources(&AutoCommit::new());
         for section in [
             Category::Notifications,
-            Category::Appearance,
-            Category::Accessibility,
             Category::RegionFormats,
             Category::MouseKeyboard,
             Category::KeyboardShortcuts,
@@ -6245,48 +6195,6 @@ mod tests {
                 std::collections::HashSet::from([OPEN_PANE_ACTION, "vim-mode"]),
                 "chords are rebound only through the shell's keyboard-shortcuts resource"
             );
-        }
-
-        // Case `accessibility_controls_bind_to_their_exported_typed_actions`.
-        {
-            let accessibility = find(&resources, &pane_resource_id(Category::Accessibility));
-            let high_contrast = accessibility
-                .actions
-                .iter()
-                .find(|action| action.id == "high-contrast")
-                .expect("Accessibility exports the high-contrast control action");
-            assert_eq!(high_contrast.params().len(), 1);
-            assert_eq!(high_contrast.params()[0].ty, ParamType::Boolean);
-
-            let binding = accessibility_bool_binding("high-contrast")
-                .expect("the displayed switch has a matching exported action");
-            let invocation = binding.invoke(true).expect("true is a valid switch value");
-            assert_eq!(
-                invocation.address,
-                ActionAddress::new(pane_resource_id(Category::Accessibility), "high-contrast")
-            );
-            assert_eq!(
-                invocation.arguments.get("value"),
-                Some(&serde_json::Value::Bool(true))
-            );
-            let encoded = high_contrast
-                .build_json(&invocation.arguments)
-                .expect("the resource accepts the control invocation");
-            let action = registry()
-                .decode(&encoded)
-                .expect("settings action decodes");
-            let mut doc = AutoCommit::new();
-            action
-                .apply(&mut doc)
-                .expect("the setting target is accepted");
-            assert_eq!(
-                read_bool(&doc, &ROOT, panes::accessibility::HIGH_CONTRAST_KEY),
-                Some(true)
-            );
-
-            let text = accessibility_text_binding("text-size")
-                .expect("the displayed chooser has a matching exported action");
-            assert!(text.invoke("not a size".to_string()).is_err());
         }
 
         // Case `default_app_handlers_are_bounded_canonical_child_resources`.
@@ -6876,13 +6784,13 @@ mod tests {
     }
 
     /// A seed written through the executor, as the panes write: Do Not Disturb
-    /// off and the Dark theme chosen, so every bool flip and choice has a real
+    /// off and focus every day, so every bool flip and choice has a real
     /// current value to change.
     fn seeded_doc() -> AutoCommit {
         let mut doc = AutoCommit::new();
         for action in [
             set_bool_action(panes::notifications::DND_KEY, false),
-            set_text_action(panes::appearance::THEME_KEY, "Dark"),
+            set_text_action(panes::notifications::FOCUS_DAYS_KEY, "Every day"),
         ] {
             tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
         }
@@ -6893,9 +6801,9 @@ mod tests {
         seed: seeded_doc(),
         registry: registry(),
         resources: |doc| provide_resources(doc),
-        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set theme"],
+        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set focus days"],
         replay: [
-            set_theme => |_| encode(&set_text_action(panes::appearance::THEME_KEY, "Nord")),
+            set_focus_days => |_| encode(&set_text_action(panes::notifications::FOCUS_DAYS_KEY, "Weekdays")),
         ],
         undo: [
             turn_on_dnd => |_| encode(&set_bool_action(panes::notifications::DND_KEY, true)),
@@ -6904,8 +6812,8 @@ mod tests {
             dnd_flips_the_current_value => ("settings.section:notifications", "dnd", |_, _| {
                 encode(&set_bool_action(panes::notifications::DND_KEY, true))
             }),
-            theme => ("settings.section:appearance", "theme", arg: "Gruvbox", |_, _| {
-                encode(&set_text_action(panes::appearance::THEME_KEY, "Gruvbox"))
+            focus_days => ("settings.section:notifications", "focus-days", arg: "Weekdays", |_, _| {
+                encode(&set_text_action(panes::notifications::FOCUS_DAYS_KEY, "Weekdays"))
             }),
         ],
     }
