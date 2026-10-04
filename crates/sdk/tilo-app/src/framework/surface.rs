@@ -176,6 +176,16 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         None
     }
 
+    /// Edits of the resource bound to the live row `row` (rename *this*
+    /// file): typed builders of the resource's action, published on that row
+    /// and applied through the same permission check, confirmation and undo
+    /// as the resource's own declarations. A row itself carries only view
+    /// and effect operations; this is how it offers a document change.
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>> {
+        let _ = row;
+        Vec::new()
+    }
+
     /// Search entries for what the surface shows that the resource does not
     /// hold — a page's text, a book's outline, the processes running —
     /// indexed with the resource's own ([`Resource::search`]) as the app's
@@ -228,6 +238,7 @@ pub(crate) trait SurfacePublication<R: Resource> {
     fn availability(&self) -> Vec<EffectStatus>;
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>>;
     fn search_entries(&self) -> Vec<SearchEntry>;
 }
 
@@ -752,6 +763,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.surface.live_row(id)
+    }
+
+    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>> {
+        self.surface.row_declarations(row)
     }
 
     fn search_entries(&self) -> Vec<SearchEntry> {

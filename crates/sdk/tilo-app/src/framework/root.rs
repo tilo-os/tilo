@@ -266,6 +266,17 @@ impl<R: Resource> ResourceRoot<R> {
         walk(self.content.as_ref(), visit);
     }
 
+    /// Bind the edits surfaces offer on the row `row` names
+    /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
+    fn bind_row_declarations(&self, row: &mut tilo_actions::Resource) {
+        let mut decls = Vec::new();
+        self.surfaces(&mut |surface| decls.extend(surface.row_declarations(row.id.as_str())));
+        for decl in decls {
+            let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+            *row = tilo_resource::bind_declaration(bound, &decl);
+        }
+    }
+
     /// The resource as published: its own actions and children, the edits
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
@@ -314,6 +325,9 @@ impl<R: Resource> ResourceRoot<R> {
             }
         }
         merge(&mut resource.children, rows);
+        for child in &mut resource.children {
+            self.bind_row_declarations(child);
+        }
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
                 continue;
@@ -1103,13 +1117,15 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
                 row = surface.live_row(id).map(super::LiveRow::into_resource);
             }
         });
+        if let Some(mut row) = row {
+            self.bind_row_declarations(&mut row);
+            return Some(row);
+        }
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document
         // action: those are the resource's own.
-        row.or_else(|| {
-            ui_core::resources::resource_for(self.content.as_ref(), None, doc, id)
-                .map(super::rows::resolved_outside_document)
-        })
+        ui_core::resources::resource_for(self.content.as_ref(), None, doc, id)
+            .map(super::rows::resolved_outside_document)
     }
     fn document_action_result(
         &self,
