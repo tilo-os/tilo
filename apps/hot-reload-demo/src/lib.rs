@@ -21,7 +21,7 @@ pub struct Document {
     pub body: String,
 }
 
-#[resource(kind = "generated.document", label = "Document")]
+#[resource(kind = "so.tilo.hot-reload-demo.document", label = "Document")]
 impl Document {
     /// Set the document title.
     #[action]
