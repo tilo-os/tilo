@@ -18,17 +18,19 @@ use super::{
 };
 use ui::widget::{AppModel, ModelPath};
 
-use ui::chrome::{self, NavCount, NavRowFace, NavSectionFace, SelectionState};
+use ui::chrome::{self, HeaderRowFace, NavCount, NavRowFace, NavSectionFace, SelectionState};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::surface;
+use ui::text_render::TextKind;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
+use ui::widget::data_table::{ColumnWidth, DataTableFace, FaceColumn};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState, EmptyStateContent,
     Interaction, MediaArt, MediaBadge, MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
-    Slider, SliderFace,
+    Slider, SliderFace, TransportControl, TransportFace,
 };
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
@@ -453,8 +455,6 @@ pub(super) struct TrackColumns {
     pub album: Option<(f64, f64)>,
     /// The leading edge of the action cluster.
     pub actions_x: f64,
-    /// The trailing edge the duration ends at.
-    pub duration_x1: f64,
 }
 
 /// The measured widths a track table lays its columns out from.
@@ -494,7 +494,6 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
     } else {
         left
     };
-    let duration_x1 = right;
     let actions_x = right - duration_w - gap - action_w * actions as f64;
     let free = (actions_x - gap - title_x).max(0.0);
     let (title_x1, album) = if album && free >= 2.0 * min_text + gap {
@@ -512,7 +511,6 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         title_x1,
         album,
         actions_x,
-        duration_x1,
     }
 }
 
@@ -777,6 +775,7 @@ impl Widget for MusicApp {
         dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
+        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -788,7 +787,7 @@ impl Widget for MusicApp {
         vec![&mut self.open_file_button, &mut self.search_button]
     }
 
-    /// The name prompt is a modal dialog: it paints in the window's top
+    /// The context menu and the name prompt paint in the window's top
     /// layer, over the app and its chrome.
     fn draw_overlay(
         &mut self,
@@ -800,6 +799,10 @@ impl Widget for MusicApp {
     ) {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.context.is_open() {
+            self.context
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         if self.name_prompt.is_some() {
             self.ensure_name_dialog();
@@ -992,6 +995,30 @@ impl Widget for MusicApp {
                 ctx.handled,
             );
             return;
+        }
+
+        // The header row's window controls: History, then the sidebar
+        // toggle (with its shortcut, and Escape or a press on the scrim
+        // for a floating sidebar).
+        let history_hovered = self.history.is_hovered();
+        if self
+            .history
+            .handle_event(event, self.history_rect, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.dirty |= history_hovered != self.history.is_hovered();
+        let toggle_hovered = self.drawer.toggle_rect().contains(self.mouse);
+        if self.drawer.handle_event(event, ctx) {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.dirty |= toggle_hovered != self.drawer.toggle_rect().contains(p);
         }
 
         if let Ok(children) = ctx.taffy.children(ctx.node_id) {
@@ -1478,7 +1505,10 @@ impl Widget for MusicApp {
             .with_name(page_name)
             .with_children(page_content);
 
-        let children = vec![navigation, search, page, player];
+        let mut children = Vec::new();
+        children.extend(self.drawer.toggle_accessibility());
+        children.extend([navigation, search, page, player]);
+        children.extend(self.history.accessibility(self.history_rect));
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -1499,6 +1529,14 @@ impl Widget for MusicApp {
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
+        if self.history.perform_semantic_action(target, action) {
+            self.dirty = true;
+            return true;
+        }
+        if target == "sidebar-toggle" && matches!(action, ui::a11y::Action::Activate) {
+            self.dispatch(Action::ToggleSidebar, state);
+            return true;
+        }
         if target == "music.seek" {
             let delta = match action {
                 ui::a11y::Action::Increment => 0.05,
@@ -1737,12 +1775,26 @@ impl ui::widget::controls::ActionControls for MusicApp {
     /// Search opened from the app's own painted controls (a Browse card, the
     /// empty library's action) goes out before the header buttons' intents.
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.history.take() {
+            return Some(invocation);
+        }
         if let Some(invocation) = self.search_opener.take() {
             return Some(invocation);
         }
         self.children_mut()
             .into_iter()
             .find_map(ui::widget::controls::take_control_invocation)
+    }
+}
+
+/// The content column's header row is the window's: it holds the History
+/// control the host offers, so the window draws no History bar above Music.
+impl ui::widget::WindowHeader for MusicApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.dirty = true;
+        }
     }
 }
 
@@ -2005,20 +2057,12 @@ impl MusicApp {
     }
 }
 
-/// Map an x coordinate to a `0..=1` fraction within `r`.
-fn frac_in(r: Rect, x: f64) -> f64 {
-    if r.width() <= 0.0 {
-        return 0.0;
-    }
-    ((x - r.x0) / r.width()).clamp(0.0, 1.0)
-}
-
 impl MusicApp {
     /// Hover labels for icon-only controls. Text-labelled rows and navigation
     /// deliberately return `None`; repeating their visible label would add
     /// noise rather than information.
     fn tooltip_at(&self, point: Point) -> Option<&str> {
-        if self.toggle_rect.contains(point) {
+        if self.drawer.toggle_rect().contains(point) {
             return Some(if self.drawer.is_open() {
                 "Hide sidebar"
             } else {
@@ -2132,11 +2176,11 @@ impl MusicApp {
         if let Some(drag) = self.drag {
             match drag {
                 Drag::Scrubber => {
-                    let f = frac_in(self.scrubber_rect, self.mouse.x);
+                    let f = SliderFace::new(self.scrubber_rect, 0.0).value_at(self.mouse);
                     self.dispatch(Action::SeekFrac(f), state);
                 }
                 Drag::Volume => {
-                    let f = frac_in(self.volume_rect, self.mouse.x);
+                    let f = SliderFace::new(self.volume_rect, 0.0).value_at(self.mouse);
                     self.dispatch(Action::VolumeFrac(f), state);
                 }
             }
@@ -2171,24 +2215,17 @@ impl MusicApp {
             *handled = true;
             return;
         }
-        // The sidebar toggle wins over everything (it sits above the scrim
-        // hit that otherwise covers the whole content in overlay).
-        if self.toggle_rect.width() > 0.0 && self.toggle_rect.contains(self.mouse) {
-            self.dispatch(Action::ToggleSidebar, state);
-            *handled = true;
-            return;
-        }
         // Transport bars get drag priority.
-        if self.scrubber_rect.contains(self.mouse) {
+        if self.scrubber_hit.contains(self.mouse) {
             self.drag = Some(Drag::Scrubber);
-            let f = frac_in(self.scrubber_rect, self.mouse.x);
+            let f = SliderFace::new(self.scrubber_rect, 0.0).value_at(self.mouse);
             self.dispatch(Action::SeekFrac(f), state);
             *handled = true;
             return;
         }
-        if self.volume_rect.contains(self.mouse) {
+        if self.volume_hit.contains(self.mouse) {
             self.drag = Some(Drag::Volume);
-            let f = frac_in(self.volume_rect, self.mouse.x);
+            let f = SliderFace::new(self.volume_rect, 0.0).value_at(self.mouse);
             self.dispatch(Action::VolumeFrac(f), state);
             *handled = true;
             return;
@@ -2481,6 +2518,23 @@ impl MusicApp {
         hovered
     }
 
+    /// Paint one media transport control and register its hit; `idle`
+    /// rests it, disabled, with nothing to play.
+    fn transport_button(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        control: TransportControl,
+        idle: bool,
+        action: Action,
+    ) -> bool {
+        let face = TransportFace::new(rect, control).disabled(idle);
+        let action = if idle { Action::None } else { action };
+        let hovered = self.push_hit(face.hit_rect(ctx.theme), action) && !idle;
+        TransportFace::paint(ctx.scene, ctx.transform, ctx.theme, &face.hovered(hovered));
+        hovered
+    }
+
     /// The width a button with `label` (and `icon`) needs at `size`.
     fn button_width(
         ctx: &mut PaintCtx<'_>,
@@ -2497,14 +2551,6 @@ impl MusicApp {
 
     // ---- master frame -----------------------------------------------------
 
-    /// Height of the window's header row: the shell's header metric, grown
-    /// with the column title at large text.
-    fn header_height(ctx: &mut PaintCtx<'_>, look: &Look) -> f64 {
-        let title = ctx.theme.text(TextRole::Heading);
-        f64::from(ctx.theme.tokens.metrics.header_height)
-            .max(line_of(ctx, &title) + 2.0 * look.related)
-    }
-
     /// Whether the now-playing bar folds to its compact form: while the
     /// sidebar floats, or when the content column is too narrow to hold the
     /// song, the transport and the volume side by side.
@@ -2516,7 +2562,11 @@ impl MusicApp {
     /// scrubber (wide), or the track and its controls over the scrubber
     /// (compact), inside the sibling inset.
     fn bar_height(ctx: &mut PaintCtx<'_>, look: &Look, compact: bool) -> f64 {
-        let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
+        // The row is as tall as its tallest control: the round play button.
+        let control = ButtonFace::height(ControlSize::Regular, ctx.theme).max(TransportFace::side(
+            TransportControl::PlayPause { playing: false },
+            ctx.theme,
+        ));
         let caption = ctx.theme.text(TextRole::Caption);
         let scrub = line_of(ctx, &caption).max(look.section + look.related);
         let top = if compact {
@@ -2540,7 +2590,6 @@ impl MusicApp {
         theme: &Theme,
     ) {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
-        self.toggle_rect = Rect::ZERO;
         self.hits.clear();
         self.row_menu_hits.clear();
         self.sync_context_menu_geometry(ctx.theme);
@@ -2570,12 +2619,31 @@ impl MusicApp {
         self.drawer.tick(ctx.theme);
         let content = self.drawer.resolve(self.rect);
         let r = self.rect;
-        let header_h = Self::header_height(ctx, &look);
+        // The window's header row: across the content column, with the
+        // toggle in it while the sidebar is hidden or floats (a floating
+        // sidebar opens under the row); a docked sidebar holds the toggle
+        // in its own row.
+        let header_area = Rect::new(content.x0, r.y0, r.x1, r.y1);
+        let history = self.history.is_shown();
+        let mut header = if self.toggle_in_content() {
+            self.drawer
+                .header_with_history(header_area, ctx.theme, history)
+        } else {
+            let side = self.sidebar_rect();
+            let _ = self
+                .drawer
+                .header(Rect::new(side.x0, r.y0, side.x1, r.y1), ctx.theme);
+            HeaderRowFace::new(header_area, ctx.theme).with_history_if(history)
+        };
+        if !self.nav_back.is_empty() {
+            header = header.with_back();
+        }
+        let content = self.drawer.resolve(self.rect);
+        let header_h = header.row.height();
         let compact = Self::compact_bar(ctx.theme, &self.drawer, content.width());
         self.bar_h = Self::bar_height(ctx, &look, compact);
-        let header = Rect::new(content.x0, r.y0, r.x1, r.y0 + header_h);
         let bar = self.nowplaying_rect();
-        let body = Rect::new(content.x0, header.y1, r.x1, bar.y0);
+        let body = Rect::new(content.x0, header.row.y1, r.x1, bar.y0);
         self.body_rect = body;
 
         // Body first so chrome draws on top (and chrome hits win). The window
@@ -2597,7 +2665,7 @@ impl MusicApp {
         }
         self.open_staged_track_menu();
 
-        self.draw_header(ctx, &look, header);
+        self.draw_header(ctx, &look, &header);
         self.draw_nowplaying(ctx, &look, bar);
         self.open_staged_player_menu();
 
@@ -2620,16 +2688,6 @@ impl MusicApp {
         self.draw_queue_preview(ctx, &look);
         self.draw_toast(ctx);
 
-        // The context menu paints last so it sits on top of all content.
-        if self.context.is_open() {
-            self.context.draw(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                &PresenceCtx::empty(),
-            );
-        }
         if self.name_prompt.is_none() {
             self.name_dialog = None;
         }
@@ -2685,21 +2743,16 @@ impl MusicApp {
         );
         let local = self.drawer.paint_panel(ctx.scene, ctx.transform, ctx.theme);
 
-        if !self.toggle_in_content() {
-            let toggle = Rect::new(
-                side.x0 + look.sibling,
-                side.y0 + (header_h - look.target) / 2.0,
-                side.x0 + look.sibling + look.target,
-                side.y0 + f64::midpoint(header_h, look.target),
-            );
-            self.toggle_rect = toggle;
-            let hovered = toggle.contains(self.mouse);
+        // A docked sidebar holds the toggle in its own header row; a
+        // floating one opens under the window's row, which keeps it.
+        let mut y = if self.toggle_in_content() {
+            side.y0 + look.related
+        } else {
             self.drawer
-                .draw_toggle(ctx.scene, ctx.transform, ctx.text, &local, toggle, hovered);
-        }
-
+                .paint_toggle(ctx.scene, ctx.transform, ctx.text, &local);
+            side.y0 + header_h
+        };
         let row_h = chrome::nav_row_height(&local);
-        let mut y = side.y0 + header_h;
         for dest in NAV_DESTINATIONS {
             let rect = Rect::new(side.x0, y, side.x1, y + row_h);
             let selected = self.view == dest.view;
@@ -2738,65 +2791,36 @@ impl MusicApp {
 
     // ---- header -----------------------------------------------------------
 
-    /// The content column's header: the sidebar toggle while the sidebar is
-    /// hidden, Back, the page title, and the open-file and search actions.
-    /// One hairline separates it from the page.
-    fn draw_header(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
-        let mid = r.center().y;
-        let mut x = r.x0 + look.sibling;
+    /// The content column's header row: the sidebar toggle while the
+    /// sidebar is hidden or floats, Back, the page title, the open-file and
+    /// search actions, and the window's History control in the trailing
+    /// corner. One hairline separates it from the page.
+    fn draw_header(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, face: &HeaderRowFace) {
         if self.toggle_in_content() {
-            let toggle = Rect::new(
-                x,
-                mid - look.target / 2.0,
-                x + look.target,
-                mid + look.target / 2.0,
-            );
-            self.toggle_rect = toggle;
-            let hovered = toggle.contains(self.mouse);
-            self.drawer.draw_toggle(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                toggle,
-                hovered,
-            );
-            x = toggle.x1 + look.related;
+            self.drawer
+                .paint_toggle(ctx.scene, ctx.transform, ctx.text, ctx.theme);
         }
-        if !self.nav_back.is_empty() {
-            let back = Rect::new(
-                x,
-                mid - look.target / 2.0,
-                x + look.target,
-                mid + look.target / 2.0,
-            );
+        if face.back.width() > 0.0 {
             self.icon_button(
                 ctx,
-                ButtonFace::icon_only(back, Icon::ChevronLeft, "Back")
+                ButtonFace::icon_only(face.back, Icon::ChevronLeft, "Back")
                     .control_size(ControlSize::Regular),
                 false,
                 Action::Back,
             );
-            x = back.x1 + look.related;
-        }
-        if x <= r.x0 + look.sibling {
-            // The title starts on the content gutter when nothing leads it.
-            x = r.x0 + look.gutter;
         }
 
-        // The two header actions are retained buttons; they lay out against
-        // the trailing edge.
+        // The two header actions are retained buttons; they end where the
+        // row's actions band ends, before History.
+        let band = face.actions;
+        let mid = band.center().y;
         let side = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let search = Rect::new(
-            r.x1 - look.sibling - side,
-            mid - side / 2.0,
-            r.x1 - look.sibling,
-            mid + side / 2.0,
-        );
+        let gap = face.metrics().gap;
+        let search = Rect::new(band.x1 - side, mid - side / 2.0, band.x1, mid + side / 2.0);
         let open = Rect::new(
-            search.x0 - look.related - side,
+            search.x0 - gap - side,
             search.y0,
-            search.x0 - look.related,
+            search.x0 - gap,
             search.y1,
         );
         self.search_button.apply_layout_external(search);
@@ -2815,28 +2839,29 @@ impl MusicApp {
             ctx.theme,
             &PresenceCtx::empty(),
         );
+        self.history_rect = face.history_rect();
+        self.history.paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            self.history_rect,
+        );
 
         if let Some(title) = self.header_title() {
             let style = ctx.theme.text(TextRole::Heading);
+            let x = face.title.x0;
             text_in_band(
                 ctx,
                 &title,
                 &style,
                 look.text,
                 x,
-                r,
+                face.row,
                 open.x0 - look.sibling - x,
             );
         }
-        surface::separator(
-            ctx.scene,
-            ctx.transform,
-            r.x0,
-            r.x1,
-            r.y1,
-            0.0,
-            ctx.theme.tokens.colors.surfaces.content,
-        );
+        face.paint_rule(ctx.scene, ctx.transform, ctx.theme);
     }
 
     /// The header's title: the destination's name. A detail page names its
@@ -3333,9 +3358,6 @@ impl MusicApp {
         let theme = ctx.theme;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
-        let row_h = ui::widget::ListRowFace::new("")
-            .secondary("")
-            .height(ctx.text, theme);
         let numeric = theme.text(TextRole::Caption).numeric();
         let index_w = if table.number_col {
             f64::from(ctx.text.measure_style("000", None, &numeric).0)
@@ -3377,20 +3399,128 @@ impl MusicApp {
             },
             second_column,
         );
+        // The table is the toolkit's DataTable face: its header, row
+        // heights, zebra and lift. The album and duration cells are its text;
+        // the index, the song over its artist and the actions are painted
+        // into their columns over it.
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let fixed = |x0: f64, x1: f64| ColumnWidth::Fixed(((x1 - x0).max(0.0) + 2.0 * pad) as f32);
+        let mut columns = Vec::new();
+        if let Some(index) = cols.index {
+            columns
+                .push(FaceColumn::new("", fixed(index.x0, index.x1)).with_kind(TextKind::Numeric));
+        }
+        let title_width = if cols.album.is_some() {
+            fixed(cols.title_x, cols.title_x1)
+        } else {
+            ColumnWidth::Flex(1.0)
+        };
+        columns.push(FaceColumn::new("Title", title_width));
+        if cols.album.is_some() {
+            let label = if downloads { "Status" } else { "Album" };
+            columns.push(FaceColumn::new(label, ColumnWidth::Flex(1.0)));
+        }
+        columns.push(FaceColumn::new(
+            "",
+            ColumnWidth::Fixed((action_w * actions as f64 + 2.0 * pad) as f32),
+        ));
+        columns.push(FaceColumn::new("Time", fixed(0.0, duration_w)).with_kind(TextKind::Numeric));
+        let album_col = cols.album.map(|_| columns.len() - 3);
+
+        let rect = Rect::new(left, y, right, y);
+        let header = DataTableFace::new(&columns, &[]);
+        let header = if second_column && table.header {
+            header
+        } else {
+            header.without_header()
+        };
+        // Where each column's content stands: its cell, inside the cell's
+        // padding.
+        let cells = header.column_rects(rect, ctx.text, theme);
+        let inner = |i: usize| {
+            cells
+                .get(i)
+                .map_or((left, left), |cell| (cell.x0 + pad, cell.x1 - pad))
+        };
+        let mut k = 0;
+        let index = cols.index.map(|_| {
+            k += 1;
+            let (x0, x1) = inner(0);
+            Rect::new(x0, 0.0, x1, 0.0)
+        });
+        let (title_x, title_x1) = inner(k);
+        let album = album_col.map(inner);
+        let (actions_x, _) = inner(columns.len() - 2);
+        let cols = TrackColumns {
+            index,
+            title_x,
+            title_x1,
+            album,
+            actions_x,
+        };
+        let header_h = header.height(theme);
+        header.paint(ctx, rect);
+        y += header_h;
+
+        // Only the rows inside the body are handed to the face; stripes
+        // keep their parity through `first_row`.
+        let row_h = DataTableFace::new(&columns, &[])
+            .two_line()
+            .row_height(theme);
+        let n = table.rows.len();
+        let first = (((self.body_rect.y0 - y) / row_h).floor().max(0.0) as usize).min(n);
+        let last = ((((self.body_rect.y1 - y) / row_h).ceil().max(0.0)) as usize).min(n);
+        let shown = table.rows.get(first..last).unwrap_or_default();
+        let durations: Vec<String> = shown
+            .iter()
+            .map(|tk| {
+                if tk.dur > 0 {
+                    ui::format::timecode(u64::from(tk.dur))
+                } else {
+                    String::new()
+                }
+            })
+            .collect();
+        let cells_text: Vec<Vec<&str>> = shown
+            .iter()
+            .zip(&durations)
+            .map(|(tk, dur)| {
+                let mut row = Vec::with_capacity(columns.len());
+                if cols.index.is_some() {
+                    row.push("");
+                }
+                row.push("");
+                if cols.album.is_some() {
+                    row.push(if downloads { "" } else { tk.album.as_str() });
+                }
+                row.push("");
+                row.push(dur.as_str());
+                row
+            })
+            .collect();
+        let rows: Vec<&[&str]> = cells_text.iter().map(Vec::as_slice).collect();
+        let rows_top = y + row_h * first as f64;
+        let body_rows = Rect::new(
+            left,
+            rows_top,
+            right,
+            rows_top + row_h * (last - first) as f64,
+        );
+
         let shared_queue = Arc::new(table.queue.to_vec());
         let offset = table.queue_offset.unwrap_or(0);
-        let ground = theme.tokens.colors.surfaces.content;
-        if second_column && table.header {
-            y = Self::draw_track_header(ctx, look, &cols, left, right, y, downloads);
-        }
-
-        for (i, tk) in table.rows.iter().enumerate() {
-            let band = Rect::new(left, y, right, y + row_h);
-            y += row_h;
-            if !visible_in(band, self.body_rect) {
-                continue;
-            }
-            let row_rect = Rect::new(left - look.related, band.y0, right + look.related, band.y1);
+        let mut hovered_row = None;
+        let mut revealed_row = None;
+        let mut painted = Vec::with_capacity(last - first);
+        for (slot, tk) in shown.iter().enumerate() {
+            let i = first + slot;
+            let row_rect = Rect::new(
+                left - look.related,
+                rows_top + row_h * slot as f64,
+                right + look.related,
+                rows_top + row_h * (slot + 1) as f64,
+            );
+            let band = Rect::new(left, row_rect.y0, right, row_rect.y1);
             let is_current = if table.queue_offset.is_some() {
                 self.pb.queue_index == offset + i && self.pb.current.is_some()
             } else {
@@ -3418,72 +3548,31 @@ impl MusicApp {
                     .as_ref()
                     .is_some_and(|(owner, track)| owner == playlist && track == &tk.id)
             });
-            chrome::paint_row_selection(
-                ctx.scene,
-                ctx.transform,
-                row_rect,
-                SelectionState::new(revealed, hovered, false),
-                ground,
-                theme,
-            );
-            let row = TrackRow {
+            if hovered {
+                hovered_row = Some(slot);
+            }
+            if revealed {
+                revealed_row = Some(slot);
+            }
+            painted.push(TrackRow {
                 track: tk,
                 index: i,
                 band,
                 is_current,
                 hovered,
-            };
-            self.draw_track_row(ctx, look, &cols, table, &row);
+            });
         }
-        y
-    }
-
-    /// The header of a table with more than one text column: what each
-    /// column holds, in the table header's quiet strong caption, closed by
-    /// one rule. Returns the y below it.
-    fn draw_track_header(
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        cols: &TrackColumns,
-        left: f64,
-        right: f64,
-        y: f64,
-        downloads: bool,
-    ) -> f64 {
-        let theme = ctx.theme;
-        let style = theme.text(TextRole::Caption).strong();
-        let pad = f64::from(theme.tokens.spacing.s3);
-        let band = Rect::new(
-            left,
-            y,
-            right,
-            y + look.target.max(line_of(ctx, &style) + 2.0 * pad),
-        );
-        let width = |x0: f64, x1: f64| (x1 - x0).max(0.0);
-        text_in_band(
-            ctx,
-            "Title",
-            &style,
-            look.dim,
-            cols.title_x,
-            band,
-            width(cols.title_x, cols.title_x1),
-        );
-        if let Some((x0, x1)) = cols.album {
-            let label = if downloads { "Status" } else { "Album" };
-            text_in_band(ctx, label, &style, look.dim, x0, band, width(x0, x1));
+        DataTableFace::new(&columns, &rows)
+            .two_line()
+            .without_header()
+            .first_row(first)
+            .hovered(hovered_row)
+            .selected(revealed_row)
+            .paint(ctx, body_rows);
+        for row in &painted {
+            self.draw_track_row(ctx, look, &cols, table, row);
         }
-        text_right_in_band(ctx, "Time", &style, look.dim, cols.duration_x1, band);
-        surface::separator(
-            ctx.scene,
-            ctx.transform,
-            left - look.related,
-            right + look.related,
-            band.y1 - 0.5,
-            0.0,
-            theme.tokens.colors.surfaces.content,
-        );
-        band.y1
+        y + row_h * n as f64
     }
 
     /// One row's content inside its band.
@@ -3552,31 +3641,22 @@ impl MusicApp {
         );
 
         let downloads = matches!(self.view, View::Downloads);
-        if let Some((album_x, album_x1)) = cols.album {
-            if downloads {
-                let (status, failed) = self.download_status(&tk.id);
-                let ink = if failed { look.danger } else { look.dim };
-                text_in_band(
-                    ctx,
-                    &status,
-                    &caption,
-                    ink,
-                    album_x,
-                    band,
-                    album_x1 - album_x,
-                );
-            } else {
-                let body = theme.text(TextRole::Body);
-                text_in_band(
-                    ctx,
-                    &tk.album,
-                    &body,
-                    look.dim,
-                    album_x,
-                    band,
-                    album_x1 - album_x,
-                );
-            }
+        // The face sets the album; a download's status is painted here, in
+        // danger ink when it failed.
+        if let Some((album_x, album_x1)) = cols.album
+            && downloads
+        {
+            let (status, failed) = self.download_status(&tk.id);
+            let ink = if failed { look.danger } else { look.dim };
+            text_in_band(
+                ctx,
+                &status,
+                &caption,
+                ink,
+                album_x,
+                band,
+                album_x1 - album_x,
+            );
         }
 
         // The action cluster, left to right.
@@ -3603,12 +3683,6 @@ impl MusicApp {
                 self.draw_like_action(ctx, look, slot(k), &tk.id, row.hovered);
                 self.draw_download_action(ctx, look, slot(k + 1), &tk.id, row.hovered);
             }
-        }
-
-        // Duration (hidden when unknown — some live sources omit it).
-        if tk.dur > 0 {
-            let dur = ui::format::timecode(u64::from(tk.dur));
-            text_right_in_band(ctx, &dur, &numeric, look.dim, cols.duration_x1, band);
         }
     }
 
@@ -5082,25 +5156,33 @@ impl MusicApp {
     /// Shuffle, previous, play/pause, next and repeat, centred over the
     /// scrubber with its elapsed and total times.
     fn draw_nowplaying_transport(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
-        let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let row_w = 5.0 * control + 4.0 * look.related;
+        let theme = ctx.theme;
+        let control = ButtonFace::height(ControlSize::Regular, theme);
+        let playing = TransportControl::PlayPause {
+            playing: self.pb.playing,
+        };
+        let play_side = TransportFace::side(playing, theme);
+        let skip_side = TransportFace::side(TransportControl::Next, theme);
+        let row_h = play_side.max(control);
+        // Shuffle and repeat flank the three media controls a group's
+        // width away; previous, play and next stand together.
+        let row_w =
+            2.0 * control + 2.0 * skip_side + play_side + 2.0 * look.sibling + 2.0 * look.related;
+        let mid = r.y0 + row_h / 2.0;
         let mut x = r.center().x - row_w / 2.0;
-        let y0 = r.y0;
-        let mut next_slot = || {
-            let rect = Rect::new(x, y0, x + control, y0 + control);
-            x += control + look.related;
+        let mut place = |side: f64, gap: f64| {
+            let rect = Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0);
+            x += side + gap;
             rect
         };
+        let shuffle = place(control, look.sibling);
+        let prev = place(skip_side, look.related);
+        let play = place(play_side, look.related);
+        let next = place(skip_side, look.sibling);
+        let repeat = place(control, 0.0);
         // With nothing to play the transport rests, disabled.
         let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
         let act = |action: Action| (!idle).then_some(action);
-        let (shuffle, prev, play, next, repeat) = (
-            next_slot(),
-            next_slot(),
-            next_slot(),
-            next_slot(),
-            next_slot(),
-        );
         self.icon_button(
             ctx,
             ButtonFace::icon_only(shuffle, Icon::Shuffle, "Shuffle")
@@ -5109,41 +5191,9 @@ impl MusicApp {
             self.pb.shuffle && !idle,
             act(Action::ToggleShuffle).unwrap_or(Action::None),
         );
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(prev, Icon::SkipBack, "Previous track")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            false,
-            act(Action::Prev).unwrap_or(Action::None),
-        );
-        let (icon, name) = if self.pb.playing {
-            (Icon::Pause, "Pause")
-        } else {
-            (Icon::Play, "Play")
-        };
-        let face = ButtonFace::icon_only(play, icon, name)
-            .role(ButtonRole::Primary)
-            .disabled(idle);
-        let hovered = self.push_hit(
-            face.hit_rect(ctx.theme),
-            act(Action::TogglePlay).unwrap_or(Action::None),
-        );
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &face.hovered(hovered),
-        );
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(next, Icon::SkipForward, "Next track")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            false,
-            act(Action::Next).unwrap_or(Action::None),
-        );
+        self.transport_button(ctx, prev, TransportControl::Previous, idle, Action::Prev);
+        self.transport_button(ctx, play, playing, idle, Action::TogglePlay);
+        self.transport_button(ctx, next, TransportControl::Next, idle, Action::Next);
         let (icon, name) = match self.pb.repeat {
             RepeatMode::One => (Icon::Repeat1, "Repeat one"),
             RepeatMode::All => (Icon::Repeat, "Repeat all"),
@@ -5158,6 +5208,7 @@ impl MusicApp {
             act(Action::CycleRepeat).unwrap_or(Action::None),
         );
 
+        let y0 = r.y0 + row_h - control;
         let scrub = Rect::new(r.x0, y0 + control + look.tight, r.x1, r.y1);
         self.draw_scrubber(ctx, look, scrub, idle);
     }
@@ -5180,9 +5231,9 @@ impl MusicApp {
             r.y1,
         );
         let face = SliderFace::new(slider, frac);
-        let track = face.track_rect();
-        self.scrubber_rect = Rect::new(track.x0, slider.y0, track.x1, slider.y1);
-        let active = self.scrubber_rect.contains(self.mouse) || self.drag == Some(Drag::Scrubber);
+        self.scrubber_rect = slider;
+        self.scrubber_hit = face.hit_rect(ctx.theme);
+        let active = self.scrubber_hit.contains(self.mouse) || self.drag == Some(Drag::Scrubber);
         let face = face
             .hovered(active && !idle)
             .dragging(self.drag == Some(Drag::Scrubber))
@@ -5224,6 +5275,7 @@ impl MusicApp {
         } else {
             // Collapsed: one volume button that opens a slider popover.
             self.volume_rect = Rect::ZERO;
+            self.volume_hit = Rect::ZERO;
             let btn = Rect::new(x - control, mid - control / 2.0, x, mid + control / 2.0);
             self.volume_btn_rect = btn;
             self.icon_button(
@@ -5251,9 +5303,9 @@ impl MusicApp {
     /// collapsed-volume popover.
     fn draw_volume_slider(&mut self, ctx: &mut PaintCtx<'_>, hit: Rect) {
         let face = SliderFace::new(hit, f64::from(self.pb.volume) / 100.0);
-        let track = face.track_rect();
-        self.volume_rect = Rect::new(track.x0, hit.y0, track.x1, hit.y1);
-        let active = self.volume_rect.contains(self.mouse) || self.drag == Some(Drag::Volume);
+        self.volume_rect = hit;
+        self.volume_hit = face.hit_rect(ctx.theme);
+        let active = self.volume_hit.contains(self.mouse) || self.drag == Some(Drag::Volume);
         let face = face
             .hovered(active)
             .dragging(self.drag == Some(Drag::Volume));
@@ -5343,55 +5395,32 @@ impl MusicApp {
     /// offers stays one press away.
     fn draw_nowplaying_compact(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
         self.volume_rect = Rect::ZERO;
+        self.volume_hit = Rect::ZERO;
         let control = ButtonFace::height(ControlSize::Regular, ctx.theme);
         let caption = ctx.theme.text(TextRole::Caption);
         let scrub_h = line_of(ctx, &caption).max(look.section + look.related);
         let top = Rect::new(r.x0, r.y0, r.x1, r.y1 - scrub_h - look.tight);
-        let controls_w = 5.0 * control + 3.0 * look.related + look.sibling;
+        let playing = TransportControl::PlayPause {
+            playing: self.pb.playing,
+        };
+        let play_side = TransportFace::side(playing, ctx.theme);
+        let skip_side = TransportFace::side(TransportControl::Next, ctx.theme);
+        let controls_w =
+            2.0 * skip_side + play_side + 2.0 * control + 2.0 * look.related + 2.0 * look.sibling;
         let mid = top.center().y;
-        let slot = |x: f64| Rect::new(x, mid - control / 2.0, x + control, mid + control / 2.0);
-        let prev = slot(top.x1 - controls_w);
-        let play = slot(prev.x1 + look.related);
-        let next = slot(play.x1 + look.related);
-        let volume = slot(next.x1 + look.sibling);
-        let more = slot(volume.x1 + look.related);
+        let square = |x: f64, side: f64| Rect::new(x, mid - side / 2.0, x + side, mid + side / 2.0);
+        let prev = square(top.x1 - controls_w, skip_side);
+        let play = square(prev.x1 + look.related, play_side);
+        let next = square(play.x1 + look.related, skip_side);
+        let volume = square(next.x1 + look.sibling, control);
+        let more = square(volume.x1 + look.sibling, control);
         let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
-        let act = |action: Action| if idle { Action::None } else { action };
 
         self.draw_compact_song(ctx, look, top, prev.x0 - look.sibling);
 
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(prev, Icon::SkipBack, "Previous track")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            false,
-            act(Action::Prev),
-        );
-        let (icon, name) = if self.pb.playing {
-            (Icon::Pause, "Pause")
-        } else {
-            (Icon::Play, "Play")
-        };
-        let face = ButtonFace::icon_only(play, icon, name)
-            .role(ButtonRole::Primary)
-            .disabled(idle);
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), act(Action::TogglePlay));
-        Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &face.hovered(hovered),
-        );
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(next, Icon::SkipForward, "Next track")
-                .control_size(ControlSize::Regular)
-                .disabled(idle),
-            false,
-            act(Action::Next),
-        );
+        self.transport_button(ctx, prev, TransportControl::Previous, idle, Action::Prev);
+        self.transport_button(ctx, play, playing, idle, Action::TogglePlay);
+        self.transport_button(ctx, next, TransportControl::Next, idle, Action::Next);
         // Volume opens the same slider popover as the mid-width bar.
         self.volume_btn_rect = volume;
         let volume_icon = if self.pb.volume == 0 {

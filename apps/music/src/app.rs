@@ -391,9 +391,11 @@ pub struct MusicApp {
     /// sidebar/content rects — so collapse clears cleanly (its own clip) and the
     /// panel never resizes against the content.
     drawer: SidebarDrawer,
-    /// Hit rect of the sidebar toggle, captured during draw so the event
-    /// handler can route a press to [`SidebarDrawer::toggle`].
-    toggle_rect: Rect,
+    /// The window's History control, held in the content column's header
+    /// row: the window draws no History bar above the app.
+    history: ui::widget::HistoryOpener,
+    /// Where the History control stands in the header row.
+    history_rect: Rect,
     /// Height of the now-playing bar in the last painted theme, so the event
     /// path hit-tests the bar that was drawn.
     bar_h: f64,
@@ -414,6 +416,10 @@ pub struct MusicApp {
     /// draw so the event handler can map drags to fractions.
     scrubber_rect: Rect,
     volume_rect: Rect,
+    /// Where a pointer takes the scrubber and the volume slider: their
+    /// faces' hit rects, captured at paint.
+    scrubber_hit: Rect,
+    volume_hit: Rect,
     /// The volume button's hit rect (shown when the inline slider is collapsed)
     /// and the open state + slider rect of its popover.
     volume_btn_rect: Rect,
@@ -723,7 +729,8 @@ impl MusicApp {
             scroll: 0.0,
             content_height: 0.0,
             drawer: SidebarDrawer::new().left(),
-            toggle_rect: Rect::ZERO,
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
             bar_h: 0.0,
             mouse: Point::ZERO,
             hits: Vec::new(),
@@ -732,6 +739,8 @@ impl MusicApp {
             bar_press: None,
             scrubber_rect: Rect::ZERO,
             volume_rect: Rect::ZERO,
+            scrubber_hit: Rect::ZERO,
+            volume_hit: Rect::ZERO,
             volume_btn_rect: Rect::ZERO,
             volume_popover_open: false,
             volume_popover_rect: Rect::ZERO,
@@ -1735,9 +1744,10 @@ impl MusicApp {
             }
             PortalOutcome::Cancelled => {}
             PortalOutcome::Failed(reason) => {
+                tracing::warn!(%reason, "the cover picker failed");
                 self.notify(
                     ToastKind::Error,
-                    format!("Couldn\u{2019}t set the cover: {reason}"),
+                    "Couldn\u{2019}t open the image. Try another one.",
                 );
             }
         }
@@ -1767,9 +1777,10 @@ impl MusicApp {
                 self.notify(ToastKind::Success, "Playlist cover updated");
             }
             (_, Err(reason)) => {
+                tracing::warn!(%reason, "the playlist cover could not be prepared");
                 self.notify(
                     ToastKind::Error,
-                    format!("Couldn’t set the cover: {reason}"),
+                    "Couldn\u{2019}t use that image as a cover. Try another one.",
                 );
             }
             (None, Ok(_)) => {}
@@ -3827,10 +3838,11 @@ impl MusicApp {
         Rect::new(self.drawer.content_rect().x0, r.y1 - self.bar_h, r.x1, r.y1)
     }
 
-    /// Whether the sidebar toggle sits at the content's leading edge rather
-    /// than in the sidebar's own header: whenever the sidebar is hidden.
+    /// Whether the sidebar toggle sits in the window's header row rather
+    /// than in the docked sidebar's own row: whenever the sidebar is hidden
+    /// or floats.
     fn toggle_in_content(&self) -> bool {
-        !self.drawer.is_open()
+        !self.drawer.is_open() || self.drawer.is_overlay()
     }
 
     /// Flip the sidebar open/closed for the current layout.

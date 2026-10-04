@@ -3755,6 +3755,8 @@ pub struct DataTableFace<'a> {
     hovered: Option<usize>,
     sort: Option<(usize, bool)>,
     compact: bool,
+    two_line: bool,
+    header: bool,
 }
 
 impl<'a> DataTableFace<'a> {
@@ -3767,6 +3769,8 @@ impl<'a> DataTableFace<'a> {
             hovered: None,
             sort: None,
             compact: false,
+            two_line: false,
+            header: true,
         }
     }
 
@@ -3805,6 +3809,31 @@ impl<'a> DataTableFace<'a> {
         self
     }
 
+    /// Rows tall enough for a cell the host paints as a `Body` line over a
+    /// `Caption` one (a song over its artist, a file over its folder).
+    #[must_use]
+    pub fn two_line(mut self) -> Self {
+        self.two_line = true;
+        self
+    }
+
+    /// A table without its header band (a continuation of a list whose
+    /// columns need no names): rows start at the top of the rect.
+    #[must_use]
+    pub fn without_header(mut self) -> Self {
+        self.header = false;
+        self
+    }
+
+    /// The header band this face paints: [`Self::header_height`], or none.
+    fn header_band(&self, theme: &Theme) -> f64 {
+        if self.header {
+            Self::header_height(theme)
+        } else {
+            0.0
+        }
+    }
+
     /// The header band's height.
     pub fn header_height(theme: &Theme) -> f64 {
         let tokens = &theme.tokens;
@@ -3823,6 +3852,15 @@ impl<'a> DataTableFace<'a> {
         } else {
             tokens.metrics.min_pointer_target + tokens.spacing.s2
         });
+        if self.two_line {
+            return text_band(
+                floor,
+                type_line_height(&tokens.typography, TextRole::Body)
+                    + type_line_height(&tokens.typography, TextRole::Caption),
+                2.0 * f64::from(tokens.spacing.s2),
+            )
+            .ceil();
+        }
         text_band(
             floor,
             type_line_height(&tokens.typography, TextRole::Caption),
@@ -3832,7 +3870,7 @@ impl<'a> DataTableFace<'a> {
 
     /// The header and every row given.
     pub fn height(&self, theme: &Theme) -> f64 {
-        Self::header_height(theme) + self.row_height(theme) * self.rows.len() as f64
+        self.header_band(theme) + self.row_height(theme) * self.rows.len() as f64
     }
 
     /// Each column's rect in `rect`, at the header's height: the band runs
@@ -3874,13 +3912,13 @@ impl<'a> DataTableFace<'a> {
     pub fn row_rect(&self, rect: Rect, index: usize, theme: &Theme) -> Rect {
         let bleed = crate::chrome::row_bleed(theme);
         let h = self.row_height(theme);
-        let y0 = rect.y0 + Self::header_height(theme) + h * index as f64;
+        let y0 = rect.y0 + self.header_band(theme) + h * index as f64;
         Rect::new(rect.x0 - bleed, y0, rect.x1 + bleed, y0 + h)
     }
 
     /// The row under `point` in a table painted into `rect`.
     pub fn row_at(&self, rect: Rect, point: Point, theme: &Theme) -> Option<usize> {
-        let top = rect.y0 + Self::header_height(theme);
+        let top = rect.y0 + self.header_band(theme);
         if point.y < top || point.x < rect.x0 || point.x > rect.x1 {
             return None;
         }
@@ -3896,16 +3934,24 @@ impl<'a> DataTableFace<'a> {
         let columns = self.column_rects(rect, ctx.text, theme);
         let header_h = Self::header_height(theme);
         let bleed = crate::chrome::row_bleed(theme);
-        crate::surface::separator(
-            ctx.scene,
-            ctx.transform,
-            rect.x0 - bleed,
-            rect.x1 + bleed,
-            rect.y0 + header_h - 0.5,
-            0.0,
-            ground,
-        );
-        for (i, (column, cell)) in self.columns.iter().zip(&columns).enumerate() {
+        if self.header {
+            crate::surface::separator(
+                ctx.scene,
+                ctx.transform,
+                rect.x0 - bleed,
+                rect.x1 + bleed,
+                rect.y0 + header_h - 0.5,
+                0.0,
+                ground,
+            );
+        }
+        for (i, (column, cell)) in self
+            .columns
+            .iter()
+            .zip(&columns)
+            .enumerate()
+            .filter(|_| self.header)
+        {
             let sorted = self
                 .sort
                 .filter(|(sorted, _)| *sorted == i)
@@ -6192,6 +6238,14 @@ mod content_edge_tests {
         let face = DataTableFace::new(&[], &[]);
         assert!((face.row_height(&theme) - 40.0).abs() < 0.01);
         assert!((DataTableFace::header_height(&theme) - regular.header_height()).abs() < 0.01);
+        // A two-line row holds a body line over a caption one; a table
+        // without its header starts its rows at the top.
+        let rows: [&[&str]; 1] = [&[""]];
+        let two = DataTableFace::new(&[], &rows).two_line().without_header();
+        assert!(two.row_height(&theme) > face.row_height(&theme));
+        let rect = Rect::new(0.0, 10.0, 200.0, 200.0);
+        assert!((two.row_rect(rect, 0, &theme).y0 - 10.0).abs() < 0.01);
+        assert!((two.height(&theme) - two.row_height(&theme)).abs() < 0.01);
     }
 
     #[test]

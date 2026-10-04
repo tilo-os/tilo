@@ -111,9 +111,13 @@ the inset between them, and never goes below 4.
 | Control (button, field, segmented track) | 8 |
 | Item inside a control or list (selected row, segment thumb) | 6 |
 | Chip, presence pill, tag, avatar | full |
+| A media transport's play/pause | full |
 
 Pills are for things that are pill-shaped by meaning (people, tags, filters).
-Buttons and tabs are not pills.
+Buttons and tabs are not pills. The one round button is a media player's
+play/pause (`TransportFace`): a filled circle in the primary action's
+colours, a size up from previous and next, which stand beside it as solid
+glyphs. Transport glyphs are solid, never outlines.
 
 **Edges.** A hairline appears only where two equal surfaces meet. Groups are
 separated by space and type weight, not boxes. A card exists only for an
