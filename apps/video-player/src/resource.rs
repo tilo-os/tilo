@@ -98,13 +98,7 @@ impl ResourceApp for VideoPlayerShell {
     }
 
     fn view(cx: &mut ViewCx<VideoPlayer>) -> Element {
-        let player = PlayerApp::new(cx.mode());
-        // Only a window someone uses follows its peers' playback.
-        cx.surface(if cx.mode().is_live() {
-            player.with_collab()
-        } else {
-            player
-        })
+        cx.surface(PlayerApp::new(cx.mode()))
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -320,5 +314,55 @@ mod tests {
                 "`{action}` is published: {surface_rows}"
             );
         }
+    }
+
+    #[test]
+    fn everyone_with_the_video_open_watches_it_together() {
+        let sample =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/h264-aac.mp4");
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        app.effect(&VideoEffect::Open {
+            path: Some(sample.display().to_string()),
+        })
+        .expect("the video opens");
+        let media_ref = surface(&mut app, |player| player.media_ref().map(str::to_owned))
+            .expect("an open video has a shareable identity");
+        let deadline = ui::time::now() + std::time::Duration::from_secs(10);
+        while app.state().transport_for(&media_ref).is_none() && ui::time::now() < deadline {
+            app.settle();
+        }
+        let said = app
+            .state()
+            .transport_for(&media_ref)
+            .cloned()
+            .expect("playing the video says where playback stands");
+        assert!(said.playing);
+        assert!(!app.undo(), "playing is nobody's undo step");
+
+        // Someone else pauses at two seconds: this player follows.
+        let epoch_ms = tilo_clock::unix_now_ms();
+        app.merge_peer_edit(|doc| {
+            tilo_actions::Action::apply(
+                &SharedAction::SetTransport {
+                    media_ref: media_ref.clone(),
+                    playing: false,
+                    position_ms: 2_000,
+                    rate: 1.0,
+                    epoch_ms,
+                },
+                doc,
+            )
+            .unwrap();
+        });
+        app.settle();
+        app.settle();
+        let (playing, position) = surface(&mut app, |player| {
+            (player.player().is_playing(), player.player().position_ms())
+        });
+        assert!(!playing, "the peer's pause is followed");
+        assert!(
+            position.abs_diff(2_000) <= media::DRIFT_SEEK_THRESHOLD_MS,
+            "the peer's position is followed: {position}"
+        );
     }
 }

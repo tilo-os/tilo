@@ -15785,8 +15785,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-advisory-lock",
- "tilo-automerge",
- "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
  "tilo-paths",
@@ -18492,7 +18490,6 @@ dependencies = [
 name = "video-player"
 version = "0.1.0"
 dependencies = [
- "collab-types",
  "fnv",
  "runtime-dylib",
  "serde",

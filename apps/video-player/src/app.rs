@@ -6,9 +6,9 @@
 //! video immersive). The media title and the Open action float in a top overlay
 //! that appears with the player's controls and auto-hides during playback, so
 //! immersive video is truly edge-to-edge. It opens files through the XDG
-//! `FileChooser` portal (or `--open PATH`), and — when a collab session is
-//! attached — keeps playback in sync across peers via the shared [`media`]
-//! transport.
+//! `FileChooser` portal (or a path or URL it is launched on), and keeps
+//! playback in step with everyone who has the same video open through the
+//! shared library's transport.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,6 @@ use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::icons::Icon;
 use ui::paint::fill_rect;
 use ui::portal::{
@@ -46,7 +45,6 @@ use ui::framework::{
 use ui::tilo_resource::ActionDecl;
 
 use crate::actions::VideoEffect;
-use crate::collab::{CollabPlayback, Role};
 use crate::preferences::{PlayerSettings, RecentMedia};
 use crate::resource::VideoPlayer as PlayerResource;
 
@@ -701,11 +699,8 @@ pub struct PlayerApp {
     open_focused: bool,
     library_focused: bool,
     library_focus_id: Option<String>,
-    /// Collaborative playback state (host/follower). `None` for a local-only
-    /// session or the headless `--shots` path.
-    collab: Option<CollabPlayback>,
-    /// The collab socket. `None` unless a collab session is attached.
-    manager: Option<CollaborationManager>,
+    /// Playback watched together with everyone who has the same video open.
+    together: Together,
     /// The playback preferences the player follows.
     preferences: PlaybackPreferences,
     /// This device's settings, where a live window keeps its preferences
@@ -761,6 +756,124 @@ enum CaptureAwaits {
     Nothing,
     Frame,
     Outcome,
+}
+
+/// How far the playhead here may stray from where it stands for everyone
+/// before this player says it moved it: past the drift a follower corrects
+/// on its own, so following never echoes back as a move.
+const TOGETHER_MOVE_MS: u64 = 1_500;
+/// How long after following a peer's move this player waits before it says
+/// anything itself, while its engine catches up.
+const TOGETHER_SETTLE_MS: u64 = 1_500;
+/// How long a paused shared transport stays something to follow: a video
+/// left paused long ago starts on its own when it is opened again.
+const TOGETHER_PAUSE_LIVES_MS: u64 = 10 * 60 * 1000;
+
+/// What watching together does this frame.
+#[derive(Debug, PartialEq)]
+enum TogetherStep {
+    /// Bring the engine to where playback stands for everyone.
+    Follow(media::TransportState),
+    /// Say where playback stands here: this player moved it.
+    Publish(media::TransportState),
+    Stay,
+}
+
+/// What this player last knew of playback watched together.
+#[derive(Default)]
+struct Together {
+    /// The video it concerns.
+    media_ref: Option<String>,
+    /// The shared transport last seen, to tell a new one from an old one.
+    seen: Option<crate::shared::SharedTransport>,
+    /// What this player itself said last, to know its own change when it
+    /// comes back.
+    said: Option<media::TransportState>,
+    /// Until when this player only follows, after it followed a move.
+    settling_until: u64,
+    /// Whether what was seen is over (left paused long ago, run past the
+    /// end): nothing to follow or to compare with.
+    over: bool,
+}
+
+impl Together {
+    /// Decide this frame's step for the video `media_ref`, given where
+    /// playback stands for everyone (`shared`) and here (`local`), at `now`.
+    fn step(
+        &mut self,
+        media_ref: &str,
+        shared: Option<&crate::shared::SharedTransport>,
+        local: media::TransportState,
+        now: u64,
+        duration_ms: u64,
+    ) -> TogetherStep {
+        if self.media_ref.as_deref() != Some(media_ref) {
+            // A video just opened: what stood before is the past unless it
+            // is still running, or was paused a moment ago.
+            let over = shared.filter(|shared| !Self::current(shared, now, duration_ms));
+            *self = Self {
+                media_ref: Some(media_ref.to_owned()),
+                seen: over.cloned(),
+                over: over.is_some(),
+                ..Self::default()
+            };
+        }
+        if shared != self.seen.as_ref() {
+            self.seen = shared.cloned();
+            self.over = false;
+            if let Some(shared) = shared {
+                let state = shared.state();
+                if self.said.is_some_and(|said| same(said, state)) {
+                    // This player's own change, come back.
+                    return TogetherStep::Stay;
+                }
+                self.settling_until = now.saturating_add(TOGETHER_SETTLE_MS);
+                return TogetherStep::Follow(state);
+            }
+        }
+        if now < self.settling_until {
+            return match self.seen.as_ref() {
+                Some(shared) => TogetherStep::Follow(shared.state()),
+                None => TogetherStep::Stay,
+            };
+        }
+        let joined = self.seen.as_ref().filter(|_| !self.over);
+        let moved = match joined.map(crate::shared::SharedTransport::state) {
+            None => local.playing,
+            Some(shared) => {
+                shared.playing != local.playing
+                    || (shared.rate - local.rate).abs() > f32::EPSILON
+                    || shared.projected_position(now).abs_diff(local.position_ms) > TOGETHER_MOVE_MS
+            }
+        };
+        if moved {
+            self.said = Some(local);
+            return TogetherStep::Publish(local);
+        }
+        match joined {
+            // Ride along with small drift; the engine corrects larger drift.
+            Some(shared) if shared.playing => TogetherStep::Follow(shared.state()),
+            _ => TogetherStep::Stay,
+        }
+    }
+
+    /// Whether `shared` is still something to join: running inside the
+    /// video, or paused a moment ago.
+    fn current(shared: &crate::shared::SharedTransport, now: u64, duration_ms: u64) -> bool {
+        if shared.playing {
+            duration_ms == 0 || shared.state().projected_position(now) < duration_ms
+        } else {
+            now.saturating_sub(shared.epoch_ms) < TOGETHER_PAUSE_LIVES_MS
+        }
+    }
+}
+
+/// Whether two transports say the same, as the document stores them.
+fn same(a: media::TransportState, b: media::TransportState) -> bool {
+    a.playing == b.playing
+        && a.position_ms == b.position_ms
+        && a.epoch_ms == b.epoch_ms
+        && (a.rate - b.rate).abs() < f32::EPSILON
 }
 
 struct KeptRecall {
@@ -991,8 +1104,7 @@ impl PlayerApp {
             open_focused: false,
             library_focused: false,
             library_focus_id: None,
-            collab: None,
-            manager: None,
+            together: Together::default(),
             preferences,
             setting: None,
             shot_metadata: None,
@@ -1195,23 +1307,6 @@ impl PlayerApp {
         }
     }
 
-    /// Attach collaborative playback: a live collab socket plus the host/
-    /// follower role from the environment. Only the live run path calls this —
-    /// `--shots` and tests stay local so no thread/socket is created.
-    #[must_use]
-    pub fn with_collab(mut self) -> Self {
-        let role = Role::from_env();
-        self.player.set_transport_enabled(role == Role::Host);
-        if role == Role::Follower {
-            // Repeat changes shared transport and therefore belongs to the
-            // host. The resource tree retains an unavailable explanation.
-            self.player.remove_setting("loop");
-        }
-        self.collab = Some(CollabPlayback::new(role));
-        self.manager = Some(CollaborationManager::new());
-        self
-    }
-
     /// Show the shared library the document holds.
     pub(crate) fn present_library(&mut self, state: &crate::shared::SharedLibrary) {
         if state != &self.shared_library {
@@ -1265,6 +1360,12 @@ impl PlayerApp {
             .filter_map(|entry| crate::kept::token_of(&entry.source).map(str::to_owned))
             .collect();
         self.dirty = true;
+    }
+
+    /// The open video's shareable identity, which the shared library's
+    /// notes and transport name it by; never a path.
+    pub fn media_ref(&self) -> Option<&str> {
+        self.current_media_ref.as_deref()
     }
 
     /// Whether the library panel shows.
@@ -1560,23 +1661,11 @@ impl PlayerApp {
 
     fn close_media(&mut self) {
         self.fail_open("video was closed before decoding a first frame".into());
-        let mut player = configured_player(
+        let player = configured_player(
             self.mode,
             self.preferences.autoplay,
             self.preferences.loop_enabled,
         );
-        player.set_transport_enabled(
-            self.collab
-                .as_ref()
-                .is_none_or(|collab| collab.role() == Role::Host),
-        );
-        if self
-            .collab
-            .as_ref()
-            .is_some_and(|collab| collab.role() == Role::Follower)
-        {
-            player.remove_setting("loop");
-        }
         self.player = player;
         self.title = "No media".into();
         self.current_source_id = None;
@@ -1921,7 +2010,6 @@ impl PlayerApp {
         if effect.requires_media() && !self.player.has_media() {
             return Err("open a video before using this playback control".into());
         }
-        self.check_following(&effect)?;
         match effect {
             VideoEffect::Open { path: None } => {
                 self.trigger_open(Some(cx.reply()))?;
@@ -1957,41 +2045,10 @@ impl PlayerApp {
         self.open_local_source(source, title, Some(queue_id))
     }
 
-    /// A transport effect while following the collaborative host is refused:
-    /// the host's transport would undo it.
-    fn check_following(&self, effect: &VideoEffect) -> Result<(), String> {
-        let follower = self
-            .collab
-            .as_ref()
-            .is_some_and(|collab| collab.role() == Role::Follower);
-        if follower
-            && matches!(
-                effect,
-                VideoEffect::TogglePlayback
-                    | VideoEffect::Seek { .. }
-                    | VideoEffect::SeekBy { .. }
-                    | VideoEffect::Restart
-                    | VideoEffect::JumpToEnd
-                    | VideoEffect::SetLoop { .. }
-                    | VideoEffect::SetPlaybackRate { .. }
-                    | VideoEffect::JumpToChapter { .. }
-                    | VideoEffect::JumpToAnnotation { .. }
-            )
-        {
-            return Err("this player is following the collaborative host".into());
-        }
-        Ok(())
-    }
-
     /// What differs from the effects' declarations right now: playback
-    /// controls need an open video, and a follower leaves the transport to
-    /// the collaborative host.
+    /// controls need an open video, and clearing needs a recent one.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
-        let follower = self
-            .collab
-            .as_ref()
-            .is_some_and(|collab| collab.role() == Role::Follower);
         if !self.player.has_media() {
             for effect in [
                 VideoEffect::CLOSE.id,
@@ -2011,22 +2068,6 @@ impl PlayerApp {
                     ui::tilo_resource::ActionRef::<VideoEffect, ()>::new(effect, &[]),
                     "no_media",
                     "Open a video first",
-                ));
-            }
-        } else if follower {
-            for effect in [
-                VideoEffect::TOGGLE_PLAYBACK.id,
-                VideoEffect::SEEK.id,
-                VideoEffect::SEEK_BY.id,
-                VideoEffect::RESTART.id,
-                VideoEffect::JUMP_TO_END.id,
-                VideoEffect::SET_PLAYBACK_RATE.id,
-                VideoEffect::SET_LOOP.id,
-            ] {
-                statuses.push(EffectStatus::unavailable(
-                    ui::tilo_resource::ActionRef::<VideoEffect, ()>::new(effect, &[]),
-                    "following_host",
-                    "This player is following the collaborative host",
                 ));
             }
         }
@@ -2290,46 +2331,47 @@ impl PlayerApp {
         }
     }
 
-    /// Pump the collab transport: apply inbound host state to a follower, or
-    /// broadcast the host's changing playback.
-    fn tick_collab(&mut self) {
-        let (Some(mgr), Some(collab)) = (self.manager.as_mut(), self.collab.as_mut()) else {
+    /// Watch together: follow where playback of the open video stands for
+    /// everyone, and say where it stands here when this player moved it
+    /// (played, paused, sought, changed speed). Only a live window with the
+    /// right to edit says so; a viewer follows.
+    fn tick_together(&mut self) {
+        if !self.mode.is_live() {
+            return;
+        }
+        let (Some(media_ref), Some(dispatcher)) =
+            (self.current_media_ref.clone(), self.dispatcher.clone())
+        else {
             return;
         };
-        for ev in mgr.poll() {
-            if let CollabEvent::Document { .. } = &ev {
-                match ev.document_mutation() {
-                    Some(Ok(collab_types::DocumentMutation::Incremental(data))) => {
-                        collab.ingest(&data);
-                    }
-                    Some(Ok(collab_types::DocumentMutation::Snapshot(data))) => {
-                        collab.ingest_snapshot(&data);
-                    }
-                    Some(Err(error)) => {
-                        tracing::warn!(%error, "video collab: invalid document mutation");
-                    }
-                    None => {}
-                }
-            }
-        }
         let now = unix_now_ms();
-        match collab.role() {
-            Role::Host => {
-                // The manager connects in the background; the host's state
-                // is stepped once it can reach followers, so the first delta
-                // after connecting carries everything since.
-                if mgr.is_connected()
-                    && let Some(engine) = self.player.engine()
-                    && let Some(delta) = collab.host_step(engine, now)
-                {
-                    mgr.send(CollabRequest::document_incremental(delta));
-                }
+        let shared = self.shared_library.transport_for(&media_ref).cloned();
+        let Some(engine) = self.player.engine_mut() else {
+            return;
+        };
+        let local = engine.transport_state(now);
+        let step = self.together.step(
+            &media_ref,
+            shared.as_ref(),
+            local,
+            now,
+            engine.duration_ms().unwrap_or(0),
+        );
+        match step {
+            TogetherStep::Follow(state) => {
+                engine.apply_transport(&state, now);
+                self.dirty = true;
             }
-            Role::Follower => {
-                if let Some(engine) = self.player.engine_mut() {
-                    collab.follow_step(engine, now);
-                }
+            TogetherStep::Publish(state) if !dispatcher.read_only() => {
+                dispatcher.apply(&crate::shared::SharedAction::SetTransport {
+                    media_ref,
+                    playing: state.playing,
+                    position_ms: state.position_ms,
+                    rate: f64::from(state.rate),
+                    epoch_ms: state.epoch_ms,
+                });
             }
+            TogetherStep::Publish(_) | TogetherStep::Stay => {}
         }
     }
 
@@ -2384,9 +2426,7 @@ impl PlayerApp {
                 | PlayerSettingEvent::Activated { .. } => None,
             };
             if let Some(effect) = effect
-                && let Err(error) = self
-                    .check_following(&effect)
-                    .and_then(|()| self.perform(effect))
+                && let Err(error) = self.perform(effect)
             {
                 tracing::warn!(%error, "video player: a settings choice was refused");
             }
@@ -2418,13 +2458,7 @@ impl PlayerApp {
     }
 
     fn maybe_loop_current_media(&mut self) {
-        if !self.preferences.loop_enabled
-            || !self.player.has_media()
-            || self
-                .collab
-                .as_ref()
-                .is_some_and(|collab| collab.role() == Role::Follower)
-        {
+        if !self.preferences.loop_enabled || !self.player.has_media() {
             return;
         }
         let duration = self.player.duration_ms();
@@ -3611,7 +3645,7 @@ impl Widget for PlayerApp {
         let (state, path) = ui::doc::document(state, path);
         self.poll_kept_recall();
         self.drain_portal();
-        self.tick_collab();
+        self.tick_together();
         self.player.sync(state, path);
         self.drain_player_media_events();
         self.sync_decoder_settings();
@@ -4142,9 +4176,8 @@ impl Widget for PlayerApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Collaboration is polled through `needs_idle_sync`; treating an idle,
-        // paused collab session as animation would otherwise force a 60 Hz
-        // redraw forever. Playback and the portal are the only frame-rate work.
+        // Playback and the portal are the only frame-rate work; a paused
+        // player wakes for a peer's change when the document presents it.
         self.player.needs_animation_frame()
             || self.portal_open.is_some()
             || self.media_open.is_some()
@@ -4152,12 +4185,6 @@ impl Widget for PlayerApp {
 
     fn has_pending_visual_work(&self) -> bool {
         self.player.has_pending_visual_work() || self.capture_pending()
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        // A follower must keep syncing even with no local input so it applies
-        // the host's incoming transport.
-        self.collab.is_some()
     }
 }
 
@@ -4571,31 +4598,20 @@ mod tests {
                 "a row resolves by id"
             );
         }
-        // Case `follower_and_missing_media_refuse_transport`.
+        // Case `missing_media_leaves_transport_unavailable`.
         {
-            let mut app = synth_app();
-            app.open_path(Path::new("/tmp/Clip.mp4"))
-                .expect("source identity available");
-            app.collab = Some(CollabPlayback::new(Role::Follower));
-            assert!(app.check_following(&VideoEffect::TogglePlayback).is_err());
-            assert!(app.effect_statuses().iter().any(|status| {
-                format!("{status:?}").contains("toggle-playback")
-                    && format!("{status:?}").contains("following_host")
-            }));
             let empty = PlayerApp::new(RunMode::Capture);
             assert!(empty.effect_statuses().iter().any(|status| {
                 format!("{status:?}").contains("toggle-playback")
                     && format!("{status:?}").contains("no_media")
             }));
-        }
-        // Case `idle_collaboration_does_not_turn_a_paused_player_into_an_animation`.
-        {
-            let mut app = PlayerApp::new(RunMode::Capture);
-            app.collab = Some(CollabPlayback::new(Role::Host));
-            assert!(Widget::needs_idle_sync(&app));
+            let mut app = synth_app();
+            app.open_path(Path::new("/tmp/Clip.mp4"))
+                .expect("source identity available");
             assert!(
-                !Widget::needs_animation_frame(&app),
-                "collab receives idle sync without requesting a 60 Hz redraw"
+                !app.effect_statuses()
+                    .iter()
+                    .any(|status| { format!("{status:?}").contains("toggle-playback") })
             );
         }
     }
@@ -4981,6 +4997,128 @@ mod tests {
                 "Space reached the focused player through the app"
             );
         }
+    }
+
+    fn transport(playing: bool, position_ms: u64, epoch_ms: u64) -> media::TransportState {
+        media::TransportState {
+            playing,
+            position_ms,
+            rate: 1.0,
+            epoch_ms,
+        }
+    }
+
+    fn shared(state: media::TransportState) -> crate::shared::SharedTransport {
+        crate::shared::SharedTransport {
+            media_ref: "clip".into(),
+            playing: state.playing,
+            position_ms: state.position_ms,
+            rate: f64::from(state.rate),
+            epoch_ms: state.epoch_ms,
+        }
+    }
+
+    #[test]
+    fn watching_together_follows_moves_and_says_its_own_once() {
+        let start = 1_000_000;
+        // A player that starts playing says so; its own change coming back
+        // is not followed.
+        let mut here = Together::default();
+        assert_eq!(
+            here.step("clip", None, transport(false, 0, start), start, 60_000),
+            TogetherStep::Stay,
+            "a paused player that nobody else watches says nothing"
+        );
+        let playing = transport(true, 0, start + 10);
+        assert_eq!(
+            here.step("clip", None, playing, start + 10, 60_000),
+            TogetherStep::Publish(playing)
+        );
+        assert_eq!(
+            here.step("clip", Some(&shared(playing)), playing, start + 20, 60_000),
+            TogetherStep::Stay,
+            "its own change is not followed back"
+        );
+
+        // Another player joins the same video and follows; while its engine
+        // catches up it says nothing of its own.
+        let mut there = Together::default();
+        let local = transport(false, 0, start + 500);
+        assert_eq!(
+            there.step("clip", Some(&shared(playing)), local, start + 500, 60_000),
+            TogetherStep::Follow(playing)
+        );
+        assert_eq!(
+            there.step("clip", Some(&shared(playing)), local, start + 900, 60_000),
+            TogetherStep::Follow(playing),
+            "settling: a lagging engine is not a move"
+        );
+        // Small drift rides; a seek far away is a move everyone follows.
+        let riding = transport(true, 2_100, start + 2_000);
+        assert_eq!(
+            there.step(
+                "clip",
+                Some(&shared(playing)),
+                riding,
+                start + 2_000,
+                60_000
+            ),
+            TogetherStep::Follow(playing)
+        );
+        let sought = transport(true, 30_000, start + 2_100);
+        assert_eq!(
+            there.step(
+                "clip",
+                Some(&shared(playing)),
+                sought,
+                start + 2_100,
+                60_000
+            ),
+            TogetherStep::Publish(sought)
+        );
+        // Pausing is a move too.
+        assert_eq!(
+            here.step(
+                "clip",
+                Some(&shared(sought)),
+                playing,
+                start + 2_200,
+                60_000
+            ),
+            TogetherStep::Follow(sought),
+            "the first player follows the seek"
+        );
+    }
+
+    #[test]
+    fn a_video_watched_long_ago_starts_on_its_own() {
+        let now = 50_000_000;
+        let long_ago = shared(transport(false, 12_000, now - TOGETHER_PAUSE_LIVES_MS - 1));
+        let mut here = Together::default();
+        assert_eq!(
+            here.step(
+                "clip",
+                Some(&long_ago),
+                transport(false, 0, now),
+                now,
+                60_000
+            ),
+            TogetherStep::Stay,
+            "an old pause is not joined"
+        );
+        let finished = shared(transport(true, 0, now - 120_000));
+        let mut there = Together::default();
+        assert_eq!(
+            there.step(
+                "clip",
+                Some(&finished),
+                transport(false, 0, now),
+                now,
+                60_000
+            ),
+            TogetherStep::Stay,
+            "a playback that ran past the end is over"
+        );
     }
 
     #[test]
