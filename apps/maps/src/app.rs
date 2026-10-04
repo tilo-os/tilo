@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
@@ -29,18 +29,15 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionFailure, ActionOutput, InvocationId, InvocationUpdate, OperationKind, Resource,
-};
+use ui::tilo_actions::ActionOutput;
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;
 use ui::tokens::typography::TypeScale;
 use ui::widget::{Button, ButtonFace, ContextMenu, MenuItem};
-use ui::widget::{FloatingSurfaceProvider, ResourceOperationStart, Widget};
+use ui::widget::{FloatingSurfaceProvider, Widget};
 
-use crate::actions::{MAPS_ACTION_TYPE, MapsAction};
+use crate::actions::MapsAction;
 use crate::canvas::{self, MapPalette, MapView};
-use crate::doc::MapsDoc;
 use crate::draw;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
 use crate::geo::{self, Projection};
@@ -200,11 +197,14 @@ pub struct MapsApp {
     rect: Rect,
     node: Option<NodeId>,
 
-    /// Framework-owned action dispatch: every collaborative doc mutation (save a
-    /// place, clear the route, add/remove an offline region) goes through this so
-    /// it brackets one undo boundary and replays byte-identically on peers — the
-    /// same path a Ctrl+K palette dispatch takes.
-    actions: crate::resource::ActionSink,
+    /// The framework's door for the map's edits (save a place, clear the
+    /// route): one undo step each, replayed byte-identically on peers — the
+    /// same path a Ctrl+K palette dispatch takes. `None` until the surface is
+    /// attached; an unattached map only shows its edits.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::Maps>>,
+    /// This device's offline areas, as stored; `None` when the map has no
+    /// host to keep them.
+    offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
@@ -237,9 +237,6 @@ pub struct MapsApp {
     content_h: f64,
     content_view_h: f64,
 
-    // CRDT bridge
-    loaded: bool,
-
     // networking
     net_tx: NetSender,
     net_rx: Receiver<NetMsg>,
@@ -252,11 +249,9 @@ pub struct MapsApp {
     location_rx: Option<LocationChannel>,
     /// True while a location fix is being acquired (drives the "Locating…" UI).
     locating: bool,
-    /// Broker identity for a location request admitted through the canonical
-    /// resource/action surface. The portal result, rather than admission, is
-    /// the operation's terminal answer.
-    location_invocation: Option<InvocationId>,
-    location_terminal: Option<InvocationUpdate>,
+    /// The answer owed to whoever invoked the locate effect: the portal's
+    /// result, rather than its admission, finishes it.
+    location_reply: Option<ui::framework::EffectReply>,
 
     // raster basemap (non-blocking OSM tiles)
     tiles: TileLayer,
@@ -756,7 +751,8 @@ impl MapsApp {
             basemap,
             rect: Rect::ZERO,
             node: None,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
+            offline_areas: None,
             last_mouse: Point::ZERO,
             map_controls: MapControls::default(),
             search: SearchBox::new(),
@@ -773,15 +769,13 @@ impl MapsApp {
             scroll: 0.0,
             content_h: 0.0,
             content_view_h: 0.0,
-            loaded: false,
             net_tx,
             net_rx,
             pending: 0,
             online,
             location_rx: None,
             locating: false,
-            location_invocation: None,
-            location_terminal: None,
+            location_reply: None,
             tiles,
             overflow: {
                 let mut m = ContextMenu::new();
@@ -827,12 +821,10 @@ impl MapsApp {
         )
     }
 
-    /// Live-verify helper: a fully live app (real tile worker, real network,
-    /// `online == true`) whose on-disk tile cache is rooted at `cache_dir`
-    /// instead of the shared default. Identical production path to `new` —
-    /// the only difference is a redirectable cache — so a live integration
-    /// test can start from a clean cache and inspect exactly the PNGs the
-    /// worker writes. Not used by the live app or `--shots`.
+    /// A fully live app (real tile worker, real network, `online == true`)
+    /// whose on-disk tile cache is rooted at `cache_dir`: the app's cache
+    /// area in a live window, a clean directory in a live integration test
+    /// that inspects exactly the PNGs the worker writes.
     pub fn new_with_cache_dir(cache_dir: std::path::PathBuf) -> Self {
         Self::build(
             MapModel::default(),
@@ -1044,23 +1036,19 @@ impl MapsApp {
         format!("{lat:.3}, {lon:.3}")
     }
 
-    /// Save (or refresh) the just-requested download as a manageable region.
-    /// The region **row** is a collaborative doc mutation dispatched through the
-    /// action host (its dedupe of the same footprint lives in the action's
-    /// `apply`); the tiles themselves were fetched externally by the caller.
-    /// `name` overrides the derived label (the searched place's name).
+    /// Record the just-requested download as one of this device's offline
+    /// areas; the tiles themselves were fetched by the caller. `name`
+    /// overrides the derived label (the searched place's name).
     fn record_region(
         &mut self,
-        doc: &mut AutoCommit,
         bounds: GeoBounds,
         z0: u8,
         z1: u8,
         tiles: u32,
         name: Option<String>,
     ) {
-        // The footprint itself is the stable resource identity. Two peers that
-        // independently download the same area therefore address one row after
-        // merge instead of creating timestamp-named duplicates.
+        // The footprint itself is the area's identity, so a second download
+        // of the same area refreshes it instead of listing it twice.
         let name = name.unwrap_or_else(|| self.region_name(bounds));
         let id = format!(
             "region:{:.6}:{:.6}:{:.6}:{:.6}:z{z0}-{z1}",
@@ -1075,16 +1063,16 @@ impl MapsApp {
             z1,
             tiles,
         };
-        self.perform(doc, &MapsAction::AddRegion(region));
+        let areas = crate::offline_areas::recorded(&self.model.regions, region);
+        self.set_offline_areas(areas);
     }
 
-    /// Remove a saved region: dispatch the row removal as an action, and delete
-    /// the tiles no *other* saved region still needs as an external side effect.
-    /// Shared imagery is kept — the tile arithmetic reads the live region set
-    /// before the row is dropped.
-    fn delete_region(&mut self, doc: &mut AutoCommit, id: &str) {
+    /// Remove an offline area and delete the tiles no *other* area still
+    /// needs. Shared imagery is kept — the tile arithmetic reads the area set
+    /// before the area is dropped.
+    fn delete_region(&mut self, id: &str) -> Result<(), String> {
         let Some(region) = self.model.regions.iter().find(|r| r.id == id).cloned() else {
-            return;
+            return Err("That offline area is not on this device".into());
         };
         // Tiles any *other* saved region still needs must survive.
         let mut keep: std::collections::HashSet<TileId> = std::collections::HashSet::new();
@@ -1097,107 +1085,62 @@ impl MapsApp {
             .collect();
         let freed = self.tiles.delete_tiles(&doomed);
         self.offline_panel.set_cache_bytes(self.tiles.cache_bytes());
-        // The metadata row is the action; the tile deletion above is external.
-        self.perform(doc, &MapsAction::DeleteRegion { id: id.to_string() });
+        let areas = self
+            .model
+            .regions
+            .iter()
+            .filter(|r| r.id != id)
+            .cloned()
+            .collect();
+        self.set_offline_areas(areas);
         self.model.status = format!("Removed “{}” · {} freed", region.name, format_bytes(freed));
+        Ok(())
+    }
+
+    /// Delete every offline tile on this device, and the areas they made up.
+    fn clear_offline_areas(&mut self) {
+        let freed = self.tiles.clear_cache();
+        self.offline_panel.set_cache_bytes(0);
+        self.set_offline_areas(Vec::new());
+        self.model.status = format!("Cleared {} of offline tiles", format_bytes(freed));
+    }
+
+    /// Show `areas` and keep them as this device's offline areas.
+    fn set_offline_areas(&mut self, areas: Vec<crate::model::DownloadedRegion>) {
+        if let Some(setting) = &self.offline_areas
+            && let Err(error) = setting.set(crate::offline_areas::OfflineAreas {
+                offline_areas: areas.clone(),
+            })
+        {
+            tracing::warn!("maps: the offline areas could not be stored: {error}");
+        }
+        self.model.regions = areas;
+    }
+
+    /// Show the offline areas another window or a restart left on this
+    /// device.
+    fn follow_offline_areas(&mut self) {
+        if let Some(setting) = &self.offline_areas {
+            let stored = setting.get().offline_areas;
+            if stored != self.model.regions {
+                self.model.regions = stored;
+            }
+        }
     }
 
     // --- actions -----------------------------------------------------------
-    /// Dispatch one collaborative [`MapsAction`] against the shared document.
-    ///
-    /// The host applies the same canonical binding used by resources and
-    /// on-screen controls. Local presentation state is never pre-flushed.
-    fn has_durable_map(&self) -> bool {
-        !self.model.places.is_empty()
-            || !self.model.regions.is_empty()
-            || !self.model.recents.is_empty()
-            || !self.model.transit.is_empty()
-            || self.model.route.is_some()
-    }
-
-    /// Publish a sample or offline map through the existing map actions.
-    /// Live empty maps stay unpublished until a later action.
-    fn publish_durable(&mut self, doc: &mut AutoCommit) {
-        let places = self.model.places.clone();
-        let recents = self.model.recents.clone();
-        let regions = self.model.regions.clone();
-        let route = self.model.route.clone();
-        let transit = self.model.transit.clone();
-        let mode = self.model.mode;
-        let transit_time = self.model.transit_time;
-        let origin = self.model.origin;
-        let origin_name = self.model.origin_name.clone();
-        let dest = self.model.dest;
-        let dest_name = self.model.dest_name.clone();
-        if !places.is_empty() {
-            self.dispatch_map(doc, &MapsAction::UpsertPlaces { places });
-        }
-        for query in recents.into_iter().rev() {
-            self.dispatch_map(doc, &MapsAction::CommitSearch { query });
-        }
-        self.dispatch_map(doc, &MapsAction::SetTravelMode { mode });
-        self.dispatch_map(
-            doc,
-            &MapsAction::SetTransitTime {
-                value: transit_time,
-            },
-        );
-        for region in regions {
-            self.dispatch_map(doc, &MapsAction::AddRegion(region));
-        }
-        if let Some(route) = route {
-            self.dispatch_map(
-                doc,
-                &MapsAction::SetRoute {
-                    route,
-                    origin,
-                    origin_name: origin_name.clone(),
-                    dest,
-                    dest_name: dest_name.clone(),
-                    mode,
-                },
-            );
-        }
-        if !transit.is_empty() {
-            self.dispatch_map(
-                doc,
-                &MapsAction::SetTransit {
-                    transit,
-                    origin,
-                    origin_name,
-                    dest,
-                    dest_name,
-                },
-            );
+    /// Submit one [`MapsAction`] through the framework's door, and show its
+    /// result in this window right away. The door checks, applies, records and
+    /// replicates it; the state it stores is presented back, so an edit the
+    /// door refuses is undone here too.
+    fn perform(&mut self, action: &MapsAction) {
+        action.apply_to_model(&mut self.model);
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
         }
     }
 
-    fn dispatch_map(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            MAPS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
-        );
-    }
-
-    fn perform(&mut self, doc: &mut AutoCommit, action: &MapsAction) {
-        // Test/standalone callers may invoke an action before the widget's
-        // first sync. Seed once only; ordinary interactions never mirror local
-        // presentation back into an existing document.
-        if MapsDoc::load(doc).is_none() && !self.actions.is_hosted() && self.has_durable_map() {
-            self.publish_durable(doc);
-        }
-        self.actions.dispatch_with_context(
-            doc,
-            MAPS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.maps", "Maps", action),
-        );
-        MapsDoc::apply_durable(doc, &mut self.model);
-    }
-
-    /// Show the places, routes and regions the framework resource already holds.
+    /// Show the places, searches and plans the framework resource holds.
     pub(crate) fn adopt_resource_state(&mut self, state: &MapModel) {
         self.model.places.clone_from(&state.places);
         self.model.recents.clone_from(&state.recents);
@@ -1209,31 +1152,18 @@ impl MapsApp {
         self.model.dest = state.dest;
         self.model.dest_name.clone_from(&state.dest_name);
         self.model.transit_time = state.transit_time;
-        self.model.regions.clone_from(&state.regions);
-        self.loaded = true;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Hosted as the resource's surface: edits go through `dispatch`, and the
+    /// offline areas are this device's `offline_areas`.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Maps>,
+        dispatch: ui::framework::Dispatcher<crate::resource::Maps>,
+        offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
     ) {
-        self.actions.attach(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// Test helper: stage ranked search hits that are not document state.
-    #[cfg(test)]
-    pub(crate) fn seed_search_results_for_test(&mut self, results: Vec<crate::model::Place>) {
-        self.model.results = results;
+        self.dispatch = Some(dispatch);
+        self.offline_areas = offline_areas;
+        self.follow_offline_areas();
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -1448,7 +1378,11 @@ impl MapsApp {
 
     /// Local (offline) search: substring match over known places. Also kicks
     /// off a live Nominatim request whose results fold in later.
-    fn run_search(&mut self, doc: Option<&mut AutoCommit>) {
+    ///
+    /// `commit` records the query in the shared search history: a search
+    /// the person submits does, one an agent or the palette runs to look
+    /// something up does not.
+    fn run_search(&mut self, commit: bool) {
         let q = self.model.query.trim().to_string();
         if q.is_empty() {
             return;
@@ -1460,8 +1394,8 @@ impl MapsApp {
             self.model.selected = Some(id);
         }
         self.model.results = results;
-        if let Some(doc) = doc {
-            self.perform(doc, &MapsAction::CommitSearch { query: q.clone() });
+        if commit {
+            self.perform(&MapsAction::CommitSearch { query: q.clone() });
         } else {
             self.model.push_recent(&q);
         }
@@ -1616,14 +1550,11 @@ impl MapsApp {
     /// Open Directions in Transit mode to the selected place, forcing the
     /// destination to the current selection. The place-card "Transit" shortcut
     /// and the `t` key land here.
-    fn enter_transit(&mut self, doc: &mut AutoCommit) {
+    fn enter_transit(&mut self) {
         self.set_dest_to_selection();
-        self.perform(
-            doc,
-            &MapsAction::SetTravelMode {
-                mode: TravelMode::Transit,
-            },
-        );
+        self.perform(&MapsAction::SetTravelMode {
+            mode: TravelMode::Transit,
+        });
         self.recompute_transit();
     }
 
@@ -1702,9 +1633,9 @@ impl MapsApp {
         }
     }
 
-    fn set_mode(&mut self, mode: TravelMode, doc: &mut AutoCommit) {
+    fn set_mode(&mut self, mode: TravelMode) {
         if self.model.mode != mode {
-            self.perform(doc, &MapsAction::SetTravelMode { mode });
+            self.perform(&MapsAction::SetTravelMode { mode });
             self.model.panel = Panel::Directions;
             // Transit plans a public-transport journey; the road modes route.
             if mode.is_transit() {
@@ -1715,20 +1646,17 @@ impl MapsApp {
         }
     }
 
-    fn toggle_save_selected(&mut self, doc: &mut AutoCommit) {
+    fn toggle_save_selected(&mut self) {
         if let Some(id) = self.model.selected.clone() {
             // Resolve the target state here (authoring time) so the action carries
             // an explicit `saved`, never a read-and-toggle that could diverge on
             // replay.
             let now_saved = self.model.place(&id).is_some_and(|p| p.saved);
             let saved = !now_saved;
-            self.perform(
-                doc,
-                &MapsAction::SetPlaceSaved {
-                    id: id.clone(),
-                    saved,
-                },
-            );
+            self.perform(&MapsAction::SetPlaceSaved {
+                id: id.clone(),
+                saved,
+            });
             // The selection is local; reflect the explicit action payload in
             // this window even when the selected search result is not yet a
             // durable bookmark row.
@@ -1738,8 +1666,8 @@ impl MapsApp {
         }
     }
 
-    fn clear_route(&mut self, doc: &mut AutoCommit) {
-        self.perform(doc, &MapsAction::ClearRoute);
+    fn clear_route(&mut self) {
+        self.perform(&MapsAction::ClearRoute);
         self.navigation_placement.reset_attached();
         self.navigation_drag_handle = Rect::ZERO;
         self.navigation_end_rect = Rect::ZERO;
@@ -2062,25 +1990,19 @@ impl MapsApp {
                   message kinds, and splitting arms out would relocate the code, not \
                   shrink what a reader must trace for one variant"
     )]
-    fn drain_net(&mut self, mut doc: Option<&mut AutoCommit>) {
+    /// Take the network results that arrived since the last frame. A result
+    /// that becomes the map's — a geocoded place, a route, transit options —
+    /// is accepted with the map action every peer replays.
+    fn drain_net(&mut self) {
         while let Ok(msg) = self.net_rx.try_recv() {
             self.pending = self.pending.saturating_sub(1);
             match msg {
                 NetMsg::Search { query, results } => match results {
                     Ok(found) if !found.is_empty() => {
                         let mut ranked = found;
-                        if let Some(state) = doc.as_deref_mut() {
-                            self.perform(
-                                state,
-                                &MapsAction::UpsertPlaces {
-                                    places: ranked.clone(),
-                                },
-                            );
-                        } else {
-                            for p in &ranked {
-                                self.model.upsert_place(p.clone());
-                            }
-                        }
+                        self.perform(&MapsAction::UpsertPlaces {
+                            places: ranked.clone(),
+                        });
                         self.rank_results(&mut ranked, &query);
                         if self.search.is_focused() {
                             // Search-as-you-type: fill the floating overlay only.
@@ -2107,18 +2029,9 @@ impl MapsApp {
                     results,
                 } => match results {
                     Ok(found) if !found.is_empty() => {
-                        if let Some(state) = doc.as_deref_mut() {
-                            self.perform(
-                                state,
-                                &MapsAction::UpsertPlaces {
-                                    places: found.clone(),
-                                },
-                            );
-                        } else {
-                            for p in &found {
-                                self.model.upsert_place(p.clone());
-                            }
-                        }
+                        self.perform(&MapsAction::UpsertPlaces {
+                            places: found.clone(),
+                        });
                         // Rank the From/To dropdown the same way the top search
                         // is ranked — relevance first, nearest-first within a
                         // tier — so a distant namesake never sits above the
@@ -2148,21 +2061,14 @@ impl MapsApp {
                 }
                 NetMsg::Route(r) => match r {
                     Ok(route) => {
-                        if let Some(state) = doc.as_deref_mut() {
-                            self.perform(
-                                state,
-                                &MapsAction::SetRoute {
-                                    route: route.clone(),
-                                    origin: self.model.origin,
-                                    origin_name: self.model.origin_name.clone(),
-                                    dest: self.model.dest,
-                                    dest_name: self.model.dest_name.clone(),
-                                    mode: self.model.mode,
-                                },
-                            );
-                        } else {
-                            self.model.route = Some(route);
-                        }
+                        self.perform(&MapsAction::SetRoute {
+                            route,
+                            origin: self.model.origin,
+                            origin_name: self.model.origin_name.clone(),
+                            dest: self.model.dest,
+                            dest_name: self.model.dest_name.clone(),
+                            mode: self.model.mode,
+                        });
                         self.fit_route();
                         self.model.status = "Route updated".to_string();
                     }
@@ -2172,20 +2078,13 @@ impl MapsApp {
                 },
                 NetMsg::Transit(t) => match t {
                     Ok(j) if !j.is_empty() => {
-                        if let Some(state) = doc.as_deref_mut() {
-                            self.perform(
-                                state,
-                                &MapsAction::SetTransit {
-                                    transit: j.clone(),
-                                    origin: self.model.origin,
-                                    origin_name: self.model.origin_name.clone(),
-                                    dest: self.model.dest,
-                                    dest_name: self.model.dest_name.clone(),
-                                },
-                            );
-                        } else {
-                            self.model.transit = j;
-                        }
+                        self.perform(&MapsAction::SetTransit {
+                            transit: j,
+                            origin: self.model.origin,
+                            origin_name: self.model.origin_name.clone(),
+                            dest: self.model.dest,
+                            dest_name: self.model.dest_name.clone(),
+                        });
                         // Frame the map on the itinerary now that we have real
                         // leg geometry (the same courtesy the road route gets).
                         self.fit_current();
@@ -2244,17 +2143,10 @@ impl MapsApp {
                 self.locating = false;
                 self.location_rx = None;
                 self.model.status = "Location unavailable".to_string();
-                if let Some(invocation) = self.location_invocation {
-                    self.location_terminal = Some(InvocationUpdate::Failed {
-                        invocation,
-                        error: ActionFailure {
-                            code: "location_channel_closed".into(),
-                            message: "The location service disconnected before returning a fix"
-                                .into(),
-                            details: None,
-                            retryable: true,
-                        },
-                    });
+                if let Some(reply) = self.location_reply.take() {
+                    reply.finish(Err(
+                        "The location service disconnected before returning a fix".into(),
+                    ));
                 }
                 return;
             }
@@ -2285,25 +2177,14 @@ impl MapsApp {
                         self.recompute_route();
                     }
                 }
-                if let Some(invocation) = self.location_invocation {
-                    self.location_terminal = Some(InvocationUpdate::Succeeded {
-                        invocation,
-                        output: ActionOutput::default(),
-                    });
+                if let Some(reply) = self.location_reply.take() {
+                    reply.finish(Ok(ActionOutput::default()));
                 }
             }
             LocationOutcome::Unavailable(reason) => {
                 self.model.status = format!("Location unavailable — {reason}");
-                if let Some(invocation) = self.location_invocation {
-                    self.location_terminal = Some(InvocationUpdate::Failed {
-                        invocation,
-                        error: ActionFailure {
-                            code: "location_unavailable".into(),
-                            message: reason,
-                            details: None,
-                            retryable: true,
-                        },
-                    });
+                if let Some(reply) = self.location_reply.take() {
+                    reply.finish(Err(reason));
                 }
             }
         }
@@ -2315,7 +2196,7 @@ impl MapsApp {
         reason = "one match arm per Hit variant; the length is the number of click \
                   targets the map surface exposes, not accidental complexity in any one arm"
     )]
-    fn dispatch(&mut self, hit: &Hit, doc: &mut AutoCommit) {
+    fn dispatch(&mut self, hit: &Hit) {
         match hit {
             Hit::Consume => {}
             Hit::Search(hit) => match self.search.handle_hit(hit) {
@@ -2325,19 +2206,13 @@ impl MapsApp {
                     self.model.results.clear();
                 }
                 SearchEffect::Pick(place) => {
-                    self.perform(
-                        doc,
-                        &MapsAction::UpsertPlaces {
-                            places: vec![place.clone()],
-                        },
-                    );
+                    self.perform(&MapsAction::UpsertPlaces {
+                        places: vec![place.clone()],
+                    });
                     place.name.clone_into(&mut self.model.query);
-                    self.perform(
-                        doc,
-                        &MapsAction::CommitSearch {
-                            query: place.name.clone(),
-                        },
-                    );
+                    self.perform(&MapsAction::CommitSearch {
+                        query: place.name.clone(),
+                    });
                     // Selection is intentionally window-local; only accepting
                     // the geocoded place crossed the shared action boundary.
                     self.select_place(&place.id);
@@ -2354,7 +2229,7 @@ impl MapsApp {
                 self.endpoints.dismiss();
                 self.scroll = 0.0;
             }
-            Hit::Mode(m) => self.set_mode(*m, doc),
+            Hit::Mode(m) => self.set_mode(*m),
             Hit::SelectPlace(id) => {
                 self.select_place(id);
             }
@@ -2365,9 +2240,9 @@ impl MapsApp {
             Hit::PoiDirections => self.poi_directions(),
             Hit::Recent(q) => {
                 q.clone_into(&mut self.model.query);
-                self.run_search(Some(doc));
+                self.run_search(true);
             }
-            Hit::ClearRecents => self.perform(doc, &MapsAction::ClearRecents),
+            Hit::ClearRecents => self.perform(&MapsAction::ClearRecents),
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
             }
@@ -2375,29 +2250,26 @@ impl MapsApp {
                 self.nav_open = false;
             }
             Hit::Directions => self.enter_directions(),
-            Hit::Transit => self.enter_transit(doc),
-            Hit::ToggleSave => self.toggle_save_selected(doc),
-            Hit::ClearRoute => self.clear_route(doc),
+            Hit::Transit => self.enter_transit(),
+            Hit::ToggleSave => self.toggle_save_selected(),
+            Hit::ClearRoute => self.clear_route(),
             Hit::UseMyLocation => self.use_my_location(),
             Hit::TransitTimeMode(m) => {
                 let mut value = self.model.transit_time;
                 value.mode = *m;
-                self.perform(doc, &MapsAction::SetTransitTime { value });
+                self.perform(&MapsAction::SetTransitTime { value });
                 self.replan_for_time();
             }
             Hit::TransitTimeDelta(d) => {
                 let mut value = self.model.transit_time;
                 value.offset_min = (value.offset_min + *d).clamp(0, 1440);
-                self.perform(doc, &MapsAction::SetTransitTime { value });
+                self.perform(&MapsAction::SetTransitTime { value });
                 self.replan_for_time();
             }
             Hit::TransitTimeNow => {
-                self.perform(
-                    doc,
-                    &MapsAction::SetTransitTime {
-                        value: crate::model::TransitTime::default(),
-                    },
-                );
+                self.perform(&MapsAction::SetTransitTime {
+                    value: crate::model::TransitTime::default(),
+                });
                 self.replan_for_time();
             }
             Hit::Journey(i) => {
@@ -2436,7 +2308,7 @@ impl MapsApp {
     }
 
     /// Apply an effect requested by the self-contained offline panel.
-    fn dispatch_offline(&mut self, action: OfflineAction, doc: &mut AutoCommit) {
+    fn dispatch_offline(&mut self, action: OfflineAction) {
         match action {
             OfflineAction::Close => self.offline_panel.close(),
             OfflineAction::ZoomDelta(delta) => self.offline_panel.adjust_zoom(delta),
@@ -2453,7 +2325,6 @@ impl MapsApp {
                     .tiles
                     .start_download(request.bounds, request.z0, request.z1);
                 self.record_region(
-                    doc,
                     request.bounds,
                     request.z0,
                     request.z1,
@@ -2465,13 +2336,12 @@ impl MapsApp {
                     |name| format!("Downloading {count} tiles for {name}…"),
                 );
             }
-            OfflineAction::DeleteRegion(id) => self.delete_region(doc, &id),
-            OfflineAction::ClearCache => {
-                let freed = self.tiles.clear_cache();
-                self.offline_panel.set_cache_bytes(0);
-                self.perform(doc, &MapsAction::ClearRegions);
-                self.model.status = format!("Cleared {} of offline tiles", format_bytes(freed));
+            OfflineAction::DeleteRegion(id) => {
+                if let Err(error) = self.delete_region(&id) {
+                    self.model.status = error;
+                }
             }
+            OfflineAction::ClearCache => self.clear_offline_areas(),
             OfflineAction::Consume => {}
         }
     }
@@ -5053,28 +4923,11 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
-    ui::provides!(
-        dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
-    );
+    ui::provides!(dyn ui::widget::FloatingSurfaceProvider);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "maps.locate",
-            "maps.search",
-            "maps.toggle-traffic",
-            "maps.open-place",
-            "maps.directions",
-            "maps.open-poi",
-            "maps.directions-poi",
-        ]
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Pull any background network results into the model first.
-        self.drain_net(Some(state));
+        self.drain_net();
         // Fold in a device-location fix if the portal worker has one.
         self.drain_location();
         // Fire a debounced search-as-you-type geocode once typing settles.
@@ -5105,23 +4958,8 @@ impl Widget for MapsApp {
             }
         }
 
-        if self.loaded {
-            // A palette/agent/peer action mutates the CRDT outside this
-            // widget's pointer path. Adopt durable resources; local camera,
-            // panel, selection and ranked results never mirror back into it.
-            MapsDoc::apply_durable(state, &mut self.model);
-        } else {
-            if MapsDoc::load(state).is_some() || self.actions.is_hosted() || !self.has_durable_map()
-            {
-                // The hosted record is the library. An empty live map stays
-                // empty until a map action writes it. Sample places still
-                // publish on the offline path.
-                MapsDoc::apply_durable(state, &mut self.model);
-            } else {
-                self.publish_durable(state);
-            }
-            self.loaded = true;
-        }
+        // Another window may have downloaded or deleted an offline area.
+        self.follow_offline_areas();
         self.endpoints
             .sync_queries(&self.model.origin_query, &self.model.dest_query);
         if let Some(effect) = self.endpoints.take_due_search(ui::time::now()) {
@@ -5245,10 +5083,15 @@ impl Widget for MapsApp {
                 }
                 // Keep the field inputs' hover state current so a click lands a
                 // caret and a press-drag extends a selection.
-                self.forward_move_to_field_inputs(event, ctx.scale_factor, *ctx.modifiers);
+                self.forward_move_to_field_inputs(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                );
                 // Track hover in the open overflow menu / offline city dropdown.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, ctx.state);
                 }
                 if self.offline_panel.is_open() {
                     self.offline_panel.route_field_event(
@@ -5256,6 +5099,7 @@ impl Widget for MapsApp {
                         ctx.scale_factor,
                         *ctx.modifiers,
                         self.last_mouse,
+                        ctx.state,
                     );
                 }
                 if self.dragging && self.left_down {
@@ -5298,7 +5142,7 @@ impl Widget for MapsApp {
             } => {
                 let p = self.last_mouse;
                 if self.model.route.is_some() && self.navigation_end_rect.contains(p) {
-                    self.clear_route(ctx.state);
+                    self.clear_route();
                     self.navigation_end_hovered = false;
                     *ctx.handled = true;
                     return;
@@ -5319,7 +5163,7 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu owns the pointer: a row press selects,
                 // an outside press dismisses. Route to it before the map/chrome.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, ctx.state);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
@@ -5335,20 +5179,25 @@ impl Widget for MapsApp {
                         ctx.scale_factor,
                         *ctx.modifiers,
                         self.last_mouse,
+                        ctx.state,
                     ) {
                         *ctx.handled = true;
                         return;
                     }
                     if let Some(action) = self.offline_panel.action_at(p) {
-                        self.dispatch_offline(action, ctx.state);
+                        self.dispatch_offline(action);
                         *ctx.handled = true;
                         return;
                     }
                 }
                 if matches!(self.model.panel, Panel::Directions)
-                    && let Some(effect) =
-                        self.endpoints
-                            .pointer_press(p, event, ctx.scale_factor, *ctx.modifiers)
+                    && let Some(effect) = self.endpoints.pointer_press(
+                        p,
+                        event,
+                        ctx.scale_factor,
+                        *ctx.modifiers,
+                        ctx.state,
+                    )
                 {
                     self.search.dismiss();
                     self.apply_endpoint_effect(effect);
@@ -5370,12 +5219,18 @@ impl Widget for MapsApp {
                         self.search.dismiss();
                     }
                     self.endpoints.dismiss();
-                    self.dispatch(&hit, ctx.state);
+                    self.dispatch(&hit);
                     // A click that focused a text field forwards the press so the
                     // shared TextInput places its caret at the click point (the
                     // preceding CursorMoved already set its hover flag).
                     if matches!(hit, Hit::Search(SearchHit::Field)) {
-                        self.forward_press_to_field(&hit, event, ctx.scale_factor, *ctx.modifiers);
+                        self.forward_press_to_field(
+                            &hit,
+                            event,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
+                            ctx.state,
+                        );
                     }
                     consumed = true;
                     *ctx.handled = true;
@@ -5445,7 +5300,7 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
                 // Esc) via its own handling before the map shortcuts.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, ctx.state);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
@@ -5463,6 +5318,7 @@ impl Widget for MapsApp {
                             ctx.scale_factor,
                             *ctx.modifiers,
                             self.last_mouse,
+                            ctx.state,
                         );
                     }
                     *ctx.handled = true;
@@ -5476,7 +5332,7 @@ impl Widget for MapsApp {
                     if self.route_field_key(event, ctx.scale_factor, *ctx.modifiers, ctx.state) {
                         *ctx.handled = true;
                     }
-                } else if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state) {
+                } else if self.handle_key(&key_event.logical_key, *ctx.modifiers) {
                     *ctx.handled = true;
                 }
             }
@@ -5486,52 +5342,6 @@ impl Widget for MapsApp {
 
     fn name(&self) -> &'static str {
         "MapsApp"
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<InvocationUpdate> {
-        if self.location_invocation != Some(invocation) {
-            return None;
-        }
-        let terminal = self.location_terminal.take()?;
-        self.location_invocation = None;
-        Some(terminal)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -5595,10 +5405,9 @@ impl Widget for MapsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
         if self.offline_panel.is_open() {
             // Text input needs the framework's exact-rectangle pointer
             // fallback so it can place its caret. All buttons dispatch through
@@ -5609,7 +5418,7 @@ impl Widget for MapsApp {
             if matches!(action, ui::a11y::Action::Activate)
                 && let Some(action) = self.offline_panel.semantic_action(target)
             {
-                self.dispatch_offline(action, state);
+                self.dispatch_offline(action);
                 return true;
             }
             return false;
@@ -5632,7 +5441,7 @@ impl Widget for MapsApp {
             return true;
         }
         if target == "maps.navigation.end" {
-            self.clear_route(state);
+            self.clear_route();
             return true;
         }
         // The TextInput needs a genuine pointer press to place its caret, so
@@ -5648,7 +5457,7 @@ impl Widget for MapsApp {
             .then(|| hit.clone())
         });
         if let Some(hit) = hit {
-            self.dispatch(&hit, state);
+            self.dispatch(&hit);
             true
         } else {
             false
@@ -5664,7 +5473,6 @@ impl Widget for MapsApp {
         // backoff (see `TileLayer::request`), so `has_inflight()` drops to
         // false and the loop settles instead of re-requesting every frame.
         self.pending > 0
-            || !self.loaded
             || self.locating
             || self.location_rx.is_some()
             || self.poi_debounce.is_some()
@@ -5713,183 +5521,6 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
-    }
-}
-
-impl ui::resources::PublishesResources for MapsApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the workspace door — keep only live search hits and POIs.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        use ui::tilo_resource::Resource as _;
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        let mut resources = self.publish_resources(doc);
-        if resources.is_empty() {
-            let state = crate::resource::Maps::read(doc).unwrap_or_default();
-            resources.push(ui::tilo_resource::publish::<crate::resource::Maps>(
-                "maps.workspace",
-                "Maps",
-                &state,
-            ));
-        }
-        if let Some(workspace) = resources.first_mut() {
-            workspace
-                .children
-                .extend(self.live_search_and_poi_resources_undecorated());
-        }
-        for resource in &mut resources {
-            self.decorate_live_resource(resource);
-        }
-        resources
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        use ui::tilo_resource::Resource as _;
-        // The framework root already owns the workspace door.
-        if self.is_hosted() && id == "maps.workspace" {
-            return None;
-        }
-        let mut resource = self
-            .publish_resource(doc, id)
-            .or_else(|| {
-                (id == "maps.workspace").then(|| {
-                    let state = crate::resource::Maps::read(doc).unwrap_or_default();
-                    ui::tilo_resource::publish::<crate::resource::Maps>(
-                        "maps.workspace",
-                        "Maps",
-                        &state,
-                    )
-                })
-            })
-            .or_else(|| {
-                id.strip_prefix("maps.search-result:").and_then(|place_id| {
-                    self.model
-                        .results
-                        .iter()
-                        .find(|place| place.id == place_id)
-                        .map(|place| Resource::new(id, "maps.search-result", place.name.clone()))
-                })
-            })
-            .or_else(|| {
-                id.strip_prefix("maps.poi:").and_then(|poi_id| {
-                    self.pois
-                        .iter()
-                        .find(|poi| poi.id == poi_id)
-                        .map(|poi| Resource::new(id, "maps.poi", poi.name.clone()))
-                })
-            })?;
-        self.decorate_live_resource(&mut resource);
-        Some(resource)
-    }
-}
-
-impl ui::undo::CommittedActions for MapsApp {
-    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
-    /// this event so the shell records exactly one undo point per dispatched
-    /// action — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
-impl MapsApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        match (kind, type_id) {
-            (OperationKind::View, "maps.search") => {
-                let query: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                self.model.query = query;
-                self.run_search(None);
-            }
-            (OperationKind::Effect, "maps.locate") => {
-                if self.location_rx.is_some() {
-                    return Err("A location request is already in progress".into());
-                }
-                self.use_my_location();
-            }
-            (OperationKind::View, "maps.toggle-traffic") => {
-                self.set_traffic(!self.map_controls.traffic_enabled());
-            }
-            (OperationKind::View, "maps.open-place" | "maps.directions") => {
-                let id: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if self.model.place(&id).is_none() {
-                    return Err("Map place is no longer available".into());
-                }
-                self.select_place(&id);
-                if type_id == "maps.directions" {
-                    self.enter_directions();
-                }
-            }
-            (OperationKind::View, "maps.open-poi" | "maps.directions-poi") => {
-                let id: String =
-                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-                if !self.pois.iter().any(|poi| poi.id == id) {
-                    return Err("Map point of interest is no longer in this viewport".into());
-                }
-                self.select_poi(&id);
-                if type_id == "maps.directions-poi" {
-                    self.poi_directions();
-                }
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: InvocationId,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if (kind, type_id) != (OperationKind::Effect, "maps.locate") {
-            return self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ResourceOperationStart::Completed(ui::tilo_actions::ActionOutput::default())
-                    })
-                });
-        }
-        if !self.online {
-            return Err("The location service is unavailable in this session".into());
-        }
-        if self.location_invocation.is_some() || self.location_rx.is_some() {
-            return Err("A location request is already in progress".into());
-        }
-        self.location_invocation = Some(invocation);
-        self.location_terminal = None;
-        self.use_my_location();
-        Ok(Some(ResourceOperationStart::Accepted))
     }
 }
 
