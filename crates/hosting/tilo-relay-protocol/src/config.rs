@@ -163,6 +163,46 @@ pub struct EnvironmentsConfig {
     /// from when the relay's own stores lack them.
     #[serde(default = "default_image_sources")]
     pub image_sources: Vec<String>,
+    /// Legacy apps for members, on a worker with KVM. Absent: none.
+    #[serde(default)]
+    pub legacy: Option<LegacyAppsConfig>,
+}
+
+/// How a KVM worker runs members' legacy apps: each member's legacy VM
+/// through `tilo-legacy`, their windows on a headless Tilo shell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyAppsConfig {
+    /// The `tilo-legacy` binary.
+    #[serde(default = "default_tilo_legacy_binary")]
+    pub tilo_legacy_binary: PathBuf,
+    /// The Tilo shell, run headless as the compositor of a member's windows.
+    #[serde(default = "default_shell_binary")]
+    pub shell_binary: PathBuf,
+    /// A local guest disk to create VMs from instead of the pinned image.
+    #[serde(default)]
+    pub guest_image: Option<PathBuf>,
+    /// Seconds a member's VM may sit with nothing running before it sleeps.
+    #[serde(default)]
+    pub idle_suspend_secs: Option<u64>,
+}
+
+impl Default for LegacyAppsConfig {
+    fn default() -> Self {
+        Self {
+            tilo_legacy_binary: default_tilo_legacy_binary(),
+            shell_binary: default_shell_binary(),
+            guest_image: None,
+            idle_suspend_secs: None,
+        }
+    }
+}
+
+fn default_tilo_legacy_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/tilo-legacy")
+}
+
+fn default_shell_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/shell")
 }
 
 impl Default for EnvironmentsConfig {
@@ -182,6 +222,7 @@ impl Default for EnvironmentsConfig {
             member_uid_count: 0,
             cgroup_root: None,
             image_sources: default_image_sources(),
+            legacy: None,
         }
     }
 }

@@ -739,7 +739,12 @@ pub fn resolve_gpu_selection(
     opts: &RunOptions,
 ) -> Option<crate::gpu::GpuSelection> {
     let node = opts.render_node.as_ref()?;
-    let selection = crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default());
+    // The compositor resolved its node's drivers once and pinned its own
+    // loaders to them; a launch it started inherits that pin. Asking every
+    // installed ICD again here would load each driver on every app launch.
+    let mut selection = crate::gpu::inherited_selection(node)
+        .unwrap_or_else(|| crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default()));
+    selection.pipeline_seed = crate::gpu::host_pipeline_seed();
     for note in &selection.notes {
         tracing::warn!(target: "tilo_launcher::gpu", package = %manifest.package_id, "{note}");
     }
@@ -1788,6 +1793,10 @@ fn splice_sandbox_shim(
         }
         argv.push("--rw".to_string());
         argv.push(sel.node.display().to_string());
+        if sel.pipeline_seed.is_some() {
+            argv.push("--ro".to_string());
+            argv.push(crate::gpu::SANDBOX_PIPELINE_SEED_DIR.to_string());
+        }
     }
     // The app's own directory, named by its in-sandbox path — the host path
     // isn't reachable from inside, so a rule on it would match nothing.
