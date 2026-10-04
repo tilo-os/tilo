@@ -19,7 +19,6 @@ use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_content::ContentStore;
-use ui::app::UserEvent;
 use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
@@ -37,7 +36,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
 use vte::{Parser, Perform};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use crate::graphics::{
@@ -272,29 +270,12 @@ fn set_terminal_disconnected(disconnected: &AtomicBool, message: &Mutex<String>,
 
 /// Wake an idle app after either fresh PTY bytes *or a lifecycle transition*.
 /// The latter is crucial: EOF has no bytes to queue, but it still changes
-/// visible text, accessibility, and action availability. Coalescing is shared
-/// with the reader's normal output wake path.
-fn request_terminal_wake(
-    waker: &Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
-    wake_pending: &AtomicBool,
-) {
-    if !wake_pending.swap(true, Ordering::AcqRel) {
-        let sent = waker
-            .lock()
-            .ok()
-            .and_then(|guard| {
-                guard.as_ref().map(|proxy| {
-                    proxy
-                        .send_event(UserEvent::External("terminal-lifecycle".to_string()))
-                        .is_ok()
-                })
-            })
-            .unwrap_or(false);
-        if !sent {
-            // Embedded/startup callers have no proxy yet. They poll through
-            // `needs_animation_frame`; do not strand a future real wake.
-            wake_pending.store(false, Ordering::Release);
-        }
+/// visible text, accessibility, and action availability. The wake handle
+/// coalesces wakes the host has not delivered yet; a host that gave the
+/// terminal none pumps it itself (`needs_animation_frame`).
+fn request_terminal_wake(waker: &Mutex<ui::WakeHandle>) {
+    if let Ok(waker) = waker.lock() {
+        waker.wake();
     }
 }
 
@@ -781,18 +762,12 @@ pub struct TerminalWidget {
     /// collaborator's ordinary document update.
     local_session_bound: bool,
 
-    /// Wakes the `ui::App` event loop when the PTY reader has new output, so a
-    /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
-    /// ~60 Hz. The binary arms it via `App::run_with_setup` (see
-    /// [`waker_handle`](Self::waker_handle)); it stays `None` when the terminal
-    /// is embedded in a host that pumps it. Embedded hosts call `sync`/`update`
-    /// independently of painting, so they can remain visually idle until the
-    /// channel actually contains output.
-    waker: Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
-    /// Coalesces reader wakes: set when a wake is in flight, cleared when the
-    /// App delivers the resulting `External` event (`on_external_event`), so a
-    /// burst of PTY reads sends at most one wake per processed frame.
-    wake_pending: Arc<AtomicBool>,
+    /// Wakes the host when the PTY reader has new output, so an idle terminal
+    /// waits for its process instead of polling. Captured from the scope the
+    /// widget is built in, and replaced by the framework's when it is attached
+    /// ([`SurfaceCx::waker`](ui::framework::SurfaceCx::waker)). Shared with the
+    /// reader threads, which outlive a replacement.
+    waker: Arc<Mutex<ui::WakeHandle>>,
     /// Buttons currently held while an application has mouse tracking active.
     /// Bits 0/1/2 are left/middle/right. This is local input state, never
     /// replicated with the shared terminal screen.
@@ -807,6 +782,9 @@ pub struct TerminalWidget {
     /// While the open context menu is the target picker: what each row does.
     target_menu_rows: Option<Vec<Option<TargetMenuRow>>>,
     environments_panel: EnvironmentsPanel,
+    /// A screenshot scenario whose view state is shown once the output it
+    /// queued is on screen.
+    staged_view: Option<String>,
 }
 
 impl TerminalWidget {
@@ -928,8 +906,7 @@ impl TerminalWidget {
             session_actions: ui::ActionHost::new(),
             local_session_id: None,
             local_session_bound: false,
-            waker: Arc::new(Mutex::new(None)),
-            wake_pending: Arc::new(AtomicBool::new(false)),
+            waker: Arc::new(Mutex::new(ui::WakeHandle::new())),
             mouse_buttons: 0,
             focused: false,
             sessions: crate::sessions::Sessions::none(),
@@ -937,6 +914,7 @@ impl TerminalWidget {
             chip_rect: Rect::ZERO,
             target_menu_rows: None,
             environments_panel: EnvironmentsPanel::default(),
+            staged_view: None,
         }
     }
 
@@ -995,13 +973,12 @@ impl TerminalWidget {
         self.pane_id = uuid::Uuid::new_v4().to_string();
     }
 
-    /// Handle used to arm the event-loop waker. A binary running the terminal
-    /// under `ui::App` calls this before moving the widget into the App, then
-    /// stores the `EventLoopProxy` inside `App::run_with_setup`'s closure. Once
-    /// armed, the PTY reader thread wakes the loop on new output and the
-    /// terminal stops polling at ~60 Hz while idle.
-    pub fn waker_handle(&self) -> Arc<Mutex<Option<EventLoopProxy<UserEvent>>>> {
-        self.waker.clone()
+    /// Wake the host through `waker` from now on: the PTY reader and the
+    /// process monitor use it for every later output and lifecycle change.
+    pub(crate) fn wake_through(&self, waker: ui::WakeHandle) {
+        if let Ok(mut current) = self.waker.lock() {
+            *current = waker;
+        }
     }
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
@@ -2501,9 +2478,115 @@ impl TerminalWidget {
     }
 }
 
+impl TerminalWidget {
+    /// Open the session, drain the PTY and mirror the document's screen.
+    fn sync_document(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
+        if self.sessions.is_live() {
+            self.ensure_session(state, root);
+        }
+        self.poll_folder_picker();
+        self.reset_stale_local_session(state, root);
+        self.find_input.sync(state, root);
+        // Drain any bytes the PTY reader thread has queued and replay them
+        // through the vte parser *here*, before reading the grid back out.
+        // The plain `ui::App` event loop only ever calls `sync` (never
+        // `update`), so if the pty were only pumped from `update` the live
+        // terminal would never advance. Pumping from `sync` — combined with
+        // the standalone waker (or an embedding host's app pump) driving the
+        // loop — is what makes a terminal actually show output.
+        self.pump(state, root);
+
+        let current_heads = state.get_heads();
+        let heads_unchanged = current_heads == self.last_sync_heads;
+        if !self.force_resync && self.mirror_valid && heads_unchanged {
+            self.pending_local_edit = false;
+            return;
+        }
+        // Choose the re-read strategy. A full re-read is required whenever the
+        // mirror can't be trusted line-for-line: the first frame, a main↔alt
+        // buffer swap (`force_resync`), or heads that moved without our own
+        // `feed` (a remote collaborator could have edited any line). The
+        // emulator's *own* writes only ever touch the live screen and the
+        // freshly appended tail, so those take the cheap incremental path.
+        let full_reread = !self.mirror_valid || self.force_resync || !self.pending_local_edit;
+        self.force_resync = false;
+        self.pending_local_edit = false;
+        self.last_sync_heads = current_heads;
+
+        self.init_crdt(state, root);
+
+        // Mirror whichever buffer is active. The alt buffer has no scrollback,
+        // so its list is exactly `height` lines. Cloned rather than borrowed:
+        // the mirror refresh below needs `&mut self` while still reading
+        // these ids, and a clone of a handful of `ObjId`s is cheap next to a
+        // full grid re-read.
+        let (grid_id, line_ids) = if self.alt_active {
+            (self.alt_grid_id.clone(), self.alt_line_ids.clone())
+        } else {
+            (self.grid_id.clone(), self.line_ids.clone())
+        };
+        let Some(grid_id) = grid_id else {
+            return;
+        };
+
+        let len = state.length(&grid_id);
+        self.refresh_grid_mirror(state, &line_ids, len, full_reread);
+        self.refresh_title_and_links(state, root);
+        self.refresh_image_placements(state);
+        self.refresh_cursor_from_crdt(state, line_ids.len());
+        if self.find_open {
+            self.refresh_find_matches();
+        }
+    }
+
+    /// Stage screenshot scenario `name`: what its process printed is queued
+    /// as output for this sync, and the view state shown over it follows once
+    /// that output is on screen.
+    pub(crate) fn stage_scenario(&mut self, name: &str) {
+        if let Some((target, environments)) = crate::scenarios::target(name) {
+            self.show_target(target, environments);
+        }
+        let output = crate::scenarios::output(name);
+        if !output.is_empty() {
+            self.deferred_output.set(Some(output));
+        }
+        if name == "ended" {
+            self.mark_disconnected("Session ended — input unavailable");
+        }
+        self.staged_view = Some(name.to_owned());
+    }
+
+    /// The view state scenario `name` shows over its output.
+    fn stage_view(&mut self, name: &str) {
+        match name {
+            "scrollback" => self.scroll_up(20),
+            "find" => {
+                self.open_find();
+                self.set_find_query("build step 042");
+            }
+            "targets" => self.open_target_menu(),
+            "environments" => {
+                self.open_environments_panel();
+                self.set_environment_name_input("Writing");
+            }
+            "empty-menu" => self.open_context_menu_at(Point::new(24.0, 24.0)),
+            // A whole line of the session's output selected, as a
+            // triple-click selects it: the printed line, not the command
+            // that echoed it.
+            "shell-select" => {
+                if let Some(row) = self.find_row_last("primes below 20:") {
+                    let (cols, _) = self.grid_size();
+                    self.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Widget for TerminalWidget {
     ui::provides!(
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence
@@ -2591,62 +2674,9 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if self.sessions.is_live() {
-            self.ensure_session(state, root);
-        }
-        self.poll_folder_picker();
-        self.reset_stale_local_session(state, root);
-        self.find_input.sync(state, root);
-        // Drain any bytes the PTY reader thread has queued and replay them
-        // through the vte parser *here*, before reading the grid back out.
-        // The plain `ui::App` event loop only ever calls `sync` (never
-        // `update`), so if the pty were only pumped from `update` the live
-        // terminal would never advance. Pumping from `sync` — combined with
-        // the standalone waker (or an embedding host's app pump) driving the
-        // loop — is what makes a terminal actually show output.
-        self.pump(state, root);
-
-        let current_heads = state.get_heads();
-        let heads_unchanged = current_heads == self.last_sync_heads;
-        if !self.force_resync && self.mirror_valid && heads_unchanged {
-            self.pending_local_edit = false;
-            return;
-        }
-        // Choose the re-read strategy. A full re-read is required whenever the
-        // mirror can't be trusted line-for-line: the first frame, a main↔alt
-        // buffer swap (`force_resync`), or heads that moved without our own
-        // `feed` (a remote collaborator could have edited any line). The
-        // emulator's *own* writes only ever touch the live screen and the
-        // freshly appended tail, so those take the cheap incremental path.
-        let full_reread = !self.mirror_valid || self.force_resync || !self.pending_local_edit;
-        self.force_resync = false;
-        self.pending_local_edit = false;
-        self.last_sync_heads = current_heads;
-
-        self.init_crdt(state, root);
-
-        // Mirror whichever buffer is active. The alt buffer has no scrollback,
-        // so its list is exactly `height` lines. Cloned rather than borrowed:
-        // the mirror refresh below needs `&mut self` while still reading
-        // these ids, and a clone of a handful of `ObjId`s is cheap next to a
-        // full grid re-read.
-        let (grid_id, line_ids) = if self.alt_active {
-            (self.alt_grid_id.clone(), self.alt_line_ids.clone())
-        } else {
-            (self.grid_id.clone(), self.line_ids.clone())
-        };
-        let Some(grid_id) = grid_id else {
-            return;
-        };
-
-        let len = state.length(&grid_id);
-        self.refresh_grid_mirror(state, &line_ids, len, full_reread);
-        self.refresh_title_and_links(state, root);
-        self.refresh_image_placements(state);
-        self.refresh_cursor_from_crdt(state, line_ids.len());
-        if self.find_open {
-            self.refresh_find_matches();
+        self.sync_document(state, root);
+        if let Some(scenario) = self.staged_view.take() {
+            self.stage_view(&scenario);
         }
     }
 
@@ -2672,14 +2702,6 @@ impl Widget for TerminalWidget {
         let queued = pending.is_some();
         self.deferred_output.set(pending);
         queued || self.folder_picker_pending()
-    }
-
-    /// The event-loop wake we requested has been delivered. Clear the coalescing
-    /// flag so the reader can request the next one; the App's redraw drives
-    /// `sync`, which drains the queued PTY bytes. The payload is unused — the
-    /// wake itself is the signal.
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {
-        self.wake_pending.store(false, Ordering::Release);
     }
 
     fn build_layout(
@@ -3495,12 +3517,6 @@ impl ui::widget::controls::ActionControls for TerminalWidget {
         for (index, available) in availability {
             self.context_menu.set_item_enabled(index, available);
         }
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for TerminalWidget {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -7917,7 +7933,6 @@ impl TerminalWidget {
             let disconnected = widget.session_disconnected.clone();
             let status = widget.session_status_message.clone();
             let waker = widget.waker.clone();
-            let pending = widget.wake_pending.clone();
             let mut child = backend.child;
             if std::thread::Builder::new()
                 .name("tilo-terminal-child-wait".into())
@@ -7928,7 +7943,7 @@ impl TerminalWidget {
                         "Terminal process status failed — input unavailable"
                     };
                     set_terminal_disconnected(&disconnected, &status, message);
-                    request_terminal_wake(&waker, &pending);
+                    request_terminal_wake(&waker);
                 })
                 .is_err()
             {
@@ -7938,10 +7953,9 @@ impl TerminalWidget {
                 widget.mark_disconnected("Terminal unavailable — process monitor could not start");
             }
         }
-        // Share the waker + coalescing flag with the reader thread so fresh PTY
-        // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
+        // Share the waker with the reader thread so fresh PTY output wakes an
+        // idle host instead of waiting for a poll.
         let waker = widget.waker.clone();
-        let wake_pending = widget.wake_pending.clone();
         let session_disconnected = widget.session_disconnected.clone();
         let session_status_message = widget.session_status_message.clone();
 
@@ -7972,7 +7986,7 @@ impl TerminalWidget {
                             &session_status_message,
                             "Terminal reader failed — session unavailable",
                         );
-                        request_terminal_wake(&waker, &wake_pending);
+                        request_terminal_wake(&waker);
                         break;
                     };
                     let read = std::io::Read::read(&mut *r, &mut buf);
@@ -7988,7 +8002,7 @@ impl TerminalWidget {
                                 &session_status_message,
                                 "Session ended — input unavailable",
                             );
-                            request_terminal_wake(&waker, &wake_pending);
+                            request_terminal_wake(&waker);
                             break;
                         }
                         PtyReadDisposition::Data(n) => {
@@ -7996,17 +8010,15 @@ impl TerminalWidget {
                             if output_tx.send(chunk.to_vec()).is_err() {
                                 break;
                             }
-                            // Wake the event loop so `sync` drains the PTY. Coalesced
-                            // via `wake_pending`: at most one in-flight wake until the
-                            // App delivers it (`on_external_event` clears the flag).
-                            request_terminal_wake(&waker, &wake_pending);
+                            // Wake the host so `sync` drains the PTY.
+                            request_terminal_wake(&waker);
                         }
                     }
                 }
             });
         if reader_result.is_err() {
             widget.mark_disconnected("Terminal unavailable — PTY reader could not start");
-            request_terminal_wake(&widget.waker, &widget.wake_pending);
+            request_terminal_wake(&widget.waker);
         }
     }
 

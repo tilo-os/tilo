@@ -822,6 +822,14 @@ pub trait Widget {
             .map(crate::history_mode::HistoryOwner::component)
     }
 
+    /// Records this widget keeps open beside the document it shows, each
+    /// synced on its own route: a framework app's records in the person's
+    /// own room ([`crate::record::person`]). They take no part in this
+    /// widget's history or controls.
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        Vec::new()
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,

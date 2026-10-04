@@ -36,7 +36,7 @@ use super::effect::Effects;
 use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
-use super::scenario::{Fixture, Run};
+use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
@@ -110,7 +110,8 @@ pub trait ResourceApp: 'static {
     /// launch that shows something rather than changing the resource (a
     /// link to one item, a file to look at before acting on it) invokes one
     /// of the app's effects ([`Invoke::effect`]) through the same door. A
-    /// capture takes none: its [scenario](Self::scenario) stages the record.
+    /// capture launched on nothing takes none: its [scenario](Self::scenario)
+    /// stages the record.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
         let _ = (input, created);
         Vec::new()
@@ -158,6 +159,23 @@ pub trait ResourceApp: 'static {
     fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {
         let _ = name;
         Vec::new()
+    }
+
+    /// What a person does in the scene that the scenario's actions and
+    /// staged view state cannot show: text typed into an editor, a drag
+    /// held over its drop target, a menu opened with a right click. Driven
+    /// on `input` through the window's own event path after the actions
+    /// and staging, so the frame shows the app's real answer to that input.
+    /// Must be deterministic, like the rest of the scenario.
+    ///
+    /// # Errors
+    /// Returns why the input could not be given (its target is missing).
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui_core::headless::FrameHarness,
+    ) -> Result<(), String> {
+        let _ = (name, input);
+        Ok(())
     }
 
     /// What a brand-new record starts with that depends on who creates it or
@@ -274,6 +292,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
     storage: AppStorage,
+    person: Option<ui_core::record::person::PersonRecords>,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only, me, run) = match editing {
@@ -293,7 +312,8 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let storage = super::settings::ViewStorage::new(storage);
+    let person = person.map(|records| super::person::PersonState::new(records, A::ID, A::TITLE));
+    let storage = super::settings::ViewStorage::new(storage, person);
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
@@ -394,8 +414,11 @@ fn create<A: ResourceApp>(
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()),
+    };
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
     }
-    .launched_on(&arguments);
+    let run = run.launched(Launched { arguments, file });
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -410,16 +433,15 @@ fn create<A: ResourceApp>(
             run,
         },
         context.storage(),
+        context.person_records().cloned(),
     );
-    if let Some(file) = &file {
-        file.report_opened(<A::Resource as Resource>::KIND);
-    }
-    // A capture is staged by its scenario alone: what a launch takes reads
-    // from outside the process (a file, a library on this device), which a
-    // screenshot must not depend on.
-    if !capture {
-        let input = LaunchInput::new(&arguments, file.as_ref()).with_content(context.content());
-        for invoke in A::launch(&input, created) {
+    // A capture launched on nothing is staged by its scenario alone: what a
+    // launch on nothing takes reads from this device (a library, the last
+    // folder), which a screenshot must not depend on. A capture launched on
+    // a file takes that file, as the command line does.
+    let launch = root.launch();
+    if !capture || !launch.is_empty() {
+        for invoke in A::launch(&launch, created) {
             root.dispatcher().invoke(invoke);
         }
     }

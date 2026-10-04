@@ -62,9 +62,6 @@
 "apps/agent/src/apply.rs" = 2
 "apps/browser/src/browser_widget.rs" = 1
 "apps/music/src/doc.rs" = 1
-"apps/notes/src/actions.rs" = 1
-"apps/notes/src/framework_history.rs" = 1
-"apps/notes/src/legacy_import.rs" = 1
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
 "apps/osk/src/framework_history.rs" = 1

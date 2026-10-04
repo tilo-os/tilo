@@ -10,6 +10,9 @@ use ui_core::widget::{AppModel, ModelPath};
 use tilo_resource::{Resource, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::PresencePayload;
+use ui_core::application_view::{
+    ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
+};
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
@@ -18,6 +21,8 @@ use ui_core::search::{SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
+use ui_core::view::ThawError;
+use ui_core::widget::capability::{capability, capability_mut};
 use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Widget};
 use ui_core::{LocalState, Theme};
 
@@ -180,6 +185,11 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
+    /// The person's own record of `P`, as the views open it.
+    pub(crate) fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
+    }
+
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
         self.past = Some(past);
         self
@@ -246,6 +256,11 @@ impl<R: Resource> ResourceRoot<R> {
         &self.live
     }
 
+    /// What the launch that opened the window named.
+    pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
+    }
+
     /// Every hosted surface of this resource in the view, in tree order.
     fn surfaces(&self, visit: &mut dyn FnMut(&dyn SurfacePublication<R>)) {
         fn walk<R: Resource>(
@@ -266,10 +281,25 @@ impl<R: Resource> ResourceRoot<R> {
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
-        let state = self.live.get();
+        self.publication_of(&self.live.get())
+    }
+
+    /// [`Self::publication`] of the resource as `doc` holds it now, which a
+    /// change from another window or participant may have moved past what
+    /// this view last synced.
+    fn current_publication(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+        if !self.live.follows(doc)
+            && let Ok(current) = R::read(doc)
+        {
+            return self.publication_of(&current);
+        }
+        self.publication()
+    }
+
+    fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         let mut resource =
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &state);
-        let mut bound = self.bindings.declarations(&state);
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state);
+        let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
         self.surfaces(&mut |surface| {
             bound.extend(surface.bound_declarations());
@@ -586,6 +616,12 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         node
     }
 
+    fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        let mut owners = self.storage.person_owners();
+        owners.extend(self.content.record_owners());
+        owners
+    }
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui_core::doc::document(state, path);
         self.refresh_access();
@@ -785,7 +821,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resource = self.publication();
+        let mut resource = self.current_publication(doc);
         // The content may add live external entities beside the resource,
         // never a document action: those are the resource's own. A hosted
         // surface has already admitted what it adds. One naming the resource
@@ -819,14 +855,25 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     fn resource_for(
         &self,
         _participant: Option<&tilo_actions::ParticipantId>,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        if let Some(published) = find(&[self.publication()], id) {
+        // A change from another window or participant may not have reached
+        // this view yet: an item it removed is gone, one it made is there.
+        if let Some(published) = find(&[self.current_publication(doc)], id) {
             return Some(published);
         }
-        if let Some(child) = R::child(&self.live.get(), id) {
-            return Some(child);
+        let current = if self.live.follows(doc) {
+            None
+        } else {
+            R::read(doc).ok()
+        };
+        let child = match &current {
+            Some(current) => R::child(current, id),
+            None => R::child(&self.live.get(), id),
+        };
+        if child.is_some() {
+            return child;
         }
         let mut row = None;
         self.surfaces(&mut |surface| {
@@ -920,6 +967,33 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+
+    // A surface that keeps presentation of its own across restarts (the
+    // open item, the caret) saves it as the window's.
+    fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
+        capability::<dyn ApplicationViewState>(self.content.as_ref())
+            .map_or(Ok(None), ApplicationViewState::capture_application_view)
+    }
+
+    fn restore_application_view(
+        &mut self,
+        local: &ApplicationLocalView,
+        doc: &AutoCommit,
+    ) -> Result<ApplicationFocusRestore, ThawError> {
+        match capability_mut::<dyn ApplicationViewState>(self.content.as_mut()) {
+            Some(view) => view.restore_application_view(local, doc),
+            None => Err(ThawError::State(
+                "application-local restoration unsupported".into(),
+            )),
+        }
+    }
+
+    fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
+        capability_mut::<dyn ApplicationViewState>(self.content.as_mut()).map_or(
+            Ok(()),
+            ApplicationViewState::finish_application_view_restore,
+        )
     }
 }
 

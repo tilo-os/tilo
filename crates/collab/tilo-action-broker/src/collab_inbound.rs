@@ -170,7 +170,7 @@ fn accept(
     let artifact = envelope.artifact;
     if let Ok(mut ch) = channels.lock() {
         let mls_vault = ch.mls_vault.clone();
-        ch.record_history(&envelope);
+        ch.record_history(&route.cluster_id, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.op_class == OpClass::Compaction

@@ -80,18 +80,37 @@ type Refresh = Box<dyn FnMut()>;
 pub(crate) struct ViewStorage {
     storage: AppStorage,
     followed: RefCell<Vec<(Weak<()>, Refresh)>>,
+    /// The person's own records, when the host keeps them: not in a view of
+    /// a past version, which shows the record it is a version of.
+    person: Option<super::person::PersonState>,
 }
 
 impl ViewStorage {
-    pub(crate) fn new(storage: AppStorage) -> Rc<Self> {
+    pub(crate) fn new(storage: AppStorage, person: Option<super::person::PersonState>) -> Rc<Self> {
         Rc::new(Self {
             storage,
             followed: RefCell::default(),
+            person,
         })
     }
 
     pub(crate) fn storage(&self) -> &AppStorage {
         &self.storage
+    }
+
+    /// The person's record of `P`, opened on first use.
+    pub(crate) fn person<P: tilo_resource::Resource>(
+        &self,
+    ) -> Option<super::person::PersonRecord<P>> {
+        self.person.as_ref()?.open::<P>()
+    }
+
+    /// The routes of the person's records the views opened.
+    pub(crate) fn person_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        self.person
+            .as_ref()
+            .map(super::person::PersonState::owners)
+            .unwrap_or_default()
     }
 
     /// `T`, followed for as long as `alive` is.
@@ -126,6 +145,9 @@ impl ViewStorage {
     /// Read every followed setting whose document changed, dropping those
     /// of views that are gone.
     pub(crate) fn refresh(&self) {
+        if let Some(person) = &self.person {
+            person.refresh();
+        }
         // Take the list so a refresh that builds a view (a switch reacting
         // to the new value) may follow more without a reentrant borrow.
         let mut current = std::mem::take(&mut *self.followed.borrow_mut());

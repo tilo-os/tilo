@@ -81,6 +81,10 @@
 //!   keystroke is a splice action.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//!   A surface whose window should reopen as it was left (the open note,
+//!   the caret) also provides
+//!   [`ApplicationViewState`](ui_core::application_view::ApplicationViewState):
+//!   the root saves and restores it with the window.
 //! * **Launching on something** — a path or URL on the command line, a file
 //!   a host hands over — asks the app which record that is
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
@@ -88,7 +92,8 @@
 //!   there ([`ResourceApp::launch`], through the same door as every
 //!   control), or which of its effects, for a launch that shows something
 //!   (a link to one item) rather than editing
-//!   ([`Invoke::effect`](tilo_resource::Invoke::effect)).
+//!   ([`Invoke::effect`](tilo_resource::Invoke::effect)); the view reads the
+//!   same launch ([`ViewCx::launch`]) to show what those actions made.
 //!   [`ResourceApp::OPENS`] names the media types it is handed and
 //!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A handed file's
 //!   bytes are kept in the launch's content store ([`LaunchInput::content`]),
@@ -130,6 +135,15 @@
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
 //!   secret stays on the device.
+//! * **The person's own data** — what they watched, the words they taught
+//!   the keyboard, where they stopped reading: data that grows, has history
+//!   and is undone, but belongs to the person rather than the room — is a
+//!   resource kept in the person's own room ([`ViewCx::person`],
+//!   [`SurfaceCx::person`]). The [`PersonRecord`] is one record per kind on
+//!   all of the person's devices, edited with the resource's actions,
+//!   attributed, in its history and undone per step, and synced to the
+//!   person's devices only — never to a collaborator, whatever room the app
+//!   is open in. A preference is still a setting.
 //! * **Effects** — work with no document delta (reload, back up now,
 //!   connect, run a query) — are a typed vocabulary: `#[derive(Effect)]` on
 //!   an enum, one variant per effect. A view answers it with
@@ -203,8 +217,10 @@
 //!   and collaborators shown where they are. The resource is staged with
 //!   actions ([`ResourceApp::scenario`]), and view state where it lives,
 //!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
-//!   state, `ResourceSurface::stage` for a custom surface's. The capture
-//!   then waits until no surface reports unfinished visual work (an async
+//!   state, `ResourceSurface::stage` for a custom surface's. What a person
+//!   does in the scene (typing, a drag held over its target) is
+//!   [`ResourceApp::scenario_input`], driven through the window's own event
+//!   path. The capture then waits until no surface reports unfinished visual work (an async
 //!   page render, a decode). [`stage`] runs a scenario on any harness, and
 //!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
@@ -223,6 +239,7 @@ mod kinds;
 mod launch;
 mod live;
 mod participant;
+mod person;
 mod preview;
 mod root;
 mod rows;
@@ -253,6 +270,7 @@ pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
 pub use live::Live;
 pub use participant::Participant;
+pub use person::PersonRecord;
 pub use preview::PastVersion;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
