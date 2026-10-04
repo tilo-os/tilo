@@ -155,42 +155,6 @@ pub(crate) fn flag(options: &[LaunchOption], name: &str) -> bool {
         .any(|option| option.name == name && option.value.is_none())
 }
 
-/// Split a command line into its arguments and the app's own `options`
-/// (each taking the next word, or written `--name=value`) and `flags`, as
-/// the launcher reads it: a word naming neither is an argument.
-pub(crate) fn split_command_line(
-    words: &[String],
-    options: &[&str],
-    flags: &[&str],
-) -> (Vec<String>, Vec<LaunchOption>) {
-    let mut arguments = Vec::new();
-    let mut named = Vec::new();
-    let mut words = words.iter();
-    while let Some(word) = words.next() {
-        if flags.contains(&word.as_str()) {
-            named.push(LaunchOption {
-                name: word.clone(),
-                value: None,
-            });
-        } else if let Some((name, value)) = word.split_once('=')
-            && options.contains(&name)
-        {
-            named.push(LaunchOption {
-                name: name.to_owned(),
-                value: Some(value.to_owned()),
-            });
-        } else if options.contains(&word.as_str()) {
-            named.push(LaunchOption {
-                name: word.clone(),
-                value: Some(words.next().cloned().unwrap_or_default()),
-            });
-        } else {
-            arguments.push(word.clone());
-        }
-    }
-    (arguments, named)
-}
-
 /// A command the app's binary runs instead of opening a window: a developer
 /// utility (writing fixtures, staging a repository) that shares the app's
 /// code but is not part of using it.
