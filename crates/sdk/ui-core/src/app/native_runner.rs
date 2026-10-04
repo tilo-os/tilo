@@ -1661,7 +1661,9 @@ impl AppHandler {
             floating_content_changed = true;
             full_redraw_required = true;
         }
-        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut())
+            || app.take_close_window_request()
+        {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -1996,7 +1998,9 @@ impl AppHandler {
                 );
             }
             if send_result.is_err() {
-                tracing::error!("ui-render thread receiver closed; exiting");
+                tracing::error!(
+                    "ui-render thread stopped; exiting (a lost drawing surface is logged above)"
+                );
                 event_loop.exit();
                 return;
             }
@@ -2449,6 +2453,10 @@ impl AppHandler {
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
+
+        // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
+        // tab chords.
+        app.handle_unconsumed_tab_chord(&event, &mut handled);
 
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:

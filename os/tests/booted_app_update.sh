@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# The system image's apps update, launch and roll back through the app
+# registry, like any other app, on a booted and logged-in Tilo: from `app`,
+# from `tilo app update`, and from the App Store.
+#
+#   RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh   # a booted dev VM
+#
+# A dev image is the production image plus dev tooling; this needs one piece
+# of that tooling, tilo-test-registry, which serves newer versions of the
+# installed Settings repacked from its own payload, signed by keys made for
+# the run. Everything the check drives is the production path: `app repo
+# add` pins the registry's owner key, `app update` / `app rollback` resolve
+# offers and hand the signed packages to tilo-install, the App Store updates
+# through the app host, and the desktop's palette launches what the store
+# now says runs.
+#
+#   1. `app list --installed` shows Settings as installed, from the image.
+#   2. `app update so.tilo.settings` installs the registry's newest version,
+#      and the palette opens that version: the launched app's payload is the
+#      updated package, not the image's.
+#   3. `app rollback` goes back to the registry's previous version, and a
+#      second rollback to the image's version.
+#   4. `tilo app update` updates every app with an update, saying what it
+#      does as it goes, within a bound.
+#   5. The App Store, sandboxed, configures the official registry from the
+#      image's trust anchor by itself; with the test registry added, its
+#      Update all updates Settings, and Settings' details show the
+#      catalogue's description and version.
+#
+# The registry runs in the guest on loopback. The command-line steps use a
+# scratch repository configuration; the App Store step edits the Store's
+# own, on a throwaway VM. Exit codes: 0 every step held; 1 one failed.
+set -uo pipefail
+
+RUNNER="${RUNNER:-}"
+APP="${APP:-so.tilo.settings}"
+APP_NAME="${APP_NAME:-Personal Settings}"
+STORE_NAME="App Store"
+NEWER="9999.0.0"
+PREVIOUS="9998.0.0"
+SCRATCH="/tmp/tilo-app-update-check"
+ATSPI="/usr/libexec/tilo/installed-atspi-apps.sh"
+
+on() {
+  if [ -n "$RUNNER" ]; then $RUNNER "$@"; else bash -c "$*"; fi
+}
+ok()  { printf 'ok    %s\n' "$*"; }
+die() {
+  printf 'FAIL  %s\n' "$*" >&2
+  on "tail -20 $SCRATCH/registry.log 2>/dev/null" >&2 || true
+  cleanup
+  exit 1
+}
+cleanup() {
+  on "[ ! -s $SCRATCH/registry.pid ] || kill \$(cat $SCRATCH/registry.pid) 2>/dev/null; true" >/dev/null 2>&1 || true
+}
+
+# `app` with the scratch repository configuration.
+app() { on "TILO_STORE_CONFIG_DIR=$SCRATCH/config TILO_STORE_CACHE_DIR=$SCRATCH/cache app $*"; }
+
+# "<version> <from>" of the installed app.
+installed() {
+  app list --installed | tr -d '\r' | awk -v id="$APP" '$1 == id { gsub(/[()]/, "", $3); print $2, $3 }'
+}
+
+expect_installed() {
+  local want="$1" got
+  got="$(installed)"
+  [ "$got" = "$want" ] || die "expected $APP to be installed as '$want', app list --installed says '$got'"
+  ok "$APP is installed as $want"
+}
+
+# The package id of the copy that runs, from the store.
+running_package() {
+  on "tilo-install inspect $APP" | tr -d '\r' | sed -n 's/^package-id *: tapp://p'
+}
+
+rollback_to_image() {
+  local out
+  out="$(app rollback "$APP" 2>&1)" || die "app rollback $APP failed: $out"
+  expect_installed "$PREVIOUS user"
+  out="$(app rollback "$APP" 2>&1)" || die "the second app rollback $APP failed: $out"
+  expect_installed "$image_version image"
+  [ "$(running_package)" = "$image_package" ] || die "rolling back did not return to the image's package"
+}
+
+# Open an app through the palette; prints "<bus> <pid>".
+open_app() {
+  on "$ATSPI open '$1'" | tr -d '\r' | tail -1
+}
+
+# Open Settings through the palette and require that the launched process
+# runs `package`'s payload. The desktop rereads the store on change (and at
+# most 30 s later), so a launch of the previous copy is retried.
+expect_launch() {
+  local package="$1" deadline=$((SECONDS + 90)) opened pid ancestry
+  while :; do
+    opened="$(open_app "$APP_NAME")"
+    pid="${opened##* }"
+    if [[ $pid =~ ^[0-9]+$ ]]; then
+      # The launcher binds the payload it was given; its path (named by the
+      # package id) is on the sandbox's command line or in its mounts.
+      ancestry="$(on "p=$pid; while [ \"\$p\" -gt 1 ]; do tr '\\0' ' ' < /proc/\$p/cmdline; echo; p=\$(awk '{print \$4}' /proc/\$p/stat); done; cat /proc/$pid/mountinfo" 2>/dev/null)"
+      on "kill $pid" >/dev/null 2>&1 || true
+      if grep -q "$package" <<<"$ancestry"; then
+        ok "$APP_NAME launched from package $package"
+        return
+      fi
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || die "$APP_NAME did not launch from package $package (last open: '$opened')"
+    sleep 5
+  done
+}
+
+on 'echo reachable' | grep -q reachable || { echo "FAIL  cannot run commands on the subject (RUNNER='$RUNNER')" >&2; exit 1; }
+on "command -v tilo-test-registry" >/dev/null || die "tilo-test-registry is not installed (a dev image ships it)"
+
+# --- 1. installed from the image ---------------------------------------------
+image="$(installed)"
+case "$image" in
+  *" image") ok "$APP is installed from the system image: $image" ;;
+  *) die "app list --installed does not show $APP as an image app: '$image'" ;;
+esac
+image_version="${image% image}"
+image_package="$(running_package)"
+[ -n "$image_package" ] || die "tilo-install inspect $APP names no package id"
+
+# --- a test registry offering two newer versions -------------------------------
+on "rm -rf $SCRATCH && mkdir -p $SCRATCH/config $SCRATCH/cache" || die "cannot create $SCRATCH"
+on "nohup tilo-test-registry --app $APP --version $NEWER --version $PREVIOUS \
+      > $SCRATCH/registry.json 2> $SCRATCH/registry.log < /dev/null & echo \$! > $SCRATCH/registry.pid" \
+  || die "cannot start tilo-test-registry"
+trap cleanup EXIT
+for _ in $(seq 1 120); do
+  on "test -s $SCRATCH/registry.json" && break
+  sleep 1
+done
+announce="$(on "cat $SCRATCH/registry.json" | tr -d '\r')"
+url="$(jq -r .url <<<"$announce")"
+owner="$(jq -r .owner_key <<<"$announce")"
+[[ $url == http://127.0.0.1:* && $owner =~ ^[0-9a-f]{64}$ ]] || die "tilo-test-registry did not come up: '$announce'"
+ok "test registry at $url offers $NEWER and $PREVIOUS"
+app repo add test "$url" --owner-key "$owner" >/dev/null || die "app repo add test failed"
+app repo disable "'Tilo main'" >/dev/null || die "could not disable the main repository for this check"
+
+# --- 2. update and launch -------------------------------------------------------
+out="$(app update "$APP" 2>&1)" || die "app update $APP failed: $out"
+expect_installed "$NEWER user"
+updated_package="$(running_package)"
+[ -n "$updated_package" ] && [ "$updated_package" != "$image_package" ] \
+  || die "the update did not change the package that runs ($updated_package)"
+expect_launch "$updated_package"
+
+# --- 3. roll back: the registry's previous version, then the image's ------------
+rollback_to_image
+expect_launch "$image_package"
+
+# --- 4. tilo app update ----------------------------------------------------------
+out="$(on "TILO_STORE_CONFIG_DIR=$SCRATCH/config TILO_STORE_CACHE_DIR=$SCRATCH/cache timeout 300 tilo app update" 2>&1)" \
+  || die "tilo app update failed or exceeded 300 s: $out"
+for line in "Checking " "update available" "Updating $APP_NAME $image_version -> $NEWER" "updated 1"; do
+  grep -qF "$line" <<<"$out" || die "tilo app update did not report '$line':
+$out"
+done
+expect_installed "$NEWER user"
+ok "tilo app update updated $APP and said so as it went"
+rollback_to_image
+
+# --- 5. the App Store ------------------------------------------------------------
+opened="$(open_app "$STORE_NAME")"
+store_pid="${opened##* }"
+[[ $store_pid =~ ^[0-9]+$ ]] || die "the App Store did not open: '$opened'"
+store_config=""
+for _ in $(seq 1 60); do
+  store_config="$(on "ls -dt \$HOME/.local/share/tilo-rooms/*/so.tilo.store/.config/tilo-store 2>/dev/null | head -1" | tr -d '\r')"
+  [ -n "$store_config" ] && on "grep -q 'Tilo main' $store_config/registries.toml" && break
+  sleep 1
+done
+on "grep -q 'Tilo main' $store_config/registries.toml" \
+  || die "the sandboxed App Store did not configure the official registry: $(on "cat $store_config/registries.toml" 2>&1)"
+ok "the sandboxed App Store configured the official registry from the image's trust anchor"
+on "kill $store_pid" >/dev/null 2>&1 || true
+store_app() { on "TILO_STORE_CONFIG_DIR=$store_config app $*"; }
+store_app repo add test "$url" --owner-key "$owner" >/dev/null || die "could not add the test registry to the App Store"
+store_app repo disable "'Tilo main'" >/dev/null || die "could not disable the main repository in the App Store"
+
+opened="$(open_app "$STORE_NAME")"
+store_bus="${opened% *}"
+store_pid="${opened##* }"
+[[ $store_pid =~ ^[0-9]+$ ]] || die "the App Store did not reopen: '$opened'"
+on "$ATSPI click '$store_bus' 'Update all' --timeout 120" \
+  || die "the App Store offered no Update all: $(on "$ATSPI names '$store_bus'" 2>&1 | head -60)"
+deadline=$((SECONDS + 180))
+until [ "$(installed)" = "$NEWER user" ]; do
+  [ "$SECONDS" -lt "$deadline" ] || die "Update all did not update $APP: $(on "$ATSPI names '$store_bus'" 2>&1 | head -60)"
+  sleep 3
+done
+ok "the App Store's Update all updated $APP to $NEWER"
+
+on "$ATSPI type '$store_bus' '$APP_NAME'" || die "could not search the App Store"
+on "$ATSPI click '$store_bus' 'Details' --timeout 60" || die "the App Store showed no Details for $APP_NAME"
+details=""
+deadline=$((SECONDS + 60))
+until grep -q "offered by a test registry" <<<"$details" && grep -q "$NEWER" <<<"$details"; do
+  [ "$SECONDS" -lt "$deadline" ] || die "the details of $APP_NAME do not show the catalogue's description and version:
+$details"
+  sleep 2
+  details="$(on "$ATSPI names '$store_bus'" 2>&1)"
+done
+grep -q "Catalogue details are unavailable" <<<"$details" \
+  && die "the App Store still says its catalogue details are unavailable"
+ok "the App Store shows $APP_NAME's description and version $NEWER"
+on "kill $store_pid" >/dev/null 2>&1 || true
+expect_launch "$(running_package)"
+
+ok "$APP updated, launched and rolled back through the registry, the CLI and the App Store"

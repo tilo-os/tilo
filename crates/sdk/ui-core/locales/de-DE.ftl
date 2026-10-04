@@ -250,6 +250,8 @@ terminal-target-host = Dieses Gerät (ohne Sandbox)
 terminal-target-default = Standardumgebung
 terminal-target-legacy = Legacy-VM
 terminal-target-manage = Umgebungen verwalten…
+terminal-run-on = Ausführen auf:
+terminal-run-on-this-device = Diesem Gerät
 terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
 terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
 terminal-env-title = Umgebungen
@@ -414,3 +416,7 @@ history-day-today = Heute
 history-day-yesterday = Gestern
 history-day-this-week = Diese Woche
 history-day-earlier = Früher
+
+widget-block-duplicate = Block mit Unterelementen duplizieren
+
+widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren

@@ -141,11 +141,143 @@ impl FrameHarness {
         crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
     }
 
-    fn retained_action_geometry(
+    /// Resolve only a currently mounted publication owner, exact app instance
+    /// and record. The alias is never decoded without its host/lifetime registry.
+    /// Reads the retained frame without input, wake draining or document edits.
+    pub fn published_action_locus(
         &self,
-    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+        instance: crate::application::InstanceId,
+        app: &str,
+        record: &str,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<Rect> {
+        if !self.action_geometry_visible() {
+            return None;
+        }
+        let target = self.bound_publication.target(address).ok()??;
+        if target.binding.instance_id != instance
+            || target.binding.app_id != app
+            || target.binding.checkout.id.as_str() != record
+        {
+            return None;
+        }
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        )
+        .ok()?;
+        let snapshot = snapshots
+            .iter()
+            .find(|s| s.binding.same_component(&target.binding))?;
+        let mut result = Vec::new();
+        self.visit_publication_locus(
+            self.root.as_ref(),
+            &target,
+            &snapshot.resources,
+            &mut result,
+        );
+        if result.len() == 1 {
+            result.pop().flatten()
+        } else {
+            None
+        }
+    }
+
+    fn visit_publication_locus(
+        &self,
+        widget: &dyn crate::widget::Widget,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        resources: &[tilo_actions::Resource],
+        result: &mut Vec<Option<Rect>>,
+    ) {
+        if widget
+            .callback_binding()
+            .is_some_and(|b| b.same_component(&target.binding))
+        {
+            // Nested foreign owners cannot contribute a same-named control.
+            // Their independent geometry must be observed through their own alias.
+            fn foreign_owner(
+                widget: &dyn crate::widget::Widget,
+                owner: &crate::bound_dispatch::CallbackBinding,
+            ) -> bool {
+                if widget
+                    .callback_binding()
+                    .is_some_and(|b| !b.same_component(owner))
+                {
+                    return true;
+                }
+                let mut foreign = false;
+                widget.for_each_child(&mut |child| {
+                    foreign |= foreign_owner(child, owner);
+                });
+                foreign
+            }
+            if foreign_owner(widget, &target.binding) {
+                result.push(None);
+                return;
+            }
+            let mut tree = SemanticTree::new();
+            tree.refresh_bound(
+                widget,
+                &self.node_map,
+                &self.bindings.semantic_node_names(&self.node_map),
+                self.focused,
+                resources,
+            );
+            let bindings = crate::widget::controls::control_action_bindings(widget);
+            result.push(
+                crate::action_locus::resource_bounds(&tree, &bindings, &target.address.address)
+                    .and_then(|(bounds, node)| self.clipped_publication_bounds(bounds, node)),
+            );
+            return;
+        }
+        widget.for_each_child(&mut |child| {
+            self.visit_publication_locus(child, target, resources, result);
+        });
+    }
+
+    fn clipped_publication_bounds(&self, bounds: Rect, node: u64) -> Option<Rect> {
+        let pointer = *self.node_map.get(&taffy::NodeId::from(node))?;
+        fn visit(
+            widget: &dyn crate::widget::Widget,
+            pointer: *const dyn crate::widget::Widget,
+            bounds: Rect,
+            matches: &mut Vec<Rect>,
+        ) {
+            if std::ptr::addr_eq(std::ptr::from_ref(widget), pointer) {
+                matches.push(bounds);
+                return;
+            }
+            // Painting clips ordinary children, including ancestors outside
+            // the publication owner. Use the retained widget path, not just
+            // the semantic path (which omits non-accessible wrappers).
+            let bounds = if let Some(clip) = widget.child_clip_rect() {
+                if ![clip.x0, clip.y0, clip.x1, clip.y1]
+                    .into_iter()
+                    .all(f64::is_finite)
+                    || clip.width() <= 0.0
+                    || clip.height() <= 0.0
+                {
+                    return;
+                }
+                bounds.intersect(clip)
+            } else {
+                bounds
+            };
+            if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                return;
+            }
+            widget.for_each_child(&mut |child| visit(child, pointer, bounds, matches));
+        }
+        let mut matches = Vec::new();
+        visit(self.root.as_ref(), pointer, bounds, &mut matches);
+        (matches.len() == 1).then(|| matches[0])
+    }
+
+    fn action_geometry_visible(&self) -> bool {
         // A system surface hiding the app cannot expose its background locus.
-        if self.system_search_presentation().is_some()
+        !(self.system_search_presentation().is_some()
             || self.caller_palette.palette.is_some()
             || self
                 .history
@@ -157,8 +289,13 @@ impl FrameHarness {
             || self
                 .action_palette
                 .as_deref()
-                .is_some_and(|palette| palette.is_presented())
-        {
+                .is_some_and(|palette| palette.is_presented()))
+    }
+
+    fn retained_action_geometry(
+        &self,
+    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+        if !self.action_geometry_visible() {
             return None;
         }
         let mut resources = Vec::new();
@@ -634,6 +771,15 @@ mod locus_tests {
             paths.len() >= 2,
             "fixture contains distinct owners with the same control id"
         );
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        assert!(
+            crate::action_locus::resource_bounds(
+                &tree,
+                &bindings,
+                &tilo_actions::ActionAddress::new("one:root", "edit"),
+            )
+            .is_none()
+        );
         for target in paths.iter().filter_map(|path| path.last()) {
             let mut event = interaction("one:root");
             event.anchor = tilo_actions::InteractionAnchor::SemanticControl {
@@ -760,6 +906,69 @@ mod locus_tests {
         assert_eq!(frame.relayout_frames(), layouts);
         assert_eq!(frame.state.doc.get_heads(), before);
         assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn exact_resource_bounds_matches_unique_ranked_route_without_input() {
+        let (mut frame, calls) = fixture();
+        let before = frame.state.doc.get_heads();
+        let focus = frame.focused;
+        let layouts = frame.relayout_frames();
+        let (tree, bindings) = frame.retained_action_geometry().unwrap();
+        for id in ["first", "second"] {
+            let address = tilo_actions::ActionAddress::new(id, "edit");
+            let ranked = frame.action_ui_routes(&address);
+            assert_eq!(ranked.len(), 1);
+            let exact = crate::action_locus::resource_bounds(&tree, &bindings, &address).unwrap();
+            assert_eq!(Some(exact.0), ranked[0].bounds);
+            assert_eq!(exact.0, frame.targets()[id]);
+            let node = tree.node(ranked[0].path.last().unwrap()).unwrap();
+            assert_eq!(Some(exact.1), node.widget_taffy_id);
+        }
+        for address in [
+            tilo_actions::ActionAddress::new("missing", "edit"),
+            tilo_actions::ActionAddress::new("first", "missing"),
+        ] {
+            assert!(crate::action_locus::resource_bounds(&tree, &bindings, &address).is_none());
+        }
+        assert_eq!(frame.focused, focus);
+        assert_eq!(frame.relayout_frames(), layouts);
+        assert_eq!(frame.state.doc.get_heads(), before);
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn exact_resource_bounds_preserves_ambiguity_and_ranked_order() {
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let root = resource_actions::immediate(
+            Box::new(
+                Column::new()
+                    .push(Box::new(
+                        Button::new("b", "Same label", None).on_action(binding.clone()),
+                    ))
+                    .push(Box::new(
+                        Button::new("a", "Same label", None).on_action(binding),
+                    )),
+            ),
+            resource,
+            |_| panic!("observation must not execute"),
+        );
+        let frame = FrameHarness::new(State::new(), root, (400, 240));
+        let address = tilo_actions::ActionAddress::new("shared:root", "edit");
+        let ranked = frame.action_ui_routes(&address);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0].control_id, "a");
+        assert_eq!(ranked[1].control_id, "b");
+        let (tree, mut bindings) = frame.retained_action_geometry().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                crate::action_locus::action_ui_routes(&tree, &bindings, &address),
+                ranked
+            );
+            assert!(crate::action_locus::resource_bounds(&tree, &bindings, &address).is_none());
+            bindings.reverse();
+        }
     }
 
     #[test]

@@ -99,7 +99,7 @@ fn target_label(target: &SessionTarget, environments: &[EnvironmentSummary]) -> 
                 );
             match location {
                 Location::ThisDevice => name,
-                Location::Relay { id } => format!("{name} · {id}"),
+                Location::Relay { relay } => format!("{name} · {relay}"),
             }
         }
         SessionTarget::Legacy { vm } => format!("{vm} · {}", t("terminal-target-legacy")),
@@ -191,7 +191,7 @@ impl TerminalWidget {
     /// Put a session on `target` behind this tab, replacing any it has.
     fn open_session(&mut self, target: &SessionTarget, requested_by: Requester) {
         self.sessions.target = Some(target.clone());
-        match self.sessions.open(target, requested_by) {
+        match self.sessions.open(target, requested_by, None) {
             Ok(backend) => {
                 self.attach_backend(backend);
                 self.resize_pty_to_grid();

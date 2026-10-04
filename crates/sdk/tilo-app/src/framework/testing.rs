@@ -347,6 +347,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         if let Some(handoff) = handoff {
             prepared.context.provide_handoff(handoff);
         }
+        let captured = capture.is_some();
         let viewport = match capture {
             Some((capture, viewport)) => {
                 prepared.context.provide_capture(capture);
@@ -361,6 +362,26 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut harness =
             FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
         settle_launch(&mut harness);
+        // The live host withdraws a component's whole action surface (the
+        // palette's, agents', scripts') when any of its actions breaks its
+        // contract. Every test that opens the app proves it would not.
+        // A capture stages fixtures, not the app someone uses.
+        let violations = if captured {
+            Vec::new()
+        } else {
+            harness.component_contract_violations()
+        };
+        if !violations.is_empty() {
+            return Err(LaunchError::Operation(format!(
+                "{} publishes an action surface the host would refuse: {}",
+                definition.app_id,
+                violations
+                    .iter()
+                    .map(|violation| format!("{}: {}", violation.address, violation.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
         Ok(Self {
             harness: Some(harness),
             records,
