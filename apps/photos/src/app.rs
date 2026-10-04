@@ -5495,7 +5495,11 @@ impl PhotosApp {
                 shared.push(format!("{}: {description}", tr("photos-description")));
             }
             if let Some(captured_at) = details.captured_at.as_deref() {
-                shared.push(format!("{}: {captured_at}", tr("photos-captured")));
+                shared.push(format!(
+                    "{}: {}",
+                    tr("photos-captured"),
+                    crate::model::capture_label(captured_at)
+                ));
             }
             if let Some(place) = details.place.as_deref() {
                 shared.push(format!("{}: {place}", tr("photos-place")));
@@ -7855,7 +7859,11 @@ impl PhotosApp {
         }
         let mut context = Vec::new();
         if let Some(captured_at) = details.captured_at.as_deref() {
-            context.push(format!("{}: {captured_at}", tr("photos-captured")));
+            context.push(format!(
+                "{}: {}",
+                tr("photos-captured"),
+                crate::model::capture_label(captured_at)
+            ));
         }
         if let Some(place) = details.place.as_deref() {
             context.push(format!("{}: {place}", tr("photos-place")));
