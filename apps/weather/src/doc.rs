@@ -82,7 +82,10 @@ impl WeatherDoc {
             .ok()?;
         Some(SavedLocation {
             id,
-            order_rank: read_f64_coerced(doc, m, "order_rank").unwrap_or(0.0),
+            // An entry without a rank reads as NaN, so the reader places it;
+            // zero is a rank like any other (a place moved above one ranked
+            // 1024).
+            order_rank: read_f64_coerced(doc, m, "order_rank").unwrap_or(f64::NAN),
             name: read_str(doc, m, "name").unwrap_or_default(),
             region: read_str(doc, m, "region").unwrap_or_default(),
             country: read_str(doc, m, "country").unwrap_or_default(),
@@ -291,7 +294,7 @@ impl WeatherDoc {
                         continue;
                     };
                     if let Some(mut location) = Self::location_from_map(doc, &location, &id) {
-                        if location.order_rank == 0.0 {
+                        if !location.order_rank.is_finite() {
                             location.order_rank = (model.locations.len() + 1) as f64 * 1024.0;
                         }
                         remaining.retain(|candidate| candidate != &id);
@@ -308,7 +311,7 @@ impl WeatherDoc {
                     doc.get(&locations, id.as_str())
                     && let Some(mut location) = Self::location_from_map(doc, &location, &id)
                 {
-                    if location.order_rank == 0.0 {
+                    if !location.order_rank.is_finite() {
                         location.order_rank = (model.locations.len() + 1) as f64 * 1024.0;
                     }
                     model.locations.push(location);
