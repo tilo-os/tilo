@@ -501,7 +501,13 @@ mod tests {
             "motion coalesces, device pixels become page pixels, capitals hold Shift, \
              characters a US layout lacks are dropped"
         );
-        assert!(input.iter().all(InputEvent::valid));
+        let request = tilo_relay_protocol::legacy_window::InputRequest {
+            workspace_id: 1,
+            publisher: [0; 32],
+            surface: 7,
+            events: input.clone(),
+        };
+        assert!(request.valid(), "the host accepts every event");
         assert!(page.take_input().is_empty());
     }
 
