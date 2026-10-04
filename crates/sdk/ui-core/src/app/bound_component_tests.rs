@@ -2375,6 +2375,7 @@ fn behaviour_probe_factory(
         autofocus_on_structure_change: true,
         appearance_reconcile: true,
         capture_protected: true,
+        window: crate::application::WindowRole::InputSurface,
     });
     Ok(component)
 }
@@ -2402,6 +2403,11 @@ fn hosted_behaviour(
         autofocus_on_structure_change: app.autofocus_on_structure_change,
         appearance_reconcile: app.appearance_reconcile,
         capture_protected: app.capture_protected(),
+        window: if app.window.app_id.is_some() {
+            crate::application::WindowRole::InputSurface
+        } else {
+            crate::application::WindowRole::Ordinary
+        },
     }
 }
 
@@ -2417,6 +2423,7 @@ fn the_hosting_window_takes_the_components_behaviour() {
             autofocus_on_structure_change: true,
             appearance_reconcile: true,
             capture_protected: true,
+            window: crate::application::WindowRole::InputSurface,
         }
     );
 }

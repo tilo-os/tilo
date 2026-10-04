@@ -27,7 +27,7 @@ use super::app::{
     DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
     role_permissions, settle_launch,
 };
-use super::launch::LaunchInput;
+use super::launch::{LaunchInput, split_command_line};
 use super::root::ResourceRoot;
 
 const INSTANCE: u64 = 7;
@@ -220,7 +220,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app launched by its owner with `arguments`, as `app ARGUMENTS`
     /// on the command line: on the record [`ResourceApp::launch_record`]
-    /// names, after its [`ResourceApp::launch`] actions.
+    /// names, after its [`ResourceApp::launch`] actions. The app's own
+    /// [options](ResourceApp::OPTIONS) and [switches](ResourceApp::FLAGS)
+    /// among them reach it as options.
     ///
     /// # Errors
     /// Returns any launch, storage or construction failure.
@@ -303,6 +305,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
         handoff: Option<PlaybackHandoff>,
         capture: Option<(Capture, (u32, u32))>,
     ) -> Result<Self, LaunchError> {
+        let (arguments, options) = split_command_line(arguments, A::OPTIONS, A::FLAGS);
+        let arguments = arguments.as_slice();
         let person = author.to_owned();
         let author = UserId(person.clone());
         let permissions = role_permissions(&person, role);
@@ -326,7 +330,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let definition = definition::<A>();
         let records = host.records_for(definition)?;
-        let named = A::launch_record(&LaunchInput::new(arguments, None));
+        let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
         let mut prepared = prepare_on(
             &mut host,
             definition,
@@ -336,6 +340,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )?;
         let checkout = prepared.context.record().clone();
         hand_launch(definition, arguments, &mut prepared)?;
+        prepared.context.provide_launch_options(options);
         if let Some(file) = file {
             prepared.context.provide_open_file(file);
         }

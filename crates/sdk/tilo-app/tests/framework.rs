@@ -109,6 +109,40 @@ fn the_live_window_withholds_itself_from_captures_only_when_the_app_declares_it(
     assert!(!inspect_live_window::<ChecklistApp, _>(tilo_app::App::capture_protected).unwrap());
 }
 
+/// The same checklist, as the session's on-screen input surface.
+struct InputSurfaceApp;
+
+impl ResourceApp for InputSurfaceApp {
+    type Resource = Checklist;
+    const ID: &'static str = "so.tilo.test-input-surface";
+    const TITLE: &'static str = "Input surface";
+    const BEHAVIOUR: tilo_app::application::ComponentBehaviour =
+        tilo_app::application::ComponentBehaviour {
+            window: tilo_app::application::WindowRole::InputSurface,
+            ..tilo_app::application::ComponentBehaviour::DEFAULT
+        };
+
+    fn view(cx: &mut ViewCx<Checklist>) -> Element {
+        ChecklistApp::view(cx)
+    }
+}
+
+#[test]
+fn an_input_surface_window_announces_its_own_app_id() {
+    use tilo_app::framework::testing::inspect_live_window;
+    assert_eq!(
+        inspect_live_window::<InputSurfaceApp, _>(|app| app.window_app_id().map(str::to_owned))
+            .unwrap()
+            .as_deref(),
+        Some("so.tilo.test-input-surface")
+    );
+    assert_eq!(
+        inspect_live_window::<ChecklistApp, _>(|app| app.window_app_id().map(str::to_owned))
+            .unwrap(),
+        None
+    );
+}
+
 fn texts(app: &TestApp<ChecklistApp>) -> Vec<(String, bool)> {
     app.state()
         .items

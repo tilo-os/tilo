@@ -267,6 +267,19 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         &self.run.launched.arguments
     }
 
+    /// The value of the app's own option `name` (`--purpose`) the window's
+    /// launch named; see [`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS).
+    /// `None` for a past version.
+    pub fn launch_option(&self, name: &str) -> Option<&str> {
+        super::launch::option(&self.run.launched.options, name)
+    }
+
+    /// Whether the window's launch named the app's switch `name`; see
+    /// [`ResourceApp::FLAGS`](super::ResourceApp::FLAGS).
+    pub fn launch_flag(&self, name: &str) -> bool {
+        super::launch::flag(&self.run.launched.options, name)
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
