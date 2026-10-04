@@ -106,6 +106,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "sync_conflict",
     "collapsed_sidebar",
     "sidebar_menu",
+    "task_list",
     "narrow_drawer",
     "narrow_editor",
 ];
@@ -215,6 +216,8 @@ struct ShotState {
     flap: bool,
     collapse: bool,
     sidebar_menu: bool,
+    /// Show the Today task list in the sidebar.
+    task_list: bool,
     scroll_hour: Option<f64>,
     narrow: bool,
     resize_from: Option<(u32, u32)>,
@@ -267,6 +270,10 @@ impl ShotState {
             "sidebar_menu" => {
                 s.calendar_screen = true;
                 s.sidebar_menu = true;
+            }
+            "task_list" => {
+                s.calendar_screen = true;
+                s.task_list = true;
             }
             "narrow_drawer" => {
                 s.calendar_screen = true;
@@ -415,6 +422,9 @@ impl ShotState {
         }
         if self.sidebar_menu {
             app.shots_open_sidebar_menu();
+        }
+        if self.task_list {
+            app.shots_show_task_list();
         }
         if self.sheet_scroll_end {
             app.shots_scroll_detail_to_end();

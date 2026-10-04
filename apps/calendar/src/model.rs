@@ -37,9 +37,9 @@ impl View {
     pub const ALL: [View; 4] = [View::Month, View::Week, View::Day, View::Agenda];
 }
 
-/// Which "smart list" or project the sidebar has selected. Drives the
-/// task list in the agenda/day rails.
-#[derive(Clone, PartialEq, Eq, Debug)]
+/// Which "smart list" or project the sidebar has chosen. Drives the
+/// task list the sidebar shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListSel {
     Inbox,
     Today,
@@ -550,6 +550,20 @@ pub struct Task {
     pub parent: Option<Id>,
 }
 
+impl Task {
+    /// The order tasks list in: open before done, then by priority, then by
+    /// due date, then by title, so the same tasks always list the same way
+    /// whatever order the document holds them in.
+    pub fn list_order(a: &Task, b: &Task) -> std::cmp::Ordering {
+        a.done
+            .cmp(&b.done)
+            .then(a.priority.rank().cmp(&b.priority.rank()))
+            .then(a.due.cmp(&b.due))
+            .then_with(|| a.title.cmp(&b.title))
+            .then(a.id.cmp(&b.id))
+    }
+}
+
 /// Aggregate model. Order within the vectors is the display order.
 #[derive(Clone, Debug, Default)]
 pub struct Model {
@@ -592,12 +606,7 @@ impl Model {
                 ListSel::Project(p) => t.project == Some(*p),
             })
             .collect();
-        out.sort_by(|a, b| {
-            a.done
-                .cmp(&b.done)
-                .then(a.priority.rank().cmp(&b.priority.rank()))
-                .then(a.due.cmp(&b.due))
-        });
+        out.sort_by(|a, b| Task::list_order(a, b));
         out
     }
 
@@ -802,7 +811,7 @@ fn seed_demo_events_early(
         },
         Event {
             id: Uuid::new_v4(),
-            title: "Gym — strength".into(),
+            title: "Strength training".into(),
             start: seed_demo_at(today, 18, 30),
             end: seed_demo_at(today, 19, 30),
             all_day: false,
