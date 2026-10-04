@@ -107,7 +107,9 @@ pub(crate) enum Request {
     /// The open article's menu (read state, tags).
     ArticleMenu,
     /// A feed's menu, anchored on its sidebar row.
-    FeedMenu(Id, Rect),
+    /// A feed's menu: the row it acts on (its lift), and the point a
+    /// right click opened it at.
+    FeedMenu(Id, Rect, Option<Point>),
     SetFont(ReadFont),
     SetPaper(ReadTheme),
     /// The reading scale as a percentage.
@@ -391,8 +393,12 @@ pub(crate) struct Core {
     show_pane: Option<NavPane>,
     /// Where the header controls that open a menu or panel sit.
     pub(crate) anchors: HashMap<Anchor, Rect>,
-    /// The first feed's sidebar row, as last painted.
+    /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
+    /// How far menus stay inside the window's edges, and from the row they
+    /// open under.
+    pub(crate) floating_inset: f64,
+    pub(crate) menu_gap: f64,
 }
 
 impl Core {
@@ -429,6 +435,8 @@ impl Core {
             show_pane: None,
             anchors: HashMap::new(),
             first_feed_row: None,
+            floating_inset: 0.0,
+            menu_gap: 0.0,
         };
         if demo {
             core.select_featured();
@@ -515,17 +523,17 @@ impl Core {
 
     pub(crate) fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
-        self.list.scroll = 0.0;
+        self.list.scroll_to_top();
         self.list.reveal = true;
         self.ensure_selection();
-        self.reader.scroll = 0.0;
+        self.reader.scroll_to_top();
         // A narrow window shows the chosen list.
         self.show_pane = Some(NavPane::Overview);
     }
 
     pub(crate) fn select_article(&mut self, id: Id, doc: &mut AutoCommit) {
         self.selected = Some(id);
-        self.reader.scroll = 0.0;
+        self.reader.scroll_to_top();
         self.list.reveal = true;
         if self.store.mark_read(id, true) {
             self.perform_action(doc, &actions::mark_read_action(id, true));
@@ -949,7 +957,7 @@ impl Core {
         if let Some(row) = row {
             menu.anchor_row(row);
         }
-        menu.open_anchored(anchor, self.window);
+        menu.open_anchored(anchor, self.menu_bounds());
         self.menu = Some(OpenMenu {
             menu,
             kind,
@@ -957,13 +965,28 @@ impl Core {
         });
     }
 
-    /// The menu of one feed, anchored on its sidebar row.
+    /// Where menus may open: the window, less the floating inset.
+    pub(crate) fn menu_bounds(&self) -> Rect {
+        self.window.inset(-self.floating_inset)
+    }
+
+    /// The menu of one feed, under its sidebar row (`row` is the row's lift),
+    /// sharing the row's leading edge.
     pub(crate) fn open_feed_menu(&mut self, feed_id: Id, row: Rect) {
+        let anchor = row.inflate(0.0, self.menu_gap);
+        self.open_feed_menu_on(feed_id, row, anchor);
+    }
+
+    /// The menu of one feed, opened by a right click at `at` on its row.
+    pub(crate) fn open_feed_menu_at(&mut self, feed_id: Id, row: Rect, at: Point) {
+        self.open_feed_menu_on(feed_id, row, Rect::from_points(at, at));
+    }
+
+    fn open_feed_menu_on(&mut self, feed_id: Id, row: Rect, anchor: Rect) {
         if self.store.feed(feed_id).is_none() {
             return;
         }
         let unread = self.store.unread_for_feed(feed_id) > 0;
-        let anchor = Rect::new(row.x1, row.y0, row.x1, row.y1);
         self.open_menu(
             MenuKind::Feed(feed_id),
             anchor,
@@ -1439,7 +1462,8 @@ impl Core {
             Request::OpenOriginal => self.open_selected_link(),
             Request::ListMenu => self.open_list_menu(),
             Request::ArticleMenu => self.open_article_menu(),
-            Request::FeedMenu(id, row) => self.open_feed_menu(id, row),
+            Request::FeedMenu(id, row, None) => self.open_feed_menu(id, row),
+            Request::FeedMenu(id, row, Some(at)) => self.open_feed_menu_at(id, row, at),
             Request::SetFont(font) => self.bump_setting(doc, |s| s.font = font),
             Request::SetPaper(paper) => self.bump_setting(doc, |s| s.theme = paper),
             Request::SetScale(percent) => {
@@ -1476,7 +1500,7 @@ impl Core {
         };
         self.set_filter(Filter::Feed(feed_id));
         self.selected = Some(id);
-        self.reader.scroll = 0.0;
+        self.reader.scroll_to_top();
         if self.store.mark_read(id, true) {
             self.pending_resource_actions
                 .push(actions::mark_read_action(id, true));
@@ -1698,6 +1722,7 @@ impl HeaderActions<'_> {
             Box::new(
                 self.button("feeds.star", Icon::Star, "Star article", Request::StarOpen)
                     .enabled_when(has_article)
+                    .toggled_by(|core| core.open_article().is_some_and(|a| a.starred))
                     .named_by(|core| {
                         if core.open_article().is_some_and(|a| a.starred) {
                             "Remove star"
@@ -1769,6 +1794,8 @@ pub struct FeedsApp {
     /// How many layouts in a row gave the window the same rect.
     settled_layouts: u32,
     mount: Option<OverlayMount>,
+    /// How far floating panels stay inside the window's edges.
+    floating_inset: f64,
     /// Anchors of search hits picked in the framework host.
     opened: Rc<RefCell<Vec<String>>>,
 }
@@ -1821,6 +1848,7 @@ impl FeedsApp {
             pending_scenario: None,
             settled_layouts: 0,
             mount: None,
+            floating_inset: 0.0,
             opened: Rc::default(),
         }
     }
@@ -1896,14 +1924,18 @@ impl FeedsApp {
         opml::import_into(&mut self.core.borrow_mut().store, &parsed);
     }
 
-    /// A refresh partway through: some feeds done, some updated, one failed.
+    /// A refresh of every feed partway through: some done, some updated,
+    /// one failed.
     pub fn force_refresh_in_progress(&mut self) {
-        self.core.borrow_mut().refresh = RefreshState {
-            total: 12,
-            done: 4,
-            updated_feeds: 3,
-            failed_feeds: 1,
-            new_items: 7,
+        let mut core = self.core.borrow_mut();
+        let total = core.store.feeds.len();
+        let done = total.div_ceil(2).saturating_sub(1);
+        core.refresh = RefreshState {
+            total,
+            done,
+            updated_feeds: done.saturating_sub(1),
+            failed_feeds: done.min(1),
+            new_items: done * 2,
             finished_at: None,
         };
     }
@@ -2138,11 +2170,13 @@ impl FeedsApp {
             )
         };
         self.core.borrow_mut().menu = None;
+        let window = Widget::get_rect(&self.shell).inset(-self.floating_inset);
         self.settings_panel = Some(
             Popover::with_content(reader_settings_panel(settings, &self.requests))
                 .with_label("Reading settings")
                 .anchored(anchor)
                 .side(PopoverSide::Below)
+                .with_viewport(window)
                 .open(true),
         );
         self.overlays_dirty = true;
@@ -2427,6 +2461,12 @@ impl ui::widget::Decorator for FeedsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let shell = Widget::build_layout(&mut self.shell, taffy, theme, node_map);
+        self.floating_inset = f64::from(theme.tokens.spacing.s2);
+        {
+            let mut core = self.core.borrow_mut();
+            core.floating_inset = self.floating_inset;
+            core.menu_gap = f64::from(theme.tokens.spacing.s1);
+        }
         let floating = |taffy: &mut TaffyTree<()>, node: NodeId| {
             if let Ok(mut style) = taffy.style(node).cloned() {
                 style.position = taffy::Position::Absolute;
@@ -2484,6 +2524,9 @@ impl ui::widget::Decorator for FeedsApp {
                     modal.dialog.apply_layout(taffy, dialog, inner);
                 }
                 if let (Some(panel), Some(node)) = (self.settings_panel.as_mut(), mount.panel) {
+                    // A floating panel keeps its inset from the window's edges.
+                    let window = Widget::get_rect(&self.shell).inset(-self.floating_inset);
+                    panel.set_viewport(window);
                     panel.apply_layout(taffy, node, inner);
                 }
             }
@@ -2497,8 +2540,9 @@ impl ui::widget::Decorator for FeedsApp {
             0
         };
         core.window = window;
+        let bounds = core.menu_bounds();
         if let Some(open) = core.menu.as_mut() {
-            open.menu.constrain_to(window);
+            open.menu.constrain_to(bounds);
         }
     }
 
