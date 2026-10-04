@@ -444,6 +444,9 @@ check_login_submitted() {
     [ "$phase" = sign-in ] || return 0
     sleep 1
   done
+  # A session that dies at once sends greetd back to the greeter. Its own
+  # log, in the user's state directory, is the only record of why.
+  gssh 'f="$HOME/.local/state/tilo/session-logs/latest.log"; [ -f "$f" ] && { echo "--- $f"; tail -n 80 "$f"; }; journalctl -b --no-pager -o short-monotonic -n 40 _UID="$(id -u)"' >&2 2>/dev/null || true
   die "tilo-greeter is still at sign-in 30 s after the credentials were sent"
 }
 

@@ -48,6 +48,7 @@ suites = [
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/board_session.sh",
+  "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
@@ -688,11 +689,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "calculator"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/calculator/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "contacts"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/contacts/src/framework_history_tests.rs"]
@@ -713,11 +709,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/slides/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "themes"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/themes/src/framework_history_tests.rs"]
@@ -736,11 +727,6 @@ readers = ["apps/weather/src/framework_history_tests.rs"]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "vpn"
@@ -897,6 +883,11 @@ reason = "boots VMs (KVM) from a built installer image"
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
 workflow = "build-image.yml"
 
 [[unrequired]]
@@ -1115,6 +1106,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"

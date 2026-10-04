@@ -185,8 +185,8 @@ installed: so.tilo.notes-cli 0.1.0
 run with:  tilo-install run so.tilo.notes-cli
 
 $ ls -la /tmp/tilo-install-demo-data/tilo-apps/bin/
--rwxr-xr-x. 1 ada ada 886728  4. Jul 16:45 notes
--rw-r--r--. 1 ada ada    158  4. Jul 16:45 notes.tilo-shim
+-rwxr-xr-x. 1 you you 886728  4. Jul 16:45 notes
+-rw-r--r--. 1 you you    158  4. Jul 16:45 notes.tilo-shim
 
 $ export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
 

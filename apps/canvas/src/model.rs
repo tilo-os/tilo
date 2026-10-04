@@ -418,6 +418,10 @@ pub struct Mark {
     pub group: String,
     /// The mark whose shape this mark is cut to, or empty.
     pub clip: String,
+    /// SVG path data of the area the mark is kept inside (the selection's
+    /// shape when it was laid), in the units of its geometry so it travels
+    /// with it, or empty.
+    pub area: String,
 }
 
 /// The stored body of a mark: everything that is replaced together.
@@ -434,6 +438,8 @@ pub struct MarkBody {
     pub group: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub clip: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub area: String,
 }
 
 /// The whole artwork as views and actions read it.
@@ -526,21 +532,65 @@ impl Artwork {
         }
     }
 
-    /// Whether `point` is inside what `mark` is cut to (anywhere when it is
-    /// not cut).
+    /// Whether `point` is inside what `mark` is cut to, its clip and its
+    /// area (anywhere when it is not cut).
     pub fn clipped_in(&self, mark: &Mark, point: Point) -> bool {
         let clips = self.clips_of(mark);
-        clips.is_empty() || clips.iter().any(|clip| clip.hit(point))
+        (clips.is_empty() || clips.iter().any(|clip| clip.hit(point)))
+            && mark.area().is_none_or(|area| area.contains(point))
+    }
+
+    /// What a click at `point` picks: the topmost mark under it, an eraser
+    /// included. An eraser shows no ink of its own, so only the pointer's
+    /// tools that outline erasers pick them; [`Self::mark_at`] passes
+    /// through them.
+    pub fn pick_at(&self, point: Point) -> Option<&Mark> {
+        self.marks.iter().rev().find(|mark| {
+            self.layer(&mark.layer)
+                .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
+                && (mark.inked() || mark.erases())
+                && mark.hit(point)
+                && self.clipped_in(mark, point)
+        })
+    }
+
+    /// The erasers on shown layers, bottom to top: what the eraser and
+    /// selection tools outline.
+    pub fn erasers(&self) -> impl Iterator<Item = &Mark> + '_ {
+        self.marks.iter().filter(|mark| {
+            mark.erases()
+                && self
+                    .layer(&mark.layer)
+                    .is_some_and(|layer| layer.visible && !layer.is_mask())
+        })
+    }
+
+    /// The marks beneath eraser `eraser` on its layer that it takes paint
+    /// off: those its reach overlaps.
+    pub fn erased_by<'a>(&'a self, eraser: &'a Mark) -> impl Iterator<Item = &'a Mark> + 'a {
+        let reach = eraser.bounds();
+        self.marks
+            .iter()
+            .take_while(move |mark| mark.id != eraser.id)
+            .filter(move |mark| {
+                mark.layer == eraser.layer
+                    && !mark.erases()
+                    && mark.inked()
+                    && self.visible_bounds(mark).intersect(reach).area() > 0.0
+            })
     }
 
     /// What of `mark` can show: its bounds, cut to its clip's.
     pub fn visible_bounds(&self, mark: &Mark) -> Rect {
         let bounds = mark.bounds();
-        self.clips_of(mark)
+        let bounds = self
+            .clips_of(mark)
             .iter()
             .map(|clip| clip.bounds())
             .reduce(|a, b| a.union(b))
-            .map_or(bounds, |clip| bounds.intersect(clip))
+            .map_or(bounds, |clip| bounds.intersect(clip));
+        mark.area()
+            .map_or(bounds, |area| bounds.intersect(area.bounding_box()))
     }
 
     /// The members of group `id`, bottom to top: its own marks and those of
@@ -1209,7 +1259,10 @@ impl Mark {
     /// others to its shape.
     pub fn inked(&self) -> bool {
         let style = &self.style;
-        style.fill.is_some() || style.stroke.is_some() || style.gradient.is_some()
+        style.fill.is_some()
+            || style.stroke.is_some()
+            || style.gradient.is_some()
+            || matches!(self.shape, Shape::Image { .. })
     }
 
     /// Whether the mark is an eraser: it takes paint off its layer and has
@@ -1217,6 +1270,38 @@ impl Mark {
     pub fn erases(&self) -> bool {
         matches!(self.shape, Shape::Stroke { .. })
             && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+    }
+
+    /// The area the mark is kept inside, in artwork units, if it has one.
+    pub fn area(&self) -> Option<BezPath> {
+        let mut area = BezPath::from_svg(&self.area)
+            .ok()
+            .filter(|area| !area.elements().is_empty())?;
+        area.apply_affine(self.affine());
+        Some(area)
+    }
+
+    /// Keep the mark inside `area` (SVG path data in artwork units), or
+    /// inside nothing when it is empty.
+    pub fn keep_inside(&mut self, area: &str) {
+        self.area = BezPath::from_svg(area)
+            .ok()
+            .filter(|path| !path.elements().is_empty())
+            .map(|mut path| {
+                path.apply_affine(self.affine().inverse());
+                path_data(&path)
+            })
+            .unwrap_or_default();
+    }
+
+    /// The mark's area moved with its geometry by `affine`.
+    fn carry_area(&mut self, affine: Affine) {
+        if let Ok(mut area) = BezPath::from_svg(&self.area)
+            && !area.elements().is_empty()
+        {
+            area.apply_affine(affine);
+            self.area = path_data(&area);
+        }
     }
 
     pub fn affine(&self) -> Affine {
@@ -1232,6 +1317,7 @@ impl Mark {
             mark.transform = Some((Affine::translate((dx, dy)) * self.affine()).as_coeffs());
         } else {
             mark.shape = self.shape.translated(dx, dy);
+            mark.carry_area(Affine::translate((dx, dy)));
             // A gradient is placed in the same units as the geometry.
             if let Some(gradient) = &mut mark.style.gradient {
                 for point in [&mut gradient.from, &mut gradient.to] {
@@ -1255,7 +1341,10 @@ impl Mark {
             .then(|| self.shape.transformed(affine))
             .flatten()
         {
-            Some(shape) => mark.shape = shape,
+            Some(shape) => {
+                mark.shape = shape;
+                mark.carry_area(affine);
+            }
             None => mark.transform = Some((affine * self.affine()).as_coeffs()),
         }
         mark
@@ -1290,7 +1379,7 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if self.erases() || !self.bounds().contains(point) {
+        if !self.bounds().contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;

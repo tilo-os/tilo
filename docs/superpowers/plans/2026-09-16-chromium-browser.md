@@ -12,7 +12,6 @@
 
 ## Global Constraints
 
-- Preserve unrelated worktree edits; commit only task-owned files or hunks.
 - macOS and Linux are required. No silent test-engine fallback, sandbox disabling or certificate bypass.
 - Keep Chrome extension support in scope; built-in blocking is independent.
 - Full completion includes actual Rust browser navigation to https://tilo.so.

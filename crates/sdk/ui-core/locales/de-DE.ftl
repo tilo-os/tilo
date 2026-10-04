@@ -256,7 +256,11 @@ terminal-env-title = Umgebungen
 terminal-env-tools = Werkzeuge
 terminal-env-no-tools = Noch keine Werkzeuge — pkg install in der Umgebung ausführen
 terminal-env-grants = Ordner
-terminal-env-no-grants = Keine Ordner freigegeben — perm trust-dir in der Umgebung ausführen
+terminal-env-no-grants = Noch keine Ordner freigegeben — „Ordner freigeben…“ verwenden oder perm trust-dir in der Umgebung ausführen
+terminal-env-grant = Ordner freigeben…
+terminal-env-grant-title = Ordner für diese Umgebung wählen
+terminal-env-grant-accept = Freigeben
+terminal-env-read-only = nur lesen
 terminal-env-rename = Umbenennen
 terminal-env-open = Hier öffnen
 terminal-env-create = Erstellen
@@ -293,6 +297,10 @@ tree-move-up = Nach oben verschieben
 tree-move-down = Nach unten verschieben
 tree-move-indent = In das Element darüber verschieben
 tree-move-outdent = Aus dem übergeordneten Element verschieben
+
+# The show/hide control inside every password field.
+text-input-show-password = Passwort anzeigen
+text-input-hide-password = Passwort verbergen
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Willkommen zurück bei Tilo

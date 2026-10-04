@@ -171,8 +171,8 @@ a cut for each.
 ## 7 · ada's writing appears on bob's screen ❌ — not on any frame yet
 
 **Two packaged word processors converge when both are opened from the
-palette.** Proven from the receiving side:
-`/tmp/qs-gpxaor_7/shots/bob-received.png` — bob's page carrying text he
+palette.** Proven from the receiving side: the `bob-received.png`
+shot shows bob's page carrying text he
 never typed, with alice's caret and pointer.
 
 That took fixing something subtle. The op stream carries signed
