@@ -28,9 +28,7 @@
 "apps/contacts/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
 "apps/ebook/src/resource.rs" = 2
-"apps/feeds/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
-"apps/git-client/src/resource.rs" = 2
 "apps/imager/src/resource.rs" = 2
 "apps/mail/src/resource.rs" = 2
 "apps/music/src/resource.rs" = 2
@@ -62,9 +60,6 @@
 "apps/diffmerge/src/lib.rs" = 2
 "apps/diffmerge/src/main.rs" = 2
 "apps/ebook/src/main.rs" = 1
-"apps/feeds/src/lib.rs" = 2
-"apps/feeds/src/main.rs" = 2
-"apps/git-client/src/main.rs" = 2
 "apps/imager/src/main.rs" = 1
 "apps/mail/src/main.rs" = 2
 "apps/music/src/lib.rs" = 2
