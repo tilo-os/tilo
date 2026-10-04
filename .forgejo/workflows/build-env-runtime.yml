@@ -367,6 +367,12 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
 
+      - name: Install checksum-pinned Cosign
+        if: env.skip != 'true'
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+
       - name: Sign, verify and tag the runtime
         if: env.skip != 'true'
         env:
@@ -376,7 +382,6 @@ jobs:
           TAG: ${{ needs.fingerprint.outputs.tag }}
         run: |
           set -euo pipefail
-          ./os/dev/install-cached-cosign.sh
           . os/dev/configure-cosign-kms.sh
           [[ $TAG =~ ^set-[0-9a-f]{64}$ && $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]
           ref="registry.tilo.so/tilo/env-runtime@$DIGEST"
