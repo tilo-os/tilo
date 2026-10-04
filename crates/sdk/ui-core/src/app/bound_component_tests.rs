@@ -2374,6 +2374,7 @@ fn behaviour_probe_factory(
     component.set_behaviour(crate::application::ComponentBehaviour {
         autofocus_on_structure_change: true,
         appearance_reconcile: true,
+        capture_protected: true,
     });
     Ok(component)
 }
@@ -2400,6 +2401,7 @@ fn hosted_behaviour(
     crate::application::ComponentBehaviour {
         autofocus_on_structure_change: app.autofocus_on_structure_change,
         appearance_reconcile: app.appearance_reconcile,
+        capture_protected: app.capture_protected(),
     }
 }
 
@@ -2414,6 +2416,7 @@ fn the_hosting_window_takes_the_components_behaviour() {
         crate::application::ComponentBehaviour {
             autofocus_on_structure_change: true,
             appearance_reconcile: true,
+            capture_protected: true,
         }
     );
 }

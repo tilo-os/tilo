@@ -262,6 +262,36 @@ fn drags_move_the_cursor_to_their_end() {
     );
 }
 
+#[test]
+fn a_drag_with_pressure_is_drawn_with_a_pen() {
+    let fake = FakeCompositor::start((800, 600));
+    fake.computer.run(&[act("screenshot")], false).unwrap();
+    fake.ops();
+    let stroke: Action = serde_json::from_value(json!({
+        "action": "left_click_drag",
+        "start_coordinate": [10.0, 20.0],
+        "coordinate": [300.0, 400.0],
+        "pressure": [0.2, 0.9, 0.4],
+        "no_screenshot": true
+    }))
+    .unwrap();
+    let constant: Action = serde_json::from_value(json!({
+        "action": "left_click_drag",
+        "coordinate": [10.0, 20.0],
+        "pressure": 0.6,
+        "no_screenshot": true
+    }))
+    .unwrap();
+    fake.computer.run(&[stroke, constant], true).unwrap();
+    assert_eq!(
+        fake.ops(),
+        vec![
+            json!({"op":"drag","x_from":10.0,"y_from":20.0,"x_to":300.0,"y_to":400.0,"steps":48,"pressure":[0.2,0.9,0.4]}),
+            json!({"op":"drag","x_from":300.0,"y_from":400.0,"x_to":10.0,"y_to":20.0,"steps":48,"pressure":[0.6]}),
+        ]
+    );
+}
+
 fn agent(id: &str) -> Agent {
     Agent {
         id: id.into(),

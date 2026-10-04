@@ -387,7 +387,16 @@ pub struct ColorSwatchPicker {
     /// Lay the swatches out on their own, without the raised panel and its
     /// padding: for a palette inline in a form.
     bare: bool,
+    /// The height of a cell, when it is not as tall as it is wide.
+    cell_height: Option<f64>,
+    /// Paints each swatch in place of its flat colour: a sample of what
+    /// choosing it gives, such as a brush's stroke.
+    painter: Option<Box<SwatchPainter>>,
 }
+
+/// Paints swatch `index` into its rect: `(scene, transform, rect, index,
+/// theme, text)`.
+pub type SwatchPainter = dyn FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer);
 
 /// Matches the permissions editor.
 pub const DEFAULT_PALETTE: [u32; 12] = [
@@ -424,7 +433,32 @@ impl ColorSwatchPicker {
             focus_index: 0,
             on_change: None,
             bare: false,
+            cell_height: None,
+            painter: None,
         }
+    }
+
+    /// Cells `height` tall rather than square.
+    #[must_use]
+    pub fn with_cell_height(mut self, height: f64) -> Self {
+        self.cell_height = Some(height.max(12.0));
+        self
+    }
+
+    /// Paint each swatch with `painter` instead of its flat colour, for a
+    /// choice among samples (brush strokes, patterns) rather than colours.
+    /// The palette's colours still name the entries without labels.
+    #[must_use]
+    pub fn with_painter(
+        mut self,
+        painter: impl FnMut(&mut Scene, Affine, Rect, usize, &Theme, &mut TextRenderer) + 'static,
+    ) -> Self {
+        self.painter = Some(Box::new(painter));
+        self
+    }
+
+    fn row_height(&self) -> f64 {
+        self.cell_height.unwrap_or(self.cell)
     }
 
     /// Run `f` with each index the user chooses.
@@ -506,12 +540,12 @@ impl ColorSwatchPicker {
             let r = i.checked_div(self.columns).unwrap_or(0) as f64;
             let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
             let x = self.rect.x0 + pad + c * self.cell;
-            let y = self.rect.y0 + pad + r * self.cell;
+            let y = self.rect.y0 + pad + r * self.row_height();
             self.swatch_rects.push(Rect::new(
                 x + 2.0,
                 y + 2.0,
                 x + self.cell - 2.0,
-                y + self.cell - 2.0,
+                y + self.row_height() - 2.0,
             ));
         }
     }
@@ -527,7 +561,7 @@ impl ColorSwatchPicker {
         let pad = px(self.pad());
         let cell = px(self.cell);
         let w = self.columns as f32 * cell + pad * 2.0;
-        let h = self.rows() as f32 * cell + pad * 2.0;
+        let h = self.rows() as f32 * px(self.row_height()) + pad * 2.0;
         (w, h)
     }
 }
@@ -583,7 +617,7 @@ impl Widget for ColorSwatchPicker {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
@@ -609,7 +643,10 @@ impl Widget for ColorSwatchPicker {
         {
             let shape = RoundedRect::from_rect(*sr, 6.0);
             let swatch = packed_color(rgb);
-            scene.fill(Fill::NonZero, transform, swatch, None, &shape);
+            match self.painter.as_mut() {
+                Some(painter) => painter(scene, transform, *sr, i, theme, text_renderer),
+                None => scene.fill(Fill::NonZero, transform, swatch, None, &shape),
+            }
             // A rest edge, so a swatch the colour of the panel still shows.
             scene.stroke(
                 &Stroke::new(1.0),

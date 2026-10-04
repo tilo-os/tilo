@@ -1189,6 +1189,31 @@ impl ChromeState {
         self.identity_source.local_user_for_room(room)
     }
 
+    /// Hand the workspaces made before this session had an identity to the
+    /// identity first-login setup just provisioned. Until then the session
+    /// acted as the OS `account` name; the new key-derived principal is no
+    /// member of a workspace that name owns, so every app opened there would
+    /// be refused its collaboration route. Boot does the same for a session
+    /// that starts with an identity already in place.
+    pub fn adopt_provisioned_identity(&mut self, account: &str) -> usize {
+        if matches!(self.identity_source, IdentitySource::SessionRegistry) {
+            self.local_user_id = crate::shell::state::local_user_id();
+        }
+        let rebound = self
+            .tree_mut()
+            .rebind_account_owned_workspaces(account, |room| {
+                self.identity_source.local_user_for_room(room)
+            })
+            .len();
+        if rebound > 0 {
+            tracing::info!(
+                "capabilities: {rebound} workspace(s) created before first-login setup now belong to its identity"
+            );
+            self.bump();
+        }
+        rebound
+    }
+
     /// Person principal selected for the active workspace, or the session
     /// fallback when no workspace is active.
     pub fn active_local_user(&self) -> crate::shell::state::UserId {
@@ -1354,7 +1379,7 @@ impl ChromeState {
                     // label and a peer cannot immediately write it back.
                     tree.sync_room_doc(room);
                     tree.seed_doc_from_cache();
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
             }
             self.bump();
@@ -1580,7 +1605,7 @@ impl ChromeState {
             // Focus is part of the serialized local session view. Commit
             // the complete address together so a compositor restart cannot
             // reopen the right layout with an older window selected.
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         self.bump();
     }
@@ -1701,7 +1726,7 @@ impl ChromeState {
             let mut tree = self.tree_mut();
             let reopened = crate::shell::closed_tabs::restore(&mut tree, entry);
             if reopened.is_some() {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             reopened
         };
@@ -2020,7 +2045,7 @@ impl ChromeState {
                 return false;
             }
             tree.desktop.active_strip.insert(ws_id, sid);
-            tree.flush_to_disk();
+            tree.queue_save();
             drop(tree);
             (true, name)
         };
@@ -2089,7 +2114,7 @@ impl ChromeState {
             );
             let id = strip.id;
             ws.strips.push(strip);
-            tree.flush_to_disk();
+            tree.queue_save();
             id
         };
         self.bump();
@@ -2124,7 +2149,7 @@ impl ChromeState {
                 tree.desktop.active_strip.insert(ws_id, first);
             }
             tree.desktop.active_group.remove(&strip);
-            tree.flush_to_disk();
+            tree.queue_save();
             true
         };
         if removed {
@@ -3298,7 +3323,7 @@ mod active_tab_tests {
                 }],
             });
             tree.persist_path = Some(path.clone());
-            tree.flush_to_disk();
+            tree.queue_save();
             let chrome = ChromeState::new(tree);
 
             chrome
@@ -3329,7 +3354,7 @@ mod active_tab_tests {
             let room = tree.desktop.workspaces[0].room;
             tree.persist_path = Some(path.clone());
             tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
-            tree.flush_to_disk();
+            tree.queue_save();
 
             // Establish a real shared-room lineage before the rename. Merely
             // assigning the same RoomId to two independently-seeded documents
@@ -3605,5 +3630,46 @@ mod active_tab_tests {
         assert_eq!(state.local_user_id, "renderer");
         assert_eq!(state.local_user_for_room(&room), "renderer");
         assert_eq!(state.active_local_user(), "renderer");
+    }
+}
+
+#[cfg(test)]
+mod provisioned_identity_tests {
+    use super::*;
+    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
+
+    #[test]
+    fn first_login_setup_hands_account_owned_workspaces_to_the_new_identity() {
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(5), "Home");
+        workspace.set_owner("tester".to_string());
+        let room = workspace.room;
+        tree.desktop.workspaces.push(workspace);
+        let chrome = ChromeState::new(tree);
+        let person = "ab".repeat(32);
+        chrome.borrow_mut().act_as(person.clone());
+
+        assert_eq!(
+            chrome.borrow_mut().adopt_provisioned_identity("tester"),
+            1
+        );
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .expect("workspace");
+        assert_eq!(workspace.owner.as_deref(), Some(person.as_str()));
+        assert_eq!(workspace.role_of_at(&person, 0), Some(CapRole::Owner));
+        assert_eq!(workspace.role_of_at(&"tester".to_string(), 0), None);
+        drop(tree);
+        drop(state);
+        assert_eq!(
+            chrome.borrow_mut().adopt_provisioned_identity("tester"),
+            0
+        );
     }
 }

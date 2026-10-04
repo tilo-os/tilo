@@ -196,7 +196,11 @@ impl SessionPool {
     /// thumbnails must not make a sound), a handful of concurrent pipelines,
     /// and a session dropped after half a minute untouched.
     pub fn for_editor() -> Self {
-        Self::new(EngineConfig::gpu().silent(), 4, Duration::from_secs(30))
+        Self::new(
+            EngineConfig::gpu().frames_only(),
+            4,
+            Duration::from_secs(30),
+        )
     }
 
     pub fn len(&self) -> usize {
@@ -299,7 +303,7 @@ mod tests {
             let mut s = EngineSession::open(
                 Source::LocalFile(p.clone()),
                 key,
-                EngineConfig::default().silent(),
+                EngineConfig::default().frames_only(),
             );
             assert_eq!(
                 s.bucket_ms(),
@@ -337,8 +341,11 @@ mod tests {
         {
             // The bug this pool exists to fix: a whole engine per thumbnail.
             let p = scratch("reuse");
-            let mut pool =
-                SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
+            let mut pool = SessionPool::new(
+                EngineConfig::default().frames_only(),
+                4,
+                Duration::from_secs(30),
+            );
             let src = Source::LocalFile(p.clone());
             let a = pool.session(&src);
             let b = pool.session(&src);
@@ -350,8 +357,11 @@ mod tests {
         {
             let base = scratch("cap");
             let dir = base.parent().unwrap().to_path_buf();
-            let mut pool =
-                SessionPool::new(EngineConfig::default().silent(), 2, Duration::from_secs(30));
+            let mut pool = SessionPool::new(
+                EngineConfig::default().frames_only(),
+                2,
+                Duration::from_secs(30),
+            );
             let mut handles = Vec::new();
             for i in 0..2 {
                 let p = dir.join(format!("c{i}.mp4"));
@@ -379,8 +389,11 @@ mod tests {
         // Phase `closing_a_source_drops_its_session`.
         {
             let p = scratch("close");
-            let mut pool =
-                SessionPool::new(EngineConfig::default().silent(), 4, Duration::from_secs(30));
+            let mut pool = SessionPool::new(
+                EngineConfig::default().frames_only(),
+                4,
+                Duration::from_secs(30),
+            );
             let src = Source::LocalFile(p.clone());
             let _ = pool.session(&src);
             assert_eq!(pool.len(), 1);
@@ -392,7 +405,8 @@ mod tests {
         {
             let p = scratch("prune");
             // Zero idle tolerance: everything untouched is immediately stale.
-            let mut pool = SessionPool::new(EngineConfig::default().silent(), 4, Duration::ZERO);
+            let mut pool =
+                SessionPool::new(EngineConfig::default().frames_only(), 4, Duration::ZERO);
             let _ = pool.session(&Source::LocalFile(p.clone()));
             assert_eq!(pool.len(), 1);
             pool.prune();
@@ -403,7 +417,7 @@ mod tests {
 
             // With a generous limit the same session survives.
             let mut pool = SessionPool::new(
-                EngineConfig::default().silent(),
+                EngineConfig::default().frames_only(),
                 4,
                 Duration::from_secs(600),
             );

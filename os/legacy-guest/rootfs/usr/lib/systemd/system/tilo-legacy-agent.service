@@ -1,0 +1,14 @@
+[Unit]
+Description=Tilo legacy VM agent (launches apps for the host over vsock)
+After=local-fs.target systemd-user-sessions.service
+Wants=user@1000.service
+
+[Service]
+ExecStart=/usr/libexec/tilo-legacy-agent --user tilo
+Restart=always
+RestartSec=1
+# The host's image smoke test waits for the "serving" line on the console.
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

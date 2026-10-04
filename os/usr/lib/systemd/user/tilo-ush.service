@@ -13,17 +13,19 @@ PartOf=tilo-graphical-session.target
 
 [Service]
 Type=simple
-# Serves on $XDG_RUNTIME_DIR/tilo/services/ush.sock and builds guests from the
-# running root — both are the defaults, spelled out here because they are the
-# contract with tilo-launcher rather than an implementation detail.
-ExecStart=/usr/libexec/tilo-ush serve --socket %t/tilo/services/ush.sock --base /
+# Serves on $XDG_RUNTIME_DIR/tilo/services/ush.sock and brokers management
+# commands to the running root — both are the defaults, spelled out here
+# because they are the contract with tilo-launcher rather than an
+# implementation detail.
+ExecStart=/usr/libexec/tilo-ush serve --socket %t/tilo/services/ush.sock --host-root /
 Restart=on-failure
 RestartSec=1s
 TimeoutStopSec=10s
 
 # The supervisor must retain user-namespace/mount functionality for bubblewrap
-# and must not hide the user's package layer, but it has no reason to mutate
-# host kernel state or share IPC/keyring state with the desktop session.
+# and must reach the environment records, its store and the images, but it has
+# no reason to mutate host kernel state or share IPC/keyring state with the
+# desktop session.
 PrivateTmp=yes
 PrivateIPC=yes
 # These directives create a systemd mount namespace that prevents this trusted

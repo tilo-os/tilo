@@ -14,6 +14,8 @@
 mod click_link_navigates;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
+#[path = "framework_body.rs"]
+mod framework_body;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]

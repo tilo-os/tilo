@@ -61,8 +61,8 @@ pub use live::{LiveChange, LiveState, RemoteMember};
 #[cfg(feature = "net")]
 pub use net::NetHttp;
 pub use session::{
-    Failure, FailureSubject, Host, LocalState, PAGE_FAILURE_CODES, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
+    Failure, FailureSubject, Host, LocalState, NodeCompletion, PAGE_FAILURE_CODES, PeerConfig,
+    PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

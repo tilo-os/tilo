@@ -234,6 +234,7 @@ impl Resource for Calculator {
                 anchor: Some(format!("calculator.history_entry:{id}")),
                 title: history_label(entry),
                 text: entry.expr.clone(),
+                action: None,
             });
         let graphs = state
             .funcs
@@ -280,6 +281,7 @@ fn graph_search(kind: GraphKind, id: &str, plot: &PlotFn) -> ui::tilo_resource::
         anchor: Some(format!("calculator.graph:{slug}:{id}")),
         title: graph_label(kind, plot),
         text: plot.expr.clone(),
+        action: None,
     }
 }
 
@@ -347,7 +349,9 @@ impl ResourceApp for CalculatorShell {
     const ID: &'static str = "so.tilo.calculator";
     const TITLE: &'static str = "Calculator";
     const ICON: Option<&'static str> = Some("calculator");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Calculator>) -> Element {
         cx.surface(CalculatorApp::new())

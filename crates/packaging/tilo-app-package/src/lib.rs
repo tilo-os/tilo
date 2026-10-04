@@ -49,6 +49,7 @@
 pub mod blobs;
 pub mod desktop;
 pub mod id;
+pub mod image;
 pub mod manifest;
 pub mod pack;
 pub mod package;
@@ -63,16 +64,21 @@ pub mod web;
 
 pub use blobs::{
     BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
-    HashingReader, OpenBlob,
+    HashingReader, OpenBlob, PackageFetcher,
 };
 pub use id::{Kind, PackageId, ParsePackageIdError};
-pub use manifest::{
-    Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Manifest, ManifestParseError,
-    NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement, Sandbox, SandboxFs,
-    SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust,
-    TrustAttestation,
+pub use image::{
+    ImageError, ImageSpec, TREE_FILE, TreeSpec, image_manifest, seal_image, seal_image_for,
 };
-pub use pack::{PackError, Packed, SigningIdentity, pack, pack_with_signature};
+pub use manifest::{
+    Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Image, Manifest,
+    ManifestParseError, NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement,
+    Sandbox, SandboxFs, SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment,
+    SplashSegmentError, Target, Trust, TrustAttestation,
+};
+pub use pack::{
+    PackError, Packed, SigningIdentity, pack, pack_with_signature, sign_placeholder_root,
+};
 pub use package::{MetaError, PackageMeta, is_safe_path};
 pub use signed::{SIGNED_ROOT_LEN, SIGNING_PREFIX_LEN, SignedRoot, SignedRootError};
 pub use tapp::{TAPP_FORMAT_VERSION, Tapp, TappError};

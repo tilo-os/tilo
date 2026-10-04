@@ -440,6 +440,9 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         open_document: args.open,
         open_uri: args.open_uri,
     };
+    if let Some(app_id) = opts.app_id.as_deref() {
+        enter_app_scope(app_id);
+    }
     match run(&args.manifest, &args.payload_root, &opts) {
         Ok(status) => {
             if let Some(code) = status.code() {
@@ -452,6 +455,17 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
             eprintln!("tilo-launcher: {e}");
             exit_code(e.to_exit_code())
         }
+    }
+}
+
+/// Move this launcher into the app's own systemd user scope before it forks
+/// the sandbox, so the app's memory, OOM handling and lifetime are its own
+/// and never the compositor's (see [`launcher::scope`]). The compositor
+/// always names the app; without a reachable user manager the app still
+/// starts, where the launcher already runs.
+fn enter_app_scope(app_id: &str) {
+    if let Err(error) = launcher::scope::join(app_id, app_id) {
+        eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
     }
 }
 

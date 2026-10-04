@@ -63,7 +63,7 @@ Requires `sudo` because the checked-in driver uses `ip netns add` and needs
 run the same two test roles in child network namespaces without host root.
 
 The always-on UDP-loopback shape of the same test (`cargo test -p shell
---test it --locked in_process_udp_pipeline_sustains_10_fps_and_bounded_latency`)
+--test it --locked in_process_udp_pipeline_delivers_frames_and_input_in_order`)
 is what unprivileged CI relies on; it exercises the framing + backpressure +
 decode pipeline without needing kernel netns.
 

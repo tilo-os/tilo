@@ -149,14 +149,21 @@ BRIDGE = "REMOTE_WRAPPER = " + repr(REMOTE_WRAPPER) + "\nTARGETS = " + repr(TARG
 
 
 class BrokerRunner:
-    def __init__(self, binding, *, local_user='xemmerling', process=transport.bounded_process):
+    def __init__(self, binding, *, local_user=None, kube_context=None, process=transport.bounded_process):
         self.binding = transport.validate_binding(binding)
         self.target = self.binding.get('cluster')
         if self.target not in TARGETS:
             raise ValueError('invalid pinned broker target')
+        # The operator account and its kubeconfig context are per-machine;
+        # they come from the caller or the environment, never from this file.
+        local_user = local_user or os.environ.get('TILO_BROKER_OPERATOR_USER', '')
         if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', local_user):
-            raise ValueError('invalid existing operator user')
+            raise ValueError('set TILO_BROKER_OPERATOR_USER to the existing operator user')
+        kube_context = kube_context or os.environ.get('TILO_BROKER_KUBE_CONTEXT', '')
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9@._:/-]{0,252}', kube_context):
+            raise ValueError('set TILO_BROKER_KUBE_CONTEXT to the operator kubeconfig context')
         self.user = local_user
+        self.kube_context = kube_context
         self.process = process
 
     def operation(self, argv):
@@ -272,7 +279,7 @@ class BrokerRunner:
             thread.start()
             try:
                 with os.fdopen(reader, 'rb') as payload:
-                    result = self.process(['runuser', '-u', self.user, '--', 'kubectl', '--context=admin@tupo-production', '-n', 'sandbox-broker',
+                    result = self.process(['runuser', '-u', self.user, '--', 'kubectl', '--context=' + self.kube_context, '-n', 'sandbox-broker',
                         'exec', '-i', 'deployment/sandbox-broker', '--', 'python', '-c', BRIDGE],
                         sink, limit, source=payload, timeout=max(0.01, deadline-time.monotonic()))
                 thread.join(timeout=1)

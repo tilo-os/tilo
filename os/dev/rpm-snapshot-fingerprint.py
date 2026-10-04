@@ -28,6 +28,7 @@ SHAPE_FILES = (
     "os/Containerfile.rpms",
     "os/dev/layer-rpm-snapshot.py",
     "os/dev/verify-rpm-snapshot-signatures.sh",
+    "os/scripts/verify-no-cisco-openh264.sh",
 )
 BASE_ASSIGNMENT = re.compile(r"^BASE_REF=(registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64})$")
 

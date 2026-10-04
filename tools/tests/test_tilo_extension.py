@@ -74,7 +74,7 @@ class Machine:
         (self.root / "usr/lib").mkdir(parents=True)
         (self.root / "usr/lib/os-release").write_text('ID=fedora\nVERSION_ID="44"\n')
         (self.root / "usr/share/tilo").mkdir(parents=True)
-        (self.root / "usr/share/tilo/cosign.pub").write_text("trusted\n")
+        (self.root / "usr/share/tilo/extensions.pub").write_text("trusted\n")
         catalogue = self.layout.catalogue_dir
         catalogue.mkdir(parents=True)
         (catalogue / "media-codecs.json").write_text((CATALOGUE / "media-codecs.json").read_text())
@@ -83,6 +83,8 @@ class Machine:
         self.requests: list[tuple[str, int]] = []
         self.online = "full"
         self.merges = 0
+        self.unmerges = 0
+        self.merged: list[str] = []
         self.revision = 1
         patches = [
             mock.patch.object(ext, "rpm_query_all", lambda layout: list(self.packages)),
@@ -92,6 +94,7 @@ class Machine:
             mock.patch.object(ext, "rpm_header", self.rpm_header),
             mock.patch.object(ext, "extract_rpm", self.extract_rpm),
             mock.patch.object(ext, "sysext_refresh", self.merge),
+            mock.patch.object(ext, "sysext_unmerge", self.unmerge),
             mock.patch.object(ext, "sysext_masked", lambda: True),
             mock.patch.object(ext.os, "uname", lambda: os.uname_result(("Linux", "h", "7", "v", "x86_64"))),
         ]
@@ -128,6 +131,11 @@ class Machine:
 
     def merge(self, layout):
         self.merges += 1
+        self.merged = sorted(p.name for p in layout.extensions.iterdir() if not p.name.startswith("."))
+
+    def unmerge(self, layout):
+        self.unmerges += 1
+        self.merged = []
 
     # -- publishing --------------------------------------------------------
 
@@ -528,9 +536,35 @@ class Lifecycle(unittest.TestCase):
         self.install(machine)
         foreign = machine.layout.extensions / "evil"
         (foreign / "usr/lib/extension-release.d").mkdir(parents=True)
+        merges = machine.merges
         self.assertEqual(machine.run("activate"), 1)
         self.assertFalse(machine.part().exists())
-        self.assertIn("unexpected system extensions", machine.status()["last_error"])
+        self.assertEqual(machine.merges, merges, "a refusal must not merge what it refused")
+        self.assertEqual((machine.unmerges, machine.merged), (1, []))
+        status = machine.status()
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("unexpected system extensions", status["last_error"])
+        # Once the foreign extension is gone, activation merges again and the
+        # refusal no longer shows.
+        import shutil
+        shutil.rmtree(foreign)
+        self.assertEqual(machine.run("activate"), 0)
+        status = machine.status()
+        self.assertEqual((status["state"], status["last_error"]), ("installed", ""))
+        self.assertIn("tilo-codecs", machine.merged)
+
+    def test_verified_downloads_move_across_mounts(self):
+        machine = Machine(self)
+        real_replace = ext.os.replace
+
+        def cross_device(source, target):
+            if "partial" in str(source):
+                raise OSError(ext.errno.EXDEV, "Invalid cross-device link")
+            return real_replace(source, target)
+
+        with mock.patch.object(ext.os, "replace", cross_device):
+            self.install(machine)
+        self.assertTrue(machine.part().is_dir())
 
     def test_development_image_merges_its_own_layers_too(self):
         machine = Machine(self)
@@ -625,6 +659,13 @@ class Shipped(unittest.TestCase):
             self.assertNotIn(namespaced, settings, f"{namespaced} would hide the merge from the host")
         helper = HELPER.read_text()
         self.assertIn('run(["systemctl", "start", "tilo-extension-activate.service"])', helper)
+
+    def test_manifests_verify_only_against_the_extension_key(self):
+        self.assertEqual(str(ext.Layout().trust_key), "/usr/share/tilo/extensions.pub")
+        shipped = (REPO / "keys/extensions.pub").read_text()
+        self.assertNotEqual(shipped, (REPO / "keys/cosign.pub").read_text())
+        self.assertIn("COPY keys/extensions.pub /usr/share/tilo/extensions.pub", (REPO / "os/Containerfile").read_text())
+        self.assertNotIn("cosign.pub", HELPER.read_text())
 
     def test_sealed_image_still_masks_the_boot_time_merge(self):
         containerfile = (REPO / "os/Containerfile").read_text()

@@ -399,7 +399,10 @@ impl RemoteInputFirewall {
                 InputEvent::PointerButton { .. }
                 | InputEvent::PointerEnter { .. }
                 | InputEvent::KeyboardFocus { .. }
-                | InputEvent::Key { .. } => {}
+                | InputEvent::Key { .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::ClipboardText { .. }
+                | InputEvent::Close => {}
             }
         }
         outcome
@@ -492,6 +495,25 @@ impl RemoteInputFirewall {
                 if *pressed {
                     self.spend_budget(peer, now, false)?;
                 }
+                Ok(event.clone())
+            }
+            InputEvent::PointerAxis { .. } => {
+                // Scrolls where this peer's pointer last was, which must still
+                // be over the window.
+                let Some((cursor_surface, local)) = self.peer_mut(peer).cursor else {
+                    return Err(Denial::NoPointerPosition);
+                };
+                if cursor_surface != surface {
+                    return Err(Denial::SurfaceMismatch);
+                }
+                self.locate(surface, local)?;
+                self.spend_budget(peer, now, false)?;
+                Ok(event.clone())
+            }
+            InputEvent::ClipboardText { .. } | InputEvent::Close => {
+                // Each changes the session (its clipboard, the window's
+                // life) as a press would.
+                self.spend_budget(peer, now, true)?;
                 Ok(event.clone())
             }
         }
@@ -741,6 +763,39 @@ mod tests {
                 Err(Denial::Occluded),
             );
         }
+    }
+
+    /// The wheel scrolls where the peer's pointer is, so it needs one over
+    /// the window, like a button; a paste and a close need none.
+    #[test]
+    fn the_wheel_needs_a_coordinate_and_a_paste_or_close_does_not() {
+        let mut fw = firewall();
+        let now = Instant::now();
+        let scroll = InputEvent::PointerAxis { dx: 0.0, dy: 30.0 };
+        assert_eq!(
+            fw.review(PEER, SHARED, &scroll, now),
+            Err(Denial::NoPointerPosition)
+        );
+        fw.review(
+            PEER,
+            SHARED,
+            &InputEvent::PointerMotion { x: 10.0, y: 20.0 },
+            now,
+        )
+        .expect("accepted motion");
+        assert_eq!(fw.review(PEER, SHARED, &scroll, now), Ok(scroll.clone()));
+        assert_eq!(
+            fw.review(PEER, PRIVATE, &scroll, now),
+            Err(Denial::SurfaceMismatch)
+        );
+        let paste = InputEvent::ClipboardText {
+            text: "hello".into(),
+        };
+        assert_eq!(fw.review(PEER, SHARED, &paste, now), Ok(paste.clone()));
+        assert_eq!(
+            fw.review(PEER, SHARED, &InputEvent::Close, now),
+            Ok(InputEvent::Close)
+        );
     }
 
     #[test]

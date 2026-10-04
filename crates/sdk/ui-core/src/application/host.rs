@@ -593,9 +593,6 @@ impl ApplicationHost {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
-        /// Retired records followed before giving up: each move out of a room
-        /// retires one, so this only bounds a pathological history.
-        const MAX_SUCCESSORS: usize = 64;
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
             let target = definition.unsaved_target(&records);
@@ -622,10 +619,77 @@ impl ApplicationHost {
                 runner_inputs,
             });
         }
-        let mut checkout = self
+        let checkout = self
             .saved_record(definition, instance_id)?
             .unwrap_or(default);
-        let mut saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        let saved = self.saved_view_for(definition, instance_id, &checkout)?;
+        let (context, target, restore) = self.prepare_checkout(
+            definition,
+            records,
+            instance_id,
+            checkout,
+            saved,
+            initial_view,
+        )?;
+        Ok(PreparedComponentInputs {
+            context,
+            target,
+            restore,
+            runner_inputs,
+        })
+    }
+
+    /// Open `checkout` for `instance_id`, or reserve it for the definition's
+    /// New factory when it does not exist yet: the record a launch named (the
+    /// file a person opened), whatever the instance showed before. The
+    /// instance's saved presentation is restored only when it is of that
+    /// record; one of another record is left for the next save to replace.
+    /// # Errors
+    /// Rejects foreign kinds, contested writers, corrupt records and denied authority.
+    pub fn prepare_record(
+        &mut self,
+        definition: &ApplicationDefinition,
+        instance_id: InstanceId,
+        checkout: RecordCheckout,
+        runner_inputs: ComponentRunnerInputs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let records = self.records_for(definition)?;
+        if checkout.kind != definition.record_kind
+            || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+            || checkout.id.is_package_primary()
+        {
+            return Err(LaunchError::BindingMismatch);
+        }
+        let saved = self
+            .views
+            .load(instance_id)
+            .map_err(LaunchError::Restore)?
+            .filter(|saved| {
+                saved.record_id == checkout.id.as_str() && checkout.kind.names(&saved.record_kind)
+            });
+        let (context, target, restore) =
+            self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
+        Ok(PreparedComponentInputs {
+            context,
+            target,
+            restore,
+            runner_inputs,
+        })
+    }
+
+    /// The checked construction the default and the named record share.
+    fn prepare_checkout(
+        &self,
+        definition: &ApplicationDefinition,
+        records: RecordStore,
+        instance_id: InstanceId,
+        mut checkout: RecordCheckout,
+        mut saved: Option<SavedInstanceView>,
+        initial_view: Option<ApplicationLocalView>,
+    ) -> Result<(HostContext, LaunchTarget, RestoreInput), LaunchError> {
+        /// Retired records followed before giving up: each move out of a room
+        /// retires one, so this only bounds a pathological history.
+        const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
             match records.try_open_record(&checkout) {
@@ -681,12 +745,7 @@ impl ApplicationHost {
                 initial_view.map(|application| context.envelope(View::default(), Some(application)))
             })
             .map_or(RestoreInput::None, RestoreInput::Local);
-        Ok(PreparedComponentInputs {
-            context,
-            target,
-            restore,
-            runner_inputs,
-        })
+        Ok((context, target, restore))
     }
 }
 

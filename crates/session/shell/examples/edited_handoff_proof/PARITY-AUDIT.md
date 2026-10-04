@@ -69,7 +69,7 @@ native proof.
 An additional host limitation prevents claiming disk durability from this run:
 `runtime_host::Session::start` does not set `WorkspaceTree::persist_path`, and
 `persist::load_tree_from` does not restore that serde-skipped field.
-`append_workspace_effect_receipt` calls `flush_to_disk`, whose state write is
+`append_workspace_effect_receipt` calls `queue_save`, whose state write is
 conditional on `persist_path` being set. The broker can record its redacted
 in-memory receipt while this standalone host lacks the persistence binding.
 No runtime-host or broker implementation was changed during this audit.

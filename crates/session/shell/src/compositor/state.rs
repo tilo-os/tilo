@@ -488,6 +488,8 @@ pub struct State {
     /// Owns the four selection globals plus the compositor's clipboard
     /// mirror, letting in-process chrome paste without a Wayland round trip. See [`crate::compositor::selection`] for why the data-control globals are gated to privileged clients.
     pub selection: SelectionState,
+    /// Legacy windows remote viewers closed, for the compositor to close.
+    remote_closes: Vec<SurfaceId>,
     /// `wl_output` + xdg-output manager; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
     /// Persisted workspace tree; foreign-client toplevels adopt into it as [`crate::shell::state::TileContent::Foreign`] tabs.
@@ -1105,6 +1107,7 @@ impl State {
             input_method_manager_state,
             virtual_keyboard_manager_state,
             selection,
+            remote_closes: Vec::new(),
             output_manager_state,
             workspace_tree,
             share_registry: ShareRegistry::new(),
@@ -2889,33 +2892,7 @@ impl RemoteInputSink for State {
                 // moved the shared seat since this peer's last motion, so
                 // restore this peer's accepted focus/location before its
                 // coordinate-less button edge is delivered.
-                if let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface)
-                    && let Some(pointer) = self.seat.get_pointer()
-                {
-                    let focus =
-                        self.surface_handles
-                            .get(&surface)
-                            .cloned()
-                            .and_then(|wl_surface| {
-                                self.remote_input_firewall.view().rect(surface).map(|rect| {
-                                    let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect);
-                                    (wl_surface, origin.into())
-                                })
-                            });
-                    pointer.motion(
-                        self,
-                        focus,
-                        &MotionEvent {
-                            location: (x, y).into(),
-                            serial,
-                            time,
-                        },
-                    );
-                    if let Some(pointer) = self.seat.get_pointer() {
-                        pointer.frame(self);
-                    }
-                }
+                self.restore_remote_pointer(peer, surface, serial, time);
                 if self.remote_seats.button_transition(peer, button, pressed)
                     && let Some(pointer) = self.seat.get_pointer()
                 {
@@ -2966,6 +2943,18 @@ impl RemoteInputSink for State {
                 let _ = self.remote_seats.seat_mut(peer).leave();
                 self.release_remote_inputs_for_peer(peer);
             }
+            InputEvent::PointerAxis { dx, dy } => {
+                self.restore_remote_pointer(peer, surface, serial, time);
+                let _ = self.remote_pointer_axis(dx, dy, time);
+            }
+            InputEvent::ClipboardText { text } => {
+                let _ = crate::compositor::selection::set_mirror_text(
+                    &self.selection_store(),
+                    crate::compositor::selection::Target::Clipboard,
+                    &text,
+                );
+            }
+            InputEvent::Close => self.remote_closes.push(surface),
             InputEvent::Key {
                 keysym,
                 pressed,
@@ -3004,6 +2993,54 @@ impl RemoteInputSink for State {
 }
 
 impl State {
+    /// Put the shared pointer back where `peer`'s last accepted motion over
+    /// `surface` left it: a legacy client sees one `wl_pointer`, while the
+    /// firewall keeps one cursor per participant, and another peer may have
+    /// moved the seat since. Coordinate-less edges (a button, the wheel)
+    /// land there.
+    fn restore_remote_pointer(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        serial: Serial,
+        time: u32,
+    ) {
+        let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let focus = self
+            .surface_handles
+            .get(&surface)
+            .cloned()
+            .and_then(|wl_surface| {
+                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                    let origin = crate::compositor::foreign::store().surface_origin(surface, rect);
+                    (wl_surface, origin.into())
+                })
+            });
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: (x, y).into(),
+                serial,
+                time,
+            },
+        );
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.frame(self);
+        }
+    }
+
+    /// The legacy windows remote viewers closed since the last call; the
+    /// compositor closes their tabs as a person's close does.
+    pub fn take_remote_closes(&mut self) -> Vec<SurfaceId> {
+        std::mem::take(&mut self.remote_closes)
+    }
+
     fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
         use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
 
@@ -3191,6 +3228,10 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Set when the connection is a legacy VM's Wayland forwarder: every app
+    /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
+    /// lowers what a window is trusted with, so it needs no proof.
+    pub legacy_guest: Option<legacy_agent_protocol::GuestOs>,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3208,6 +3249,7 @@ impl Default for ClientState {
             enforce_package_id: false,
             executable: None,
             pid: None,
+            legacy_guest: None,
         }
     }
 }
@@ -3329,6 +3371,19 @@ fn remember_surface_id(surface: &WlSurface) -> u64 {
     id
 }
 
+/// The Tilo package a toplevel's client was launched as, when the launcher
+/// started it confined as that package: the identity comes from the
+/// authenticated launch record, never from the app id the client announces.
+/// Every other client (a host app, an X11 client, a legacy guest, anything
+/// started outside the launcher) has none, and its windows are legacy.
+fn launched_package(client: Option<&ClientState>) -> Option<String> {
+    let client = client?;
+    if client.legacy_guest.is_some() || !client.enforce_package_id {
+        return None;
+    }
+    client.package_id.clone()
+}
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -3336,6 +3391,15 @@ fn authenticated_toplevel_identity(
     let Some(client) = client else {
         return Ok((announced_app_id, None));
     };
+    if let Some(guest) = client.legacy_guest {
+        return Ok((
+            Some(legacy_agent_protocol::window::host_app_id(
+                guest,
+                announced_app_id.as_deref(),
+            )),
+            None,
+        ));
+    }
     let Some(package_id) = client.package_id.as_deref() else {
         return Ok((announced_app_id, None));
     };
@@ -4312,24 +4376,27 @@ impl State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let client = surface.wl_surface().client();
-        let identity = authenticated_toplevel_identity(
-            client
-                .as_ref()
-                .and_then(|client| client.get_data::<ClientState>()),
-            announced,
-        );
+        let client_state = client
+            .as_ref()
+            .and_then(|client| client.get_data::<ClientState>());
+        let package = launched_package(client_state);
+        let identity = authenticated_toplevel_identity(client_state, announced);
         let Ok((app_id, room)) = identity else {
             surface.send_close();
             return;
         };
         let adopted = {
             let mut tree = self.workspace_tree.write();
-            if let Some(room) = room {
-                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room).is_some()
+            let tab = if let Some(room) = room {
+                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room)
             } else {
-                tab_binding::adopt_toplevel(&mut tree, id, app_id);
-                true
+                Some(tab_binding::adopt_toplevel(&mut tree, id, app_id))
+            };
+            if let (Some(tab), Some(package)) = (tab, package) {
+                tree.remember_package_launch(tab, package);
             }
+            drop(tree);
+            tab.is_some()
         };
         if !adopted {
             surface.send_close();
@@ -4462,10 +4529,17 @@ impl XdgShellHandler for State {
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
-        let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), announced_app_id)
+        let (identity, package) = if let Some(client) = surface.wl_surface().client() {
+            let client_state = client.get_data::<ClientState>();
+            (
+                authenticated_toplevel_identity(client_state, announced_app_id),
+                launched_package(client_state),
+            )
         } else {
-            authenticated_toplevel_identity(None, announced_app_id)
+            (
+                authenticated_toplevel_identity(None, announced_app_id),
+                None,
+            )
         };
         let Ok((app_id, attributed_room)) = identity else {
             tracing::warn!(
@@ -4499,7 +4573,12 @@ impl XdgShellHandler for State {
             if let Some(room) = attributed_room {
                 let adopted = {
                     let mut tree = self.workspace_tree.write();
-                    tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room)
+                    let tab =
+                        tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room);
+                    if let (Some(tab), Some(package)) = (tab, package) {
+                        tree.remember_package_launch(tab, package);
+                    }
+                    tab
                 };
                 if adopted.is_none() {
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
@@ -4509,7 +4588,10 @@ impl XdgShellHandler for State {
                 }
             } else {
                 let mut tree = self.workspace_tree.write();
-                tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+                let tab = tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+                if let Some(package) = package {
+                    tree.remember_package_launch(tab, package);
+                }
             }
         }
 
@@ -5425,6 +5507,39 @@ mod osk_identity_tests {
     use super::*;
 
     #[test]
+    fn only_a_confined_package_launch_names_a_windows_package() {
+        let room = crate::shell::state::RoomId::new();
+        let launched = |confined| {
+            ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
+                    package_id: "so.tilo.files".into(),
+                    workspace_id: Some(room.to_string()),
+                    confined,
+                },
+                42,
+            )
+        };
+        assert_eq!(
+            launched_package(Some(&launched(true))).as_deref(),
+            Some("so.tilo.files")
+        );
+        // A host app the launcher started unconfined keeps its desktop id
+        // and is a legacy window, whatever the id says.
+        assert_eq!(launched_package(Some(&launched(false))), None);
+        // A client nobody launched, announcing a Tilo package's id.
+        assert_eq!(launched_package(Some(&ClientState::default())), None);
+        assert_eq!(launched_package(None), None);
+        let guest = ClientState {
+            package_id: Some("so.tilo.files".into()),
+            workspace_id: Some(room.to_string()),
+            enforce_package_id: true,
+            legacy_guest: Some(legacy_agent_protocol::GuestOs::Windows),
+            ..ClientState::default()
+        };
+        assert_eq!(launched_package(Some(&guest)), None);
+    }
+
+    #[test]
     fn osk_and_floating_identity_trust_only_exact_credentials() {
         // Phase `only_private_socket_plus_exact_app_id_is_trusted`.
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
@@ -5480,6 +5595,19 @@ mod osk_identity_tests {
                     Some("org.example.HostApp".into())
                 ),
                 Ok((Some("org.example.HostApp".into()), None))
+            );
+            let legacy = ClientState {
+                legacy_guest: Some(legacy_agent_protocol::GuestOs::Linux),
+                ..ClientState::default()
+            };
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), Some("org.gnome.Calculator".into())),
+                Ok((Some("legacy.linux.org.gnome.Calculator".into()), None)),
+                "a legacy VM's window is named after its guest"
+            );
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), None),
+                Ok((Some("legacy.linux.window".into()), None))
             );
             let room = crate::shell::state::RoomId::new();
             let host = ClientState::attributed_arc(

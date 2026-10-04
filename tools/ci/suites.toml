@@ -55,6 +55,7 @@ suites = [
   "os/tests/disk_image_user_labels.sh",
   "os/tests/rockchip_boot_gap.sh",
   "os/tests/rockchip_loader_test.py",
+  "os/tests/disk_sectors_test.py",
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
@@ -195,6 +196,21 @@ inputs = [
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
+name = "no-cisco-openh264"
+# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
+# finished-rootfs gate, and the CI/developer environments that alone may carry it.
+inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
+name = "mount-source-cache-keys"
+# A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
+# the kernel, a toolchain) keys its layer on that image's reference, so a local
+# Buildah build never reuses a layer installed from a previous snapshot.
+inputs = ["os/"]
+suites = ["os/tests/test_mount_source_cache_keys.py"]
+
+[[group]]
 name = "dev-feature-targets"
 # The dev features os/components.toml names, against the packages' manifests:
 # `pkg/feature` must reach the package, not a dependency of it named pkg.
@@ -325,7 +341,7 @@ suites = [
 [[group]]
 name = "vm-acceptance"
 inputs = ["scripts/vm-acceptance/"]
-suites = ["scripts/vm-acceptance/test_apps.py"]
+suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
 
 [[group]]
 name = "perf-tools"
@@ -407,8 +423,10 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
   "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
@@ -564,6 +582,11 @@ inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/wind
 readers = ["crates/windows/compat-service/src/plan.rs"]
 
 [[cargo]]
+package = "legacy-vm"
+inputs = ["os/legacy-guest-snapshot.env"]
+readers = ["crates/runtime/legacy-vm/src/image.rs"]
+
+[[cargo]]
 package = "installer"
 inputs = ["os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/installer.json"]
 readers = ["crates/session/installer/src/disks.rs", "crates/session/installer/src/locales.rs"]
@@ -690,11 +713,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/slides/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "themes"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/themes/src/framework_history_tests.rs"]
@@ -713,11 +731,6 @@ readers = ["apps/weather/src/framework_history_tests.rs"]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "vpn"
@@ -1092,6 +1105,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"

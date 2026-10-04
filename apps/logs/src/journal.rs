@@ -258,8 +258,8 @@ const ROWS_SERVICES: &[Row] = &[
         Priority::Warning,
         Some(very(1022)),
         "syslog",
-        "Invalid user admin from 193.118.52.7 port 40122 — 3rd attempt this minute",
-        &[("SYSLOG_FACILITY", "4"), ("SSH_REMOTE", "193.118.52.7")],
+        "Invalid user admin from 203.0.113.7 port 40122 — 3rd attempt this minute",
+        &[("SYSLOG_FACILITY", "4"), ("SSH_REMOTE", "203.0.113.7")],
     ),
 ];
 

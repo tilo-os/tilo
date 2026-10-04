@@ -36,17 +36,9 @@ pub mod resource;
 pub mod strings;
 
 pub use app::WindowsApp;
-
-pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_live())
-}
-pub fn app_root_open(path: &std::path::Path) -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_live_open(path))
-}
-pub fn app_root_offline() -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_offline())
-}
-pub fn app_root_scenario(scenario: &str) -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_offline_scenario(scenario))
-}
 pub use resource::{Windows, WindowsShell};
+
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<WindowsShell>()
+}
