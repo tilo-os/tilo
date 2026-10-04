@@ -191,7 +191,7 @@ jobs:
           printf '%s\n' "$RPMS_REF" > "out/env-runtime-rpms-${{ matrix.arch }}.txt"
           ls -l out
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: env-runtime-tree-${{ matrix.arch }}
           path: out/
@@ -222,7 +222,7 @@ jobs:
       - name: Build the packer
         run: cargo build --release --locked -p tilo-app-package-cli --bin tilo-app-package
 
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: trees
 
@@ -283,7 +283,7 @@ jobs:
           (cd sealed && sha256sum ./*.tapp > SHA256SUMS)
           ls -l sealed
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: env-runtime-sealed
           path: sealed/
@@ -300,7 +300,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: env-runtime-sealed
           path: sealed
