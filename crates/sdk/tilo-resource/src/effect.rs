@@ -57,7 +57,8 @@
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
 //! (answers with a JSON value), `destructive` (asks for confirmation),
 //! `privileged` (hands out or shows a credential, such as copying a one-time
-//! code: asks for confirmation too), `idempotent` (safe to repeat after an
+//! code: asks for confirmation too), `sensitive` (discloses a copy of private
+//! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome), `device_only` (only the person at this device) and
 //! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
@@ -279,7 +280,10 @@ impl EffectDecl {
         spec.contract = ActionContract {
             permission: self.permission,
             risk: self.risk,
-            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
+            confirmation: if matches!(
+                self.risk,
+                RiskLevel::Destructive | RiskLevel::Privileged | RiskLevel::Sensitive
+            ) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
@@ -578,6 +582,23 @@ mod tests {
         let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, "test.effects");
         assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
+    }
+
+    /// A copy of private data leaving the app asks first, without being a
+    /// credential or a deletion.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.exports")]
+    enum Exports {
+        /// Export the address book.
+        #[effect(job, sensitive)]
+        ExportBook,
+    }
+
+    #[test]
+    fn a_sensitive_effect_asks_first() {
+        let spec = Exports::ExportBook.bound();
+        assert_eq!(spec.contract.risk, RiskLevel::Sensitive);
+        assert_eq!(spec.contract.confirmation, ConfirmationPolicy::Confirm);
     }
 
     /// A secret argument is published as one, and still reaches the handler.
