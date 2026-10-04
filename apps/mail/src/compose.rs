@@ -47,7 +47,7 @@ use ui::theme::Theme;
 use ui::widget::marks::Mark;
 use ui::widget::{BlockContent, BlockEditor, BlockKind, Button, ButtonFace, TextInput};
 
-use crate::actions::{DraftBodySeed, MAIL_ACTION_TYPE, MailAction};
+use crate::actions::{DraftBodySeed, MailAction};
 use crate::doc::MailDoc;
 use crate::model::{ComposeFormat, Draft, DraftAttachment};
 use crate::resource::{Mail, draft_body_dispatcher};
@@ -383,7 +383,7 @@ pub struct ComposeWindow {
     /// reaches the document.
     seed: Option<DraftBodySeed>,
     /// Dispatches [`MailAction::StartDraftBody`].
-    seed_actions: crate::resource::ActionSink,
+    dispatcher: Option<Dispatcher<Mail>>,
     /// The body as plain text as of the last frame, for accessibility and a
     /// switch to plain-text authoring.
     body_plain: String,
@@ -440,7 +440,7 @@ impl ComposeWindow {
             editor: body_editor(None),
             body_layout: BodyLayout::default(),
             seed: None,
-            seed_actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
             body_plain: String::new(),
             plain_body: {
                 let mut b = TextInput::local()
@@ -964,7 +964,7 @@ impl ComposeWindow {
     /// Start the body afresh from `seed` when the window next reaches the
     /// document; until then the body reads as the seed's text.
     fn start_body(&mut self, seed: DraftBodySeed) {
-        self.editor = body_editor(self.seed_actions.framework.as_ref());
+        self.editor = body_editor(self.dispatcher.as_ref());
         self.body_layout = BodyLayout::default();
         self.body_plain.clone_from(&seed.text);
         self.seed = Some(seed);
@@ -977,20 +977,20 @@ impl ComposeWindow {
         self.editor
             .source_mut()
             .attach(draft_body_dispatcher(&dispatcher));
-        self.seed_actions.attach(dispatcher);
+        self.dispatcher = Some(dispatcher);
     }
 
     /// Apply a pending [`Self::start_body`].
     fn start_pending_body(&mut self, doc: &mut automerge::AutoCommit) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
         let Some(seed) = self.seed.take() else {
             return;
         };
         let action = MailAction::StartDraftBody(seed);
         let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", &action);
-        if let Err(error) =
-            self.seed_actions
-                .try_dispatch_with_context(doc, MAIL_ACTION_TYPE, &action, context)
-        {
+        if let Err(error) = dispatcher.apply_now_with(doc, &action, context) {
             tracing::warn!(%error, "draft body could not be started");
         }
     }
@@ -1014,13 +1014,6 @@ impl ComposeWindow {
         if ui::Widget::needs_redraw(&self.editor) {
             self.dirty = true;
         }
-    }
-
-    /// The undo boundary before a standalone start of the body, for the
-    /// host. Edits of the body are the framework dispatcher's, whose undo
-    /// steps the app's root keeps.
-    pub fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.seed_actions.take_committed()
     }
 
     fn focused_kind(&self) -> BlockKind {
@@ -2735,6 +2728,7 @@ mod tests {
 
     fn win() -> ComposeWindow {
         let mut w = ComposeWindow::new(ComposeFormat::Html);
+        w.attach_framework(ui::framework::testing::dispatcher("so.tilo.mail"));
         w.open_blank();
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         w

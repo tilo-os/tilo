@@ -440,17 +440,8 @@ impl MailApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
     ) {
-        self.shared.borrow_mut().actions.attach(dispatcher.clone());
+        self.shared.borrow_mut().dispatcher = Some(dispatcher.clone());
         self.compose.attach_framework(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.shared.borrow().actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&self) {
-        self.shared.borrow_mut().actions.mark_hosted_for_test();
     }
 
     pub(crate) fn has_pending_send(&self) -> bool {
@@ -504,16 +495,19 @@ impl MailApp {
         )
     }
 
-    /// The sample mailbox, persisting account changes into a sandbox.
+    /// The sample mailbox, editing the document it is synced with and
+    /// persisting account changes into a sandbox.
     #[cfg(test)]
     pub fn new_sample() -> Self {
         let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
-        Self::assemble(
+        let mut app = Self::assemble(
             shared,
             ContentStore::memory(),
             None,
             AccountsPersist::sandbox(),
-        )
+        );
+        app.attach_framework(ui::framework::testing::dispatcher("so.tilo.mail"));
+        app
     }
 
     /// No account configured yet, persisting into a sandbox.
@@ -523,12 +517,14 @@ impl MailApp {
             AccountStore::new(),
             avatar_store_offline(),
         ));
-        Self::assemble(
+        let mut app = Self::assemble(
             shared,
             ContentStore::memory(),
             None,
             AccountsPersist::sandbox(),
-        )
+        );
+        app.attach_framework(ui::framework::testing::dispatcher("so.tilo.mail"));
+        app
     }
 
     fn assemble(
@@ -4876,7 +4872,6 @@ impl MailApp {
 
 impl Widget for MailApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
     );
@@ -4910,9 +4905,6 @@ impl Widget for MailApp {
             self.hydrate_domain_state(state);
         } else {
             self.register_hydrated_messages(state);
-            // Seeding baselines is not a user undo bracket; discard so a
-            // subsequent View (InspectMessage) is not mistaken for a commit.
-            let _ = self.shared.borrow_mut().take_committed_action();
             self.hydrate_domain_state(state);
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
@@ -5467,58 +5459,34 @@ impl ui::search::capability::SearchSource for MailApp {
 }
 
 impl ui::resources::PublishesResources for MailApp {
-    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
-    /// folder/message Document ops ride [`tilo_resource::publish`]; this
-    /// returns only live extras — never a second `mail.mailbox` Document door.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.shared.borrow().actions.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
+    /// What the window shows beside the resource's own publication: an
+    /// in-flight send and a search-index fault. Folders and messages, and
+    /// every edit of them, are the resource's.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::resource::live_extras(self)
     }
+
+    /// The mailbox root is the resource's own publication, not a second page.
     fn action_directory_resource_page(
         &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
+        _doc: &AutoCommit,
+        _cursor: &[u8],
+        _max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        if self.shared.borrow().actions.is_hosted() {
-            // Document mailbox root is ResourceRoot's publish, not a second page.
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: true,
-            });
-        }
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources: if cursor.is_empty() && max_results > 0 {
-                self.publish_resources(doc)
-            } else {
-                Vec::new()
-            },
+            resources: Vec::new(),
             next_cursor: Vec::new(),
             exhausted: true,
         })
     }
+
+    /// A message, thread or attachment the published page left out, with
+    /// what can be done with it here (open, reply, save).
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == "mail.mailbox" {
+        if id == "mail.mailbox" {
             return None;
         }
         self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for MailApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its mail action, so it records one undo boundary bracketing it (the same
-    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
-    /// cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A standalone body start dispatches through the composer; everything
-        // else through Mail's own host. One event does one or the other.
-        let body = self.compose.take_committed_action();
-        let mail = self.shared.borrow_mut().take_committed_action();
-        body.or(mail)
     }
 }
 
@@ -6501,7 +6469,12 @@ mod tests {
                 stored.attachments.is_empty(),
                 "no host path crosses the action"
             );
-            assert!(state.take_committed_action().is_some());
+            let steps = ui::tilo_resource::history::versions(&mut doc.clone())
+                .into_iter()
+                .filter_map(|version| version.context)
+                .filter(|context| context.change.is_step())
+                .count();
+            assert_eq!(steps, 1, "saving the draft is one undo step");
         }
 
         // Phase `calendar_invitation_handoff_refuses_malformed_and_oversized_payloads`.
@@ -7006,31 +6979,16 @@ mod tests {
                 app.shared.borrow().mailbox.get(id).unwrap().read,
                 "Open immediately dispatches the canonical mark-read action"
             );
-            let dispatched = app
-                .shared
-                .borrow()
-                .actions
-                .last_dispatched()
-                .cloned()
-                .expect("Open emitted an action");
-            let expected = crate::actions::encode(&crate::actions::set_read_action(
-                vec![id.to_string()],
-                true,
-            ));
-            assert_eq!(dispatched.type_id, expected.type_id);
             assert_eq!(
-                dispatched.payload, expected.payload,
-                "resource Open and every on-screen mark-read control use the same action payload"
+                MailDoc::get_read(&doc, &id.to_string()),
+                Some(true),
+                "resource Open writes the same mark-read every on-screen control does"
             );
             assert!(
                 doc.get(&automerge::ROOT, "ui")
                     .expect("document remains readable")
                     .is_none(),
                 "Open records no selection, folder, search, mode, or compose presentation state"
-            );
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "mark-read remains a replayable collaborative action"
             );
         }
 
@@ -7181,9 +7139,10 @@ mod tests {
                 !app.shared.borrow().mailbox.get(id).unwrap().read,
                 "unlike Open message, explicit preview never queues mark-read"
             );
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_none(),
-                "a read-state-neutral preview creates no collaborative action"
+            assert_ne!(
+                MailDoc::get_read(&doc, &id.to_string()),
+                Some(true),
+                "a read-state-neutral preview writes no read state"
             );
             let semantics = app.accessibility().expect("reader accessibility");
             let reader = semantics
@@ -7229,7 +7188,7 @@ mod tests {
                     .is_some_and(|mail| mail.read),
                 "Enter uses the normal Open boundary, rather than silently previewing"
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(MailDoc::get_read(&doc, &unread.to_string()), Some(true));
             assert_ne!(app.shared.borrow().inspection, Some(unread));
         }
 
@@ -8325,14 +8284,17 @@ mod tests {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let before = app.shared.borrow().mailbox.count(Folder::Archive);
-            assert!(app.shared.borrow().selected.is_some());
+            let id = app.shared.borrow().selected.expect("a selected message");
             dispatch(&mut app, &char_key("e"), &mut doc);
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Archive),
                 before + 1,
                 "'e' archived the selection"
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(
+                MailDoc::get_folder_for(&doc, &id.to_string()),
+                Some(Folder::Archive)
+            );
         }
 
         // Phase `reader_shortcuts_reply_star_and_mark_unread_through_visible_paths`.
@@ -8351,11 +8313,14 @@ mod tests {
                 app.shared.borrow().mailbox.get(id).unwrap().starred,
                 !was_starred
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(
+                MailDoc::get_starred(&doc, &id.to_string()),
+                Some(!was_starred)
+            );
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(MailDoc::get_read(&doc, &id.to_string()), Some(false));
         }
 
         // Phase `shortcut_arrow_down_moves_selection`.
@@ -8376,13 +8341,17 @@ mod tests {
             let (mut app, mut doc) = app();
             app.layout_for_test(1280.0, 800.0);
             let before = app.shared.borrow().mailbox.count(Folder::Trash);
+            let id = app.shared.borrow().selected.expect("a selected message");
             dispatch(&mut app, &named_key(NamedKey::Delete), &mut doc);
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Trash),
                 before + 1,
                 "Delete moved the selection to Trash"
             );
-            assert!(ui::undo::take_committed_action(&mut app).is_some());
+            assert_eq!(
+                MailDoc::get_folder_for(&doc, &id.to_string()),
+                Some(Folder::Trash)
+            );
         }
     }
 
