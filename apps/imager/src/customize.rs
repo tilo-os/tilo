@@ -12,10 +12,11 @@
 //! * every text field is a real shared [`TextInput`] — caret, selection,
 //!   clipboard, IME and a11y come for free. Secrets stay off the host and are
 //!   collected only on the target machine (HIG §3: never hand-roll editing);
-//! * every edit dispatches the matching [`ImagerAction`] through the app's
-//!   [`ui::ActionHost`], so a change is one undo boundary, replicates to
-//!   collaborators, and is byte-identical to the action the Ctrl+K palette
-//!   would dispatch — the single source of truth in [`crate::actions`].
+//! * every edit applies the matching [`ImagerAction`] through the imager
+//!   resource's [`Dispatcher`], so a change is an undo step (the keystrokes
+//!   of one field one step), replicates to collaborators, and is the same
+//!   action the Ctrl+K palette would invoke — the single source of truth in
+//!   [`crate::actions`].
 //!
 //! The panel holds no profile of its own: it renders from an [`InstallProfile`]
 //! snapshot each frame and writes changes back through actions, so the document
@@ -37,10 +38,12 @@ use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::tokens::Metrics;
 use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
-use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
+use crate::actions::ImagerAction;
 use crate::app::TextRun;
 use crate::model::{Filesystem, InstallProfile, installer_locales};
+use crate::resource::Imager;
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
+use ui::framework::Dispatcher;
 
 const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
 const BUTTON_H: f64 = Metrics::BASE.min_pointer_target as f64;
@@ -778,13 +781,13 @@ impl CustomizePanel {
     // ---- interaction ------------------------------------------------------
 
     /// Route a winit event into the panel. Text edits and toggles dispatch
-    /// their [`ImagerAction`] through `host`; the returned [`CzResponse`] tells
+    /// their [`ImagerAction`] through `edits`; the returned [`CzResponse`] tells
     /// the host whether the event was consumed and whether export was asked for.
     pub(crate) fn handle_event(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut crate::resource::ActionSink,
+        edits: Option<&Dispatcher<Imager>>,
         profile: &InstallProfile,
         target_removable: bool,
         content: Rect,
@@ -798,11 +801,11 @@ impl CustomizePanel {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_click(event, ctx, host, profile, target_removable, &g),
+            } => self.handle_left_click(event, ctx, edits, profile, target_removable, &g),
             WindowEvent::KeyboardInput { event: key_ev, .. }
                 if key_ev.state == ElementState::Pressed =>
             {
-                self.handle_key_event(event, ctx, key_ev, host, &g)
+                self.handle_key_event(event, ctx, key_ev, edits, &g)
             }
             _ => CzResponse {
                 handled: false,
@@ -865,7 +868,7 @@ impl CustomizePanel {
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
-        host: &mut crate::resource::ActionSink,
+        edits: Option<&Dispatcher<Imager>>,
         profile: &InstallProfile,
         _target_removable: bool,
         g: &CzGeom,
@@ -894,7 +897,7 @@ impl CustomizePanel {
             if selected != before
                 && let Some(value) = Self::choice_profile_value(field, &selected)
             {
-                Self::dispatch(ctx.state, host, &Self::field_action(field, value));
+                Self::dispatch(ctx.state, edits, &Self::field_action(field, value));
             }
             if handled {
                 return CzResponse {
@@ -933,7 +936,7 @@ impl CustomizePanel {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        host: &mut crate::resource::ActionSink,
+        edits: Option<&Dispatcher<Imager>>,
         g: &CzGeom,
     ) -> CzResponse {
         if self.export_focused {
@@ -983,7 +986,7 @@ impl CustomizePanel {
             if let Some(value) = Self::choice_profile_value(f, &selected)
                 && selected != before
             {
-                Self::dispatch(ctx.state, host, &Self::field_action(f, value));
+                Self::dispatch(ctx.state, edits, &Self::field_action(f, value));
             }
             return CzResponse {
                 handled,
@@ -1019,7 +1022,7 @@ impl CustomizePanel {
             },
         );
         let value = self.input(f).value().to_string();
-        Self::dispatch(ctx.state, host, &Self::field_action(f, value));
+        Self::dispatch(ctx.state, edits, &Self::field_action(f, value));
         CzResponse {
             handled: true,
             export_requested: false,
@@ -1080,17 +1083,12 @@ impl CustomizePanel {
         }
     }
 
-    fn dispatch(
-        doc: &mut AutoCommit,
-        host: &mut crate::resource::ActionSink,
-        action: &ImagerAction,
-    ) {
-        host.dispatch_with_context(
-            doc,
-            IMAGER_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", action),
-        );
+    /// Apply `action` now, inside the event that made it, so the field's
+    /// next keystroke continues the same undo step.
+    fn dispatch(doc: &mut AutoCommit, edits: Option<&Dispatcher<Imager>>, action: &ImagerAction) {
+        if let Some(edits) = edits {
+            let _ = edits.apply_now(doc, action);
+        }
     }
 
     /// Focus a field programmatically (test/host helper).
