@@ -141,6 +141,46 @@ class TypingTargetTests(unittest.TestCase):
             self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
 
 
+class KeyboardFocusTests(unittest.TestCase):
+    def focus_client(self, states: list[int]):
+        from unittest import mock
+
+        client = mock.Mock()
+        client.tree.return_value = {"/page": "(<'Web content'>,)", "/address": "(<'Address and search'>,)"}
+        client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
+        replies = iter(states)
+
+        def call(path, method, *args, check=True):
+            if method.endswith("GetState"):
+                return f"([uint32 {next(replies, states[-1])}, 0],)"
+            return "()"
+
+        client.call.side_effect = call
+        return client
+
+    def test_ready_waits_until_the_field_holds_the_keyboard(self):
+        from unittest import mock
+
+        # The window is mapped and focused on the third look.
+        client = self.focus_client([0, 0, CLIENT.FOCUSED_STATE_BIT])
+        with mock.patch.object(CLIENT.time, "sleep"):
+            CLIENT.wait_for_keyboard_focus(client, "Address and search", 5)
+        methods = [c.args[:2] for c in client.call.call_args_list]
+        self.assertEqual(methods[0], ("/address", "org.a11y.atspi.Component.GrabFocus"))
+        self.assertEqual(sum(m == "org.a11y.atspi.Accessible.GetState" for _, m in methods), 3)
+
+    def test_a_window_that_never_takes_the_keyboard_fails_the_gate(self):
+        from unittest import mock
+
+        client = self.focus_client([0])
+        clock = iter(range(0, 1000, 10))
+        with mock.patch.object(CLIENT.time, "sleep"), \
+                mock.patch.object(CLIENT.time, "monotonic", lambda: next(clock)), \
+                mock.patch.object(CLIENT, "app_log", return_value="(nothing)"):
+            with self.assertRaisesRegex(CLIENT.GateError, "never took keyboard focus"):
+                CLIENT.wait_for_keyboard_focus(client, "Address and search", 30)
+
+
 class TypedTextTests(unittest.TestCase):
     def test_text_replies_read_back_exactly(self):
         self.assertEqual(CLIENT.text_reply("('hi',)\n"), "hi")
