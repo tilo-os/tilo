@@ -19,8 +19,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
-    AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Element, EmptyState,
-    ModelPath, Row, Text, Widget,
+    AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Dropdown, Element,
+    EmptyState, ModelPath, Row, Text, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -55,6 +55,11 @@ impl DetailKey {
             library_empty: core.library.snippets.is_empty(),
         }
     }
+
+    /// Whether a snippet is open.
+    pub(crate) fn has_snippet(&self) -> bool {
+        self.snippet.is_some()
+    }
 }
 
 /// Build the content column for what `core` has open.
@@ -74,25 +79,29 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         return Box::new(EmptyState::new(tr("snippets-none-selected")).with_icon(Icon::Code));
     };
 
-    // The facts: the language (a button that opens its picker), then the
+    // The facts: the language (a picker over every language), then the
     // folder and tags.
     let picker = {
         let requests = Rc::clone(requests);
-        Button::new(
-            &format!("snippets.snippet:{id}.language"),
-            &language.name(),
-            None,
+        Dropdown::from_state(
+            Language::ALL.into_iter().map(Language::name).collect(),
+            &ui::LocalState::new(language.name()),
         )
-        .with_icon(Icon::Code)
+        .with_id(&format!("snippets.snippet:{id}.language"))
+        .with_resolved_accessible_name(tr("snippets-language"))
+        .leading_icon(Icon::Code)
         .control_size(ControlSize::Small)
-        .tooltip(tr("snippets-language"))
-        .on_effect(move || requests.borrow_mut().push(Action::PickLanguage(id)))
+        .on_change(move |name| {
+            if let Some(language) = Language::ALL.into_iter().find(|l| l.name() == name) {
+                requests
+                    .borrow_mut()
+                    .push(Action::SetLanguage(id, language));
+            }
+        })
     };
-    let mut facts = Row::new().push(Box::new(Anchored {
-        button: picker,
+    let mut facts = Row::new().push(Box::new(LanguagePicker {
+        dropdown: picker,
         core: Rc::clone(core),
-        part: Part::Language,
-        shown: None,
     }));
     // The folder and each tag open the library at them.
     if !folder.is_empty() {
@@ -181,9 +190,19 @@ fn open_snippet_button(
     })
 }
 
+/// The content header's actions: the open snippet's favorite toggle and
+/// overflow menu, or none while no snippet is open.
+pub(crate) fn header_actions(core: &Shared, requests: &Requests, open: bool) -> Vec<Element> {
+    if open {
+        vec![favorite_button(core, requests), more_button(core, requests)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// The header's favorite toggle for the open snippet: a star that reads as
 /// on while the snippet is a favorite.
-pub(crate) fn favorite_button(core: &Shared, requests: &Requests) -> Element {
+fn favorite_button(core: &Shared, requests: &Requests) -> Element {
     let button = Button::icon_only("snippets.favorite", Icon::Star, &tr("snippets-favorite"));
     Box::new(Anchored {
         button: open_snippet_button(core, requests, button, Action::ToggleFavorite),
@@ -194,7 +213,7 @@ pub(crate) fn favorite_button(core: &Shared, requests: &Requests) -> Element {
 }
 
 /// The header's overflow button: the open snippet's less frequent actions.
-pub(crate) fn more_button(core: &Shared, requests: &Requests) -> Element {
+fn more_button(core: &Shared, requests: &Requests) -> Element {
     let button = Button::icon_only(
         "snippets.more",
         Icon::MoreHorizontal,
@@ -208,18 +227,16 @@ pub(crate) fn more_button(core: &Shared, requests: &Requests) -> Element {
     })
 }
 
-/// Which of the app's buttons an [`Anchored`] is.
+/// Which of the header's buttons an [`Anchored`] is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Part {
-    Language,
     Favorite,
     More,
 }
 
-/// One of the app's buttons that the core follows: the header's buttons
-/// are disabled while no snippet is open and the favorite toggle reads the
-/// snippet's state; the buttons that open a menu tell the core where they
-/// are, so the menu opens under them.
+/// One of the header's buttons that the core follows: the favorite toggle
+/// reads the snippet's state, and the overflow button tells the core where
+/// it is, so its menu opens under it.
 struct Anchored {
     button: Button,
     core: Shared,
@@ -230,9 +247,6 @@ struct Anchored {
 
 impl Anchored {
     fn refresh(&mut self) {
-        if self.part == Part::Language {
-            return;
-        }
         let Ok(core) = self.core.try_borrow() else {
             return;
         };
@@ -291,21 +305,69 @@ impl ui::widget::Decorator for Anchored {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         Widget::apply_layout(&mut self.button, taffy, node, origin);
         let rect = Widget::get_rect(&self.button);
-        if let Ok(mut core) = self.core.try_borrow_mut() {
-            match self.part {
-                Part::Language => core.language_anchor = rect,
-                Part::More => core.more_anchor = rect,
-                Part::Favorite => {}
-            }
+        if self.part == Part::More
+            && let Ok(mut core) = self.core.try_borrow_mut()
+        {
+            core.more_anchor = rect;
         }
     }
 
     fn name(&self) -> &'static str {
         match self.part {
-            Part::Language => "SnippetLanguage",
             Part::Favorite => "SnippetFavorite",
             Part::More => "SnippetMore",
         }
+    }
+}
+
+/// The language picker; it opens when the core asks for it (the palette's
+/// or a capture's "pick a language").
+struct LanguagePicker {
+    dropdown: Dropdown,
+    core: Shared,
+}
+
+impl LanguagePicker {
+    fn open_if_asked(&mut self) {
+        let asked = self
+            .core
+            .try_borrow_mut()
+            .is_ok_and(|mut core| std::mem::take(&mut core.pick_language));
+        if asked && !self.dropdown.is_open() {
+            self.dropdown.open_menu();
+        }
+    }
+}
+
+impl ui::widget::Decorator for LanguagePicker {
+    type Inner = Dropdown;
+
+    fn inner(&self) -> &Dropdown {
+        &self.dropdown
+    }
+
+    fn inner_mut(&mut self) -> &mut Dropdown {
+        &mut self.dropdown
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.dropdown, taffy, theme, node_map);
+        ui::widget::decorator::register_node(node_map, node, self);
+        node
+    }
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.open_if_asked();
+        Widget::update(&mut self.dropdown, state, path)
+    }
+
+    fn name(&self) -> &'static str {
+        "SnippetLanguage"
     }
 }
 

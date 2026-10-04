@@ -363,9 +363,9 @@ pub fn folder_resource_id(folder: &str) -> String {
 fn new_snippet_in_folder_spec(folder: String) -> ActionSpec {
     ActionSpec::prompted(
         "new-snippet",
-        "New snippet",
-        "Title",
-        "snippet title…",
+        crate::tr("snippets-new-snippet"),
+        crate::tr("snippets-action-title"),
+        crate::tr("snippets-action-new-hint"),
         ExecutionLocus::ClientLocal,
         move |title: &str| {
             let mut s = Snippet::blank(&folder);
@@ -403,7 +403,7 @@ fn folder_context_resource(ctx: &SnippetsResourceCtx) -> Resource {
 pub fn provide_tag_resource(tag: String) -> Resource {
     Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
         "reveal",
-        "Reveal tagged snippets",
+        &crate::tr("snippets-action-reveal-tag"),
         &SnippetsOperation::RevealTag { tag },
     ))
 }
@@ -418,7 +418,7 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     );
     r = r.with_action(view_operation(
         "open",
-        "Open snippet",
+        &crate::tr("snippets-action-open"),
         &SnippetsOperation::OpenSnippet { id },
     ));
 
@@ -432,17 +432,17 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     ));
     r = r.with_action(ActionSpec::prompted(
         "rename",
-        "Rename",
-        "Title",
-        "new title…",
+        crate::tr("snippets-action-rename"),
+        crate::tr("snippets-action-title"),
+        crate::tr("snippets-action-title-hint"),
         ExecutionLocus::ClientLocal,
         move |t: &str| encode(&rename_action(id, t.trim())),
     ));
     r = r.with_action(ActionSpec::prompted(
         "set-language",
-        "Set language",
-        "Language",
-        "rust, shell, python, sql…",
+        crate::tr("snippets-action-set-language"),
+        crate::tr("snippets-language"),
+        crate::tr("snippets-action-language-hint"),
         ExecutionLocus::ClientLocal,
         move |t: &str| {
             encode(&set_language_action(
@@ -453,36 +453,40 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     ));
     r = r.with_action(ActionSpec::prompted(
         "move-to-folder",
-        "Move to folder",
-        "Folder",
-        "folder name (blank = All)",
+        crate::tr("snippets-action-move"),
+        crate::tr("snippets-fact-folder"),
+        crate::tr("snippets-action-folder-hint"),
         ExecutionLocus::ClientLocal,
         move |t: &str| encode(&set_folder_action(id, t.trim())),
     ));
     r = r.with_action(ActionSpec::prompted(
         "set-tags",
-        "Set tags",
-        "Tags",
-        "comma, separated, tags",
+        crate::tr("snippets-action-set-tags"),
+        crate::tr("snippets-fact-tags"),
+        crate::tr("snippets-action-tags-hint"),
         ExecutionLocus::ClientLocal,
         move |t: &str| encode(&set_tags_action(id, &parse_tags(t))),
     ));
     r = r.with_action(ActionSpec::prompted(
         "edit-description",
-        "Edit description",
-        "Description",
-        "describe this snippet…",
+        crate::tr("snippets-action-describe"),
+        crate::tr("snippets-action-description"),
+        crate::tr("snippets-action-description-hint"),
         ExecutionLocus::ClientLocal,
         move |t: &str| encode(&set_description_action(id, t)),
     ));
     r = r.with_action(encode_spec(
         "toggle-favorite",
-        if s.favorite { "Unstar" } else { "Star" },
+        &crate::tr(if s.favorite {
+            "snippets-remove-favorite"
+        } else {
+            "snippets-add-favorite"
+        }),
         &set_favorite_action(id, !s.favorite),
     ));
     r.with_action(encode_spec(
         "delete",
-        "Delete snippet",
+        &crate::tr("snippets-action-delete"),
         &delete_snippet_action(id),
     ))
 }

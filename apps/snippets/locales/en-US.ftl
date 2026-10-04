@@ -38,7 +38,6 @@ snippets-none-selected = No snippet selected
 snippets-language = Language
 snippets-language-plain-text = Plain text
 snippets-facet-tag = Tag
-snippets-language-of = Language: { $language }
 snippets-set-language = Set language to { $language }
 snippets-copy = Copy
 snippets-fill-and-copy = Fill in and copy
@@ -74,3 +73,22 @@ snippets-fact-copied = Copied
 snippets-yes = Yes
 snippets-no = No
 snippets-history-empty = No snippets in this version
+
+## Actions
+
+snippets-action-open = Open snippet
+snippets-action-reveal-tag = Reveal tagged snippets
+snippets-action-rename = Rename
+snippets-action-title = Title
+snippets-action-title-hint = New title…
+snippets-action-new-hint = Snippet title…
+snippets-action-set-language = Set language
+snippets-action-language-hint = rust, shell, python, sql…
+snippets-action-move = Move to folder
+snippets-action-folder-hint = Folder name (blank for all snippets)
+snippets-action-set-tags = Set tags
+snippets-action-tags-hint = comma, separated, tags
+snippets-action-describe = Edit description
+snippets-action-description = Description
+snippets-action-description-hint = Describe this snippet…
+snippets-action-delete = Delete snippet

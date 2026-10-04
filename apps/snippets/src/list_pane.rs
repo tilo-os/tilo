@@ -140,6 +140,11 @@ impl Core {
             .two_line_secondary()
             .selected(self.open == Some(snippet.id))
             .interaction(interaction);
+        let face = if snippet.favorite {
+            face.mark(Icon::Star)
+        } else {
+            face
+        };
         match meta {
             Some(meta) => face.meta(meta),
             None => face,
@@ -437,6 +442,11 @@ impl Core {
                             focused: self.list.focused && self.open == Some(*id),
                             ..Interaction::default()
                         });
+                    let face = if snippet.favorite {
+                        face.mark(Icon::Star)
+                    } else {
+                        face
+                    };
                     match &meta {
                         Some(meta) => face.meta(meta),
                         None => face,
