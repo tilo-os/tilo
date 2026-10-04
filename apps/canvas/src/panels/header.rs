@@ -544,7 +544,7 @@ fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         // again in one step, then saving, exporting and the keys.
         let (start, rest) = items.split_at(2);
         let mut options: Vec<(String, String)> = start.iter().map(entry).collect();
-        options.extend(recents.iter().take(MENU_RECENTS).map(|recent| {
+        options.extend(recents.artworks.iter().take(MENU_RECENTS).map(|recent| {
             let name = if recent.title.is_empty() {
                 std::path::Path::new(&recent.path)
                     .file_stem()

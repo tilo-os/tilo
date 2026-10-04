@@ -4,8 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ui::tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, PermissionRequirement,
-    ResultSpec,
+    ActionParam, ActionSpec, OperationKind, ParamType, PermissionRequirement, ResultSpec,
 };
 use ui::tilo_resource::{
     self, ActionDecl, ActionRef, Doc, JsonSchema, ModelError, Resource, SearchEntry,
@@ -717,85 +716,6 @@ impl Resource for ArtworkResource {
         Some(CanvasAction::json_schema())
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        let view = |id: &str, label: &str, params: Vec<ActionParam>, wrap: Wrap| {
-            operation(id, label, OperationKind::View, params, wrap)
-        };
-        let mut look = view("look", "Look at the artwork", params_of::<Look>(), |args| {
-            ViewOp::Look(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
-        );
-        look.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut inspect = view("inspect", "Inspect marks", params_of::<Inspect>(), |args| {
-            ViewOp::Inspect(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
-        );
-        inspect.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut media = view("media", "List media", Vec::new(), |_| ViewOp::Media).with_description(
-            "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
-        );
-        media.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut export = ActionSpec::typed_operation(
-            "export",
-            "Export picture",
-            "Export picture",
-            OperationKind::Effect,
-            VIEW_TYPE,
-            params_of::<Export>(),
-            |args| {
-                EncodedAction::encode_operation(
-                    VIEW_TYPE,
-                    &ViewOp::Export(read_args(args).unwrap_or_default()),
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: VIEW_TYPE.into(),
-                    payload: Vec::new(),
-                })
-            },
-        )
-        .requiring(PermissionRequirement::Read)
-        .with_description(
-            "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
-        );
-        export.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let mut diff = view("diff", "Compare versions", params_of::<Diff>(), |args| {
-            ViewOp::Diff(read_args(args).unwrap_or_default())
-        })
-        .with_description(
-            "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
-        );
-        diff.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        let [compare, svg] = vector_operations();
-        let mut save = operation(
-            "save-artwork",
-            "Save artwork",
-            OperationKind::Effect,
-            params_of::<SaveArtwork>(),
-            |args| ViewOp::SaveArtwork(read_args(args).unwrap_or_default()),
-        )
-        .with_description(
-            "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
-        );
-        save.contract.result = ResultSpec::Json {
-            schema: serde_json::json!({"type": "object"}),
-        };
-        vec![look, inspect, media, export, diff, compare, svg, save]
-    }
-
     fn answer(doc: &Doc, action: &str, changes: &[ui::automerge::Patch]) -> Option<Value> {
         crate::answer::answer(doc, action, changes)
     }
@@ -889,49 +809,177 @@ fn area_declarations() -> Vec<ActionDecl<ArtworkResource>> {
     ]
 }
 
-/// How a view's arguments become the operation it asks for.
-type Wrap = fn(&ui::tilo_actions::ActionArgs) -> ViewOp;
-
-/// A read-only operation answered by the surface.
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    params: Vec<ActionParam>,
-    wrap: Wrap,
-) -> ActionSpec {
-    ActionSpec::typed_operation(id, label, label, kind, VIEW_TYPE, params, move |args| {
-        EncodedAction::encode_operation(VIEW_TYPE, &wrap(args)).unwrap_or_else(|_| EncodedAction {
-            type_id: VIEW_TYPE.into(),
-            payload: Vec::new(),
-        })
-    })
-    .requiring(PermissionRequirement::Read)
+/// One of the canvas's views or effects, as it declares it.
+struct Declared {
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    params: fn() -> Vec<ActionParam>,
+    view: bool,
 }
 
-/// The views that compare against the reference and export SVG.
-fn vector_operations() -> [ActionSpec; 2] {
-    let mut compare = operation("compare", "Compare with reference", OperationKind::View, params_of::<Compare>(), |args| {
-            ViewOp::Compare(read_args(args).unwrap_or_default())
+/// What the canvas answers to look at, measure, compare and write out the
+/// artwork: views read it as it is or was, effects write a picture or a
+/// file of it. Each takes its fields as named arguments, as its schema
+/// describes them, and answers with JSON.
+const DECLARED: [Declared; 8] = [
+    Declared {
+        id: "look",
+        label: "Look at the artwork",
+        description: "See the artwork as a picture: the whole of it, or a region up close. Answers with the image and the revision it shows. grid: true overlays labelled coordinates for placing marks.",
+        params: params_of::<Look>,
+        view: true,
+    },
+    Declared {
+        id: "inspect",
+        label: "Inspect marks",
+        description: "List the layers and the newest marks (id, kind, name, layer, bounds [x,y,w,h], colours), optionally only in a region or on one layer; measure weighs marks' ink as the eye does, to balance icons and type.",
+        params: params_of::<Inspect>,
+        view: true,
+    },
+    Declared {
+        id: "media",
+        label: "List media",
+        description: "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
+        params: Vec::new,
+        view: true,
+    },
+    Declared {
+        id: "export",
+        label: "Export picture",
+        description: "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
+        params: params_of::<Export>,
+        view: false,
+    },
+    Declared {
+        id: "diff",
+        label: "Compare versions",
+        description: "Compare two versions: marks and layers added, removed or changed by id (with what changed: stacking, shape, fill, …), the changed region, and with look a before|after picture of it.",
+        params: params_of::<Diff>,
+        view: true,
+    },
+    Declared {
+        id: "compare",
+        label: "Compare with reference",
+        description: "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
+        params: params_of::<Compare>,
+        view: true,
+    },
+    Declared {
+        id: "export-svg",
+        label: "Export SVG",
+        description: "Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
+        params: params_of::<ExportSvg>,
+        view: false,
+    },
+    Declared {
+        id: "save-artwork",
+        label: "Save artwork",
+        description: "Save the artwork as a .artwork file open-artwork reads: to a path, or kept as content.",
+        params: params_of::<SaveArtwork>,
+        view: false,
+    },
+];
+
+impl ViewOp {
+    fn fields(value: &impl Serialize) -> serde_json::Map<String, Value> {
+        match serde_json::to_value(value) {
+            Ok(Value::Object(fields)) => fields,
+            _ => serde_json::Map::new(),
+        }
+    }
+}
+
+impl ui::tilo_resource::Effect for ViewOp {
+    const OPERATION: &'static str = VIEW_TYPE;
+
+    fn declarations() -> Vec<ui::tilo_resource::EffectDecl> {
+        DECLARED
+            .iter()
+            .map(|declared| ui::tilo_resource::EffectDecl {
+                id: declared.id,
+                label: declared.label,
+                description: declared.description,
+                params: (declared.params)(),
+                kind: if declared.view {
+                    OperationKind::View
+                } else {
+                    OperationKind::Effect
+                },
+                row: false,
+                answers: ui::tilo_resource::Answers::Value,
+                risk: if declared.view {
+                    ui::tilo_actions::RiskLevel::None
+                } else {
+                    ui::tilo_actions::RiskLevel::Low
+                },
+                idempotent: declared.view,
+                permission: PermissionRequirement::Read,
+                device_only: false,
+                risk_of: None,
+                programmatic: false,
+            })
+            .collect()
+    }
+
+    /// Every one answers with a JSON object.
+    fn specs() -> Vec<ActionSpec> {
+        Self::declarations()
+            .into_iter()
+            .map(|declared| {
+                let mut spec = declared.spec(Self::OPERATION);
+                spec.contract.result = ResultSpec::Json {
+                    schema: serde_json::json!({"type": "object"}),
+                };
+                spec
+            })
+            .collect()
+    }
+
+    fn id(&self) -> &'static str {
+        match self {
+            Self::Look(_) => "look",
+            Self::Inspect(_) => "inspect",
+            Self::Media => "media",
+            Self::Export(_) => "export",
+            Self::Diff(_) => "diff",
+            Self::ExportSvg(_) => "export-svg",
+            Self::Compare(_) => "compare",
+            Self::SaveArtwork(_) => "save-artwork",
+        }
+    }
+
+    fn arguments(&self) -> serde_json::Map<String, Value> {
+        match self {
+            Self::Look(look) => Self::fields(look),
+            Self::Inspect(inspect) => Self::fields(inspect),
+            Self::Media => serde_json::Map::new(),
+            Self::Export(export) => Self::fields(export),
+            Self::Diff(diff) => Self::fields(diff),
+            Self::ExportSvg(export) => Self::fields(export),
+            Self::Compare(compare) => Self::fields(compare),
+            Self::SaveArtwork(save) => Self::fields(save),
+        }
+    }
+
+    fn decode(id: &str, arguments: &serde_json::Map<String, Value>) -> Result<Self, String> {
+        fn read<T: serde::de::DeserializeOwned>(
+            arguments: &serde_json::Map<String, Value>,
+        ) -> Result<T, String> {
+            let mut fields = arguments.clone();
+            fields.retain(|_, value| !value.is_null());
+            serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())
+        }
+        Ok(match id {
+            "look" => Self::Look(read(arguments)?),
+            "inspect" => Self::Inspect(read(arguments)?),
+            "media" => Self::Media,
+            "export" => Self::Export(read(arguments)?),
+            "diff" => Self::Diff(read(arguments)?),
+            "export-svg" => Self::ExportSvg(read(arguments)?),
+            "compare" => Self::Compare(read(arguments)?),
+            "save-artwork" => Self::SaveArtwork(read(arguments)?),
+            other => return Err(format!("there is no canvas view `{other}`")),
         })
-        .with_description(
-            "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
-        );
-    compare.contract.result = ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    let mut svg = operation(
-        "export-svg",
-        "Export SVG",
-        OperationKind::Effect,
-        params_of::<ExportSvg>(),
-        |args| ViewOp::ExportSvg(read_args(args).unwrap_or_default()),
-    )
-        .with_description(
-            "Export the artwork as SVG (plain layers as exact vectors, painted ones as pictures), written to path or kept as content (small ones answered).",
-        );
-    svg.contract.result = ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    [compare, svg]
+    }
 }

@@ -27,7 +27,7 @@
 
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::tilo_resource::SearchEntry;
+use ui::tilo_resource::{SearchEntry, SearchWeight};
 
 use crate::backend::{MusicBackend, SearchTop};
 use crate::model::Library;
@@ -409,7 +409,9 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
             .artist(&track.artist_id)
             .map_or("", |artist| artist.genre.as_str());
         entries.push(
-            SearchEntry::new(track.title.clone(), format!("{artist} {genre}"))
+            SearchEntry::new(track.title.clone(), String::new())
+                .field(artist, SearchWeight::Subtitle)
+                .field(genre, SearchWeight::Metadata)
                 .anchored(crate::actions::track_resource_id(&track.id))
                 .invoking(crate::actions::play_track_address(&track.id))
                 .grouped(kind_label(SONG_TYPE_ID))
@@ -424,7 +426,9 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
             .artist(&album.artist_id)
             .map_or("", |artist| artist.genre.as_str());
         entries.push(
-            SearchEntry::new(album.title.clone(), format!("{artist} {genre}"))
+            SearchEntry::new(album.title.clone(), String::new())
+                .field(artist, SearchWeight::Subtitle)
+                .field(genre, SearchWeight::Metadata)
                 .invoking(crate::actions::open_album_address(&album.id))
                 .grouped(kind_label(ALBUM_TYPE_ID))
                 .subtitled(album_subtitle(artist, "Album", album.year))
@@ -433,7 +437,8 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
     }
     for artist in lib.artists.values() {
         entries.push(
-            SearchEntry::new(artist.name.clone(), artist.genre.clone())
+            SearchEntry::new(artist.name.clone(), String::new())
+                .field(artist.genre.clone(), SearchWeight::Metadata)
                 .invoking(crate::actions::open_artist_address(&artist.id))
                 .grouped(kind_label(ARTIST_TYPE_ID))
                 .subtitled(if artist.genre.is_empty() {
