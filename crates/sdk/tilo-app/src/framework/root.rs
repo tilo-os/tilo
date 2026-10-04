@@ -187,6 +187,7 @@ impl<R: Resource> ResourceRoot<R> {
     }
 
     /// The app's view: the custom surface itself when the view is one.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn content_mut(&mut self) -> &mut dyn Widget {
         self.content.as_mut()
     }
