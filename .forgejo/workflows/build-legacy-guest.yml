@@ -317,6 +317,18 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Podman
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends \
+              e2fsprogs fuse-overlayfs jq podman slirp4netns uidmap util-linux
+          else
+            sudo -n dnf install -y e2fsprogs fuse-overlayfs jq podman slirp4netns util-linux
+          fi
       - name: Load KVM and vhost-vsock
         run: |
           set -euo pipefail
@@ -325,14 +337,19 @@ jobs:
           sudo -n modprobe vhost_vsock || echo "::notice::no vhost_vsock: using vhost-device-vsock"
           # Kata's job container has a static /dev; the kernel's own nodes
           # appear once devtmpfs is mounted.
-          if [[ ! -c /dev/kvm ]]; then
+          sudo -n modprobe fuse 2>/dev/null || true
+          sudo -n modprobe loop 2>/dev/null || true
+          if [[ ! -c /dev/kvm || ! -c /dev/fuse || ! -c /dev/loop-control ]]; then
             sudo -n mount -t devtmpfs devtmpfs /dev
             sudo -n mkdir -p /dev/pts /dev/shm
             [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
             mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
-          sudo -n chmod 0666 /dev/kvm
+          sudo -n chmod 0666 /dev/kvm /dev/fuse
+          [[ ! -c /dev/vhost-vsock ]] || sudo -n chmod 0666 /dev/vhost-vsock
           python3 os/dev/probe-kvm.py x86_64
+      - name: Use native Podman overlay storage
+        run: ./os/dev/ci-native-podman-store.sh
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           name: legacy-guest-disk-x86_64
@@ -348,7 +365,9 @@ jobs:
           set -euo pipefail
           mkdir -p e2e/artifacts
           chmod -R a+rwX e2e
-          sudo -n podman run --rm --privileged --network host \
+          devices=(--device /dev/kvm)
+          [[ ! -c /dev/vhost-vsock ]] || devices+=(--device /dev/vhost-vsock)
+          podman run --rm --privileged --network host "${devices[@]}" \
             -v "$PWD:/w" -w /w "$BUILDER_IMAGE" bash os/dev/legacy-vm-e2e.sh
       - name: Upload screenshots and logs
         if: always()
