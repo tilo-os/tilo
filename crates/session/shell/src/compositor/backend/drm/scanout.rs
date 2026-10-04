@@ -96,6 +96,64 @@ fn is_display_connector(interface: connector::Interface) -> bool {
     )
 }
 
+/// Outcome of [`Card::reclaim_master`].
+#[derive(Debug)]
+enum MasterReclaim {
+    /// The seat manager had already granted master; nothing was asked.
+    AlreadyHeld,
+    /// The fd was not master and `DRM_IOCTL_SET_MASTER` succeeded.
+    Acquired,
+    /// The fd is not master and the kernel refused to make it so.
+    NotGranted(std::io::Error),
+}
+
+/// Decide how to end up holding DRM master, given whether the fd already
+/// holds it. `acquire` runs only when the probe could not confirm master,
+/// so an fd the seat manager already made master never sees a
+/// `SET_MASTER` it is not permitted to issue.
+fn reclaim_master(
+    probe: std::io::Result<bool>,
+    acquire: impl FnOnce() -> std::io::Result<()>,
+) -> MasterReclaim {
+    match probe {
+        Ok(true) => return MasterReclaim::AlreadyHeld,
+        Ok(false) => {}
+        Err(e) => tracing::debug!("DRM scanout: could not probe DRM master: {e}"),
+    }
+    match acquire() {
+        Ok(()) => MasterReclaim::Acquired,
+        Err(e) => MasterReclaim::NotGranted(e),
+    }
+}
+
+/// Whether `fd` currently holds DRM master, asked the way libdrm's
+/// `drmIsMaster` does. `DRM_IOCTL_AUTH_MAGIC` is a master-only ioctl: the
+/// kernel answers a non-master with `EACCES` before it reads the token,
+/// and a master with `EINVAL` because token 0 is never issued.
+fn fd_is_drm_master(fd: BorrowedFd<'_>) -> std::io::Result<bool> {
+    // `_IOW('d', 0x11, struct drm_auth { __u32 magic; })`, identical on every Linux arch.
+    const DRM_IOCTL_AUTH_MAGIC: libc::Ioctl = 0x4004_6411;
+    let mut auth: u32 = 0;
+    // SAFETY: `fd` is a live borrowed descriptor and `auth` is a valid,
+    // writable `struct drm_auth` for the duration of the call.
+    let rc = unsafe {
+        libc::ioctl(
+            fd.as_raw_fd(),
+            DRM_IOCTL_AUTH_MAGIC,
+            std::ptr::from_mut(&mut auth),
+        )
+    };
+    if rc == 0 {
+        return Ok(true);
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::EINVAL) => Ok(true),
+        Some(libc::EACCES) => Ok(false),
+        _ => Err(err),
+    }
+}
+
 /// Minimal owned-fd wrapper implementing the `drm` crate's device traits; fd comes from libseat (`Session::open`), privileged + DRM master while the session is active.
 struct Card(OwnedFd);
 
@@ -115,6 +173,23 @@ impl Card {
             .try_clone()
             .map(Card)
             .map_err(|e| format!("dup card fd: {e}"))
+    }
+
+    /// Make sure this fd holds DRM master, asking the kernel for it only
+    /// when it does not already.
+    ///
+    /// The seat manager owns master, not the compositor: logind opens the
+    /// node in its own process and sets master before `TakeDevice`/
+    /// `ResumeDevice` hand it over. The kernel then refuses
+    /// `DRM_IOCTL_SET_MASTER` from any other process without
+    /// `CAP_SYS_ADMIN`, with `EACCES` and even when the fd already is
+    /// master. Probing first keeps an unprivileged session from issuing
+    /// that doomed ioctl after every suspend and VT switch; the fallback
+    /// remains for seat backends that open the node in this process.
+    fn reclaim_master(&self) -> MasterReclaim {
+        reclaim_master(fd_is_drm_master(self.as_fd()), || {
+            self.acquire_master_lock()
+        })
     }
 
     /// `dev_t` of the underlying `cardN` node for stable per-connector `OutputId`s; best-effort (`0` on `fstat` failure — connector id still disambiguates).
@@ -850,15 +925,25 @@ impl CardHandle {
         }
     }
 
-    /// Take DRM master back. Every `set_crtc` after a resume needs it, so this runs before the modeset.
+    /// Make sure DRM master is held again. Every `set_crtc` after a resume
+    /// needs it, so this runs before the modeset. The seat manager restores
+    /// master itself before announcing the session active, and suspend never
+    /// takes it away, so this is normally a probe that finds it held.
     pub fn acquire_master(&self) -> bool {
-        match self.card.acquire_master_lock() {
-            Ok(()) => {
+        match self.card.reclaim_master() {
+            MasterReclaim::AlreadyHeld => {
+                tracing::debug!("DRM scanout: DRM master held on resume");
+                true
+            }
+            MasterReclaim::Acquired => {
                 tracing::info!("DRM scanout: re-acquired DRM master");
                 true
             }
-            Err(e) => {
-                tracing::warn!("DRM scanout: acquire_master_lock on resume failed: {e}");
+            MasterReclaim::NotGranted(e) => {
+                tracing::warn!(
+                    "DRM scanout: session does not hold DRM master on resume and the seat \
+                     manager has not granted it ({e}); set_crtc may EACCES"
+                );
                 false
             }
         }
@@ -1622,12 +1707,13 @@ impl DrmScanout {
                 )
             })?;
         let card = Card(fd);
-        // Become DRM master so set_crtc is permitted. libseat normally grants it on the active session; acquire explicitly and log.
-        match card.acquire_master_lock() {
-            Ok(()) => tracing::info!("DRM scanout: acquired DRM master"),
-            Err(e) => {
+        // set_crtc needs DRM master. The seat manager grants it with the fd on an active session; ask the kernel only if it did not.
+        match card.reclaim_master() {
+            MasterReclaim::AlreadyHeld => tracing::info!("DRM scanout: DRM master held"),
+            MasterReclaim::Acquired => tracing::info!("DRM scanout: acquired DRM master"),
+            MasterReclaim::NotGranted(e) => {
                 tracing::warn!(
-                    "DRM scanout: acquire_master_lock failed ({e}); set_crtc may EACCES"
+                    "DRM scanout: session does not hold DRM master ({e}); set_crtc may EACCES"
                 );
             }
         }
@@ -4142,6 +4228,66 @@ mod tests {
                 logical_to_physical_point(0, 0, 1080, 1920, T::Rotate270),
                 (0, 1079)
             );
+        }
+    }
+
+    #[test]
+    fn resume_keeps_logind_granted_master_without_set_master() {
+        use super::super::session::{SessionAction, SessionState};
+        // Phase `resume_from_sleep_on_a_master_fd_issues_no_set_master`.
+        {
+            // logind opened the node and keeps master across suspend. The
+            // kernel refuses SET_MASTER from this unprivileged process with
+            // EACCES even on that master fd, so the resume sequence must
+            // only probe it.
+            let session = SessionState::new_active();
+            let mut set_master_calls = 0;
+            for action in session.resume_actions() {
+                if action == SessionAction::AcquireMaster {
+                    let outcome = reclaim_master(Ok(true), || {
+                        set_master_calls += 1;
+                        Err(std::io::Error::from_raw_os_error(libc::EACCES))
+                    });
+                    assert!(matches!(outcome, MasterReclaim::AlreadyHeld));
+                }
+            }
+            assert_eq!(set_master_calls, 0);
+        }
+        // Phase `fd_without_master_still_asks_the_kernel`.
+        {
+            let mut asked = false;
+            let outcome = reclaim_master(Ok(false), || {
+                asked = true;
+                Ok(())
+            });
+            assert!(asked);
+            assert!(matches!(outcome, MasterReclaim::Acquired));
+        }
+        // Phase `refused_set_master_is_reported_not_granted`.
+        {
+            let outcome = reclaim_master(Ok(false), || {
+                Err(std::io::Error::from_raw_os_error(libc::EACCES))
+            });
+            assert!(matches!(
+                outcome,
+                MasterReclaim::NotGranted(ref e) if e.raw_os_error() == Some(libc::EACCES)
+            ));
+        }
+        // Phase `unprobeable_fd_falls_back_to_set_master`.
+        {
+            // A non-DRM fd cannot answer the probe; that is "unknown", not "master".
+            let null = std::fs::File::open("/dev/null").expect("open /dev/null");
+            let probe = fd_is_drm_master(null.as_fd());
+            assert!(
+                probe.is_err(),
+                "a non-DRM fd must not read as master: {probe:?}"
+            );
+            let mut asked = false;
+            let _ = reclaim_master(probe, || {
+                asked = true;
+                Ok(())
+            });
+            assert!(asked);
         }
     }
 }
