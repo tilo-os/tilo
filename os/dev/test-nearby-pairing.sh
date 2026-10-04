@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Two booted Tilo disks on one Ethernet segment: joining an existing identity
-# from first-boot onboarding through "Use existing -> Connect a nearby device".
+# from first-boot onboarding through "Use my existing Tilo identity -> Connect a
+# nearby device".
 #
 # VM A finishes onboarding by creating an identity. VM B stays at its first
 # login onboarding and asks to join it. Both boot the same installed disk (as
@@ -252,13 +253,13 @@ no_privileged_pairing() {
 sudo_b 'chmod 2750 /var/lib/tilo/enrollment-commits'
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "$code"
+vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "${code:0:3} ${code:3:3}"
 approve_from_a "$code" refused || note "A's approval did not complete, as expected for a refused commit"
 failed="$(await_state failed 150)"
 printf '%s\n' "$failed" > "$out/b-status-failed.json"
 jq -e '.error | test("Permission denied")' <<<"$failed" >/dev/null \
   || die "the failed status does not carry the helper's error: $failed"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "Permission denied" "Connect a nearby device"
+vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "Permission denied" "Try again"
 for attempt in $(seq 1 30); do
   vm_b ssh '! pgrep -u "$(id -u)" -x tilo-enroll >/dev/null' && break
   [ "$attempt" -lt 30 ] || die "the failed pairing helper is still running on B"
@@ -273,7 +274,7 @@ vm_b shot negative-error >/dev/null && cp -f "$run_b/negative-error.png" "$out/"
 sudo_b 'chmod 2770 /var/lib/tilo/enrollment-commits'
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "$code"
+vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "${code:0:3} ${code:3:3}"
 approve_from_a "$code" paired || {
   cat "$out/paired-approve.txt" >&2
   die "A's approval failed"

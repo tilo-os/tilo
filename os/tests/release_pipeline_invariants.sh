@@ -383,7 +383,8 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
 grep -Fq 'dist/apps/app-collections.toml' "$apps" \
-  && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
+  && grep -Fq 'cancel-in-progress: false' "$apps" \
+  && ! grep -Eq '^  pull_request(_target)?:' "$apps" \
   && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
   && grep -Fq 'PRIOR_X86_URL' "$apps" \

@@ -333,24 +333,28 @@ assert_password_role() {
 
 case "$mode" in
   oobe|oobe-actions)
-    wait_for_names "Use existing" "Create identity"
+    wait_for_names "Use my existing Tilo identity" "Create a new identity"
     if [[ $mode == oobe-actions ]]; then
       # Prove the complete external-reader contract before making the
-      # irreversible identity choice. The disposable Connect branch gives us
+      # irreversible identity choice. The disposable restore branch gives us
       # a visible, non-secret editable field: focus and write it solely over
       # AT-SPI, observe the value through that same bus, then return to Intro.
-      click_named "Use existing"
+      click_named "Use my existing Tilo identity"
+      wait_for_names "Restore from a backup" "Back"
+      click_named "Restore from a backup"
       wait_for_names "Identity backup file" "Back"
       focus_named "Identity backup file"
       set_text_named "Identity backup file" "tilo-atspi-edit-probe"
       click_named "Back"
-      wait_for_names "Use existing" "Create identity"
+      wait_for_names "Restore from a backup" "Back"
+      click_named "Back"
+      wait_for_names "Use my existing Tilo identity" "Create a new identity"
 
       # Each remaining transition is made through org.a11y.atspi.Action, then
       # observed back through the live AT-SPI tree. It catches a provider that
       # advertises controls but drops ActionRequest messages before the
       # compositor's widget dispatcher.
-      click_named "Create identity"
+      click_named "Create a new identity"
       wait_for_names \
         "I understand that losing this device without a backup means losing this identity." \
         "Create local identity"
@@ -379,19 +383,27 @@ case "$mode" in
     fi
     ;;
   oobe-nearby)
-    # Use existing -> Connect a nearby device, as a person does. A retry after
-    # a failed attempt is already on the Connect screen and skips the first
-    # step.
+    # Use my existing Tilo identity -> Connect a nearby device, as a person
+    # does; choosing it starts pairing. A retry after a failed attempt is
+    # already on the pairing screen and asks again with Try again.
     for _ in $(seq 1 400); do
       collect_tree || { sleep 0.05; continue; }
-      node_named "Connect a nearby device" >/dev/null && break
-      if node_named "Use existing" >/dev/null; then
-        click_named "Use existing"
+      if node_named "Try again" >/dev/null; then
+        click_named "Try again"
+        exit 0
+      fi
+      if node_named "Restore from a backup" >/dev/null; then
+        click_named "Connect a nearby device"
+        exit 0
+      fi
+      if node_named "Use my existing Tilo identity" >/dev/null; then
+        click_named "Use my existing Tilo identity"
       fi
       sleep 0.05
     done
-    wait_for_names "Connect a nearby device"
-    click_named "Connect a nearby device"
+    echo "AT-SPI $mode tree never offered nearby pairing" >&2
+    printf '%s\n' "$names" >&2
+    exit 1
     ;;
   oobe-nearby-done)
     # Joining an identity ends first use on its ready screen. The media codecs
@@ -405,8 +417,8 @@ case "$mode" in
       sleep 0.05
     done
     wait_for_fragments "identity is ready"
-    if node_named "Connect a nearby device" >/dev/null; then
-      echo "AT-SPI $mode tree still offers Connect a nearby device" >&2
+    if node_named "Try again" >/dev/null; then
+      echo "AT-SPI $mode tree still offers to try pairing again" >&2
       exit 1
     fi
     ;;
@@ -422,10 +434,10 @@ case "$mode" in
       node_named "Tilo workspace" >/dev/null && break
       node_containing "identity is ready" >/dev/null && break
       node_containing "needs recovery" >/dev/null && break
-      node_named "Use existing" >/dev/null && break
+      node_named "Use my existing Tilo identity" >/dev/null && break
       sleep 0.05
     done
-    for refused in "Use existing" "Create identity" "Create your local" "needs recovery"; do
+    for refused in "Use my existing Tilo identity" "Create a new identity" "Create your local" "needs recovery"; do
       if node_containing "$refused" >/dev/null; then
         echo "AT-SPI $mode tree shows '$refused' after the identity was established" >&2
         printf '%s\n' "$names" >&2
@@ -445,7 +457,7 @@ case "$mode" in
     # A session for an identity this device already holds: the desktop, with
     # neither identity setup nor identity recovery in front of it.
     wait_for_names "Tilo workspace"
-    for refused in "Use existing" "Create identity" "Your existing identity needs recovery"; do
+    for refused in "Use my existing Tilo identity" "Create a new identity" "Your existing identity needs recovery"; do
       if node_named "$refused" >/dev/null; then
         echo "AT-SPI $mode tree shows '$refused' for an established identity" >&2
         printf '%s\n' "$names" >&2
