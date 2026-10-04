@@ -3051,7 +3051,10 @@ impl WgpuEngine {
             bind_group_layout,
             entries,
             ..
-        }) = self.shaders.get(index).and_then(|shader| shader.wgpu.as_ref())
+        }) = self
+            .shaders
+            .get(index)
+            .and_then(|shader| shader.wgpu.as_ref())
         else {
             return;
         };
