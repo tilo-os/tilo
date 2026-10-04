@@ -1006,6 +1006,24 @@ Apply the first row that matches each call.
 | A legend painted next to a `PieChart` | `PieChart::new(slices).with_legend()` |
 | `PageSidebar` markup dots drawn by the app | `sidebar.set_marked(page_indices)` |
 | `PageSidebar::with_header("PAGES")` | Delete the call (the default is "Pages"), or pass sentence case. |
+| A header, a sentence or a status set in by hand (`with_horizontal_padding`, an `inset(S3, ..)`, a `text_edge` helper) so it meets a list's text | Delete it: rows, headers, property labels and table columns share the column's content edge (HIG §9.3). |
+| A `Row` of a `Text` title and a `Toggle` / `Button` built to look like a list row | `ListRow::new(id, title).trailing(Box::new(control))` |
+| A `Row` of title, value text and spacer for a figure at the trailing edge (a clock's time, a code) | `ListRow::…value(text)` / `.title_value(text)` |
+| `ListRow::on_activate(f)` for an open or select | `.on_view(f)`; for an action that changes something, `.on_effect(f)` |
+| A row's hover action routed to an exported action by hand | `.action_binding(icon, label, binding)` |
+| A hand-built count pill, star or tag beside a row's title | `.count(n)`, `.mark(Icon::Star)`, `.tags(&[(label, style)])` |
+| `PropertyRow { action, .. }` | `PropertyRow::new(label, value).action(icon, label)` (up to two); the field is `actions` |
+| Two `PropertyList`s whose label columns differ in one section | Put them in the same `Section` (they share one column), or `PropertyList::sections(..)` |
+| A `Text` + `Icon` button pair that folds a group | `Section::…collapsible()` |
+| A dot and a `Caption` built as a status footer | `StatusLine::active(text)` (or `warning`, `error`, `idle`) |
+| An avatar beside a `Title` and a `Caption` heading a detail view | `ObjectHeader::new(name).avatar(name, id).caption(text)` |
+| A plain `Chip` beside an invisible button that navigates | `Chip::new(label).with_id(id).on_click(f)` |
+| `CellRender` closures `|row, scene, theme, text, rect|` | `|row, scene, transform, theme, text, rect|`, painting through `transform` |
+| `CellTextRender` closures `|row, scene, text, rect, theme, selected|` | `|row, scene, transform, text, rect, theme, selected|` |
+| A cell painter that draws a severity or status pill | `.with_badge(|row| (label, tone))` |
+| A cell painter that draws a tree's indent and chevron, with app hit-testing | `DataTable::tree(depth, has_children, expanded, on_toggle)` |
+| `DataTable` row selection on release of a drag-scrolling body | A mouse press selects at once; add `.drag_scroll()` only where a mouse drag should scroll |
+| A painted track list or a hand-drawn header band | `data_table::DataTableFace` |
 
 ### Which widget replaces which hand-drawn pattern
 
@@ -1037,27 +1055,79 @@ Apply the first row that matches each call.
 - **Section header.** `SectionHeader::heading` for a section of a page,
   `SectionHeader::group` for a group inside one. `.count(n)` when the number
   of items matters (unread, changes); `.action(button)` for one text action
-  on the whole group. No subtitle: if the person must know something to act,
-  put one sentence in the content.
-- **ListRow leading column.** `.avatar(name, identity)` for people and
-  accounts, `.icon(icon)` for kinds of things, `.badge(code)` for a short
-  classifying code (`GET`, `PDF`, `WARN`). With faces, compute
-  `badge_column_width(text, theme, &all_badges)` once per list and pass it to
-  every row's `.leading_column(..)` so titles line up.
-- **ListRow text.** Title in `Body` (`.emphasized(true)` for unread),
-  `.secondary(text)` for the one secondary fact (`.two_line_secondary()` for a
-  message preview), `.meta(text)` for a time, size or count. More than one
-  secondary fact: a `PropertyList` in the detail view, or columns in a
-  `DataTable`. Never join facts with `·`.
-- **ListRow trailing.** `.active()`, `.warning()`, `.error()`, `.idle()` for a
-  status dot; `.presence(identity)` for a person's presence; `.disclosure()`
-  when activating opens a page; `.action(icon, label, f)` for actions shown on
-  hover and focus (they replace the meta); `.swipe_action(icon, label,
-  destructive, f)` for touch.
-- **Lists.** Put `ListRow`s in a `Section`: consecutive rows become one list,
-  edge to edge, with inset separators that hide beside the selected row.
-  With faces, call `.separator(next_selected)` on every row but the last.
-  Selection is `.selected(true)`; never paint a row fill.
+  on the whole group (its label ends on the trailing edge). The header is
+  one height with or without an action. No subtitle: if the person must know
+  something to act, put one sentence in the content. A painted host uses
+  `SectionHeaderFace` with the same geometry (`height`, `action_rect`,
+  `paint`).
+- **A section that folds** (a window group, an archive): `Section::…
+  .with_header(..).collapsible()` (or `.collapsed()`), `.on_toggle(f)`. The
+  header gets a chevron, toggles with a pointer, Enter, Space and the arrow
+  keys, and reads as expanded or collapsed. Never build a disclosure out of a
+  button and a flag.
+- **Status and detail heads.** A non-interactive status ("Engine running",
+  "3 stopped") is a `StatusLine::active(text)` (`warning`, `error`, `idle`,
+  `presence`): a dot and a `Caption` on the content edge. The head of a detail
+  view is an `ObjectHeader::new(name).avatar(name, id)` (or `.icon(icon)`,
+  `.square()`) `.caption(text)`: never a hand-stacked `Title` and `Caption`.
+- **ListRow leading column.** `.avatar(name, identity)` for people
+  (`.square()` for accounts and sites), `.icon(icon)` for kinds of things,
+  `.badge(code)` for a short classifying code (`GET`, `PDF`, `WARN`, with
+  `.badge_tooltip(text)` when the code needs explaining; the code is part of
+  the row's name), `.thumbnail(image)` for a picture,
+  `.media(source, aspect)` for media art (the title's initials stand in until
+  it loads), `.checkbox(checked, f)` for multi-select, `.swatch(colour)` for a
+  colour that is content, `.leading_paint(f)` for anything else (a font
+  sample). In a `Section`, consecutive rows share one badge column on their
+  own; with faces, compute `badge_column_width(text, theme, &all_badges)`
+  once per list and pass it to every row's `.leading_column(..)`.
+- **ListRow text.** Title in `Body` (`.emphasized(true)` for unread,
+  `.two_line_title()` for long names, `.title_family(font)` only in a font
+  list), `.mark(icon)` after it for starred or pinned, `.tags(&[(label,
+  style)])` for labels; `.subtitle(text)` for a `Body` line under the title (a
+  message's subject), `.secondary(text)` for the one secondary fact
+  (`.two_line_secondary()` for a message preview), `.meta(text)` for a time,
+  size or count on the title's line (`.meta_spans(&[(text, tone)])` for toned
+  figures such as `+2.4%`), `.count(n)` for how many items the row stands
+  for. More than one secondary fact: a `PropertyList` in the detail view, or
+  columns in a `DataTable`. Never join facts with `·`.
+- **ListRow trailing.** `.value(text)` (or `.title_value(text)`) for the
+  row's own figure (a time, a code, a temperature): hover actions never
+  replace it. `.trailing(element)` for one persistent control (a `Toggle`, a
+  `Button`, a `ToggleGroup`, a small `ProgressRing`, a `Badge`): the row
+  keeps its width, it stays reachable by keyboard and assistive technology,
+  and it moves under the text when the row is narrow (faces:
+  `.trailing_width(w)` and `trailing_rect(..)`). `.checked(bool)` for the
+  chosen row of a single-choice list; `.active()`, `.warning()`, `.error()`,
+  `.idle()` for a status dot on the title's line; `.presence(identity)` for a
+  person's presence; `.disclosure()` when activating opens a page.
+  `.action(icon, label, f)` (or `.action_binding(icon, label, binding)` for an
+  exported action the host confirms) for actions shown on hover and focus
+  (they replace the meta; the arrow keys reach them, and a touch pointer
+  shows them on the selected row); `.swipe_action(icon, label, destructive,
+  f)` for touch. `.with_enabled(false)` dims a row and takes it out of focus.
+- **ListRow activation.** `.on_view(f)` when activating opens or selects
+  something, `.on_effect(f)` when it does something; both publish the row's
+  action so it is discoverable and driveable, as a `Button`'s do. `.on_action
+  (binding)` for an exported resource action. `.on_activate(f)` remains for
+  a closure the native audit may report.
+- **Chip.** A tag or a backlink that navigates is a `Chip::new(label)
+  .with_id(id).on_click(f)` (or `.on_action(binding)`): a button with a focus
+  ring that Enter and Space press. `.menu()` adds a trailing chevron for a
+  chip that opens choices. A painted keyboard key is a `ChipFace` wider than
+  its label: the label centres in it.
+- **PropertyList.** One label column per section: lists in one `Section`
+  share it on their own, and `PropertyList::sections(vec![(title, rows)])`
+  groups related facts under titles in one list (`PropertyColumn` shares a
+  column across stacks; faces take `.label_column(property_label_column(..))`).
+  `Property::with_kind(TextKind::Identifier / Secret / Numeric)` for values
+  that never break (they elide before the actions); prose wraps at a readable
+  measure. `.tone(Tone)` for a value that carries a status; `.copyable()`
+  and `.action(icon, label, f)` for up to two trailing actions;
+  `.with_accessible_value(text)` when the painted value is not what should
+  be read (a masked secret). `.compact()` for an inspector beside a canvas;
+  `.with_id(id)` for tests and the accessibility tree. A `Field` that shows a
+  value it cannot edit hosts a `PropertyValue`.
 - **Tone.** `Success`, `Warning`, `Danger` and `Info` for status,
   `Tone::of_identity(id)` / `Tone::Presence(hue)` for a person. `Neutral` is
   no colour. A tone is never decoration: a card stripe or a stat ticker
@@ -1070,6 +1140,52 @@ Apply the first row that matches each call.
   `.meta(..)` lines.
 - **Progress ring.** Plain progress or a countdown: no fill call. A measured
   level: `.level(thresholds)`. A status: `.tone(..)`.
+
+### Lists
+
+- **One content edge.** A row's text, a section's title, a property list's
+  labels and a table's first column all start on the column's content edge;
+  the lift and the stripes bleed `chrome::row_bleed` (`s2`) past it (HIG
+  §9.3). Give the column its gutter and nothing else: no inset on a header to
+  meet a row's text, no padding on a sentence to meet a list.
+- **Rows in a section.** Put `ListRow`s in a `Section`: consecutive rows
+  become one list, edge to edge, with inset separators that hide beside the
+  selected row, one shared badge column, and one lift across a run of
+  selected rows (a multi-selection). Selection is `.selected(true)`; never
+  paint a row fill.
+- **Painted rows.** Paint each `ListRowFace` into its outer rect (the
+  content edge grown by `row_bleed`), call `.separator(next_selected)` on
+  every row but the last and `.joined(RowJoin::new(above, below))` on
+  selected rows. `paint_row_selection_joined` is the lift for anything else a
+  host paints as a row.
+- **Long lists.** A `VirtualList` stands its rows one bleed in from its
+  edges, so their lift fills it, and keeps the shared scroll bar in its
+  gutter. `.on_activate(f)` runs on Enter and on a double click,
+  `.on_context(f)` on a right click (the row is selected first, and `f` gets
+  the row's rect to anchor a menu), `reveal(key)` scrolls a row into view.
+  Build it with `VirtualList::with_selection_delegate(..)` when the rows
+  paint their own selection: each row receives a `RowSelection` with its
+  neighbours' (a `ListRow` row takes it in place, with its joined lift and
+  separators).
+- **Tables.** A `DataTable`'s rows are 40 high, 32 with `.compact()`. Columns:
+  `ColumnWidth::Auto` measures header, text, badges and controls, and shares
+  the leftover when no column is flexible; `.priority(n)` lets a column give
+  way when the table is narrow (higher first); what still does not fit
+  scrolls sideways (shift-wheel or the bar). `.wrapping(lines)` lets a cell
+  wrap and its row grow. `.with_badge(|row| (label, tone))` for a level or a
+  status, `ColumnDef::checkbox(..)` with `.on_check(f)` for a column of
+  boxes, `.with_add_row(label, f)` for the blank row that adds one. Painters
+  (`with_render`, `with_text_render`) receive the table's transform; never
+  paint text a column can declare. A table that holds a hierarchy is
+  `.tree(depth, has_children, expanded, on_toggle)`: the chevron, the indent,
+  Right and Left to fold, level and expansion read out. `.fill_height()`
+  takes the parent's height and scrolls inside; `.on_row_context_menu(f)`
+  selects the row and hands its rect; `.drag_scroll()` lets a mouse drag
+  scroll the body (a finger always does), otherwise a drag past the slop runs
+  `.on_row_drag_begin(f)` and `row_rect` / `row_at_point` find drop targets.
+  Edit rows in place with `rows_mut()` and `apply_changes(&changes)` so cell
+  controls stay mounted by row key. `set_sort_indicator(key, ascending)` shows
+  a sort the host applied. A painted host draws `data_table::DataTableFace`.
 
 ### What to delete in an app
 

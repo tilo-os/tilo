@@ -2457,7 +2457,9 @@ pub use tree_view::{
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
-pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
+pub use virtual_list::{
+    DuplicateListKey, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
+};
 mod activation;
 pub use activation::{Interaction, paint_focus_ring};
 pub mod media_card;
@@ -2472,10 +2474,14 @@ pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
-pub use property_list::{Property, PropertyList, PropertyListFace, PropertyRow};
+pub use property_list::{
+    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyRow, PropertyValue,
+    property_label_column,
+};
 pub mod list_row;
 pub use list_row::{
-    ListRow, ListRowFace, RowAction, RowLeading, RowStatus, SwipeAction, badge_column_width,
+    ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
+    badge_column_width,
 };
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
@@ -2514,7 +2520,7 @@ pub use tone::Tone;
 pub mod collaboration_overview;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
 mod section;
-pub use section::{Section, SectionHeader};
+pub use section::{ObjectHeader, Section, SectionHeader, SectionHeaderFace, StatusLine};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
