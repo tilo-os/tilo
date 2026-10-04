@@ -205,8 +205,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let mut app = config
             .app()
             .with_category(Category::Network)
-            .with_width_hint(NW)
-            .with_narrow_content_shot();
+            .with_width_hint(NW);
         let mut doc = AutoCommit::new();
         let (taffy, node) = lay_out_at(&mut app, NW, NH);
         app.sync(&mut doc, &automerge::ROOT);
