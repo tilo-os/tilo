@@ -90,11 +90,6 @@ impl BrowserWindow {
         self.page.engine_handle()
     }
 
-    #[cfg(feature = "wpe")]
-    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
-        self.page.content_rect_handle()
-    }
-
     fn immersive(&self) -> bool {
         self.window_fullscreen_active && self.page.content_fullscreen()
     }

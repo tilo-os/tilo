@@ -90,7 +90,7 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.resolve_collection(
                     "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
                 ),
-                sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+                sorted(catalog),
             )
         with self.subTest(phase='main push selects affected apps and publishes default collection'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
@@ -119,7 +119,7 @@ class AppReleaseTests(unittest.TestCase):
             self.assertIn("collection=default", workflow)
 
             catalog = app_release.app_catalog(ROOT)
-            expected = sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS))
+            expected = sorted(catalog)
             for path in (
                 "tools/canonical_verifier_bundle.py",
                 "tools/assemble_verified_apps.py",
@@ -253,11 +253,11 @@ class AppReleaseTests(unittest.TestCase):
                 classified = app_release.input_classification(['crates/format/src/lib.rs'], metadata, root)
                 self.assertEqual(['crates/format/src/lib.rs'], classified['binary'])
                 self.assertEqual(['crates/format/src/lib.rs'], classified['packaging'])
-        with self.subTest(phase='global change excludes os integrated apps'):
+        with self.subTest(phase='global change selects every app, the browser included'):
             catalog = {**CATALOG, "browser": {}}
             self.assertEqual(
                 app_release.apps_from_changes(["Cargo.lock"], catalog),
-                sorted(CATALOG),
+                sorted(catalog),
             )
         with self.subTest(phase='shared runtime change selects reverse dependent apps'):
             with tempfile.TemporaryDirectory() as directory:
@@ -298,7 +298,7 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.apps_from_changes(
                     ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, ROOT
                 ),
-                sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+                sorted(catalog),
             )
         with self.subTest(phase='every global release input triggers main packaging'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
@@ -317,10 +317,10 @@ class AppReleaseTests(unittest.TestCase):
                         any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns),
                         f"{path} does not trigger Release / apps",
                     )
-        with self.subTest(phase='os integrated browser change does not use generic builder'):
+        with self.subTest(phase='a browser change releases the browser tapp'):
             catalog = {**CATALOG, "browser": {}}
             self.assertEqual(
-                app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), []
+                app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), ["browser"]
             )
         with self.subTest(phase='release graph keeps image codecs explicit'):
             # One app must not enable unused image codecs in every thin tapp.

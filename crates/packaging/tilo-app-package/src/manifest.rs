@@ -240,6 +240,16 @@ pub struct Package {
     /// `None` for `kind = "runtime"`. Version must parse as semver.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Further runtime bundles, `<runtime-name>/<version>` each, that the
+    /// launcher mounts read-only at `/run/tilo-runtime/<version>` when they
+    /// are installed and verify. The app starts without a missing one and
+    /// offers to install it: the browser's web engine is one.
+    #[serde(
+        default,
+        rename = "optional-runtimes",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub optional_runtimes: Vec<String>,
     /// Targets the app is built and published for; absent means
     /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]

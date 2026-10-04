@@ -40,9 +40,6 @@ impl WebViewEngine for LiveProbe {
     fn frames(&self) -> FrameSlot {
         self.inner.frames()
     }
-    fn take_dmabuf(&self) -> Option<ui::webview::DmabufFrame> {
-        self.inner.take_dmabuf()
-    }
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         self.inner.set_waker(waker);
     }
