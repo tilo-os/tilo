@@ -2743,7 +2743,10 @@ impl BrowserWidget {
             );
         }
         if let Some(message) = &self.private_window_notice {
-            notices.push(crate::notice::Notice::info(message));
+            notices.push(
+                crate::notice::Notice::warning("Couldn’t open a private window")
+                    .with_message(message.clone()),
+            );
         }
         if self.close_blocked {
             notices.push(
@@ -3620,8 +3623,7 @@ impl BrowserWidget {
         }
         if !self.back_entries.is_empty() {
             self.menu_direction = Some(direction);
-            let x = anchor.x0.min((self.rect.x1 - 220.0).max(self.rect.x0));
-            self.back_menu.open_at([x as f32, (anchor.y1 + 4.0) as f32]);
+            self.back_menu.open_anchored(anchor, self.rect);
         }
     }
 

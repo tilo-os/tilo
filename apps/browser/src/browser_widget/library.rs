@@ -361,7 +361,6 @@ impl BrowserWidget {
         let mut parts: Vec<Element> = notices.iter().map(|notice| notice.widget(false)).collect();
         parts.extend([
             Box::new(header) as Element,
-            Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)),
             Box::new(
                 Row::new()
                     .no_wrap()

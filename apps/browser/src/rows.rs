@@ -24,7 +24,7 @@ pub(crate) fn with_buttons(row: ListRow, buttons: Vec<Button>) -> Row {
     line
 }
 
-/// `line` with a progress bar under its text, inside the list's insets.
+/// `line` with a progress bar under its text, on the text's leading edge.
 pub(crate) fn with_progress(
     line: impl Widget + 'static,
     bar: ProgressBar,
@@ -40,7 +40,7 @@ pub(crate) fn with_progress(
             .push(Box::new(
                 Row::new()
                     .no_wrap()
-                    .with_padding(spacing.s3, spacing.s0)
+                    .with_padding(spacing.s0, spacing.s0)
                     .push(Box::new(bar)),
             )),
     )
