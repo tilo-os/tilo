@@ -58,15 +58,17 @@ class QueueReliefTests(unittest.TestCase):
             self.assertNotRegex(events, r"(?m)^  schedule:")
             self.assertRegex(events, r"(?m)^  workflow_dispatch:")
             self.assertRegex(events, r"(?m)^  push:")
-        with self.subTest(phase='app and desktop prs keep preflight without packaging'):
-            for name, plan, build in (("release-apps", "plan", "build"),
-                                      ("release-desktop", "validate", "package")):
-                with self.subTest(workflow=name):
-                    text = workflow(name)
-                    self.assertRegex(section(text, "on"), r"(?m)^  pull_request:")
-                    self.assertIn("steps:", section(text, plan, 2))
-                    self.assertRegex(section(text, build, 2),
-                                     r"if: .*github.event_name != 'pull_request'")
+        with self.subTest(phase='desktop prs keep preflight without packaging'):
+            text = workflow("release-desktop")
+            self.assertRegex(section(text, "on"), r"(?m)^  pull_request:")
+            self.assertIn("steps:", section(text, "validate", 2))
+            self.assertRegex(section(text, "package", 2),
+                             r"if: .*github.event_name != 'pull_request'")
+        with self.subTest(phase='app prs start no release jobs and never package'):
+            text = workflow("release-apps")
+            self.assertNotRegex(section(text, "on"), r"(?m)^  pull_request(?:_target)?:")
+            self.assertRegex(section(text, "build", 2),
+                             r"if: .*github.event_name != 'pull_request'")
         with self.subTest(phase='specialized contract checks keep pr and periodic coverage'):
             for name in ("ci-legacy-apps", "ci-filesystem"):
                 with self.subTest(workflow=name):
