@@ -8,19 +8,18 @@
 
 use chrono::NaiveDate;
 use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    Resource,
+    ActionArgs, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType, Resource,
 };
 use ui::tilo_resource::Effect as _;
 use uuid::Uuid;
 
 use crate::actions::{
-    AttendeeData, AttendeePatch, CalendarAction, CalendarOperation, DATE_FMT, EventData,
-    EventPatch, ProjectData, ProjectPatch, TaskData, TaskPatch, attendee_resource_id,
-    calendar_id_from_resource, calendar_operation, delete_event_action, delete_task_action,
-    email_address, encode, event_resource_id, normalize_timezone, occurrence_resource_id,
-    patch_event_action, patch_task_action, project_id_from_resource, project_resource_id,
-    reminder_resource_id, set_task_done_action, task_resource_id,
+    AttendeeData, AttendeePatch, CalendarAction, DATE_FMT, EventData, EventPatch, ProjectData,
+    ProjectPatch, TaskData, TaskPatch, attendee_resource_id, calendar_id_from_resource,
+    delete_event_action, delete_task_action, email_address, encode, event_resource_id,
+    normalize_timezone, occurrence_resource_id, open_spec, patch_event_action, patch_task_action,
+    project_id_from_resource, project_resource_id, reminder_resource_id, set_task_done_action,
+    task_resource_id,
 };
 use crate::model::{Id, Model, Palette, Priority, Recurrence};
 
@@ -269,12 +268,7 @@ fn project_resource(project: &ProjectResource) -> Option<Resource> {
         "calendar.project",
         project.data.name.clone(),
     );
-    child = child.with_action(calendar_operation(
-        "open",
-        "Open project tasks",
-        OperationKind::View,
-        &CalendarOperation::OpenProject { id: id.clone() },
-    ));
+    child = child.with_action(open_spec(project_resource_id(parsed_id)));
     child = child.with_action(ActionSpec::typed(
         "edit",
         "Rename project",
@@ -353,12 +347,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
         "calendar.event",
         event_label(&ev.data),
     );
-    child = child.with_action(calendar_operation(
-        "open",
-        "Open event",
-        OperationKind::View,
-        &CalendarOperation::OpenEvent { id: id.clone() },
-    ));
+    child = child.with_action(open_spec(event_resource_id(parsed_id)));
     child = child.with_action(event_update_spec(
         "edit",
         "Rename event",
@@ -906,15 +895,7 @@ fn event_resource(ev: &EventResource) -> Option<Resource> {
             "calendar.occurrence",
             format!("{} · {original_date}", event_label(&ev.data)),
         )
-        .with_action(calendar_operation(
-            "open",
-            "Open occurrence",
-            OperationKind::View,
-            &CalendarOperation::OpenOccurrence {
-                event_id: ev.data.id.clone(),
-                original_date: original_date.to_string(),
-            },
-        ));
+        .with_action(open_spec(occurrence_resource_id(event_id, original_date)));
         occurrence = occurrence.with_action(immediate_spec(
             "exclude",
             "Skip occurrence",
@@ -959,12 +940,7 @@ fn task_resource(tk: &TaskResource) -> Option<Resource> {
         task_label(&tk.data),
     );
     child = child
-        .with_action(calendar_operation(
-            "open",
-            "Open task",
-            OperationKind::View,
-            &CalendarOperation::OpenTask { id: id.clone() },
-        ))
+        .with_action(open_spec(task_resource_id(parsed_id)))
         .with_action(immediate_spec(
             "toggle",
             toggle_label,

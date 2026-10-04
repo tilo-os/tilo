@@ -26,7 +26,7 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use ui::time::Duration;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_content::ContentStore;
@@ -103,7 +103,6 @@ const LIB_ROW_GAP_TIGHT: f64 = step(Spacing::BASE.s2);
 /// the face would vanish into it. Its edge then derives from this face via
 /// [`surface::card`].
 const SHEET_BUTTON_H: f64 = 44.0;
-const RETAINED_CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
 /// Button height. Deliberately shorter than the bar so the controls sit in
 /// the strip rather than filling it edge to edge.
@@ -1150,6 +1149,9 @@ pub struct PhotosApp {
     /// library's actions, applied through it. `None` until the framework
     /// attaches the surface; nothing is edited before then.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Photos>>,
+    /// The library's published actions and this surface's effects, which
+    /// its retained controls are bound to once the framework attaches it.
+    actions: Option<ui::framework::Actions<crate::resource::Photos>>,
     /// Where imported originals are kept and photographs are read from. The
     /// document names content by hash; this handle resolves it.
     content: ContentStore,
@@ -1394,6 +1396,8 @@ pub struct PhotosApp {
     /// while selecting album membership. They never write the document.
     album_page_buttons: Vec<(AlbumEditorHit, Button)>,
     album_page_pending: Rc<Cell<Option<AlbumEditorHit>>>,
+    /// An album sheet command invoked through its effect, for the next sync.
+    album_editor_pending: Cell<Option<AlbumEditorHit>>,
     metadata_editor: bool,
     metadata_editor_ids: Vec<String>,
     metadata_folder_input: TextInput,
@@ -2010,11 +2014,12 @@ impl PhotosApp {
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
             // 1× capsules; the first `build_layout` refits them to the theme.
-            buttons.push((*hit, build_button(*hit, key, *icon, *face, BTN_H, &pending)));
+            buttons.push((*hit, build_button(*hit, key, *icon, *face, BTN_H, None)));
         }
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
             dispatch: None,
+            actions: None,
             content,
             #[cfg(test)]
             last_library_action: None,
@@ -2050,7 +2055,7 @@ impl PhotosApp {
             directory_import_details_open: false,
             directory_import_details_page: 0,
             directory_import_details_layout: None,
-            directory_import_buttons: build_directory_import_buttons(&directory_import_pending),
+            directory_import_buttons: build_directory_import_buttons(None),
             directory_import_pending,
             directory_import_progress: ProgressBar::indeterminate()
                 .with_label("Indexing photo folder"),
@@ -2068,7 +2073,7 @@ impl PhotosApp {
             pending_people_scans: HashMap::new(),
             library_analysis: crate::library_analysis::LibraryAnalysisState::default(),
             library_analysis_capability: initial_analysis_capability,
-            library_analysis_buttons: build_library_analysis_buttons(&library_analysis_pending),
+            library_analysis_buttons: build_library_analysis_buttons(None),
             library_analysis_progress: ProgressBar::new(0.0).with_label("Photo analysis"),
             library_analysis_pending,
             library_analysis_failure_hits: Vec::new(),
@@ -2117,7 +2122,7 @@ impl PhotosApp {
             places_page: 0,
             places_hits: Vec::new(),
             collection_page_hits: Vec::new(),
-            collection_page_buttons: build_collection_page_buttons(&collection_page_pending),
+            collection_page_buttons: build_collection_page_buttons(None),
             collection_page_pending,
             places_map_bounds: Rect::ZERO,
             places_drag_origin: None,
@@ -2143,7 +2148,7 @@ impl PhotosApp {
             metadata_filter_cards: Vec::new(),
             library_page_hits: Vec::new(),
             timeline_density_hits: Vec::new(),
-            timeline_density_buttons: build_timeline_density_buttons(&timeline_density_pending),
+            timeline_density_buttons: build_timeline_density_buttons(None),
             timeline_density_pending,
             library_select_button: build_library_header_button("photos-library-select", "Select"),
             library_album_buttons: build_library_album_buttons(),
@@ -2168,8 +2173,9 @@ impl PhotosApp {
             album_editor_focus: 0,
             album_editor_rect: Rect::ZERO,
             album_editor_hits: Vec::new(),
-            album_page_buttons: build_album_page_buttons(&album_page_pending),
+            album_page_buttons: build_album_page_buttons(None),
             album_page_pending,
+            album_editor_pending: Cell::new(None),
             metadata_editor: false,
             metadata_editor_ids: Vec::new(),
             metadata_folder_input: TextInput::local()
@@ -2204,7 +2210,7 @@ impl PhotosApp {
             metadata_editor_scroll: 0.0,
             metadata_editor_body: Rect::ZERO,
             metadata_editor_reveal_focus: false,
-            metadata_editor_buttons: build_metadata_editor_buttons(&metadata_editor_pending),
+            metadata_editor_buttons: build_metadata_editor_buttons(None),
             metadata_editor_pending,
             library_thumbnails: HashMap::new(),
             thumbnail_resource_keys: HashMap::new(),
@@ -2359,7 +2365,7 @@ impl PhotosApp {
         for (((hit, key, icon, _), face), was_enabled) in
             TOOLBAR.iter().zip(want.iter()).zip(enabled)
         {
-            let mut button = build_button(*hit, key, *icon, *face, btn_h, &self.pending);
+            let mut button = build_button(*hit, key, *icon, *face, btn_h, self.actions.as_ref());
             button.set_enabled(was_enabled);
             self.buttons.push((*hit, button));
         }
@@ -2586,7 +2592,7 @@ impl PhotosApp {
         }
         self.people_control_signature = signature;
         self.people_controls.clear();
-        let pending = Rc::clone(&self.people_pending);
+        let actions = self.actions.clone();
         let recognition_enabled = self.people_controller.privacy().recognition_enabled;
         let mut push = |intent: PeopleIntent, label: String, primary: bool, danger: bool| {
             let visible_label = match &intent {
@@ -2600,25 +2606,7 @@ impl PhotosApp {
                 None,
             )
             .with_accessible_name(&label);
-            let mut button = if matches!(
-                &intent,
-                PeopleIntent::Back
-                    | PeopleIntent::OpenApproved(_)
-                    | PeopleIntent::OpenSuggestion(_)
-                    | PeopleIntent::BrowseApproved
-                    | PeopleIntent::BeginMerge
-                    | PeopleIntent::ToggleHidden
-                    | PeopleIntent::Page(_)
-            ) {
-                let queued = intent.clone();
-                let pending = Rc::clone(&pending);
-                button.on_view(move || *pending.borrow_mut() = Some(queued.clone()))
-            } else {
-                let queued = intent.clone();
-                let pending = Rc::clone(&pending);
-                button.on_effect(move || *pending.borrow_mut() = Some(queued.clone()))
-            }
-            .fill_width(44.0);
+            let mut button = bound(button, &intent.effect(), actions.as_ref()).fill_width(44.0);
             if primary || matches!(&intent, PeopleIntent::OpenSuggestion(_)) {
                 button = button.primary();
             } else if danger {
@@ -3779,8 +3767,64 @@ impl PhotosApp {
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Photos>,
+        actions: ui::framework::Actions<crate::resource::Photos>,
     ) {
         self.dispatch = Some(dispatcher);
+        self.actions = Some(actions);
+        self.bind_controls();
+    }
+
+    /// Build the retained controls again, bound to their effects.
+    fn bind_controls(&mut self) {
+        let actions = self.actions.as_ref();
+        let enabled = |buttons: &[(_, Button)]| -> Vec<bool> {
+            buttons
+                .iter()
+                .map(|(_, button)| button.is_enabled())
+                .collect()
+        };
+        let toolbar = enabled(&self.buttons);
+        self.buttons = TOOLBAR
+            .iter()
+            .zip(self.faces.iter())
+            .zip(toolbar)
+            .map(|(((hit, key, icon, _), face), was_enabled)| {
+                let mut button = build_button(*hit, key, *icon, *face, self.toolbar_btn_h, actions);
+                button.set_enabled(was_enabled);
+                (*hit, button)
+            })
+            .collect();
+        self.directory_import_buttons = build_directory_import_buttons(actions);
+        self.library_analysis_buttons = build_library_analysis_buttons(actions);
+        self.collection_page_buttons = build_collection_page_buttons(actions);
+        self.timeline_density_buttons = build_timeline_density_buttons(actions);
+        self.album_page_buttons = build_album_page_buttons(actions);
+        self.metadata_editor_buttons = build_metadata_editor_buttons(actions);
+        // People controls are rebuilt on their next refresh.
+        self.people_control_signature.clear();
+    }
+
+    /// Answer the effect of a retained control: post its intent for the
+    /// next sync, which has the document. `false` when `effect` is not one.
+    fn post_control(&self, effect: &PhotosEffect) -> bool {
+        let Some(control) = Control::of(effect) else {
+            return false;
+        };
+        match control {
+            Control::Toolbar(hit) => self.pending.set(Some(hit)),
+            Control::Album(hit) => match hit {
+                AlbumEditorHit::PreviousPage | AlbumEditorHit::NextPage => {
+                    self.album_page_pending.set(Some(hit));
+                }
+                hit => self.album_editor_pending.set(Some(hit)),
+            },
+            Control::Details(hit) => self.metadata_editor_pending.set(Some(hit)),
+            Control::Timeline(hit) => self.timeline_density_pending.set(Some(hit)),
+            Control::Collection(hit) => self.collection_page_pending.set(Some(hit)),
+            Control::Directory(hit) => self.directory_import_pending.set(Some(hit)),
+            Control::People(intent) => *self.people_pending.borrow_mut() = Some(intent),
+        }
+        true
     }
 
     /// This surface editing through `dispatcher`: what a test of the
@@ -5010,13 +5054,9 @@ impl PhotosApp {
             PhotosEffect::ViewPlace { place_key } => {
                 self.open_place_collection(library, &place_key)?;
             }
-            PhotosEffect::ViewAlbum { .. }
-            | PhotosEffect::ViewFolder { .. }
-            | PhotosEffect::ViewPerson { .. }
-            | PhotosEffect::ViewTag { .. }
-            | PhotosEffect::ViewObject { .. }
-            | PhotosEffect::ViewPet { .. }
-            | PhotosEffect::Import { path: Some(_) } => {}
+            // Views with a library to check, a direct import and the
+            // retained controls' effects are answered before this.
+            _ => {}
         }
         Ok(())
     }
@@ -13718,10 +13758,9 @@ fn build_button(
     icon: Icon,
     face: Face,
     btn_h: f32,
-    pending: &Rc<Cell<Option<Hit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Button {
     let label = tr(key);
-    let slot = pending.clone();
     let shown = match face {
         Face::Labelled => label.as_str(),
         Face::IconOnly | Face::LargeOverflow => "",
@@ -13745,11 +13784,11 @@ fn build_button(
     } else {
         button.with_icon(icon)
     };
-    button
+    let button = button
         .with_size(width, btn_h)
         .tooltip(label.clone())
-        .with_accessible_name(&label)
-        .on_effect(move || slot.set(Some(hit)))
+        .with_accessible_name(&label);
+    bound(button, &hit.effect(), actions)
 }
 
 /// A local navigation button in the album sheet. Membership paging is device
@@ -13759,18 +13798,17 @@ fn build_album_page_button(
     hit: AlbumEditorHit,
     id: &str,
     label: &str,
-    pending: &Rc<Cell<Option<AlbumEditorHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Button {
-    let slot = pending.clone();
-    Button::new(id, label, None)
+    let button = Button::new(id, label, None)
         .with_size(92.0, 44.0)
         .tooltip(label)
-        .with_accessible_name(label)
-        .on_effect(move || slot.set(Some(hit)))
+        .with_accessible_name(label);
+    bound(button, &hit.effect(), actions)
 }
 
 fn build_album_page_buttons(
-    pending: &Rc<Cell<Option<AlbumEditorHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(AlbumEditorHit, Button)> {
     [
         (
@@ -13781,7 +13819,7 @@ fn build_album_page_buttons(
         (AlbumEditorHit::NextPage, "photos-album-next-page", "Next"),
     ]
     .into_iter()
-    .map(|(hit, id, label)| (hit, build_album_page_button(hit, id, label, pending)))
+    .map(|(hit, id, label)| (hit, build_album_page_button(hit, id, label, actions)))
     .collect()
 }
 
@@ -13791,7 +13829,7 @@ fn build_album_page_buttons(
 /// becoming a painted collection of fake controls merely because it is docked
 /// over the photo canvas.
 fn build_metadata_editor_buttons(
-    pending: &Rc<Cell<Option<MetadataEditorHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(MetadataEditorHit, Button)> {
     [
         (MetadataEditorHit::Organize, "organize", "Organize"),
@@ -13831,14 +13869,10 @@ fn build_metadata_editor_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
-        let slot = Rc::clone(pending);
-        (
-            hit,
-            Button::new(&format!("photos-metadata-{id}"), label, None)
-                .tooltip(label)
-                .with_accessible_name(label)
-                .on_effect(move || slot.set(Some(hit))),
-        )
+        let button = Button::new(&format!("photos-metadata-{id}"), label, None)
+            .tooltip(label)
+            .with_accessible_name(label);
+        (hit, bound(button, &hit.effect(), actions))
     })
     .collect()
 }
@@ -13865,7 +13899,7 @@ fn build_library_album_buttons() -> Vec<(AlbumEditorHit, Button)> {
 }
 
 fn build_collection_page_buttons(
-    pending: &Rc<Cell<Option<CollectionPageHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(CollectionPageHit, Button)> {
     [
         (
@@ -13889,21 +13923,17 @@ fn build_collection_page_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label)| {
-        let slot = pending.clone();
-        (
-            hit,
-            Button::new(id, label, None)
-                .with_size(88.0, 40.0)
-                .tooltip(label)
-                .with_accessible_name(label)
-                .on_effect(move || slot.set(Some(hit))),
-        )
+        let button = Button::new(id, label, None)
+            .with_size(88.0, 40.0)
+            .tooltip(label)
+            .with_accessible_name(label);
+        (hit, bound(button, &hit.effect(), actions))
     })
     .collect()
 }
 
 fn build_directory_import_buttons(
-    pending: &Rc<Cell<Option<DirectoryStatusHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(DirectoryStatusHit, Button)> {
     [
         (
@@ -13932,14 +13962,7 @@ fn build_directory_import_buttons(
             .with_size(104.0, 40.0)
             .tooltip(label)
             .with_accessible_name(label);
-        let button = if hit == DirectoryStatusHit::Details {
-            let slot = pending.clone();
-            button.on_view(move || slot.set(Some(hit)))
-        } else {
-            let slot = pending.clone();
-            button.on_effect(move || slot.set(Some(hit)))
-        };
-        (hit, button)
+        (hit, bound(button, &hit.effect(), actions))
     })
     .collect()
 }
@@ -13948,7 +13971,7 @@ fn build_directory_import_buttons(
 /// timeline owns placement, while Button owns its visual states, names and
 /// minimum target treatment.
 fn build_timeline_density_buttons(
-    pending: &Rc<Cell<Option<TimelineHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(TimelineHit, Button)> {
     [
         (
@@ -13966,22 +13989,18 @@ fn build_timeline_density_buttons(
     ]
     .into_iter()
     .map(|(hit, id, name, icon)| {
-        let slot = pending.clone();
-        (
-            hit,
-            Button::new(id, "", None)
-                .with_icon(icon)
-                .with_size(44.0, 44.0)
-                .tooltip(name)
-                .with_accessible_name(name)
-                .on_effect(move || slot.set(Some(hit))),
-        )
+        let button = Button::new(id, "", None)
+            .with_icon(icon)
+            .with_size(44.0, 44.0)
+            .tooltip(name)
+            .with_accessible_name(name);
+        (hit, bound(button, &hit.effect(), actions))
     })
     .collect()
 }
 
 fn build_library_analysis_buttons(
-    pending: &Rc<Cell<Option<LibraryAnalysisHit>>>,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
 ) -> Vec<(LibraryAnalysisHit, Button)> {
     [
         (
@@ -14011,18 +14030,225 @@ fn build_library_analysis_buttons(
     ]
     .into_iter()
     .map(|(hit, id, label, icon)| {
-        let slot = pending.clone();
-        (
-            hit,
-            Button::new(id, label, None)
-                .with_icon(icon)
-                .with_size(220.0, 44.0)
-                .tooltip(label)
-                .with_accessible_name(label)
-                .on_effect(move || slot.set(Some(hit))),
-        )
+        let button = Button::new(id, label, None)
+            .with_icon(icon)
+            .with_size(220.0, 44.0)
+            .tooltip(label)
+            .with_accessible_name(label);
+        (hit, bound(button, &hit.effect(), actions))
     })
     .collect()
+}
+
+/// The effect each retained control invokes, and back: a button is bound to
+/// its effect through the framework, and the effect's handler posts the
+/// control's intent for the next sync, which has the document.
+impl Hit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::Open => PhotosEffect::Import { path: None },
+            Self::Library => PhotosEffect::ViewLibrary,
+            Self::RotateLeft => PhotosEffect::RotateLeft,
+            Self::RotateRight => PhotosEffect::RotateRight,
+            Self::CropToView => PhotosEffect::CropToView,
+            Self::Reset => PhotosEffect::ResetEdits,
+            Self::Copy => PhotosEffect::Copy,
+            Self::Share => PhotosEffect::ShareShown,
+            Self::Save => PhotosEffect::Save { path: None },
+            Self::More => PhotosEffect::ToggleMoreMenu,
+        }
+    }
+}
+
+impl AlbumEditorHit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::New => PhotosEffect::NewAlbum,
+            Self::Edit => PhotosEffect::EditAlbum,
+            Self::PreviousPage => PhotosEffect::PreviousLibraryPage,
+            Self::NextPage => PhotosEffect::NextLibraryPage,
+            Self::Save => PhotosEffect::SaveAlbumDraft,
+            Self::Cancel => PhotosEffect::CancelAlbumDraft,
+            Self::Delete => PhotosEffect::DeleteAlbumDraft,
+            Self::ConfirmDelete => PhotosEffect::ConfirmAlbumDelete,
+        }
+    }
+}
+
+impl MetadataEditorHit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::Save => PhotosEffect::SaveDetails,
+            Self::Cancel => PhotosEffect::CancelDetails,
+            Self::Organize => PhotosEffect::ShowDetailsOrganize,
+            Self::TimeAndPlace => PhotosEffect::ShowDetailsTimeAndPlace,
+            Self::ClearFolder => PhotosEffect::ClearDraftFolder,
+            Self::ClearPeople => PhotosEffect::ClearDraftPeople,
+            Self::ClearTags => PhotosEffect::ClearDraftTags,
+            Self::ClearCapturedAt => PhotosEffect::ClearDraftCapturedAt,
+            Self::ClearLocation => PhotosEffect::ClearDraftLocation,
+            Self::PlaceOnMap => PhotosEffect::PlaceDraftOnMap,
+        }
+    }
+}
+
+impl TimelineHit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::ZoomOut => PhotosEffect::ShowFewerPhotos,
+            Self::ZoomIn => PhotosEffect::ShowMorePhotos,
+        }
+    }
+}
+
+impl CollectionPageHit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::AlbumsPrevious => PhotosEffect::PreviousAlbumsPage,
+            Self::AlbumsNext => PhotosEffect::NextAlbumsPage,
+            Self::PeoplePrevious => PhotosEffect::PreviousPeoplePage,
+            Self::PeopleNext => PhotosEffect::NextPeoplePage,
+            Self::PlacesPrevious => PhotosEffect::PreviousPlacesPage,
+            Self::PlacesNext => PhotosEffect::NextPlacesPage,
+        }
+    }
+}
+
+impl DirectoryStatusHit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::Stop => PhotosEffect::StopImport,
+            Self::Details => PhotosEffect::ShowImportDetails,
+            Self::Dismiss => PhotosEffect::DismissImport,
+        }
+    }
+}
+
+impl LibraryAnalysisHit {
+    fn effect(self) -> PhotosEffect {
+        match self {
+            Self::Start => PhotosEffect::AnalyzeLibrary,
+            Self::Pause => PhotosEffect::PauseLibraryAnalysis,
+            Self::Resume => PhotosEffect::ResumeLibraryAnalysis,
+            Self::RetryFailures => PhotosEffect::RetryLibraryAnalysisFailures,
+        }
+    }
+}
+
+impl PeopleIntent {
+    fn effect(&self) -> PhotosEffect {
+        match self.clone() {
+            Self::Back => PhotosEffect::PeopleBack,
+            Self::ToggleRecognition => PhotosEffect::TogglePeopleRecognition,
+            Self::Scan => PhotosEffect::AnalyzePeopleLibrary,
+            Self::CancelScan => PhotosEffect::CancelPeopleScan,
+            Self::OpenApproved(person) => PhotosEffect::OpenApprovedPerson { person },
+            Self::OpenSuggestion(cluster) => PhotosEffect::OpenSuggestion { cluster },
+            Self::BrowseApproved => PhotosEffect::BrowseApprovedPeople,
+            Self::SaveName => PhotosEffect::SavePersonName,
+            Self::BeginMerge => PhotosEffect::BeginPeopleMerge,
+            Self::MergeApprovedInto(person) => PhotosEffect::MergeApprovedInto { person },
+            Self::ApproveSuggestion => PhotosEffect::ApproveSuggestion,
+            Self::RejectSuggestion => PhotosEffect::RejectSuggestion,
+            Self::HideSuggestion => PhotosEffect::HideSuggestion,
+            Self::RestoreSuggestion => PhotosEffect::RestoreSuggestion,
+            Self::MergeSuggestionWith(person) => PhotosEffect::MergeSuggestionWith { person },
+            Self::ToggleHidden => PhotosEffect::ToggleHiddenSuggestions,
+            Self::Page(forward) => PhotosEffect::PeoplePage { forward },
+            Self::DeleteLocalData => PhotosEffect::DeleteLocalPeopleData,
+            Self::ConfirmDeleteLocalData => PhotosEffect::ConfirmDeleteLocalPeopleData,
+        }
+    }
+}
+
+/// The intent of the retained control `effect` stands for, when it is one.
+enum Control {
+    Toolbar(Hit),
+    Album(AlbumEditorHit),
+    Details(MetadataEditorHit),
+    Timeline(TimelineHit),
+    Collection(CollectionPageHit),
+    Directory(DirectoryStatusHit),
+    People(PeopleIntent),
+}
+
+impl Control {
+    fn of(effect: &PhotosEffect) -> Option<Self> {
+        use PhotosEffect as E;
+        Some(match effect.clone() {
+            E::RotateLeft => Self::Toolbar(Hit::RotateLeft),
+            E::RotateRight => Self::Toolbar(Hit::RotateRight),
+            E::CropToView => Self::Toolbar(Hit::CropToView),
+            E::ResetEdits => Self::Toolbar(Hit::Reset),
+            E::ShareShown => Self::Toolbar(Hit::Share),
+            E::ToggleMoreMenu => Self::Toolbar(Hit::More),
+            E::NewAlbum => Self::Album(AlbumEditorHit::New),
+            E::EditAlbum => Self::Album(AlbumEditorHit::Edit),
+            E::PreviousLibraryPage => Self::Album(AlbumEditorHit::PreviousPage),
+            E::NextLibraryPage => Self::Album(AlbumEditorHit::NextPage),
+            E::SaveAlbumDraft => Self::Album(AlbumEditorHit::Save),
+            E::CancelAlbumDraft => Self::Album(AlbumEditorHit::Cancel),
+            E::DeleteAlbumDraft => Self::Album(AlbumEditorHit::Delete),
+            E::ConfirmAlbumDelete => Self::Album(AlbumEditorHit::ConfirmDelete),
+            E::SaveDetails => Self::Details(MetadataEditorHit::Save),
+            E::CancelDetails => Self::Details(MetadataEditorHit::Cancel),
+            E::ShowDetailsOrganize => Self::Details(MetadataEditorHit::Organize),
+            E::ShowDetailsTimeAndPlace => Self::Details(MetadataEditorHit::TimeAndPlace),
+            E::ClearDraftFolder => Self::Details(MetadataEditorHit::ClearFolder),
+            E::ClearDraftPeople => Self::Details(MetadataEditorHit::ClearPeople),
+            E::ClearDraftTags => Self::Details(MetadataEditorHit::ClearTags),
+            E::ClearDraftCapturedAt => Self::Details(MetadataEditorHit::ClearCapturedAt),
+            E::ClearDraftLocation => Self::Details(MetadataEditorHit::ClearLocation),
+            E::PlaceDraftOnMap => Self::Details(MetadataEditorHit::PlaceOnMap),
+            E::ShowFewerPhotos => Self::Timeline(TimelineHit::ZoomOut),
+            E::ShowMorePhotos => Self::Timeline(TimelineHit::ZoomIn),
+            E::PreviousAlbumsPage => Self::Collection(CollectionPageHit::AlbumsPrevious),
+            E::NextAlbumsPage => Self::Collection(CollectionPageHit::AlbumsNext),
+            E::PreviousPeoplePage => Self::Collection(CollectionPageHit::PeoplePrevious),
+            E::NextPeoplePage => Self::Collection(CollectionPageHit::PeopleNext),
+            E::PreviousPlacesPage => Self::Collection(CollectionPageHit::PlacesPrevious),
+            E::NextPlacesPage => Self::Collection(CollectionPageHit::PlacesNext),
+            E::StopImport => Self::Directory(DirectoryStatusHit::Stop),
+            E::ShowImportDetails => Self::Directory(DirectoryStatusHit::Details),
+            E::DismissImport => Self::Directory(DirectoryStatusHit::Dismiss),
+            E::PeopleBack => Self::People(PeopleIntent::Back),
+            E::TogglePeopleRecognition => Self::People(PeopleIntent::ToggleRecognition),
+            E::CancelPeopleScan => Self::People(PeopleIntent::CancelScan),
+            E::OpenApprovedPerson { person } => Self::People(PeopleIntent::OpenApproved(person)),
+            E::OpenSuggestion { cluster } => Self::People(PeopleIntent::OpenSuggestion(cluster)),
+            E::BrowseApprovedPeople => Self::People(PeopleIntent::BrowseApproved),
+            E::SavePersonName => Self::People(PeopleIntent::SaveName),
+            E::BeginPeopleMerge => Self::People(PeopleIntent::BeginMerge),
+            E::MergeApprovedInto { person } => {
+                Self::People(PeopleIntent::MergeApprovedInto(person))
+            }
+            E::ApproveSuggestion => Self::People(PeopleIntent::ApproveSuggestion),
+            E::RejectSuggestion => Self::People(PeopleIntent::RejectSuggestion),
+            E::HideSuggestion => Self::People(PeopleIntent::HideSuggestion),
+            E::RestoreSuggestion => Self::People(PeopleIntent::RestoreSuggestion),
+            E::MergeSuggestionWith { person } => {
+                Self::People(PeopleIntent::MergeSuggestionWith(person))
+            }
+            E::ToggleHiddenSuggestions => Self::People(PeopleIntent::ToggleHidden),
+            E::PeoplePage { forward } => Self::People(PeopleIntent::Page(forward)),
+            E::DeleteLocalPeopleData => Self::People(PeopleIntent::DeleteLocalData),
+            E::ConfirmDeleteLocalPeopleData => Self::People(PeopleIntent::ConfirmDeleteLocalData),
+            _ => return None,
+        })
+    }
+}
+
+/// `button`, bound to `effect` through the framework's door once the surface
+/// is attached; until then it is drawn and reached by its semantics alone.
+fn bound(
+    button: Button,
+    effect: &PhotosEffect,
+    actions: Option<&ui::framework::Actions<crate::resource::Photos>>,
+) -> Button {
+    match actions {
+        Some(actions) => actions.bind_effect_invocation(button, effect),
+        None => button,
+    }
 }
 
 /// Wrap an RGBA buffer as the image type the scene draws.
@@ -14321,43 +14547,8 @@ impl PhotosApp {
     ///
     /// Photos lays these controls over several custom-painted surfaces, so
     /// the ordinary recursive widget plumbing cannot discover them. Keep the
-    /// inventory in one place so resource publication, policy refresh,
-    /// invocation draining, and operation dispatch cannot drift apart.
-    fn retained_buttons(&self) -> Vec<&Button> {
-        let mut buttons = Vec::new();
-        buttons.extend(self.buttons.iter().map(|(_, button)| button));
-        buttons.extend(
-            self.directory_import_buttons
-                .iter()
-                .map(|(_, button)| button),
-        );
-        buttons.extend(
-            self.library_analysis_buttons
-                .iter()
-                .map(|(_, button)| button),
-        );
-        buttons.extend(
-            self.collection_page_buttons
-                .iter()
-                .map(|(_, button)| button),
-        );
-        buttons.extend(
-            self.timeline_density_buttons
-                .iter()
-                .map(|(_, button)| button),
-        );
-        buttons.push(&self.library_select_button);
-        buttons.extend(self.library_album_buttons.iter().map(|(_, button)| button));
-        buttons.extend(self.album_page_buttons.iter().map(|(_, button)| button));
-        buttons.extend(
-            self.metadata_editor_buttons
-                .iter()
-                .map(|(_, button)| button),
-        );
-        buttons.extend(self.people_controls.iter().map(|control| &control.button));
-        buttons
-    }
-
+    /// inventory in one place so policy refresh and invocation draining
+    /// cannot drift apart.
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
         let mut buttons = Vec::new();
         buttons.extend(self.buttons.iter_mut().map(|(_, button)| button));
@@ -14428,6 +14619,24 @@ impl PhotosApp {
         }
         if let Some(hit) = self.metadata_editor_pending.take() {
             self.activate_metadata_editor_hit(hit, doc);
+        }
+        if let Some(hit) = self.album_editor_pending.take() {
+            match hit {
+                AlbumEditorHit::New => self.begin_new_album(doc),
+                AlbumEditorHit::Edit => self.begin_edit_album(doc),
+                AlbumEditorHit::Save => self.save_album_editor(doc),
+                AlbumEditorHit::Cancel => self.cancel_album_editor(),
+                AlbumEditorHit::Delete => {
+                    self.album_delete_confirm = true;
+                    self.notice = Some(
+                        "Press Delete album? again to keep photographs and delete only the album"
+                            .to_owned(),
+                    );
+                }
+                AlbumEditorHit::ConfirmDelete => self.delete_active_album(doc),
+                AlbumEditorHit::PreviousPage => self.page_library(false),
+                AlbumEditorHit::NextPage => self.page_library(true),
+            }
         }
         let people = self.people_pending.borrow_mut().take();
         if let Some(intent) = people {
@@ -14525,10 +14734,7 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
@@ -14555,32 +14761,6 @@ impl Widget for PhotosApp {
                 .places_camera_feedback
                 .is_some_and(|feedback| !feedback.done(ui::time::now()))
                 || self.people_detail_transition.is_animating(ui::time::now()))
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[RETAINED_CONTROL_OPERATION_TYPE]
-    }
-
-    // The toolbar and sheet controls are laid out over custom-painted
-    // surfaces, outside `children`; a control invocation reaches them here.
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if request.type_id != RETAINED_CONTROL_OPERATION_TYPE {
-            return Ok(None);
-        }
-        for button in self.retained_buttons_mut() {
-            if let Some(started) = button.start_operation(op, doc, path)? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
     }
 
     #[allow(
@@ -16185,24 +16365,6 @@ impl Widget for PhotosApp {
     }
 }
 
-impl ui::resources::PublishesResources for PhotosApp {
-    /// The toolbar and sheet controls laid out over the custom-painted
-    /// surfaces, outside `children`: they publish themselves as every toolkit
-    /// control does. The library is the resource's own publication.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.retained_buttons()
-            .into_iter()
-            .flat_map(|button| button.resources(doc))
-            .collect()
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.retained_buttons()
-            .into_iter()
-            .flat_map(|button| button.resources(doc))
-            .find(|resource| resource.id.as_str() == id)
-    }
-}
-
 impl PhotosApp {
     /// Why the last search refresh was rejected, while the last good index
     /// stays in use: a row a caller can read and act on.
@@ -16266,6 +16428,9 @@ impl PhotosApp {
         library: &crate::model::PhotoLibrary,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let done = || Ok(Some(tilo_actions::ActionOutput::default()));
+        if self.post_control(&effect) {
+            return done();
+        }
         match effect {
             PhotosEffect::View { photo_id } => self.view_photo(library, &photo_id)?,
             PhotosEffect::ViewLibrary => self.show_library(),

@@ -5836,31 +5836,28 @@ impl Default for CalendarApp {
     }
 }
 
+/// What an item's `open` shows, by the kind its resource id names.
+enum Open<'a> {
+    Event {
+        id: &'a str,
+    },
+    Occurrence {
+        event_id: &'a str,
+        original_date: &'a str,
+    },
+    Task {
+        id: &'a str,
+    },
+    Project {
+        id: &'a str,
+    },
+    Calendar {
+        id: &'a str,
+    },
+}
+
 impl Widget for CalendarApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if request.kind != tilo_actions::OperationKind::View {
-            return Ok(None);
-        }
-        Ok(self
-            .answer_view_operation(request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-            }))
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::CALENDAR_OPERATION_TYPE]
-    }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
@@ -6517,14 +6514,30 @@ impl CalendarApp {
         clippy::too_many_lines,
         reason = "the complete operation dispatch keeps every canonical Calendar view/effect route and its truthful state transition in one auditable match"
     )]
-    fn answer_view_operation(&mut self, type_id: &str, payload: &[u8]) -> Result<bool, String> {
-        if type_id != crate::actions::CALENDAR_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::CalendarOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match operation {
-            crate::actions::CalendarOperation::OpenEvent { id } => {
+    /// Open an item — an event, an occurrence, a task, a project or a
+    /// calendar — by its resource id, as its `open` asks.
+    pub(crate) fn open_item(&mut self, item: &str) -> Result<(), String> {
+        let open = if let Some(id) = item.strip_prefix("calendar.event:") {
+            Open::Event { id }
+        } else if let Some((event_id, original_date)) = item
+            .strip_prefix("calendar.occurrence:")
+            .and_then(|rest| rest.rsplit_once(':'))
+        {
+            Open::Occurrence {
+                event_id,
+                original_date,
+            }
+        } else if let Some(id) = item.strip_prefix("calendar.task:") {
+            Open::Task { id }
+        } else if let Some(id) = item.strip_prefix("calendar.project:") {
+            Open::Project { id }
+        } else if let Some(id) = item.strip_prefix("calendar.collection:") {
+            Open::Calendar { id }
+        } else {
+            return Err(format!("`{item}` is no event, task, project or calendar"));
+        };
+        match open {
+            Open::Event { id } => {
                 let id = id
                     .parse::<Id>()
                     .map_err(|_| "invalid event id".to_string())?;
@@ -6535,14 +6548,14 @@ impl CalendarApp {
                 self.anchor = event.start.date();
                 self.select_event(id);
             }
-            crate::actions::CalendarOperation::OpenOccurrence {
+            Open::Occurrence {
                 event_id,
                 original_date,
             } => {
                 let id = event_id
                     .parse::<Id>()
                     .map_err(|_| "invalid event id".to_string())?;
-                let original_date = NaiveDate::parse_from_str(&original_date, "%Y-%m-%d")
+                let original_date = NaiveDate::parse_from_str(original_date, "%Y-%m-%d")
                     .map_err(|_| "invalid occurrence date".to_string())?;
                 let event = self
                     .model
@@ -6556,7 +6569,7 @@ impl CalendarApp {
                     .map_or(original_date, |start| start.date());
                 self.select_event(id);
             }
-            crate::actions::CalendarOperation::OpenTask { id } => {
+            Open::Task { id } => {
                 let id = id
                     .parse::<Id>()
                     .map_err(|_| "invalid task id".to_string())?;
@@ -6569,7 +6582,7 @@ impl CalendarApp {
                 }
                 self.select_task(id);
             }
-            crate::actions::CalendarOperation::OpenProject { id } => {
+            Open::Project { id } => {
                 let id = id
                     .parse::<Id>()
                     .map_err(|_| "invalid project id".to_string())?;
@@ -6585,9 +6598,9 @@ impl CalendarApp {
                 self.narrow_screen = NarrowScreen::Calendar;
                 self.blur_editor();
             }
-            crate::actions::CalendarOperation::OpenCalendar { id } => {
+            Open::Calendar { id } => {
                 let calendar = self
-                    .calendar_for_resource(Some(&id))
+                    .calendar_for_resource(Some(id))
                     .ok_or_else(|| "calendar no longer exists".to_string())?;
                 self.calendar_filter = Some(calendar.id);
                 self.detail_open = false;
@@ -6603,29 +6616,25 @@ impl CalendarApp {
                     )
                 });
             }
-            crate::actions::CalendarOperation::ShowAllCalendars => {
-                self.calendar_filter = None;
-                self.detail_open = false;
-                self.selection = None;
-                self.narrow_screen = NarrowScreen::Calendar;
-                self.blur_editor();
-                self.status = Some("Showing all calendars".into());
-            }
-            crate::actions::CalendarOperation::ShowMonth => {
-                self.view = View::Month;
-            }
-            crate::actions::CalendarOperation::ShowWeek => {
-                self.view = View::Week;
-            }
-            crate::actions::CalendarOperation::ShowDay => {
-                self.view = View::Day;
-            }
-            crate::actions::CalendarOperation::ShowAgenda => {
-                self.view = View::Agenda;
-            }
         }
         self.dirty = true;
-        Ok(true)
+        Ok(())
+    }
+
+    /// Show every calendar again, after one calendar's events were shown.
+    pub(crate) fn show_all_calendars(&mut self) {
+        self.calendar_filter = None;
+        self.detail_open = false;
+        self.selection = None;
+        self.narrow_screen = NarrowScreen::Calendar;
+        self.blur_editor();
+        self.status = Some("Showing all calendars".into());
+        self.dirty = true;
+    }
+
+    fn show_view(&mut self, view: View) {
+        self.view = view;
+        self.dirty = true;
     }
 
     /// Answer one of the calendar's effects, invoked by a control, the
@@ -6638,6 +6647,40 @@ impl CalendarApp {
         use crate::resource::CalendarEffect;
         use ui::framework::Effected;
         match effect {
+            CalendarEffect::Open { item } => {
+                self.open_item(&item)?;
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowAllCalendars => {
+                self.show_all_calendars();
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowView { view } => {
+                self.show_view(match view.as_str() {
+                    "month" => View::Month,
+                    "week" => View::Week,
+                    "day" => View::Day,
+                    "agenda" => View::Agenda,
+                    other => return Err(format!("there is no `{other}` view")),
+                });
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowMonth => {
+                self.show_view(View::Month);
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowWeek => {
+                self.show_view(View::Week);
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowDay => {
+                self.show_view(View::Day);
+                Ok(Effected::done())
+            }
+            CalendarEffect::ShowAgenda => {
+                self.show_view(View::Agenda);
+                Ok(Effected::done())
+            }
             CalendarEffect::Sync => {
                 if self.syncing || self.sync_requested {
                     return Err("calendar synchronization is already running".into());

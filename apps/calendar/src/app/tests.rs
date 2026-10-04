@@ -2570,26 +2570,8 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         let mut app = CalendarApp::new_demo();
         let mut doc = demo_document(&app);
         app.sync(&mut doc, &automerge::ROOT);
-        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::OpenCalendar {
-            id: "icloud/holidays".into(),
-        })
-        .expect("operation serializes");
-
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::CALENDAR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("hidden collection still opens"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        app.open_item(&crate::actions::calendar_resource_id("icloud/holidays"))
+            .expect("hidden collection still opens");
         assert_eq!(app.calendar_filter.as_deref(), Some("icloud/holidays"));
         assert!(
             app.status
@@ -2604,31 +2586,13 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         let mut doc = demo_document(&app);
         app.sync(&mut doc, &automerge::ROOT);
         app.calendar_filter = Some("work/default".into());
-        let root = published_resource(&app, &doc, "calendar.calendar")
-            .expect("calendar root is addressable");
         assert!(
-            root.actions
+            <crate::resource::CalendarEffect as ui::tilo_resource::Effect>::specs()
                 .iter()
                 .any(|action| action.id == "show-all-calendars"),
             "the recovery route is advertised through the canonical root"
         );
-        let payload = serde_json::to_vec(&crate::actions::CalendarOperation::ShowAllCalendars)
-            .expect("operation serializes");
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::CALENDAR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("show-all operation is accepted"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        app.show_all_calendars();
         assert!(app.calendar_filter.is_none());
         assert_eq!(app.status.as_deref(), Some("Showing all calendars"));
     }

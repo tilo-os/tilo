@@ -10,14 +10,14 @@
 //! Reading files from disk or a file chooser is an effect
 //! ([`DiffmergeEffect`]) whose result opens a comparison through an action.
 //! Scrolling, the active hunk and the mode shown are view state; the
-//! operations that move them ([`DiffmergeOperation`]) change nothing in the
+//! effects that move them (also [`DiffmergeEffect`]) change nothing in the
 //! document.
 
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType, Resource, RetryPolicy,
+    ExecutionLocus, ParamType, Resource, RetryPolicy,
 };
 use ui::prelude::Effect;
 // The effect derive names its runtime crate by this path.
@@ -29,89 +29,11 @@ use crate::model::{BlockKind, ChangeBlock, DiffModel, MergeHunk, MergeModel, Res
 
 /// Registry `type_id` for every Diff action.
 pub const DIFFMERGE_ACTION_TYPE: &str = "diffmerge.action";
-/// Operation type of the view operations.
-pub const DIFFMERGE_OPERATION_TYPE: &str = "diffmerge.operation";
 /// Keep global search/contextual expansion bounded even for enormous diffs.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 64;
 
-/// Moving around what is open: no document delta.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiffmergeOperation {
-    ShowDiff,
-    ShowMerge,
-    PreviousChange,
-    NextChange,
-    ShowDiffBlock {
-        block: u64,
-        /// Snapshot fingerprint of the exact aligned rows this address named.
-        /// The index is only a fast lookup hint; this prevents a stale palette
-        /// result from selecting a newly recomputed, different block.
-        fingerprint: String,
-    },
-}
-
-/// # Errors
-///
-/// Returns an error when `payload` is not valid JSON for this operation type.
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<DiffmergeOperation>, String> {
-    if type_id != DIFFMERGE_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-#[allow(
-    clippy::expect_used,
-    clippy::needless_pass_by_value,
-    reason = "the operation is both serialized into the descriptor and inspected for its lifecycle contract; its serde shape is infallible"
-)]
-fn view(id: &str, label: &str, value: DiffmergeOperation) -> ActionSpec {
-    let spec = ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        DIFFMERGE_OPERATION_TYPE,
-        &value,
-    )
-    .expect("DiffmergeOperation is always serializable");
-    match value {
-        DiffmergeOperation::ShowDiff | DiffmergeOperation::ShowMerge => {
-            spec.retry_policy(RetryPolicy::Idempotent)
-        }
-        DiffmergeOperation::PreviousChange
-        | DiffmergeOperation::NextChange
-        | DiffmergeOperation::ShowDiffBlock { .. } => spec,
-    }
-}
-
-/// The view operations on the workspace.
-pub(crate) fn view_operations() -> Vec<ActionSpec> {
-    vec![
-        view(
-            "show-diff",
-            "Show two-way diff",
-            DiffmergeOperation::ShowDiff,
-        ),
-        view(
-            "show-merge",
-            "Show three-way merge",
-            DiffmergeOperation::ShowMerge,
-        ),
-        view(
-            "previous-change",
-            "Previous change",
-            DiffmergeOperation::PreviousChange,
-        ),
-        view("next-change", "Next change", DiffmergeOperation::NextChange),
-    ]
-}
-
-/// Bringing inputs in from outside the document.
+/// Bringing inputs in from outside the document, and moving around what is
+/// open (no document delta).
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "diffmerge.effects")]
 pub enum DiffmergeEffect {
@@ -125,6 +47,29 @@ pub enum DiffmergeEffect {
     },
     /// Load sample
     LoadSample,
+    /// Show two-way diff.
+    #[effect(view, idempotent)]
+    ShowDiff,
+    /// Show three-way merge.
+    #[effect(view, idempotent)]
+    ShowMerge,
+    /// Previous change.
+    #[effect(view)]
+    PreviousChange,
+    /// Next change.
+    #[effect(view)]
+    NextChange,
+    /// Show change.
+    #[effect(view, row)]
+    Show {
+        #[param("The change's index")]
+        block: u64,
+        /// Snapshot fingerprint of the exact aligned rows this address named.
+        /// The index is only a fast lookup hint; this prevents a stale palette
+        /// result from selecting a newly recomputed, different block.
+        #[param("The change's fingerprint")]
+        fingerprint: String,
+    },
 }
 
 /// Which side a conflict/change hunk resolution takes. A strict subset of
@@ -627,7 +572,7 @@ pub fn comparison_resource(comparison: &Comparison) -> Resource {
             .entry(fingerprint.clone())
             .and_modify(|count| *count += 1)
             .or_insert(0);
-        let action = DiffmergeOperation::ShowDiffBlock {
+        let action = DiffmergeEffect::Show {
             block: u64::try_from(index).unwrap_or(u64::MAX),
             fingerprint: fingerprint.clone(),
         };
@@ -637,7 +582,7 @@ pub fn comparison_resource(comparison: &Comparison) -> Resource {
                 "diffmerge.diff-block",
                 label,
             )
-            .with_action(view("show", "Show change", action)),
+            .with_action(action.bound()),
         );
     }
     root
@@ -710,7 +655,7 @@ mod tests {
     use super::*;
     use crate::resource::Diffmerge;
     use automerge::AutoCommit;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{LocalTransport, OperationKind};
     use ui::tilo_resource::Resource as _;
 
     fn registry() -> ActionRegistry {
@@ -880,15 +825,11 @@ mod tests {
         for (index, child) in comparison.children.iter().enumerate() {
             let show = child.actions.iter().find(|a| a.id == "show").unwrap();
             assert_eq!(show.kind, OperationKind::View);
-            let ActionInput::Immediate(encoded) = &show.input else {
-                panic!("show is immediate");
-            };
+            let encoded = ui::testing::action_contract::spec_encoding(show, None);
             let fingerprint = diff_block_fingerprint(&model, index).unwrap();
             assert_eq!(
-                decode_operation(DIFFMERGE_OPERATION_TYPE, &encoded.payload)
-                    .unwrap()
-                    .unwrap(),
-                DiffmergeOperation::ShowDiffBlock {
+                DiffmergeEffect::from_payload(&encoded.payload).unwrap(),
+                DiffmergeEffect::Show {
                     block: u64::try_from(index).unwrap(),
                     fingerprint: fingerprint.clone(),
                 }
