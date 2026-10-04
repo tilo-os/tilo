@@ -13,7 +13,7 @@ tilo-app new hot-reload-demo --template document --dev
 Agents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:
 
 ```json
-{"resource":"generated.document","action":"set-content","arguments":{"title":"Plan","body":"Ship it"}}
+{"resource":"so.tilo.hot-reload-demo.document","action":"set-content","arguments":{"title":"Plan","body":"Ship it"}}
 ```
 
 Validate the native SDK, action surface, scenarios, and package metadata with one command:

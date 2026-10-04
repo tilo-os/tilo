@@ -9549,6 +9549,11 @@ fn app_lib(spec: &AppSpec) -> String {
             format!("pub mod components;\npub mod screens;\n\n{GRAPH_APP_TEMPLATE}")
         }
     };
+    // The templates name their resource `generated.<what>`; an app's kind
+    // lives under its own id, so two generated apps never share actions,
+    // permissions or search under one kind.
+    let application =
+        application.replace("kind = \"generated.", &format!("kind = \"{}.", spec.app_id));
     format!(
         "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}\nui::dev_reload_entry!(App);\n",
         title = spec.title,
@@ -9670,6 +9675,7 @@ fn app_readme(spec: &AppSpec) -> String {
         "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `TestApp` tests the running app. `tilo-app doctor` rejects apps that remove this surface.\n"
     );
     let (resource, action, arguments) = readme_action_example(spec.template);
+    let resource = format!("{}.{resource}", spec.app_id);
     let _ = writeln!(
         out,
         "Agents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
@@ -9793,20 +9799,18 @@ fn app_readme(spec: &AppSpec) -> String {
     out
 }
 
+/// The template's resource kind under the app's id, one of its actions and
+/// arguments for it.
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => ("generated.greeting", "set-name", r#"{"name":"Ada"}"#),
+        Template::Starter => ("greeting", "set-name", r#"{"name":"Ada"}"#),
         Template::Document => (
-            "generated.document",
+            "document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
-        Template::Collection => ("generated.items", "set-draft", r#"{"draft":"Buy milk"}"#),
-        Template::Graph => (
-            "generated.graph-project",
-            "set-draft",
-            r#"{"draft":"Launch plan"}"#,
-        ),
+        Template::Collection => ("items", "set-draft", r#"{"draft":"Buy milk"}"#),
+        Template::Graph => ("graph-project", "set-draft", r#"{"draft":"Launch plan"}"#),
     }
 }
 
