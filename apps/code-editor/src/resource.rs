@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use terminal::resource::{SessionState, Terminal};
+
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
@@ -45,7 +47,12 @@ pub struct ProjectState {
     /// are read: a project holds every file it has opened, and reading them
     /// all on every keystroke would cost what the project weighs.
     pub buffers: HashMap<String, String>,
+    /// The embedded terminal's session, once the project has one.
+    pub terminal: Option<SessionState>,
 }
+
+/// The project's embedded terminal, published as the terminal session it is.
+pub const TERMINAL_RESOURCE_ID: &str = "code_editor.terminal";
 
 /// The code-editor project resource.
 pub struct CodeEditor;
@@ -69,6 +76,7 @@ impl Resource for CodeEditor {
                 .filter(|file| !file.deleted)
                 .collect(),
             buffers: HashMap::new(),
+            terminal: EditorDoc::terminal_panel(doc).map(|panel| Terminal::read_under(doc, &panel)),
         })
     }
 
@@ -143,7 +151,16 @@ impl Resource for CodeEditor {
     }
 
     fn children(state: &ProjectState) -> Vec<PublishedResource> {
-        publish_document_children(&state.files)
+        let mut children = publish_document_children(&state.files);
+        if let Some(session) = &state.terminal {
+            children.push(ui::tilo_resource::publish_child::<Terminal, Self>(
+                TERMINAL_RESOURCE_ID,
+                "Terminal",
+                Some(session),
+                CodeEditorAction::Terminal,
+            ));
+        }
+        children
     }
 
     fn search(state: &ProjectState) -> Vec<SearchEntry> {
@@ -267,6 +284,7 @@ impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
     fn present(&mut self, state: &Rc<ProjectState>) {
         // Adopt shared file records only — never wipe an unpublished local tree.
         self.adopt_resource_state(state);
+        self.present_terminal(state.terminal.as_ref());
     }
 
     fn attach(&mut self, cx: SurfaceCx<CodeEditor>) {
