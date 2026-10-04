@@ -16822,6 +16822,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-unlock-protocol"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "p256 0.14.0",
+ "postcard",
+ "serde",
+ "serde_bytes",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tilo-seal",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
