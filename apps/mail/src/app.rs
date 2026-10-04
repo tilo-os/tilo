@@ -234,38 +234,6 @@ impl AccountsPersist {
             None => Ok(()),
         }
     }
-
-    /// The device-local preference lives beside the account store, but outside
-    /// its shared account schema. It is never a collaborative document field.
-    fn load_compose_format(&self) -> ComposeFormat {
-        let Some(path) = self.local_preferences_path() else {
-            return ComposeFormat::Html;
-        };
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<LocalPreferences>(&bytes).ok())
-            .map_or(ComposeFormat::Html, |prefs| {
-                ComposeFormat::from_key(&prefs.compose_format)
-            })
-    }
-
-    fn persist_compose_format(&self, format: ComposeFormat) -> std::io::Result<()> {
-        let Some(path) = self.local_preferences_path() else {
-            return Ok(());
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec(&LocalPreferences {
-            compose_format: format.as_key().to_string(),
-        })
-        .map_err(std::io::Error::other)?;
-        std::fs::write(path, bytes)
-    }
-
-    fn local_preferences_path(&self) -> Option<std::path::PathBuf> {
-        Some(self.root()?.join("mail-local.json"))
-    }
 }
 
 /// The configuration directory of the profile `storage` belongs to: the
@@ -279,14 +247,6 @@ fn profile_config_root(storage: &ui::storage::AppStorage) -> Option<std::path::P
             path.parent().map(std::path::Path::to_path_buf)
         }
     }
-}
-
-/// Device-local Mail preferences. Kept deliberately small and separate from
-/// the shared account payload: a peer must never adopt another window's
-/// composer mode just because it received mailbox changes.
-#[derive(serde::Deserialize, serde::Serialize)]
-struct LocalPreferences {
-    compose_format: String,
 }
 
 struct PendingSetupValidation {
@@ -397,9 +357,11 @@ pub struct MailApp {
     /// so observing the id here gives every selection path one persistence
     /// boundary without leaking that preference into Automerge.
     persisted_active_account: Option<String>,
-    /// Last format persisted to this device-local preference store. This lets
-    /// format toggles save immediately without rewriting disk at every close.
-    persisted_compose_format: ComposeFormat,
+    /// The person's Mail preferences, followed in a live window: the compose
+    /// format and the folded account sidebars.
+    preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
+    /// The preferences as this window last read or stored them.
+    followed_preferences: crate::resource::MailPreferences,
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
@@ -584,7 +546,6 @@ impl MailApp {
                     .map(|account| account.id.clone()),
             )
         };
-        let compose_format = accounts_persist.load_compose_format();
         Self {
             shared,
             content,
@@ -597,7 +558,7 @@ impl MailApp {
                 .with_action("Add account")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
-            compose: ComposeWindow::new(compose_format),
+            compose: ComposeWindow::new(ComposeFormat::default()),
             shortcuts: MailShortcutsOverlay::new(),
             editing_draft: None,
             context_menu: None,
@@ -623,7 +584,8 @@ impl MailApp {
             pending_send: None,
             accounts_persist,
             persisted_active_account,
-            persisted_compose_format: compose_format,
+            preferences: None,
+            followed_preferences: crate::resource::MailPreferences::default(),
             connect_requested: false,
             awaiting_engine: false,
             background_poll_deadline: Cell::new(None),
@@ -1385,7 +1347,7 @@ impl MailApp {
     }
 
     fn send_compose(&mut self, doc: &mut AutoCommit) {
-        self.persist_compose_format_if_changed();
+        self.store_preferences_if_changed();
         if self.pending_send.is_some() {
             self.shared.borrow_mut().status = Some("Message is still sending…".into());
             return;
@@ -1453,7 +1415,7 @@ impl MailApp {
         self.editing_draft = Some(id);
         self.shared.borrow_mut().status = Some("Draft saved to Drafts".into());
         self.compose.close();
-        self.persist_compose_format_if_changed();
+        self.store_preferences_if_changed();
         self.dirty = true;
     }
 
@@ -2736,20 +2698,74 @@ impl MailApp {
         }
     }
 
-    /// Persist the compose mode on this device only. The caller invokes this
-    /// at every format-changing or composer lifecycle boundary; the retained
-    /// value makes unchanged close/save/send paths a no-op.
-    fn persist_compose_format_if_changed(&mut self) {
-        let format = self.compose.format();
-        if format == self.persisted_compose_format {
+    /// Follow the person's Mail preferences in this window.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        preferences: ui::framework::Setting<crate::resource::MailPreferences>,
+    ) {
+        let current = preferences.get();
+        self.preferences = Some(preferences);
+        self.adopt_preferences(current);
+    }
+
+    /// Show `preferences`: the format a new composition starts in (an open
+    /// composer keeps its own) and which account sidebars are folded.
+    fn adopt_preferences(&mut self, preferences: crate::resource::MailPreferences) {
+        if !self.compose.open {
+            self.compose.set_format(preferences.compose_format);
+        }
+        for account in &mut self.shared.borrow_mut().accounts.accounts {
+            account.collapsed = preferences.collapsed_accounts.contains(&account.id);
+        }
+        self.followed_preferences = preferences;
+        self.dirty = true;
+    }
+
+    /// The preferences as this window shows them now.
+    fn shown_preferences(&self) -> crate::resource::MailPreferences {
+        crate::resource::MailPreferences {
+            compose_format: self.compose.format(),
+            collapsed_accounts: self
+                .shared
+                .borrow()
+                .accounts
+                .accounts
+                .iter()
+                .filter(|account| account.collapsed)
+                .map(|account| account.id.clone())
+                .collect(),
+        }
+    }
+
+    /// Adopt what another window or device stored, then store what changed
+    /// here: a format switched, an account folded.
+    fn sync_preferences(&mut self) {
+        let Some(preferences) = &self.preferences else {
+            return;
+        };
+        let stored = preferences.get();
+        if stored != self.followed_preferences {
+            self.adopt_preferences(stored);
             return;
         }
-        match self.accounts_persist.persist_compose_format(format) {
-            Ok(()) => self.persisted_compose_format = format,
+        self.store_preferences_if_changed();
+    }
+
+    /// Store the preferences this window shows when they changed. Called at
+    /// every format-changing or composer lifecycle boundary and every sync.
+    fn store_preferences_if_changed(&mut self) {
+        let Some(preferences) = &self.preferences else {
+            return;
+        };
+        let shown = self.shown_preferences();
+        if shown == self.followed_preferences {
+            return;
+        }
+        match preferences.set(shown.clone()) {
+            Ok(()) => self.followed_preferences = shown,
             Err(error) => {
-                self.shared.borrow_mut().status = Some(format!(
-                    "Compose format changed, but could not save that preference: {error}"
-                ));
+                self.shared.borrow_mut().status =
+                    Some(format!("Could not save your Mail preferences: {error}"));
             }
         }
     }
@@ -4176,7 +4192,7 @@ impl MailApp {
             ComposeAction::None => {}
         }
         if lifecycle_boundary || self.compose.format() != format_before {
-            self.persist_compose_format_if_changed();
+            self.store_preferences_if_changed();
         }
         consumed
     }
@@ -5024,6 +5040,7 @@ impl Widget for MailApp {
             self.maybe_auto_refresh();
         }
         self.persist_active_account_if_changed();
+        self.sync_preferences();
         let search_refresh = {
             let state = self.shared.borrow();
             self.mail_search_provider.refresh(&state.mailbox)
@@ -5757,7 +5774,7 @@ impl MailApp {
             None => return false,
         }
         if lifecycle_boundary || self.compose.format() != format_before {
-            self.persist_compose_format_if_changed();
+            self.store_preferences_if_changed();
         }
         true
     }
@@ -8150,16 +8167,6 @@ mod tests {
                 "the account-settings form is scoped to the clicked account"
             );
         }
-
-        // Phase `sample_compose_format_preference_never_uses_the_real_config_root`.
-        {
-            let mut app = MailApp::new_sample();
-            let sandbox = app.accounts_persist_root().expect("sample sandbox");
-            app.compose.set_format(ComposeFormat::Text);
-            app.persist_compose_format_if_changed();
-            assert!(sandbox.join("mail-local.json").is_file());
-            assert_ne!(Some(sandbox), accounts::config_root());
-        }
     }
 
     #[test]
@@ -8206,43 +8213,6 @@ mod tests {
                     .is_none(),
                 "window presentation never enters collaborative state"
             );
-        }
-
-        // Phase `compose_format_restores_per_device_without_entering_the_shared_document`.
-        {
-            let persistence = AccountsPersist::sandbox();
-            let preference_path = persistence
-                .local_preferences_path()
-                .expect("sandbox has a local preference path");
-            let first_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
-            let mut first = MailApp::assemble(
-                first_state,
-                ContentStore::memory(),
-                None,
-                persistence.clone(),
-            );
-            first.compose.set_format(ComposeFormat::Text);
-            first.persist_compose_format_if_changed();
-            assert!(preference_path.is_file(), "format is persisted locally");
-
-            let second_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
-            let second = MailApp::assemble(second_state, ContentStore::memory(), None, persistence);
-            assert_eq!(
-                second.compose.format(),
-                ComposeFormat::Text,
-                "a later window on this device restores its local preference"
-            );
-
-            let mut doc = AutoCommit::new();
-            first.sync(&mut doc, &automerge::ROOT);
-            let mut peer = MailApp::new_sample();
-            peer.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                peer.compose.format(),
-                ComposeFormat::Html,
-                "a peer with a different local store never receives this preference"
-            );
-            assert!(doc.get(&automerge::ROOT, "ui").unwrap().is_none());
         }
 
         // Phase `active_account_selection_persists_locally_without_touching_automerge`.
