@@ -4117,6 +4117,56 @@ fn submit_accessory_and_span_highlighting() {
         );
     }
 
+    // Case `a_toggle_accessory_is_a_pressed_toggle_for_people_and_agents`.
+    {
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<bool>::new()));
+        let sink = seen.clone();
+        let mut ti = TextInput::local().with_trailing_accessory(
+            crate::icons::Icon::X,
+            "Clear for every photo",
+            AccessoryAction::Toggle {
+                pressed: false,
+                on_toggle: Box::new(move |on| sink.borrow_mut().push(on)),
+            },
+        );
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 32.0));
+        draw_to_populate(&mut ti);
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children.len(), 1, "shown while the field is empty");
+        let toggle = &node.children[0];
+        assert_eq!(toggle.role, crate::a11y::Role::ToggleButton);
+        assert_eq!(toggle.state.checked, Some(false));
+        let target = toggle.action_target.clone().expect("agents can reach it");
+
+        let rect = Widget::synthetic_accessibility_rect(&ti, &[0]).expect("accessory rect");
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut ti,
+            &mut doc,
+            &mouse_move(rect.center().x, rect.center().y),
+            mods(false, false),
+        );
+        assert!(drive(&mut ti, &mut doc, &left_press(), mods(false, false)));
+        assert_eq!(ti.accessory_pressed(), Some(true));
+        let node = Widget::accessibility(&ti).expect("field semantics");
+        assert_eq!(node.children[0].state.checked, Some(true));
+
+        let root = automerge::ROOT;
+        assert!(Widget::perform_semantic_action(
+            &mut ti,
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &root,
+        ));
+        assert_eq!(seen.borrow().as_slice(), [true, false]);
+        assert_eq!(ti.accessory_pressed(), Some(false));
+
+        ti.set_accessory_pressed(true);
+        assert_eq!(ti.accessory_pressed(), Some(true), "the host syncs it");
+        assert!(ti.take_dirty().is_none(), "toggling is not a text edit");
+    }
+
     // Case `a_span_highlighter_colours_the_single_line`.
     {
         let mut ti = TextInput::local()
