@@ -124,6 +124,11 @@ device you are using; do it from another one. Revoking needs the identity's
 root key, so run it on a device that can approve devices (`status` shows
 `can approve devices`); elsewhere it names the device to use.
 
+A device enrolled by another one holds only the identity's public record.
+Its apps sign as you with its own device key, presented with the certificate
+the identity issued when it was enrolled; the other devices accept that and
+nothing else from it.
+
 What revocation reaches, and when:
 
 - The device you revoke from refuses the revoked device's signatures at once,
@@ -180,9 +185,9 @@ What revocation reaches, and when:
 - Without internet access the two devices find each other only after one of
   them has connected to the other: device ids are resolved through iroh's
   public address lookup, and LAN-only mDNS discovery is off by default.
-- A device enrolled by another device holds only the identity's public record;
-  apps that need to sign as the identity (authored launches) do not start on
-  it yet, so a continued app may stay "Available elsewhere" there.
+- Rooms governed by a relay learn a revocation only once their governor
+  publishes it; until then the revoked device is still listed as a member
+  there, although every device and relay that knows the revocation refuses it.
 
 See also [Device sync, remote control and serving mesh](device-mesh.md) and
 [Identity signing boundary](identity-security.md).
