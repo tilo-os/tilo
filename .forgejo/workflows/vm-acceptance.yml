@@ -103,12 +103,12 @@ jobs:
           python3 -c 'import PIL'  # the checks read pixels from shots
 
       # registry.tilo.so answers this network's anonymous reads with 401.
+      # The builder has no docker; skopeo and podman share this login.
       - name: Log in to registry.tilo.so
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: registry.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | podman login --username "$ACTOR" --password-stdin registry.tilo.so
 
       - name: Plan the ref, its base disk, the swaps and the checks
         id: plan
