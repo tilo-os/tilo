@@ -560,24 +560,36 @@ fn refused<R: Resource>(reason: &str) -> EncodedAction {
 
 /// The published spec of one declared or bound mutation: what the palette,
 /// agents and scripts invoke, building `R::Action` from their arguments.
+///
+/// The action is built when it is invoked, never when it is published: one
+/// that takes no arguments still mints its ids and reads the clock at the
+/// moment it is taken, so two invocations make two distinct actions.
 pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let mut spec = ActionSpec::typed(
-        decl.id,
-        decl.label.clone(),
-        decl.label.clone(),
-        ExecutionLocus::ClientLocal,
-        decl.params.clone(),
-        move |args| match build(args, origin_now_ms()) {
-            Ok(action) => {
-                encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
-            }
-            Err(reason) => refused::<R>(&reason),
-        },
-    )
-    .requiring(decl.permission)
-    // Every document action is undone by the host's undo.
-    .reversible();
+    let encoded =
+        move |args: &tilo_actions::ActionArgs| encode_built::<R>(build(args, origin_now_ms()));
+    let spec = if decl.params.is_empty() {
+        ActionSpec::deferred(
+            decl.id,
+            decl.label.clone(),
+            ExecutionLocus::ClientLocal,
+            R::ACTION_TYPE,
+            move || encoded(&tilo_actions::ActionArgs::none()),
+        )
+    } else {
+        ActionSpec::typed(
+            decl.id,
+            decl.label.clone(),
+            decl.label.clone(),
+            ExecutionLocus::ClientLocal,
+            decl.params.clone(),
+            encoded,
+        )
+    };
+    let mut spec = spec
+        .requiring(decl.permission)
+        // Every document action is undone by the host's undo.
+        .reversible();
     if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }

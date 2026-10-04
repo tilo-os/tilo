@@ -30,10 +30,6 @@ pub(crate) enum BuilderDomain {
         source: PageId,
         pages: Vec<PageId>,
     },
-    DailyCreate {
-        title: String,
-        order: u32,
-    },
     /// Generic published doors (`apply` / `group` / rich-text catalogue
     /// builders) that mint from arguments and therefore need a Draft domain.
     PublishedDoor {
@@ -105,10 +101,6 @@ impl BuilderDomain {
                 }
                 ("duplicate-exact-source-map-fresh-ids/v2", parts)
             }
-            Self::DailyCreate { title, order } => (
-                "daily-create-v4-uuid/v1",
-                vec![title.as_bytes().to_vec(), order.to_be_bytes().to_vec()],
-            ),
             Self::PublishedDoor { action, scope } => (
                 "published-dynamic-door/v1",
                 vec![scope.clone(), action.as_bytes().to_vec()],
@@ -288,16 +280,6 @@ mod tests {
                 pages: vec![page, Uuid::from_u128(2)]
             })
         );
-        assert_ne!(
-            draft(BuilderDomain::DailyCreate {
-                title: "2026-09-22".into(),
-                order: 0
-            }),
-            draft(BuilderDomain::DailyCreate {
-                title: "2026-09-23".into(),
-                order: 0
-            })
-        );
     }
 
     #[test]
@@ -316,10 +298,6 @@ mod tests {
             BuilderDomain::Duplicate {
                 source: page,
                 pages: vec![],
-            },
-            BuilderDomain::DailyCreate {
-                title: "2026-09-22".into(),
-                order: 0,
             },
         ] {
             let resolver = builder(domain);

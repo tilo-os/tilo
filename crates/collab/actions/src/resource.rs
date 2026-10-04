@@ -757,8 +757,11 @@ impl ActionSpec {
     }
 
     fn validate_built(&self, encoded: EncodedAction) -> Result<EncodedAction, ArgError> {
+        // A refusal carries the builder's reason to the caller, as a typed
+        // action's does.
         if let Some(expected) = self.deferred_invocation_type()
             && encoded.type_id != expected
+            && encoded.type_id != INVALID_ARGUMENTS_TYPE
         {
             return Err(ArgError::Constraint {
                 name: "deferred".into(),

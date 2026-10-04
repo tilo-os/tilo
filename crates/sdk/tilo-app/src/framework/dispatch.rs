@@ -243,7 +243,8 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Re-read whether the participant may write. Returns whether it
     /// changed.
-    pub(crate) fn refresh_read_only(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    fn refresh_read_only(&self) -> bool {
         let writes =
             self.permissions.borrow().as_ref().map(|permissions| {
                 permissions.check(&PermissionScope::app(self.app_id, Verb::Write))

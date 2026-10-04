@@ -188,3 +188,54 @@ fn a_persons_record_survives_a_relaunch() {
     let mut app = app.reopen().unwrap();
     assert_eq!(videos(&app.person::<Watched>().unwrap()), ["kept"]);
 }
+
+#[test]
+fn the_palette_and_agents_take_back_the_persons_own_steps() {
+    let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+    let watched = app.person::<Watched>().unwrap();
+    watched
+        .invoke(&Watched::WATCH.with("first".into()))
+        .unwrap();
+    watched
+        .invoke(&Watched::WATCH.with("second".into()))
+        .unwrap();
+    app.harness().relayout();
+
+    // The record is published beside the app's resource, with the
+    // person's undo and redo.
+    let surface = app.agent_surface();
+    let actions: Vec<&str> = surface
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["resource"] == "person:test.watched")
+        .map(|row| row["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["redo", "undo"]);
+
+    let undone = app
+        .call_on(
+            "person:test.watched",
+            "undo",
+            serde_json::json!({ "steps": 2 }),
+        )
+        .unwrap();
+    assert_eq!(undone, Some(serde_json::json!({ "steps": 2 })));
+    assert!(videos(&watched).is_empty());
+    app.call_on("person:test.watched", "redo", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(videos(&watched), ["first"]);
+
+    // The shared queue's history is not the person's: its undo has nothing
+    // of theirs to take back, and theirs nothing of the queue's.
+    app.invoke(Queue::ADD.with("shared".into())).unwrap();
+    app.call_on("person:test.watched", "undo", serde_json::json!({}))
+        .unwrap();
+    assert!(videos(&watched).is_empty());
+    assert_eq!(app.state().items, ["shared"]);
+    assert!(
+        app.call_on("person:test.watched", "undo", serde_json::json!({}))
+            .is_err(),
+        "nothing more of the person's to undo"
+    );
+}
