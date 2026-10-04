@@ -34,7 +34,7 @@ use {
 
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
-use super::launch::{Command, LaunchInput};
+use super::launch::{Command, Helper, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
 use super::scenario::{Fixture, Launched, Run};
@@ -169,6 +169,17 @@ pub trait ResourceApp: 'static {
     fn commands() -> &'static [Command] {
         &[]
     }
+
+    /// The helpers the app's binary also is ([`Helper`]), asked in order
+    /// before the app starts.
+    fn helpers() -> &'static [Helper] {
+        &[]
+    }
+
+    /// Whether the app takes part in the workspace runtime of the room it is
+    /// launched in. An app that only runs on this device (an imager on a
+    /// platform without the runtime) says no.
+    const ATTACHES_RUNTIME: bool = true;
 
     /// The app's message catalog, loaded before its view is built in every
     /// host that mounts the app, so the view's lookups find its messages.
@@ -1059,7 +1070,9 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .allowed_options(&["--data-dir"])
         .allowed_live_options(live_options::<A>())
         .allowed_live_flags(live_flags::<A>());
-    let spec = if A::PRIVATE_WINDOWS {
+    let spec = if !A::ATTACHES_RUNTIME {
+        spec.runtime_attachment(|_| false)
+    } else if A::PRIVATE_WINDOWS {
         // A private window is nobody's runtime participant: it neither syncs
         // nor shares what it shows.
         spec.runtime_attachment(|args| !args.has(PRIVATE_FLAG))
@@ -1101,5 +1114,30 @@ pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> Lau
 /// feature); a host without it drives [`launch_spec`] itself.
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn run<A: ResourceApp>() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = run_helper::<A>(&args) {
+        #[allow(
+            clippy::exit,
+            reason = "a helper the binary is ends the process with its own exit code"
+        )]
+        std::process::exit(code);
+    }
     crate::launch::run_or_exit(&launch_spec::<A>());
+}
+
+/// Run the first of `A`'s [helpers](ResourceApp::helpers) that `args` is
+/// for, answering the exit code the process ends with; `None` when the
+/// command line is the app's own.
+pub fn run_helper<A: ResourceApp>(args: &[String]) -> Option<i32> {
+    for helper in A::helpers() {
+        match (helper.run)(args) {
+            Ok(None) => {}
+            Ok(Some(code)) => return Some(code),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return Some(1);
+            }
+        }
+    }
+    None
 }
