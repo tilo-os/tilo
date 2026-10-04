@@ -9,6 +9,7 @@
 //! frame. See [`crate::command`].
 
 use std::fmt::Write as _;
+use ui::tilo_resource::Effect as _;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::history_panel::HistoryPanel;
@@ -68,7 +69,6 @@ const MAX_MOVE_ENTRIES: usize = 256;
 const MAX_ANSWERED_ENTRIES: usize = 64;
 
 /// A `move` of several of the current folder's entries into `folder`.
-#[derive(serde::Serialize, serde::Deserialize)]
 struct MoveRequest {
     entries: Vec<String>,
     folder: String,
@@ -177,11 +177,9 @@ pub(crate) fn template_resource_id(path: &str) -> String {
     format!("files.template:{}", hex_prefix(&digest, 16))
 }
 
-/// Folder Views/Effects for [`crate::resource::FileExplorer::local_operations`].
-///
-/// Hosted surfaces stop republishing a second `files.folder` root, so these
-/// must ride `tilo_resource::publish` — otherwise the palette loses refresh,
-/// new-folder, paste, go-to, and the presentation Views.
+/// The folder-wide views and operations of a Files window, published on the
+/// resource beside its actions ([`crate::resource::FileExplorer::local_operations`]):
+/// refresh, paste, showing a folder by path and the view and sort commands.
 #[allow(
     clippy::expect_used,
     reason = "folder name and path payloads are locally constructed and serializable"
@@ -201,25 +199,6 @@ pub(crate) fn folder_palette_operations() -> Vec<ActionSpec> {
             ..ActionContract::default()
         }));
     }
-    ops.push(
-        ActionSpec::prompted_operation(
-            "new-folder",
-            "New folder",
-            "Folder name",
-            "New Folder",
-            OperationKind::Effect,
-            "files.new-folder",
-            |name| {
-                EncodedAction::encode_operation("files.new-folder", &name)
-                    .expect("folder name is serializable")
-            },
-        )
-        .with_contract(ActionContract {
-            permission: PermissionRequirement::Write,
-            reversible: false,
-            ..ActionContract::default()
-        }),
-    );
     if let Ok(spec) =
         ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
     {
@@ -232,35 +211,22 @@ pub(crate) fn folder_palette_operations() -> Vec<ActionSpec> {
             ..ActionContract::default()
         }));
     }
-    ops.push(go_to_folder_action());
+    ops.push(FileExplorerWidget::show_folder_action(
+        "go-to",
+        "Go to folder…",
+    ));
+    // `open` with a path, the convention an agent opens an app at a file or
+    // folder by: Files shows that folder, as `go-to` does.
+    ops.push(FileExplorerWidget::show_folder_action(
+        "open",
+        "Open folder",
+    ));
     for (id, label, verb, kind) in folder_view_commands() {
         if let Ok(spec) = ActionSpec::operation(id, label, kind, "files.folder-command", &verb) {
             ops.push(spec.with_contract(if kind == OperationKind::View {
                 ActionContract::view()
             } else {
                 ActionContract::default()
-            }));
-        }
-    }
-    for (id, label, verb) in [
-        ("add-favorite", "Add to Favourites", "add-favorite"),
-        (
-            "remove-favorite",
-            "Remove from Favourites",
-            "remove-favorite",
-        ),
-    ] {
-        if let Ok(spec) = ActionSpec::operation(
-            id,
-            label,
-            OperationKind::Effect,
-            "files.folder-command",
-            &verb,
-        ) {
-            ops.push(spec.with_contract(ActionContract {
-                permission: PermissionRequirement::Write,
-                retry: RetryPolicy::AtMostOnce,
-                ..ActionContract::default()
             }));
         }
     }
@@ -342,29 +308,6 @@ fn folder_view_commands() -> [(&'static str, &'static str, &'static str, Operati
             OperationKind::View,
         ),
     ]
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "a path string payload is always serializable"
-)]
-fn go_to_folder_action() -> ActionSpec {
-    ActionSpec::typed_operation(
-        "go-to",
-        "Go to folder…",
-        "absolute folder path, e.g. /data/in",
-        OperationKind::View,
-        "files.go-to",
-        vec![ActionParam::required(
-            "path",
-            ParamType::Text,
-            "Absolute path of the folder to show",
-        )],
-        |args: &ActionArgs| {
-            EncodedAction::encode_operation("files.go-to", &args.text("path").unwrap_or(""))
-                .expect("folder path is serializable")
-        },
-    )
 }
 
 /// Places for [`crate::resource::FileExplorer::children`]: Open is a View.
@@ -915,12 +858,6 @@ impl FileExplorerWidget {
         widget
     }
 
-    /// Whether a framework hosts this widget: its resource is then published
-    /// by the framework, and the widget adds only its live rows.
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.dispatcher.is_some()
-    }
-
     /// Take part in the resource: bookmark edits go through `dispatcher`,
     /// and the view follows the person's `preferences`.
     pub(crate) fn attach_framework(
@@ -1461,6 +1398,96 @@ impl FileExplorerWidget {
             .map(|entry| entry.path.clone())
     }
 
+    /// The entry of the folder shown that `entry` names: its published row
+    /// id, else its name.
+    fn entry_named(&self, entry: &str) -> Option<PathBuf> {
+        self.visible_entry_path(entry).or_else(|| {
+            self.entries
+                .iter()
+                .find(|candidate| candidate.name == entry)
+                .map(|candidate| candidate.path.clone())
+        })
+    }
+
+    /// Do `effect` to the filesystem, answering what it reports.
+    ///
+    /// # Errors
+    /// Why nothing (or not everything) was done.
+    pub(crate) fn run_effect(
+        &mut self,
+        effect: crate::effects::FilesEffect,
+    ) -> Result<Option<serde_json::Value>, String> {
+        use crate::effects::FilesEffect;
+        let answer = match effect {
+            FilesEffect::NewFolder { name } => {
+                fileops::new_folder(&self.current_path, &name)?;
+                self.refresh();
+                None
+            }
+            FilesEffect::Rename { entry, name } => {
+                if self.is_trash_view() {
+                    return Err("Restore an item from Trash before renaming it".into());
+                }
+                let target = self
+                    .entry_named(&entry)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                fileops::rename(&target, &name)?;
+                self.refresh();
+                None
+            }
+            FilesEffect::Trash { entry } => {
+                if self.is_trash_view() {
+                    return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
+                }
+                let target = self
+                    .entry_named(&entry)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                let index = self
+                    .entries
+                    .iter()
+                    .position(|candidate| candidate.path == target)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                self.selection.select_only(index);
+                self.apply_delete();
+                None
+            }
+            FilesEffect::UndoTrash => {
+                if self.last_trash_undo.is_none() {
+                    return Err("nothing was moved to Trash from this window".into());
+                }
+                self.apply_undo_last_trash();
+                None
+            }
+            FilesEffect::EmptyTrash => {
+                if !self.is_trash_view() {
+                    return Err("Empty Trash from the Trash folder".into());
+                }
+                // The effect is confirmed by its contract; no second sheet.
+                self.perform_empty_trash();
+                None
+            }
+            FilesEffect::Move {
+                entries,
+                folder,
+                create,
+            } => {
+                if entries.is_empty() || entries.len() > MAX_MOVE_ENTRIES {
+                    return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
+                }
+                Some(
+                    self.move_entries(&MoveRequest {
+                        entries,
+                        folder,
+                        create: create.unwrap_or(true),
+                    })?
+                    .into(),
+                )
+            }
+        };
+        self.structure_dirty = true;
+        Ok(answer)
+    }
+
     fn visible_open_path(&self, resource_id: &str) -> Option<PathBuf> {
         self.visible_entry_path(resource_id)
             .or_else(|| {
@@ -1482,17 +1509,6 @@ impl FileExplorerWidget {
                     .filter_map(|account| account.mount)
                     .find(|mount| crate::search_provider::place_resource_id(mount) == resource_id)
             })
-    }
-
-    /// Block until every in-flight thumbnail generation has settled (or the
-    /// timeout elapses). Requests are enqueued during `draw`, so a caller draws
-    /// once, calls this, then draws the frame it keeps — used by the `--shots`
-    /// pre-warm so a headless grid captures the real previews, never the
-    /// placeholders. Never call on a live UI thread.
-    pub fn prewarm_thumbnails(&self, timeout: std::time::Duration) {
-        if let Some(thumbs) = self.thumbs.as_deref() {
-            thumbs.block_until_idle(timeout);
-        }
     }
 
     /// Refresh the persistent top bar with the current navigation context
@@ -1906,7 +1922,7 @@ impl FileExplorerWidget {
         self.footer_label()
     }
 
-    /// `--shots`: force the status bubble fully visible so a single headless
+    /// A capture: force the status bubble fully visible so a single headless
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
@@ -4315,6 +4331,35 @@ impl FileExplorerWidget {
         }
     }
 
+    /// The filesystem work that cannot be done now, as this window's state
+    /// says.
+    pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use crate::effects::FilesEffect;
+        let mut statuses = Vec::new();
+        if self.last_trash_undo.is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::UNDO_TRASH,
+                "nothing_to_undo",
+                "Nothing was moved to Trash from this window",
+            ));
+        }
+        if !self.is_trash_view() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::EMPTY_TRASH,
+                "not_in_trash",
+                "Empty Trash from the Trash folder",
+            ));
+        }
+        if self.is_trash_view() || !self.current_path.is_dir() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::NEW_FOLDER,
+                "location_unavailable",
+                "The current location cannot contain a new folder",
+            ));
+        }
+        statuses
+    }
+
     /// Ask for the previews of every file shown, so a capture waits for them.
     fn prefetch_thumbnails(&self) {
         if let Some(ctx) = self.thumb_ctx() {
@@ -5918,6 +5963,22 @@ impl FileExplorerWidget {
 
     /// Whether the current directory is a favourite that may be removed (i.e.
     /// present in the list and not the pinned Home entry).
+    /// The stored place of the folder shown, when it is a folder a person
+    /// can pin (not Recent, Trash or an archive).
+    pub(crate) fn current_place(&self) -> Option<String> {
+        (self.current_path.is_dir() && !self.is_trash_view())
+            .then(|| self.place_for(&self.current_path))
+    }
+
+    /// Whether the folder shown is one of the Favourites.
+    pub(crate) fn current_is_favourite(&self) -> bool {
+        self.favs
+            .borrow()
+            .favorites
+            .iter()
+            .any(|f| f.path == self.current_path)
+    }
+
     fn current_is_removable_favourite(&self) -> bool {
         self.favs
             .borrow()
@@ -7185,119 +7246,6 @@ impl FileExplorerWidget {
 }
 
 impl FileExplorerWidget {
-    /// The small, stable root exposed to the broker directory. A folder listing
-    /// may be huge, so entry rows stay bounded. Session favorites come first.
-    /// A place [`tilo_resource::publish`] already listed stays when this session
-    /// does not already have that place.
-    fn published_folder(&self, doc: &automerge::AutoCommit) -> Resource {
-        let live = self.action_directory_folder_root();
-        let state = <crate::resource::FileExplorer as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut folder = ui::tilo_resource::publish::<crate::resource::FileExplorer>(
-            &crate::search_provider::folder_resource_id(&self.current_path),
-            &self.current_path.display().to_string(),
-            &state,
-        );
-        for action in live.actions {
-            if let Some(existing) = folder
-                .actions
-                .iter_mut()
-                .find(|existing| existing.id == action.id)
-            {
-                *existing = action;
-            } else {
-                folder.actions.push(action);
-            }
-        }
-        let published = std::mem::take(&mut folder.children);
-        let mut templates = Vec::new();
-        let mut published_places = Vec::new();
-        for child in published {
-            if child.kind == "files.template" {
-                templates.push(child);
-            } else if child.kind == "files.place" {
-                published_places.push(child);
-            }
-        }
-        folder.children = live.children;
-        if self.error.is_some() {
-            folder
-                .children
-                .extend(ui::resources::PublishesResources::resources(
-                    &self.state_retry,
-                    doc,
-                ));
-        }
-        if !self.is_trash_view() {
-            let can_create = self.current_path.is_dir();
-            for template in &mut templates {
-                if let Some(action) = template.actions.first_mut() {
-                    action.contract.availability = if can_create {
-                        Availability::Available
-                    } else {
-                        Availability::Unavailable {
-                            code: "location_unavailable".into(),
-                            reason: "The current location cannot contain a new file".into(),
-                        }
-                    };
-                }
-            }
-            folder.children.extend(templates);
-        }
-        folder
-            .children
-            .extend(published_place_resources(&self.favs.borrow().favorites));
-        let listed: std::collections::HashSet<String> = folder
-            .children
-            .iter()
-            .map(|child| child.id.as_str().to_string())
-            .collect();
-        for place in published_places {
-            if !listed.contains(place.id.as_str()) {
-                folder.children.push(place);
-            }
-        }
-        folder.children.extend(self.live_remote_account_resources());
-        folder.children.extend(self.live_entry_resources());
-        folder
-    }
-
-    fn action_directory_folder_root(&self) -> Resource {
-        let mut folder = self.folder_resource_base();
-        Self::append_navigation_actions(&mut folder);
-        folder.actions.push(Self::go_to_action());
-        folder.actions.push(Self::open_folder_action());
-        folder.actions.push(self.move_action());
-        self.append_favorite_action(&mut folder);
-        self.append_creation_actions(&mut folder);
-        self.append_nearby_receiver_resources(&mut folder);
-        folder
-    }
-
-    /// The folder as a caller browsing into it resolves it: the root plus
-    /// its first entries, each with its complete actions.
-    #[allow(dead_code, reason = "framework migration test helper")]
-    fn folder_with_entries(&self) -> Resource {
-        let mut folder = self.action_directory_folder_root();
-        folder.children.extend(
-            self.entries
-                .iter()
-                .take(MAX_EAGER_ENTRY_RESOURCES)
-                .map(|entry| self.entry_resource(entry)),
-        );
-        folder
-    }
-
-    fn go_to_action() -> ActionSpec {
-        Self::show_folder_action("go-to", "Go to folder…")
-    }
-
-    /// `open` with a path, the convention an agent opens an app at a file
-    /// or folder by: Files shows that folder, as `go-to` does.
-    fn open_folder_action() -> ActionSpec {
-        Self::show_folder_action("open", "Open folder")
-    }
-
     #[allow(
         clippy::expect_used,
         reason = "a path string payload is always serializable"
@@ -7356,7 +7304,7 @@ impl FileExplorerWidget {
             })
             .collect();
         let mut answer = serde_json::json!({
-            "resource": crate::search_provider::folder_resource_id(&self.current_path),
+            "resource": <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND,
             "path": self.current_path.display().to_string(),
             "entries": entries,
         });
@@ -7367,80 +7315,6 @@ impl FileExplorerWidget {
             fields.insert("more".into(), more.into());
         }
         answer
-    }
-
-    /// `move`: put several of this folder's entries into another folder in
-    /// one step, creating that folder unless told not to. Answers with what
-    /// moved where.
-    #[allow(
-        clippy::expect_used,
-        reason = "a move request of strings and a flag is serializable"
-    )]
-    fn move_action(&self) -> ActionSpec {
-        ActionSpec::typed_operation(
-            "move",
-            "Move entries to folder",
-            "entry names, absolute folder path, e.g. /data/out/images",
-            OperationKind::Effect,
-            "files.move",
-            vec![
-                ActionParam::required(
-                    "entries",
-                    ParamType::Array,
-                    "Names of entries in this folder, e.g. [\"a.png\",\"b.jpg\"]",
-                )
-                .with_schema(serde_json::json!({
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": MAX_MOVE_ENTRIES,
-                    "items": {"type": "string", "minLength": 1, "maxLength": 4096}
-                })),
-                ActionParam::required(
-                    "folder",
-                    ParamType::Text,
-                    "Absolute path of the destination folder; names are kept",
-                ),
-                ActionParam::optional(
-                    "create",
-                    ParamType::Boolean,
-                    "Create the folder (and its parents) when missing; default true",
-                ),
-            ],
-            |args: &ActionArgs| {
-                let request = MoveRequest {
-                    entries: args
-                        .array("entries")
-                        .unwrap_or_default()
-                        .iter()
-                        .filter_map(|entry| entry.as_str().map(str::to_owned))
-                        .collect(),
-                    folder: args.text("folder").unwrap_or_default().to_owned(),
-                    create: args.boolean("create").unwrap_or(true),
-                };
-                EncodedAction::encode_operation("files.move", &request)
-                    .expect("move request is serializable")
-            },
-        )
-        .with_description(
-            "Move several entries of this folder into another folder in one call, creating it when missing",
-        )
-        .with_contract(ActionContract {
-            availability: if self.current_path.is_dir() {
-                Availability::Available
-            } else {
-                Availability::Unavailable {
-                    code: "location_unavailable".into(),
-                    reason: "The current location lists no entries to move".into(),
-                }
-            },
-            permission: PermissionRequirement::Write,
-            retry: RetryPolicy::AtMostOnce,
-            reversible: false,
-            result: ResultSpec::Json {
-                schema: serde_json::json!({"type": "string"}),
-            },
-            ..ActionContract::default()
-        })
     }
 
     /// Carry out a [`MoveRequest`]: every entry is found before anything
@@ -7693,190 +7567,6 @@ impl FileExplorerWidget {
         );
     }
 
-    fn folder_resource_base(&self) -> Resource {
-        let mut folder = Resource::new(
-            crate::search_provider::folder_resource_id(&self.current_path),
-            "files.folder",
-            self.current_path.display().to_string(),
-        );
-        if let Ok(spec) = ActionSpec::operation(
-            "refresh",
-            "Refresh folder",
-            OperationKind::Effect,
-            "files.refresh",
-            &"",
-        ) {
-            folder.actions.push(spec.with_contract(ActionContract {
-                availability: if self.current_path.exists() || self.is_recent_view() {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "location_missing".into(),
-                        reason: "The current folder no longer exists".into(),
-                    }
-                },
-                permission: PermissionRequirement::Read,
-                retry: RetryPolicy::Idempotent,
-                ..ActionContract::default()
-            }));
-        }
-        folder
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "these fixed command payloads are locally constructed and serializable"
-    )]
-    fn append_navigation_actions(folder: &mut Resource) {
-        for (id, label, verb, kind) in folder_view_commands() {
-            folder.actions.push(
-                ActionSpec::operation(id, label, kind, "files.folder-command", &verb)
-                    .expect("folder command is serializable")
-                    .with_contract(if kind == OperationKind::View {
-                        ActionContract::view()
-                    } else {
-                        ActionContract::default()
-                    }),
-            );
-        }
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "the selected fixed folder-command payload is serializable"
-    )]
-    fn append_favorite_action(&self, folder: &mut Resource) {
-        let current_is_favorite = self
-            .favs
-            .borrow()
-            .favorites
-            .iter()
-            .any(|favorite| favorite.path == self.current_path);
-        let (id, label, verb) = if current_is_favorite {
-            (
-                "remove-favorite",
-                "Remove from Favourites",
-                "remove-favorite",
-            )
-        } else {
-            ("add-favorite", "Add to Favourites", "add-favorite")
-        };
-        folder.actions.push(
-            ActionSpec::operation(
-                id,
-                label,
-                OperationKind::Effect,
-                "files.folder-command",
-                &verb,
-            )
-            .expect("favourite command is serializable")
-            .with_contract(ActionContract {
-                availability: if self.current_path.is_dir() {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "location_unavailable".into(),
-                        reason: "The current location cannot be a favourite".into(),
-                    }
-                },
-                permission: PermissionRequirement::Write,
-                retry: RetryPolicy::AtMostOnce,
-                ..ActionContract::default()
-            }),
-        );
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "new-folder, paste, and empty-trash payloads are fixed local values"
-    )]
-    fn append_creation_actions(&self, folder: &mut Resource) {
-        folder.actions.push(
-            ActionSpec::prompted_operation(
-                "new-folder",
-                "New folder",
-                "Folder name",
-                "New Folder",
-                OperationKind::Effect,
-                "files.new-folder",
-                |name| {
-                    EncodedAction::encode_operation("files.new-folder", &name)
-                        .expect("folder name is serializable")
-                },
-            )
-            .with_contract(ActionContract {
-                availability: if self.current_path.is_dir() {
-                    Availability::Available
-                } else {
-                    Availability::Unavailable {
-                        code: "location_unavailable".into(),
-                        reason: "The current location cannot contain a new folder".into(),
-                    }
-                },
-                permission: PermissionRequirement::Write,
-                reversible: false,
-                ..ActionContract::default()
-            }),
-        );
-        folder.actions.push(
-            ActionSpec::operation("paste", "Paste", OperationKind::Effect, "files.paste", &"")
-                .expect("file operation payload is serializable")
-                .with_contract(ActionContract {
-                    availability: if self.clipboard.is_empty() {
-                        Availability::Unavailable {
-                            code: "clipboard_empty".into(),
-                            reason: "Copy or cut files before pasting".into(),
-                        }
-                    } else {
-                        Availability::Available
-                    },
-                    permission: PermissionRequirement::Write,
-                    risk: RiskLevel::Low,
-                    confirmation: ConfirmationPolicy::None,
-                    retry: RetryPolicy::AtMostOnce,
-                    reversible: false,
-                    ..ActionContract::default()
-                }),
-        );
-        if self.last_trash_undo.is_some() {
-            folder.actions.push(
-                ActionSpec::operation(
-                    "undo-trash",
-                    t("files-undo-move-trash"),
-                    OperationKind::Effect,
-                    "files.folder-command",
-                    &"undo-trash",
-                )
-                .expect("undo-trash payload is serializable")
-                .with_contract(ActionContract {
-                    permission: PermissionRequirement::Write,
-                    retry: RetryPolicy::AtMostOnce,
-                    ..ActionContract::default()
-                }),
-            );
-        }
-        if self.is_trash_view() {
-            folder.actions.push(
-                ActionSpec::operation(
-                    "empty-trash",
-                    t("files-menu-empty-trash"),
-                    OperationKind::Effect,
-                    "files.folder-command",
-                    &"empty-trash",
-                )
-                .expect("empty-trash command is serializable")
-                .destructive()
-                .with_contract(ActionContract {
-                    permission: PermissionRequirement::Write,
-                    risk: RiskLevel::Destructive,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    retry: RetryPolicy::AtMostOnce,
-                    ..ActionContract::default()
-                }),
-            );
-        }
-    }
-
     /// Construct the complete action contract for one already-projected row.
     /// This is intentionally separate from `resources`: a folder can have far
     /// more rows than an action directory should enumerate, while an exact
@@ -7928,31 +7618,13 @@ impl FileExplorerWidget {
         }
         self.append_open_with_actions(entry, &resource_id, &mut resource);
         if !self.is_trash_view() {
-            let rename_resource_id = resource_id.clone();
-            resource.actions.push(
-                ActionSpec::prompted_operation(
-                    "rename",
-                    t("files-menu-rename"),
-                    t("files-action-rename-prompt"),
-                    &entry.name,
-                    OperationKind::Effect,
-                    "files.rename",
-                    move |name| {
-                        EncodedAction::encode_operation(
-                            "files.rename",
-                            &vec![rename_resource_id.as_str(), name],
-                        )
-                        .expect("rename payload is serializable")
-                    },
-                )
-                .with_contract(ActionContract {
-                    permission: PermissionRequirement::Write,
-                    retry: RetryPolicy::AtMostOnce,
-                    // The filesystem owns durable history, so never advertise
-                    // an action-history inverse that Files cannot honour.
-                    ..ActionContract::default()
-                }),
-            );
+            let mut rename = crate::effects::FilesEffect::Rename {
+                entry: resource_id.clone(),
+                name: entry.name.clone(),
+            }
+            .bound_asking(&["name"]);
+            rename.label = t("files-menu-rename");
+            resource.actions.push(rename);
             resource
                 .actions
                 .extend(Self::transfer_actions(&resource_id));
@@ -8016,7 +7688,6 @@ impl FileExplorerWidget {
             vec![
                 ("copy", t("files-menu-copy"), "copy", false),
                 ("cut", t("files-menu-cut"), "cut", false),
-                ("trash", t("files-menu-move-trash"), "trash", true),
                 (
                     "properties",
                     t("files-menu-properties"),
@@ -8044,6 +7715,14 @@ impl FileExplorerWidget {
                 spec = spec.destructive();
             }
             resource.actions.push(spec);
+        }
+        if !self.is_trash_view() {
+            let mut trash = crate::effects::FilesEffect::Trash {
+                entry: resource_id.clone(),
+            }
+            .bound();
+            trash.label = t("files-menu-move-trash");
+            resource.actions.push(trash);
         }
         if let Some(availability) = entry.availability.as_ref() {
             resource.actions.push(
@@ -8142,9 +7821,9 @@ impl FileExplorerWidget {
         resource
     }
 
-    /// Live extras beside `ResourceRoot` when framework-hosted: listing rows,
-    /// remote accounts, nearby transfers, and the error retry control. Not a
-    /// second `files.folder` root and not places/templates (those ride publish).
+    /// The live rows the window shows beneath the resource: listing entries,
+    /// remote accounts, nearby transfers, and the retry of a failed listing.
+    /// The folder, its places and templates are the resource's publication.
     fn live_filesystem_extras(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         let mut extras = self.live_entry_resources();
         extras.extend(self.live_remote_account_resources());
@@ -8406,10 +8085,8 @@ impl Widget for FileExplorerWidget {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "files.refresh",
-            "files.new-folder",
             "files.paste",
             "files.go-to",
-            "files.move",
             "files.transfer",
             "files.new-from-template",
             "files.open",
@@ -8421,7 +8098,6 @@ impl Widget for FileExplorerWidget {
             "files.nearby-decide",
             "files.nearby-retry",
             "files.nearby-cancel",
-            "files.rename",
             "files.share-link",
             "files.remote-account",
             // The hand-positioned recovery Button still publishes through the
@@ -9181,37 +8857,12 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
         clippy::too_many_lines,
         reason = "the resource catalogue mirrors the folder/entry protocol in one auditable tree; splitting it would separate action contracts from their resources"
     )]
+    // The folder, its places and templates and its folder-wide work are the
+    // resource's publication; the window adds the live rows it shows:
+    // listing entries, remote accounts, nearby transfers and the retry of a
+    // failed listing.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
-        // Hosted: ResourceRoot already published folder Views/Effects, places,
-        // and templates via tilo_resource::publish. Keep only live filesystem
-        // listing rows (and other live extras) — never a second files.folder.
-        if self.is_framework_hosted() {
-            return self.live_filesystem_extras(doc);
-        }
-        vec![self.published_folder(doc)]
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &automerge::AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        if self.is_framework_hosted() {
-            // Folder root is ResourceRoot's publish, not a second page.
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: true,
-            });
-        }
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| self.published_folder(doc))
-                .into_iter()
-                .collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
+        self.live_filesystem_extras(doc)
     }
     /// Materialise an exact search-addressed row only when the action host is
     /// about to resolve it. This keeps the open resource tree bounded to the
@@ -9229,17 +8880,12 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
             }
             None
         }
-        let folder = self.published_folder(doc);
-        if let Some(found) = find(&folder, id) {
-            if self.is_framework_hosted() && found.id == folder.id {
-                return None;
-            }
-            return Some(found);
-        }
-        if !self.is_framework_hosted()
-            && id == crate::search_provider::folder_resource_id(&self.current_path)
+        if let Some(found) = self
+            .live_filesystem_extras(doc)
+            .iter()
+            .find_map(|resource| find(resource, id))
         {
-            return Some(self.published_folder(doc));
+            return Some(found);
         }
         self.entries
             .iter()
@@ -9304,11 +8950,6 @@ impl FileExplorerWidget {
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (OperationKind::Effect, "files.new-folder") => {
-                let name: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                fileops::new_folder(&self.current_path, &name)?;
-                self.refresh();
-            }
             (OperationKind::Effect, "files.new-from-template") => {
                 let template_id: String =
                     serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -9366,14 +9007,6 @@ impl FileExplorerWidget {
                 }
                 self.navigate(path);
                 self.operation_result = Some(self.folder_answer());
-            }
-            (OperationKind::Effect, "files.move") => {
-                let request: MoveRequest =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                if request.entries.is_empty() || request.entries.len() > MAX_MOVE_ENTRIES {
-                    return Err(format!("move takes 1 to {MAX_MOVE_ENTRIES} entries"));
-                }
-                self.operation_result = Some(self.move_entries(&request)?.into());
             }
             (OperationKind::Effect, "files.transfer") => {
                 let [verb, resource_id, folder]: [String; 3] =
@@ -9450,8 +9083,7 @@ impl FileExplorerWidget {
                     | "sort-descending" | "zoom-in" | "zoom-out" | "hidden" | "shortcuts" => {
                         OperationKind::View
                     }
-                    "add-favorite" | "remove-favorite" | "empty-trash" | "terminal"
-                    | "undo-trash" => OperationKind::Effect,
+                    "terminal" => OperationKind::Effect,
                     _ => return Ok(false),
                 };
                 if kind != expected_kind {
@@ -9480,24 +9112,6 @@ impl FileExplorerWidget {
                     "hidden" => {
                         self.apply_command(FileCommand::ToggleHidden);
                     }
-                    "add-favorite" => {
-                        if !self.current_path.is_dir() {
-                            return Err("the current location cannot be a favourite".into());
-                        }
-                        self.apply_command(FileCommand::AddFavorite(self.current_path.clone()));
-                    }
-                    "remove-favorite" => {
-                        self.apply_command(FileCommand::RemoveFavorite(self.current_path.clone()));
-                    }
-                    "empty-trash" if self.is_trash_view() => {
-                        // The action contract was confirmation-gated by the
-                        // resource broker; do not make an agent traverse an
-                        // inaccessible second UI-only confirmation sheet.
-                        self.perform_empty_trash();
-                    }
-                    "undo-trash" => {
-                        self.apply_undo_last_trash();
-                    }
                     "terminal" => self
                         .open_terminal(&mut SystemRunner)
                         .map_err(|e| format!("could not open terminal: {e}"))?,
@@ -9520,10 +9134,8 @@ impl FileExplorerWidget {
                     "properties" | "sharing" | "history" | "availability" | "send-nearby" => {
                         OperationKind::View
                     }
-                    "copy" | "cut" | "restore" | "purge" | "trash" | "keep-offline"
-                    | "automatic-storage" | "free-local-space" | "retry-transfer" => {
-                        OperationKind::Effect
-                    }
+                    "copy" | "cut" | "restore" | "purge" | "keep-offline" | "automatic-storage"
+                    | "free-local-space" | "retry-transfer" => OperationKind::Effect,
                     _ => return Ok(false),
                 };
                 if kind != expected_kind {
@@ -9535,14 +9147,6 @@ impl FileExplorerWidget {
                     .position(|entry| entry.path == target)
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 self.selection.select_only(index);
-                if verb == "trash" {
-                    if self.is_trash_view() {
-                        return Err("Use the separately confirmed permanent-delete action for items already in Trash".into());
-                    }
-                    self.apply_delete();
-                    self.structure_dirty = true;
-                    return Ok(true);
-                }
                 let command = match verb.as_str() {
                     "copy" => FileCommand::Copy,
                     "cut" => FileCommand::Cut,
@@ -9651,21 +9255,6 @@ impl FileExplorerWidget {
                 self.nearby_send.cancel(handle);
                 self.status = Some(t("files-nearby-cancelled"));
             }
-            (OperationKind::Effect, "files.rename") => {
-                let args: Vec<String> =
-                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-                let resource_id = args
-                    .first()
-                    .ok_or_else(|| "missing file resource".to_string())?;
-                let name = args
-                    .get(1)
-                    .ok_or_else(|| "missing new file name".to_string())?;
-                let target = self
-                    .visible_entry_path(resource_id)
-                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
-                fileops::rename(&target, name)?;
-                self.refresh();
-            }
             (OperationKind::Effect, "files.share-link") => {
                 let resource_id: String =
                     serde_json::from_slice(payload).map_err(|e| e.to_string())?;
@@ -9769,6 +9358,61 @@ mod open_with_recent;
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
 mod tests;
+
+/// What the palette, agents and scripts reach of a Files window, for the
+/// tests that drive the widget without a framework host: the resource's
+/// publication with the window's effects beside it and its live rows
+/// beneath, and the routing the framework's surface host does.
+#[cfg(test)]
+pub(crate) mod published {
+    use super::FileExplorerWidget;
+    use crate::effects::FilesEffect;
+    use crate::resource::{FileExplorer, FilesState};
+    use ui::tilo_actions::Resource;
+    use ui::tilo_resource::{Effect as _, Resource as _};
+    use ui::widget::Widget as _;
+
+    /// The published tree: one root, as the framework publishes it, with the
+    /// places the window shows.
+    pub(crate) fn tree(files: &FileExplorerWidget, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        let mut root = ui::tilo_resource::publish::<FileExplorer>(
+            FileExplorer::KIND,
+            "Files",
+            &FilesState::default(),
+        );
+        root.actions.extend(FilesEffect::specs());
+        // The places as a device whose home is the window's resolves them.
+        root.children
+            .extend(super::published_place_resources(&files.favorites()));
+        root.children.extend(ui::resources::resources(files, doc));
+        vec![root]
+    }
+
+    /// Start `op` on the window as the surface host does: the effect
+    /// vocabulary to the surface's handler, anything else to its operations.
+    ///
+    /// # Errors
+    /// Why the operation failed or was refused.
+    pub(crate) fn start(
+        files: &mut FileExplorerWidget,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(request) = op.unscoped()
+            && request.type_id == FilesEffect::OPERATION
+        {
+            let value = files.run_effect(FilesEffect::from_payload(request.payload)?)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput {
+                    value,
+                    ..ui::tilo_actions::ActionOutput::default()
+                },
+            )));
+        }
+        files.start_operation(op, doc, path)
+    }
+}
 
 #[cfg(all(test, unix))]
 #[path = "framework_history_tests.rs"]

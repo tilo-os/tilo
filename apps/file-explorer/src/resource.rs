@@ -11,13 +11,17 @@
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{FileHistory, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, Fixture, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
+};
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_actions::{Action, ActionError, ActionParam, ActionRegistry, ActionSpec, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::doc::PlacesDoc;
+use crate::effects::FilesEffect;
 use crate::files_app::{
     FileExplorerWidget, folder_palette_operations, published_place_resources,
     published_template_resources,
@@ -243,7 +247,7 @@ impl ResourceApp for FileExplorerShell {
     }
 }
 
-impl ResourceSurface<FileExplorer> for FileExplorerWidget {
+impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
     fn present(&mut self, state: &Rc<FilesState>) {
         self.present_places(&state.bookmarks);
     }
@@ -266,6 +270,51 @@ impl ResourceSurface<FileExplorer> for FileExplorerWidget {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: FilesEffect,
+        _cx: &mut EffectCx<FileExplorer, Self>,
+    ) -> EffectAnswer {
+        Ok(match self.run_effect(effect)? {
+            Some(answer) => Effected::value(answer),
+            None => Effected::done(),
+        })
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+
+    /// Pin the folder shown to the Favourites, or unpin it.
+    fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
+        let Some(place) = self.current_place() else {
+            return Vec::new();
+        };
+        let pinned = self.current_is_favourite();
+        let id = if pinned {
+            "remove-current-bookmark"
+        } else {
+            "add-current-bookmark"
+        };
+        let label = if pinned {
+            "Remove this folder from Favourites"
+        } else {
+            "Add this folder to Favourites"
+        };
+        vec![ActionDecl::new(id, label, Vec::new(), move |_, _| {
+            Ok(if pinned {
+                FilesDocAction::RemoveBookmark {
+                    place: place.clone(),
+                }
+            } else {
+                FilesDocAction::AddBookmark {
+                    place: place.clone(),
+                    at: None,
+                }
+            })
+        })]
     }
 }
 
@@ -290,7 +339,6 @@ mod tests {
         let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
         for expected in [
             "refresh",
-            "new-folder",
             "paste",
             "go-to",
             "list",
@@ -450,5 +498,59 @@ mod tests {
             TestApp::<FileExplorerShell>::launched(&[directory.path().to_str().unwrap()]).unwrap();
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("launched.txt"), "{frame}");
+    }
+
+    /// Filesystem work reaches the window's handler through the door, as the
+    /// palette or an agent invokes it; pinning the folder shown is the
+    /// resource's action, bound to that folder.
+    #[test]
+    fn filesystem_work_is_the_windows_effects() {
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("draft.txt"), b"x").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[folder.path().to_str().unwrap()]).unwrap();
+        app.effect(&FilesEffect::NewFolder {
+            name: "Projects".into(),
+        })
+        .unwrap();
+        assert!(folder.path().join("Projects").is_dir());
+        app.effect(&FilesEffect::Rename {
+            entry: "draft.txt".into(),
+            name: "final.txt".into(),
+        })
+        .unwrap();
+        assert!(folder.path().join("final.txt").exists());
+        let moved = app
+            .effect(&FilesEffect::Move {
+                entries: vec!["final.txt".into()],
+                folder: folder.path().join("Projects").display().to_string(),
+                create: None,
+            })
+            .unwrap();
+        assert!(
+            folder.path().join("Projects/final.txt").exists(),
+            "{moved:?}"
+        );
+        assert!(
+            app.effect(&FilesEffect::EmptyTrash).is_err(),
+            "Trash is emptied from the Trash folder only"
+        );
+
+        let instance = app.harness().component_instance_id().unwrap();
+        app.harness()
+            .invoke_bound_action(
+                &ui::bound_dispatch::BoundActionAddress {
+                    instance_id: instance,
+                    address: ui::tilo_actions::ActionAddress::new(
+                        FileExplorer::KIND,
+                        "add-current-bookmark",
+                    ),
+                },
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        app.settle();
+        let place = folder.path().display().to_string();
+        assert!(app.state().bookmarks.contains(&place), "{:?}", app.state());
     }
 }
