@@ -167,15 +167,18 @@ pub fn device_checks(
             ),
         ),
         // An older image: register anyway, so vm upgrade can move it on.
-        (true, Some(Err(error @ CliError::ProtocolMismatch { client, daemon, .. })))
-            if daemon < client =>
-        {
-            Check::warn(
-                "tilo-vmd",
-                error.to_string(),
-                "slots and swaps wait for a newer image: tilo-vm vm upgrade <name> (it needs only SSH and bootc)",
-            )
-        }
+        (
+            true,
+            Some(Err(error @ CliError::ProtocolMismatch {
+                vm, client, daemon, ..
+            })),
+        ) if daemon < client => Check::warn(
+            "tilo-vmd",
+            error.to_string(),
+            format!(
+                "slots and swaps wait for a newer image: tilo-vm vm upgrade {vm} (it needs only SSH and bootc)"
+            ),
+        ),
         (true, Some(Err(error))) => Check::fail("tilo-vmd", error.to_string(), error.hint()),
     });
     if let Some(Ok(hello)) = hello {
@@ -488,7 +491,13 @@ mod tests {
         assert!(usable(&checks));
         let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
         assert_eq!(daemon.state, "warn");
-        assert!(daemon.fix.as_deref().unwrap().contains("vm upgrade"));
+        assert!(
+            daemon
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("tilo-vm vm upgrade yoga ")
+        );
         let newer = Err(CliError::ProtocolMismatch {
             vm: "yoga".into(),
             client: 5,

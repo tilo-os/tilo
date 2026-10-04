@@ -398,7 +398,7 @@ jobs:
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
@@ -469,7 +469,7 @@ jobs:
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/compiler-inputs.json
@@ -541,7 +541,7 @@ jobs:
       - name: Save observed Clippy inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/clippy-*-inputs.json

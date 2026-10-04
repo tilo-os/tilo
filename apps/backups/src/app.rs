@@ -9,17 +9,22 @@
 //! State split:
 //!   * the *catalog* (snapshot listing), navigation, selections, modal state,
 //!     focus, and device/backend observations are local to this widget;
-//!   * durable retention policy lives in the Automerge doc (see
-//!     [`BackupsDoc`]) and is changed only through a typed action.
+//!   * where this device backs up from and to is a device-local setting
+//!     ([`BackupLocation`]);
+//!   * durable retention policy lives in the resource document (see
+//!     [`crate::doc::BackupsDoc`]) and is changed only through a typed action;
+//!   * backing up, verifying and restoring are [`BackupsEffect`]s, whose jobs
+//!     run off the UI thread.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Setting, SurfaceCx,
+};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use vello::Scene;
@@ -45,13 +50,14 @@ use ui::widget::{
 };
 use ui::{card_column_width, card_columns};
 
-use crate::actions::{self, BACKUPS_ACTION_TYPE};
-use crate::doc::{BackupsDoc, PolicyField};
+use crate::actions::{self, BackupsEffect, Blocked};
+use crate::doc::PolicyField;
 use crate::model::{
     Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, SnapFile, SnapStatus,
     SnapType, Snapshot, Source, SourceKind, View,
 };
 use crate::paint;
+use crate::resource::{BackupLocation, Backups, DemoRepository};
 
 // Fixed bands are the 1× *floors* of renderer-measured values: the top bar and
 // its tabs (`chrome_metrics`), the timeline's day header / snapshot row /
@@ -175,24 +181,38 @@ enum Hit {
     CloseRail,
 }
 
-#[derive(Clone, Copy)]
-enum PickPurpose {
-    Source,
-    Destination,
-    Restore,
+/// A folder chooser's answer, from the worker that waited for it.
+type Picked = ui::portal::PortalOutcome;
+
+/// Wait for the user to choose a folder. Runs on a job's worker thread.
+fn pick_folder(title: &str, accept: &str) -> Picked {
+    ui::portal::PickRequest::directory(title, accept)
+        .thread_name("backups-folder-picker")
+        .send()
+        .recv()
+        .unwrap_or_else(|_| {
+            ui::portal::PortalOutcome::Failed("The folder chooser closed unexpectedly".into())
+        })
 }
 
-enum JobEvent {
-    Progress(crate::engine::Progress),
-    Created(crate::engine::BackupManifest),
-    Verified(crate::engine::Verification),
-    Restored(crate::engine::Verification),
-    Failed(String),
-}
-
+/// What the surface's effects are doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShotScenario {
-    Restore,
+enum Work {
+    Idle,
+    /// A folder chooser is open.
+    Choosing,
+    /// A backup, verification or restore is running.
+    Running,
+}
+
+/// What a running job last reported, written by its worker and shown by the
+/// progress banner.
+type JobProgress = Arc<Mutex<Option<String>>>;
+
+fn report(progress: &JobProgress, status: String) {
+    if let Ok(mut shown) = progress.lock() {
+        *shown = Some(status);
+    }
 }
 
 /// Local view state. It is intentionally never read from or written to the
@@ -241,17 +261,22 @@ pub struct BackupsApp {
     tab_h: f64,
     policy_focus: usize,
     toast: Option<(String, ToastKind, Instant)>,
-    seeded: bool,
     /// The Timeline source rail as the shared adaptive drawer: docked beside the
     /// snapshot list on wide windows, a summoned overlay drawer when narrow.
     drawer: SidebarDrawer,
-    /// `--shots` hook: force the overlay rail open so its narrow state can be
-    /// captured headlessly (`TILO_BACKUPS_RAIL_OPEN=1`).
+    /// The `rail` capture holds the overlay rail open so its narrow state can
+    /// be seen.
     force_rail_open: bool,
-    /// Framework-owned action dispatch: every retention-policy edit goes through
-    /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
-    /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: crate::resource::ActionSink,
+    /// Where edits and effects go: every retention-policy edit is the
+    /// resource's action, and every backup, verification and restore is a
+    /// [`BackupsEffect`] — the same path Ctrl+K and agents take. `None` until
+    /// the framework attaches the surface.
+    dispatcher: Option<Dispatcher<Backups>>,
+    /// Where this device backs up from and to, kept current while the app
+    /// runs; `None` outside a live window.
+    location: Option<Setting<BackupLocation>>,
+    /// The location the catalog was last loaded for.
+    loaded: BackupLocation,
     /// Transient floating status bubble: the health + snapshot tally surfaced as
     /// a bottom-right pill instead of a permanent bottom strip, so the dashboard
     /// spans to the window bottom. Poked when the tally/health changes and shown
@@ -260,12 +285,9 @@ pub struct BackupsApp {
     /// The label last shown in the bubble, so a poke fires only on a real change
     /// (`draw` runs every frame; poking unconditionally would pin it open).
     status_shown: String,
-    /// `--shots` / `--scenario status` forces the bubble fully visible so a still
-    /// frame captures the floating pill.
+    /// The `status` capture forces the bubble fully visible so a still frame
+    /// captures the floating pill.
     shots_status: bool,
-    /// One-shot visual-regression state. Never persisted or sent to the
-    /// backup worker; it only lets CI exercise recovery/progress framing.
-    shot_scenario: Option<ShotScenario>,
     /// Retained complete recovery-point index. The visible resource snapshot
     /// stays bounded, while Ctrl+K searches every already-loaded version.
     search_index: crate::search_provider::BackupsSearchIndex,
@@ -275,8 +297,9 @@ pub struct BackupsApp {
     /// damaged repository. Keep that distinct from first-run so actions never
     /// imply the repository is ready when it was not successfully loaded.
     repository_error: Option<String>,
-    picker: Option<(PickPurpose, ui::portal::PortalChannel)>,
-    job: Option<Receiver<JobEvent>>,
+    /// What this surface's effects are doing now.
+    work: Work,
+    job_progress: JobProgress,
     job_status: Option<String>,
 }
 
@@ -305,48 +328,11 @@ impl BackupsApp {
             && self.repository_error.is_none()
     }
 
-    pub(crate) fn unavailable_reason(&self) -> Option<&str> {
-        self.repository_error.as_deref()
-    }
-
-    /// The live app: starts on an empty catalog (real first-run state) and
-    /// shows onboarding until the user configures a source + destination.
+    /// The surface before the framework attaches it: an empty catalog. The
+    /// live window loads this device's repository on attach; a capture shows
+    /// its scenario's [`DemoRepository`].
     pub fn new() -> Self {
-        let mut app = Self::with_catalog(Catalog::empty());
-        if let Some((source, destination)) = Self::read_config() {
-            app.source_path = Some(source.clone());
-            app.destination_path = Some(destination.clone());
-            // `list_snapshots` correctly treats a brand-new repository as an
-            // empty one. A *saved* destination is different: never create a
-            // missing mount path on startup, or an unplugged drive could look
-            // like a fresh local repository and receive a backup in the wrong
-            // place later.
-            if destination.is_dir() {
-                match crate::engine::list_snapshots(&destination) {
-                    Ok(manifests) => {
-                        app.catalog = Catalog::from_local(&source, &destination, &manifests);
-                        app.sync_search_index();
-                    }
-                    Err(error) => {
-                        app.repository_error =
-                            Some(format!("Couldn’t read the saved backup location: {error}"));
-                    }
-                }
-            } else {
-                app.repository_error = Some(
-                    "Couldn’t read the saved backup location: it is not mounted or is no longer a folder."
-                        .into(),
-                );
-            }
-        }
-        app
-    }
-
-    /// The demo app: pre-seeded with the sample catalog. Used only by the
-    /// `--shots` renderer so screenshots exercise a populated dashboard —
-    /// never the live launch.
-    pub fn new_demo() -> Self {
-        Self::with_catalog(Catalog::sample())
+        Self::with_catalog(Catalog::empty())
     }
 
     fn with_catalog(catalog: Catalog) -> Self {
@@ -368,24 +354,24 @@ impl BackupsApp {
             tab_h: TAB_H,
             policy_focus: 0,
             toast: None,
-            seeded: false,
             drawer: SidebarDrawer::new()
                 .left()
                 .docked_width(RAIL_W)
                 .overlay_width(RAIL_W.max(288.0))
                 .breakpoint(RAIL_BREAKPOINT),
-            force_rail_open: std::env::var("TILO_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
-            actions: crate::resource::ActionSink::default(),
+            force_rail_open: false,
+            dispatcher: None,
+            location: None,
+            loaded: BackupLocation::default(),
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
             shots_status: false,
-            shot_scenario: None,
             search_index,
             source_path: None,
             destination_path: None,
             repository_error: None,
-            picker: None,
-            job: None,
+            work: Work::Idle,
+            job_progress: JobProgress::default(),
             job_status: None,
         }
     }
@@ -394,76 +380,96 @@ impl BackupsApp {
         self.search_index.sync(&self.catalog);
     }
 
+    /// Take part in the resource: edits and effects go through the
+    /// dispatcher, and the repository shown is this device's (a live
+    /// window) or the scenario's (a capture).
+    pub(crate) fn attach_framework(&mut self, cx: &SurfaceCx<Backups>) {
+        self.dispatcher = Some(cx.dispatcher());
+        if let Some(demo) = cx.fixture::<DemoRepository>() {
+            self.catalog = demo.catalog.clone();
+            self.sync_search_index();
+            self.source_path.clone_from(&demo.location.source);
+            self.destination_path.clone_from(&demo.location.destination);
+            self.repository_error.clone_from(&demo.error);
+        } else if cx.mode().is_live() {
+            let location = cx.settings::<BackupLocation>();
+            self.load_location(location.get());
+            self.location = Some(location);
+        }
+    }
+
+    /// Show the retention policy the document holds.
+    pub(crate) fn present_policy(&mut self, policy: RetentionPolicy) {
+        self.ui.policy = policy;
+    }
+
+    /// Load the repository at `location`. A saved destination that is gone
+    /// (an unplugged drive) is reported, never created: otherwise it could
+    /// look like a fresh repository and receive a backup in the wrong place.
+    fn load_location(&mut self, location: BackupLocation) {
+        self.loaded = location.clone();
+        self.source_path = location.source;
+        self.destination_path = location.destination;
+        self.repository_error = None;
+        self.catalog = Catalog::empty();
+        if let (Some(source), Some(destination)) = (&self.source_path, &self.destination_path) {
+            if destination.is_dir() {
+                match crate::engine::list_snapshots(destination) {
+                    Ok(manifests) => {
+                        self.catalog = Catalog::from_local(source, destination, &manifests);
+                    }
+                    Err(error) => {
+                        self.repository_error =
+                            Some(format!("Couldn’t read the saved backup location: {error}"));
+                    }
+                }
+            } else {
+                self.repository_error = Some(
+                    "Couldn’t read the saved backup location: it is not mounted or is no longer a folder."
+                        .into(),
+                );
+            }
+        }
+        self.sync_search_index();
+    }
+
+    /// Reload the repository after a job changed it.
+    fn reload_repository(&mut self) -> Result<(), String> {
+        let (Some(source), Some(destination)) = (&self.source_path, &self.destination_path) else {
+            return Ok(());
+        };
+        let manifests = crate::engine::list_snapshots(destination).map_err(|error| {
+            let error = format!("Its repository could not be reloaded: {error}");
+            self.repository_error = Some(error.clone());
+            error
+        })?;
+        self.catalog = Catalog::from_local(source, destination, &manifests);
+        self.sync_search_index();
+        Ok(())
+    }
+
     /// Adjust one retention field by `delta`, clamped to `[0, 999]`, through the
-    /// action host. This is the single production funnel both the on-screen +/-
-    /// buttons and the keyboard arrow / `+` / `-` handlers call, and it dispatches
+    /// dispatcher. This is the single production funnel both the on-screen +/-
+    /// buttons and the keyboard arrow / `+` / `-` handlers call, and it submits
     /// the byte-identical [`BackupsAction`](crate::actions::BackupsAction) the
     /// Ctrl+K increment/decrement spec exports.
-    pub(crate) fn bump_retention(
-        &mut self,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        field: PolicyField,
-        delta: i64,
-    ) {
-        let cur = BackupsDoc::retention(doc, root, field);
-        let action = actions::bump_retention_action(field, cur, delta);
-        self.actions.dispatch_with_context(
-            doc,
-            BACKUPS_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.backups", "Backups", &action),
-        );
-    }
-
-    /// The last action dispatched, for the `affordance == ActionSpec` covenant
-    /// test.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    /// Show the retention policy the framework resource already holds.
-    /// An empty/default projection must not wipe unpublished local policy.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::BackupsState) {
-        let untouched = state.policy == RetentionPolicy::default();
-        let local_unpublished = self.ui.policy != RetentionPolicy::default();
-        if untouched && local_unpublished {
-            return;
+    fn bump_retention(&self, field: PolicyField, delta: i64) {
+        let current = match field {
+            PolicyField::Hourly => self.ui.policy.hourly,
+            PolicyField::Daily => self.ui.policy.daily,
+            PolicyField::Weekly => self.ui.policy.weekly,
+            PolicyField::Monthly => self.ui.policy.monthly,
+        };
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(&actions::bump_retention_action(field, current, delta));
         }
-        self.ui.policy = state.policy;
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn ui_policy(&self) -> &RetentionPolicy {
-        &self.ui.policy
-    }
-
-    #[cfg(test)]
-    pub(crate) fn ui_policy_mut(&mut self) -> &mut RetentionPolicy {
-        &mut self.ui.policy
-    }
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Backups>,
-    ) {
-        self.actions.attach(dispatcher);
-    }
-
-    fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
-        self.ui.policy = BackupsDoc::policy(doc, root);
+    /// Invoke `effect` through the door, as the palette and agents do.
+    fn invoke(&self, effect: &BackupsEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(effect);
+        }
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
@@ -476,296 +482,381 @@ impl BackupsApp {
         self.toast = Some((msg.into(), ToastKind::Error, ui::time::now()));
     }
 
-    fn config_path() -> Option<PathBuf> {
-        Some(tilo_paths::xdg::state_home()?.join("tilo/backups/config.json"))
-    }
-
-    fn read_config() -> Option<(PathBuf, PathBuf)> {
-        let value: serde_json::Value =
-            serde_json::from_slice(&fs::read(Self::config_path()?).ok()?).ok()?;
-        Some((
-            PathBuf::from(value.get("source")?.as_str()?),
-            PathBuf::from(value.get("destination")?.as_str()?),
-        ))
-    }
-
-    fn save_config(&self) {
-        let (Some(source), Some(destination), Some(path)) = (
-            &self.source_path,
-            &self.destination_path,
-            Self::config_path(),
-        ) else {
-            return;
-        };
-        let value = serde_json::json!({ "source": source, "destination": destination });
-        if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let _ = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
+    /// Why the repository effects cannot run here now, if they cannot.
+    pub(crate) fn blocked(&self) -> Option<Blocked> {
+        if self.work != Work::Idle {
+            return Some(Blocked {
+                code: "busy",
+                reason: "A backup operation is already running; wait for it to finish.".into(),
+            });
         }
+        if let Some(error) = &self.repository_error {
+            return Some(Blocked {
+                code: "not_configured",
+                reason: format!("{error} Choose another backup location to continue."),
+            });
+        }
+        if !self.is_configured() {
+            return Some(Blocked {
+                code: "not_configured",
+                reason: "Choose a source and destination before running a backup".into(),
+            });
+        }
+        None
     }
 
-    fn pick_folder(&mut self, purpose: PickPurpose) {
-        let (title, accept) = match purpose {
-            PickPurpose::Source => ("Choose a folder to protect", "Protect folder"),
-            PickPurpose::Destination => ("Choose a backup location", "Use this location"),
-            PickPurpose::Restore => ("Restore into an empty folder", "Restore here"),
-        };
-        self.picker = Some((
-            purpose,
-            ui::portal::PickRequest::directory(title, accept)
-                .thread_name("backups-folder-picker")
-                .send(),
-        ));
-    }
-
-    fn start_backup(&mut self) {
-        if let Some(error) = self.repository_error.clone() {
-            self.toast_error(format!(
-                "{error} Choose another backup location to continue."
+    /// The effects that cannot run on this device right now.
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+        let mut statuses = Vec::new();
+        if let Some(blocked) = self.blocked() {
+            statuses.push(EffectStatus::unavailable(
+                BackupsEffect::BACKUP_NOW,
+                blocked.code,
+                blocked.reason.clone(),
             ));
-            return;
+            statuses.push(EffectStatus::unavailable(
+                BackupsEffect::VERIFY,
+                blocked.code,
+                blocked.reason.clone(),
+            ));
+            statuses.push(EffectStatus::unavailable(
+                BackupsEffect::RESTORE_SNAPSHOT,
+                blocked.code,
+                blocked.reason,
+            ));
         }
+        if self.work != Work::Idle {
+            statuses.push(EffectStatus::unavailable(
+                BackupsEffect::SETUP,
+                "busy",
+                "A backup operation is already running; wait for it to finish.",
+            ));
+        }
+        statuses
+    }
+
+    fn has_snapshot(&self, id: &str) -> bool {
+        self.catalog
+            .snapshots
+            .iter()
+            .any(|snapshot| snapshot.id == id)
+    }
+
+    /// Answer one effect, from a button, the palette, an agent or a script.
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: BackupsEffect,
+        cx: &mut EffectCx<Backups, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            BackupsEffect::Setup => {
+                if self.work != Work::Idle {
+                    return Err(
+                        "A backup operation is already running; wait for it to finish.".into(),
+                    );
+                }
+                // A saved location that can no longer be read keeps its
+                // source: only a new destination is chosen.
+                if self.source_path.is_some() && !self.is_configured() {
+                    Ok(self.choose_destination(cx))
+                } else {
+                    Ok(self.choose_source(cx))
+                }
+            }
+            BackupsEffect::BackupNow => {
+                if let Some(blocked) = self.blocked() {
+                    self.toast_error(blocked.reason.clone());
+                    return Err(blocked.reason);
+                }
+                Ok(self.start_backup(cx))
+            }
+            BackupsEffect::Verify { snapshot_id } => {
+                self.repository_ready(&snapshot_id)?;
+                self.ui.sel_snapshot = Some(snapshot_id.clone());
+                Ok(self.start_verify(snapshot_id, cx))
+            }
+            BackupsEffect::RestoreSnapshot { snapshot_id } => {
+                self.repository_ready(&snapshot_id)?;
+                self.ui.sel_snapshot = Some(snapshot_id.clone());
+                Ok(self.choose_restore_folder(snapshot_id, cx))
+            }
+            BackupsEffect::ShowSource { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.sel_snapshot = None;
+                self.ui.view = View::Sources;
+                Ok(Effected::done())
+            }
+            BackupsEffect::ShowDestination { destination_id } => {
+                if !self
+                    .catalog
+                    .destinations
+                    .iter()
+                    .any(|destination| destination.id == destination_id)
+                {
+                    return Err("That destination is unavailable on this device.".into());
+                }
+                self.ui.sel_dest = Some(destination_id);
+                self.ui.view = View::Destinations;
+                Ok(Effected::done())
+            }
+            BackupsEffect::ShowSnapshot { snapshot_id } => {
+                if !self.has_snapshot(&snapshot_id) {
+                    return Err("That snapshot is unavailable in this local repository.".into());
+                }
+                self.ui.sel_snapshot = Some(snapshot_id);
+                self.ui.view = View::Timeline;
+                Ok(Effected::done())
+            }
+            BackupsEffect::ShowSchedule { source_id } => {
+                if !self
+                    .catalog
+                    .sources
+                    .iter()
+                    .any(|source| source.id == source_id)
+                {
+                    return Err("That schedule's source is unavailable on this device.".into());
+                }
+                self.ui.sel_source = Some(source_id);
+                self.ui.view = View::Schedules;
+                Ok(Effected::done())
+            }
+        }
+    }
+
+    /// Whether a verification or restore of `snapshot_id` may start now.
+    fn repository_ready(&mut self, snapshot_id: &str) -> Result<(), String> {
+        if let Some(blocked) = self.blocked() {
+            self.toast_error(blocked.reason.clone());
+            return Err(blocked.reason);
+        }
+        if !self.has_snapshot(snapshot_id) {
+            return Err("That snapshot is unavailable in this local repository.".into());
+        }
+        Ok(())
+    }
+
+    fn choose_source(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
+        self.work = Work::Choosing;
+        cx.thread(
+            |_| pick_folder("Choose a folder to protect", "Protect folder"),
+            |app: &mut Self, picked, cx| {
+                app.work = Work::Idle;
+                match picked {
+                    Picked::Opened(path) => {
+                        app.source_path = Some(path);
+                        Ok(app.choose_destination(cx))
+                    }
+                    Picked::Cancelled => Err("No folder was chosen; nothing was set up.".into()),
+                    Picked::Failed(error) => {
+                        app.toast_error(error.clone());
+                        Err(error)
+                    }
+                }
+            },
+        )
+    }
+
+    fn choose_destination(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
+        self.work = Work::Choosing;
+        cx.thread(
+            |_| pick_folder("Choose a backup location", "Use this location"),
+            |app: &mut Self, picked, cx| {
+                app.work = Work::Idle;
+                let destination = match picked {
+                    Picked::Opened(path) => path,
+                    Picked::Cancelled => {
+                        return Err("No location was chosen; nothing was set up.".into());
+                    }
+                    Picked::Failed(error) => {
+                        app.toast_error(error.clone());
+                        return Err(error);
+                    }
+                };
+                let Some(source) = app.source_path.clone() else {
+                    return Err("Choose a folder to protect first.".into());
+                };
+                if let Err(error) = crate::engine::validate_paths(&source, &destination) {
+                    app.toast_error(error.to_string());
+                    return Err(error.to_string());
+                }
+                let location = BackupLocation {
+                    source: Some(source),
+                    destination: Some(destination),
+                };
+                if let Some(setting) = &app.location
+                    && let Err(error) = setting.set(location.clone())
+                {
+                    let error = format!("Couldn’t save the backup location: {error}");
+                    app.toast_error(error.clone());
+                    return Err(error);
+                }
+                app.load_location(location);
+                Ok(app.start_backup(cx))
+            },
+        )
+    }
+
+    fn start_job(&mut self, status: &str) -> JobProgress {
+        self.work = Work::Running;
+        self.job_progress = JobProgress::new(Mutex::new(Some(status.to_owned())));
+        self.job_status = Some(status.to_owned());
+        Arc::clone(&self.job_progress)
+    }
+
+    fn finish_job(&mut self) {
+        self.work = Work::Idle;
+        self.job_status = None;
+    }
+
+    fn start_backup(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
         let (Some(source), Some(destination)) =
             (self.source_path.clone(), self.destination_path.clone())
         else {
-            return;
+            return Effected::done();
         };
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.job = Some(rx);
-        self.job_status = Some("Preparing files…".into());
-        if let Err(error) = std::thread::Builder::new()
-            .name("backups-create".into())
-            .spawn(move || {
-                let progress_tx = tx.clone();
-                match crate::engine::create_snapshot(&source, &destination, |progress| {
-                    let _ = progress_tx.send(JobEvent::Progress(progress.clone()));
-                }) {
-                    Ok(manifest) => {
-                        let _ = tx.send(JobEvent::Created(manifest));
-                    }
-                    Err(error) => {
-                        let _ = tx.send(JobEvent::Failed(error.to_string()));
-                    }
+        let policy = cx.live().get().policy;
+        let shown = self.start_job("Preparing files…");
+        cx.thread(
+            move |progress| {
+                let created = crate::engine::create_snapshot(&source, &destination, |step| {
+                    report(
+                        &shown,
+                        format!("{} files · {}", step.files, ui::format::bytes(step.bytes)),
+                    );
+                    progress.report("copying", Some(step.files), None);
+                })
+                .map_err(|error| error.to_string())?;
+                progress.report("pruning", None, None);
+                let pruned = crate::engine::prune_snapshots(&destination, &policy)
+                    .map_err(|error| error.to_string());
+                Ok::<_, String>((created, pruned))
+            },
+            |app: &mut Self, result, _| {
+                app.finish_job();
+                let (manifest, pruned) = result.inspect_err(|error| {
+                    app.toast_error(error.clone());
+                })?;
+                if let Err(error) = app.reload_repository() {
+                    app.toast_error(
+                        "Backup finished, but its history could not be reopened. Choose the location again before another operation.",
+                    );
+                    return Err(error);
                 }
-            })
-        {
-            self.job = None;
-            self.job_status = None;
-            self.toast_error(format!("Couldn't start the backup worker: {error}"));
-        }
-    }
-
-    fn start_verify(&mut self) {
-        if let Some(error) = self.repository_error.clone() {
-            self.toast_error(format!(
-                "{error} Choose another backup location to continue."
-            ));
-            return;
-        }
-        let (Some(destination), Some(id)) =
-            (self.destination_path.clone(), self.ui.sel_snapshot.clone())
-        else {
-            return;
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.job = Some(rx);
-        self.job_status = Some("Checking every file…".into());
-        if let Err(error) = std::thread::Builder::new()
-            .name("backups-verify".into())
-            .spawn(
-                move || match crate::engine::verify_snapshot(&destination, &id) {
-                    Ok(result) => {
-                        let _ = tx.send(JobEvent::Verified(result));
-                    }
-                    Err(error) => {
-                        let _ = tx.send(JobEvent::Failed(error.to_string()));
-                    }
-                },
-            )
-        {
-            self.job = None;
-            self.job_status = None;
-            self.toast_error(format!("Couldn't start the verification worker: {error}"));
-        }
-    }
-
-    fn start_restore(&mut self, restore_to: PathBuf) {
-        if let Some(error) = self.repository_error.clone() {
-            self.toast_error(format!(
-                "{error} Choose another backup location to continue."
-            ));
-            return;
-        }
-        let (Some(destination), Some(id)) =
-            (self.destination_path.clone(), self.ui.sel_snapshot.clone())
-        else {
-            return;
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.job = Some(rx);
-        self.job_status = Some("Restoring and checking files…".into());
-        if let Err(error) = std::thread::Builder::new()
-            .name("backups-restore".into())
-            .spawn(move || {
-                let progress_tx = tx.clone();
-                match crate::engine::restore_snapshot(
-                    &destination,
-                    &id,
-                    &restore_to,
-                    false,
-                    |progress| {
-                        let _ = progress_tx.send(JobEvent::Progress(progress.clone()));
-                    },
-                ) {
-                    Ok(result) => {
-                        let _ = tx.send(JobEvent::Restored(result));
-                    }
-                    Err(error) => {
-                        let _ = tx.send(JobEvent::Failed(error.to_string()));
-                    }
-                }
-            })
-        {
-            self.job = None;
-            self.job_status = None;
-            self.toast_error(format!("Couldn't start the recovery worker: {error}"));
-        }
-    }
-
-    fn drain_effects(&mut self) {
-        self.drain_picker();
-        self.drain_job();
-    }
-
-    fn drain_picker(&mut self) {
-        let portal_result =
-            self.picker
-                .as_ref()
-                .and_then(|(purpose, receiver)| match receiver.try_recv() {
-                    Ok(outcome) => Some((*purpose, outcome)),
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Disconnected) => Some((
-                        *purpose,
-                        ui::portal::PortalOutcome::Failed(
-                            "The folder chooser closed unexpectedly".into(),
-                        ),
-                    )),
-                });
-        if let Some((purpose, outcome)) = portal_result {
-            self.picker = None;
-            match outcome {
-                ui::portal::PortalOutcome::Opened(path) => match purpose {
-                    PickPurpose::Source => {
-                        self.source_path = Some(path);
-                        self.pick_folder(PickPurpose::Destination);
-                    }
-                    PickPurpose::Destination => {
-                        if let Some(source) = &self.source_path {
-                            match crate::engine::validate_paths(source, &path) {
-                                Ok(_) => {
-                                    self.destination_path = Some(path);
-                                    self.repository_error = None;
-                                    self.save_config();
-                                    self.start_backup();
-                                }
-                                Err(error) => self.toast_error(error.to_string()),
-                            }
-                        }
-                    }
-                    PickPurpose::Restore => {
-                        // The sheet promises a destination chooser, not a
-                        // background restore. Dismiss it only after the user
-                        // explicitly chose a folder; `start_restore` still
-                        // calls the engine with `overwrite = false`.
-                        self.ui.restore_open = false;
-                        self.start_restore(path);
-                    }
-                },
-                ui::portal::PortalOutcome::Cancelled => {}
-                ui::portal::PortalOutcome::Failed(error) => self.toast_error(error),
-            }
-        }
-    }
-
-    fn drain_job(&mut self) {
-        loop {
-            let event = self
-                .job
-                .as_ref()
-                .and_then(|receiver| match receiver.try_recv() {
-                    Ok(event) => Some(event),
-                    Err(TryRecvError::Empty) => None,
-                    Err(TryRecvError::Disconnected) => Some(JobEvent::Failed(
-                        "The backup worker stopped unexpectedly".into(),
-                    )),
-                });
-            let Some(event) = event else {
-                break;
-            };
-            match event {
-                JobEvent::Progress(progress) => {
-                    self.job_status = Some(format!(
-                        "{} files · {}",
-                        progress.files,
-                        ui::format::bytes(progress.bytes)
-                    ));
-                }
-                JobEvent::Created(manifest) => {
-                    self.job = None;
-                    self.job_status = None;
-                    if let (Some(source), Some(destination)) =
-                        (&self.source_path, &self.destination_path)
-                    {
-                        match crate::engine::list_snapshots(destination) {
-                            Ok(manifests) => {
-                                self.catalog = Catalog::from_local(source, destination, &manifests);
-                                self.sync_search_index();
-                            }
-                            Err(error) => {
-                                self.repository_error = Some(format!(
-                                    "Backup finished, but its repository could not be reloaded: {error}"
-                                ));
-                                self.toast_error(
-                                    "Backup finished, but its history could not be reopened. Choose the location again before another operation.",
-                                );
-                                break;
-                            }
-                        }
-                    }
-                    self.toast_now(format!(
+                match &pruned {
+                    Ok(_) => app.toast_now(format!(
                         "Backup complete · {} files · {}",
                         manifest.files,
                         ui::format::bytes(manifest.bytes)
-                    ));
-                    break;
+                    )),
+                    Err(error) => app.toast_error(format!(
+                        "Backup complete, but older snapshots could not be removed: {error}"
+                    )),
                 }
-                JobEvent::Verified(result) => {
-                    self.job = None;
-                    self.job_status = None;
-                    self.toast_now(format!(
-                        "Verified {} files · {}",
-                        result.files,
-                        ui::format::bytes(result.bytes)
-                    ));
-                    break;
+                Ok(Effected::value(serde_json::json!({
+                    "snapshot": manifest.id,
+                    "files": manifest.files,
+                    "bytes": manifest.bytes,
+                    "removed": pruned.unwrap_or_default(),
+                })))
+            },
+        )
+    }
+
+    fn start_verify(&mut self, id: String, cx: &mut EffectCx<Backups, Self>) -> Effected {
+        let Some(destination) = self.destination_path.clone() else {
+            return Effected::done();
+        };
+        self.start_job("Checking every file…");
+        cx.thread(
+            move |_| crate::engine::verify_snapshot(&destination, &id),
+            |app: &mut Self, result, _| {
+                app.finish_job();
+                let result = result.map_err(|error| {
+                    app.toast_error(error.to_string());
+                    error.to_string()
+                })?;
+                app.toast_now(format!(
+                    "Verified {} files · {}",
+                    result.files,
+                    ui::format::bytes(result.bytes)
+                ));
+                Ok(Effected::value(serde_json::json!({
+                    "files": result.files,
+                    "bytes": result.bytes,
+                })))
+            },
+        )
+    }
+
+    fn choose_restore_folder(&mut self, id: String, cx: &mut EffectCx<Backups, Self>) -> Effected {
+        self.work = Work::Choosing;
+        cx.thread(
+            |_| pick_folder("Restore into an empty folder", "Restore here"),
+            |app: &mut Self, picked, cx| {
+                app.work = Work::Idle;
+                match picked {
+                    // The sheet promises a destination chooser, not a
+                    // background restore: it closes only once a folder was
+                    // chosen, and the engine never overwrites one.
+                    Picked::Opened(path) => {
+                        app.ui.restore_open = false;
+                        Ok(app.start_restore(id, path, cx))
+                    }
+                    Picked::Cancelled => Err("No folder was chosen; nothing was restored.".into()),
+                    Picked::Failed(error) => {
+                        app.toast_error(error.clone());
+                        Err(error)
+                    }
                 }
-                JobEvent::Restored(result) => {
-                    self.job = None;
-                    self.job_status = None;
-                    self.toast_now(format!(
-                        "Restored {} files · {}",
-                        result.files,
-                        ui::format::bytes(result.bytes)
-                    ));
-                    break;
-                }
-                JobEvent::Failed(error) => {
-                    self.job = None;
-                    self.job_status = None;
-                    self.toast_error(error);
-                    break;
-                }
-            }
-        }
+            },
+        )
+    }
+
+    fn start_restore(
+        &mut self,
+        id: String,
+        restore_to: PathBuf,
+        cx: &mut EffectCx<Backups, Self>,
+    ) -> Effected {
+        let Some(destination) = self.destination_path.clone() else {
+            return Effected::done();
+        };
+        let shown = self.start_job("Restoring and checking files…");
+        cx.thread(
+            move |progress| {
+                crate::engine::restore_snapshot(&destination, &id, &restore_to, false, |step| {
+                    report(
+                        &shown,
+                        format!("{} files · {}", step.files, ui::format::bytes(step.bytes)),
+                    );
+                    progress.report("restoring", Some(step.files), None);
+                })
+            },
+            |app: &mut Self, result, _| {
+                app.finish_job();
+                let result = result.map_err(|error| {
+                    app.toast_error(error.to_string());
+                    error.to_string()
+                })?;
+                app.toast_now(format!(
+                    "Restored {} files · {}",
+                    result.files,
+                    ui::format::bytes(result.bytes)
+                ));
+                Ok(Effected::value(serde_json::json!({
+                    "files": result.files,
+                    "bytes": result.bytes,
+                })))
+            },
+        )
     }
 
     // ---- semantic colour mapping (all sourced from the Theme) -----------
@@ -1022,7 +1113,7 @@ impl BackupsApp {
         );
         if !self.is_empty() {
             let rect = Rect::new(bar.x1 - PAD - action_w, cy - 17.0, bar.x1 - PAD, cy + 17.0);
-            let busy = self.job.is_some() || self.job_status.is_some();
+            let busy = self.work == Work::Running || self.job_status.is_some();
             let label = if busy { "Backing up…" } else { "Back up now" };
             let face = if narrow {
                 ButtonFace::new(rect, "")
@@ -1248,34 +1339,28 @@ impl BackupsApp {
         scene.pop_layer();
     }
 
-    /// `--shots`: force the status bubble fully visible so a single headless
-    /// frame captures the floating pill.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
-    }
-
-    /// Stage deterministic non-destructive states for screenshot coverage.
-    pub fn stage_shot_scenario(&mut self, scenario: &str) {
+    /// Stage deterministic, non-destructive states for a screenshot: the
+    /// repository itself is the scenario's [`DemoRepository`].
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
+            // The floating status pill, fully shown in a still frame.
+            "status" => {
+                self.shots_status = true;
+                self.status_bubble.poke(ui::time::now());
+            }
             "progress" => self.job_status = Some("642 files · 3.8 GB verified so far".into()),
             "failure" => self.toast_error(
                 "Backup paused: the destination is unavailable. Reconnect it, then retry.",
             ),
-            "restore" => self.shot_scenario = Some(ShotScenario::Restore),
+            "restore" => {
+                self.select_newest_snapshot();
+                self.ui.restore_open = true;
+            }
             // The other dashboard views, so every primary screen is capturable.
             "sources" => self.ui.view = View::Sources,
             "destinations" => self.ui.view = View::Destinations,
             "schedules" => self.ui.view = View::Schedules,
-            "unavailable" => {
-                self.catalog = Catalog::empty();
-                self.sync_search_index();
-                self.source_path = Some(PathBuf::from("/home/you/Documents"));
-                self.destination_path = Some(PathBuf::from("/media/backup-drive"));
-                self.repository_error = Some(
-                    "Couldn’t read the saved backup location: the drive is unavailable.".into(),
-                );
-            }
+            "rail" => self.force_rail_open = true,
             _ => {}
         }
     }
@@ -1401,7 +1486,7 @@ impl BackupsApp {
         }
         let c = &theme.tokens.colors;
         let cy = content.y0 + content.height() * 0.36;
-        let title = if self.job.is_some() {
+        let title = if self.work == Work::Running {
             "Creating a verified backup"
         } else if self.source_path.is_some() {
             "Now choose where to keep it"
@@ -1429,7 +1514,7 @@ impl BackupsApp {
             c.text_dim,
             Point::new(content.center().x, cy + 30.0),
         );
-        if self.job.is_none() && self.picker.is_none() {
+        if self.work == Work::Idle {
             let label = if self.source_path.is_some() {
                 "Choose backup location"
             } else {
@@ -4616,7 +4701,7 @@ impl BackupsApp {
         hit
     }
 
-    fn dispatch(&mut self, hit: Hit, doc: &mut AutoCommit, root: &ObjId) {
+    fn dispatch(&mut self, hit: Hit) {
         match hit {
             Hit::Tab(v) => self.ui.view = v,
             Hit::Source(opt) => {
@@ -4641,33 +4726,34 @@ impl BackupsApp {
                 }
             }
             Hit::Policy(field, delta) => {
-                self.bump_retention(doc, root, field, delta);
+                self.bump_retention(field, delta);
                 self.policy_focus = PolicyField::ALL
                     .iter()
                     .position(|f| *f == field)
                     .unwrap_or(0);
             }
-            Hit::Setup => {
-                if self.source_path.is_some() {
-                    self.pick_folder(PickPurpose::Destination);
-                } else {
-                    self.pick_folder(PickPurpose::Source);
+            Hit::Setup => self.invoke(&BackupsEffect::Setup),
+            Hit::BackupNow => self.invoke(&BackupsEffect::BackupNow),
+            Hit::Verify => {
+                if let Some(snapshot_id) = self.ui.sel_snapshot.clone() {
+                    self.invoke(&BackupsEffect::Verify { snapshot_id });
                 }
             }
-            Hit::BackupNow => self.start_backup(),
-            Hit::Verify => self.start_verify(),
             Hit::RestoreOpen => self.ui.restore_open = true,
-            Hit::RestoreConfirm => self.pick_folder(PickPurpose::Restore),
+            Hit::RestoreConfirm => {
+                if let Some(snapshot_id) = self.ui.sel_snapshot.clone() {
+                    self.invoke(&BackupsEffect::RestoreSnapshot { snapshot_id });
+                }
+            }
             Hit::RestoreCancel => self.ui.restore_open = false,
             // The Timeline source-rail collapse / summon toggle.
             Hit::ToggleRail => self.drawer.toggle(),
             // A tap on the scrim behind an open overlay rail dismisses it.
             Hit::CloseRail => self.drawer.close(),
         }
-        self.load_cache(doc, root);
     }
 
-    fn cycle_view(&mut self, dir: i32, doc: &AutoCommit, root: &ObjId) {
+    fn cycle_view(&mut self, dir: i32) {
         let views = &View::ALL;
         let idx = views.iter().position(|v| *v == self.ui.view).unwrap_or(0) as i32;
         let n = views.len() as i32;
@@ -4676,10 +4762,9 @@ impl BackupsApp {
         if let Some(&view) = views.get(next as usize) {
             self.ui.view = view;
         }
-        self.load_cache(doc, root);
     }
 
-    fn move_snapshot_selection(&mut self, dir: i32, doc: &AutoCommit, root: &ObjId) {
+    fn move_snapshot_selection(&mut self, dir: i32) {
         let snaps = self.catalog.timeline(self.ui.sel_source.as_deref());
         if snaps.is_empty() {
             return;
@@ -4704,164 +4789,40 @@ impl BackupsApp {
         };
         let id = snap.id.clone();
         self.ui.sel_snapshot = Some(id);
-        self.load_cache(doc, root);
     }
-}
 
-impl BackupsApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if !matches!(
-            kind,
-            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
-        ) {
-            return Ok(false);
+    /// Select the newest snapshot of the shown source, so the detail panel
+    /// and its actions are visible. A convenience selection on this device,
+    /// never a replicated document mutation.
+    fn select_newest_snapshot(&mut self) {
+        if self.ui.sel_snapshot.is_none() {
+            self.ui.sel_snapshot = self
+                .catalog
+                .timeline(self.ui.sel_source.as_deref())
+                .first()
+                .map(|snapshot| snapshot.id.clone());
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if self.job.is_some() {
-            return Err("A backup operation is already running; wait for it to finish.".into());
-        }
-        match operation {
-            crate::actions::BackupOperation::Setup => self.pick_folder(PickPurpose::Source),
-            crate::actions::BackupOperation::BackupNow => {
-                if self.source_path.is_none() || self.destination_path.is_none() {
-                    return Err("Backups are not configured on this device.".into());
-                }
-                self.start_backup();
-            }
-            crate::actions::BackupOperation::Verify { snapshot_id } => {
-                if self.destination_path.is_none()
-                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.start_verify();
-            }
-            crate::actions::BackupOperation::Restore { snapshot_id } => {
-                if self.destination_path.is_none()
-                    || !self.catalog.snapshots.iter().any(|s| s.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.pick_folder(PickPurpose::Restore);
-            }
-            crate::actions::BackupOperation::OpenSource { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.sel_snapshot = None;
-                self.ui.view = View::Sources;
-            }
-            crate::actions::BackupOperation::OpenDestination { destination_id } => {
-                if !self
-                    .catalog
-                    .destinations
-                    .iter()
-                    .any(|destination| destination.id == destination_id)
-                {
-                    return Err("That destination is unavailable on this device.".into());
-                }
-                self.ui.sel_dest = Some(destination_id);
-                self.ui.view = View::Destinations;
-            }
-            crate::actions::BackupOperation::OpenSnapshot { snapshot_id } => {
-                if !self
-                    .catalog
-                    .snapshots
-                    .iter()
-                    .any(|snapshot| snapshot.id == snapshot_id)
-                {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.ui.view = View::Timeline;
-            }
-            crate::actions::BackupOperation::OpenSchedule { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That schedule's source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.view = View::Schedules;
-            }
-        }
-        Ok(true)
     }
 }
 
 impl Widget for BackupsApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::search::capability::SearchSource);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::BACKUPS_OPERATION_TYPE]
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        self.drain_effects();
-        if !self.seeded {
-            // Readers fall back to the default policy. The record stays empty
-            // until a retention action writes a field.
-            self.seeded = true;
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        // Another window, or the Settings app, moved this device's backup
+        // location: show the repository there.
+        if let Some(location) = self.location.as_ref().map(Setting::get)
+            && location != self.loaded
+            && self.work != Work::Running
+        {
+            self.load_location(location);
         }
-        self.load_cache(state, path);
-        // Auto-select the newest snapshot locally so the detail panel + actions
-        // are visible. This is a convenience selection, never a replicated
-        // document mutation.
-        if self.ui.sel_snapshot.is_none() {
-            let newest = self
-                .catalog
-                .timeline(self.ui.sel_source.as_deref())
-                .first()
-                .map(|s| s.id.clone());
-            if let Some(id) = newest {
-                self.ui.sel_snapshot = Some(id);
-            }
+        if self.work == Work::Running
+            && let Ok(shown) = self.job_progress.lock()
+        {
+            self.job_status.clone_from(&shown);
         }
-        // Dev/test hook (off by default): force a starting view / open the
-        // restore sheet so each screen can be captured headlessly via
-        // `BACKUPS_VIEW=destinations … --shots`.
-        if let Ok(v) = std::env::var("BACKUPS_VIEW") {
-            match v.as_str() {
-                "sources" => {
-                    self.ui.view = View::Sources;
-                }
-                "destinations" => {
-                    self.ui.view = View::Destinations;
-                }
-                "schedules" => {
-                    self.ui.view = View::Schedules;
-                }
-                _ => {}
-            }
-        }
-        if self.shot_scenario == Some(ShotScenario::Restore) {
-            self.ui.restore_open = true;
-        }
+        self.select_newest_snapshot();
     }
 
     fn build_layout(
@@ -4942,7 +4903,7 @@ impl Widget for BackupsApp {
                 ..
             } => {
                 if let Some(hit) = self.hit_at(self.last_mouse) {
-                    self.dispatch(hit, ctx.state, ctx.path);
+                    self.dispatch(hit);
                     *ctx.handled = true;
                 } else if self.ui.restore_open {
                     // The sheet's scrim swallows the press; nothing behind a
@@ -4977,7 +4938,7 @@ impl Widget for BackupsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
-                self.handle_key(&key_event.logical_key, ctx.state, ctx.path, ctx.handled);
+                self.handle_key(&key_event.logical_key, ctx.handled);
             }
             _ => {}
         }
@@ -4988,28 +4949,7 @@ impl Widget for BackupsApp {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some("backups_app")
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+        Some("BackupsApp")
     }
 
     fn get_rect(&self) -> Rect {
@@ -5142,10 +5082,9 @@ impl Widget for BackupsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, path) = ui::doc::document(state, path);
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }
@@ -5155,7 +5094,7 @@ impl Widget for BackupsApp {
             .find(|(_, hit)| format!("backups.hit:{hit:?}") == target)
             .map(|(_, hit)| hit.clone());
         if let Some(hit) = hit {
-            self.dispatch(hit, state, path);
+            self.dispatch(hit);
             true
         } else {
             false
@@ -5164,8 +5103,6 @@ impl Widget for BackupsApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.toast.is_some()
-            || self.picker.is_some()
-            || self.job.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(ui::time::now())
     }
@@ -5177,35 +5114,8 @@ impl ui::search::capability::SearchSource for BackupsApp {
     }
 }
 
-impl ui::resources::PublishesResources for BackupsApp {
-    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
-    /// policy Document ops ride [`tilo_resource::publish`]; this returns only
-    /// live catalog extras (never a second `backups.policy` / workspace root).
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == crate::actions::BACKUPS_RESOURCE_ID {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for BackupsApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records exactly one undo boundary bracketing it — the
-    /// same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
 impl BackupsApp {
-    fn handle_key(&mut self, key: &Key, doc: &mut AutoCommit, root: &ObjId, handled: &mut bool) {
+    fn handle_key(&mut self, key: &Key, handled: &mut bool) {
         match key {
             Key::Named(NamedKey::Escape) => {
                 if self.ui.restore_open {
@@ -5213,11 +5123,10 @@ impl BackupsApp {
                 } else {
                     self.ui.sel_snapshot = None;
                 }
-                self.load_cache(doc, root);
                 *handled = true;
             }
             Key::Named(NamedKey::Tab) => {
-                self.cycle_view(1, doc, root);
+                self.cycle_view(1);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
@@ -5225,7 +5134,7 @@ impl BackupsApp {
                     self.policy_focus =
                         (self.policy_focus + PolicyField::ALL.len() - 1) % PolicyField::ALL.len();
                 } else {
-                    self.move_snapshot_selection(-1, doc, root);
+                    self.move_snapshot_selection(-1);
                 }
                 *handled = true;
             }
@@ -5233,7 +5142,7 @@ impl BackupsApp {
                 if self.ui.view == View::Schedules {
                     self.policy_focus = (self.policy_focus + 1) % PolicyField::ALL.len();
                 } else {
-                    self.move_snapshot_selection(1, doc, root);
+                    self.move_snapshot_selection(1);
                 }
                 *handled = true;
             }
@@ -5241,11 +5150,10 @@ impl BackupsApp {
                 if self.ui.view == View::Schedules {
                     // `policy_focus` is always kept `% PolicyField::ALL.len()`.
                     if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
-                        self.bump_retention(doc, root, f, -1);
-                        self.load_cache(doc, root);
+                        self.bump_retention(f, -1);
                     }
                 } else {
-                    self.cycle_view(-1, doc, root);
+                    self.cycle_view(-1);
                 }
                 *handled = true;
             }
@@ -5253,62 +5161,49 @@ impl BackupsApp {
                 if self.ui.view == View::Schedules {
                     // `policy_focus` is always kept `% PolicyField::ALL.len()`.
                     if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
-                        self.bump_retention(doc, root, f, 1);
-                        self.load_cache(doc, root);
+                        self.bump_retention(f, 1);
                     }
                 } else {
-                    self.cycle_view(1, doc, root);
+                    self.cycle_view(1);
                 }
                 *handled = true;
             }
-            Key::Character(s) => self.handle_character_key(s, doc, root, handled),
+            Key::Character(s) => self.handle_character_key(s, handled),
             _ => {}
         }
     }
 
     /// The character-key half of [`Self::handle_key`], split out to keep
     /// that dispatcher under the line limit. Same arms, same order.
-    fn handle_character_key(
-        &mut self,
-        s: &str,
-        doc: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-    ) {
+    fn handle_character_key(&mut self, s: &str, handled: &mut bool) {
         match s {
             "1" => {
                 self.ui.view = View::Timeline;
-                self.load_cache(doc, root);
                 *handled = true;
             }
             "2" => {
                 self.ui.view = View::Sources;
-                self.load_cache(doc, root);
                 *handled = true;
             }
             "3" => {
                 self.ui.view = View::Destinations;
-                self.load_cache(doc, root);
                 *handled = true;
             }
             "4" => {
                 self.ui.view = View::Schedules;
-                self.load_cache(doc, root);
                 *handled = true;
             }
             "+" | "=" if self.ui.view == View::Schedules => {
                 // `policy_focus` is always kept `% PolicyField::ALL.len()`.
                 if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
-                    self.bump_retention(doc, root, f, 1);
-                    self.load_cache(doc, root);
+                    self.bump_retention(f, 1);
                 }
                 *handled = true;
             }
             "-" | "_" if self.ui.view == View::Schedules => {
                 // `policy_focus` is always kept `% PolicyField::ALL.len()`.
                 if let Some(&f) = PolicyField::ALL.get(self.policy_focus) {
-                    self.bump_retention(doc, root, f, -1);
-                    self.load_cache(doc, root);
+                    self.bump_retention(f, -1);
                 }
                 *handled = true;
             }
@@ -5378,6 +5273,14 @@ impl BackupsApp {
 }
 
 #[cfg(test)]
+impl BackupsApp {
+    /// The sample catalog, as captures show it.
+    fn demo() -> Self {
+        Self::with_catalog(Catalog::sample())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -5417,23 +5320,38 @@ mod tests {
             !app.is_configured(),
             "paths alone must not advertise a usable local repository"
         );
-        app.start_backup();
-        assert!(
-            app.job.is_none(),
-            "no worker starts against an unknown repository"
+        let blocked = app
+            .blocked()
+            .expect("an unreadable repository blocks its effects");
+        assert_eq!(blocked.code, "not_configured");
+        assert!(blocked.reason.contains("Choose another backup location"));
+        assert_eq!(
+            app.effect_statuses().len(),
+            3,
+            "backing up, verifying and restoring are unavailable; setup is not"
         );
-        assert!(
-            app.toast
-                .as_ref()
-                .is_some_and(|(_, kind, _)| *kind == ToastKind::Error),
-            "the blocked operation is reported as an error, not success"
-        );
+        // Every snapshot row offers its effects as unavailable too.
+        let rows: Vec<_> = crate::actions::live_rows(&Catalog::sample(), app.blocked().as_ref())
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect();
+        let snapshot = &rows[2].children[0];
+        for id in ["verify", "restore"] {
+            let action = snapshot.actions.iter().find(|a| a.id == id).unwrap();
+            assert!(
+                matches!(
+                    &action.contract.availability,
+                    tilo_actions::Availability::Unavailable { reason, .. } if *reason == blocked.reason
+                ),
+                "{id}"
+            );
+        }
     }
 
     /// Case of `catalog_and_repository_state_decide_the_offered_controls`.
     fn demo_constructor_seeds_the_sample_catalog() {
         // The --shots/demo builder keeps the populated sample dashboard.
-        let app = BackupsApp::new_demo();
+        let app = BackupsApp::demo();
         assert!(!app.catalog.sources.is_empty(), "demo has sources");
         assert!(!app.catalog.snapshots.is_empty(), "demo has snapshots");
         assert!(
@@ -5532,7 +5450,8 @@ mod tests {
     /// real frame (populating the hit map exactly as the live app does), then
     /// synthesises the pointer events a real click produces and feeds them
     /// through `handle_event`. Assertions read the widget's local navigation
-    /// state while durable policy assertions continue to use `BackupsDoc`.
+    /// state; the retention action these controls submit is covered through
+    /// the framework in `tests/framework.rs`.
     struct Frame {
         app: BackupsApp,
         state: ui::State,
@@ -5550,7 +5469,7 @@ mod tests {
         fn demo_sized(width: f64, height: f64) -> Self {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut app = BackupsApp::new_demo();
+            let mut app = BackupsApp::demo();
             app.rect = Rect::new(0.0, 0.0, width, height);
             let mut f = Self {
                 app,
@@ -5678,8 +5597,7 @@ mod tests {
 
         fn key(&mut self, key: &Key) {
             let mut handled = false;
-            self.app
-                .handle_key(key, &mut self.state.doc, &self.state.root, &mut handled);
+            self.app.handle_key(key, &mut handled);
             assert!(handled, "the restore keyboard action was handled");
             self.draw();
         }
@@ -5811,14 +5729,6 @@ mod tests {
                 assert!(minus.x0 >= 0.0 && plus.x1 <= width);
             }
         }
-
-        let before = BackupsDoc::retention(&f.state.doc, &f.state.root, PolicyField::Daily);
-        f.click_hit(|hit| matches!(hit, Hit::Policy(PolicyField::Daily, 1)));
-        assert_eq!(
-            BackupsDoc::retention(&f.state.doc, &f.state.root, PolicyField::Daily),
-            before + 1,
-            "the visible phone control uses the durable action path"
-        );
     }
 
     /// Case of `retention_steppers_stay_reachable_and_stack_at_large_text`.
@@ -6148,33 +6058,29 @@ mod tests {
             !names.iter().any(|name| name.contains("Choose files")),
             "screen readers receive the same whole-snapshot contract as sighted users"
         );
-        let resources = ui::resources::resources(&f.app, &f.state.doc);
-        let flat = tilo_actions::flatten(&resources);
-        assert!(
-            resources
-                .iter()
-                .any(|resource| resource.kind == "backups.workspace"),
-            "workspace catalog is driveable: {:?}",
-            resources
-                .iter()
-                .map(|r| r.kind.as_str())
-                .collect::<Vec<_>>(),
+        // The same effects are published on the snapshot's live row.
+        let rows: Vec<_> = crate::actions::live_rows(f.app.resource_catalog(), None)
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect();
+        let kinds: Vec<&str> = rows.iter().map(|row| row.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "backups.source-set",
+                "backups.destination-set",
+                "backups.snapshot-set"
+            ]
         );
+        let snapshot = &rows[2].children[0];
+        let ids: Vec<&str> = snapshot.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["open", "verify", "restore"]);
         assert!(
-            flat.iter()
-                .any(|entry| entry.resource_kind == "backups.policy")
-                || resources.iter().any(|resource| {
-                    resource
-                        .children
-                        .iter()
-                        .any(|child| child.kind == "backups.policy")
-                }),
-            "policy Document ops ride the published workspace child",
-        );
-        assert!(
-            tilo_actions::flatten(&resources)
+            snapshot
+                .children
                 .iter()
-                .any(|entry| entry.action.kind == tilo_actions::OperationKind::Effect)
+                .any(|child| child.kind == "backups.restore-target"),
+            "the restore target is an explicit row"
         );
     }
 
