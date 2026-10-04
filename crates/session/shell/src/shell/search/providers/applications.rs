@@ -2539,7 +2539,7 @@ mod native_application_tests {
             let directory = tempfile::tempdir().unwrap();
             let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
             chrome.borrow_mut().hosted_inputs =
-                HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
             let mut doc = automerge::AutoCommit::new();
             let results = NativeApplicationsProvider::default().query(SearchContext {
                 needle: "Files",
@@ -2602,7 +2602,7 @@ mod native_application_tests {
             {
                 let mut state = chrome.borrow_mut();
                 state.hosted_inputs =
-                    HostedTileInputs::for_host_directory(directory.path()).unwrap();
+                    HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
                 state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
                     strip: strip_id,
                     groups: ids

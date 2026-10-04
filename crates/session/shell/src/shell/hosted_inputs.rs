@@ -1,5 +1,8 @@
-//! Narrow startup inputs for the existing embedded app constructors.
-//! File paths are presentation data; they grant no filesystem authority.
+//! What the shell hands the apps it mounts in its own process: where Files
+//! starts, the services they borrow from the shell, and the
+//! [`InProcessApps`](super::in_process::InProcessApps) that keeps their
+//! records. File paths are presentation data; they grant no filesystem
+//! authority.
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -48,16 +51,26 @@ pub struct HostedTileInputs {
     native_apps: Arc<[NativeAppRegistration]>,
     documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
     file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
-    /// The framework apps this host mounts in its own process; `None`
-    /// hosts their tabs as plain widgets.
+    /// The framework apps this host mounts in its own process; without
+    /// them a tab of such an app says it is unavailable.
     in_process: Option<super::in_process::SharedInProcessApps>,
+    /// Whether the terminals this host mounts open sessions on the
+    /// session's process supervisor: only a real session's do.
+    opens_sessions: bool,
+    /// A private profile for the apps of a host that keeps nobody's records,
+    /// removed with the last input that uses it.
+    private_profile: Option<Arc<FixtureDirectory>>,
 }
 
-struct FixtureDirectory(PathBuf);
+/// A fixture's folder for Files and the profile its apps keep records in,
+/// removed with the last input that uses them.
+struct FixtureDirectory(Vec<PathBuf>);
 
 impl Drop for FixtureDirectory {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        for directory in &self.0 {
+            let _ = std::fs::remove_dir_all(directory);
+        }
     }
 }
 
@@ -66,7 +79,10 @@ impl HostedTileInputs {
     /// initial directory; it does not claim to sandbox filesystem access.
     /// # Errors
     /// Returns an error if the directory cannot be resolved or is not a directory.
-    pub fn for_host_directory(directory: &std::path::Path) -> std::io::Result<Self> {
+    pub fn for_host_directory(
+        directory: &std::path::Path,
+        apps: super::in_process::InProcessApps,
+    ) -> std::io::Result<Self> {
         let directory = directory.canonicalize()?;
         if !directory.is_dir() {
             return Err(std::io::Error::new(
@@ -101,13 +117,33 @@ impl HostedTileInputs {
                     opens_mime_types: &["text/plain"],
                 },
             ]),
+            in_process: Some(Rc::new(RefCell::new(apps))),
+            opens_sessions: true,
             ..Self::default()
         })
     }
 
+    /// [`Self::for_host_directory`] for a test or a capture: the apps keep
+    /// their records in a private profile removed with these inputs, as a
+    /// fixture person, and terminals open no session.
+    /// # Errors
+    /// As [`Self::for_host_directory`], and the profile cannot be created.
+    pub fn for_host_directory_privately(directory: &std::path::Path) -> std::io::Result<Self> {
+        let profile =
+            std::env::temp_dir().join(format!("tilo-shell-apps-{}", uuid::Uuid::new_v4()));
+        let apps = super::in_process::InProcessApps::at(&profile, "fixture-person")
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let owned = Arc::new(FixtureDirectory(vec![profile]));
+        let mut inputs = Self::for_host_directory(directory, apps)?;
+        inputs.opens_sessions = false;
+        inputs.private_profile = Some(owned);
+        Ok(inputs)
+    }
+
     /// Explicit deterministic inputs for scratch scenes, tests and captures.
-    /// The Files widget reads only this owned temporary directory; Terminal
-    /// uses its existing null backend. This does not advertise a host provider.
+    /// Files reads only this owned temporary directory, terminals open no
+    /// session, and the apps keep their records in a profile of the
+    /// fixture's own. This does not advertise a host provider.
     /// # Errors
     /// Returns filesystem errors while creating the fixture.
     pub fn fixture() -> std::io::Result<Self> {
@@ -140,9 +176,15 @@ impl HostedTileInputs {
         parent: &std::path::Path,
         file_services: Option<file_explorer::files_app::HostedFileServices>,
     ) -> std::io::Result<Self> {
-        let directory = parent.join(format!("tilo-shell-fixture-{}", uuid::Uuid::new_v4()));
+        let id = uuid::Uuid::new_v4();
+        let directory = parent.join(format!("tilo-shell-fixture-{id}"));
+        let profile = parent.join(format!("tilo-shell-fixture-apps-{id}"));
         std::fs::create_dir(&directory)?;
-        let fixture = Arc::new(FixtureDirectory(directory.clone()));
+        let fixture = Arc::new(FixtureDirectory(vec![directory.clone(), profile.clone()]));
+        // A fixture's apps keep their records in its own profile, as a
+        // fixture person, and never reach the session's.
+        let apps = super::in_process::InProcessApps::at(&profile, "fixture-person")
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         std::fs::write(directory.join("Welcome.txt"), "Shell capture fixture\n")?;
         Ok(Self {
             picker_scope: Some(crate::portal::PickerScope {
@@ -161,14 +203,23 @@ impl HostedTileInputs {
             native_apps: Arc::default(),
             documents: Rc::default(),
             file_directories: Rc::default(),
-            in_process: None,
+            in_process: Some(Rc::new(RefCell::new(apps))),
+            opens_sessions: false,
+            private_profile: None,
         })
     }
 
-    /// Mount framework apps (the terminal) in this process through `apps`:
-    /// each tab the app's own component on a record of its own.
+    /// Mount framework apps (the terminal, Files, the browser) in this
+    /// process through `apps`, as a real session does: its terminals open
+    /// sessions on the session's process supervisor.
     pub fn mount_apps_in_process(&mut self, apps: super::in_process::InProcessApps) {
         self.in_process = Some(Rc::new(RefCell::new(apps)));
+        self.opens_sessions = true;
+    }
+
+    /// Whether the terminals this host mounts open sessions.
+    pub(crate) fn opens_sessions(&self) -> bool {
+        self.opens_sessions
     }
 
     pub(crate) fn in_process(&self) -> Option<&super::in_process::SharedInProcessApps> {
@@ -316,7 +367,6 @@ impl HostedTileInputs {
 #[derive(Debug)]
 pub enum HostedTileError {
     RequiredServiceMissing(&'static str),
-    Terminal(terminal::HostedTerminalError),
     Fixture(String),
 }
 
@@ -326,7 +376,6 @@ impl std::fmt::Display for HostedTileError {
             Self::RequiredServiceMissing(service) => {
                 write!(formatter, "Required service unavailable: {service}")
             }
-            Self::Terminal(error) => error.fmt(formatter),
             Self::Fixture(error) => write!(formatter, "Fixture unavailable: {error}"),
         }
     }
@@ -355,6 +404,27 @@ mod tests {
         }
     }
 
+    /// The Files tab a host's inputs mount, as the shell's tile resolver
+    /// mounts it.
+    fn mounted_files(
+        inputs: &HostedTileInputs,
+    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+        let tab = crate::shell::state::Tab {
+            id: 7,
+            title: "Files".into(),
+            tile: files_tile(),
+        };
+        let request = tilo_desktop::resolver::TileRequest {
+            room: crate::shell::state::RoomId::new(),
+            tab: &tab,
+        };
+        crate::shell::mount_in_process(&request, inputs).map(|resolution| match resolution {
+            tilo_desktop::resolver::TileResolution::Component(component) => Ok(component),
+            tilo_desktop::resolver::TileResolution::Failed(error) => Err(error),
+            _ => Err(ui::launch::LaunchError::Operation("not a component".into())),
+        })
+    }
+
     #[test]
     fn hosted_file_inputs_live_through_clones_and_never_fall_back() {
         fn fixture_directory_lives_through_last_input_clone() {
@@ -369,14 +439,22 @@ mod tests {
             let last = inputs.clone();
             drop(inputs);
             assert!(child.is_dir());
-            let tile = crate::shell::try_to_ui_tile(
-                &files_tile(),
-                terminal::HostedProcessServices::default(),
-                &last,
+            let component = mounted_files(&last)
+                .expect("a fixture mounts Files in-process")
+                .unwrap();
+            let mut harness = ui::headless::FrameHarness::from_component(
+                component,
+                (1000, 700),
+                ui::application::ComponentRunnerInputs::from_native_process(),
             )
             .unwrap();
-            assert!(matches!(tile, ui::widget::TileContent::App(_)));
-            drop(tile);
+            harness.relayout();
+            assert!(
+                harness.inspection_json().unwrap().contains("Welcome.txt"),
+                "Files lists the fixture's own folder"
+            );
+            harness.close_components();
+            drop(harness);
             assert!(child.is_dir());
             drop(last);
             assert!(!child.exists());
@@ -387,11 +465,8 @@ mod tests {
             let parent = tempfile::tempdir().unwrap();
             let mut inputs = HostedTileInputs::fixture_in(parent.path()).unwrap();
             inputs.files = None;
-            let result = crate::shell::try_to_ui_tile(
-                &files_tile(),
-                terminal::HostedProcessServices::default(),
-                &inputs,
-            );
+            assert!(mounted_files(&inputs).is_none(), "nothing is mounted");
+            let result = crate::shell::try_to_ui_tile(&files_tile(), &inputs);
             assert!(matches!(
                 result,
                 Err(HostedTileError::RequiredServiceMissing("Files startup"))
@@ -421,7 +496,7 @@ mod desktop_catalog_tests {
     #[test]
     fn desktop_native_catalog_includes_constructible_files() {
         let dir = tempfile::tempdir().unwrap();
-        let inputs = HostedTileInputs::for_host_directory(dir.path()).unwrap();
+        let inputs = HostedTileInputs::for_host_directory_privately(dir.path()).unwrap();
         assert!(
             inputs
                 .native_apps()

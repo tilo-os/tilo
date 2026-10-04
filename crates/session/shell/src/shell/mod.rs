@@ -156,7 +156,6 @@ pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
 pub mod test_support;
-pub mod tile;
 pub mod tool_intents;
 pub mod topbar_chrome;
 pub mod trusted_ui;
@@ -172,515 +171,21 @@ pub mod workspace_history;
 
 use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 use ui::widget::context_menu::MenuItem;
-#[cfg(any(test, debug_assertions))]
-use ui::widget::toast::ToastStack;
 use ui::widget::{
-    AppKind as UiKind, AppWidget, GroupRow, TabDescriptor, TileContent as UiTile, Widget,
+    AppKind as UiKind, GroupRow, TabDescriptor, TileContent as UiTile, Widget,
     WindowGroup as UiGroup, context_menu::ContextMenu,
 };
 
 use crate::shell::editor_app::EditorApp;
-use browser::BrowserWidget;
-
 use crate::shell::notes_app::NotesApp;
-use crate::shell::tile::{
-    Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
-    WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
-};
-
-use file_explorer::FileExplorerWidget;
-use terminal::TerminalWidget;
 pub use tilo_desktop::launchpad::{
     EMPTY_WORKSPACE_ACTIVITY, EMPTY_WORKSPACE_CHAT, EMPTY_WORKSPACE_INVITE, EMPTY_WORKSPACE_MEET,
     EMPTY_WORKSPACE_NOTES, EMPTY_WORKSPACE_TASKS,
 };
-use tilo_desktop::workspace_settings::WorkspaceSettings;
 
-/// Root tilo shell handle. Owns the runtime workspace tree — the live
-/// counterpart to the persisted [`state::WorkspaceTree`], holding real
-/// `Box<dyn AppWidget>`s in [`tile::TileContent::App`] instead of
-/// `AppPlaceholder` symbols — and the single Automerge document shared
-/// across every hosted app.
-// Each overlay's visibility is toggled independently (they are not
-// mutually exclusive — e.g. quick settings can open over the overview),
-// so collapsing them into one enum/flags field would misrepresent the
-// state space rather than simplify it; 41 call sites across the crate
-// read/write these individually.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "four independent overlay-visibility flags, not mutually exclusive states"
-)]
-pub struct Shell {
-    tree: RuntimeTree,
-    state: ui::state::State,
-
-    ws_settings: WorkspaceSettings,
-    #[cfg(any(test, debug_assertions))]
-    toasts: ToastStack,
-    ctx_menu: ContextMenu,
-
-    overview_visible: bool,
-    search_visible: bool,
-    quick_settings_visible: bool,
-    _hosted_inputs: hosted_inputs::HostedTileInputs,
-    ws_settings_visible: bool,
-
-    /// Test-only pointer to the first hosted [`TerminalWidget`], captured
-    /// before coercion into `Box<dyn AppWidget>`. Stays valid because the
-    /// unsizing coercion doesn't move the heap allocation. `None` if PTY
-    /// spawn failed and the tile fell back to a `Stub`.
-    #[cfg(any(test, debug_assertions))]
-    first_terminal_ptr: Option<*const TerminalWidget>,
-    /// Same allocation-stability argument as `first_terminal_ptr`. `None`
-    /// when the default workspace has no file-explorer tile.
-    #[cfg(any(test, debug_assertions))]
-    first_file_explorer_ptr: Option<*const FileExplorerWidget>,
-}
-
-impl Shell {
-    /// Constructs a shell hosting the default demo workspace: Terminal
-    /// (null backend), Files, Notes, Editor, and a
-    /// Browser chrome. Production launches the packaged WPE-backed browser;
-    /// this in-process workspace mirror uses the same `BrowserWidget` contract.
-    /// # Panics
-    /// Panics if its explicitly temporary fixture directory cannot be created.
-    pub fn new_with_default_demo_workspace() -> Self {
-        Self::new_demo_workspace(None)
-    }
-
-    /// Construct the same demo workspace with an explicitly provided Terminal.
-    /// The caller creates the widget with its chosen process/service; this
-    /// constructor performs no process discovery or login-shell fallback.
-    /// # Panics
-    /// Panics if the temporary Files fixture cannot be created.
-    pub fn new_with_demo_terminal(terminal: TerminalWidget) -> Self {
-        Self::new_demo_workspace(Some(terminal))
-    }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "The scratch workspace requires its private temporary Files fixture."
-    )]
-    fn new_demo_workspace(terminal: Option<TerminalWidget>) -> Self {
-        let hosted_inputs = hosted_inputs::HostedTileInputs::fixture().expect("demo Files fixture");
-        let DemoTabs {
-            tabs,
-            #[cfg(any(test, debug_assertions))]
-            first_terminal_ptr,
-            #[cfg(any(test, debug_assertions))]
-            first_file_explorer_ptr,
-        } = default_demo_tabs(&hosted_inputs, terminal);
-        let group = RuntimeGroup::with_tabs(tabs, state::WindowWidth::Normal);
-        let strip = RuntimeStrip::new("Main", vec![group]);
-        let workspace = RuntimeWorkspace::new("Home", vec![strip]);
-        let tree = RuntimeTree::new(vec![workspace]);
-        // WorkspaceSettings must target a workspace id; pre-seed with the
-        // active one. `open_ws_settings` rebinds it on later switches.
-        let active_ws_id = tree.active;
-        let mut shell = Self {
-            tree,
-            state: ui::state::State::new(),
-            ws_settings: WorkspaceSettings::new(active_ws_id),
-            #[cfg(any(test, debug_assertions))]
-            toasts: ToastStack::new(),
-            ctx_menu: ContextMenu::new(),
-            overview_visible: false,
-            search_visible: false,
-            quick_settings_visible: false,
-            _hosted_inputs: hosted_inputs,
-            ws_settings_visible: false,
-            #[cfg(any(test, debug_assertions))]
-            first_terminal_ptr,
-            #[cfg(any(test, debug_assertions))]
-            first_file_explorer_ptr,
-        };
-        // Prime every app against the shared doc so `update` has CRDT
-        // sub-trees to work with from the first call.
-        shell.sync_all_apps();
-        shell
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn new_for_test() -> Self {
-        Self::new_with_default_demo_workspace()
-    }
-
-    /// Iterate as `tree.workspaces[..].strips[..].window_groups[..].tabs[..].tile`.
-    pub fn workspace_tree(&self) -> &RuntimeTree {
-        &self.tree
-    }
-
-    /// Shared by the constructor and [`Self::tick_for_test`].
-    fn sync_all_apps(&mut self) {
-        for ws in &mut self.tree.workspaces {
-            for strip in &mut ws.strips {
-                for group in &mut strip.window_groups {
-                    for tab in &mut group.tabs {
-                        if let RuntimeTile::App(app) = &mut tab.tile {
-                            app.sync(&mut self.state.doc, &self.state.root);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// One `sync` + `update` pass over every hosted app against the shared
-    /// doc, without painting — advances the terminal's PTY reader and the
-    /// CRDT without a GPU-backed render loop.
-    #[cfg(any(test, debug_assertions))]
-    pub fn tick_for_test(&mut self) {
-        for ws in &mut self.tree.workspaces {
-            for strip in &mut ws.strips {
-                for group in &mut strip.window_groups {
-                    for tab in &mut group.tabs {
-                        if let RuntimeTile::App(app) = &mut tab.tile {
-                            app.sync(&mut self.state.doc, &self.state.root);
-                            let _ = app.update(&mut self.state.doc, &self.state.root);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// First row of the first hosted terminal's grid, or `None` if no live
-    /// terminal tile exists. An in-process terminal tile has no session
-    /// record of its own, so this reaches through the raw pointer captured at
-    /// construction (same validity argument as `first_file_explorer_ptr`).
-    #[cfg(any(test, debug_assertions))]
-    pub fn first_terminal_line(&self) -> Option<String> {
-        let ptr = self.first_terminal_ptr?;
-        // SAFETY: the pointer was captured from the boxed widget the tab
-        // still owns, and is live for `&self`.
-        let terminal: &TerminalWidget = unsafe { &*ptr };
-        terminal.grid_text().split('\n').next().map(str::to_owned)
-    }
-
-    /// Entry names from the first hosted file-explorer, or empty if there
-    /// is none. The file-explorer keeps its listing in local widget state,
-    /// so this reaches through the raw pointer captured at construction
-    /// (same validity argument as `first_terminal_ptr`).
-    #[cfg(any(test, debug_assertions))]
-    pub fn first_file_explorer_entries(&self) -> Vec<String> {
-        let Some(ptr) = self.first_file_explorer_ptr else {
-            return Vec::new();
-        };
-        // SAFETY: see the doc-comment above; pointer is live for `&self`.
-        let fe: &FileExplorerWidget = unsafe { &*ptr };
-        fe.entries().iter().map(|e| e.name.clone()).collect()
-    }
-
-    // Trivial visibility getters so tests can assert every chrome piece
-    // was constructed without exposing the fields themselves.
-
-    pub fn overview_visible(&self) -> bool {
-        self.overview_visible
-    }
-
-    pub fn search_visible(&self) -> bool {
-        self.search_visible
-    }
-
-    pub fn quick_settings_visible(&self) -> bool {
-        self.quick_settings_visible
-    }
-
-    pub fn ws_settings_visible(&self) -> bool {
-        self.ws_settings_visible
-    }
-
-    /// Open the global search palette and re-seed its command list so the
-    /// first keystroke lands against a known state. Idempotent — calling
-    /// it on an already-visible palette just refreshes the seed.
-    pub fn open_search(&mut self) {
-        self.search_visible = true;
-    }
-
-    pub fn close_search(&mut self) {
-        self.search_visible = false;
-    }
-
-    pub fn toggle_overview(&mut self) {
-        self.overview_visible = !self.overview_visible;
-    }
-
-    pub fn open_quick_settings(&mut self) {
-        self.quick_settings_visible = true;
-    }
-
-    pub fn close_quick_settings(&mut self) {
-        self.quick_settings_visible = false;
-    }
-
-    /// A second tray-gear click closes the popover rather than re-opening it.
-    pub fn toggle_quick_settings(&mut self) {
-        self.quick_settings_visible = !self.quick_settings_visible;
-    }
-
-    /// Rebinds the modal's `ws_id` so a newly-created workspace becomes the
-    /// target after a switch.
-    pub fn open_ws_settings(&mut self) {
-        self.ws_settings = WorkspaceSettings::new(self.tree.active);
-        self.ws_settings_visible = true;
-    }
-
-    pub fn close_ws_settings(&mut self) {
-        self.ws_settings_visible = false;
-    }
-
-    /// Canonical entry point for shell-level global hotkeys — both the
-    /// production path ([`Shell::handle_window_event`]) and tests
-    /// (`shell::test_support::key_press`) funnel through here. Returns
-    /// `true` if the press matched a global binding, `false` if it should
-    /// fall through to the focused widget tree.
-    // `press` is only ever read here, but narrowing to `&KeyPress` would
-    // touch `crates/session/shell/tests/shell_chrome_test.rs`'s call sites, outside this
-    // pass's scope (only crates/session/shell/src/shell/ is ours to edit).
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "press is only ever borrowed here, but narrowing the signature would touch \
-                  crates/session/shell/tests call sites outside this pass's scope"
-    )]
-    pub fn dispatch_key(&mut self, press: test_support::KeyPress) -> bool {
-        use test_support::Mods;
-        // Normalize to lowercase so `Cmd+K` and `Cmd+k` hit the same branch.
-        let logical = press.logical.as_str();
-        let shortcut = settings_store::hardware::ShortcutConfig::load();
-        let pressed = |action: settings_store::hardware::ShortcutAction| {
-            shortcut.bindings.get(&action).is_some_and(|chord| {
-                let needs_cmd =
-                    chord.modifiers.contains("Super") || chord.modifiers.contains("Ctrl");
-                needs_cmd == press.mods.contains(Mods::CMD)
-                    && chord.modifiers.contains("Shift") == press.mods.contains(Mods::SHIFT)
-                    && chord.modifiers.contains("Alt") == press.mods.contains(Mods::ALT)
-                    && chord.key.eq_ignore_ascii_case(logical)
-            })
-        };
-        if pressed(settings_store::hardware::ShortcutAction::Search) {
-            self.open_search();
-            return true;
-        }
-        if pressed(settings_store::hardware::ShortcutAction::WorkspaceOverview) {
-            self.toggle_overview();
-            return true;
-        }
-        if pressed(settings_store::hardware::ShortcutAction::QuickSettings) {
-            self.toggle_quick_settings();
-            return true;
-        }
-
-        // Priority matches z-order: search / overview sit above
-        // quick-settings, which sits above the ws_settings modal.
-        if logical.eq_ignore_ascii_case("Escape") && press.mods == Mods::NONE {
-            if self.search_visible {
-                self.close_search();
-                return true;
-            }
-            if self.overview_visible {
-                self.overview_visible = false;
-                return true;
-            }
-            if self.quick_settings_visible {
-                self.close_quick_settings();
-                return true;
-            }
-            if self.ws_settings_visible {
-                self.close_ws_settings();
-                return true;
-            }
-            return false;
-        }
-
-        false
-    }
-
-    /// Projects a winit `WindowEvent::KeyboardInput` onto
-    /// [`test_support::KeyPress`] and routes it through
-    /// [`Self::dispatch_key`]. Tests go through `dispatch_key` directly so
-    /// they don't have to reach for winit's private `KeyEventExtra` field.
-    pub fn handle_window_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        modifiers: &winit::event::Modifiers,
-    ) -> bool {
-        use test_support::{KeyPress, Mods};
-        use winit::event::{ElementState, KeyEvent, WindowEvent};
-        use winit::keyboard::{Key, NamedKey};
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let mut mods = Mods::NONE;
-        let ms = modifiers.state();
-        // Super and Ctrl are treated as equivalent — Linux hardware rarely
-        // has a dedicated Super key.
-        if ms.super_key() || ms.control_key() {
-            mods = mods | Mods::CMD;
-        }
-        if ms.shift_key() {
-            mods = mods | Mods::SHIFT;
-        }
-        if ms.alt_key() {
-            mods = mods | Mods::ALT;
-        }
-        let logical = match logical_key {
-            Key::Named(NamedKey::Escape) => "Escape".to_string(),
-            Key::Named(NamedKey::Tab) => "Tab".to_string(),
-            Key::Named(NamedKey::Enter) => "Enter".to_string(),
-            Key::Named(NamedKey::ArrowUp) => "ArrowUp".to_string(),
-            Key::Named(NamedKey::ArrowDown) => "ArrowDown".to_string(),
-            Key::Named(NamedKey::ArrowLeft) => "ArrowLeft".to_string(),
-            Key::Named(NamedKey::ArrowRight) => "ArrowRight".to_string(),
-            Key::Named(NamedKey::Backspace) => "Backspace".to_string(),
-            Key::Named(NamedKey::Space) => "Space".to_string(),
-            Key::Character(c) => c.as_str().to_string(),
-            _ => return false,
-        };
-        self.dispatch_key(KeyPress { logical, mods })
-    }
-
-    /// Number of toasts currently in the stack. Lets a test assert "a toast
-    /// was fired" without caring about timing.
-    #[cfg(any(test, debug_assertions))]
-    pub fn toast_count(&self) -> usize {
-        self.toasts.len()
-    }
-
-    /// `ToastKind` of every active toast in push order.
-    #[cfg(any(test, debug_assertions))]
-    pub fn toast_kinds(&self) -> Vec<ui::widget::toast::ToastKind> {
-        self.toasts.iter().map(|t| t.kind).collect()
-    }
-
-    /// Routes a +/- wheel tick into the sidebar and returns the resulting
-    /// active-strip index.
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_sidebar_wheel(&mut self, dir: i32) -> usize {
-        self.tree.move_active_strip(dir).unwrap_or(0)
-    }
-
-    /// Index of the currently-active strip on the active workspace in the
-    /// runtime tree. `0` when the workspace has no strips (shouldn't happen
-    /// for a sanely-constructed shell, but the caller shouldn't panic in
-    /// that case).
-    #[cfg(any(test, debug_assertions))]
-    pub fn active_strip_index(&self) -> usize {
-        let active_ws = self.tree.active;
-        let Some(workspace) = self.tree.workspaces.iter().find(|w| w.id == active_ws) else {
-            return 0;
-        };
-        self.tree
-            .active_strip
-            .get(&active_ws)
-            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
-            .unwrap_or(0)
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn append_empty_strip_for_test(&mut self, name: &str) -> usize {
-        let Some(workspace) = self
-            .tree
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == self.tree.active)
-        else {
-            return 0;
-        };
-        workspace.strips.push(RuntimeStrip::new(name, Vec::new()));
-        workspace.strips.len().saturating_sub(1)
-    }
-
-    /// Same route as a real tray-gear click: a toggle of quick settings.
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_tray_gear_click(&mut self) {
-        self.toggle_quick_settings();
-    }
-
-    /// Renames via [`WorkspaceSettings::rename`], matching the production
-    /// path where the General tab's name field commits a new value.
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_rename_active_workspace(&mut self, new_name: &str) {
-        use ui::widget::toast::ToastKind;
-        // Scratch persisted workspace, same reason as the other simulators.
-        let mut scratch = state::Workspace::new(
-            self.tree.active,
-            self.tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == self.tree.active)
-                .map(|w| w.name.clone())
-                .unwrap_or_default(),
-        );
-        self.ws_settings.rename(&mut scratch, new_name);
-        // Mirror into the runtime tree so `active_workspace_name()`
-        // reflects the edit.
-        if let Some(ws) = self
-            .tree
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == self.tree.active)
-        {
-            ws.name = new_name.to_string();
-        }
-        self.toasts.push(
-            crate::shell::i18n::t("shell-workspace-renamed"),
-            ToastKind::Info,
-        );
-    }
-
-    // Default tile context menu: "Close Tab" / separator / "Split Right" /
-    // "Move to New Group". Callbacks are currently no-ops.
-
-    pub fn context_menu_is_open(&self) -> bool {
-        self.ctx_menu.is_open()
-    }
-
-    /// `None` if the menu has never been opened.
-    pub fn context_menu_position(&self) -> Option<[f32; 2]> {
-        self.ctx_menu.position()
-    }
-
-    /// Action-item labels in order, skipping separators.
-    pub fn context_menu_labels(&self) -> Vec<String> {
-        self.ctx_menu
-            .items()
-            .iter()
-            .filter_map(|i| i.label().map(std::string::ToString::to_string))
-            .collect()
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_right_click_on_active_tile(&mut self, position: [f32; 2]) {
-        self.open_default_tile_context_menu(position);
-    }
-
-    /// Populate `ctx_menu` with the tab action list and open it at
-    /// `position`. The items come from [`tab_context_menu_items`], the one
-    /// list the production host (`ShellOverlayHost`) builds its menu from,
-    /// so this fixture can never offer an action the desktop does not.
-    #[cfg(any(test, debug_assertions))]
-    fn open_default_tile_context_menu(&mut self, position: [f32; 2]) {
-        // Rebuild from scratch so repeated right-clicks don't accumulate
-        // items from earlier menus.
-        let (menu, _actions) = build_tab_context_menu(2);
-        self.ctx_menu = menu;
-        self.ctx_menu.open_at(position);
-    }
-}
-
-/// One action a tab's right-click menu offers. The production
-/// [`overlay_host::ShellOverlayHost`] and the fixture [`Shell`] both build
-/// their menu from [`tab_context_menu_items`], so the two cannot drift, and
-/// every action here is reachable by pointer, keyboard (arrows + Enter in
+/// One action a tab's right-click menu offers. The
+/// [`overlay_host::ShellOverlayHost`] builds its menu from
+/// [`tab_context_menu_items`], and every action here is reachable by pointer, keyboard (arrows + Enter in
 /// the open menu) and by its [`Self::semantic_key`] through accessibility,
 /// scripts and the bench — a menu row is not a capability on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -807,104 +312,6 @@ mod tab_menu_item_tests {
     }
 }
 
-/// Builder output for the default demo workspace. Carries the tab list plus
-/// test-only raw pointers to the `TerminalWidget` / `FileExplorerWidget`
-/// allocations inside two of those tabs, so `Shell` can expose introspection
-/// helpers without downcasting through `Box<dyn AppWidget>` (not `Any`).
-struct DemoTabs {
-    tabs: Vec<RuntimeTab>,
-    #[cfg(any(test, debug_assertions))]
-    first_terminal_ptr: Option<*const TerminalWidget>,
-    #[cfg(any(test, debug_assertions))]
-    first_file_explorer_ptr: Option<*const FileExplorerWidget>,
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "The caller constructs these inputs using HostedTileInputs::fixture, which always supplies Files."
-)]
-fn default_demo_tabs(
-    inputs: &hosted_inputs::HostedTileInputs,
-    terminal: Option<TerminalWidget>,
-) -> DemoTabs {
-    let mut tabs: Vec<RuntimeTab> = Vec::new();
-    #[cfg(any(test, debug_assertions))]
-    let mut first_terminal_ptr: Option<*const TerminalWidget> = None;
-    // Declared up here (written unconditionally below) so the final struct
-    // literal can reference it without a local scope leak.
-    #[cfg(any(test, debug_assertions))]
-    let first_file_explorer_ptr: Option<*const FileExplorerWidget>;
-
-    match terminal.map_or_else(TerminalWidget::spawn_headless, Ok) {
-        Ok(t) => {
-            let boxed: Box<TerminalWidget> = Box::new(t);
-            #[cfg(any(test, debug_assertions))]
-            {
-                // Capture the pointer *before* coercing into
-                // `Box<dyn AppWidget>` — the unsizing coercion preserves the
-                // address, so this stays valid for the `Box`'s lifetime.
-                first_terminal_ptr = Some(&raw const *boxed);
-            }
-            let app: Box<dyn AppWidget> = boxed;
-            tabs.push(RuntimeTab::new("Terminal", RuntimeTile::App(app)));
-        }
-        Err(e) => {
-            tracing::warn!("terminal spawn failed: {e}; falling back to stub");
-            tabs.push(RuntimeTab::new(
-                "Terminal",
-                RuntimeTile::Stub {
-                    kind: UiKind::Terminal,
-                    label: crate::shell::i18n::t_args(
-                        "shell-terminal-unavailable",
-                        &[("error", e.to_string().into())],
-                    ),
-                },
-            ));
-        }
-    }
-
-    // File-explorer: `new` is infallible; OS errors surface via its own
-    // in-pane status bar rather than the Stub fallback.
-    let fe_boxed: Box<FileExplorerWidget> = Box::new(FileExplorerWidget::with_startup_inputs(
-        inputs.files.clone().expect("demo Files inputs"),
-    ));
-    #[cfg(any(test, debug_assertions))]
-    {
-        first_file_explorer_ptr = Some(&raw const *fe_boxed);
-    }
-    let fe_app: Box<dyn AppWidget> = fe_boxed;
-    tabs.push(RuntimeTab::new("Files", RuntimeTile::App(fe_app)));
-
-    // Seeds a welcome paragraph on first boot; later boots load the shared doc.
-    let notes = NotesApp::with_seed(
-        "Welcome to tilo.\n\n\
-         These notes sync live with anyone invited to this workspace — edits \
-         replicate through the same CRDT path every widget uses.\n\n\
-         Ctrl+Z / Ctrl+Y undo and redo across the whole shell.",
-    );
-    tabs.push(RuntimeTab::new("Notes", RuntimeTile::App(Box::new(notes))));
-
-    // Uses its own CRDT key so it doesn't stomp on the Notes body.
-    let editor = EditorApp::with_default_snippet();
-    tabs.push(RuntimeTab::new(
-        "Editor",
-        RuntimeTile::App(Box::new(editor)),
-    ));
-
-    tabs.push(RuntimeTab::new(
-        "Browser",
-        RuntimeTile::App(Box::new(BrowserWidget::new())),
-    ));
-
-    DemoTabs {
-        tabs,
-        #[cfg(any(test, debug_assertions))]
-        first_terminal_ptr,
-        #[cfg(any(test, debug_assertions))]
-        first_file_explorer_ptr,
-    }
-}
-
 fn to_ui_kind(k: &ShellKind) -> UiKind {
     // `ui::AppKind` has only five variants; the shell's own `AppKind` still
     // carries `FileExplorer` and `Other(String)` for v1 compatibility.
@@ -943,7 +350,7 @@ pub(crate) fn hosted_label_for_title(title: &str) -> String {
         .map_or_else(|| title.to_string(), |(_, label)| (*label).to_string())
 }
 
-/// Probe into [`to_ui_tile`] for tests that don't want the full `UiTile`
+/// How the shell resolves `t`, for tests that don't want the full `UiTile`
 /// type (and its boxed `AppWidget`) on the public surface.
 #[cfg(any(test, debug_assertions))]
 /// # Panics
@@ -954,6 +361,21 @@ pub(crate) fn hosted_label_for_title(title: &str) -> String {
 )]
 pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
     let inputs = hosted_inputs::HostedTileInputs::fixture().expect("tile-shape fixture");
+    // As the shell resolves a tab: an app it mounts in-process first.
+    let tab = state::Tab {
+        id: 1,
+        title: String::new(),
+        tile: t.clone(),
+    };
+    let request = tilo_desktop::resolver::TileRequest {
+        room: state::RoomId::new(),
+        tab: &tab,
+    };
+    match mount_in_process(&request, &inputs) {
+        Some(tilo_desktop::resolver::TileResolution::Component(_)) => return "App",
+        Some(_) => return "Notice",
+        None => {}
+    }
     match to_ui_tile_with_inputs(t, &inputs) {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
@@ -987,7 +409,7 @@ pub(crate) fn to_ui_tile_with_inputs(
     t: &ShellTile,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> UiTile {
-    match try_to_ui_tile(t, terminal::HostedProcessServices::default(), inputs) {
+    match try_to_ui_tile(t, inputs) {
         Ok(tile) => tile,
         Err(error) => UiTile::Notice {
             title: crate::shell::i18n::t("shell-app-unavailable"),
@@ -1001,27 +423,21 @@ pub(crate) fn to_ui_tile_for_tab_with_inputs(
     tab: state::TabId,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> UiTile {
-    try_to_ui_tile_for_tab(
-        t,
-        terminal::HostedProcessServices::default(),
-        inputs,
-        Some(tab),
-    )
-    .unwrap_or_else(|error| UiTile::Notice {
+    try_to_ui_tile_for_tab(t, inputs, Some(tab)).unwrap_or_else(|error| UiTile::Notice {
         title: crate::shell::i18n::t("shell-app-unavailable"),
         detail: error.to_string(),
     })
 }
 
-/// Construct the actual embedded app using explicit host startup inputs.
+/// The content of a tile the shell shows itself rather than mounting an
+/// app's component for it ([`mount_in_process`]).
 /// # Errors
-/// A required service must exist before the widget or a process is constructed.
+/// A required service must exist before the content is constructed.
 pub fn try_to_ui_tile(
     t: &ShellTile,
-    services: terminal::HostedProcessServices,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
-    try_to_ui_tile_for_tab(t, services, inputs, None)
+    try_to_ui_tile_for_tab(t, inputs, None)
 }
 
 #[expect(
@@ -1030,7 +446,6 @@ pub fn try_to_ui_tile(
 )]
 fn try_to_ui_tile_for_tab(
     t: &ShellTile,
-    services: terminal::HostedProcessServices,
     inputs: &hosted_inputs::HostedTileInputs,
     tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
@@ -1110,50 +525,22 @@ fn try_to_ui_tile_for_tab(
             },
         },
         ShellTile::AppPlaceholder { kind, label } => match kind {
-            ShellKind::Terminal => {
-                let widget = if inputs.is_fixture() {
-                    TerminalWidget::spawn_headless().map_err(|error| {
-                        hosted_inputs::HostedTileError::Fixture(error.to_string())
-                    })?
-                } else {
-                    TerminalWidget::spawn_hosted(services)
-                        .map_err(hosted_inputs::HostedTileError::Terminal)?
-                };
-                UiTile::App(Box::new(widget))
+            // These are their apps' own components, mounted in this process
+            // by `mount_in_process`; reaching here, the host mounts none.
+            ShellKind::FileExplorer
+                if inputs.files.is_none()
+                    && tab.and_then(|tab| inputs.files_for_tab(tab)).is_none()
+                    && (inputs.is_fixture() || !cfg!(target_os = "linux")) =>
+            {
+                return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                    "Files startup",
+                ));
             }
-            // File-explorer — `new` is infallible; the widget surfaces any
-            // directory-read errors via its own in-pane status bar.
-            ShellKind::FileExplorer => {
-                let tab_files = tab.and_then(|tab| inputs.files_for_tab(tab));
-                let widget = if let Some(files) = tab_files.as_ref().or(inputs.files.as_ref()) {
-                    if let Some(services) = inputs.file_services() {
-                        FileExplorerWidget::with_startup_inputs_and_services(
-                            files.clone(),
-                            services.clone(),
-                        )
-                    } else {
-                        FileExplorerWidget::with_startup_inputs(files.clone())
-                    }
-                } else {
-                    if inputs.is_fixture() {
-                        return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
-                            "Files startup",
-                        ));
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        FileExplorerWidget::new()
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
-                            "Files startup",
-                        ));
-                    }
-                };
-                UiTile::App(Box::new(widget))
+            ShellKind::Terminal | ShellKind::FileExplorer | ShellKind::Browser => {
+                return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                    "in-process apps",
+                ));
             }
-            ShellKind::Browser => UiTile::App(Box::new(BrowserWidget::new())),
             // Each opens on an empty document — prose the shell wrote would
             // be indistinguishable from prose the user wrote.
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
@@ -1548,7 +935,7 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
 /// record of places, starting where the shell says and opening documents
 /// through the shell; the browser on the room's record of its bookmarks and
 /// settings.
-fn mount_in_process(
+pub fn mount_in_process(
     request: &tilo_desktop::resolver::TileRequest<'_>,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> Option<tilo_desktop::resolver::TileResolution> {
@@ -1566,11 +953,12 @@ fn mount_in_process(
             tab,
             ui::record::RecordId::for_tab(tab),
             |context| {
-                // A fixture shows terminals that open no session.
-                context.lend(if inputs.is_fixture() {
-                    terminal::HostedProcessServices::unavailable()
-                } else {
+                // Only a real session's terminals open sessions; a test's or
+                // a capture's show a terminal with none.
+                context.lend(if inputs.opens_sessions() {
                     terminal::HostedProcessServices::default()
+                } else {
+                    terminal::HostedProcessServices::unavailable()
                 });
             },
         ),
@@ -1936,22 +1324,6 @@ mod legacy_files_opener_regressions {
         }
     }
 
-    struct MultiClickInterval(std::time::Duration);
-
-    impl MultiClickInterval {
-        fn extend_for_fixture() -> Self {
-            let previous = ui::gesture::multi_click_interval();
-            ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(60));
-            Self(previous)
-        }
-    }
-
-    impl Drop for MultiClickInterval {
-        fn drop(&mut self) {
-            ui::gesture::set_multi_click_interval(self.0);
-        }
-    }
-
     fn legacy_chrome(
         root: &std::path::Path,
         records: ui::record::RecordStore,
@@ -1961,113 +1333,11 @@ mod legacy_files_opener_regressions {
         ));
         let chrome = chrome_state::ChromeState::new_with_handle(tree);
         chrome.borrow_mut().hosted_inputs =
-            hosted_inputs::HostedTileInputs::for_host_directory(root).expect("owned Files root");
+            hosted_inputs::HostedTileInputs::for_host_directory_privately(root)
+                .expect("owned Files root");
         chrome.borrow_mut().set_records(records);
         install_document_opener(&chrome);
         chrome
-    }
-
-    fn find_semantic_bounds(
-        node: &ui::headless::InspectionNode,
-        name: &str,
-    ) -> Option<vello::kurbo::Rect> {
-        fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<vello::kurbo::Rect> {
-            if node.name.as_deref() == Some(name) {
-                return node.bounds.map(ui::AccessBounds::to_rect);
-            }
-            node.children
-                .iter()
-                .find_map(|child| in_access(child, name))
-        }
-
-        node.semantics
-            .as_ref()
-            .and_then(|access| in_access(access, name))
-            .or_else(|| {
-                node.children
-                    .iter()
-                    .find_map(|child| find_semantic_bounds(child, name))
-            })
-    }
-
-    fn semantic_selected(node: &ui::headless::InspectionNode, name: &str) -> Option<bool> {
-        fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<bool> {
-            if node.name.as_deref() == Some(name) {
-                return Some(node.state.selected);
-            }
-            node.children
-                .iter()
-                .find_map(|child| in_access(child, name))
-        }
-
-        node.semantics
-            .as_ref()
-            .and_then(|access| in_access(access, name))
-            .or_else(|| {
-                node.children
-                    .iter()
-                    .find_map(|child| semantic_selected(child, name))
-            })
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn legacy_files_tile_activation_does_not_reenter_the_mounted_record_loan() {
-        let directory = tempfile::tempdir().expect("temporary Files root");
-        let document = directory.path().join("legacy.txt");
-        std::fs::write(&document, "legacy contents\n").expect("fixture document");
-        let document = document.canonicalize().expect("canonical fixture document");
-        let records = ui::record::RecordStore::in_memory();
-        let chrome = legacy_chrome(directory.path(), records.clone());
-        let _clear = ClearDocumentOpener;
-        let _multi_click_interval = MultiClickInterval::extend_for_fixture();
-
-        let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(
-            file_explorer::FileExplorerWidget::with_startup_inputs(file_explorer::StartupInputs {
-                initial_dir: directory.path().to_path_buf(),
-                workspace_roots: Vec::new(),
-                record_roots: Vec::new(),
-                remote_accounts: Vec::new(),
-                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
-            }),
-        )));
-        let files_checkout = ui::record::RecordCheckout::new(
-            ui::record::RecordId::for_tab(700),
-            ui::record::RecordKind::new("files-view-state"),
-        );
-        tile.bind_or_create_record(records, files_checkout);
-        let mut driver =
-            ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
-        let row = find_semantic_bounds(&driver.inspection().root, "legacy.txt")
-            .expect("legacy File row reaches the TileHost semantic tree");
-        assert!(row.area() > 0.0, "legacy File row has physical bounds");
-        let center = row.center();
-
-        driver.click_at(center.x, center.y);
-        assert_eq!(
-            semantic_selected(&driver.inspection().root, "legacy.txt"),
-            Some(true),
-            "the first physical click must select the mounted Files row before activation"
-        );
-        assert!(
-            chrome
-                .borrow()
-                .hosted_inputs
-                .native_app_for_path(&document)
-                .is_some(),
-            "the configured shell owner must recognize the selected native document"
-        );
-        driver.click_at(center.x, center.y);
-
-        assert!(
-            chrome
-                .borrow()
-                .tree()
-                .native_document_tabs
-                .values()
-                .any(|reference| reference.path == document),
-            "the legacy double-click opener must finish while TileHost retains the Files record loan"
-        );
     }
 
     #[test]

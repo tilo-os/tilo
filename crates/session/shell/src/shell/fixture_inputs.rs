@@ -508,19 +508,15 @@ mod tests {
         child: &std::path::Path,
         document: &mut automerge::AutoCommit,
     ) {
-        use ui::widget::{TileContent, Widget};
+        use ui::widget::Widget;
         let group = frame.host_mut().group_at_for_tests(strip, 0).unwrap();
         assert!(group.set_active_tab(files_tab));
         let host = group.active_host_mut().unwrap();
         host.sync(document, &automerge::ROOT);
-        let TileContent::App(app) = host.content_mut() else {
-            panic!("actual Files app");
-        };
-        let files = app
-            .as_any_mut()
-            .unwrap()
-            .downcast_mut::<file_explorer::files_app::FileExplorerWidget>()
-            .unwrap();
+        frame.relayout();
+        let files = frame
+            .mounted_mut(file_explorer::mounted_files)
+            .expect("actual Files app");
         files.refresh();
         let entries = files.displayed_entries();
         assert_eq!(entries.len(), 1);
