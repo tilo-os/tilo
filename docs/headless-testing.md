@@ -96,8 +96,8 @@ control socket past it.
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
+cargo build -p tilo-control                 # lands in target/debug; images ship /usr/bin/tilo-control
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/control-cli
 
 qc actions list Calculator --json           # inspect search results without opening the palette
 qc actions invoke applications dev.tilo.calculator # invoke the exact discovered identity
