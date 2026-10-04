@@ -1,4 +1,9 @@
 //! VPN — standard Tilo application entry point.
+//!
+//! The standard launcher serves every mode: the live window, `--shots`
+//! captures (with `--scenario NAME`, `--viewport WxH`, `--theme light`) and
+//! the headless drives. A capture shows the sample connections; the live
+//! window only ever shows the person's own saved tunnels.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -15,81 +20,37 @@
     clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::widget::Widget;
-
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(match args.scenario.as_deref() {
-        Some("confirm") => vpn::app_root_demo_confirm(),
-        Some("add" | "import") => vpn::app_root_demo_add(),
-        Some(
-            state @ ("detail" | "config" | "logs" | "loading" | "error" | "disconnected"
-            | "connecting" | "unprovisioned" | "setup"),
-        ) => vpn::app_root_demo_state(state),
-        Some("empty") => vpn::app_root_demo_state("empty"),
-        _ if std::env::var("TILO_VPN_SAMPLE").as_deref() == Ok("1") => vpn::app_root_demo(),
-        _ => vpn::app_root(),
-    })
-}
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-fn wants_standalone() -> bool {
-    std::env::args().any(|arg| {
-        [
-            "--shots",
-            "--responsive-matrix",
-            "--native-audit",
-            "--headless",
-        ]
-        .iter()
-        .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
-    })
-}
-
-fn shot_spec() -> LaunchSpec {
-    LaunchSpec::new("so.tilo.vpn", vpn::app_root)
-        .shot_root(shot_root)
-        .scenarios(&[
-            "confirm",
-            "add",
-            "import",
-            "detail",
-            "config",
-            "logs",
-            "loading",
-            "empty",
-            "error",
-            "disconnected",
-            "connecting",
-            "unprovisioned",
-            "setup",
-        ])
-        .configure_app(|app| vpn::actions::register(app.action_registry_mut()))
-}
-
-pub fn main() {
-    if wants_standalone() {
-        ui::launch::run_or_exit(&shot_spec());
-        return;
+/// Whether this launch is a capture or a headless drive, which must stay on
+/// the sample connections and never touch the real `NetworkManager`.
+fn is_capture(args: impl Iterator<Item = String>) -> bool {
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--data-dir" => {
+                let _ = args.next();
+            }
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
+            _ if arg.starts_with("--shots=") || arg.starts_with("--headless=") => return true,
+            _ => {}
+        }
     }
-    ui::launch::run_or_exit(&vpn::launch_spec());
+    false
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "set TILO_VPN_SAMPLE once on the main thread before the framework host starts threads"
+)]
+pub fn main() {
+    if is_capture(std::env::args().skip(1)) {
+        // SAFETY: set once at startup before any threads read the environment.
+        unsafe {
+            std::env::set_var("TILO_VPN_SAMPLE", "1");
+        }
+    }
+    ui::framework::run::<vpn::VpnShell>();
 }
