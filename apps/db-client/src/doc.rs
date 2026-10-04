@@ -52,44 +52,20 @@ pub struct SavedQuery {
 /// Stateless helpers over the shared editor document.
 pub struct EditorDoc;
 
-/// The actor of the shared schema change. Nobody edits as it.
-const SCHEMA_GENESIS_ACTOR: &[u8] = b"so.tilo.db-client.schema.genesis.v1";
-
-/// The canonical schema change, built once per process: the `editor` map with
-/// its `sql` Text plus the empty `connections` / `saved_queries` lists, under
-/// a fixed actor at time 0, so the same bytes on every machine.
-fn schema_genesis() -> &'static [u8] {
-    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    GENESIS.get_or_init(|| {
-        let mut doc = AutoCommit::new();
-        doc.set_actor(automerge::ActorId::from(SCHEMA_GENESIS_ACTOR));
-        let _ = EditorDoc::sql_text(&mut doc);
-        let _ = doc.put_object(&ROOT, CONNECTIONS_KEY, ObjType::List);
-        let _ = doc.put_object(&ROOT, SAVED_QUERIES_KEY, ObjType::List);
-        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
-        doc.save()
-    })
-}
-
-/// Give a fresh document the shared containers every replica writes into.
-/// Must run outside an open transaction (it applies a change); a new record
-/// gets it from [`crate::resource::DbClient`]'s `initialize`.
+/// Give a new workspace the containers every replica writes into: the
+/// `editor` map with its `sql` Text and the empty `connections` /
+/// `saved_queries` lists. Created on first use instead, each would be a
+/// per-replica object: two people who open the same new record before
+/// syncing would each mint one, and a merge would show only one of them.
 ///
-/// Created on first use instead, the SQL buffer (first edit), the
-/// connection list and the saved-query list (first add) are per-replica
-/// objects: two people who open the same new record, or add their first
-/// connection, before syncing each mint one, and a merge shows only one of
-/// them. A document that already has any of these keeps what it has.
-pub fn adopt_shared_schema(doc: &mut AutoCommit) {
-    let fresh = ["editor", CONNECTIONS_KEY, SAVED_QUERIES_KEY]
-        .iter()
-        .all(|key| {
-            doc.get_all(&ROOT, *key)
-                .is_ok_and(|values| values.is_empty())
-        });
-    if fresh {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, schema_genesis());
-    }
+/// # Errors
+/// Returns the document's refusal, which only a corrupted document gives.
+pub fn create_schema(doc: &mut AutoCommit) -> Result<(), automerge::AutomergeError> {
+    let editor = doc.put_object(&ROOT, "editor", ObjType::Map)?;
+    doc.put_object(&editor, "sql", ObjType::Text)?;
+    doc.put_object(&ROOT, CONNECTIONS_KEY, ObjType::List)?;
+    doc.put_object(&ROOT, SAVED_QUERIES_KEY, ObjType::List)?;
+    Ok(())
 }
 
 impl EditorDoc {
@@ -147,8 +123,9 @@ impl EditorDoc {
     }
 
     /// Replace the entire buffer with `sql`, splicing only what differs so it
-    /// remains a single CRDT object (no `put_object` churn). Seeds the demo's
-    /// starter query; edits go through [`crate::actions::DbAction::EditSql`].
+    /// remains a single CRDT object (no `put_object` churn). The app edits
+    /// through [`crate::actions::DbAction::EditSql`]; tests build documents.
+    #[cfg(test)]
     pub fn set_sql(doc: &mut AutoCommit, sql: &str) {
         let tid = Self::sql_text(doc);
         ui::doc::splice_text_diffed(doc, &tid, sql);
@@ -276,19 +253,18 @@ mod tests {
     use super::*;
     use tilo_automerge::ApplyIncoming;
 
-    /// Two replicas open the same new record and each type SQL and save a
-    /// query before syncing: both must survive the merge.
+    /// Two replicas open the same new record (one genesis) and each type SQL
+    /// and save a query before syncing: both must survive the merge.
     #[test]
     fn concurrent_first_opens_on_two_replicas_keep_both_edits() {
         use tilo_actions::Action;
         for _ in 0..8 {
+            use ui::tilo_resource::Resource as _;
             let mut base = AutoCommit::new();
+            crate::resource::DbClient::initialize(&mut base).unwrap();
             base.commit();
             let mut a = base.fork();
             let mut b = base.fork();
-            for doc in [&mut a, &mut b] {
-                adopt_shared_schema(doc);
-            }
             let sql = EditorDoc::sql_text(&mut a);
             a.splice_text(&sql, 0, 0, "left").unwrap();
             let sql = EditorDoc::sql_text(&mut b);
