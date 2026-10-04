@@ -544,55 +544,24 @@ fn safe_account_name(name: &str) -> bool {
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
-fn valid_room_id(value: &str) -> bool {
-    let mut parts = value.split('-');
-    let expected = [8, 4, 4, 4, 12];
-    expected.into_iter().all(|len| {
-        parts.next().is_some_and(|part| {
-            part.len() == len && part.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-    }) && parts.next().is_none()
-}
-
 fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
-    let bytes = match fs::read(source) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    if bytes.len() > 64 * 1024 {
-        return Ok(());
-    }
-    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+    use tilo_relay_protocol::personal_devices;
+    // The export is this session's own convenience file: an unreadable or
+    // malformed one shares no rooms rather than failing the enrollment.
+    let Ok(rooms) = personal_devices::read_rooms(source) else {
         return Ok(());
     };
-    if ids.len() > 256 || ids.iter().any(|id| !valid_room_id(id)) {
+    if rooms.is_empty() {
         return Ok(());
     }
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    tilo_files::native::atomic::write(
-        dest,
-        &serde_json::to_vec_pretty(&ids)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
-    )?;
-    Ok(())
+    personal_devices::remember_rooms(dest, &rooms).map(|_| ())
 }
 
 /// Where this session publishes the workspace rooms a newly enrolled device
 /// should join. Absent when the process has no home or state directory.
 #[must_use]
 pub fn personal_rooms_export_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    Some(base.join("tilo").join("personal-rooms.json"))
+    tilo_relay_protocol::personal_devices::rooms_export_path()
 }
 
 fn relay_is_dialable(
@@ -684,56 +653,13 @@ fn copy_home_peers(
         })?;
     fs::create_dir_all(parent)?;
     tilo_files::native::atomic::write(&parent.join("home-peers.json"), &encoded)?;
-    remember_personal_device(
-        &parent.join("personal-device-peers.json"),
-        local_cert.device_public_key,
+    tilo_relay_protocol::personal_devices::remember_direct_peers(
+        &parent.join(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
+        &[local_cert.device_public_key],
     )?;
-    let local_peers = source.with_file_name("personal-device-peers.json");
-    remember_personal_device(&local_peers, joined_device)?;
-    Ok(())
-}
-
-fn remember_personal_device(path: &Path, device_public_key: [u8; 32]) -> io::Result<()> {
-    let id = hex::encode(device_public_key);
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => return Err(error),
-    };
-    if bytes.len() > 64 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal device list exceeds 64 KiB",
-        ));
-    }
-    let mut ids: Vec<String> = if bytes.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_slice(&bytes)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-    };
-    if ids.len() > 128
-        || ids.iter().any(|known| {
-            known.len() != 64
-                || hex::decode(known)
-                    .ok()
-                    .is_none_or(|decoded| decoded.len() != 32)
-        })
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "personal device list is invalid",
-        ));
-    }
-    if !ids.iter().any(|known| known == &id) {
-        ids.push(id);
-    }
-    let encoded = serde_json::to_vec_pretty(&ids)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    tilo_files::native::atomic::write(path, &encoded)?;
+    let local_peers =
+        source.with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE);
+    tilo_relay_protocol::personal_devices::remember_direct_peers(&local_peers, &[joined_device])?;
     Ok(())
 }
 

@@ -165,6 +165,11 @@ impl WorkspaceTreeReplica {
         if let NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } = msg
             && RoomId::parse(room).is_some_and(|room| self.tree.read().requires_native_owner(room))
         {
+            tracing::debug!(
+                target: "shell::network::replica",
+                %room,
+                "room replication ignored: the room's native owner replicates it"
+            );
             return;
         }
         match msg {
@@ -182,8 +187,21 @@ impl WorkspaceTreeReplica {
                 drop(tree);
                 // `None` = not in that room. No reply — a peer learns nothing about a room it named, not even that it's unknown here.
                 let Some(changes) = exported else {
+                    tracing::debug!(
+                        target: "shell::network::replica",
+                        sender = %sender,
+                        room = %room_id,
+                        "SyncReq for a room this machine is not in"
+                    );
                     return;
                 };
+                tracing::debug!(
+                    target: "shell::network::replica",
+                    sender = %sender,
+                    room = %room_id,
+                    changes = changes.len(),
+                    "answering SyncReq"
+                );
                 // Recorded after "not in that room" (so asking about an absent room
                 // doesn't count) and before "nothing to send" (an up-to-date guest still counts as a participant).
                 self.note_participant(room_id, sender);
@@ -223,6 +241,13 @@ impl WorkspaceTreeReplica {
                     );
                     return;
                 }
+                tracing::debug!(
+                    target: "shell::network::replica",
+                    sender = %sender,
+                    room = %room_id,
+                    changes = changes.len(),
+                    "applied SyncResp"
+                );
                 // Recorded only once accepted — a refused document must not leave a participant behind it.
                 self.note_participant(room_id, sender);
             }
@@ -575,6 +600,52 @@ mod tests {
             "{what} ({needle:?}) leaked to a guest invited only to room A.\n\
              Found in the guest's own state at byte {at}:\n…{}…",
             &held[start..end]
+        );
+    }
+
+    #[test]
+    fn an_enrolled_device_receives_the_rooms_it_adopted() {
+        let mut owner_tree = WorkspaceTree::default();
+        let home = owner_tree.append_empty_workspace("Home");
+        let owner = crate::shell::state::local_user_id();
+        owner_tree.adopt_ownerless_workspaces(&owner);
+        let room = owner_tree.room_of(home).expect("the owner's room");
+        let owner_handle = owner_tree.shared();
+        let mut owner_replica = WorkspaceTreeReplica::new(1, owner_handle);
+
+        let mut device_tree = WorkspaceTree::default();
+        assert!(device_tree.join_enrolled_room(room));
+        let device_handle = device_tree.shared();
+        let mut device_replica = WorkspaceTreeReplica::new(2, device_handle.clone());
+
+        device_replica.request_sync();
+        let requests = device_replica.drain_outgoing();
+        assert!(
+            requests.iter().any(
+                |msg| matches!(msg, NeighbourMsg::SyncReq { room: r, .. } if *r == room.to_string())
+            ),
+            "the enrolled device asks for the adopted room: {requests:?}"
+        );
+        for request in &requests {
+            owner_replica.handle(&PeerOrigin::hub(2), request);
+        }
+        let answers = owner_replica.drain_outgoing();
+        assert!(!answers.is_empty(), "the owner answers the enrolled device");
+        for answer in &answers {
+            device_replica.handle(&PeerOrigin::hub(1), answer);
+        }
+        let names: Vec<_> = device_handle
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room == room)
+            .map(|workspace| workspace.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Home".to_string()],
+            "the adopted room shows the owner's workspace"
         );
     }
 

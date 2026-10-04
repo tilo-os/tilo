@@ -909,28 +909,18 @@ fn personal_device_peer_addrs(
     path: &Path,
     local_device: Option<[u8; 32]>,
 ) -> Vec<iroh::EndpointAddr> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
+    let devices = match tilo_relay_protocol::personal_devices::read_direct_peers(path) {
+        Ok(devices) => devices,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "personal device list is unusable");
+            return Vec::new();
+        }
     };
-    if bytes.len() > 64 * 1024 {
-        tracing::warn!(path = %path.display(), "personal device list exceeds its bound");
-        return Vec::new();
-    }
-    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
-        tracing::warn!(path = %path.display(), "personal device list is invalid");
-        return Vec::new();
-    };
-    if ids.len() > MAX_HOME_PEERS {
-        tracing::warn!(path = %path.display(), "personal device list exceeds its bound");
-        return Vec::new();
-    }
-    ids.into_iter()
-        .filter_map(|id| {
-            let bytes = decode_lower_hex_32(&id)?;
-            if local_device == Some(bytes) {
-                return None;
-            }
-            iroh::EndpointId::from_bytes(&bytes)
+    devices
+        .into_iter()
+        .filter(|device| local_device != Some(*device))
+        .filter_map(|device| {
+            iroh::EndpointId::from_bytes(&device)
                 .ok()
                 .map(iroh::EndpointAddr::new)
         })
@@ -938,9 +928,12 @@ fn personal_device_peer_addrs(
 }
 
 fn personal_device_peer_path() -> PathBuf {
-    home_peer_registry_path().with_file_name("personal-device-peers.json")
+    home_peer_registry_path()
+        .with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE)
 }
 
+/// The rooms listed at `path`. Unlike the enrollment writers, the session
+/// skips a malformed entry rather than dropping the whole list.
 fn personal_room_ids(path: &Path) -> Vec<RoomId> {
     let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
@@ -951,7 +944,7 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
     let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
         return Vec::new();
     };
-    if ids.len() > 256 {
+    if ids.len() > tilo_relay_protocol::personal_devices::MAX_ROOMS {
         return Vec::new();
     }
     ids.into_iter()
@@ -964,6 +957,9 @@ fn personal_room_ids(path: &Path) -> Vec<RoomId> {
 /// upper bound on how stale a guest's view of a room can be.
 const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often an unchanged presence snapshot is rewritten, so its timestamp
+/// tells a status tool the session is still running.
+const PRESENCE_EXPORT_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
 /// Keep transport bursts from monopolizing the compositor thread. The actor's
 /// channel is bounded, so leaving events queued simply applies backpressure
 /// until the next frame instead of losing ordering or data.
@@ -1239,6 +1235,14 @@ pub struct ShellNetwork {
     /// Topics on which a direct peer has actually appeared. A remote action
     /// sent before that is dropped by the transport, so it is not attempted.
     live_room_peers: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
+    /// The device rows last published by [`Self::export_personal_presence`]
+    /// and when.
+    last_presence_export: Mutex<
+        Option<(
+            std::time::Instant,
+            Vec<tilo_relay_protocol::personal_devices::DevicePresence>,
+        )>,
+    >,
     /// Certified device keys eligible to decrypt personal secrets. Routing
     /// uses the deliberately distinct relay service ids above.
     registered_home_device_ids: Mutex<std::collections::HashSet<[u8; 32]>>,
@@ -1633,7 +1637,8 @@ impl ShellNetwork {
         }
         let dialed_direct_peers = std::collections::HashSet::new();
         for addr in personal_device_peer_addrs(
-            &home_peer_registry_path().with_file_name("personal-device-peers.json"),
+            &home_peer_registry_path()
+                .with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
             Some(*local_peer_id.as_bytes()),
         ) {
             let _ = cmd_tx.try_send(NetCmd::Connect { addr });
@@ -1706,6 +1711,7 @@ impl ShellNetwork {
             registered_home_peer_ids: Mutex::new(home_peer_ids),
             dialed_direct_peers: Mutex::new(dialed_direct_peers),
             live_room_peers: Mutex::new(std::collections::HashSet::new()),
+            last_presence_export: Mutex::new(None),
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
@@ -2131,6 +2137,10 @@ impl ShellNetwork {
                     | NeighbourMsg::IdentityAnnouncementV2 { .. }
             )
         {
+            tracing::debug!(
+                workspace_topic = ws,
+                "not publishing room replication on a topic its native owner replicates"
+            );
             return false;
         }
         if self.native_topic_required(ws)
@@ -2820,8 +2830,10 @@ impl ShellNetwork {
     }
 
     fn enrolled_room_candidates(&self) -> Result<Vec<RoomId>, String> {
-        let mut enrolled =
-            personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
+        let mut enrolled = personal_room_ids(
+            &personal_device_peer_path()
+                .with_file_name(tilo_relay_protocol::personal_devices::ROOMS_FILE),
+        );
         // The setup session publishes its rooms under the user state
         // directory. The copy on the target lives beside the peer list.
         if let Some(exported) = tilo_identity_host::provisioning::personal_rooms_export_path() {
@@ -3022,7 +3034,8 @@ impl ShellNetwork {
     }
 
     fn adopt_enrolled_rooms(&self) {
-        let path = personal_device_peer_path().with_file_name("personal-rooms.json");
+        let path = personal_device_peer_path()
+            .with_file_name(tilo_relay_protocol::personal_devices::ROOMS_FILE);
         // Read the file before taking the tree's write lock: the frame
         // painter reads the same tree.
         let rooms = personal_room_ids(&path);
@@ -3068,6 +3081,86 @@ impl ShellNetwork {
         let _ = tilo_files::native::atomic::write(&path, &bytes);
     }
 
+    /// Publish what this session sees of the person's other devices, for
+    /// status tools outside the session such as `tilo-identity status`: the
+    /// devices it dials directly and those whose certified fabric presence
+    /// it holds, whether a connection to each is open, in how many rooms, and
+    /// its last heartbeat. Rows that did not change are refreshed at most
+    /// every [`PRESENCE_EXPORT_REFRESH`], so the timestamp shows the session
+    /// is alive.
+    fn export_personal_presence(&self) {
+        use tilo_relay_protocol::personal_devices::{self, DevicePresence, PresenceSnapshot};
+        let Some(runtime_dir) = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+        else {
+            return;
+        };
+        let local = *self.local_peer_id.as_bytes();
+        let direct =
+            personal_devices::read_direct_peers(&personal_device_peer_path()).unwrap_or_default();
+        let mut last_seen = std::collections::BTreeMap::<[u8; 32], u64>::new();
+        if let Ok(fabric) = self.device_fabric.lock() {
+            for (device, snapshot) in fabric.snapshots() {
+                if let Some(key) = decode_lower_hex_32(device.as_str()) {
+                    last_seen.insert(key, snapshot.presence.last_seen_unix_ms);
+                }
+            }
+        }
+        let mut rooms = std::collections::HashMap::<[u8; 32], u32>::new();
+        if let Ok(live) = self.live_room_peers.lock() {
+            for (_, peer) in live.iter() {
+                let count = rooms.entry(*peer.as_bytes()).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        let mut devices: std::collections::BTreeSet<[u8; 32]> = direct
+            .iter()
+            .copied()
+            .chain(last_seen.keys().copied())
+            .collect();
+        devices.remove(&local);
+        let rows: Vec<DevicePresence> = devices
+            .into_iter()
+            .take(PresenceSnapshot::MAX_DEVICES)
+            .map(|device| DevicePresence {
+                device: hex::encode(device),
+                online: rooms.contains_key(&device),
+                last_seen_unix_ms: last_seen.get(&device).copied().filter(|seen| *seen > 0),
+                direct_peer: direct.contains(&device),
+                shared_rooms: rooms.get(&device).copied().unwrap_or_default(),
+            })
+            .collect();
+        let Ok(mut last) = self.last_presence_export.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if last.as_ref().is_some_and(|(written, previous)| {
+            *previous == rows && now.duration_since(*written) < PRESENCE_EXPORT_REFRESH
+        }) {
+            return;
+        }
+        let snapshot = PresenceSnapshot {
+            schema_version: PresenceSnapshot::CURRENT_SCHEMA,
+            local_device: hex::encode(local),
+            identity: self.personal_continuity_user.map(hex::encode),
+            refreshed_unix_ms: now_unix_seconds().saturating_mul(1000),
+            devices: rows.clone(),
+        };
+        let path = personal_devices::presence_path(&runtime_dir);
+        let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) else {
+            return;
+        };
+        if let Some(parent) = path.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return;
+        }
+        if tilo_files::native::atomic::write(&path, &bytes).is_ok() {
+            *last = Some((now, rows));
+        }
+    }
+
     /// Attach an always-on home or hosted workspace server. The actor keeps
     /// its direct Iroh gossip path and additionally uses the authenticated
     /// host session for offline store-and-forward.
@@ -3098,6 +3191,7 @@ impl ShellNetwork {
         // enrolled, with or without a relay. A missing or malformed relay
         // registry must not skip them.
         changed |= self.dial_direct_peers();
+        self.export_personal_presence();
         let mut relay_workspace_ids = self
             .replica
             .lock()
@@ -6584,6 +6678,7 @@ pub(crate) fn shell_network_for_test(
         registered_home_peer_ids: Mutex::new(std::collections::HashSet::new()),
         dialed_direct_peers: Mutex::new(std::collections::HashSet::new()),
         live_room_peers: Mutex::new(std::collections::HashSet::new()),
+        last_presence_export: Mutex::new(None),
         registered_home_device_ids: Mutex::new(std::collections::HashSet::new()),
         last_home_peer_refresh: Mutex::new(None),
         last_sync_kick: Mutex::new(None),

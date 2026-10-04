@@ -235,7 +235,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 
     let member_cert =
         tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
-    assert_eq!(member_cert.capabilities, DeviceCapabilities::member());
+    assert_eq!(member_cert.capabilities, DeviceCapabilities::joined());
     assert!(!recipient_paths.user_privkey.exists());
     let record = recipient_identities.join(format!(
         "identity-{}.json",
@@ -446,8 +446,17 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         member_cert.device_public_key,
         recipient.verifying_key().to_bytes()
     );
-    assert_eq!(member_cert.capabilities, DeviceCapabilities::member());
+    assert_eq!(member_cert.capabilities, DeviceCapabilities::joined());
     tilo_user_identity::verify_device_cert(&member_cert).unwrap();
+    // The session's first-boot check accepts it as an enrolled device, as it
+    // does a device the imager enrolled, instead of asking for recovery.
+    assert!(
+        tilo_user_identity::persist::joined_device_is_ready(
+            &recipient_paths,
+            tilo_clock::try_unix_now_ns().unwrap()
+        )
+        .unwrap()
+    );
     assert!(!recipient_paths.user_privkey.exists());
     assert!(!approver_paths.user_privkey.exists());
 
