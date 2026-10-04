@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use tilo_content::ContentStore;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
@@ -85,6 +87,13 @@ impl Resource for Photos {
     }
 }
 
+/// The pose a capture shows and the scratch directory its generated
+/// photographs go in.
+struct ShotPose {
+    scenario: String,
+    directory: std::path::PathBuf,
+}
+
 /// Framework app: the photos widget is the surface over [`Photos`].
 pub struct PhotosShell;
 
@@ -98,11 +107,33 @@ impl ResourceApp for PhotosShell {
     }
 
     fn view(cx: &mut ViewCx<Photos>) -> Element {
-        cx.surface(PhotosApp::new_persistent(ContentStore::for_app()))
+        if cx.mode() != RunMode::Capture {
+            return cx.surface(PhotosApp::new_persistent(ContentStore::for_app()));
+        }
+        // A capture poses the scenario's library on its first sync and
+        // writes the photographs it generates into the capture's scratch
+        // directory, so it never touches the person's library.
+        crate::strings::install();
+        let mut app = PhotosApp::new();
+        if let Some(pose) = cx.fixture::<ShotPose>() {
+            app.stage_scenario(&pose.scenario, &pose.directory);
+        }
+        cx.surface(app)
     }
 
     fn scenarios() -> &'static [&'static str] {
         crate::SHOT_SCENARIOS
+    }
+
+    fn fixture(fixture: &mut Fixture<Photos>) {
+        let scenario = fixture.scenario().unwrap_or("opened").to_owned();
+        if let Ok(directory) = fixture.directory() {
+            let directory = directory.to_path_buf();
+            fixture.provide(ShotPose {
+                scenario,
+                directory,
+            });
+        }
     }
 
     fn label(state: &PhotosState) -> String {
@@ -185,7 +216,7 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<PhotosShell>()
 }
 
-/// Capture, import and explicit file opens stay on the standalone widget path.
+/// Imports and explicit file opens stay on the standalone widget path.
 pub fn standalone_launch() -> bool {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -193,20 +224,12 @@ pub fn standalone_launch() -> bool {
             "--data-dir" => {
                 let _ = args.next();
             }
-            "--shots"
-            | "--responsive-matrix"
-            | "--native-audit"
-            | "--headless"
-            | "--library"
-            | "--analyze-imports" => return true,
-            "--open" | "--import-directory" | "--size" => {
+            "--native-audit" | "--headless" | "--library" | "--analyze-imports" => return true,
+            "--open" | "--import-directory" => {
                 let _ = args.next();
                 return true;
             }
-            flag if flag.starts_with("--shots=")
-                || flag.starts_with("--open=")
-                || flag.starts_with("--import-directory=") =>
-            {
+            flag if flag.starts_with("--open=") || flag.starts_with("--import-directory=") => {
                 return true;
             }
             file if !file.starts_with('-') => return true,

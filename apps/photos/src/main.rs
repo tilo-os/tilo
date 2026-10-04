@@ -44,8 +44,8 @@ use ui::widget::Widget;
 extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Default live path: framework-hosted ResourceApp. Shots, imports and
-    // explicit file opens keep the standalone widget launcher.
+    // Default live path and captures: the framework-hosted ResourceApp.
+    // Imports and explicit file opens keep the standalone widget launcher.
     if !photos::standalone_launch() {
         ui::framework::run::<photos::PhotosShell>();
         return Ok(());
@@ -54,12 +54,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &LaunchSpec::new_with_args("so.tilo.photos", live_root)
             .history(&photos::framework_history::HISTORY)
             .open_app_global_state_with_args(open_state)
-            .shot_root(shot_root)
-            .shot_viewport(|_| (1280, 800))
             .allowed_live_flags(&["--analyze-imports", "--library"])
             .allowed_live_options(&["--open", "--import-directory"])
             .max_positionals(1)
-            .scenarios(photos::SHOT_SCENARIOS)
             .configure_app(configure_app),
     )?;
     Ok(())
@@ -164,25 +161,4 @@ fn configure_app(app: &mut ui::App) {
     {
         app.debug_mode = false;
     }
-}
-
-/// The app posed for `--scenario`: it seeds the scenario's library into the
-/// capture's document on its first sync, writing its generated photographs
-/// beside the output so a shot run leaves nothing where the live app looks.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "signature is fixed by the `LaunchSpec::shot_root` factory callback"
-)]
-fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    photos::strings::install();
-    let scenario = args.scenario.as_deref().unwrap_or("opened").to_owned();
-    let staging = args
-        .shots
-        .as_deref()
-        .and_then(std::path::Path::parent)
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("photos-shots");
-    let mut app = photos::PhotosApp::new();
-    app.stage_scenario(&scenario, &staging);
-    Ok(Box::new(app))
 }
