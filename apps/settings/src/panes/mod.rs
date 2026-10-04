@@ -68,6 +68,27 @@ pub(crate) fn preference_commit_context(
     })
 }
 
+/// Why this process cannot tell which programs the device has installed,
+/// when it cannot: no directory on `PATH` is visible to it. A lookup would
+/// then report every program as missing, which says nothing about the device.
+pub(crate) fn installed_programs_unreadable() -> Option<String> {
+    programs_unreadable_on(std::env::var_os("PATH").as_deref())
+}
+
+fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
+    let Some(path) = path else {
+        return Some("PATH is not set".to_string());
+    };
+    if std::env::split_paths(path).any(|dir| dir.is_dir()) {
+        None
+    } else {
+        Some(format!(
+            "none of {} is visible to Settings",
+            path.to_string_lossy()
+        ))
+    }
+}
+
 /// The "Sound" category renders the audio pane.
 pub mod sound {
     pub use super::audio::build;
@@ -97,6 +118,27 @@ mod tests {
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
             Some("so.tilo.settings")
+        );
+    }
+
+    /// A `PATH` none of whose directories is visible cannot say a program is
+    /// missing; one visible directory can.
+    #[test]
+    fn programs_are_unreadable_only_when_no_path_directory_is_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join("usr-bin");
+        let unreadable = programs_unreadable_on(Some(hidden.as_os_str()));
+        assert!(
+            unreadable
+                .as_deref()
+                .is_some_and(|error| error.ends_with("is visible to Settings")),
+            "{unreadable:?}"
+        );
+        let mixed = std::env::join_paths([hidden.as_path(), dir.path()]).unwrap();
+        assert_eq!(programs_unreadable_on(Some(&mixed)), None);
+        assert_eq!(
+            programs_unreadable_on(None).as_deref(),
+            Some("PATH is not set")
         );
     }
 }

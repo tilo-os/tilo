@@ -55,15 +55,11 @@ use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    OperationKind, RetryPolicy,
-};
+use tilo_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::put_if_changed;
 use ui::tilo_resource::TextEdit;
 
-use crate::app::{DB_OPERATION_TYPE, DbClientOperation};
-use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY, SavedQuery};
+use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};
 use crate::model::{ConnectionProfile, Engine};
 
 /// Wire type id under which the client's actions are encoded + registered.
@@ -315,45 +311,6 @@ pub fn known_engine(engine: &str) -> bool {
         Engine::from_key(engine),
         Engine::Sqlite | Engine::Postgres | Engine::MySql
     )
-}
-
-/// The Effect that opens the saved connection `id` on this device.
-#[allow(
-    clippy::expect_used,
-    reason = "the operation payload holds one string, so encoding cannot fail"
-)]
-pub(crate) fn connect_operation(id: Uuid) -> ActionSpec {
-    let spec = ActionSpec::operation(
-        "connect",
-        "Connect",
-        OperationKind::Effect,
-        DB_OPERATION_TYPE,
-        &DbClientOperation::Connect {
-            connection_id: id.to_string(),
-        },
-    )
-    .expect("connect payload is serializable");
-    crate::app::job(spec).retry_policy(RetryPolicy::Idempotent)
-}
-
-/// The Effect that runs a saved query on the active connection.
-#[allow(
-    clippy::expect_used,
-    reason = "the operation payload holds two strings, so encoding cannot fail"
-)]
-pub(crate) fn run_saved_query_operation(query: &SavedQuery) -> ActionSpec {
-    let spec = ActionSpec::operation(
-        "run",
-        "Run saved query",
-        OperationKind::Effect,
-        DB_OPERATION_TYPE,
-        &DbClientOperation::RunQuery {
-            connection_id: String::new(),
-            sql: query.sql.clone(),
-        },
-    )
-    .expect("run payload is serializable");
-    crate::app::job(spec).destructive()
 }
 
 #[cfg(test)]

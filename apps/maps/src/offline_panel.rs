@@ -7,7 +7,6 @@
 use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -175,6 +174,7 @@ impl OfflinePanel {
         scale: f64,
         modifiers: winit::event::Modifiers,
         mouse: Point,
+        doc: &mut AutoCommit,
     ) -> bool {
         if let (
             WindowEvent::MouseInput {
@@ -189,26 +189,8 @@ impl OfflinePanel {
         {
             self.input.begin_edit();
         }
-        let mut doc = AutoCommit::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return false;
-        };
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        self.input.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        let handled =
+            crate::search_box::drive_hand_laid(&mut self.input, event, scale, modifiers, doc);
         self.reconcile_field();
         handled
     }

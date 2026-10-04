@@ -645,7 +645,7 @@ mod tests {
         surface::offers(
             &[(wp, &doc)],
             &surface::View::default(),
-            &permitting("word-processor"),
+            &permitting("so.tilo.word-processor"),
         )
     }
 
@@ -746,10 +746,11 @@ mod tests {
             ));
 
             // There is no agent-only vocabulary: "table" means whatever the app
-            // publishes for it — its own insert-table — never a compiled-in recipe.
-            let table = Instruction::from_floor("turn the bullets into a table", &offers);
+            // publishes for it — here its own table of contents — never a
+            // compiled-in recipe.
+            let table = Instruction::from_floor("turn the headings into a table", &offers);
             assert!(
-                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#insert-table")),
+                matches!(&table, Instruction::Perform { id, .. } if id.ends_with("#generate-toc")),
                 "{table:?}"
             );
         }

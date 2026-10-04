@@ -471,6 +471,17 @@ impl Button {
         }
     }
 
+    /// The interaction state a host painting its own face over this
+    /// button's focus, press and activation contract should show.
+    pub(crate) fn interact(&self) -> ButtonInteract {
+        ButtonInteract {
+            hovered: self.is_hovered,
+            pressed: self.is_pressed,
+            focused: self.focus_visible(),
+            disabled: !self.effectively_enabled(),
+        }
+    }
+
     /// The counterpart to `TextInput::apply_layout_external` for an app
     /// that hand-positions a shared control over its own painted chrome;
     /// the button still owns its focus / a11y / activation contract, only

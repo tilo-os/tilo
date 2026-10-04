@@ -126,22 +126,43 @@ impl Joined {
         self.owner
             .rooms()
             .into_iter()
-            .filter_map(|room| {
-                self.owner
-                    .with_current(room, |view| {
-                        let document = view.peer().admitted_room().ok_or("no admitted room")?;
-                        let (name, owner, capabilities) =
-                            tilo_peer_state::room::extract_governed_fields(document);
-                        let mut workspace =
-                            Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
-                        workspace.room = room;
-                        workspace.owner = owner;
-                        workspace.capabilities = capabilities;
-                        Ok(workspace)
-                    })
-                    .ok()
-            })
+            .filter_map(|room| self.current_room(room).ok().map(|(workspace, _)| workspace))
             .collect()
+    }
+
+    // Use the same current custody check as an enrolled relay session. Merely
+    // retaining a peer or its device key cannot authenticate a selected root.
+    fn current_room(&self, room: RoomId) -> Result<(Workspace, String), String> {
+        let (_, cert, _, continuity) =
+            Connect::new(self.owner.clone(), room)?.material(&self.custody)?;
+        self.owner.with_current(room, |view| {
+            if view.continuity() != continuity || view.device() != &cert {
+                return Err("room identity changed while selecting the audience".into());
+            }
+            let (_, _, principal) = view
+                .peer()
+                .permissions(cert.device_public_key, SystemTime::now())?;
+            let document = view.peer().admitted_room().ok_or("no admitted room")?;
+            let (name, owner, capabilities) =
+                tilo_peer_state::room::extract_governed_fields(document);
+            let mut workspace =
+                Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
+            workspace.room = room;
+            workspace.owner = owner;
+            workspace.capabilities = capabilities;
+            Ok((workspace, principal))
+        })
+    }
+
+    /// Select only a room this exact profile principal and certified device
+    /// currently take part in. Reading authority never joins or requests keys.
+    pub(super) fn action_room(&self, actor: &str, room: &str) -> Result<String, String> {
+        let room = RoomId::parse(room).ok_or("invalid MCP room")?;
+        let (_, principal) = self.current_room(room)?;
+        if actor != principal {
+            return Err("the selected profile actor is not this room's admitted identity".into());
+        }
+        Ok(room.to_string())
     }
 
     /// The slot the channel service fills with this device's channel keys.

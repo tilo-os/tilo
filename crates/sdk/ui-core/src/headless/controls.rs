@@ -120,6 +120,59 @@ impl FrameHarness {
         tree
     }
 
+    /// Resolve an exact action against the retained layout, without draining
+    /// wakes, laying out, scrolling, focusing, or executing an action. Hosts
+    /// must associate this metadata with the presentation that owns the layout;
+    /// it is not a portable semantic node identity or a capture receipt.
+    pub fn action_ui_routes(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Vec<crate::ActionUiRoute> {
+        let Some((tree, bindings)) = self.retained_action_geometry() else {
+            return Vec::new();
+        };
+        crate::action_locus::action_ui_routes(&tree, &bindings, address)
+    }
+
+    /// The exact retained control locus for a semantic action, if uniquely
+    /// available. Missing/ambiguous/domain-specific targets return no geometry.
+    pub fn semantic_locus(&self, interaction: &tilo_actions::SemanticInteraction) -> Option<Rect> {
+        let (tree, bindings) = self.retained_action_geometry()?;
+        crate::action_locus::interaction_bounds(&tree, &bindings, interaction)
+    }
+
+    fn retained_action_geometry(
+        &self,
+    ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
+        // A system surface hiding the app cannot expose its background locus.
+        if self.system_search_presentation().is_some()
+            || self.caller_palette.palette.is_some()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| !history.live_visible())
+            || self
+                .history_layout
+                .is_some_and(|layout| !layout.app_visible)
+            || self
+                .action_palette
+                .as_deref()
+                .is_some_and(|palette| palette.is_presented())
+        {
+            return None;
+        }
+        let mut resources = Vec::new();
+        crate::widget::collect_widget_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            &mut resources,
+        );
+        Some((
+            self.semantic_tree_over(&resources),
+            crate::widget::controls::control_action_bindings(self.root.as_ref()),
+        ))
+    }
+
     /// Every operable control the exported accessibility tree carries now,
     /// in tree order.
     pub fn controls(&self) -> Vec<Control> {
@@ -444,4 +497,289 @@ fn is_pressable(role: Role) -> bool {
 /// declared.
 pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
     spec.operation_type.as_deref() == Some(SEMANTIC_OPERATION_TYPE)
+}
+
+#[cfg(test)]
+mod locus_tests {
+    use super::*;
+    use crate::state::State;
+    use crate::widget::{Button, Column, resource_actions};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    fn fixture() -> (FrameHarness, Rc<Cell<u32>>) {
+        let calls = Rc::new(Cell::new(0));
+        let mut column = Column::new();
+        for id in ["first", "second"] {
+            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit", false);
+            resource.id = tilo_actions::ResourceId::new(id);
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+            let counter = calls.clone();
+            column = column.push(resource_actions::immediate(
+                Box::new(Button::new(id, "Same label", None).on_action(binding)),
+                resource,
+                move |_| {
+                    counter.set(counter.get() + 1);
+                    Ok(tilo_actions::ActionOutput::default())
+                },
+            ));
+        }
+        (
+            FrameHarness::new(State::new(), Box::new(column), (400, 240)),
+            calls,
+        )
+    }
+
+    fn interaction(resource: &str) -> tilo_actions::SemanticInteraction {
+        tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId::new(),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "synthetic-test-only".into(),
+                kind: tilo_actions::InteractionActorKind::Person,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: "edit".into(),
+                label: "Edit".into(),
+                app: None,
+            },
+            resource: tilo_actions::ActionResource {
+                id: resource.into(),
+                kind: "example".into(),
+                label: "Same label".into(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        }
+    }
+
+    #[test]
+    fn semantic_locus_never_matches_labels_or_unbound_semantic_ids() {
+        let (frame, calls) = fixture();
+        let mut event = interaction("first");
+        assert_eq!(frame.semantic_locus(&event), Some(frame.targets()["first"]));
+        event.resource.id = "missing".into();
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "identical resource label is not identity"
+        );
+        event.resource.id = "first".into();
+        let other = frame.action_ui_routes(&tilo_actions::ActionAddress::new("second", "edit"));
+        event.anchor = tilo_actions::InteractionAnchor::SemanticControl {
+            id: other[0].path.last().unwrap().as_str().into(),
+        };
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "another resource's node is not this target"
+        );
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["first".into()],
+        };
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "unsupported domain geometry remains missing"
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn semantic_locus_refuses_multiple_affordances_for_one_action() {
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let root = resource_actions::immediate(
+            Box::new(
+                Column::new()
+                    .push(Box::new(
+                        Button::new("a", "Same label", None).on_action(binding.clone()),
+                    ))
+                    .push(Box::new(
+                        Button::new("b", "Same label", None).on_action(binding),
+                    )),
+            ),
+            resource,
+            |_| panic!("observation must not execute"),
+        );
+        let frame = FrameHarness::new(State::new(), root, (400, 240));
+        assert_eq!(
+            frame
+                .action_ui_routes(&tilo_actions::ActionAddress::new("shared:root", "edit"))
+                .len(),
+            2
+        );
+        assert_eq!(frame.semantic_locus(&interaction("shared:root")), None);
+    }
+
+    #[test]
+    fn semantic_locus_refuses_control_id_reuse_across_distinct_resources() {
+        let mut root = Column::new();
+        for kind in ["one", "two"] {
+            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit", false);
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+            root = root.push(resource_actions::immediate(
+                Box::new(Column::new().with_id(kind).push(Box::new(
+                    Button::new("edit", "Same label", None).on_action(binding),
+                ))),
+                resource,
+                |_| panic!("observation must not execute"),
+            ));
+        }
+        let frame = FrameHarness::new(State::new(), Box::new(root), (400, 300));
+        let paths = frame.semantic_tree().control_paths("edit");
+        assert!(
+            paths.len() >= 2,
+            "fixture contains distinct owners with the same control id"
+        );
+        for target in paths.iter().filter_map(|path| path.last()) {
+            let mut event = interaction("one:root");
+            event.anchor = tilo_actions::InteractionAnchor::SemanticControl {
+                id: target.as_str().into(),
+            };
+            assert_eq!(frame.semantic_locus(&event), None);
+        }
+        assert!(
+            frame
+                .action_ui_routes(&tilo_actions::ActionAddress::new("one:root", "edit"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn semantic_locus_is_hidden_when_caller_search_covers_the_app() {
+        let (mut frame, _) = fixture();
+        assert!(frame.semantic_locus(&interaction("first")).is_some());
+        frame.open_caller_search("").unwrap();
+        assert!(frame.semantic_locus(&interaction("first")).is_none());
+    }
+
+    #[test]
+    fn semantic_locus_is_hidden_when_history_replaces_the_live_app() {
+        use crate::history_mode::*;
+        static DEFINITION: HistoryDefinition = HistoryDefinition {
+            app_id: "test.locus",
+            scopes: &[HistoryScopeDefinition {
+                key: "document",
+                title: "Document",
+                presentation: HistoryPresentation::Domain {
+                    create: crate::history_mode::test_preview,
+                },
+                content_schema: None,
+            }],
+        };
+        let (mut frame, _) = fixture();
+        let registration = HistoryRegistration::new(
+            &DEFINITION,
+            vec![HistorySourceRegistration::HostDocument {
+                scope: "document",
+                resource: HistoryResource::new(
+                    "synthetic",
+                    "room",
+                    "test.locus",
+                    crate::RecordId::for_tab(71),
+                ),
+            }],
+        )
+        .unwrap();
+        frame.install_history(registration).unwrap();
+        assert!(frame.semantic_locus(&interaction("first")).is_some());
+        frame
+            .perform_named("history-open", &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(!frame.history.as_ref().unwrap().live_visible());
+        assert!(frame.semantic_locus(&interaction("first")).is_none());
+    }
+
+    #[test]
+    fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
+        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit", false);
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
+        let frame = FrameHarness::new(
+            State::new(),
+            Box::new(Button::new("stale-control", "Same label", None).on_action(binding)),
+            (400, 240),
+        );
+        assert_eq!(frame.semantic_locus(&interaction("stale:root")), None);
+    }
+
+    #[test]
+    fn semantic_locus_refuses_a_frame_local_projected_resource_identity() {
+        let (mut frame, _) = fixture();
+        let retained = std::mem::replace(&mut frame.root, Box::new(Column::new()));
+        frame.root = Box::new(
+            crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
+                .with_child(retained),
+        );
+        frame.invalidate_layout_tree();
+        frame.relayout();
+        let tree = frame.semantic_tree();
+        let route = frame.action_ui_routes(&tilo_actions::ActionAddress::new("first", "edit"));
+        let target = route[0].path.last().unwrap();
+        assert!(
+            !tree.node(target).unwrap().durable_identity,
+            "fixture sits below an unkeyed parent"
+        );
+        let encoded = percent_encoding::utf8_percent_encode(
+            target.as_str(),
+            percent_encoding::NON_ALPHANUMERIC,
+        );
+        let mut event = interaction(&format!("ui:{encoded}"));
+        event.action.id = "activate".into();
+        assert_eq!(frame.semantic_locus(&event), None);
+    }
+
+    #[test]
+    fn action_locus_uses_exact_binding_without_input_or_state_change() {
+        let (mut frame, calls) = fixture();
+        let before = frame.state.doc.get_heads();
+        let focus = frame.focused;
+        let layouts = frame.relayout_frames();
+        let first = tilo_actions::ActionAddress::new("first", "edit");
+        let second = tilo_actions::ActionAddress::new("second", "edit");
+        let a = frame.action_ui_routes(&first);
+        let b = frame.action_ui_routes(&second);
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert_ne!(a[0].bounds, b[0].bounds);
+        assert_eq!(a[0].bounds, Some(frame.targets()["first"]));
+        assert_eq!(b[0].bounds, Some(frame.targets()["second"]));
+        assert!(
+            frame
+                .action_ui_routes(&tilo_actions::ActionAddress::new("missing", "edit"))
+                .is_empty()
+        );
+        assert!(
+            frame
+                .action_ui_routes(&tilo_actions::ActionAddress::new("first", "missing"))
+                .is_empty()
+        );
+        assert_eq!(frame.focused, focus);
+        assert_eq!(frame.relayout_frames(), layouts);
+        assert_eq!(frame.state.doc.get_heads(), before);
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn action_locus_reads_current_layout_and_does_not_reuse_replaced_controls() {
+        let (mut frame, _) = fixture();
+        let address = tilo_actions::ActionAddress::new("first", "edit");
+        let before = frame.action_ui_routes(&address)[0].bounds;
+        frame.resize((700, 240)).unwrap();
+        let after = frame.action_ui_routes(&address)[0].bounds;
+        assert_eq!(after, Some(frame.targets()["first"]));
+        let retained = std::mem::replace(&mut frame.root, Box::new(Column::new()));
+        frame.root = Box::new(Column::new().push(retained));
+        frame.invalidate_layout_tree();
+        frame.relayout();
+        let moved = frame.action_ui_routes(&address)[0].bounds;
+        assert_eq!(moved, Some(frame.targets()["first"]));
+        assert_ne!(before, moved);
+        frame.root = Box::new(Button::new("replacement", "Same label", None));
+        frame.invalidate_layout_tree();
+        frame.relayout();
+        assert!(frame.action_ui_routes(&address).is_empty());
+    }
 }

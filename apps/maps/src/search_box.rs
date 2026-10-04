@@ -180,6 +180,7 @@ impl SearchBox {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) -> SearchKeyEffect {
         if !self.focused {
             return SearchKeyEffect::None;
@@ -198,7 +199,7 @@ impl SearchBox {
             return SearchKeyEffect::Dismissed;
         }
         self.input.set_focus(true);
-        drive_text_input(&mut self.input, event, scale, modifiers);
+        drive_hand_laid(&mut self.input, event, scale, modifiers, doc);
         if self.input.take_submit() {
             self.focused = false;
             SearchKeyEffect::Submit
@@ -214,8 +215,9 @@ impl SearchBox {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
-        drive_text_input(&mut self.input, event, scale, modifiers);
+        drive_hand_laid(&mut self.input, event, scale, modifiers, doc);
     }
 
     pub(crate) fn forward_press(
@@ -223,9 +225,10 @@ impl SearchBox {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
         self.input.set_focus(true);
-        drive_text_input(&mut self.input, event, scale, modifiers);
+        drive_hand_laid(&mut self.input, event, scale, modifiers, doc);
     }
 
     pub(crate) fn take_targets(&mut self) -> Vec<(Rect, SearchHit)> {
@@ -416,27 +419,28 @@ impl SearchBox {
     }
 }
 
-/// Drive a hand-laid local text field through the standard widget event path.
-/// Directions reuses this so Maps has one adapter for all three fields.
-pub(crate) fn drive_text_input(
-    input: &mut TextInput,
+/// Drive a hand-laid widget — a text field, a menu — through the standard
+/// widget event path, with the event's own document. Hand-laid widgets keep
+/// their state themselves; the document is only the event's context.
+pub(crate) fn drive_hand_laid(
+    widget: &mut dyn Widget,
     event: &WindowEvent,
     scale: f64,
     modifiers: winit::event::Modifiers,
-) {
-    let mut doc = AutoCommit::new();
+    doc: &mut AutoCommit,
+) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
+        return false;
     };
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
-    input.handle_event(
+    widget.handle_event(
         event,
         &mut ui::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: doc,
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -444,6 +448,7 @@ pub(crate) fn drive_text_input(
             taffy: &taffy,
         },
     );
+    handled
 }
 
 #[cfg(test)]

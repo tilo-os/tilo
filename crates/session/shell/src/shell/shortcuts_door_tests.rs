@@ -914,6 +914,12 @@ fn press(
     event.location = winit::keyboard::KeyLocation::Standard;
     event.state = winit::event::ElementState::Pressed;
     event.repeat = false;
+    // A plain character key also carries the text it types.
+    if modifiers.is_empty()
+        && let winit::keyboard::Key::Character(text) = &event.logical_key
+    {
+        event.text = Some(text.clone());
+    }
     let event = winit::event::WindowEvent::KeyboardInput {
         device_id: unsafe { std::mem::zeroed() },
         event,
@@ -2072,11 +2078,12 @@ fn a_question_answered_in_the_sheet_is_bound_and_a_secret_stays_hidden() {
         "Publishing token"
     );
     type_text(&mut host, "s3");
-    assert_eq!(
-        host.sheet_field_display().as_deref(),
-        Some("••"),
-        "a secret answer is masked on screen"
+    let field = host.sheet_field().expect("the answer field");
+    assert!(
+        field.is_secret() && !field.is_revealed(),
+        "a secret answer is hidden on screen"
     );
+    assert_eq!(field.value(), "s3");
     press_named(&mut host, winit::keyboard::NamedKey::Enter);
     drop(host);
 

@@ -19,6 +19,8 @@ use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 pub const MAX_SIDE: f64 = 8192.0; // a document limit in artwork units, not on-screen spacing
 /// The most marks one action may add.
 pub const MAX_MARKS_PER_ACTION: usize = 2000;
+/// The most marks an artwork opened from a file may hold.
+pub const MAX_MARKS: usize = 100_000;
 /// The most points one stroke or outline may have.
 pub const MAX_POINTS: usize = 4096;
 
@@ -442,6 +444,37 @@ pub struct MarkBody {
     pub area: String,
 }
 
+impl Mark {
+    /// What is stored of the mark besides its id, layer and place.
+    pub fn body(&self) -> MarkBody {
+        MarkBody {
+            name: self.name.clone(),
+            shape: self.shape.clone(),
+            style: self.style.clone(),
+            transform: self.transform,
+            group: self.group.clone(),
+            clip: self.clip.clone(),
+            area: self.area.clone(),
+        }
+    }
+
+    /// The mark `id` on `layer` at `order`, made of `body`.
+    pub fn of_body(id: String, layer: String, order: String, body: MarkBody) -> Self {
+        Self {
+            id,
+            layer,
+            order,
+            name: body.name,
+            shape: body.shape,
+            style: body.style,
+            transform: body.transform,
+            group: body.group,
+            clip: body.clip,
+            area: body.area,
+        }
+    }
+}
+
 /// The whole artwork as views and actions read it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Artwork {
@@ -538,6 +571,46 @@ impl Artwork {
         let clips = self.clips_of(mark);
         (clips.is_empty() || clips.iter().any(|clip| clip.hit(point)))
             && mark.area().is_none_or(|area| area.contains(point))
+    }
+
+    /// What a click at `point` picks: the topmost mark under it, an eraser
+    /// included. An eraser shows no ink of its own, so only the pointer's
+    /// tools that outline erasers pick them; [`Self::mark_at`] passes
+    /// through them.
+    pub fn pick_at(&self, point: Point) -> Option<&Mark> {
+        self.marks.iter().rev().find(|mark| {
+            self.layer(&mark.layer)
+                .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
+                && (mark.inked() || mark.erases())
+                && mark.hit(point)
+                && self.clipped_in(mark, point)
+        })
+    }
+
+    /// The erasers on shown layers, bottom to top: what the eraser and
+    /// selection tools outline.
+    pub fn erasers(&self) -> impl Iterator<Item = &Mark> + '_ {
+        self.marks.iter().filter(|mark| {
+            mark.erases()
+                && self
+                    .layer(&mark.layer)
+                    .is_some_and(|layer| layer.visible && !layer.is_mask())
+        })
+    }
+
+    /// The marks beneath eraser `eraser` on its layer that it takes paint
+    /// off: those its reach overlaps.
+    pub fn erased_by<'a>(&'a self, eraser: &'a Mark) -> impl Iterator<Item = &'a Mark> + 'a {
+        let reach = eraser.bounds();
+        self.marks
+            .iter()
+            .take_while(move |mark| mark.id != eraser.id)
+            .filter(move |mark| {
+                mark.layer == eraser.layer
+                    && !mark.erases()
+                    && mark.inked()
+                    && self.visible_bounds(mark).intersect(reach).area() > 0.0
+            })
     }
 
     /// What of `mark` can show: its bounds, cut to its clip's.
@@ -1339,7 +1412,7 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if self.erases() || !self.bounds().contains(point) {
+        if !self.bounds().contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;

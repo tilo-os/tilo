@@ -187,6 +187,16 @@ impl RuntimeServices for Standalone {
         &self.room
     }
 
+    fn mcp_room(&self, requested: Option<&str>) -> io::Result<String> {
+        let room = requested.unwrap_or(&self.room);
+        if room == self.room {
+            return Ok(self.room.clone());
+        }
+        self.joined
+            .action_room(&self.actor, room)
+            .map_err(|error| io::Error::new(io::ErrorKind::PermissionDenied, error))
+    }
+
     fn actor(&self) -> &str {
         &self.actor
     }
@@ -194,7 +204,11 @@ impl RuntimeServices for Standalone {
     fn action_host(&self) -> io::Result<RuntimeActionHost> {
         self.broker
             .app_action_broker()
-            .map(RuntimeActionHost)
+            .map(|broker| RuntimeActionHost {
+                broker,
+                room: self.room.clone(),
+                joined: Arc::clone(&self.joined),
+            })
             .ok_or_else(|| io::Error::other("runtime action broker is unavailable"))
     }
 
@@ -235,7 +249,23 @@ impl RuntimeServices for Standalone {
 /// The broker's action door as one more local caller, standing for no app
 /// connection. Its callers act from this foreign device.
 #[derive(Clone)]
-pub struct RuntimeActionHost(AppActionBroker);
+pub struct RuntimeActionHost {
+    broker: AppActionBroker,
+    room: String,
+    joined: Arc<Joined>,
+}
+
+impl RuntimeActionHost {
+    fn admitted(&self, caller: &Caller) -> bool {
+        let Some(room) = caller.room().filter(|room| *room != self.room) else {
+            return true;
+        };
+        let tilo_actions::remote::CallerPrincipal::Person(actor) = caller.principal() else {
+            return false;
+        };
+        self.joined.action_room(actor, room).is_ok()
+    }
+}
 
 fn on_this_device(caller: &Caller) -> Caller {
     caller.clone().from_foreign_device(true)
@@ -247,7 +277,12 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        self.0.state().action_query(&on_this_device(caller), &query)
+        if !self.admitted(caller) {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        self.broker
+            .state()
+            .action_query(&on_this_device(caller), &query)
     }
 
     fn invoke(
@@ -255,13 +290,21 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        self.0
+        if !self.admitted(caller) {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
+        self.broker
             .state()
             .action_invoke(&on_this_device(caller), None, None, &request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.0.state().action_observe(&on_this_device(caller), id)
+        if !self.admitted(caller) {
+            return None;
+        }
+        self.broker
+            .state()
+            .action_observe(&on_this_device(caller), id)
     }
 
     fn cancel(
@@ -269,7 +312,12 @@ impl ActionHost for RuntimeActionHost {
         caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Result<(), ActionHostError> {
-        self.0.state().action_cancel(&on_this_device(caller), id)
+        if !self.admitted(caller) {
+            return Err(ActionHostError::UnknownInvocation);
+        }
+        self.broker
+            .state()
+            .action_cancel(&on_this_device(caller), id)
     }
 }
 

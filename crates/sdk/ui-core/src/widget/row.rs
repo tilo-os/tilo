@@ -80,6 +80,8 @@ pub struct Row {
     cache_rect: vello::kurbo::Rect,
     cache_present: bool,
     descendant_caches_released: bool,
+    /// Whether the cached subtree shows a secret, replayed with the cache.
+    cache_shows_secret: bool,
 }
 
 impl Default for Row {
@@ -110,6 +112,7 @@ impl Row {
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
             descendant_caches_released: false,
+            cache_shows_secret: false,
         }
     }
 
@@ -493,6 +496,7 @@ impl Widget for Row {
             let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
+            let secrets = crate::secret_paint::SecretPaint::begin();
             for child in &mut self.children {
                 child.draw_with_presence(
                     &mut local,
@@ -503,6 +507,7 @@ impl Widget for Row {
                     permissions,
                 );
             }
+            self.cache_shows_secret = secrets.finish();
             scene.append(&local, Some(transform));
             self.subtree_cache = local;
             self.cache_rect = self.rect;
@@ -513,6 +518,9 @@ impl Widget for Row {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
             scene.append(&self.subtree_cache, Some(translated(transform, dx, dy)));
+            if self.cache_shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
             if !self.descendant_caches_released {
                 for child in &mut self.children {
                     child.release_scene_cache();

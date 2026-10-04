@@ -18,14 +18,21 @@
 //! them inside its own namespace (a copied-up `/usr/lib64` is mode 0555), so
 //! they are added back there and confer nothing outside.
 //!
-//! Package downloads are the build's only traffic. By default it shares the
-//! caller's network; a [`BuildEgress`] replaces that with a gated one that
-//! allows the hosts the runtime's repositories name ([`repo_hosts`]).
+//! What the sandbox may reach is its [`Network`]: for a build, the
+//! runtime's package repositories and nothing else.
 
 use std::ffi::OsString;
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+
+use crate::network::Network;
 
 /// Top-level entries of the runtime tree that are mounted rather than
 /// linked. Everything else at the top that is a symlink (`bin -> usr/bin`) is
@@ -42,49 +49,6 @@ const MERGED_USR: &[(&str, &str)] = &[
 
 /// The subtrees the upper covers; a tool's files live under these.
 pub const UPPER_SUBTREES: &[&str] = &["usr", "etc"];
-
-/// A network for builds other than the caller's: what the sandbox gets in
-/// place of `--share-net`, given the hosts the runtime's repositories name.
-pub trait BuildEgress: Send + Sync + std::fmt::Debug {
-    /// bwrap arguments that give the sandbox its network (`--unshare-net`
-    /// and whatever brings the gate in), and the environment it needs.
-    fn sandbox_args(&self, hosts: &[String]) -> Vec<OsString>;
-}
-
-/// The hosts the runtime's dnf repositories name (`baseurl`, `metalink`,
-/// `mirrorlist`), sorted: what a build's egress must allow. The mirrors a
-/// metalink hands out are not known in advance.
-pub fn repo_hosts(runtime: &Path) -> Vec<String> {
-    let mut hosts = Vec::new();
-    let Ok(dir) = std::fs::read_dir(runtime.join("etc/yum.repos.d")) else {
-        return hosts;
-    };
-    for entry in dir.flatten() {
-        let Ok(text) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        for line in text.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            if !matches!(key.trim(), "baseurl" | "metalink" | "mirrorlist") {
-                continue;
-            }
-            for url in value.split_whitespace() {
-                if let Some(host) = url
-                    .split_once("://")
-                    .and_then(|(_, rest)| rest.split(['/', ':', '?']).next())
-                    .filter(|h| !h.is_empty())
-                {
-                    hosts.push(host.to_owned());
-                }
-            }
-        }
-    }
-    hosts.sort();
-    hosts.dedup();
-    hosts
-}
 
 /// Who the build's root is, outside its namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +100,12 @@ pub enum SandboxError {
     },
     #[error("running bwrap: {0}")]
     Spawn(#[from] bounded_command::Error),
+    /// The build's network could not be set up; the build did not run.
+    #[error("the build's network could not be set up, so it did not run: {0}")]
+    Egress(String),
+    /// This platform cannot enforce the requested gated network.
+    #[error("gated build networking is unsupported on this platform; the build did not run")]
+    UnsupportedGatedNetwork,
 }
 
 /// Captured result of one command inside the sandbox.
@@ -156,7 +126,7 @@ pub struct BuildSandbox {
     dnf_cache: Option<PathBuf>,
     bwrap: PathBuf,
     identity: Identity,
-    egress: Option<std::sync::Arc<dyn BuildEgress>>,
+    network: Network,
 }
 
 impl BuildSandbox {
@@ -193,7 +163,7 @@ impl BuildSandbox {
             dnf_cache: None,
             bwrap: PathBuf::from("bwrap"),
             identity: Identity::detect(),
-            egress: None,
+            network: Network::Offline,
         })
     }
 
@@ -212,10 +182,10 @@ impl BuildSandbox {
         self
     }
 
-    /// Give the sandbox `egress`'s network instead of the caller's.
+    /// What the sandbox may reach; [`Network::Offline`] unless set.
     #[must_use]
-    pub fn with_egress(mut self, egress: std::sync::Arc<dyn BuildEgress>) -> Self {
-        self.egress = Some(egress);
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = network;
         self
     }
 
@@ -241,7 +211,11 @@ impl BuildSandbox {
     ///
     /// [`SandboxError::Io`] when the runtime's top level can't be listed or
     /// the dnf cache can't be created.
-    pub fn bwrap_args(&self, program: &[&str]) -> Result<Vec<OsString>, SandboxError> {
+    pub fn bwrap_args(
+        &self,
+        program: &[&str],
+        network: &[OsString],
+    ) -> Result<Vec<OsString>, SandboxError> {
         let mut args: Vec<OsString> = Vec::new();
         let mut extend = |items: &[&dyn AsRef<std::ffi::OsStr>]| {
             for item in items {
@@ -262,13 +236,6 @@ impl BuildSandbox {
             &"--new-session",
             &"--clearenv",
         ]);
-        let network = match &self.egress {
-            Some(egress) => egress.sandbox_args(&repo_hosts(&self.runtime)),
-            None => vec!["--share-net".into()],
-        };
-        for arg in &network {
-            extend(&[arg]);
-        }
         for sub in UPPER_SUBTREES {
             let lower = self.runtime.join(sub);
             if !lower.is_dir() {
@@ -302,12 +269,11 @@ impl BuildSandbox {
             })?;
             extend(&[&"--bind", cache, &"/var/cache/libdnf5"]);
         }
-        // Name resolution for the downloads. The mount point it creates in
-        // the upper is dropped by the seal.
+        // After the mounts: the network's resolv.conf binds over the overlay.
+        for arg in network {
+            extend(&[arg]);
+        }
         extend(&[
-            &"--ro-bind-try",
-            &"/etc/resolv.conf",
-            &"/etc/resolv.conf",
             &"--setenv",
             &"PATH",
             &"/usr/local/bin:/usr/bin:/usr/sbin",
@@ -339,12 +305,31 @@ impl BuildSandbox {
     /// output ceiling or the deadline. A command that runs and fails is an
     /// `Ok` with `success == false`.
     pub fn run(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
+        self.run_on(&self.network, argv, timeout)
+    }
+
+    /// [`Self::run`] with no network, whatever the sandbox's is: for
+    /// queries of the rpm database.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::run`].
+    pub fn run_offline(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
+        self.run_on(&Network::Offline, argv, timeout)
+    }
+
+    fn run_on(
+        &self,
+        network: &Network,
+        argv: &[&str],
+        timeout: Duration,
+    ) -> Result<Ran, SandboxError> {
         // The previous run's overlay can outlive its process briefly while
         // the kernel tears its mount namespace down; until then the upper
         // is busy. Wait that out rather than fail the build.
         let mut attempts = 0u32;
         loop {
-            let ran = self.run_once(argv, timeout)?;
+            let ran = self.run_once(network, argv, timeout)?;
             attempts = attempts.saturating_add(1);
             if ran.success || !overlay_busy(&ran.stderr) || attempts >= 20 {
                 return Ok(ran);
@@ -353,23 +338,55 @@ impl BuildSandbox {
         }
     }
 
-    fn run_once(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
-        let mut command = if self.identity == Identity::SubordinateIds {
+    fn command(&self) -> Command {
+        if self.identity == Identity::SubordinateIds {
             let mut command = Command::new("unshare");
             command.args(UNSHARE_SUBORDINATE).arg(&self.bwrap);
             command
         } else {
             Command::new(&self.bwrap)
-        };
-        command.args(self.bwrap_args(argv)?);
+        }
+    }
+
+    fn run_once(
+        &self,
+        network: &Network,
+        argv: &[&str],
+        timeout: Duration,
+    ) -> Result<Ran, SandboxError> {
         tracing::debug!(?argv, runtime = %self.runtime.display(), "build sandbox");
-        let out = bounded_command::run_prepared_with_limits(
-            command,
-            None,
-            OUTPUT_LIMIT,
-            OUTPUT_LIMIT,
-            timeout,
-        );
+        let out = match network {
+            #[cfg(not(target_os = "linux"))]
+            Network::Gated { .. } => return Err(SandboxError::UnsupportedGatedNetwork),
+            #[cfg(target_os = "linux")]
+            Network::Gated { policy, options } => self.run_gated(argv, policy, options, timeout),
+            Network::Offline | Network::Host => {
+                // Name resolution for the caller's network; the mount point
+                // it creates in the upper is dropped by the seal.
+                let net_args: Vec<OsString> = if matches!(network, Network::Host) {
+                    [
+                        "--share-net",
+                        "--ro-bind-try",
+                        "/etc/resolv.conf",
+                        "/etc/resolv.conf",
+                    ]
+                    .map(OsString::from)
+                    .to_vec()
+                } else {
+                    vec!["--unshare-net".into()]
+                };
+                let mut command = self.command();
+                command.args(self.bwrap_args(argv, &net_args)?);
+                bounded_command::run_prepared_with_limits(
+                    command,
+                    None,
+                    OUTPUT_LIMIT,
+                    OUTPUT_LIMIT,
+                    timeout,
+                )
+                .map_err(SandboxError::from)
+            }
+        };
         self.reclaim()?;
         let out = out?;
         Ok(Ran {
@@ -378,6 +395,106 @@ impl BuildSandbox {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
+    }
+
+    /// Run with gated egress. bwrap makes the network namespace and stops
+    /// before the program (`--block-fd`); the egress is attached to that
+    /// namespace — stub, filter, then `pasta` — and only then is bwrap let
+    /// go. Any failure before that kills bwrap: the program never runs
+    /// with a network the policy didn't shape.
+    #[cfg(target_os = "linux")]
+    fn run_gated(
+        &self,
+        argv: &[&str],
+        policy: &tilo_egress::EgressPolicy,
+        options: &tilo_egress::EgressOptions,
+        timeout: Duration,
+    ) -> Result<bounded_command::Output, SandboxError> {
+        let io = |path: &Path| {
+            let path = path.to_owned();
+            move |source| SandboxError::Io { path, source }
+        };
+        let resolv = self.scratch.join("resolv.conf");
+        std::fs::write(&resolv, tilo_egress::RESOLV_CONF).map_err(io(&resolv))?;
+        let (info_read, info_write) = pipe().map_err(io(&self.scratch))?;
+        let (block_read, block_write) = pipe().map_err(io(&self.scratch))?;
+        let (info_fd, block_fd) = (info_write.as_raw_fd(), block_read.as_raw_fd());
+        let network: Vec<OsString> = vec![
+            "--unshare-net".into(),
+            "--ro-bind".into(),
+            resolv.into_os_string(),
+            "/etc/resolv.conf".into(),
+            "--info-fd".into(),
+            info_fd.to_string().into(),
+            "--block-fd".into(),
+            block_fd.to_string().into(),
+        ];
+        let mut command = self.command();
+        command.args(self.bwrap_args(argv, &network)?);
+        // SAFETY: fcntl is async-signal-safe; the descriptors are open (the
+        // pipes outlive the spawn) and only lose close-on-exec in the child.
+        unsafe {
+            command.pre_exec(move || {
+                for fd in [info_fd, block_fd] {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let mut child = bounded_command::spawn_prepared(command, None, OUTPUT_LIMIT, timeout)?;
+        let pid = match child_pid(&info_read, &mut child) {
+            Ok(pid) => pid,
+            // bwrap ended before it was ready: its own words say why.
+            Err(ChildPid::Exited(out)) => return out.map_err(SandboxError::from),
+            Err(ChildPid::Failed(reason)) => return Err(SandboxError::Egress(reason)),
+        };
+        // Both ends the child holds are in it by now.
+        drop((info_write, block_read));
+        let attached = tilo_egress::Netns::of_process(pid)
+            .map_err(|e| format!("the sandbox's namespaces: {e}"))
+            .and_then(|netns| {
+                tilo_egress::spawn_egress(&netns, policy.clone(), options)
+                    .map(|egress| (netns, egress))
+                    .map_err(|e| e.to_string())
+            });
+        let (netns, egress) = match attached {
+            Ok(attached) => attached,
+            Err(reason) => {
+                // A sandbox that failed to set itself up (its overlay still
+                // busy, say) is gone before egress can attach; its own error
+                // is the one to report, and the one `run` retries on.
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_secs(2))
+                    .unwrap_or_else(Instant::now);
+                while Instant::now() < deadline {
+                    match child.try_wait() {
+                        Some(Ok(out)) if !out.status.success() => return Ok(out),
+                        Some(_) => break,
+                        None => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                return Err(SandboxError::Egress(reason));
+            }
+        };
+        // SAFETY: a one-byte write to a pipe this function owns.
+        let released =
+            unsafe { libc::write(block_write.as_raw_fd(), b"x".as_ptr().cast(), 1) } == 1;
+        drop(block_write);
+        if !released {
+            return Err(SandboxError::Egress("could not release the sandbox".into()));
+        }
+        let out = loop {
+            if let Some(out) = child.try_wait() {
+                break out;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        drop(egress);
+        drop(netns);
+        out.map_err(SandboxError::from)
     }
 
     /// Give everything in the scratch directory back to the caller: files
@@ -447,10 +564,81 @@ impl BuildSandbox {
     }
 }
 
+/// A close-on-exec pipe: `(read, write)`.
+#[cfg(target_os = "linux")]
+fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds: [RawFd; 2] = [-1, -1];
+    // SAFETY: `fds` is a two-element array, as pipe2 requires.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: pipe2 just returned these two descriptors, owned by no one.
+    Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
+}
+
+#[cfg(target_os = "linux")]
+enum ChildPid {
+    Exited(Result<bounded_command::Output, bounded_command::Error>),
+    Failed(String),
+}
+
+/// Read `"child-pid": N` from bwrap's `--info-fd`, or what happened instead.
+#[cfg(target_os = "linux")]
+fn child_pid(info: &OwnedFd, child: &mut bounded_command::AsyncCommand) -> Result<u32, ChildPid> {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(60))
+        .unwrap_or_else(Instant::now);
+    let mut seen = Vec::new();
+    while Instant::now() < deadline {
+        if let Some(pid) = parse_child_pid(&seen) {
+            return Ok(pid);
+        }
+        if let Some(out) = child.try_wait() {
+            return Err(ChildPid::Exited(out));
+        }
+        let mut poll = libc::pollfd {
+            fd: info.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd; a bounded wait.
+        let ready = unsafe { libc::poll(&raw mut poll, 1, 50) };
+        if ready > 0 {
+            let mut buf = [0u8; 256];
+            // SAFETY: reading into a live local buffer from an open pipe.
+            let n = unsafe { libc::read(info.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            if let Ok(n) = usize::try_from(n) {
+                seen.extend_from_slice(buf.get(..n).unwrap_or_default());
+            }
+        }
+    }
+    Err(ChildPid::Failed(
+        "the sandbox never reported its process".into(),
+    ))
+}
+
+/// bwrap's info is JSON: `{ "child-pid": 1234 }`.
+#[cfg(any(target_os = "linux", test))]
+fn parse_child_pid(info: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(info).ok()?;
+    let rest = text.split_once("\"child-pid\"")?.1;
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    // A number is complete once something follows it.
+    (rest.len() > digits.len())
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
 /// Whether this host can run a build sandbox: bwrap is present and may
 /// create a user namespace with an overlay. A cheap probe, for callers and
 /// tests that should skip rather than fail where it can't.
 pub fn available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(probe_available)
+}
+
+fn probe_available() -> bool {
     let probe = std::env::temp_dir().join(format!("tilo-env-tools-probe-{}", std::process::id()));
     let ok = (|| {
         for side in ["lower", "upper", "work"] {
@@ -515,30 +703,53 @@ pub fn remove_tree(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
-    fn repo_hosts_are_the_hosts_the_repositories_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let repos = dir.path().join("etc/yum.repos.d");
-        std::fs::create_dir_all(&repos).unwrap();
+    fn gated_builds_are_rejected_before_spawning_on_unsupported_platforms() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use tilo_egress::{EgressOptions, EgressPolicy};
+
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join("runtime");
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir_all(runtime.join("usr")).unwrap();
+        let bwrap = root.path().join("bwrap");
+        // Any attempted spawn, including a host-network fallback, leaves a marker.
         std::fs::write(
-            repos.join("fedora.repo"),
-            "[fedora]\nmetalink=https://mirrors.fedoraproject.org/metalink?repo=fedora-44\n\
-             #baseurl=http://commented.example/\n",
+            &bwrap,
+            "#!/bin/sh\nprintf started > \"$0.started\"\nexit 0\n",
         )
         .unwrap();
-        std::fs::write(
-            repos.join("local.repo"),
-            "[a]\nbaseurl = https://dl.example.org:8443/a/ http://mirror.example.net/b\n\
-             [b]\nbaseurl=file:///repo\n",
-        )
-        .unwrap();
+        std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        for policy in [
+            EgressPolicy::none(),
+            EgressPolicy::from_grants(["packages.example.test"]),
+            EgressPolicy::Any,
+        ] {
+            let sandbox = BuildSandbox::create(&runtime, &scratch)
+                .unwrap()
+                .with_identity(Identity::CallerOnly)
+                .with_bwrap(bwrap.clone())
+                .with_network(Network::Gated {
+                    policy,
+                    options: EgressOptions::from_host(&runtime),
+                });
+            let error = sandbox.run(&["true"], Duration::from_secs(1)).unwrap_err();
+            assert!(matches!(error, SandboxError::UnsupportedGatedNetwork));
+            assert!(!root.path().join("bwrap.started").exists());
+            assert!(!scratch.join("resolv.conf").exists());
+        }
+    }
+
+    #[test]
+    fn the_child_pid_is_read_once_it_is_complete() {
+        assert_eq!(parse_child_pid(b"{\n    \"child-pid\": 4242"), None);
         assert_eq!(
-            repo_hosts(dir.path()),
-            [
-                "dl.example.org",
-                "mirror.example.net",
-                "mirrors.fedoraproject.org"
-            ]
+            parse_child_pid(b"{\n    \"child-pid\": 4242\n}\n"),
+            Some(4242)
         );
+        assert_eq!(parse_child_pid(b"{ \"child-pid\": 7,"), Some(7));
+        assert_eq!(parse_child_pid(b"garbage"), None);
     }
 }

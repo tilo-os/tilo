@@ -86,7 +86,8 @@
 //!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
 //!   it, a minted one) and which of the resource's actions the launch takes
 //!   there ([`ResourceApp::launch`], through the same door as every
-//!   control). [`ResourceApp::OPENS`] names the media types it is handed and
+//!   control), or which of its effects, for a launch that shows something
+//!   (a link to one item) rather than editing ([`Invoke::effect`](tilo_resource::Invoke::effect)). [`ResourceApp::OPENS`] names the media types it is handed and
 //!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
 //!   binary runs instead of a window (`--emit-photos DIR`) is a
 //!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
@@ -138,7 +139,20 @@
 //!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
 //!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
 //!   finishes on the UI thread, changing the document with ordinary actions
-//!   and answering its caller. Effects never run in History mode.
+//!   and answering its caller. Effects never run in History mode. A variant
+//!   that only changes what its caller sees (open, reveal, show) is
+//!   `#[effect(view)]`, published as a View operation and answered by the
+//!   same handler.
+//! * **Operations on one item** — open *this* snippet, reveal *this* tag,
+//!   connect *this* connection, run *this* saved query — are effects bound
+//!   to the item: the resource's `children` carry
+//!   `.with_action(MyEffect::Open { id }.bound())`, a live row
+//!   [`LiveRow::effect`]. The palette, an agent or a script invokes it on
+//!   the item through the same door as every other action, and the handler
+//!   of `MyEffect` receives that value. An effect only ever offered this way
+//!   is `#[effect(row)]`, so the resource does not also offer it with an id
+//!   to type. No view or surface answers a raw `Widget::start_operation`
+//!   for it.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in

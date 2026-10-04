@@ -44,6 +44,10 @@ use zeroize::Zeroize;
 mod preparation;
 use preparation::Preparation;
 
+#[path = "text_input_reveal.rs"]
+mod reveal;
+use reveal::RevealToggle;
+
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,8 +317,12 @@ pub struct TextInput {
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
     submit_requested: bool,
-    /// The plaintext still never reaches the a11y tree or `text_review`.
-    reveal: bool,
+    /// Trailing show/hide control of a single-line secret field; it owns
+    /// the reveal state. The plaintext still never reaches the a11y tree or
+    /// `text_review`.
+    reveal: RevealToggle,
+    /// The control's layout node while this field is in a layout tree.
+    reveal_node: Option<NodeId>,
     /// Rebuilt by each `draw`; empty in single-line mode.
     lines: Vec<VisualLine>,
     /// Preserved across consecutive `Up`/`Down`; reset on any other move.
@@ -482,7 +490,8 @@ impl TextInput {
             multiline_shaped: false,
             enter_submits: false,
             submit_requested: false,
-            reveal: false,
+            reveal: RevealToggle::new(),
+            reveal_node: None,
             lines: Vec::new(),
             goal_x: None,
             scroll_y: 0.0,
@@ -1115,6 +1124,7 @@ impl TextInput {
         }
         if self.secret {
             self.text.zeroize();
+            self.last_notified_text.zeroize();
         }
         self.text = s.to_string();
         self.selection_anchor = None;
@@ -1130,6 +1140,12 @@ impl TextInput {
 
     pub fn value(&self) -> &str {
         &self.text
+    }
+
+    /// Whether an IME candidate is displayed but not yet committed as text.
+    /// Composite editors must leave candidate-selection keys to the IME.
+    pub fn is_composing(&self) -> bool {
+        !self.preedit.is_empty()
     }
 
     /// Register an app-local callback for committed user edits.
@@ -2637,6 +2653,7 @@ impl TextInput {
         self.single_origin.y += rect.y0 - self.rect.y0;
         self.rect = rect;
         self.refresh_multiline_origin();
+        self.refresh_reveal_control();
     }
 
     fn refresh_multiline_origin(&mut self) {
@@ -2672,12 +2689,13 @@ impl TextInput {
 
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
-        self.id = id.to_string();
+        self.set_id(id);
         self
     }
 
     pub(crate) fn set_id(&mut self, id: &str) {
         self.id = id.to_string();
+        self.reveal.set_field_id(id);
     }
 
     /// Bind this input to one root-level document string.
@@ -2723,26 +2741,56 @@ impl TextInput {
         self.secret
     }
 
-    /// Only meaningful together with `with_secret`.
+    /// Only meaningful together with `with_secret`. Secret fields start
+    /// hidden; a single-line one also offers its own show/hide control.
     #[must_use]
     pub fn with_reveal(mut self, on: bool) -> Self {
-        self.reveal = on;
+        self.reveal.set_revealed(on);
         self
     }
 
     pub fn set_reveal(&mut self, on: bool) {
-        self.reveal = on;
+        self.reveal.set_revealed(on);
     }
 
     /// No-op on a non-secret field.
     pub fn toggle_reveal(&mut self) {
         if self.secret {
-            self.reveal = !self.reveal;
+            self.reveal.set_revealed(!self.reveal.revealed());
         }
     }
 
     pub fn is_revealed(&self) -> bool {
-        self.reveal
+        self.reveal.revealed()
+    }
+
+    /// Whether this field paints and offers the trailing show/hide control.
+    pub fn has_reveal_control(&self) -> bool {
+        self.secret && !self.multiline
+    }
+
+    /// Where the show/hide control sits, or `None` without one.
+    pub fn reveal_control_rect(&self) -> Option<Rect> {
+        self.has_reveal_control().then(|| self.reveal.get_rect())
+    }
+
+    /// Room the trailing edge keeps free of text: the show/hide control when
+    /// present, otherwise the same padding as the leading edge.
+    fn trailing_text_inset(&self, padding_x: f64) -> f64 {
+        if self.has_reveal_control() {
+            RevealToggle::width_for(self.rect.height())
+        } else {
+            padding_x
+        }
+    }
+
+    fn refresh_reveal_control(&mut self) {
+        self.reveal.set_enabled(!self.effectively_disabled());
+        if self.has_reveal_control() {
+            self.reveal.place(self.rect);
+        } else {
+            self.reveal.set_focus(false);
+        }
     }
 
     #[must_use]
@@ -2901,7 +2949,7 @@ impl TextInput {
 
     #[must_use]
     pub fn disabled(mut self, on: bool) -> Self {
-        self.disabled = on;
+        self.set_disabled(on);
         self
     }
 
@@ -2912,6 +2960,7 @@ impl TextInput {
             self.is_dragging = false;
             self.is_hovered = false;
         }
+        self.reveal.set_enabled(!self.effectively_disabled());
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -2946,7 +2995,7 @@ impl TextInput {
     }
 
     fn masked(&self) -> bool {
-        self.secret && !self.reveal
+        self.secret && !self.reveal.revealed()
     }
 
     /// One bullet per *character* of the real text when masked.
@@ -3244,14 +3293,16 @@ impl TextInput {
         self.cursor_from_x(logical_x)
     }
 
+    /// A secret refuses Copy and Cut, shown or not, as password fields do
+    /// everywhere: its value never leaves the field.
     fn do_copy(&self) {
-        if let Some(s) = self.selected_str() {
+        if let Some(s) = self.shareable_selection() {
             clipboard_copy(s);
         }
     }
 
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        if let Some(s) = self.selected_str() {
+        if let Some(s) = self.shareable_selection() {
             let owned = s.to_string();
             // Delete only once the text is on a clipboard; a failed copy
             // must not lose the selection.
@@ -3675,7 +3726,7 @@ impl TextInput {
             self.caret_affinity = TextAffinity::Before;
         }
 
-        let has_sel = self.has_selection();
+        let can_share = self.shareable_selection().is_some();
         let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
 
         let mut menu = ContextMenu::new();
@@ -3718,7 +3769,7 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        if has_sel && !self.text_actions.is_empty() {
+        if can_share && !self.text_actions.is_empty() {
             for (index, action) in self.text_actions.iter().enumerate() {
                 menu.push(MenuItem::action(action.label.clone(), || {}));
                 actions.push(Some(CtxAction::TextAction(index)));
@@ -3726,7 +3777,7 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        if has_sel {
+        if can_share {
             menu.push(MenuItem::action("Cut", || {}));
             actions.push(Some(CtxAction::Cut));
             menu.push(MenuItem::action("Copy", || {}));
@@ -3799,10 +3850,11 @@ impl TextInput {
                 let _ = self.undo_last_autocorrection(false, state, obj_id);
             }
             CtxAction::TextAction(index) => {
-                if let (Some(action), Some((start, end))) =
-                    (self.text_actions.get(index), self.selection_range())
-                    && let Some(selected) = self.text.get(start..end)
-                {
+                if let (Some(action), Some((start, end)), Some(selected)) = (
+                    self.text_actions.get(index),
+                    self.selection_range(),
+                    self.shareable_selection(),
+                ) {
                     self.pending_text_action = Some(TextActionRequest {
                         id: action.id.clone(),
                         text: selected.to_string(),
@@ -3897,6 +3949,7 @@ impl Drop for TextInput {
     fn drop(&mut self) {
         if self.secret {
             self.text.zeroize();
+            self.last_notified_text.zeroize();
             self.preedit.zeroize();
         }
     }
@@ -4001,13 +4054,22 @@ impl Widget for TextInput {
             let band = band as f32;
             Dimension::length(band.max(self.interaction.minimum_target()))
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height,
             },
             ..Default::default()
-        });
+        };
+        self.refresh_reveal_control();
+        let node = if self.has_reveal_control() {
+            let reveal = self.reveal.build_layout(taffy, theme, node_map);
+            self.reveal_node = Some(reveal);
+            taffy.parent_node(style, &[reveal])
+        } else {
+            self.reveal_node = None;
+            taffy.leaf_node(style)
+        };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -4134,10 +4196,13 @@ impl Widget for TextInput {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
         self.gutter_text_scale = f64::from(theme.text_scale);
+        if self.secret && !self.text.is_empty() {
+            crate::secret_paint::note_secret_painted();
+        }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
@@ -4180,12 +4245,20 @@ impl Widget for TextInput {
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
         self.update_single_line_scroll(cursor_x_offset, padding_x, theme.caret_width);
 
+        // Text never runs under the show/hide control.
+        let text_clip = if self.has_reveal_control() {
+            let mut clip = self.rect;
+            clip.x1 = (clip.x1 - RevealToggle::width_for(clip.height())).max(clip.x0);
+            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.md))
+        } else {
+            shape
+        };
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             BlendMode::default(),
             1.0,
             transform,
-            &shape,
+            &text_clip,
         );
 
         self.draw_single_line_decorations(scene, transform, theme, true);
@@ -4202,6 +4275,11 @@ impl Widget for TextInput {
         }
 
         scene.pop_layer();
+        if self.has_reveal_control() {
+            self.refresh_reveal_control();
+            self.reveal
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
         self.draw_spelling(scene, transform, theme);
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
@@ -4213,6 +4291,19 @@ impl Widget for TextInput {
             return;
         }
         self.clamp_to_text();
+
+        // The show/hide control sees input first; a press it takes never
+        // places the caret or moves focus.
+        if self.has_reveal_control() {
+            self.refresh_reveal_control();
+            let node = self.reveal_node.unwrap_or(ctx.node_id);
+            let already_handled = *ctx.handled;
+            self.reveal
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled && !already_handled {
+                return;
+            }
+        }
 
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
@@ -4333,11 +4424,51 @@ impl Widget for TextInput {
 
     /// A disabled input claims no cursor and defers to the host default.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if !self.effectively_disabled() && self.rect.contains(point) {
+        if self.has_reveal_control() && self.reveal.contains(point) {
+            Some(winit::window::CursorIcon::Pointer)
+        } else if !self.effectively_disabled() && self.rect.contains(point) {
             Some(winit::window::CursorIcon::Text)
         } else {
             None
         }
+    }
+
+    /// Hosts that embed the field without a layout tree still get the
+    /// show/hide control's tooltip.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if self.has_reveal_control() {
+            self.reveal.tooltip_at(point)
+        } else {
+            None
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.has_reveal_control() {
+            vec![&self.reveal]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.has_reveal_control() {
+            visitor(&self.reveal);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.has_reveal_control() {
+            vec![&mut self.reveal]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Repaints like a leaf; the show/hide control does not make the field a
+    /// container that only redraws for a dirty child.
+    fn needs_redraw(&self) -> bool {
+        true
     }
 
     fn is_focusable(&self) -> bool {
@@ -4760,6 +4891,7 @@ impl crate::widget::controls::ActionControls for TextInput {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
+        self.reveal.set_enabled(!self.effectively_disabled());
     }
 }
 
@@ -4948,7 +5080,11 @@ impl TextInput {
     ) {
         // Include the caret's painted width, especially for padding-free code
         // lines: putting its left edge on the clip boundary hides it entirely.
-        let visible_width = (self.rect.width() - padding_x * 2.0 - caret_width * 2.0).max(0.0);
+        let visible_width = (self.rect.width()
+            - padding_x
+            - self.trailing_text_inset(padding_x)
+            - caret_width * 2.0)
+            .max(0.0);
         if self.is_focused {
             if cursor_x_offset - self.scroll_x < 0.0 {
                 self.scroll_x = cursor_x_offset;
@@ -5320,12 +5456,14 @@ impl TextInput {
     /// the user dragged across its bullets; middle click may still paste a
     /// primary selection *into* a secret field, matching GTK password inputs.
     fn publish_primary_selection(&self) {
-        if let Some(selected) = self.primary_selection_text() {
+        if let Some(selected) = self.shareable_selection() {
             clipboard_copy_primary(selected);
         }
     }
 
-    fn primary_selection_text(&self) -> Option<&str> {
+    /// The selection as it may leave the field — for the clipboard, the
+    /// primary selection or a host's text action. Never a secret's.
+    fn shareable_selection(&self) -> Option<&str> {
         (!self.secret).then(|| self.selected_str()).flatten()
     }
 

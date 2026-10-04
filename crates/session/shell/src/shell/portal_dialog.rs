@@ -22,9 +22,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use taffy::{Style, TaffyTree};
 use tokio::sync::oneshot;
+use ui::widget::{EventCtx, TextInput, Widget as _};
 use vello::kurbo::Rect;
-use winit::event::Modifiers;
+use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::PhysicalKey;
 
 use crate::portal::desktop_services::{
@@ -1572,15 +1574,6 @@ pub struct DialogLayout {
     pub remember: Option<Rect>,
 }
 
-/// A network-secrets field as drawn: its label and what shows in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecretFieldDisplay {
-    pub label: String,
-    /// The typed value, or bullets for a masked field.
-    pub shown: String,
-    pub focused: bool,
-}
-
 pub struct PortalDialogController {
     queue: PortalDialogQueue,
     active: Option<String>,
@@ -1588,12 +1581,15 @@ pub struct PortalDialogController {
     launcher_name: String,
     launcher_icon: usize,
     launcher_field: usize,
-    /// What has been typed into an authentication sheet. Cleared whenever
-    /// the sheet closes, whichever way.
-    secret: String,
-    /// What has been typed into each field of a network-secrets sheet;
-    /// wiped like `secret`.
-    entries: Vec<String>,
+    /// The authentication sheet's answer field; secret unless PAM echoes.
+    /// Wiped whenever the sheet closes, whichever way.
+    secret: TextInput,
+    /// One field per network-secrets field, masked ones secret; wiped like
+    /// `secret`.
+    entries: Vec<TextInput>,
+    /// A shortcut step's typed answer; secret when the step asks for one.
+    /// Wiped like `secret`.
+    step_field: TextInput,
     /// The focused network-secrets field; one past the last is the
     /// "Remember" row.
     entry_focus: usize,
@@ -1619,8 +1615,9 @@ impl PortalDialogController {
             launcher_name: String::new(),
             launcher_icon: 0,
             launcher_field: 0,
-            secret: String::new(),
+            secret: TextInput::local(),
             entries: Vec::new(),
+            step_field: TextInput::local(),
             entry_focus: 0,
             remember: false,
             entry_error: None,
@@ -1646,8 +1643,22 @@ impl PortalDialogController {
             self.launcher_icon = 0;
             self.launcher_field = 0;
             self.forget_secret();
-            if let Some(DialogView::Authentication { identity, .. }) = self.view() {
-                self.selected = identity;
+            match self.view() {
+                Some(DialogView::Authentication { identity, echo, .. }) => {
+                    self.selected = identity;
+                    self.secret = TextInput::local()
+                        .with_id("portal-authentication-secret")
+                        .with_secret(!echo);
+                }
+                Some(DialogView::ShortcutStep {
+                    field: Some(ShortcutStepField { masked }),
+                    ..
+                }) => {
+                    self.step_field = TextInput::local()
+                        .with_id("portal-shortcut-step-field")
+                        .with_secret(masked);
+                }
+                _ => {}
             }
             if let Some(handle) = self.active.clone() {
                 let (fields, remember) = self.queue.network_fields(&handle);
@@ -1657,7 +1668,18 @@ impl PortalDialogController {
                     .position(|field| field.required && field.initial.is_empty())
                     .or_else(|| fields.iter().position(|field| field.initial.is_empty()))
                     .unwrap_or(0);
-                self.entries = fields.into_iter().map(|field| field.initial).collect();
+                self.entries = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, field)| {
+                        TextInput::local()
+                            .with_id(&format!("portal-network-secret-{index}"))
+                            .with_placeholder(&field.label)
+                            .with_accessible_name(field.label)
+                            .with_secret(field.masked)
+                            .with_initial_value(&field.initial)
+                    })
+                    .collect();
                 self.remember = remember.unwrap_or(false);
             }
             self.launcher_name = self
@@ -1727,7 +1749,7 @@ impl PortalDialogController {
                 view.handle(),
                 ShortcutStepDecision::Confirmed {
                     choice: (!choices.is_empty()).then_some(self.selected),
-                    text: std::mem::take(&mut self.launcher_name),
+                    text: take_text(&mut self.step_field),
                 },
             ),
             DialogView::AppChoice { choices, .. } => choices
@@ -1765,7 +1787,7 @@ impl PortalDialogController {
                 } else {
                     self.selected
                 };
-                let secret = std::mem::take(&mut self.secret);
+                let secret = take_text(&mut self.secret);
                 self.queue.finish_authentication(
                     view.handle(),
                     AuthenticationDecision::Answered { identity, secret },
@@ -1774,7 +1796,8 @@ impl PortalDialogController {
             DialogView::NetworkSecrets { .. } => {
                 let (fields, _) = self.queue.network_fields(view.handle());
                 let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
-                    |(index, (field, value))| {
+                    |(index, (field, entry))| {
+                        let value = entry.value();
                         if value.is_empty() {
                             field.required.then(|| (index, t("portal-secret-required")))
                         } else if !field.rule.accepts(value) {
@@ -1789,9 +1812,10 @@ impl PortalDialogController {
                     self.entry_error = Some(reason);
                     return false;
                 }
-                let values = std::mem::take(&mut self.entries)
-                    .into_iter()
-                    .map(zeroize::Zeroizing::new)
+                let values = self
+                    .entries
+                    .iter()
+                    .map(|entry| zeroize::Zeroizing::new(entry.value().to_owned()))
                     .collect();
                 let remember = self.remember;
                 self.forget_secret();
@@ -2085,30 +2109,127 @@ impl PortalDialogController {
         }
     }
 
-    /// Type into an authentication sheet's secret field. Consumes every
-    /// printable key while such a sheet is up.
-    pub fn edit_secret(&mut self, logical_key: &winit::keyboard::Key) -> bool {
+    /// Hand a key or IME event to the sheet's focused text field. The
+    /// "Remember" row takes only Space, which ticks it. Consumes every
+    /// event while a sheet with text entry is up.
+    pub fn edit_secret(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         use winit::keyboard::{Key, NamedKey};
 
         if self.is_network_secrets() {
             if self.entry_focus >= self.entries.len() {
                 // The "Remember" row: Space toggles it, nothing else types.
-                if matches!(logical_key, Key::Named(NamedKey::Space)) {
+                if matches!(
+                    event,
+                    WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            logical_key: Key::Named(NamedKey::Space),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                        ..
+                    }
+                ) {
                     self.remember = !self.remember;
                 }
                 return true;
             }
             self.entry_error = None;
-            let Some(entry) = self.entries.get_mut(self.entry_focus) else {
-                return true;
-            };
-            edit_text(entry, logical_key);
+            let focus = self.entry_focus;
+            for (index, entry) in self.entries.iter_mut().enumerate() {
+                entry.set_focus(index == focus);
+            }
+            if let Some(entry) = self.entries.get_mut(focus) {
+                forward_to_field(entry, event, ctx);
+            }
             return true;
         }
-        if !self.is_authentication() {
+        let Some(field) = self.text_field_mut() else {
             return false;
+        };
+        field.set_focus(true);
+        forward_to_field(field, event, ctx);
+        true
+    }
+
+    /// The single text field of an authentication sheet or a shortcut
+    /// step, when one is up.
+    fn text_field_mut(&mut self) -> Option<&mut TextInput> {
+        match self.view()? {
+            DialogView::Authentication { .. } => Some(&mut self.secret),
+            DialogView::ShortcutStep { field: Some(_), .. } => Some(&mut self.step_field),
+            _ => None,
         }
-        edit_text(&mut self.secret, logical_key)
+    }
+
+    /// Lay the sheet's text fields out in `layout` and mark the focused
+    /// one; returns them for painting and pointer routing.
+    pub fn place_fields(&mut self, layout: &DialogLayout) -> Vec<&mut TextInput> {
+        let Some(view) = self.view() else {
+            return Vec::new();
+        };
+        let mut placed = Vec::new();
+        match view {
+            DialogView::Authentication { .. } => {
+                if let Some(rect) = layout.secret {
+                    self.secret.apply_layout_external(rect);
+                    self.secret.set_focus(true);
+                    placed.push(&mut self.secret);
+                }
+            }
+            DialogView::ShortcutStep { field: Some(_), .. } => {
+                if let Some(rect) = layout.launcher_name {
+                    self.step_field.apply_layout_external(rect);
+                    self.step_field.set_focus(true);
+                    placed.push(&mut self.step_field);
+                }
+            }
+            DialogView::NetworkSecrets { .. } => {
+                let focus = self.entry_focus;
+                for (index, (entry, rect)) in self
+                    .entries
+                    .iter_mut()
+                    .zip(&layout.secret_fields)
+                    .enumerate()
+                {
+                    entry.apply_layout_external(*rect);
+                    entry.set_focus(index == focus);
+                    placed.push(entry);
+                }
+            }
+            _ => {}
+        }
+        placed
+    }
+
+    /// Route a pointer event to the sheet's text fields, for hover, caret
+    /// placement and their show/hide controls; a press on a field focuses
+    /// it first. `true` when a field used the event.
+    pub fn field_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        layout: &DialogLayout,
+        point: Option<vello::kurbo::Point>,
+    ) -> bool {
+        if let (
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            },
+            Some(point),
+        ) = (event, point)
+            && let Some(index) = layout
+                .secret_fields
+                .iter()
+                .position(|rect| rect.contains(point))
+        {
+            self.entry_focus = index;
+        }
+        let mut used = false;
+        for field in self.place_fields(layout) {
+            used |= forward_to_field(field, event, ctx);
+        }
+        used
     }
 
     pub fn is_authentication(&self) -> bool {
@@ -2119,31 +2240,17 @@ impl PortalDialogController {
         matches!(self.view(), Some(DialogView::NetworkSecrets { .. }))
     }
 
-    /// Whether the sheet up takes typed secrets, so every key belongs to it.
-    pub fn is_secret_entry(&self) -> bool {
-        self.is_authentication() || self.is_network_secrets()
-    }
-
-    /// The fields of a network-secrets sheet as drawn: masked values as
-    /// bullets.
-    pub fn secret_field_displays(&self) -> Vec<SecretFieldDisplay> {
-        let Some(view) = self.view() else {
-            return Vec::new();
-        };
-        view.secret_fields()
-            .iter()
-            .zip(&self.entries)
-            .enumerate()
-            .map(|(index, (field, value))| SecretFieldDisplay {
-                label: field.label.clone(),
-                shown: if field.masked {
-                    "•".repeat(value.chars().count())
-                } else {
-                    value.clone()
-                },
-                focused: index == self.entry_focus,
-            })
-            .collect()
+    /// Whether the sheet up takes typed text — a secret, or a shortcut
+    /// step's answer — so every key belongs to it.
+    pub fn is_text_entry(&self) -> bool {
+        matches!(
+            self.view(),
+            Some(
+                DialogView::Authentication { .. }
+                    | DialogView::NetworkSecrets { .. }
+                    | DialogView::ShortcutStep { field: Some(_), .. }
+            )
+        )
     }
 
     /// Whether "Remember on this device" is ticked and focused, when the
@@ -2181,9 +2288,9 @@ impl PortalDialogController {
         });
         match &view {
             DialogView::Authentication { echo, .. } => {
-                state["secret_len"] = self.secret.chars().count().into();
+                state["secret_len"] = self.secret.value().chars().count().into();
                 if *echo {
-                    state["secret"] = self.secret.clone().into();
+                    state["secret"] = self.secret.value().into();
                 }
             }
             DialogView::NetworkSecrets {
@@ -2195,7 +2302,8 @@ impl PortalDialogController {
                     .iter()
                     .zip(&self.entries)
                     .enumerate()
-                    .map(|(index, (field, value))| {
+                    .map(|(index, (field, input))| {
+                        let value = input.value();
                         let mut entry = serde_json::json!({
                             "key": field.key,
                             "label": field.label,
@@ -2205,7 +2313,7 @@ impl PortalDialogController {
                             "focused": index == self.entry_focus,
                         });
                         if !field.masked {
-                            entry["value"] = value.clone().into();
+                            entry["value"] = value.into();
                         }
                         entry
                     })
@@ -2222,23 +2330,39 @@ impl PortalDialogController {
         state
     }
 
-    /// The secret field as drawn: bullets unless the prompt echoes.
-    pub fn secret_display(&self) -> Option<String> {
+    /// The sheet's single text field — an authentication answer or a
+    /// shortcut step's — when one is up.
+    pub fn text_field(&self) -> Option<&TextInput> {
         match self.view()? {
-            DialogView::Authentication { echo: true, .. } => Some(self.secret.clone()),
-            DialogView::Authentication { .. } => Some("•".repeat(self.secret.chars().count())),
+            DialogView::Authentication { .. } => Some(&self.secret),
+            DialogView::ShortcutStep { field: Some(_), .. } => Some(&self.step_field),
             _ => None,
         }
+    }
+
+    /// The network-secrets sheet's fields, in order.
+    pub fn secret_fields(&self) -> &[TextInput] {
+        &self.entries
+    }
+
+    /// Whether the sheet up now asks for a secret: administrator
+    /// authentication, network secrets, or any sheet whose field is a
+    /// secret, such as a shortcut step's masked answer.
+    pub fn holds_secret(&self) -> bool {
+        matches!(
+            self.view(),
+            Some(DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. })
+        ) || self.text_field().is_some_and(TextInput::is_secret)
+            || self.entries.iter().any(TextInput::is_secret)
     }
 
     fn forget_secret(&mut self) {
         // Overwrite before release so the freed allocation does not keep
         // the password.
-        let mut bytes = std::mem::take(&mut self.secret).into_bytes();
-        bytes.iter_mut().for_each(|byte| *byte = 0);
-        std::hint::black_box(&bytes);
-        for entry in std::mem::take(&mut self.entries) {
-            drop(zeroize::Zeroizing::new(entry));
+        wipe(&mut self.secret);
+        wipe(&mut self.step_field);
+        for mut entry in std::mem::take(&mut self.entries) {
+            wipe(&mut entry);
         }
         self.entry_focus = 0;
         self.remember = false;
@@ -2257,20 +2381,6 @@ impl PortalDialogController {
             .then_some(self.launcher_icon)
     }
 
-    /// The editable field's text as the sheet shows it: a secret answer
-    /// is masked.
-    pub fn field_display(&self) -> Option<String> {
-        let view = self.view()?;
-        view.launcher_editor()?;
-        Some(match &view {
-            DialogView::ShortcutStep {
-                field: Some(ShortcutStepField { masked: true }),
-                ..
-            } => "•".repeat(self.launcher_name.chars().count()),
-            _ => self.launcher_name.clone(),
-        })
-    }
-
     pub fn launcher_name_focused(&self) -> bool {
         self.view().is_some_and(|view| {
             view.launcher_editor()
@@ -2279,32 +2389,45 @@ impl PortalDialogController {
     }
 }
 
-/// Apply one key to a secret being typed; `true` when the key was text.
-fn edit_text(buffer: &mut String, logical_key: &winit::keyboard::Key) -> bool {
-    use winit::keyboard::{Key, NamedKey};
-
-    match logical_key {
-        Key::Named(NamedKey::Backspace) => {
-            if let Some((index, _)) = buffer.char_indices().next_back() {
-                buffer.truncate(index);
-            }
-            true
-        }
-        Key::Named(NamedKey::Space) => {
-            if buffer.len() < 512 {
-                buffer.push(' ');
-            }
-            true
-        }
-        Key::Character(text) => {
-            let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
-            if buffer.len().saturating_add(accepted.len()) <= 512 {
-                buffer.push_str(&accepted);
-            }
-            true
-        }
-        _ => false,
+/// Give `event` to an embedded field; `true` when the field used it. The
+/// fields are local and never write the document.
+fn forward_to_field(field: &mut TextInput, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+    let mut taffy = TaffyTree::<()>::new();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return false;
+    };
+    let mut used = false;
+    // The sheet owns focus between its fields; the node is a stand-in that
+    // must never become the frame's focus target.
+    let mut focus_target = None;
+    field.handle_event(
+        event,
+        &mut EventCtx {
+            taffy: &taffy,
+            handled: &mut used,
+            focus_target: &mut focus_target,
+            ..ctx.reborrow(ctx.path, node)
+        },
+    );
+    // The value is read back on confirm; drop the copy this hands out.
+    if let Some(value) = field.take_dirty() {
+        drop(zeroize::Zeroizing::new(value));
     }
+    used
+}
+
+/// The field's value, leaving it wiped.
+fn take_text(field: &mut TextInput) -> String {
+    let value = field.value().to_owned();
+    wipe(field);
+    value
+}
+
+/// Empty `field`, overwriting what it held: a field marked secret zeroes
+/// its text as it lets go of it, so an echoed answer is marked too.
+fn wipe(field: &mut TextInput) {
+    field.set_secret(true);
+    field.set_text("");
 }
 
 fn authentication_detail(request: &AuthenticationRequest) -> String {
@@ -2538,10 +2661,13 @@ mod tests {
             .expect("layout");
         assert!(layout.secret.is_some());
         for key in ["h", "u", "n", "t"] {
-            assert!(controller.edit_secret(&Key::Character(key.into())));
+            assert!(type_key(&mut controller, Key::Character(key.into())));
         }
-        assert!(controller.edit_secret(&Key::Named(NamedKey::Backspace)));
-        assert_eq!(controller.secret_display().as_deref(), Some("•••"));
+        assert!(type_key(&mut controller, Key::Named(NamedKey::Backspace)));
+        let field = controller.text_field().expect("the answer field");
+        assert!(field.is_secret(), "the answer is a secret field");
+        assert!(!field.is_revealed(), "and starts hidden");
+        assert_eq!(field.value(), "hun");
         assert!(controller.confirm());
         assert_eq!(
             receiver.blocking_recv(),
@@ -2550,7 +2676,99 @@ mod tests {
                 secret: "hun".into()
             })
         );
-        assert_eq!(controller.secret_display(), None);
+        assert!(controller.text_field().is_none());
+        assert!(controller.secret.value().is_empty(), "nothing is kept");
+    }
+
+    #[test]
+    fn every_secret_field_of_a_sheet_is_hidden_with_its_own_reveal() {
+        let layout_bounds = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let queue = PortalDialogQueue::default();
+        let _auth = queue
+            .enqueue_authentication(authentication_request(&["quinn"]))
+            .expect("queued");
+        let mut controller = PortalDialogController::new(queue.clone());
+        assert!(controller.pump());
+        let layout = controller.layout(layout_bounds).expect("layout");
+        let fields = controller.place_fields(&layout);
+        assert_eq!(fields.len(), 1);
+        assert!(fields[0].is_secret() && !fields[0].is_revealed());
+        assert!(fields[0].has_reveal_control());
+        assert!(controller.cancel());
+
+        let mut echo = authentication_request(&["quinn"]);
+        echo.echo = true;
+        let _echo = queue.enqueue_authentication(echo).expect("queued");
+        assert!(controller.pump());
+        assert!(
+            !controller.text_field().expect("field").is_secret(),
+            "an echoed answer is shown as typed"
+        );
+        assert!(controller.cancel());
+
+        let _secrets = queue
+            .enqueue_network_secrets(NetworkSecretsRequest {
+                handle: "nm:1".into(),
+                title: "Network sign-in".into(),
+                detail: String::new(),
+                fields: vec![
+                    SecretFieldSpec {
+                        key: "identity".into(),
+                        label: "User name".into(),
+                        masked: false,
+                        required: true,
+                        initial: "quinn".into(),
+                        rule: SecretFieldRule::Any,
+                    },
+                    SecretFieldSpec {
+                        key: "password".into(),
+                        label: "Password".into(),
+                        masked: true,
+                        required: true,
+                        initial: String::new(),
+                        rule: SecretFieldRule::Any,
+                    },
+                ],
+                remember: None,
+            })
+            .expect("queued");
+        assert!(controller.pump());
+        let [identity, password] = controller.secret_fields() else {
+            panic!("two fields");
+        };
+        assert!(!identity.is_secret());
+        assert_eq!(identity.value(), "quinn");
+        assert!(password.is_secret() && !password.is_revealed());
+        assert!(controller.cancel());
+
+        queue_secret_step(&queue);
+        assert!(controller.pump());
+        let field = controller.text_field().expect("the step's field");
+        assert!(field.is_secret() && !field.is_revealed());
+    }
+
+    fn queue_secret_step(queue: &PortalDialogQueue) {
+        queue
+            .enqueue_shortcut_step(
+                ShortcutStepRequest {
+                    handle: "shortcut:token".into(),
+                    shortcut: "Publish".into(),
+                    title: "Publishing token".into(),
+                    detail: String::new(),
+                    confirm_label: "Continue".into(),
+                    choices: Vec::new(),
+                    field: Some(ShortcutStepField { masked: true }),
+                },
+                |_| {},
+            )
+            .expect("queued");
+    }
+
+    fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
+        let event = crate::shell::test_support::typed_key_event(key);
+        crate::shell::test_support::with_scratch_event_ctx(|ctx| {
+            controller.edit_secret(&event, ctx)
+        })
     }
 
     #[test]
@@ -2568,7 +2786,7 @@ mod tests {
             ["quinn".to_string(), "root".to_string()]
         );
         assert!(controller.select_next(false));
-        assert!(controller.edit_secret(&Key::Character("x".into())));
+        assert!(type_key(&mut controller, Key::Character("x".into())));
         assert!(controller.cancel());
         assert_eq!(
             receiver.blocking_recv(),
@@ -2580,7 +2798,7 @@ mod tests {
             .expect("queued again");
         assert!(controller.pump());
         assert_eq!(
-            controller.secret_display().as_deref(),
+            controller.text_field().map(TextInput::value),
             Some(""),
             "nothing carried over"
         );

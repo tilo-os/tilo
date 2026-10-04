@@ -296,7 +296,6 @@ dependencies = [
  "runtime-dylib",
  "runtime-identity",
  "runtime-portal",
- "serde",
  "serde_json",
  "shell",
  "tempfile",
@@ -976,7 +975,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
- "tilo-files",
  "tilo-paths",
  "tilo-vello",
  "tilo-winit",
@@ -1436,7 +1434,6 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
- "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-vello",
  "tilo-winit",
@@ -1554,9 +1551,11 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-paths",
  "tilo-wet-media",
  "tracing",
  "usvg",
@@ -3642,6 +3641,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-app-package",
+ "tilo-egress",
  "tilo-environment",
  "tilo-user-identity",
  "tracing",
@@ -5632,11 +5632,10 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
- "tilo-actions",
+ "tempfile",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-files",
- "tilo-paths",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
@@ -10919,13 +10918,9 @@ dependencies = [
  "os-actions",
  "private-fs",
  "runtime-dylib",
- "serde",
- "serde_json",
  "taffy",
  "tempfile",
- "tilo-actions",
  "tilo-app",
- "tilo-automerge-fork",
  "tilo-doc-pdf",
  "tilo-ocr",
  "tilo-thumbnail",
@@ -13184,7 +13179,6 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-files",
- "tilo-paths",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -13930,7 +13924,6 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
- "toml 1.0.6+spec-1.1.0",
  "tracing",
  "workspace-hack",
 ]
@@ -15695,6 +15688,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-image-codec"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
@@ -16684,6 +16685,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-host",
  "tilo-host-search",
+ "tilo-image-codec",
  "tilo-media",
  "tilo-paths",
  "tilo-resource",
@@ -16884,6 +16886,8 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-test-env",
+ "tilo-vm",
  "tilo-vm-protocol",
  "uuid",
  "workspace-hack",
@@ -18554,8 +18558,6 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
- "tilo-files",
- "tilo-paths",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",

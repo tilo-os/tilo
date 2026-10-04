@@ -133,6 +133,8 @@ mod interaction_test;
 mod keyboard_focus_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
+#[path = "legacy_window_between_devices.rs"]
+mod legacy_window_between_devices;
 #[path = "lock_screen_visual.rs"]
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]

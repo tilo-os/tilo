@@ -36,8 +36,7 @@ same signed native build and freshness checks.
 Pull requests use the cheapest lane that proves the affected boundary:
 
 - Rust tests use the affected-package graph in **Check affected workspace packages**.
-- **Release / apps** computes the affected-app plan on PRs without native
-  release packaging.
+- **Release / apps** does not run on PRs; it plans and packages on `main`.
 - Desktop PRs with matching packaging inputs run preflight contracts. Full
   distribution builds run weekly, on tags, or by explicit dispatch. Their
   sccache namespace is shared by architecture; compiler identity and native

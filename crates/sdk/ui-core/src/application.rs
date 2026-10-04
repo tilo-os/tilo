@@ -33,10 +33,15 @@ pub struct ApplicationDefinition {
     pub required: Vec<PermissionScope>,
     pub optional: Vec<PermissionScope>,
     /// Media types (`type/subtype`, lowercase) the component opens when a host
-    /// hands it a file ([`HostContext::take_open_file`]).
+    /// hands it a file ([`HostContext::take_open_file`]); [`ANY_MEDIA_TYPE`]
+    /// for a component that opens every file (a hex editor).
     pub opens: &'static [&'static str],
     pub create: ComponentFactory,
 }
+
+/// The entry of [`ApplicationDefinition::opens`] that opens files of every
+/// type.
+pub const ANY_MEDIA_TYPE: &str = "*/*";
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
@@ -546,9 +551,13 @@ impl ApplicationDefinition {
     }
 
     /// Whether the component opens files of `media_type` (parameters and case ignored).
+    /// [`ANY_MEDIA_TYPE`] among [`Self::opens`] opens every file.
     pub fn opens_media_type(&self, media_type: &str) -> bool {
-        open_file::media_type_essence(media_type)
-            .is_some_and(|essence| self.opens.contains(&essence.as_str()))
+        open_file::media_type_essence(media_type).is_some_and(|essence| {
+            self.opens
+                .iter()
+                .any(|opens| *opens == ANY_MEDIA_TYPE || *opens == essence.as_str())
+        })
     }
     /// Validate, invoke the one factory under its lifetime, then restore presentation only.
     /// The factory projects through `HostContext::read_record`; no mutable `Widget::sync`

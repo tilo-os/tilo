@@ -66,6 +66,8 @@ const GROUPS: &[Group] = &[
             ("New paragraph", "Enter"),
             ("notes-help-outline-indent", "Tab / Shift-Tab"),
             ("notes-help-block-indent", "Ctrl-] / Ctrl-["),
+            ("notes-help-editor-leave", "Esc, Tab"),
+            ("notes-help-block-backspace", "Backspace"),
             ("Open block menu", "/"),
             ("Link another note", "[["),
             ("Toggle checklist item", "click"),

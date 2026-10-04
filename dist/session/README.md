@@ -68,3 +68,23 @@ prompter unit: that would race the host's Secret Service and change existing
 application credential behaviour. The handoff fixes its desktop-routing
 environment only. A missing, locked, or failing host GCR/keyring remains a
 host-session issue and requires a live password-prompt check after login.
+
+## VM test
+
+`dist/session/vm-e2e/run.py` runs the packaged session as a Fedora user does:
+the fedora-44 RPMs from Release / desktop installed with dnf on the Fedora 44
+Cloud image under KVM, a gnome-keyring Secret Service unlocked on the user's
+bus, the identity provisioned there (`--provision-identity`, the same
+platform-storage minting the setup screen does), SDDM autologin into
+`tilo.desktop`, then Settings, Notes, Files and Terminal opened through
+Super+Space search on the VM's keyboard (QMP). There is no control socket in
+this session, so the run sees it only through SSH, the keyboard and
+screenshots. Each app must start, and the compositor must stay the same
+process for the dwell after it, with no crash log, core dump, unexpected
+session exit or panic in the journal or `latest.log`.
+
+It runs in CI only (`.forgejo/workflows/host-session-e2e.yml`, on the KVM
+runners): after every Release / desktop package lane with that run's RPMs,
+and by dispatch with any Release / desktop run's RPMs (`rpm_run`, default the
+newest on main). `report.md`, screenshots, the guest journal and session logs
+are the run's artifact.

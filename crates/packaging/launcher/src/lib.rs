@@ -65,6 +65,8 @@ pub mod sandbox;
 pub mod scope;
 pub mod seccomp;
 pub mod services;
+#[cfg(target_os = "linux")]
+pub mod system_authority;
 
 #[cfg(test)]
 mod managed_tests;

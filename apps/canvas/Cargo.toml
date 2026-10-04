@@ -44,10 +44,16 @@ tracing.workspace = true
 i_overlay = { version = "9.0", default-features = false }
 # An SVG or reference picture named by a path is read where files have one.
 tilo-files = { path = "../../crates/platform/tilo-files" }
+# The artworks opened or saved lately are kept in the app's own state.
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Saving to and opening from a file in Files, in a directory of the test's.
+tempfile.workspace = true
 
 [lints]
 workspace = true

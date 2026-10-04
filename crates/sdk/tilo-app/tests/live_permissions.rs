@@ -72,9 +72,11 @@ impl Widget for AccessProbe {
         &mut self,
         taffy: &mut TaffyTree<()>,
         _: &Theme,
-        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+        let node = taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
@@ -86,6 +88,10 @@ impl Widget for AccessProbe {
 
     fn name(&self) -> &'static str {
         "AccessProbe"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("access-probe")
     }
 
     fn get_rect(&self) -> Rect {
@@ -109,6 +115,12 @@ impl ResourceSurface<Memo> for AccessProbe {
 fn a_role_change_takes_effect_while_the_app_runs() {
     let mut app = TestApp::<MemoApp>::new().unwrap();
     let changes = PROBE_CHANGES.with(|probe| probe.borrow().clone()).unwrap();
+    assert!(
+        app.harness()
+            .semantic_owner_instance("access-probe")
+            .is_some(),
+        "a surface is addressed by name like any widget"
+    );
     app.invoke(Memo::ADD_LINE.with("milk".into())).unwrap();
     assert!(app.harness().inspection_json().unwrap().contains("Editing"));
 

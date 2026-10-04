@@ -267,12 +267,4 @@ unsafe fn reaper_child(
 }
 
 /// `pasta` on `PATH`, else where Fedora installs it.
-pub fn find() -> PathBuf {
-    std::env::var_os("PATH")
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|d| d.join("pasta"))
-                .find(|p| p.is_file())
-        })
-        .unwrap_or_else(|| PathBuf::from("/usr/bin/pasta"))
-}
+pub use crate::config::find_pasta as find;

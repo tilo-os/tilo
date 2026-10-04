@@ -2,9 +2,9 @@
 //!
 //! Durable resources and window-local presentation state live here as plain
 //! serde types. The typed CRDT schema (see [`crate::doc`]) persists only the
-//! collaborative subset: saved/accepted places, history, itineraries and
-//! offline regions. Camera, panel, selection, drafts and ranked caches remain
-//! per-window.
+//! collaborative subset: saved/accepted places, history and itineraries.
+//! Camera, panel, selection, drafts and ranked caches remain per-window, and
+//! the offline areas are this device's ([`crate::offline_areas`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -156,6 +156,7 @@ impl Poi {
 /// (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is
 /// a mode of Directions, not a separate surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TravelMode {
     Car,
     Transit,
@@ -523,8 +524,9 @@ pub struct MapModel {
     pub zoom: f64,
     /// One-line network/status message for the status bar.
     pub status: String,
-    /// Map areas saved for offline use. The tiles are persisted in the on-disk
-    /// cache; this is the manageable list of what has been downloaded.
+    /// Map areas this device saved for offline use, as its device-local
+    /// setting holds them. The tiles are persisted in the on-disk cache; this
+    /// is the manageable list of what has been downloaded.
     #[serde(default)]
     pub regions: Vec<DownloadedRegion>,
 }

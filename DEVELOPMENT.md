@@ -101,6 +101,28 @@ sudo bootc upgrade && sudo systemctl reboot
 sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo systemctl reboot
 ```
 
+A board dev image carries tilo-vmd, sshd and the toolchain, so the machine is a
+`tilo-vm` target like a dev VM: register it once, then swap, roll back, take
+pictures and move it between images with the same commands (`tilo-vm guide
+devices`). Components never go onto it by hand (no `bootc usr-overlay` and
+copies into `/usr`): nothing could roll that back.
+
+```sh
+tilo-vm vm add yoga --ssh <you>@<address> --key <your key>   # checks SSH, root through sudo, tilo-vmd, toolchain, bootc
+tilo-vm vm use yoga
+tilo-vm slot create --headless && tilo-vm swap shell         # your build in your slot; tilo-vm rollback undoes it
+tilo-vm shot -o target/yoga.png                              # tilo-vm seat claim puts it on the built-in display
+tilo-vm vm upgrade --from sha:<commit>                       # that commit's image for this board, then a reboot
+```
+
+The board job checks the Lenovo image's audio stack (topology, DSP firmware,
+UCM profile: `os/tests/board_audio_contract.sh --root`), but only the laptop
+proves the sound. After booting a build that changes it, `wpctl status` lists a
+speaker sink and a microphone source for Built-in Audio, and
+`journalctl -b -k | grep -i -e q6apm -e wsa884x` shows no errors. The four
+speakers run without DSP speaker protection, as upstream ships them: test them
+at low volume.
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets

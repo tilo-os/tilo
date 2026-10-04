@@ -56,6 +56,14 @@ on:
         description: "Bind the checked-out session wrapper into the disposable dev guest for a small-script regression test."
         required: false
         default: "false"
+      shared_disk_esp:
+        description: "After upgrade_image boots, put a foreign ESP ahead of Tilo's (a disk shared with Windows) and require bootc status and a staged switch to shared_disk_switch_image."
+        required: false
+        default: "false"
+      shared_disk_switch_image:
+        description: "With shared_disk_esp: an immutable tilo-vm dev image that is neither the candidate's nor upgrade_image."
+        required: false
+        default: ""
       verity_samples:
         description: "Optional space-separated composefs object paths (two hex digits, slash, 126 hex digits) to read under native KVM."
         required: false
@@ -86,6 +94,8 @@ jobs:
       CHECK_DESKTOP: ${{ github.event.inputs.check_desktop }}
       OVERRIDE_SESSION_WRAPPER: ${{ github.event.inputs.override_session_wrapper }}
       VERITY_SAMPLES: ${{ github.event.inputs.verity_samples }}
+      SHARED_DISK_ESP: ${{ github.event.inputs.shared_disk_esp }}
+      SHARED_DISK_SWITCH_IMAGE: ${{ github.event.inputs.shared_disk_switch_image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -171,6 +181,17 @@ jobs:
           [[ $DEV_UKI_BOOT == false || $TILO_VM_ARCH == x86_64 ]] || exit 2
           [[ $TILO_VM_ARCH == aarch64 || ( $CPU_VARIANT == host && $CAPTURE_FAULT_PC == false ) ]] || exit 2
           [[ $OVERRIDE_SESSION_WRAPPER == true || $OVERRIDE_SESSION_WRAPPER == false ]] || exit 2
+          [[ $SHARED_DISK_ESP == true || $SHARED_DISK_ESP == false ]] || exit 2
+          [[ $SHARED_DISK_ESP == false || -n $UPGRADE_IMAGE ]] || {
+            echo '::error::shared_disk_esp checks the bootc of upgrade_image; name one'
+            exit 1
+          }
+          # bootc refuses to switch to the image of an existing deployment, so
+          # the target is a third one.
+          [[ $SHARED_DISK_ESP == false || ( $SHARED_DISK_SWITCH_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ && $SHARED_DISK_SWITCH_IMAGE != "$UPGRADE_IMAGE" ) ]] || {
+            echo '::error::shared_disk_switch_image must pin a tilo-vm dev image digest other than upgrade_image'
+            exit 1
+          }
           [[ -z $UPGRADE_IMAGE || $UPGRADE_IMAGE =~ ^registry\.tilo\.so/tilo/tilo-vm@sha256:[0-9a-f]{64}$ ]] || {
             echo '::error::upgrade_image must pin a tilo-vm dev image digest'
             exit 1
@@ -288,6 +309,55 @@ jobs:
               exit 1
             }
             cat "$TILO_RUN/bootc-status.json"
+          fi
+          if [[ $SHARED_DISK_ESP == true ]]; then
+            # A disk shared with Windows: its ESP comes first. The overlay
+            # grows by the room the foreign ESP takes, which the root must not
+            # grow into; the guest adds it (os/tests/shared_disk_esp.sh) and
+            # boots with it in place.
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              os/tests/shared_disk_esp.sh "$TILO_USER@127.0.0.1:/tmp/shared_disk_esp.sh"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/shared_disk_esp.sh hold-size"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl poweroff" || true
+            stopped=false
+            for attempt in $(seq 1 60); do
+              if [[ $(./os/dev/vm.sh status) == stopped ]]; then stopped=true; break; fi
+              sleep 1
+            done
+            [[ $stopped == true ]] || { echo '::error::guest did not shut down to grow its disk'; exit 1; }
+            ./os/dev/vm.sh stop
+            qemu-img resize -f qcow2 "$overlay" +1G
+            ./os/dev/vm.sh boot --2d --disk "$overlay"
+            ready=false
+            for attempt in $(seq 1 120); do
+              if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then ready=true; break; fi
+              sleep 1
+            done
+            [[ $ready == true ]] || { echo '::error::grown disk did not boot'; exit 1; }
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              os/tests/shared_disk_esp.sh "$TILO_USER@127.0.0.1:/tmp/shared_disk_esp.sh"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/shared_disk_esp.sh prepare" \
+              | tee "$TILO_RUN/shared-disk-prepare.log"
+            old_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id')
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' systemctl reboot" || true
+            ready=false
+            for attempt in $(seq 1 180); do
+              new_boot=$(./os/dev/vm.sh ssh 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null) || new_boot=
+              if [[ -n $new_boot && $new_boot != "$old_boot" ]]; then ready=true; break; fi
+              sleep 1
+            done
+            [[ $ready == true ]] || { echo '::error::guest did not boot with a foreign ESP ahead of its own'; exit 1; }
+            sshpass -p "$TILO_PASS" scp -q -P 2222 \
+              -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+              os/tests/shared_disk_esp.sh "$TILO_USER@127.0.0.1:/tmp/shared_disk_esp.sh"
+            timeout --kill-after=10s 28m ./os/dev/vm.sh ssh \
+              "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/shared_disk_esp.sh check '$SHARED_DISK_SWITCH_IMAGE'" \
+              | tee "$TILO_RUN/shared-disk-check.log"
           fi
           if [[ $DEV_UKI_BOOT == true ]]; then
             sshpass -p "$TILO_PASS" scp -q -P 2222 \
@@ -437,7 +507,7 @@ jobs:
 
       - name: Upload desktop evidence
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: dev-kvm-desktop-diagnostic
           path: |
@@ -458,7 +528,7 @@ jobs:
 
       - name: Upload failed framebuffer
         if: failure()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: dev-kvm-greeter-failure
           path: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/boot-failure.ppm
@@ -466,7 +536,7 @@ jobs:
 
       - name: Upload greeter diagnostic log
         if: failure()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: dev-kvm-cage-diagnostic
           path: /var/tmp/tilo-dev-boot-diagnostic-${{ github.run_id }}/cage-diagnostic.log

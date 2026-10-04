@@ -957,9 +957,12 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
                 .is_some_and(|(fullscreen_id, _)| fullscreen_id == *id)
         }),
     );
+    // A window the person focused while showing it on another device of
+    // theirs types there until they use this device again.
     let candidate = state
         .focused_output_presentation_surface()
         .or(overlay_focus)
+        .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
             let chrome = fb.chrome();
             let tree = chrome.tree();
@@ -1241,6 +1244,8 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
                 .filter(|(surface_id, _)| state.client_input.surfaces.contains_key(surface_id)),
         );
         tiles.extend(state.output_presentation_remote_tiles());
+        let offscreen = state.offscreen_stream_tiles(&tiles);
+        tiles.extend(offscreen);
         tiles
     };
     let view = crate::network::input_firewall::ShellView::new(
@@ -1299,6 +1304,21 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        state.release_personal_keyboard_focus();
+        // Another device of the person last placed this seat's pointer, on a
+        // window it shows. The host's cursor never left its spot, so the
+        // pointer goes back to what is under it before this input lands.
+        if state.take_personal_pointer_hold()
+            && !matches!(event, WindowEvent::CursorMoved { .. })
+            && let Some((x, y)) = state.client_input.pointer_position()
+        {
+            let _ = route_cursor_moved(
+                state,
+                fb,
+                chrome_captures_input(fb),
+                winit::dpi::PhysicalPosition::new(x, y),
+            );
+        }
     }
     match event {
         WindowEvent::CursorMoved { position, .. } => {

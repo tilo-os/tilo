@@ -576,14 +576,18 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        if request.kind != tilo_actions::OperationKind::Effect || request.type_id != E::OPERATION {
+        if request.type_id != E::OPERATION {
             return Ok(None);
         }
         let effect = E::from_payload(request.payload)?;
         let id = effect.id();
-        let job = E::declarations()
-            .iter()
-            .any(|decl| decl.id == id && decl.is_job());
+        let declaration = E::declarations().into_iter().find(|decl| decl.id == id);
+        // A view only changes what its caller sees and is admitted as one;
+        // an effect invoked as a view would skip the checks an effect gets.
+        if declaration.as_ref().map(|decl| decl.kind) != Some(request.kind) {
+            return Err(format!("`{id}` was invoked as another kind of operation"));
+        }
+        let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
         let answer = handle(host, effect, &mut cx);
         let started = cx.started.take();

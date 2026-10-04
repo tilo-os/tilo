@@ -63,7 +63,9 @@ use winit::event::WindowEvent;
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
 use crate::i18n::{t, t_args};
 use crate::prefs::{SystemPrefs, UpdatePrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
+use crate::widgets::{
+    El, caption, card, choice_row, error_caption, error_row, rows, setting_row, value_row,
+};
 
 pub const CHECK_KEY: &str = "updates.check";
 pub const RESTART_KEY: &str = "updates.restart";
@@ -93,6 +95,11 @@ fn run_bounded(
 ) -> Result<bounded_command::Output, String> {
     bounded_command::run(program, args, None, MAX_HELPER_OUTPUT, timeout)
         .map_err(|error| format!("{program} command failed: {error}"))
+}
+
+/// The rollback target when one was read.
+fn target_of(target: &Result<Option<String>, String>) -> Option<&str> {
+    target.as_ref().ok().and_then(Option::as_deref)
 }
 
 fn helper_diagnostic(bytes: &[u8]) -> String {
@@ -141,6 +148,9 @@ fn schedule_from_label(label: &str) -> String {
 pub struct UpdateStatus {
     pub current_version: String,
     pub staged_version: Option<String>,
+    /// Why the staged image could not be read. While set, `staged_version`
+    /// says nothing about the machine and the pane shows this instead.
+    pub staged_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -252,9 +262,14 @@ impl UpdateStatus {
             .ok()
             .and_then(|s| parse_pretty_name(&s))
             .unwrap_or_else(|| "Tilo (Fedora bootc)".to_string());
+        let (staged_version, staged_error) = match read_bootc_staged() {
+            Ok(staged) => (staged, None),
+            Err(error) => (None, Some(error)),
+        };
         Self {
             current_version: current,
-            staged_version: read_bootc_staged(),
+            staged_version,
+            staged_error,
         }
     }
 }
@@ -271,14 +286,24 @@ fn parse_pretty_name(contents: &str) -> Option<String> {
     None
 }
 
-/// Ask `bootc` whether an image is staged for the next boot. Returns `None`
-/// when `bootc` is missing, fails, or reports nothing staged.
-fn read_bootc_staged() -> Option<String> {
-    let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT).ok()?;
+/// `bootc status --format json`, or why it could not be read.
+fn read_bootc_status() -> Result<String, String> {
+    let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT)?;
     if !out.status.success() {
-        return None;
+        let diagnostic = helper_diagnostic(&out.stderr);
+        return Err(if diagnostic.is_empty() {
+            format!("bootc status exited with {}", out.status)
+        } else {
+            diagnostic
+        });
     }
-    parse_bootc_staged(&String::from_utf8_lossy(&out.stdout))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Ask `bootc` whether an image is staged for the next boot: `Ok(None)` when
+/// it reports nothing staged, `Err` when it could not be asked.
+fn read_bootc_staged() -> Result<Option<String>, String> {
+    read_bootc_status().map(|json| parse_bootc_staged(&json))
 }
 
 /// Parse `bootc status --format json` for a staged deployment. Defensive
@@ -337,7 +362,10 @@ pub trait UpdateControl: Send + Sync {
     /// reports failure — with that failure's reason.
     fn set_timer(&self, on: bool) -> Result<(), String>;
     /// What this machine can go back to: `(entry label, image reference)`.
-    fn rollback_target(&self) -> Option<String>;
+    ///
+    /// # Errors
+    /// Returns why the deployments could not be read.
+    fn rollback_target(&self) -> Result<Option<String>, String>;
     /// Make the next boot the previous deployment.
     ///
     /// # Errors
@@ -471,8 +499,8 @@ impl UpdateControl for UnavailableControl {
     fn set_timer(&self, _on: bool) -> Result<(), String> {
         Err("automatic updates cannot be changed from here on this machine".into())
     }
-    fn rollback_target(&self) -> Option<String> {
-        None
+    fn rollback_target(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     fn roll_back(&self) -> Result<(), String> {
         Err("rolling back is not available on this machine".into())
@@ -520,12 +548,8 @@ impl UpdateControl for RealUpdateControl {
         })
     }
 
-    fn rollback_target(&self) -> Option<String> {
-        let out = run_bounded("bootc", &["status", "--format", "json"], STATUS_TIMEOUT).ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        parse_bootc_rollback(&String::from_utf8_lossy(&out.stdout))
+    fn rollback_target(&self) -> Result<Option<String>, String> {
+        read_bootc_status().map(|json| parse_bootc_rollback(&json))
     }
 
     fn roll_back(&self) -> Result<(), String> {
@@ -687,7 +711,7 @@ enum FirmwareUiState {
     },
 }
 
-type CheckEvent = Result<(UpdateStatus, Option<String>, UpdateDetails), String>;
+type CheckEvent = Result<(UpdateStatus, Result<Option<String>, String>, UpdateDetails), String>;
 type FirmwareRefreshEvent = Result<
     (
         Vec<os_actions::FirmwareUpdate>,
@@ -724,8 +748,9 @@ pub struct UpdatesPane {
     timer_enabled: Option<bool>,
     schedule: Option<String>,
     allow_metered: Option<bool>,
-    /// What this machine can go back to, if anything.
-    rollback_target: Option<String>,
+    /// What this machine can go back to, if anything, or why that could not
+    /// be read.
+    rollback_target: Result<Option<String>, String>,
     /// `None` means fwupd is unavailable; `Some([])` means it answered and
     /// there are no applicable upgrades.
     firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
@@ -785,7 +810,7 @@ impl UpdatesPane {
             prefs.auto = on;
         }
         let rollback_target = control.rollback_target();
-        let details = UpdateDetails::from_system(rollback_target.as_deref());
+        let details = UpdateDetails::from_system(target_of(&rollback_target));
         let schedule = control.schedule();
         let allow_metered = control.allow_metered();
         let firmware_updates = os_actions::get_firmware_updates();
@@ -1424,7 +1449,7 @@ impl UpdatesPane {
     }
 
     pub fn rollback_target(&self) -> Option<&str> {
-        self.rollback_target.as_deref()
+        target_of(&self.rollback_target)
     }
 
     /// The rollback card's title and lines, in order.
@@ -1437,11 +1462,17 @@ impl UpdatesPane {
     pub fn rollback_card_lines(&self) -> Vec<String> {
         let mut out = vec![rollback_card_title()];
         match (&self.rollback_target, self.rollback_armed) {
-            (None, _) => {
+            (Err(error), _) => {
+                out.push(t_args(
+                    "upd-rollback-error",
+                    &[("error", error.as_str().into())],
+                ));
+            }
+            (Ok(None), _) => {
                 out.push(t("upd-no-previous"));
                 out.push(no_rollback_caption());
             }
-            (Some(target), false) => {
+            (Ok(Some(target)), false) => {
                 out.push(t_args(
                     "upd-previous-image",
                     &[("image", target.as_str().into())],
@@ -1449,7 +1480,7 @@ impl UpdatesPane {
                 out.push(rollback_intro_caption());
                 out.push(t("upd-roll-back"));
             }
-            (Some(target), true) => {
+            (Ok(Some(target)), true) => {
                 out.push(t_args(
                     "upd-roll-back-to",
                     &[("image", target.as_str().into())],
@@ -1508,6 +1539,15 @@ impl UpdatesPane {
 
     /// Status card — current + staged + the primary action.
     fn status_card(&self) -> El {
+        if let Some(error) = &self.status.staged_error {
+            return card(
+                &t("upd-software"),
+                error_caption(&t_args(
+                    "upd-status-error",
+                    &[("error", error.as_str().into())],
+                )),
+            );
+        }
         let action: El = match &self.status.staged_version {
             Some(staged) => Box::new(
                 Column::new()
@@ -1536,12 +1576,16 @@ impl UpdatesPane {
     }
 
     fn overview_card(&self) -> El {
-        let os_value = if self.status.staged_version.is_some() {
-            t("upd-os-staged")
-        } else {
-            t("upd-os-current")
-        };
-        let mut overview = vec![value_row(&t("upd-os"), &os_value)];
+        let mut overview = vec![match &self.status.staged_error {
+            Some(error) => error_row(
+                &t("upd-os"),
+                &t_args("upd-status-error", &[("error", error.as_str().into())]),
+            ),
+            None if self.status.staged_version.is_some() => {
+                value_row(&t("upd-os"), &t("upd-os-staged"))
+            }
+            None => value_row(&t("upd-os"), &t("upd-os-current")),
+        }];
         if let Ok(updates) = &self.firmware_updates {
             let fw_value = if updates.is_empty() {
                 t("upd-firmware-current")
@@ -1821,14 +1865,15 @@ impl UpdatesPane {
         let lines = self.rollback_card_lines();
         let rollback_body: El = match (&self.rollback_target, self.rollback_armed, lines.as_slice())
         {
-            (None, _, [_, no_previous, no_previous_caption, ..]) => Box::new(
+            (Err(_), _, [_, error, ..]) => error_caption(error),
+            (Ok(None), _, [_, no_previous, no_previous_caption, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .push(Box::new(Text::new(no_previous).with_size(13.0)))
                     .push(caption(no_previous_caption)),
             ),
-            (Some(_), false, [_, previous, intro, button_label, ..]) => Box::new(
+            (Ok(Some(_)), false, [_, previous, intro, button_label, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
@@ -1845,7 +1890,7 @@ impl UpdatesPane {
                     )),
             ),
             // Armed: what it does not undo, in front of the button that does it.
-            (Some(_), true, [_, prompt, caveats @ .., confirm_label]) => {
+            (Ok(Some(_)), true, [_, prompt, caveats @ .., confirm_label]) => {
                 let mut col = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
@@ -2129,7 +2174,7 @@ impl UpdatesPane {
                 let result = control.check_now().map(|()| {
                     let status = status_provider();
                     let rollback_target = control.rollback_target();
-                    let details = details_provider(rollback_target.as_deref());
+                    let details = details_provider(target_of(&rollback_target));
                     (status, rollback_target, details)
                 });
                 let _ = tx.send(result);
@@ -2638,10 +2683,12 @@ mod tests {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: staged.map(std::string::ToString::to_string),
+            staged_error: None,
         };
         let requeried = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: Some("Tilo 2026.07".into()),
+            staged_error: None,
         };
         UpdatesPane::with_parts(
             status,
@@ -3379,8 +3426,8 @@ mod tests {
             *self.timer.lock().unwrap() = Some(on);
             Ok(())
         }
-        fn rollback_target(&self) -> Option<String> {
-            self.target.lock().unwrap().clone()
+        fn rollback_target(&self) -> Result<Option<String>, String> {
+            Ok(self.target.lock().unwrap().clone())
         }
         fn roll_back(&self) -> Result<(), String> {
             *self.rollbacks.lock().unwrap() += 1;
@@ -3419,10 +3466,42 @@ mod tests {
         }
     }
 
+    /// `bootc` that cannot be asked (not root, absent, refused) is reported
+    /// as that failure. "Your system is up to date" is a claim about the
+    /// machine and is never made from a failed read.
+    #[test]
+    fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let status = UpdateStatus {
+            current_version: "Tilo 2026.06".into(),
+            staged_version: None,
+            staged_error: Some("error: This command requires root privileges".into()),
+        };
+        let requeried = status.clone();
+        let pane = UpdatesPane::with_parts_and_control(
+            status,
+            UpdatePrefs::default(),
+            Arc::new(move || requeried.clone()),
+            Arc::new(|| "CHECKED-NOW".to_string()),
+            Arc::new(RecordingRebooter::default()),
+            Arc::new(FakeControl::new(Some(true), None)),
+        );
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter().any(|line| line
+                == "Can't check for updates: error: This command requires root privileges"),
+            "{text:#?}"
+        );
+        for claim in [t("upd-up-to-date"), t("upd-os-current")] {
+            assert!(!text.contains(&claim), "claims {claim:?}: {text:#?}");
+        }
+    }
+
     fn pane_with_control(control: Arc<FakeControl>) -> UpdatesPane {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
+            staged_error: None,
         };
         let requeried = status.clone();
         UpdatesPane::with_parts_and_control(
@@ -3449,6 +3528,7 @@ mod tests {
                 UpdateStatus {
                     current_version: "Tilo".into(),
                     staged_version: None,
+                    staged_error: None,
                 },
                 UpdatePrefs {
                     auto: false,
@@ -3457,6 +3537,7 @@ mod tests {
                 Arc::new(|| UpdateStatus {
                     current_version: "Tilo".into(),
                     staged_version: None,
+                    staged_error: None,
                 }),
                 Arc::new(|| "now".to_string()),
                 Arc::new(RecordingRebooter::default()),

@@ -20,6 +20,8 @@ bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-environment = { path = "../environment" }
+# The build sandbox reaches its runtime's repositories and nothing else.
+tilo-egress = { path = "../egress" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 
 anyhow.workspace = true

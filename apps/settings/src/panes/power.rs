@@ -49,7 +49,7 @@ use winit::event::WindowEvent;
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card, choice_row, error_caption, rows, setting_row, value_row};
 use ui::i18n::ArgValue;
 
 pub const PROFILE_KEY: &str = "power.profile";
@@ -266,6 +266,9 @@ pub struct PowerPane {
     require_operation_token: bool,
     available_profiles: Vec<PowerProfile>,
     profile_notice: Option<String>,
+    /// The active profile could not be read; `profile` is then only the
+    /// first choice offered, never shown as the active one.
+    profile_unread: bool,
     profile: PowerProfile,
     last_profile: PowerProfile,
     prefs: PowerPrefs,
@@ -467,6 +470,7 @@ impl PowerPane {
         if profile_result.is_ok() && !available_profiles.contains(&profile) {
             available_profiles.push(profile);
         }
+        let profile_unread = profile_result.is_err();
         let profile_notice = match (profile_result.err(), available_result.err()) {
             (None, None) => None,
             (profile_error, capability_error) => {
@@ -501,6 +505,7 @@ impl PowerPane {
             require_operation_token: false,
             available_profiles,
             profile_notice,
+            profile_unread,
             profile,
             last_profile: profile,
             prefs: SystemPrefs::load().power,
@@ -540,6 +545,7 @@ impl PowerPane {
             require_operation_token: false,
             available_profiles: PROFILES.iter().map(|(_, profile)| *profile).collect(),
             profile_notice: None,
+            profile_unread: false,
             profile,
             last_profile: profile,
             prefs,
@@ -666,7 +672,11 @@ impl PowerPane {
             .iter()
             .map(|profile| profile_label(*profile))
             .collect();
-        let current = profile_label(self.profile);
+        let current = if self.profile_unread {
+            t("power-profile-unread")
+        } else {
+            profile_label(self.profile)
+        };
         let mut profile_rows =
             if profile_opts.is_empty() {
                 vec![value_row(
@@ -688,7 +698,11 @@ impl PowerPane {
             };
         profile_rows.push(caption(&t("power-profile-caption")));
         if let Some(notice) = &self.profile_notice {
-            profile_rows.push(caption(notice));
+            profile_rows.push(if self.profile_unread {
+                error_caption(notice)
+            } else {
+                caption(notice)
+            });
         }
         card(&t("power-profile-title"), rows(profile_rows))
     }
@@ -955,6 +969,7 @@ impl PowerPane {
                 Ok(()) => {
                     self.last_profile = p;
                     self.profile = p;
+                    self.profile_unread = false;
                     self.profile_notice = Some(format!("{} is now active.", profile_label(p)));
                     self.operation_finished(
                         &operation,

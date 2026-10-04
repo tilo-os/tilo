@@ -293,6 +293,12 @@ impl<R: Resource> SurfaceCx<R> {
         self.run.content()
     }
 
+    /// What the window's launch named (paths, URLs), as
+    /// [`ViewCx::launch_arguments`](super::ViewCx::launch_arguments).
+    pub fn launch_arguments(&self) -> &[String] {
+        &self.run.arguments
+    }
+
     /// The id of the app the surface is part of, which its presence keys
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {
@@ -365,6 +371,10 @@ pub enum ResourceSelection {
         start: usize,
         end: usize,
     },
+    /// A pointer over an item, at a point of the shared window (logical
+    /// pixels): where a collaborator is aiming in a surface that draws
+    /// their cursor itself.
+    Pointer { item: String, x: f32, y: f32 },
 }
 
 impl ResourceSelection {
@@ -386,6 +396,7 @@ impl ResourceSelection {
                     end: *end,
                 },
             ),
+            Self::Pointer { item, x, y } => (key(item), PresencePayload::Pointer { x: *x, y: *y }),
         }
     }
 }
@@ -393,7 +404,14 @@ impl ResourceSelection {
 /// Presents resource changes to a hosted surface, routes its effects to it,
 /// and otherwise stays out of its way: layout, drawing and input are the
 /// surface's own.
+///
+/// The surface is laid out first, so the host and the surface it forwards
+/// its name to are one address: the window's map of named widgets, which
+/// keys a widget by address and name, finds the surface's own node when a
+/// test or a headless drive names it.
+#[repr(C)]
 pub(crate) struct SurfaceHost<R: Resource, S, E> {
+    surface: S,
     live: Live<R>,
     presented: u64,
     dispatch: Dispatcher<R>,
@@ -405,7 +423,6 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     effects: Option<EffectRunner<R, S, E>>,
     /// What the surface last said of its effects, which the root publishes.
     statuses: Rc<RefCell<Vec<EffectStatus>>>,
-    surface: S,
 }
 
 /// The scenario a surface stages on its next sync: outer `None` is nothing

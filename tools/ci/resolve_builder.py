@@ -11,20 +11,37 @@ import socket
 import ssl
 import sys
 import time
+import tomllib
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-IMAGE = "registry.tilo.so/tilo/tilo-builder"
-MANIFEST_URL = "https://registry.tilo.so/v2/tilo/tilo-builder/manifests/latest"
+
+def registry_settings(environ=os.environ):
+    """Registry coordinates from tools/ci/images.toml, overridable per run."""
+    with Path(__file__).with_name("images.toml").open("rb") as stream:
+        registry = tomllib.load(stream)["registry"]
+    host = environ.get("TILO_CI_REGISTRY") or registry["host"]
+    repository = (environ.get("TILO_CI_BUILDER_REPOSITORY")
+                  or registry["namespace"] + "/" + registry["builder"])
+    realm = environ.get("TILO_CI_REGISTRY_TOKEN_REALM") or registry["token_realm"]
+    if not re.fullmatch(r"[a-z0-9.-]+(:[0-9]+)?", host) or not re.fullmatch(r"[a-z0-9._/-]+", repository):
+        raise ValueError("invalid builder registry coordinates")
+    if not realm.startswith("https://"):
+        raise ValueError("registry token realm must use https")
+    return host, repository, realm
+
+
+REGISTRY, REPOSITORY, TOKEN_REALM = registry_settings()
+IMAGE = REGISTRY + "/" + REPOSITORY
+MANIFEST_URL = "https://" + REGISTRY + "/v2/" + REPOSITORY + "/manifests/latest"
 # The builder is always a multi-architecture index; asking for index types
 # only means a registry can never answer with one platform's manifest.
 INDEX_TYPES = ("application/vnd.oci.image.index.v1+json",
                "application/vnd.docker.distribution.manifest.list.v2+json")
-# The in-region write endpoint answers every request with a token challenge
-# and grants anonymous callers pull; the public endpoint needs no token.
-TOKEN_REALM = "https://registry.tilo.so/token"
-PULL_SCOPE = "repository:tilo/tilo-builder:pull"
+# A registry may answer every request with a token challenge and grant
+# anonymous callers pull; one that needs no token is read directly.
+PULL_SCOPE = "repository:" + REPOSITORY + ":pull"
 AUTH_CHALLENGE = re.compile(r'Bearer realm="(?P<realm>[^"]+)",service="(?P<service>[^"]+)"'
                             r'(?:,scope="(?P<scope>[^"]+)")?')
 MAX_RESPONSE = 1024 * 1024
