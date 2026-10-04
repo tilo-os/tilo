@@ -24,7 +24,7 @@ use tilo_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
+use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};
 
 #[cfg(test)]
@@ -189,6 +189,15 @@ pub enum NetCmd {
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
+    },
+    /// Send one shared window's stream (its start, frames, end and control
+    /// grants) to exactly the viewers named by their peer handles, over the
+    /// authenticated direct media route. No other participant of the
+    /// workspace, its gossip topic or its workspace host receives any of it.
+    PublishSurfaceTo {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        viewers: Vec<crate::network::protocol::PeerId>,
     },
     /// Publish live workspace-control traffic over the route selected by the
     /// canonical device mesh. Direct input uses the authenticated exact-target
@@ -545,6 +554,9 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 if !matches!(
                     frame.message,
                     NeighbourMsg::SurfaceFrame { .. }
+                        | NeighbourMsg::SurfaceStreamStart { .. }
+                        | NeighbourMsg::SurfaceStreamEnd { .. }
+                        | NeighbourMsg::PermissionGrant { .. }
                         | NeighbourMsg::RemoteInput { .. }
                         | NeighbourMsg::RemoteAction { .. }
                 ) {
@@ -583,12 +595,17 @@ async fn enqueue_surface_event(
     input_tx: &mpsc::Sender<InternalEvent>,
     event: InternalEvent,
 ) -> bool {
-    // Remote-action frames are requests and answers, not media: they take
-    // the reliable queue with input.
+    // Remote-action frames are requests and answers, not media, and a
+    // stream's start, end and grants are its control: they take the
+    // reliable queue with input.
     let is_input = matches!(
         &event,
         InternalEvent::SurfaceFrame {
-            msg: NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. },
+            msg: NeighbourMsg::RemoteInput { .. }
+                | NeighbourMsg::RemoteAction { .. }
+                | NeighbourMsg::SurfaceStreamStart { .. }
+                | NeighbourMsg::SurfaceStreamEnd { .. }
+                | NeighbourMsg::PermissionGrant { .. },
             ..
         }
     );
@@ -772,12 +789,17 @@ struct ActorState {
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
-    /// At most one direct surface fanout per workspace may be dialing or
+    /// At most one direct fanout per shared window may be dialing or
     /// writing. A producer can submit frames faster than an unreachable peer's
-    /// dial timeout; retain only the newest pending frame instead of stalling
-    /// the actor or building an unbounded queue of obsolete video.
-    surface_fanout_tasks: HashMap<WorkspaceId, tokio::task::JoinHandle<()>>,
-    pending_surface_frames: HashMap<WorkspaceId, NeighbourMsg>,
+    /// dial timeout; retain only the newest pending frame of that window
+    /// instead of stalling the actor or building an unbounded queue of
+    /// obsolete video. Windows are independent, so one window's frames never
+    /// displace another's.
+    surface_fanout_tasks: HashMap<(WorkspaceId, SurfaceId), tokio::task::JoinHandle<()>>,
+    pending_surface_frames: HashMap<(WorkspaceId, SurfaceId), NeighbourMsg>,
+    /// Windows streamed to named viewers only: their frames go to exactly
+    /// these devices and never fall back to the workspace's gossip topic.
+    surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
     personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
     active_personal_media: HashMap<(EndpointId, [u8; 16]), ActivePersonalMediaTransfer>,
     next_personal_media_generation: u64,
@@ -1011,10 +1033,16 @@ impl ActorState {
                 }
                 self.subscribers.remove(&ws);
                 self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
-                self.pending_surface_frames.remove(&ws);
-                if let Some(task) = self.surface_fanout_tasks.remove(&ws) {
-                    task.abort();
-                }
+                self.pending_surface_frames
+                    .retain(|(frame_ws, _), _| *frame_ws != ws);
+                self.surface_fanout_viewers
+                    .retain(|(frame_ws, _), _| *frame_ws != ws);
+                self.surface_fanout_tasks.retain(|(task_ws, _), task| {
+                    if *task_ws == ws {
+                        task.abort();
+                    }
+                    *task_ws != ws
+                });
                 if let Some(topic) = self.topics.remove(&ws) {
                     topic.pump.abort();
                 }
@@ -1083,6 +1111,8 @@ impl ActorState {
                     return true;
                 }
                 if matches!(msg, NeighbourMsg::SurfaceFrame { .. }) {
+                    self.surface_fanout_viewers
+                        .remove(&(ws, fanout_surface(&msg)));
                     // The host plane is already connected and independently
                     // useful. Enqueue it before any direct-peer dial timeout;
                     // only the compatibility gossip fallback depends on the
@@ -1140,6 +1170,9 @@ impl ActorState {
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route).await;
+            }
+            Some(NetCmd::PublishSurfaceTo { ws, msg, viewers }) => {
+                self.publish_surface_to(ws, msg, &viewers).await;
             }
             Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
                 self.publish_remote_action(ws, target, msg).await;
@@ -1309,8 +1342,9 @@ impl ActorState {
     /// retains gossip as a compatibility fallback. The workspace host is
     /// still published to separately.
     fn start_surface_fanout(&mut self, ws: WorkspaceId, msg: NeighbourMsg) -> bool {
-        if self.surface_fanout_tasks.contains_key(&ws) {
-            self.pending_surface_frames.insert(ws, msg);
+        let key = (ws, fanout_surface(&msg));
+        if self.surface_fanout_tasks.contains_key(&key) {
+            self.pending_surface_frames.insert(key, msg);
             return true;
         }
         let wire = SurfaceWireFrame {
@@ -1324,17 +1358,22 @@ impl ActorState {
             tracing::warn!(ws, bytes = bytes.len(), "surface frame exceeds wire limit");
             return false;
         }
-        let workspace_peer_count = self
-            .peers_seen
-            .keys()
-            .filter(|(peer_ws, _)| *peer_ws == ws)
-            .count();
+        let only = self.surface_fanout_viewers.get(&key);
         let targets: Vec<_> = self
             .peers
             .values()
             .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
+            .filter(|addr| only.is_none_or(|viewers| viewers.contains(&addr.id)))
             .cloned()
             .collect();
+        let workspace_peer_count = match only {
+            Some(_) => targets.len(),
+            None => self
+                .peers_seen
+                .keys()
+                .filter(|(peer_ws, _)| *peer_ws == ws)
+                .count(),
+        };
         // Each viewer is an independent QUIC route. Dial/write them
         // concurrently so one unreachable peer cannot add 300ms in front of
         // every healthy viewer (or block later collaboration commands once
@@ -1403,7 +1442,7 @@ impl ActorState {
                 })
                 .await;
         });
-        self.surface_fanout_tasks.insert(ws, task);
+        self.surface_fanout_tasks.insert(key, task);
         true
     }
 
@@ -1731,6 +1770,37 @@ impl ActorState {
                     "refused workspace-control input on a workspace-wide relay"
                 );
             }
+        }
+    }
+
+    /// [`NetCmd::PublishSurfaceTo`]: one window's stream to exactly its
+    /// viewers. Frames take the per-window media fanout restricted to them;
+    /// the stream's start, end and control grants go to each directly.
+    async fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
+        let targets = self
+            .peers
+            .keys()
+            .filter(|peer| self.peers_seen.contains_key(&(ws, **peer)))
+            .filter(|peer| viewers.contains(&crate::network::behaviour::peer_liveness_handle(peer)))
+            .copied()
+            .collect::<Vec<_>>();
+        match msg {
+            NeighbourMsg::SurfaceFrame { .. } => {
+                let key = (ws, fanout_surface(&msg));
+                self.surface_fanout_viewers.insert(key, targets);
+                let _ = self.start_surface_fanout(ws, msg);
+            }
+            NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+            | NeighbourMsg::PermissionGrant { .. } => {
+                if let NeighbourMsg::SurfaceStreamEnd { surface, .. } = &msg {
+                    self.surface_fanout_viewers.remove(&(ws, *surface));
+                }
+                for target in targets {
+                    let _ = self.publish_direct(ws, target, msg.clone()).await;
+                }
+            }
+            _ => tracing::warn!(ws, "refused a non-stream message on the viewer route"),
         }
     }
 
@@ -2142,9 +2212,10 @@ impl ActorState {
         outcomes: Vec<SurfaceFanoutOutcome>,
         all_delivered: bool,
     ) {
-        self.surface_fanout_tasks.remove(&ws);
+        let key = (ws, fanout_surface(&msg));
+        self.surface_fanout_tasks.remove(&key);
         if !self.subscribers.contains_key(&ws) {
-            self.pending_surface_frames.remove(&ws);
+            self.pending_surface_frames.remove(&key);
             return;
         }
         for outcome in outcomes {
@@ -2156,7 +2227,10 @@ impl ActorState {
                 self.surface_connections.remove(&outcome.peer);
             }
         }
-        if !all_delivered {
+        // A window streamed to named viewers only never falls back to the
+        // workspace topic: a frame that missed them is superseded by the next.
+        let targeted = self.surface_fanout_viewers.contains_key(&key);
+        if !all_delivered && !targeted {
             publish(
                 &self.topics,
                 &self.host_sessions,
@@ -2168,8 +2242,9 @@ impl ActorState {
             )
             .await;
         }
-        if let Some(next) = self.pending_surface_frames.remove(&ws)
+        if let Some(next) = self.pending_surface_frames.remove(&key)
             && !self.start_surface_fanout(ws, next.clone())
+            && !targeted
         {
             publish(
                 &self.topics,
@@ -3107,6 +3182,10 @@ async fn personal_media_cancelled(cancel: &mut tokio::sync::watch::Receiver<bool
     let _ = cancel.changed().await;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the actor's state is built in one literal so every field's starting value reads together"
+)]
 async fn run(
     endpoint: Endpoint,
     lookup: MemoryLookup,
@@ -3166,6 +3245,7 @@ async fn run(
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
+        surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
         active_personal_media: HashMap::new(),
@@ -3215,6 +3295,15 @@ async fn run(
         task.abort();
     }
     let _ = router.shutdown().await;
+}
+
+/// The window a direct fanout carries: each shared window is fanned out on
+/// its own, so its frames are coalesced only with its own.
+fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
+    match msg {
+        NeighbourMsg::SurfaceFrame { surface, .. } => *surface,
+        _ => 0,
+    }
 }
 
 async fn publish(
@@ -4084,6 +4173,7 @@ mod tests {
                         since: vec![],
                         room: String::new(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -4285,6 +4375,7 @@ mod tests {
                         since: vec![],
                         room: "responsive".into(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -4904,6 +4995,7 @@ mod tests {
                         since: vec![],
                         room: "hosted".into(),
                         invite_id: None,
+                        nonce: 0,
                     },
                 })
                 .await
@@ -5859,6 +5951,7 @@ mod tests {
                     since: vec![],
                     room: "after-ready".into(),
                     invite_id: None,
+                    nonce: 0,
                 },
             })
             .await

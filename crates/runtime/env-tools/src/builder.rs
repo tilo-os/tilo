@@ -12,17 +12,19 @@
 //! Nothing here needs a session or a display; a relay's compute worker
 //! drives the same [`Builder`] as a device does.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tilo_app_package::PackageId;
 
 use crate::index::{Entry, LocalIndex, ToolLookup};
 use crate::key::CacheKey;
+use crate::network::{Network, NetworkChoice};
 use crate::resolve::{self, Resolution, ResolveError};
-use crate::sandbox::{BuildEgress, BuildSandbox, SandboxError};
+use crate::sandbox::{BuildSandbox, SandboxError};
 use crate::seal::{self, SealError, SealReport};
 
 /// dnf options every resolve and build uses; part of [`crate::key::RECIPE`].
@@ -139,6 +141,9 @@ pub struct Builder<S, C> {
     index: LocalIndex,
     timeouts: Timeouts,
     sandbox: SandboxOptions,
+    network: NetworkChoice,
+    /// Each runtime's egress policy, worked out once.
+    policies: Mutex<HashMap<PackageId, tilo_egress::EgressPolicy>>,
 }
 
 impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
@@ -153,6 +158,8 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
             state,
             timeouts: Timeouts::default(),
             sandbox: SandboxOptions::default(),
+            network: NetworkChoice::default(),
+            policies: Mutex::new(HashMap::new()),
         }
     }
 
@@ -168,11 +175,11 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         self
     }
 
-    /// Route the builds' package downloads through `egress` instead of the
-    /// caller's network.
+    /// What the builds may reach: their runtime's repositories (the
+    /// default), nothing, or the caller's whole network.
     #[must_use]
-    pub fn with_egress(mut self, egress: Arc<dyn BuildEgress>) -> Self {
-        self.sandbox.egress = Some(egress);
+    pub fn with_network(mut self, network: NetworkChoice) -> Self {
+        self.network = network;
         self
     }
 
@@ -278,13 +285,9 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         packages: &[String],
     ) -> Result<(CacheKey, Resolution), BuildError> {
         let scratch = self.scratch("resolve")?;
-        let result = resolve_in(
-            tree,
-            &scratch,
-            &self.options(runtime),
-            packages,
-            self.timeouts.resolve,
-        );
+        let result = self.options(runtime, tree).and_then(|options| {
+            resolve_in(tree, &scratch, &options, packages, self.timeouts.resolve)
+        });
         let _ = crate::sandbox::remove_tree(&scratch);
         let resolution = result?;
         Ok((CacheKey::new(*runtime, &resolution.install), resolution))
@@ -305,14 +308,8 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         scratch: &Path,
         out: &Path,
     ) -> Result<SealedTree, BuildError> {
-        build_tree(
-            tree,
-            nevras,
-            scratch,
-            out,
-            &self.options(runtime),
-            self.timeouts.install,
-        )
+        let options = self.options(runtime, tree)?;
+        build_tree(tree, nevras, scratch, out, &options, self.timeouts.install)
     }
 
     fn remember(&self, key: &CacheKey, tool: PackageId, requested: &[String]) {
@@ -326,12 +323,42 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         }
     }
 
-    /// The sandbox options for a build on `runtime`: its own metadata cache.
-    fn options(&self, runtime: &PackageId) -> SandboxOptions {
-        SandboxOptions {
+    /// The sandbox options for a build on `runtime` (at `tree`): its own
+    /// metadata cache, and the network the builder's choice gives it.
+    fn options(&self, runtime: &PackageId, tree: &Path) -> Result<SandboxOptions, BuildError> {
+        let network = match self.network {
+            NetworkChoice::Offline => Network::Offline,
+            NetworkChoice::Host => Network::Host,
+            NetworkChoice::Gated => crate::network::gated(self.policy(runtime, tree)?),
+        };
+        Ok(SandboxOptions {
             dnf_cache: Some(self.state.join("dnf-cache").join(runtime.to_hex())),
+            network,
             ..self.sandbox.clone()
+        })
+    }
+
+    fn policy(
+        &self,
+        runtime: &PackageId,
+        tree: &Path,
+    ) -> Result<tilo_egress::EgressPolicy, BuildError> {
+        if let Some(policy) = self
+            .policies
+            .lock()
+            .ok()
+            .and_then(|p| p.get(runtime).cloned())
+        {
+            return Ok(policy);
         }
+        let scratch = self.scratch("mirrors")?;
+        let policy = crate::network::repo_policy(tree, &scratch);
+        let _ = crate::sandbox::remove_tree(&scratch);
+        let policy = policy?;
+        if let Ok(mut policies) = self.policies.lock() {
+            policies.insert(*runtime, policy.clone());
+        }
+        Ok(policy)
     }
 
     fn scratch(&self, what: &str) -> Result<PathBuf, BuildError> {
@@ -356,14 +383,24 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
 }
 
 /// How a build's sandbox is set up beyond its runtime and scratch.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SandboxOptions {
     /// dnf's metadata cache, kept across builds on one runtime.
     pub dnf_cache: Option<PathBuf>,
     /// A bubblewrap other than `bwrap` on `PATH`.
     pub bwrap: Option<PathBuf>,
-    /// Where package downloads go; the caller's network when `None`.
-    pub egress: Option<Arc<dyn BuildEgress>>,
+    /// What the sandbox may reach.
+    pub network: Network,
+}
+
+impl Default for SandboxOptions {
+    fn default() -> Self {
+        Self {
+            dnf_cache: None,
+            bwrap: None,
+            network: Network::Offline,
+        }
+    }
 }
 
 fn sandbox(
@@ -378,10 +415,7 @@ fn sandbox(
     if let Some(bwrap) = &options.bwrap {
         sandbox = sandbox.with_bwrap(bwrap.clone());
     }
-    if let Some(egress) = &options.egress {
-        sandbox = sandbox.with_egress(Arc::clone(egress));
-    }
-    Ok(sandbox)
+    Ok(sandbox.with_network(options.network.clone()))
 }
 
 fn dnf_argv<'a>(head: &[&'a str], packages: &'a [String]) -> Vec<&'a str> {
@@ -483,7 +517,7 @@ pub fn build_tree(
 }
 
 fn installed(sandbox: &BuildSandbox) -> Result<Vec<String>, BuildError> {
-    let ran = sandbox.run(
+    let ran = sandbox.run_offline(
         &["rpm", "-qa", "--qf", resolve::RPM_QUERY_FORMAT],
         Duration::from_secs(120),
     )?;
