@@ -54,6 +54,14 @@ const SCENARIOS: &[&str] = &[
     "timers-narrow",
 ];
 
+/// The moment a capture's wall clocks show, the same on every run.
+pub(crate) struct ShotNow(pub(crate) chrono::DateTime<Utc>);
+
+/// A Tuesday morning: the time a capture's clocks read.
+fn shot_now() -> chrono::DateTime<Utc> {
+    chrono::DateTime::from_timestamp(1_782_806_400, 0).unwrap_or_default()
+}
+
 /// The scene a scenario shows, without its window size.
 fn scene(name: Option<&str>) -> &str {
     let name = name.unwrap_or_default();
@@ -90,9 +98,26 @@ impl ResourceApp for ClocksShell {
         }
     }
 
+    fn fixture(fixture: &mut ui::framework::Fixture<Clocks>) {
+        fixture.provide(ShotNow(shot_now()));
+    }
+
     fn scenario(name: Option<&str>) -> Vec<Invoke<Clocks>> {
+        use crate::model::WeekdayKey::{Fri, Mon, Thu, Tue, Wed};
         match scene(name) {
             "running" => vec![Clocks::ADD_TIMER.with(("Tea".to_owned(), 272))],
+            "world" => [
+                ("Tokyo", "Asia/Tokyo"),
+                ("London", "Europe/London"),
+                ("New York", "America/New_York"),
+            ]
+            .into_iter()
+            .map(|(city, zone)| Clocks::ADD_WORLD_CLOCK.with((city.to_owned(), zone.to_owned())))
+            .collect(),
+            "alarms" => vec![
+                Clocks::ADD_ALARM.with(("Wake up".to_owned(), 7, 0, vec![Mon, Tue, Wed, Thu, Fri])),
+                Clocks::ADD_ALARM.with(("Gym".to_owned(), 18, 30, Vec::new())),
+            ],
             _ => Vec::new(),
         }
     }
@@ -101,6 +126,12 @@ impl ResourceApp for ClocksShell {
 impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
     fn present(&mut self, state: &Rc<Clocks>) {
         self.show(state);
+    }
+
+    fn attach(&mut self, cx: ui::framework::SurfaceCx<Clocks>) {
+        if let Some(now) = cx.fixture::<ShotNow>() {
+            self.state.update(|shown| shown.pinned_now = Some(now.0));
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
