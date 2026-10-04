@@ -12,17 +12,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
 use ui::tilo_actions::{
-    ActionAddress, ActionParam, EncodedAction, PROMPTED_PARAM, ParamType,
-    Resource as PublishedResource,
+    ActionAddress, ActionParam, PROMPTED_PARAM, ParamType, Resource as PublishedResource,
 };
-use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{
+    ActionDecl, ActionRef, Demand, Doc, Invoke, ModelError, Resource, SearchEntry,
+};
 use ui::widget::Element;
 
 use crate::actions::{
@@ -36,12 +36,14 @@ use crate::effects::CodeEditorEffect;
 /// Stable id prefix for the published project root.
 pub const PROJECT_KIND: &str = "code_editor.project";
 
-/// Lightweight project projection for search and the published tree.
+/// The project: its file and folder records, and the text of the files a
+/// view is showing.
 #[derive(Clone, Debug, Default)]
 pub struct ProjectState {
-    pub project_id: Option<String>,
     pub files: Vec<CollaborativeFile>,
-    /// Buffer text keyed by file id — base for replace-text Document ops.
+    /// The text of the files views demanded, keyed by file id. Only these
+    /// are read: a project holds every file it has opened, and reading them
+    /// all on every keystroke would cost what the project weighs.
     pub buffers: HashMap<String, String>,
 }
 
@@ -61,28 +63,26 @@ impl Resource for CodeEditor {
     }
 
     fn read(doc: &Doc) -> Result<ProjectState, ModelError> {
-        let project_id = match doc.get(ROOT, "project_id") {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(id) => Some(id.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let files: Vec<_> = EditorDoc::files(doc)
-            .into_iter()
-            .filter(|file| !file.deleted)
-            .collect();
-        let mut buffers = HashMap::new();
-        for file in files.iter().filter(|file| file.kind == "file") {
-            if let Some(text) = EditorDoc::read_buffer_key(doc, &file.id) {
-                buffers.insert(file.id.clone(), text);
+        Ok(ProjectState {
+            files: EditorDoc::files(doc)
+                .into_iter()
+                .filter(|file| !file.deleted)
+                .collect(),
+            buffers: HashMap::new(),
+        })
+    }
+
+    /// The text of the demanded files (their ids are the demand's keys).
+    fn load(state: &mut ProjectState, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
+        state.buffers.retain(|id, _| demand.keys.contains(id));
+        for id in &demand.keys {
+            if !state.buffers.contains_key(id)
+                && let Some(text) = EditorDoc::read_buffer_key(doc, id)
+            {
+                state.buffers.insert(id.clone(), text);
             }
         }
-        Ok(ProjectState {
-            project_id,
-            files,
-            buffers,
-        })
+        Ok(())
     }
 
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
@@ -143,7 +143,7 @@ impl Resource for CodeEditor {
     }
 
     fn children(state: &ProjectState) -> Vec<PublishedResource> {
-        publish_document_children(&state.files, &state.buffers)
+        publish_document_children(&state.files)
     }
 
     fn search(state: &ProjectState) -> Vec<SearchEntry> {
@@ -269,7 +269,12 @@ impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<CodeEditor>) {
-        self.attach_framework(cx.dispatcher(), cx.mode().is_live(), cx.settings());
+        self.attach_framework(
+            cx.dispatcher(),
+            cx.mode().is_live(),
+            cx.settings(),
+            cx.live(),
+        );
         if cx.mode() == RunMode::Capture
             && let Some(sample) = cx.fixture::<SampleProject>()
         {
@@ -299,82 +304,6 @@ impl ResourceSurface<CodeEditor, CodeEditorEffect> for CodeApp {
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.live_row(id)
-    }
-}
-
-/// Framework dispatcher for file records and text edits.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<CodeEditor>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<CodeEditor>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &CodeEditorAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        let _ = self.try_dispatch_with_context(doc, type_id, action, context);
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &CodeEditorAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = crate::actions::encode(action).ok();
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
     }
 }
 
@@ -717,5 +646,34 @@ mod tests {
             .expect("the dock is shown");
         let editor = targets.get("editor_view").copied().expect("the editor");
         assert!(panel.y0 >= editor.y1 - 0.5, "{panel:?} below {editor:?}");
+    }
+
+    #[test]
+    fn only_the_open_files_text_is_read_and_what_disk_holds_is_no_undo_step() {
+        let mut sample = sample();
+        sample.open("src/main.rs");
+        let state = sample.app.state();
+        assert!(
+            state.buffers.is_empty(),
+            "reading the project reads no text"
+        );
+        let main = file_id(&state, "ferris-cli/src/main.rs");
+        assert_eq!(
+            editor(&mut sample.app, |app| app.read_buffers_for_test()),
+            vec![main.clone()],
+            "the open tab's text is read, and only it"
+        );
+        // Recording the folder and reading the file are content from
+        // outside: an undo takes neither back.
+        sample.app.undo();
+        sample.app.settle();
+        let after = sample.app.state();
+        assert_eq!(after.files.len(), state.files.len());
+        assert!(
+            sample
+                .app
+                .read_document(|doc| EditorDoc::read_buffer_key(doc, &main))
+                .is_some_and(|text| text.contains("fn main"))
+        );
     }
 }

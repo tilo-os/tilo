@@ -35,7 +35,6 @@ use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
@@ -78,10 +77,6 @@ pub fn file_resource_id(file: impl std::fmt::Display) -> String {
 
 pub fn folder_resource_id(folder: impl std::fmt::Display) -> String {
     format!("code_editor.folder:{folder}")
-}
-
-pub fn project_resource_id(project: impl std::fmt::Display) -> String {
-    format!("code_editor.project:{project}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,12 +190,25 @@ pub enum CodeEditorAction {
         kind: EntryKind,
         expected_revision: i64,
     },
+    /// Replace a file's whole text with `text`, as the smallest splice
+    /// against the text it has when the edit applies.
+    ReplaceText {
+        id: String,
+        text: String,
+    },
     /// Create the embedded terminal's object if this project does not have one.
     EnsureTerminalPanel,
-    /// Mint the durable project id once. Replay writes the same id; a later
-    /// call leaves an id that is already there.
-    EnsureProjectId {
+    /// Record a file or folder of the project's folder on disk, the first
+    /// time the editor reads it. A file's text is read when it is opened
+    /// ([`Self::EnsureBuffer`]). An entry that is already recorded, or whose
+    /// path a peer recorded under another id, is left as it is.
+    ImportEntry {
         id: String,
+        kind: EntryKind,
+        name: String,
+        parent: Option<String>,
+        language: String,
+        order: i64,
     },
     /// Create a file buffer and seed it once. An existing buffer is left as it
     /// is, so a peer's unsaved text is not replaced by a disk read.
@@ -225,48 +233,6 @@ impl EntryKind {
             Self::Folder => "folder",
         }
     }
-}
-
-/// Durable, browseable history metadata for a Code mutation.
-pub fn history_context(
-    action: &CodeEditorAction,
-    file_name: &str,
-    project_id: &str,
-) -> tilo_actions::ActionContext {
-    let mut context =
-        tilo_actions::ActionContext::for_action("so.tilo.code-editor", "Code", action);
-    let (id, kind, label) = match action {
-        CodeEditorAction::EditText(edit) => (edit.file_id.as_str(), "file", "Edit text"),
-        CodeEditorAction::CreateFile { id, .. } => (id.as_str(), "file", "Create file"),
-        CodeEditorAction::CreateFolder { id, .. } => (id.as_str(), "folder", "Create folder"),
-        CodeEditorAction::RenameFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Rename"),
-        CodeEditorAction::MoveFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Move"),
-        CodeEditorAction::SetFileLanguage { id, .. } => (id.as_str(), "file", "Set file language"),
-        CodeEditorAction::DeleteFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Delete"),
-        CodeEditorAction::EnsureTerminalPanel => ("terminal", "panel", "Open terminal panel"),
-        CodeEditorAction::EnsureProjectId { id } => (id.as_str(), "project", "Identify project"),
-        CodeEditorAction::EnsureBuffer { key, .. } => (key.as_str(), "file", "Open file"),
-    };
-    context.action_label = label.to_string();
-    context.resource = Some(tilo_actions::ActionResource {
-        id: match kind {
-            "folder" => folder_resource_id(id),
-            "project" => project_resource_id(id),
-            _ => file_resource_id(id),
-        },
-        kind: format!("code_editor.{kind}"),
-        label: file_name.to_string(),
-    });
-    if let Some(extension) = file_name.rsplit_once('.').map(|(_, extension)| extension) {
-        context
-            .facets
-            .push(tilo_actions::ActionFacet::new("file-type", extension));
-    }
-    context.facets.push(tilo_actions::ActionFacet::new(
-        "project-resource",
-        project_resource_id(project_id),
-    ));
-    context
 }
 
 impl Action for CodeEditorAction {
@@ -327,10 +293,15 @@ impl Action for CodeEditorAction {
                 doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?;
                 Ok(())
             }
-            Self::EnsureProjectId { id } => {
-                EditorDoc::ensure_project_id(doc, id);
-                Ok(())
-            }
+            Self::ReplaceText { id, text } => apply_replace_text(doc, id, text),
+            Self::ImportEntry {
+                id,
+                kind,
+                name,
+                parent,
+                language,
+                order,
+            } => apply_import(doc, id, *kind, name, parent.as_deref(), language, *order),
             Self::EnsureBuffer { key, seed } => {
                 EditorDoc::ensure_buffer_key(doc, key, seed);
                 Ok(())
@@ -340,8 +311,11 @@ impl Action for CodeEditorAction {
 
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
-            Self::EnsureTerminalPanel | Self::EnsureProjectId { .. } => {
-                tilo_actions::ChangeKind::Housekeeping
+            Self::EnsureTerminalPanel => tilo_actions::ChangeKind::Housekeeping,
+            // What is on disk is content from outside: it syncs, but nobody
+            // takes it back with an undo.
+            Self::ImportEntry { .. } | Self::EnsureBuffer { .. } => {
+                tilo_actions::ChangeKind::External
             }
             _ => tilo_actions::ChangeKind::Content,
         }
@@ -522,6 +496,60 @@ fn apply_create_file(
     // Duplicate delivery is intentionally an idempotent no-op: the existing
     // UUID owns the durable record and body, so it must never be overwritten.
     let _ = EditorDoc::create_file(doc, &entry, seed);
+    Ok(())
+}
+
+fn apply_replace_text(doc: &mut Doc, id: &str, text: &str) -> Result<(), ActionError> {
+    if text.len() > 8 * 1024 * 1024 {
+        return Err(ActionError::Refused(
+            "replacement text must be at most 8 MiB".to_string(),
+        ));
+    }
+    current_entry(doc, id, EntryKind::File)?;
+    let base = EditorDoc::read_buffer_key(doc, id)
+        .ok_or_else(|| ActionError::Refused("file has no text yet".to_string()))?;
+    text_edit_action(id.to_string(), &base, text).apply(doc)
+}
+
+fn apply_import(
+    doc: &mut Doc,
+    id: &str,
+    kind: EntryKind,
+    name: &str,
+    parent: Option<&str>,
+    language: &str,
+    order: i64,
+) -> Result<(), ActionError> {
+    if EditorDoc::file(doc, id).is_some() {
+        return Ok(());
+    }
+    let Ok(path) = canonical_path(doc, parent, name) else {
+        // The folder it is in was removed from the project.
+        return Ok(());
+    };
+    let taken = EditorDoc::files(doc)
+        .into_iter()
+        .any(|record| !record.deleted && record.path == path);
+    if taken {
+        return Ok(());
+    }
+    let seed = "";
+    validate_create(doc, id, name, &path, parent, kind.as_str(), seed)?;
+    let entry = CollaborativeFile {
+        id: id.to_string(),
+        kind: kind.as_str().to_string(),
+        name: name.to_string(),
+        path,
+        parent: parent.map(str::to_owned),
+        language: language.to_string(),
+        order,
+        deleted: false,
+        name_revision: 0,
+        structure_revision: 0,
+        language_revision: 0,
+        deletion_revision: 0,
+    };
+    EditorDoc::create_file_record(doc, &entry);
     Ok(())
 }
 
@@ -931,7 +959,7 @@ fn entry_move_action(
     )
 }
 
-fn replace_text_action(file_id: String, base: String) -> ActionSpec {
+fn replace_text_action(file_id: String) -> ActionSpec {
     ActionSpec::typed(
         "replace-text",
         "Replace text",
@@ -943,11 +971,12 @@ fn replace_text_action(file_id: String, base: String) -> ActionSpec {
             "complete document text",
         )],
         move |args| match args.text("text") {
-            Some(next) if next.len() <= 8 * 1024 * 1024 => {
-                encode(&text_edit_action(file_id.clone(), &base, next))
-                    .unwrap_or_else(|_| invalid_arguments("valid replacement text is required"))
-            }
-            _ => invalid_arguments("replacement text is required and must be at most 8 MiB"),
+            Some(text) => encode(&CodeEditorAction::ReplaceText {
+                id: file_id.clone(),
+                text: text.to_string(),
+            })
+            .unwrap_or_else(|_| invalid_arguments("valid replacement text is required")),
+            None => invalid_arguments("replacement text is required"),
         },
     )
 }
@@ -955,16 +984,14 @@ fn replace_text_action(file_id: String, base: String) -> ActionSpec {
 /// Document mutations for one collaborative file — rename / move / language /
 /// delete / replace-text. Opening and saving it are the editor's effects,
 /// which its live rows add under the same id.
-pub(crate) fn publish_file_document(file: &CollaborativeFile, buffer: Option<&str>) -> Resource {
+pub(crate) fn publish_file_document(file: &CollaborativeFile) -> Resource {
     let label = if file.name.trim().is_empty() {
         "untitled".to_string()
     } else {
         file.name.clone()
     };
-    let mut resource = Resource::new(file_resource_id(&file.id), "code_editor.file", label);
-    if let Some(base) = buffer {
-        resource = resource.with_action(replace_text_action(file.id.clone(), base.to_owned()));
-    }
+    let mut resource = Resource::new(file_resource_id(&file.id), "code_editor.file", label)
+        .with_action(replace_text_action(file.id.clone()));
     resource = resource.with_action(entry_rename_action(
         file.id.clone(),
         EntryKind::File,
@@ -1088,18 +1115,12 @@ pub(crate) fn publish_folder_document(
 }
 
 /// File and folder Document children for [`tilo_resource::publish`].
-pub(crate) fn publish_document_children(
-    files: &[CollaborativeFile],
-    buffers: &HashMap<String, String>,
-) -> Vec<Resource> {
+pub(crate) fn publish_document_children(files: &[CollaborativeFile]) -> Vec<Resource> {
     let mut children = Vec::new();
     for file in files.iter().filter(|file| !file.deleted) {
         match file.kind.as_str() {
             "file" => {
-                children.push(publish_file_document(
-                    file,
-                    buffers.get(&file.id).map(String::as_str),
-                ));
+                children.push(publish_file_document(file));
             }
             "folder" => children.push(publish_folder_document(file, files, None, None)),
             _ => {}
@@ -1121,27 +1142,51 @@ mod tests {
     }
 
     #[test]
-    fn ensure_project_id_is_idempotent_housekeeping() {
+    fn importing_a_disk_entry_is_outside_content_and_never_overrides_a_record() {
         let mut doc = AutoCommit::new();
-        let first = CodeEditorAction::EnsureProjectId {
-            id: "00000000-0000-4000-8000-0000000000aa".into(),
+        let import = |id: &str, name: &str| CodeEditorAction::ImportEntry {
+            id: id.into(),
+            kind: EntryKind::File,
+            name: name.into(),
+            parent: None,
+            language: "Rust".into(),
+            order: 0,
         };
-        assert_eq!(first.change_kind(), tilo_actions::ChangeKind::Housekeeping);
+        let first = import(&test_file_id(1), "main.rs");
+        assert_eq!(first.change_kind(), tilo_actions::ChangeKind::External);
         first.apply(&mut doc).unwrap();
-        CodeEditorAction::EnsureProjectId {
-            id: "00000000-0000-4000-8000-0000000000bb".into(),
-        }
-        .apply(&mut doc)
-        .unwrap();
-        let Some((automerge::Value::Scalar(value), _)) =
-            doc.get(automerge::ROOT, "project_id").unwrap()
-        else {
-            panic!("project id was not written");
+        let record = EditorDoc::file(&doc, &test_file_id(1)).expect("recorded");
+        assert_eq!(record.path, "main.rs");
+        assert!(
+            EditorDoc::read_buffer_key(&doc, &test_file_id(1)).is_none(),
+            "a file's text is read when it is opened"
+        );
+        // The same entry again, or another id at a path a peer recorded, is
+        // left as it is.
+        first.apply(&mut doc).unwrap();
+        import(&test_file_id(2), "main.rs").apply(&mut doc).unwrap();
+        assert!(EditorDoc::file(&doc, &test_file_id(2)).is_none());
+    }
+
+    #[test]
+    fn replace_text_splices_against_the_text_it_meets() {
+        let mut doc = AutoCommit::new();
+        test_file_action(5, "fn main() {}\n")
+            .apply(&mut doc)
+            .unwrap();
+        let replace = CodeEditorAction::ReplaceText {
+            id: test_file_id(5),
+            text: "fn main() { run() }\n".into(),
         };
-        let automerge::ScalarValue::Str(id) = value.as_ref() else {
-            panic!("project id was not text");
-        };
-        assert_eq!(id.as_str(), "00000000-0000-4000-8000-0000000000aa");
+        // A peer's edit landed first: the replacement still applies whole.
+        text_edit_action(test_file_id(5), "fn main() {}\n", "// peer\nfn main() {}\n")
+            .apply(&mut doc)
+            .unwrap();
+        replace.apply(&mut doc).unwrap();
+        assert_eq!(
+            EditorDoc::read_buffer_key(&doc, &test_file_id(5)).as_deref(),
+            Some("fn main() { run() }\n")
+        );
     }
 
     #[test]
@@ -1374,7 +1419,6 @@ mod tests {
         );
     }
 
-    const CONTRACT_PROJECT_ID: &str = "00000000-0000-4000-8000-0000000000a0";
     const MAIN_TEXT: &str = "fn main() {}\n";
     const MAIN_EDITED: &str = "fn main() { run() }\n";
     /// `test_file_id(22)` and `(23)` as resource addresses.
@@ -1385,7 +1429,6 @@ mod tests {
     /// same create actions the tree's commands dispatch.
     fn project_seed() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        EditorDoc::ensure_project_id(&mut doc, CONTRACT_PROJECT_ID);
         for action in [
             CodeEditorAction::CreateFolder {
                 id: test_file_id(20),
@@ -1491,7 +1534,12 @@ mod tests {
             }),
             rename_file => (MAIN_FILE, "rename", arg: "app.rs", |doc, _| rename_main(doc)),
             set_language => (LIB_FILE, "set-language", arg: "Python", |doc, _| lib_language(doc)),
-            replace_text => (MAIN_FILE, "replace-text", arg: MAIN_EDITED, |_, _| edit_main()),
+            replace_text => (MAIN_FILE, "replace-text", arg: MAIN_EDITED, |_, _| {
+                encoded(&CodeEditorAction::ReplaceText {
+                    id: test_file_id(22),
+                    text: MAIN_EDITED.into(),
+                })
+            }),
         ],
     }
 

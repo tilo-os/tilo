@@ -29,6 +29,14 @@ impl Sample {
         self.app.settle();
     }
 
+    /// Run `visit` on the editor with the live document, as [`with_doc`].
+    pub(crate) fn with_doc<T: 'static>(
+        &mut self,
+        visit: impl FnOnce(&mut CodeApp, &mut ui::automerge::AutoCommit) -> T + 'static,
+    ) -> T {
+        with_doc(&mut self.app, visit)
+    }
+
     /// Run `read` on the editor.
     pub(crate) fn editor<T>(&mut self, read: impl FnOnce(&mut CodeApp) -> T) -> T {
         editor(&mut self.app, read)
@@ -47,6 +55,8 @@ pub(crate) fn sample() -> Sample {
             language_servers: false,
         })
         .unwrap();
+    let mut app = app;
+    app.settle();
     Sample {
         _directory: directory,
         root,
@@ -61,4 +71,23 @@ pub(crate) fn editor<T>(
 ) -> T {
     app.with_surface::<CodeApp, _>(read)
         .expect("the editor is mounted")
+}
+
+/// Run `visit` on the editor `app` mounted with the live document, at the
+/// start of the next sync, where the editor edits it: what an event's handler
+/// gets. Its edits go through the framework's door like any other.
+pub(crate) fn with_doc<T: 'static>(
+    app: &mut TestApp<CodeEditorShell>,
+    visit: impl FnOnce(&mut CodeApp, &mut ui::automerge::AutoCommit) -> T + 'static,
+) -> T {
+    let out = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = std::rc::Rc::clone(&out);
+    editor(app, move |app| {
+        app.test_hook = Some(Box::new(move |app, doc| {
+            *slot.borrow_mut() = Some(visit(app, doc));
+        }));
+    });
+    app.settle();
+    let result = out.borrow_mut().take();
+    result.expect("the editor synced")
 }

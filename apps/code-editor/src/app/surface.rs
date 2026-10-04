@@ -427,6 +427,12 @@ impl CodeApp {
         self.search_hits.len()
     }
 
+    pub(crate) fn read_buffers_for_test(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.presented.buffers.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
     pub(crate) fn lsp_enabled_for_test(&self) -> bool {
         self.lsp_enabled()
     }
