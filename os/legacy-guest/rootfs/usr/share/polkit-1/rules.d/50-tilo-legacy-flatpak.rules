@@ -1,0 +1,7 @@
+// `tilo-legacy install` runs `flatpak install --system` as the guest's one
+// account. The VM is that person's own; there is no second user to protect.
+polkit.addRule(function (action, subject) {
+    if (action.id.indexOf("org.freedesktop.Flatpak.") === 0 && subject.user === "tilo") {
+        return polkit.Result.YES;
+    }
+});

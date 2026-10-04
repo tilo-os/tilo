@@ -41,6 +41,8 @@ hex.workspace = true
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
+# Installed legacy apps become commands in every guest (`LegacyLaunch`).
+legacy-vm = { path = "../legacy-vm" }
 
 anyhow.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }

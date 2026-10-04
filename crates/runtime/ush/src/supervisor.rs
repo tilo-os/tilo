@@ -273,6 +273,7 @@ impl Session {
             readable_dirs: policy.readable_dirs(now),
             grant_root: self.store.grant_root().map(Path::to_path_buf),
             runtime_bin: runtime_binary()?,
+            legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
             command: self.opts.command.clone(),
