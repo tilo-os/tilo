@@ -1531,6 +1531,14 @@ search-apps-opening-body = Wird geladen …
 # Suche: Kontinuitätsaktionen zwischen deinen zertifizierten Geräten
 search-continuity-certified-device = Zertifiziertes Gerät
 search-continuity-play-on = { $source } auf { $target } abspielen
+search-continuity-wake-device = Gerät aufwecken
+search-continuity-wake-device-subtitle = Sendet ein Wecksignal von einem Gerät in seinem Netzwerk
+device-wake-app-name = Geräte
+device-wake-rejoined = { $device } ist wach
+device-wake-not-rejoined = { $device } ist nicht aufgewacht
+device-wake-not-rejoined-body = Es hat ein Wecksignal erhalten, ist aber nicht zurückgekommen. Vielleicht ist es aus oder hat keinen Strom.
+device-wake-failed = { $device } konnte nicht geweckt werden
+device-wake-failed-body = In seinem Netzwerk konnte kein Wecksignal gesendet werden.
 search-continuity-media-handoff-subtitle = Diese laufende Mediensitzung auf ein bestimmtes zertifiziertes Gerät verschieben
 search-continuity-media-cancel = Verschieben von „{ $media }“ abbrechen
 search-continuity-media-retry = Verschieben von „{ $media }“ erneut versuchen

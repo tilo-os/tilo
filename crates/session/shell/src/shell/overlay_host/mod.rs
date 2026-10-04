@@ -3209,6 +3209,11 @@ impl ShellOverlayHost {
         self.session_action_policy.attach(registry);
     }
 
+    /// The registry the session's idle loop consults before suspending.
+    pub fn session_inhibitors(&self) -> tilo_power_mgmt::InhibitRegistry {
+        self.session_action_policy.inhibitors()
+    }
+
     pub fn set_power_bridge(&mut self, bridge: tilo_power_mgmt::PowerBridge) {
         self.power_bridge = Some(bridge);
     }
