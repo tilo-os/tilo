@@ -99,6 +99,28 @@ pub type CellTextRender<Row> =
 pub type CellRender<Row> =
     Box<dyn Fn(&Row, &mut Scene, Affine, &Theme, &mut TextRenderer, Rect) + Send + Sync>;
 
+/// How two rows order under a column, for the table's own sorting.
+pub type ColumnCompare<Row> = Arc<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
+
+/// Which column a table is sorted by and in which direction. Hand the
+/// table a [`crate::LocalState`] of it ([`DataTable::with_sort_state`]) and
+/// the order a person chose survives the view being built again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableSort {
+    pub key: String,
+    pub ascending: bool,
+}
+
+impl TableSort {
+    #[must_use]
+    pub fn ascending(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            ascending: true,
+        }
+    }
+}
+
 /// A cell's badge: a short label and the tone it carries (a status, a
 /// level). An empty label paints nothing.
 pub type CellBadge<Row> = Arc<dyn Fn(&Row) -> (String, crate::widget::Tone) + Send + Sync>;
@@ -184,6 +206,9 @@ pub struct ColumnDef<Row> {
     pub checked: Option<CellChecked<Row>>,
     /// `None` follows [`Self::kind`] (see [`CellAlign::for_kind`]).
     pub align: Option<CellAlign>,
+    /// How a sortable column orders rows; `None` orders by the column's
+    /// text (numerically for a numeric column), else its badge label.
+    pub compare: Option<ColumnCompare<Row>>,
     pub(crate) resize_handle_px: f32,
 }
 
@@ -206,6 +231,7 @@ impl<Row> ColumnDef<Row> {
             badge: None,
             checked: None,
             align: None,
+            compare: None,
             resize_handle_px: 6.0,
         }
     }
@@ -302,6 +328,39 @@ impl<Row> ColumnDef<Row> {
     pub fn sortable(mut self, v: bool) -> Self {
         self.sortable = v;
         self
+    }
+
+    /// A sortable column that orders rows by `compare` rather than by its
+    /// text.
+    #[must_use]
+    pub fn sorted_by(
+        mut self,
+        compare: impl Fn(&Row, &Row) -> Ordering + Send + Sync + 'static,
+    ) -> Self {
+        self.sortable = true;
+        self.compare = Some(Arc::new(compare));
+        self
+    }
+
+    /// How the table orders rows when sorted by this column.
+    fn comparator(&self) -> Option<ColumnCompare<Row>>
+    where
+        Row: 'static,
+    {
+        if let Some(compare) = &self.compare {
+            return Some(Arc::clone(compare));
+        }
+        if let Some(text) = &self.text {
+            let text = Arc::clone(text);
+            let numeric = self.kind == TextKind::Numeric;
+            return Some(Arc::new(move |a, b| {
+                compare_text(text(a).as_deref(), text(b).as_deref(), numeric)
+            }));
+        }
+        let badge = Arc::clone(self.badge.as_ref()?);
+        Some(Arc::new(move |a, b| {
+            compare_text(Some(&badge(a).0), Some(&badge(b).0), false)
+        }))
     }
 
     #[must_use]
@@ -469,8 +528,26 @@ pub trait TableModel {
     }
 }
 
-/// `(display_index, ctrl, shift)`.
+/// `(row, ctrl, shift)`, `row` an index into the rows the host set.
 type RowClick = Box<dyn FnMut(usize, bool, bool)>;
+
+/// Absent values sort last; numbers by value; text without regard to case.
+fn compare_text(a: Option<&str>, b: Option<&str>, numeric: bool) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => {
+            let number = |text: &str| text.trim().replace(',', "").parse::<f64>().ok();
+            if numeric && let (Some(x), Some(y)) = (number(a), number(b)) {
+                return x.total_cmp(&y);
+            }
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| a.cmp(b))
+        }
+    }
+}
 
 /// So row changes can re-apply the current ordering.
 struct SortState<Row> {
@@ -576,8 +653,9 @@ pub struct DataTable<Row> {
     /// Model-backed tables attach selection to stable keys. Select-all is a
     /// complement and therefore constant-space even for 100M rows.
     model_selection: crate::selection::KeySelection<u64>,
-    /// `(display_index, ctrl, shift)`, so a stateless host (rebuilt each
-    /// frame) can own the selection.
+    /// `(row, ctrl, shift)`, `row` an index into the rows the host set
+    /// whatever their sorted order, so a stateless host (rebuilt each frame)
+    /// can own the selection.
     on_row_click: Option<RowClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
     /// When set, *replaces* the internal `toggle_sort` so the host can own
@@ -641,12 +719,14 @@ pub struct DataTable<Row> {
     tree: Option<TreeRows<Row>>,
     /// A sort shown on a header without the table reordering its rows.
     sort_indicator: Option<(String, bool)>,
+    /// Where the order a person chose is kept across rebuilds.
+    sort_state: Option<crate::LocalState<Option<TableSort>>>,
     add_row: Option<AddRow>,
     /// `(display_index, checked)` when a checkbox cell is toggled.
     on_check: Option<Box<dyn FnMut(usize, bool)>>,
 }
 
-impl<Row> DataTable<Row> {
+impl<Row: 'static> DataTable<Row> {
     /// Minimum column width in pixels — dragging below this clamps.
     pub const MIN_COL_WIDTH: f32 = 40.0;
 
@@ -719,6 +799,7 @@ impl<Row> DataTable<Row> {
             hidden: Vec::new(),
             tree: None,
             sort_indicator: None,
+            sort_state: None,
             add_row: None,
             on_check: None,
         }
@@ -800,6 +881,33 @@ impl<Row> DataTable<Row> {
         self.sort_indicator = Some((key.into(), ascending));
     }
 
+    /// Sort by the column `state` names, and keep the order a person picks
+    /// from the headers in `state`, so it survives the view being built
+    /// again. Rows and their callbacks keep the host's indices.
+    #[must_use]
+    pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self {
+        if let Some(sort) = state.with(Clone::clone) {
+            self.sort_by_column(&sort.key, sort.ascending);
+        }
+        self.sort_state = Some(state.clone());
+        self
+    }
+
+    /// Sort by the column keyed `key` with its own comparator; `false` when
+    /// there is no such sortable column.
+    fn sort_by_column(&mut self, key: &str, ascending: bool) -> bool {
+        let Some(compare) = self
+            .columns
+            .iter()
+            .find(|column| column.key == key && column.sortable)
+            .and_then(ColumnDef::comparator)
+        else {
+            return false;
+        };
+        self.sort_by_with(move |a, b| compare(a, b), key, ascending);
+        true
+    }
+
     /// A blank row after the last one that adds a row when pressed (a new
     /// header, a new parameter); `label` is its placeholder.
     #[must_use]
@@ -839,7 +947,7 @@ impl<Row> DataTable<Row> {
         }
         let anchor = self.capture_view_anchor();
         self.rebuild_row_keys();
-        self.view = (0..self.rows.len()).collect();
+        self.unsort_view();
         if changes
             .iter()
             .any(|change| matches!(change, TableModelChange::Reset))
@@ -973,6 +1081,9 @@ impl<Row> DataTable<Row> {
         self
     }
 
+    /// Run `f(row, ctrl, shift)` when a row is clicked. Every row callback
+    /// names the row by its index in the rows the host set
+    /// ([`Self::set_rows`]), however the table has sorted them.
     #[must_use]
     pub fn on_row_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
         self.on_row_click = Some(Box::new(f));
@@ -1034,8 +1145,27 @@ impl<Row> DataTable<Row> {
             self.structure_dirty = true;
         }
         self.rebuild_row_keys();
-        self.view = (0..self.rows.len()).collect();
+        self.unsort_view();
         self.reapply_sort_with_anchor(anchor.as_ref());
+    }
+
+    /// Show the rows in the host's order again, the selection staying on
+    /// the rows it names, before the sort is applied afresh.
+    fn unsort_view(&mut self) {
+        if self.model.is_none() && !self.selection.is_empty() {
+            let selected: Vec<usize> = self
+                .selection
+                .selected()
+                .into_iter()
+                .map(|display| self.source_row(display))
+                .collect();
+            let primary = self
+                .selection
+                .primary()
+                .map(|display| self.source_row(display));
+            self.selection.replace_indices(selected, primary);
+        }
+        self.view = (0..self.rows.len()).collect();
     }
 
     fn rebuild_row_keys(&mut self) {
@@ -1070,6 +1200,9 @@ impl<Row> DataTable<Row> {
     }
 
     fn reconcile_viewport(&mut self, anchor: Option<&SparseAnchor<RowIdentity>>) {
+        // A table without a viewport of its own shows every row and never
+        // scrolls: there is no first visible row to keep in place.
+        let anchor = anchor.filter(|_| self.viewport.viewport() > 0.0);
         let count = self.display_len();
         let model = self.model.as_deref();
         let view = &self.view;
@@ -1106,6 +1239,45 @@ impl<Row> DataTable<Row> {
         }
         let source_index = *self.view.get(display_index)?;
         self.row_keys.get(source_index).copied()
+    }
+
+    /// The index in the host's rows of the row shown at `display_index`;
+    /// a model-backed table's model orders its own rows.
+    fn source_row(&self, display_index: usize) -> usize {
+        if self.model.is_some() {
+            return display_index;
+        }
+        self.view
+            .get(display_index)
+            .copied()
+            .unwrap_or(display_index)
+    }
+
+    /// Where the host's row `row` is shown.
+    fn display_row(&self, row: usize) -> Option<usize> {
+        if self.model.is_some() {
+            return Some(row);
+        }
+        self.view.iter().position(|source| *source == row)
+    }
+
+    /// Select only the host's row `row` (an index into the rows set with
+    /// [`Self::set_rows`]), wherever sorting shows it.
+    pub fn select_row(&mut self, row: usize) {
+        if let Some(display) = self.display_row(row) {
+            self.select_only_index(display);
+        }
+    }
+
+    /// The selected rows as indices into the rows the host set, in the
+    /// order the table shows them.
+    #[must_use]
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.selection
+            .selected()
+            .into_iter()
+            .map(|display| self.source_row(display))
+            .collect()
     }
 
     fn display_len(&self) -> usize {
@@ -1328,6 +1500,18 @@ impl<Row> DataTable<Row> {
     }
 
     fn reapply_sort_with_anchor(&mut self, anchor: Option<&SparseAnchor<RowIdentity>>) {
+        // The selection is kept by where rows are shown; it names the same
+        // rows after they move.
+        let selected: Vec<usize> = self
+            .selection
+            .selected()
+            .into_iter()
+            .filter_map(|display| self.view.get(display).copied())
+            .collect();
+        let primary = self
+            .selection
+            .primary()
+            .and_then(|display| self.view.get(display).copied());
         if let Some(s) = &self.sort {
             let rows = &self.rows;
             let cmp = &s.cmp;
@@ -1339,6 +1523,24 @@ impl<Row> DataTable<Row> {
                 let o = cmp(ra, rb);
                 if ascending { o } else { o.reverse() }
             });
+            // Cell controls follow their rows to where they now stand.
+            if !self.mounted_cells.is_empty() {
+                self.structure_dirty = true;
+            }
+            self.layout_dirty = true;
+        }
+        if self.model.is_none() && !selected.is_empty() {
+            let mut shown = vec![usize::MAX; self.rows.len()];
+            for (display, source) in self.view.iter().enumerate() {
+                if let Some(slot) = shown.get_mut(*source) {
+                    *slot = display;
+                }
+            }
+            let at = |source: usize| shown.get(source).copied().filter(|d| *d != usize::MAX);
+            self.selection.replace_indices(
+                selected.iter().filter_map(|source| at(*source)),
+                primary.and_then(at),
+            );
         }
         self.reconcile_viewport(anchor);
     }
@@ -1809,8 +2011,9 @@ impl<Row> DataTable<Row> {
         let Some(checked) = checked else {
             return false;
         };
+        let source = self.source_row(row);
         if let Some(on_check) = &mut self.on_check {
-            on_check(row, !checked);
+            on_check(source, !checked);
         }
         true
     }
@@ -1835,8 +2038,9 @@ impl<Row> DataTable<Row> {
             self.select_only_index(row);
         }
         let rect = self.row_rect(row).unwrap_or(self.rect);
+        let source = self.source_row(row);
         if let Some(callback) = &mut self.on_row_context {
-            callback(row, point, rect);
+            callback(source, point, rect);
         }
         true
     }
@@ -1853,8 +2057,9 @@ impl<Row> DataTable<Row> {
         ))
     }
 
-    /// `None` if not sortable, or if no comparator has been registered via
-    /// `sort_by_with` yet.
+    /// Sort by column `index`, or flip the order when it already sorts by
+    /// it; the column's own comparator orders the rows (see
+    /// [`ColumnDef::sorted_by`]). `None` if the column does not sort.
     pub fn toggle_sort(&mut self, index: usize) -> Option<(String, bool)> {
         let col = self.columns.get(index)?;
         if !col.sortable {
@@ -1872,14 +2077,25 @@ impl<Row> DataTable<Row> {
             Some(s) if s.key == key => !s.ascending,
             _ => true,
         };
-        if let Some(s) = &mut self.sort
+        let sorted = if let Some(s) = &mut self.sort
             && s.key == key
         {
             s.ascending = ascending;
             self.reapply_sort();
-            return Some((key, ascending));
+            true
+        } else {
+            self.sort_by_column(&key, ascending)
+        };
+        if !sorted {
+            return None;
         }
-        None
+        if let Some(state) = &self.sort_state {
+            state.set(Some(TableSort {
+                key: key.clone(),
+                ascending,
+            }));
+        }
+        Some((key, ascending))
     }
 
     /// Header background, bottom border, column labels and the active sort arrow.
@@ -2202,8 +2418,9 @@ impl<Row> DataTable<Row> {
         {
             self.row_press = None;
             let rect = self.row_rect(row).unwrap_or(self.rect);
+            let source = self.source_row(row);
             if let Some(begin) = &mut self.on_row_drag_begin {
-                begin(row, origin, rect);
+                begin(source, origin, rect);
             }
             *handled = true;
             return;
@@ -2376,8 +2593,9 @@ impl<Row> DataTable<Row> {
             let shift = modifiers.state().shift_key();
             self.apply_selection_click(ri, ctrl, shift);
             *focus_target = Some(node_id);
+            let source = self.source_row(ri);
             if let Some(cb) = &mut self.on_row_click {
-                cb(ri, ctrl, shift);
+                cb(source, ctrl, shift);
             }
             // Internal double-click → activate (long-lived hosts).
             let now = crate::time::now();
@@ -2388,7 +2606,7 @@ impl<Row> DataTable<Row> {
             if is_double {
                 self.last_click_row = None;
                 if let Some(cb) = &mut self.on_activate {
-                    cb(ri);
+                    cb(source);
                 }
             } else {
                 self.last_click_row = Some((ri, now));
@@ -2547,7 +2765,8 @@ impl<Row> DataTable<Row> {
                 *handled = true;
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(c) = cur
+                let source = cur.map(|c| self.source_row(c));
+                if let Some(c) = source
                     && let Some(cb) = &mut self.on_activate
                 {
                     cb(c);
@@ -3512,8 +3731,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
             }
             Action::Activate | Action::ToggleCheck => {
                 self.select_only_index(row);
+                let source = self.source_row(row);
                 if let Some(cb) = &mut self.on_activate {
-                    cb(row);
+                    cb(source);
                 }
                 self.refresh_view_anchor();
                 true
@@ -3558,8 +3778,9 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 if self.selectable {
                     self.select_only_index(index);
                 }
+                let source = self.source_row(index);
                 if let Some(callback) = &mut self.on_activate {
-                    callback(index);
+                    callback(source);
                 }
                 true
             }
@@ -3592,8 +3813,8 @@ fn column_floor<Row>(
         ColumnWidth::Auto => auto
             .get(&column.key)
             .copied()
-            .map_or((DataTable::<Row>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
-        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH, None),
+            .map_or((DataTable::<()>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
+        ColumnWidth::Flex(_) => (DataTable::<()>::MIN_COL_WIDTH, None),
     }
 }
 
@@ -4966,7 +5187,93 @@ mod tests {
             assert_eq!(t.sort_state(), Some(("name", true)));
         }
 
+        fn a_sorted_table_speaks_in_the_hosts_rows_and_keeps_its_order() {
+            let rows = || {
+                vec![
+                    R { name: "c".into() },
+                    R { name: "a".into() },
+                    R { name: "b".into() },
+                ]
+            };
+            let columns = || {
+                vec![
+                    ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+                        .sortable(true)
+                        .with_text(|row: &R| row.name.clone()),
+                ]
+            };
+            let state = crate::LocalState::new(None::<TableSort>);
+            let clicks = Rc::new(RefCell::new(Vec::new()));
+            let activations = Rc::new(RefCell::new(Vec::new()));
+            let (click_sink, activate_sink) = (Rc::clone(&clicks), Rc::clone(&activations));
+            let mut table = DataTable::new(columns())
+                .selectable(true)
+                .with_sort_state(&state)
+                .on_row_click(move |row, _, _| click_sink.borrow_mut().push(row))
+                .on_activate(move |row| activate_sink.borrow_mut().push(row));
+            table.set_rows(rows());
+            let _ = lay_out(&mut table);
+            // The host selects its row 0 ("c"); sorting by the text column
+            // moves it to the end and the selection goes with it.
+            table.select_row(0);
+            assert_eq!(table.toggle_sort(0), Some(("name".into(), true)));
+            let shown: Vec<_> = table.view_rows().iter().map(|r| r.name.clone()).collect();
+            assert_eq!(shown, ["a", "b", "c"]);
+            assert_eq!(table.selected_rows(), [0]);
+            assert_eq!(
+                state.with(Clone::clone),
+                Some(TableSort::ascending("name")),
+                "the order is kept where a rebuilt view finds it"
+            );
+
+            // A click and a double click on the first row shown name the
+            // host's row "a", which is its row 1.
+            let _ = lay_out(&mut table);
+            let (tree, node) = lay_out(&mut table);
+            let modifiers = winit::event::Modifiers::default();
+            dispatch(
+                &mut table,
+                &tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (20.0, HEADER_HEIGHT + 12.0).into(),
+                },
+                modifiers,
+            );
+            for _ in 0..2 {
+                for state in [ElementState::Pressed, ElementState::Released] {
+                    dispatch(
+                        &mut table,
+                        &tree,
+                        node,
+                        &WindowEvent::MouseInput {
+                            device_id: device(),
+                            state,
+                            button: MouseButton::Left,
+                        },
+                        modifiers,
+                    );
+                }
+            }
+            assert_eq!(*clicks.borrow(), [1, 1]);
+            assert_eq!(*activations.borrow(), [1]);
+            assert_eq!(table.selected_rows(), [1]);
+
+            // Flipping keeps the selection on "a", now shown last.
+            assert_eq!(table.toggle_sort(0), Some(("name".into(), false)));
+            assert_eq!(table.selected_rows(), [1]);
+            assert!(table.selection().is_selected(2));
+
+            // A table built again from the same state starts in that order.
+            let mut rebuilt = DataTable::new(columns()).with_sort_state(&state);
+            rebuilt.set_rows(rows());
+            let shown: Vec<_> = rebuilt.view_rows().iter().map(|r| r.name.clone()).collect();
+            assert_eq!(shown, ["c", "b", "a"]);
+        }
+
         model_owns_sort_order_while_table_owns_header_state();
+        a_sorted_table_speaks_in_the_hosts_rows_and_keeps_its_order();
         toggle_sort_requires_prior_sort_by_with();
         set_rows_reapplies_sort();
         header_click_fires_on_header_click_instead_of_toggle();

@@ -30,6 +30,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
+use ui::widget::data_table::TableSort;
 use ui::widget::toast::{ToastKind, ToastStack};
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 
@@ -83,7 +84,6 @@ struct ViewKey {
     available: bool,
     zone: ZoneKind,
     rule: Option<RuleId>,
-    rule_sort: view::RuleSort,
     tab: Tab,
     wide: bool,
     service: bool,
@@ -114,7 +114,8 @@ pub struct FirewallApp {
     rev: u64,
     selected_zone: ZoneKind,
     selected_rule: Option<RuleId>,
-    rule_sort: view::RuleSort,
+    /// The rules table's order, which the table keeps here.
+    rule_sort: LocalState<Option<TableSort>>,
     tab: Tab,
     draft: Draft,
     notice: Option<Notice>,
@@ -204,7 +205,7 @@ impl FirewallApp {
             config,
             rev: 0,
             selected_rule: None,
-            rule_sort: view::RuleSort::default(),
+            rule_sort: LocalState::new(Some(TableSort::ascending("action"))),
             tab: Tab::Rules,
             draft: Draft::new(),
             notice: None,
@@ -394,7 +395,6 @@ impl FirewallApp {
             available: self.available,
             zone: self.selected_zone,
             rule: self.selected_rule,
-            rule_sort: self.rule_sort,
             tab: self.tab,
             wide: self.wide,
             service: self.draft.service,
@@ -466,7 +466,7 @@ impl FirewallApp {
             zone,
             tab: self.tab,
             selected_rule: self.selected_rule,
-            rule_sort: self.rule_sort,
+            rule_sort: &self.rule_sort,
             pending_delete,
             draft: &self.draft,
             adding: self.adding,
@@ -513,7 +513,6 @@ impl FirewallApp {
         match *intent {
             Intent::SelectZone(zone) => self.select_zone(zone),
             Intent::SelectRule(id) => self.selected_rule = Some(id),
-            Intent::SortRules(key) => self.rule_sort = self.rule_sort.by(key),
             Intent::SetTab(tab) => self.tab = tab,
             Intent::SetMatchService(service) => {
                 self.draft.service = service;
