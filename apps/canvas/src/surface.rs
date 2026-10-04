@@ -278,6 +278,12 @@ impl CanvasSurface {
         f64::from(self.spacing.s1)
     }
 
+    /// How far off a line or stroke a click still picks it, in artwork
+    /// units: a few screen pixels, whatever the zoom.
+    fn pick_slop(&self) -> f64 {
+        self.units(f64::from(self.spacing.s1))
+    }
+
     /// How near, in screen pixels, a dragged edge snaps to another.
     fn snap_reach(&self) -> f64 {
         f64::from(self.spacing.s2)
@@ -894,7 +900,7 @@ impl CanvasSurface {
             });
         }
         let inside_group = double || self.modifiers.control_key();
-        let hit = edit::pick(&self.art, at, inside_group);
+        let hit = edit::pick_near(&self.art, at, self.pick_slop(), inside_group);
         if double && let [id] = hit.as_slice() {
             let id = id.clone();
             if self.enter(&id) {
@@ -1426,6 +1432,19 @@ impl CanvasSurface {
 
     /// Carry out a change of view asked for by the zoom buttons, and tell
     /// them how far the canvas is zoomed now.
+    /// Carry out the canvas's keys pressed while something else had the
+    /// focus.
+    fn follow_keys(&mut self) {
+        if self.tools.keys.with(Vec::is_empty) {
+            return;
+        }
+        let keys = self.tools.keys.with(Clone::clone);
+        self.tools.keys.set(Vec::new());
+        for pressed in keys {
+            self.key(&pressed.key, pressed.text.as_deref(), pressed.modifiers);
+        }
+    }
+
     fn follow_view(&mut self) {
         if self.rect.width() > 1.0
             && let Some(request) = self.tools.view.with(|view| *view)
@@ -1611,6 +1630,7 @@ impl CanvasSurface {
                 self.select(Vec::new());
                 true
             }
+            Key::Character(ch) if self.tools.size_key(ch) => true,
             Key::Character(ch) if !modifiers.alt_key() => {
                 let Some(tool) = Tool::ALL
                     .into_iter()
@@ -2196,7 +2216,7 @@ impl CanvasSurface {
             return None;
         }
         self.art
-            .pick_at(self.content_point(self.cursor))
+            .pick_near(self.content_point(self.cursor), self.pick_slop())
             .filter(|mark| !self.selection.contains(&mark.id))
     }
 
@@ -2213,6 +2233,7 @@ impl CanvasSurface {
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
+        self.overlay_footprint(scene, to_screen);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
         }
@@ -2316,6 +2337,30 @@ impl CanvasSurface {
             let marked = hovered == Some(mark.id.as_str()) || self.selection.contains(&mark.id);
             crate::render::eraser_outline(scene, &outline, marked.then_some(theme.accent_primary));
         }
+    }
+
+    /// The brush's or eraser's footprint round the pointer: a ring as wide
+    /// as the mark it lays at this zoom, dark and light so it reads on any
+    /// paint, as a painter's hand expects to see where it will land.
+    fn overlay_footprint(&self, scene: &mut Scene, to_screen: Affine) {
+        if !matches!(self.current_tool(), Tool::Brush | Tool::Eraser)
+            || self.space
+            || matches!(self.drag, Some(Drag::Pan))
+            || !self.rect.contains(self.cursor)
+        {
+            return;
+        }
+        let ring = Circle::new(
+            self.content_point(self.cursor),
+            self.tools.brush_size() / 2.0,
+        );
+        // Too small to read as a ring: the crosshair says where it lands.
+        if ring.radius * self.zoom() < 2.0 {
+            return;
+        }
+        let mut path = ui::vello::kurbo::Shape::to_path(&ring, 0.1);
+        path.apply_affine(to_screen);
+        crate::render::footprint_ring(scene, &path);
     }
 
     /// What is hovered and picked: outlines, the frame and its guides.
@@ -2837,6 +2882,7 @@ impl Widget for CanvasSurface {
         _presence: &PresenceCtx,
     ) {
         self.follow_tool();
+        self.follow_keys();
         self.follow_view();
         self.follow_crop();
         self.take_picked();
@@ -3113,6 +3159,7 @@ impl Widget for CanvasSurface {
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        self.follow_keys();
         self.follow_view();
         // The panels show what is selected.
         if self.tools.selection.with(|shown| *shown != self.selection) {

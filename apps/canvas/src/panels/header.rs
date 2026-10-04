@@ -9,7 +9,7 @@ use ui::text_render::FontChoice;
 use ui::widget::EditableLabel;
 
 use super::icon_button;
-use crate::actions::CanvasAction;
+use crate::actions::{Align, CanvasAction};
 use crate::model::Artwork;
 use crate::resource::ArtworkResource;
 use crate::selection::{Combine, Select, UseSelection};
@@ -163,6 +163,7 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let tools = tools.clone();
         cx.switch(&tools.selection.clone(), move |cx, picked| {
             let combine = picked.len() >= 2;
+            let align = !picked.is_empty();
             let facts = facts.clone();
             let tools = tools.clone();
             cx.switch(&tools.layer.clone(), move |cx, layer| {
@@ -171,7 +172,7 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .iter()
                     .find(|(mask, _, _)| mask == layer)
                     .map(|(_, owner, name)| (owner.clone(), name.clone()));
-                if !facts.area && !combine && masked.is_none() {
+                if !facts.area && !align && masked.is_none() {
                     return Box::new(Spacer::fixed(0.0)) as Element;
                 }
                 let area = facts.area;
@@ -282,6 +283,9 @@ fn strip(
     }
     if combine {
         groups.push(combine_commands(tools));
+    }
+    if tools.selection.with(|picked| !picked.is_empty()) {
+        groups.push(align_commands(tools));
     }
     let count: usize = groups.iter().map(Vec::len).sum();
     #[allow(clippy::cast_precision_loss, reason = "a handful of buttons")]
@@ -485,6 +489,71 @@ fn combine_commands(tools: &Tools) -> Vec<Command> {
         )
     })
     .collect()
+}
+
+/// Line the picked marks up along an edge or centre line, or space them
+/// evenly: among themselves when there are several, on the artwork when
+/// there is one.
+fn align_commands(tools: &Tools) -> Vec<Command> {
+    let edges = [
+        (Icon::AlignStartVertical, "left"),
+        (Icon::AlignCenterVertical, "center"),
+        (Icon::AlignEndVertical, "right"),
+        (Icon::AlignStartHorizontal, "top"),
+        (Icon::AlignCenterHorizontal, "middle"),
+        (Icon::AlignEndHorizontal, "bottom"),
+    ];
+    let to = |picked: &[String]| (picked.len() == 1).then(|| "artwork".to_owned());
+    let mut commands: Vec<Command> = edges
+        .into_iter()
+        .map(|(icon, edge)| {
+            let picked = tools.selection.clone();
+            let reads = picked.clone();
+            Command::new(
+                icon,
+                &format!("canvas-align-{edge}"),
+                ArtworkResource::ALIGN.map(move |()| {
+                    let ids = picked.with(Clone::clone);
+                    let to = to(&ids);
+                    (ids, edge.to_owned(), to)
+                }),
+                std::sync::Arc::new(move || {
+                    let ids = reads.with(Clone::clone);
+                    CanvasAction::Align(Align {
+                        to: to(&ids),
+                        ids,
+                        edge: Some(edge.to_owned()),
+                        distribute: None,
+                    })
+                }),
+            )
+        })
+        .collect();
+    // Spacing needs three to have a gap to even out.
+    if tools.selection.with(|picked| picked.len() >= 3) {
+        for (icon, axis) in [
+            (Icon::AlignHorizontalDistributeCenter, "horizontal"),
+            (Icon::AlignVerticalDistributeCenter, "vertical"),
+        ] {
+            let picked = tools.selection.clone();
+            let reads = picked.clone();
+            commands.push(Command::new(
+                icon,
+                &format!("canvas-distribute-{axis}"),
+                ArtworkResource::DISTRIBUTE
+                    .map(move |()| (picked.with(Clone::clone), axis.to_owned())),
+                std::sync::Arc::new(move || {
+                    CanvasAction::Align(Align {
+                        ids: reads.with(Clone::clone),
+                        edge: None,
+                        distribute: Some(axis.to_owned()),
+                        to: None,
+                    })
+                }),
+            ));
+        }
+    }
+    commands
 }
 
 /// What the last open, save or export came to, in a caption under the

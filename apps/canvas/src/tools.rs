@@ -158,6 +158,11 @@ pub struct Tools {
     /// A change of view asked for from outside the canvas (the zoom
     /// buttons), carried out by the canvas on its next frame.
     pub view: LocalState<Option<ViewRequest>>,
+    /// Keys pressed while a button or another control that does not type
+    /// had the focus, and that it left alone: the canvas's own (Escape,
+    /// Delete, the arrows, Enter), carried out by the canvas on its next
+    /// frame as if it had had the focus.
+    pub keys: LocalState<Vec<CanvasKey>>,
     /// Whether the sidebar of inspector, layers and history is shown.
     pub sidebar: LocalState<bool>,
     /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
@@ -301,6 +306,14 @@ impl Loaded {
     }
 }
 
+/// A key for the canvas pressed while something else had the focus.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanvasKey {
+    pub key: ui::winit::keyboard::Key,
+    pub text: Option<String>,
+    pub modifiers: ui::winit::keyboard::ModifiersState,
+}
+
 /// A change of view the canvas makes when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewRequest {
@@ -348,6 +361,7 @@ impl Default for Tools {
             preview: LocalState::new(None),
             zoom: LocalState::new(1.0),
             view: LocalState::new(None),
+            keys: LocalState::new(Vec::new()),
             sidebar: LocalState::new(true),
             room: LocalState::new(0),
             stop: LocalState::new(0),
@@ -394,6 +408,20 @@ const INK: &str = "#2b3f8f";
 const BRUSH_RANGE: (f64, f64) = (1.0, 120.0);
 
 impl Tools {
+    /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the
+    /// size slider's travel, as painters' hands expect. Whether `key` was
+    /// one of them.
+    pub fn size_key(&self, key: &str) -> bool {
+        let step = match key {
+            "]" => 0.05,
+            "[" => -0.05,
+            _ => return false,
+        };
+        let travel = self.size.with(|size| *size);
+        self.size.set((travel + step).clamp(0.0, 1.0));
+        true
+    }
+
     /// The brush width in artwork units.
     pub fn brush_size(&self) -> f64 {
         let travel = self.size.with(|size| size.clamp(0.0, 1.0));

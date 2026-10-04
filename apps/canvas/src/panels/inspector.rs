@@ -151,17 +151,20 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let brush = {
         let tools = tools.clone();
         cx.switch(&tools.tool.clone(), move |cx, tool| {
-            let erasing = *tool == Tool::Eraser;
-            if matches!(tool, Tool::Wand | Tool::Bucket) {
-                return sampling(&tools);
-            }
+            let tool = *tool;
             let tools = tools.clone();
             cx.switch(&tools.layer.clone(), move |cx, layer| {
-                if erasing {
-                    eraser(cx, &tools)
-                } else {
-                    brush(cx, &tools, layer)
-                }
+                let settings = match tool {
+                    Tool::Eraser => eraser(cx, &tools),
+                    // Picking and selecting lay no paint: nothing to set.
+                    Tool::Select | Tool::Marquee | Tool::Oval | Tool::Lasso => {
+                        return Box::new(Spacer::fixed(0.0)) as Element;
+                    }
+                    Tool::Wand => sampling(&tools),
+                    Tool::Bucket => section(vec![brush(cx, &tools, layer, tool), sampling(&tools)]),
+                    _ => brush(cx, &tools, layer, tool),
+                };
+                section(vec![settings, Box::new(ui::widget::Divider::horizontal())])
             })
         })
     };
@@ -173,7 +176,6 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     };
     section(vec![
         brush,
-        Box::new(ui::widget::Divider::horizontal()),
         artwork(cx),
         Box::new(ui::widget::Divider::horizontal()),
         layer,
@@ -235,7 +237,11 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
 }
 
 /// The brush on `layer`: the paints its medium offers, its size and load.
-fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
+///
+/// For the other tools that lay paint, only what they use of it: the
+/// colour, and for lines and open paths the width.
+fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str, tool: Tool) -> Element {
+    let brushing = tool == Tool::Brush;
     let (medium, pigments, load) = cx.read(|art| {
         let Some(art) = art else {
             return (None, Vec::new(), None);
@@ -250,30 +256,8 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
             .unwrap_or_default();
         (medium, pigments, crate::tools::load_fraction(art, layer))
     });
-    // The medium that paints the layer, or on a plain layer the preset the
-    // brush is loaded with.
-    let title: Element = if let Some(medium) = &medium {
-        caption(&medium.label)
-    } else {
-        let preset = tools.preset.clone();
-        Box::new(
-            Text::dynamic(move || {
-                ui::i18n::I18nManager::lookup_plain(&preset.with(|preset| preset.label()))
-            })
-            .with_role(TextRole::Caption)
-            .dimmed(),
-        )
-    };
-    let mut parts: Vec<Element> = vec![Box::new(
-        Row::new()
-            .with_gap(8.0)
-            .no_wrap()
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(heading("canvas-brush"))
-            .push(Box::new(Spacer::new()))
-            .push(title),
-    )];
-    if medium.is_none() {
+    let mut parts: Vec<Element> = vec![tool_heading(tools, medium.as_ref(), tool)];
+    if brushing && medium.is_none() {
         parts.push(preset_picker(tools));
     }
     let palette = brush_palette(tools, &pigments);
@@ -292,6 +276,9 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
         let tools = tools.clone();
         Text::dynamic(move || format!("{:.0}", tools.brush_size())).with_role(TextRole::Caption)
     };
+    if !matches!(tool, Tool::Brush | Tool::Line | Tool::Pen) {
+        return section(parts);
+    }
     parts.push(tight(vec![
         labelled(
             &ui::i18n::I18nManager::lookup_plain("canvas-brush-size"),
@@ -303,6 +290,9 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
                 .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
         ),
     ]));
+    if !brushing {
+        return section(parts);
+    }
     if medium.is_none() {
         parts.push(fraction(
             "canvas-brush-opacity",
@@ -315,26 +305,58 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
         }));
     }
     if let Some(load) = load {
-        tools.load.set(load);
-        let load_label = {
-            let load = tools.load.clone();
-            Text::dynamic(move || percent(load.with(|load| *load))).with_role(TextRole::Caption)
-        };
-        parts.push(tight(vec![
-            labelled(
-                &ui::i18n::I18nManager::lookup_plain("canvas-brush-load"),
-                Box::new(load_label),
-            ),
-            Box::new(
-                Slider::from_state(&tools.load)
-                    .with_id("canvas-brush-load")
-                    .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
-                        "canvas-brush-load",
-                    )),
-            ),
-        ]));
+        parts.push(load_slider(tools, load));
     }
     section(parts)
+}
+
+/// What the tool settings are of: the brush, and the medium painting the
+/// layer or the preset it is loaded with; or the tool by name.
+fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: Tool) -> Element {
+    if tool != Tool::Brush {
+        return heading(tool.label());
+    }
+    let title: Element = if let Some(medium) = medium {
+        caption(&medium.label)
+    } else {
+        let preset = tools.preset.clone();
+        Box::new(
+            Text::dynamic(move || {
+                ui::i18n::I18nManager::lookup_plain(&preset.with(|preset| preset.label()))
+            })
+            .with_role(TextRole::Caption)
+            .dimmed(),
+        )
+    };
+    Box::new(
+        Row::new()
+            .with_gap(8.0)
+            .no_wrap()
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(heading("canvas-brush"))
+            .push(Box::new(Spacer::new()))
+            .push(title),
+    )
+}
+
+/// How much paint a painted layer's brush carries, starting at `load`.
+fn load_slider(tools: &Tools, load: f64) -> Element {
+    tools.load.set(load);
+    let load_label = {
+        let load = tools.load.clone();
+        Text::dynamic(move || percent(load.with(|load| *load))).with_role(TextRole::Caption)
+    };
+    tight(vec![
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain("canvas-brush-load"),
+            Box::new(load_label),
+        ),
+        Box::new(
+            Slider::from_state(&tools.load)
+                .with_id("canvas-brush-load")
+                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-load")),
+        ),
+    ])
 }
 
 /// The presets the brush can lay a plain layer's strokes with, drawn in
@@ -508,12 +530,15 @@ fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> Color
             })
             .selecting(INKS.iter().position(|rgb| Some(*rgb) == current));
     }
-    // Keep the pigment when this palette has it too, else load the first.
+    // Keep the pigment when this palette has it too, else load the one
+    // nearest the brush's colour: the paint the hand was using, not the
+    // palette's first (a white that does not show on a light ground).
     let loaded = tools
         .pigment
         .with(|pigment| pigment.as_ref().map(|(name, _)| name.clone()));
     let index = loaded
         .and_then(|name| pigments.iter().position(|pigment| pigment.name == name))
+        .or_else(|| nearest(tools.colour(), pigments))
         .unwrap_or(0);
     if let Some(pigment) = pigments.get(index) {
         tools
@@ -541,6 +566,29 @@ fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> Color
             }
         })
         .selecting(Some(index))
+}
+
+/// The pigment whose masstone is nearest `colour`.
+fn nearest(
+    colour: ui::vello::peniko::Color,
+    pigments: &[crate::media::PigmentSpec],
+) -> Option<usize> {
+    let want = colour.to_rgba8();
+    let distance = |pigment: &crate::media::PigmentSpec| {
+        let Some(got) = crate::render::colour(&pigment.colour, &[]) else {
+            return u32::MAX;
+        };
+        let got = got.to_rgba8();
+        [(want.r, got.r), (want.g, got.g), (want.b, got.b)]
+            .into_iter()
+            .map(|(a, b)| u32::from(a.abs_diff(b)))
+            .fold(0u32, |sum, d| sum.saturating_add(d.saturating_mul(d)))
+    };
+    pigments
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, pigment)| distance(pigment))
+        .map(|(index, _)| index)
 }
 
 /// The artwork's title, size and ground.
@@ -755,7 +803,12 @@ fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark], tools: &Tools) 
             art.and_then(|art| art.layer(&first.layer))
                 .is_none_or(|layer| layer.medium.is_empty())
         });
-        let mut stroke = vec![heading("canvas-stroke")];
+        // A brush stroke's paint is the brush's, not an outline round it.
+        let mut stroke = vec![heading(if erasers {
+            "canvas-tool-eraser"
+        } else {
+            "canvas-brush"
+        })];
         if !erasers {
             stroke.push(paints(
                 cx,
@@ -925,7 +978,6 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
     let width = cx.actions().bind(
         NumberInput::from_state(&width)
             .with_range(0.5, 400.0)
-            .with_size(112.0, 32.0)
             .with_step(1.0)
             .with_precision(1)
             .with_id("canvas-stroke-size")
@@ -1027,7 +1079,6 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
     let width = cx.actions().bind(
         NumberInput::from_state(&width)
             .with_range(0.0, 400.0)
-            .with_size(112.0, 32.0)
             .with_step(1.0)
             .with_precision(1)
             .with_id("canvas-stroke-width")
@@ -1088,12 +1139,13 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
             &ui::i18n::I18nManager::lookup_plain("canvas-dash"),
             grow(dash),
         ),
-        Box::new(
-            Row::new()
-                .with_gap(6.0)
-                .no_wrap()
-                .push(grow(cap))
-                .push(grow(join)),
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain("canvas-cap"),
+            grow(cap),
+        ),
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain("canvas-join"),
+            grow(join),
         ),
     ])
 }
@@ -1241,7 +1293,6 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
         cx.actions().bind(
             NumberInput::from_state(&size_state)
                 .with_range(4.0, 1000.0)
-                .with_size(96.0, 32.0)
                 .with_step(2.0)
                 .with_precision(0)
                 .with_id("canvas-text-size")
@@ -1331,4 +1382,29 @@ fn arrange(cx: &ViewCx<ArtworkResource>, ids: &[String]) -> Element {
                 ArtworkResource::REMOVE_MARKS.with(ids.to_vec()),
             ))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test fixtures")]
+
+    use super::*;
+
+    /// A brush moved onto a painted layer loads the pigment nearest the
+    /// colour it held, not the palette's first.
+    #[test]
+    fn a_painted_layer_loads_the_pigment_nearest_the_brush() {
+        let oil = crate::media::builtin()
+            .into_iter()
+            .find(|medium| medium.engine == "oil" && !medium.palette.is_empty())
+            .unwrap();
+        let blue = ui::vello::peniko::Color::from_rgb8(0x2b, 0x3f, 0x8f);
+        let index = nearest(blue, &oil.palette).unwrap();
+        let chosen = &oil.palette[index].name;
+        assert!(
+            chosen.contains("ultramarine") || chosen.contains("blue"),
+            "{chosen}"
+        );
+        assert_ne!(index, 0, "not simply the first pigment");
+    }
 }
