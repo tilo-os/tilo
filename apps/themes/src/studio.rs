@@ -428,7 +428,7 @@ impl Studio {
         #[param("Whether similar letters are always told apart")] always: bool,
     ) -> Result<(), Refusal> {
         edit(self, &theme, |t| {
-            t.distinct_letters = Json(always.then_some(true))
+            t.distinct_letters = Json(always.then_some(true));
         })
     }
 
