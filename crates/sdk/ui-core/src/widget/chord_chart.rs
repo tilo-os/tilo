@@ -171,6 +171,8 @@ pub struct ChordChart {
     activated: Option<ChordSelection>,
     keyboard_inspection: bool,
     touch: ChartTouchTracker,
+    /// The room the arc labels need beside the ring, measured at paint.
+    label_room: f64,
 }
 impl ChordChart {
     pub fn new(nodes: Vec<ChordNode>, links: Vec<ChordLink>) -> Self {
@@ -188,6 +190,7 @@ impl ChordChart {
             activated: None,
             keyboard_inspection: false,
             touch: ChartTouchTracker::default(),
+            label_room: 0.0,
         }
     }
     #[must_use]
@@ -255,13 +258,17 @@ impl ChordChart {
     fn geometry(&self) -> (Point, f64, f64) {
         let top = if self.title.is_empty() { 10.0 } else { 38.0 };
         let area = Rect::new(
-            self.rect.x0 + 28.0,
+            self.rect.x0 + 12.0,
             self.rect.y0 + top,
-            self.rect.x1 - 28.0,
-            self.rect.y1 - 24.0,
+            self.rect.x1 - 12.0,
+            self.rect.y1 - 12.0,
         );
-        let outer =
-            (area.width().min(area.height()) / 2.0 - self.style.label_offset - 16.0).max(2.0);
+        // The ring leaves the labels their measured room at the sides and a
+        // line above and below.
+        let side = self.label_room.max(self.style.label_offset + 16.0);
+        let outer = (area.width() / 2.0 - side)
+            .min(area.height() / 2.0 - self.style.label_offset - 16.0)
+            .max(2.0);
         (
             area.center(),
             (outer - self.style.ring_width.max(4.0)).max(1.0),
@@ -270,6 +277,91 @@ impl ChordChart {
     }
     fn palette(index: usize, theme: &Theme) -> Color {
         theme.tokens.colors.presence.series(index)
+    }
+
+    /// The room the labels need beside the ring: the widest label, never
+    /// more than a quarter of the chart, so the ring keeps its size.
+    fn measure_label_room(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        if !self.style.show_labels {
+            self.label_room = 0.0;
+            return;
+        }
+        let style = theme.text(TextRole::Caption);
+        let widest = self
+            .nodes
+            .iter()
+            .map(|node| f64::from(tr.measure_style(&node.label, None, &style).0))
+            .fold(0.0, f64::max);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        self.label_room = (widest + 2.0 * pad).min(self.rect.width() / 4.0);
+    }
+
+    /// Each arc's label outside its arc, largest arc first: shortened to the
+    /// room left before the chart's edge, and dropped (the tooltip names
+    /// the arc) where it would collide with a label already placed.
+    fn label_layout(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        center: Point,
+        outer: f64,
+    ) -> Vec<(String, Rect)> {
+        let style = theme.text(TextRole::Caption);
+        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.rect, theme);
+        let radius = outer
+            + self
+                .style
+                .label_offset
+                .min(f64::from(theme.tokens.spacing.s2));
+        let mut order: Vec<&NodeGeom> = self
+            .node_geometry
+            .iter()
+            .filter(|geom| geom.end > geom.start)
+            .collect();
+        order.sort_by(|a, b| (b.end - b.start).total_cmp(&(a.end - a.start)));
+        let mut placed = Vec::new();
+        for geom in order {
+            let label = self.node(&geom.id).map_or("", |n| n.label.as_str());
+            let label = if self.style.show_values {
+                format!("{label} {}", format_value(geom.value))
+            } else {
+                label.to_owned()
+            };
+            let mid = geom.start.midpoint(geom.end);
+            let room = crate::widget::chart_labels::radial_room(center, radius, mid, self.rect);
+            let Some((shown, w, h)) =
+                crate::widget::chart_labels::fit_label(tr, &label, room, &style)
+            else {
+                continue;
+            };
+            let rect = crate::widget::chart_labels::radial_label_rect(center, radius, mid, (w, h));
+            if placer.place(rect) {
+                placed.push((shown, rect));
+            }
+        }
+        placed
+    }
+
+    fn draw_labels(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        center: Point,
+        outer: f64,
+    ) {
+        let style = theme.text(TextRole::Caption);
+        for (label, rect) in self.label_layout(tr, theme, center, outer) {
+            tr.draw_style(
+                scene,
+                &label,
+                crate::widget::chart_labels::ground_ink(theme),
+                transform * Affine::translate((rect.x0, rect.y0)),
+                None,
+                &style,
+            );
+        }
     }
     fn hit(&self, point: Point) -> Option<ChordSelection> {
         self.node_geometry
@@ -352,6 +444,7 @@ impl Widget for ChordChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.measure_label_room(tr, theme);
         if !self.title.is_empty() {
             tr.draw_style(
                 scene,
@@ -488,28 +581,9 @@ impl Widget for ChordChart {
                     &geom.path,
                 );
             }
-            if self.style.show_labels && geom.end > geom.start {
-                let mid = geom.start.midpoint(geom.end);
-                let label_r = outer + self.style.label_offset;
-                let label = self.node(&geom.id).map_or("", |n| n.label.as_str());
-                let label = if self.style.show_values {
-                    format!("{label} {}", format_value(geom.value))
-                } else {
-                    label.to_owned()
-                };
-                tr.draw_style(
-                    scene,
-                    &label,
-                    theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
-                            mid.cos().mul_add(label_r, center.x) - 24.0,
-                            mid.sin().mul_add(label_r, center.y) - 6.0,
-                        )),
-                    Some(64.0),
-                    &theme.text(TextRole::Caption),
-                );
-            }
+        }
+        if self.style.show_labels {
+            self.draw_labels(scene, transform, tr, theme, center, outer);
         }
         if self.keyboard_inspection
             && let Some(selection) = self.hovered.as_ref()
@@ -751,6 +825,56 @@ fn format_value(v: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// At every size the arc labels stay outside the ring, inside the
+    /// chart, and clear of each other.
+    #[test]
+    fn arc_labels_stay_off_the_ring_and_off_each_other() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        for (w, h) in [(220.0, 200.0), (320.0, 260.0), (520.0, 360.0)] {
+            let mut chart = ChordChart::new(
+                ["Design", "Engineering", "Research", "Support", "Sales"]
+                    .into_iter()
+                    .map(|label| ChordNode::new(label, label))
+                    .collect(),
+                vec![
+                    ChordLink::new("d-e", "Design", "Engineering", 32.0),
+                    ChordLink::new("d-r", "Design", "Research", 14.0),
+                    ChordLink::new("e-r", "Engineering", "Research", 25.0),
+                    ChordLink::new("e-s", "Engineering", "Support", 18.0),
+                    ChordLink::new("s-s", "Support", "Sales", 27.0),
+                    ChordLink::new("s-d", "Sales", "Design", 21.0),
+                ],
+            );
+            chart.rect = Rect::new(0.0, 0.0, w, h);
+            let mut scene = Scene::new();
+            chart.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let (center, _, outer) = chart.geometry();
+            let labels = chart.label_layout(&mut tr, &theme, center, outer);
+            assert!(!labels.is_empty(), "{w}: some arcs are named");
+            for (i, (_, a)) in labels.iter().enumerate() {
+                let nearest = Point::new(center.x.clamp(a.x0, a.x1), center.y.clamp(a.y0, a.y1));
+                assert!(
+                    nearest.distance(center) >= outer,
+                    "{w}: {a:?} covers the ring"
+                );
+                assert!(
+                    a.x0 >= chart.rect.x0 - 0.5 && a.x1 <= chart.rect.x1 + 0.5,
+                    "{w}: {a:?} leaves the chart"
+                );
+                for (_, b) in labels.iter().skip(i + 1) {
+                    assert!(a.intersect(*b).is_zero_area(), "{w}: {a:?} hits {b:?}");
+                }
+            }
+        }
+    }
     #[test]
     fn chord_ribbons_hit_test_and_invalid_links_are_safe() {
         fn ribbon_is_closed_and_hit_testable() {
