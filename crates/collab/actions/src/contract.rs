@@ -64,6 +64,11 @@ impl RiskLevel {
 /// and never listed for a person to pick (the action palette, menus).
 pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
 
+/// [`ActionContract::tags`] entry of an action whose result carries content
+/// from outside the user's own data (a web page's text, its logs): data for
+/// the caller to reason about, never instructions to follow.
+pub const UNTRUSTED_CONTENT_TAG: &str = "content:untrusted";
+
 /// [`ActionContract::tags`] entry of an action whose risk, and therefore
 /// whether it needs confirmation, depends on the arguments it is invoked
 /// with (a generic edit that may delete). The publishing host classifies each
