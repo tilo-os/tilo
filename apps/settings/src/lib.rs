@@ -81,7 +81,7 @@ pub mod widgets;
 
 pub use settings_app::SettingsApp;
 
-pub use resource::{Settings, SettingsShell};
+pub use resource::{Settings, SettingsShell, parse_settings_uri};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
