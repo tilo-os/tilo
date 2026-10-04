@@ -41,7 +41,7 @@ use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher,
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
-use ui::widget::{Dropdown, ProgressBar, Sparkline, Toggle, Widget};
+use ui::widget::{Dropdown, ProgressBar, StatTile, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -232,13 +232,12 @@ pub(crate) fn lock_from_label(label: &str) -> Option<u32> {
 }
 
 fn battery_status_shown(battery: &BatteryInfo) -> String {
-    let capacity = ArgValue::from(i64::from(battery.capacity));
-    match battery.status.as_str() {
-        "Full" => t("power-status-full"),
-        "Charging" => t_args("power-status-charging", &[("capacity", capacity)]),
-        "Not charging" => t_args("power-status-plugged", &[("capacity", capacity)]),
-        _ => t_args("power-status-battery", &[("capacity", capacity)]),
-    }
+    t(match battery.status.as_str() {
+        "Full" => "power-status-full",
+        "Charging" => "power-state-charging",
+        "Not charging" => "power-state-plugged",
+        _ => "power-state-battery",
+    })
 }
 
 fn health_explanation_shown(battery: &BatteryInfo) -> String {
@@ -609,12 +608,12 @@ impl PowerPane {
             .map(|p| p.capacity as f32)
             .collect();
         if trend.len() >= 2 {
+            let latest = trend.last().copied().unwrap_or_default();
             battery_rows.push(Box::new(
-                Sparkline::new(trend, Theme::dark().accent_primary)
-                    .with_max(100.0)
-                    .with_size(320.0, 56.0),
+                StatTile::new(t("power-history-title"), format!("{latest:.0}"))
+                    .unit("%")
+                    .sparkline(trend),
             ));
-            battery_rows.push(caption(&t("power-history-caption")));
         }
         if let Some(capability) = &self.charge_cap {
             let choices: Vec<String> = capability
@@ -639,15 +638,6 @@ impl PowerPane {
                         .with_placeholder(&format!("{}%", capability.current)),
                 ),
             ));
-            let detail = match capability.backend {
-                ChargeCapBackend::ConservationMode => t("power-charge-cap-conservation"),
-                ChargeCapBackend::HuaweiWmi => t("power-charge-cap-huawei"),
-                ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
-                    t("power-charge-cap-start-stop")
-                }
-                ChargeCapBackend::PowerSupply => t("power-charge-cap-stop"),
-            };
-            battery_rows.push(caption(&detail));
         } else {
             battery_rows.push(value_row(
                 &t("power-charge-cap"),
@@ -686,7 +676,6 @@ impl PowerPane {
                     ),
                 )]
             };
-        profile_rows.push(caption(&t("power-profile-caption")));
         if let Some(notice) = &self.profile_notice {
             profile_rows.push(caption(notice));
         }
@@ -753,7 +742,6 @@ impl PowerPane {
                             .with_placeholder(&lock_now),
                     ),
                 ),
-                caption(&t("power-idle-caption")),
                 choice_row(
                     &t("power-saver-suspend"),
                     Box::new(
@@ -787,7 +775,6 @@ impl PowerPane {
                             .with_placeholder(&performance_now),
                     ),
                 ),
-                caption(&t("power-profile-idle-caption")),
             ]),
         )
     }

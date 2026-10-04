@@ -7,16 +7,17 @@
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
 use crate::i18n::t;
-use crate::widgets::{card, rows, setting_row};
+use crate::widgets::{card, choice_row, rows, setting_row};
 use automerge::{AutoCommit, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::doc::{read_bool, read_str_or_text};
+use ui::input::{KeyLegend, KeyboardBinding, KeyboardModifier};
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{ShortcutRecorder, Toggle, Widget};
+use ui::widget::{InputHint, Row, ShortcutRecorder, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -62,21 +63,34 @@ fn active_keycaps() -> ui::Keycaps {
         })
 }
 
-/// `chord` as the active layout's keycaps spell it (`Strg+Umschalt+T` on a
-/// German layout). The stored chord stays canonical.
-fn chord_label(chord: &KeyChord) -> String {
-    ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key)
+/// The keycaps a stored chord is drawn with.
+fn binding_of(chord: &KeyChord) -> KeyboardBinding {
+    let modifiers = chord.modifiers.iter().filter_map(|modifier| {
+        match modifier.to_ascii_lowercase().as_str() {
+            "super" | "meta" => Some(KeyboardModifier::System),
+            "ctrl" | "control" => Some(KeyboardModifier::Control),
+            "alt" | "option" => Some(KeyboardModifier::Alt),
+            "shift" => Some(KeyboardModifier::Shift),
+            _ => None,
+        }
+    });
+    KeyboardBinding::new(modifiers, KeyLegend::from_name(&chord.key))
 }
 
-fn chords_text(chords: &[KeyChord]) -> String {
+/// The chords of a shortcut nobody can rebind, as keycaps in the same
+/// column the editable ones use.
+fn chords_keycaps(chords: &[KeyChord]) -> Box<dyn Widget> {
     if chords.is_empty() {
-        return t("settings-shortcut-unassigned");
+        return Box::new(Text::new(&t("settings-shortcut-unassigned")).dimmed());
     }
-    chords
-        .iter()
-        .map(chord_label)
-        .collect::<Vec<_>>()
-        .join("  /  ")
+    let mut row = Row::new().no_wrap();
+    for (index, chord) in chords.iter().enumerate() {
+        if index > 0 {
+            row = row.push(Box::new(Text::new(&t("settings-shortcut-or")).dimmed()));
+        }
+        row = row.push(Box::new(InputHint::keyboard(binding_of(chord))));
+    }
+    Box::new(row)
 }
 
 fn entry_row(entry: &ShortcutEntry) -> Box<dyn Widget> {
@@ -84,7 +98,7 @@ fn entry_row(entry: &ShortcutEntry) -> Box<dyn Widget> {
     match entry.action.filter(|_| entry.rebindable) {
         Some(action) => {
             let key = durable_key(action);
-            setting_row(
+            choice_row(
                 &label,
                 Box::new(ShortcutRecorder::new(
                     &key,
@@ -102,7 +116,7 @@ fn entry_row(entry: &ShortcutEntry) -> Box<dyn Widget> {
                 )),
             )
         }
-        None => crate::widgets::value_row(&label, &chords_text(&entry.chords)),
+        None => choice_row(&label, chords_keycaps(&entry.chords)),
     }
 }
 
@@ -144,7 +158,14 @@ impl Default for ShortcutPane {
 
 impl ShortcutPane {
     fn composition(&self) -> Box<dyn Widget> {
-        let entries = catalogue(&self.config);
+        // The catalogue lists a few shortcuts twice, once as a rebindable
+        // action and once as the desktop's fixed chord under the same name.
+        // One row per name, the first (the editable one) wins.
+        let mut seen = std::collections::HashSet::new();
+        let entries: Vec<_> = catalogue(&self.config)
+            .into_iter()
+            .filter(|entry| seen.insert(t(&entry.label_key)))
+            .collect();
         let mut cards: Vec<Box<dyn Widget>> = ShortcutCategory::ALL
             .into_iter()
             .map(|category| {
@@ -168,15 +189,17 @@ impl ShortcutPane {
             })
             .collect();
         if !self.config.actions.is_empty() {
-            let mut actions: Vec<Box<dyn Widget>> = self
+            let actions: Vec<Box<dyn Widget>> = self
                 .config
                 .actions
                 .iter()
-                .map(|bound| crate::widgets::value_row(&bound.label, &chord_label(&bound.chord)))
+                .map(|bound| {
+                    choice_row(
+                        &bound.label,
+                        chords_keycaps(std::slice::from_ref(&bound.chord)),
+                    )
+                })
                 .collect();
-            actions.push(crate::widgets::caption(&t(
-                "settings-shortcuts-actions-caption",
-            )));
             cards.push(card(&t("settings-shortcuts-actions"), rows(actions)));
         }
         crate::widgets::cards(cards)
