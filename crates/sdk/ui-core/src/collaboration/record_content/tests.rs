@@ -50,3 +50,30 @@ fn each_record_has_its_own_lane() {
     assert_eq!(store.read(&hash), None);
     assert!(other.take_requests().wants.is_empty());
 }
+
+#[test]
+fn a_record_that_is_not_the_windows_own_keeps_its_content_on_its_route() {
+    let app = "so.tilo.person-content-test";
+    let person = super::super::RouteSpec::record(app, uuid::Uuid::from_u128(7), "history");
+    let store = ContentLane::record_store(&person);
+    let hash = store.put(b"a poster").unwrap();
+    let again = ContentLane::record_store(&person);
+    assert_eq!(
+        again.read(&hash).as_deref(),
+        Some(&b"a poster"[..]),
+        "one store per record"
+    );
+    let routed = ContentLane::routed(app);
+    let [(route, lane)] = routed.as_slice() else {
+        panic!("one routed lane, got {}", routed.len());
+    };
+    assert_eq!(route, &person);
+    assert_eq!(
+        lane.take_requests().offers,
+        vec![(hash, b"a poster".to_vec())]
+    );
+    assert!(
+        ContentLane::routed("so.tilo.record-content-test").is_empty(),
+        "a window's own record sends on the window's route"
+    );
+}

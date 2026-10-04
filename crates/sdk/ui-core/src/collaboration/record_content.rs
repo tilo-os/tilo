@@ -18,6 +18,11 @@
 //! record of a process: the store queues its requests there, and the
 //! window's collaboration loop sends them on the record's route and hands
 //! back what arrives.
+//!
+//! A record other than the window's own — one of the person's records,
+//! kept in their own room — has a lane of its own that names its route
+//! ([`ContentLane::record_store`]): its content lives where that record
+//! does, on the person's devices, never in the window's room.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
@@ -44,6 +49,10 @@ struct LaneState {
 /// Where one record's content store and its window's collaboration meet.
 #[derive(Default)]
 pub struct ContentLane {
+    /// The record's route, for a record that is not the window's own.
+    route: OnceLock<super::RouteSpec>,
+    /// The content store of such a record.
+    store: OnceLock<ContentStore>,
     state: Mutex<LaneState>,
     wake: Mutex<Option<crate::WakeHandle>>,
     /// The record's host carries its content to the record's other
@@ -58,20 +67,46 @@ pub struct LaneRequests {
     pub offers: Vec<(String, Vec<u8>)>,
 }
 
+type Lanes = Mutex<HashMap<(String, String), Arc<ContentLane>>>;
+
+fn lanes() -> std::sync::MutexGuard<'static, HashMap<(String, String), Arc<ContentLane>>> {
+    static LANES: OnceLock<Lanes> = OnceLock::new();
+    LANES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl ContentLane {
     /// The lane of record `record` of app `app` in this process.
     pub fn of(app: &str, record: &str) -> Arc<Self> {
-        static LANES: OnceLock<Mutex<HashMap<(String, String), Arc<ContentLane>>>> =
-            OnceLock::new();
-        let lanes = LANES.get_or_init(Mutex::default);
-        let mut lanes = lanes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(
-            lanes
+            lanes()
                 .entry((app.to_owned(), record.to_owned()))
                 .or_default(),
         )
+    }
+
+    /// The content store of the record `route` names, when it is not the
+    /// window's own: what it references is read from and kept by the host
+    /// under that record's scope, and travels on its route alone. This
+    /// device holds the bytes for the app only while it runs.
+    pub fn record_store(route: &super::RouteSpec) -> ContentStore {
+        let lane = Self::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        let _ = lane.route.set(route.clone());
+        lane.store
+            .get_or_init(|| RecordContent::store(ContentStore::memory(), Arc::clone(&lane)))
+            .clone()
+    }
+
+    /// The lanes of app `app`'s records that are not a window's own, with
+    /// the routes they send on.
+    pub fn routed(app: &str) -> Vec<(super::RouteSpec, Arc<Self>)> {
+        lanes()
+            .iter()
+            .filter(|((lane_app, _), _)| lane_app == app)
+            .filter_map(|(_, lane)| Some((lane.route.get()?.clone(), Arc::clone(lane))))
+            .collect()
     }
 
     /// The record's host answered the route's content subscription: what

@@ -661,30 +661,47 @@ impl App {
         else {
             return;
         };
-        let lane = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
-        {
-            let _entry = self.enter_wake_scope();
-            lane.attach(crate::WakeHandle::new());
+        let own = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        let lanes = std::iter::once((None, own)).chain(
+            ContentLane::routed(&route.app_id)
+                .into_iter()
+                .map(|(route, lane)| (Some(route), lane)),
+        );
+        for (route, lane) in lanes {
+            {
+                let _entry = self.enter_wake_scope();
+                lane.attach(crate::WakeHandle::new());
+            }
+            self.send_lane_requests(route.as_ref(), &lane);
         }
-        let requests = lane.take_requests();
-        for hash in requests.wants {
-            if let Err(error) = self
+    }
+
+    /// Send what `lane` queued: on the window's own route, or on `route`
+    /// for a record that is not the window's.
+    fn send_lane_requests(
+        &mut self,
+        route: Option<&crate::collaboration::RouteSpec>,
+        lane: &crate::collaboration::record_content::ContentLane,
+    ) {
+        let mut send = |request: CollabRequest| match route {
+            Some(route) => self
                 .collaboration
                 .manager
-                .try_send(CollabRequest::WantContent { hash: hash.clone() })
-            {
+                .try_send_to_route(route.clone(), request),
+            None => self.collaboration.manager.try_send(request),
+        };
+        let requests = lane.take_requests();
+        for hash in requests.wants {
+            if let Err(error) = send(CollabRequest::WantContent { hash: hash.clone() }) {
                 tracing::debug!(%error, "collab: record content request deferred");
                 lane.retry_want(hash);
             }
         }
         for (hash, bytes) in requests.offers {
-            match self
-                .collaboration
-                .manager
-                .try_send(CollabRequest::OfferContent {
-                    hash: hash.clone(),
-                    bytes: bytes.clone(),
-                }) {
+            match send(CollabRequest::OfferContent {
+                hash: hash.clone(),
+                bytes: bytes.clone(),
+            }) {
                 Ok(()) | Err(crate::collaboration::CollabSendError::TooLarge { .. }) => {}
                 Err(_) => lane.retry_offer(hash, bytes),
             }

@@ -326,4 +326,20 @@ impl PersonRecord {
     pub fn flush(&self) {
         let _ = self.store.try_flush();
     }
+
+    /// Where the content this record references is stored and read: under
+    /// the person's own room, kept by the host and carried to the person's
+    /// other devices on the record's route — never in the room of the
+    /// window showing it. `None` without a person room, where the record
+    /// stays on this device and keeps no content of its own.
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        let (package, home) = self.store.package_and_home();
+        let room = uuid::Uuid::parse_str(&home).ok()?;
+        Some(
+            crate::collaboration::record_content::ContentLane::record_store(
+                &crate::collaboration::RouteSpec::record(package, room, self.checkout.id.as_str()),
+            ),
+        )
+    }
 }
