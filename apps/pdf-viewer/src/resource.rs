@@ -223,6 +223,12 @@ impl ResourceSurface<PdfViewer> for PdfApp {
 
     fn attach(&mut self, cx: SurfaceCx<PdfViewer>) {
         self.attach_framework(cx.dispatcher());
+        // A capture shows the scenario's signature, never the person's.
+        if cx.mode().is_live()
+            && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()
+        {
+            self.attach_signature(signature);
+        }
     }
 
     fn read_only_changed(&mut self, read_only: bool) {
