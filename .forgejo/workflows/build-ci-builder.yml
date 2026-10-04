@@ -62,7 +62,6 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Choose native build or promoted-builder qualification
         id: plan
         env:
@@ -115,8 +114,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -311,8 +308,6 @@ jobs:
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
         id: cargo-cache
         uses: ./.forgejo/actions/restore-cargo-downloads
@@ -363,8 +358,6 @@ jobs:
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
