@@ -296,7 +296,6 @@ dependencies = [
  "runtime-dylib",
  "runtime-identity",
  "runtime-portal",
- "serde",
  "serde_json",
  "shell",
  "tempfile",
