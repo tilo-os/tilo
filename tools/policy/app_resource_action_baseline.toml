@@ -50,7 +50,6 @@
 "apps/passwords/src/resource.rs" = 2
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
-"apps/print-centre/src/resource.rs" = 1
 "apps/remote/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
@@ -109,7 +108,6 @@
 "apps/pdf-viewer/src/lib.rs" = 2
 "apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
-"apps/print-centre/src/main.rs" = 2
 "apps/remote/src/main.rs" = 2
 "apps/settings/src/main.rs" = 1
 "apps/sheets/src/main.rs" = 1
@@ -141,7 +139,6 @@
 "apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
-"apps/print-centre/src/resource.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]
