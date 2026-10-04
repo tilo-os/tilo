@@ -28,7 +28,7 @@ pub(crate) fn terminal() -> VtGrid {
         "        CPU: 4d 6h 12min".to_owned(),
         format!("{prompt}df -h /srv"),
         "Filesystem      Size  Used Avail Use% Mounted on".to_owned(),
-        "/dev/nvme1n1p1  1.8T  1.1T  644G  63% /srv".to_owned(),
+        "tank/srv        1.8T  1.1T  644G  63% /srv".to_owned(),
         format!("{prompt}ls ~/builds"),
         "\x1b[1;34m2026-06-29-nightly\x1b[0m  \x1b[1;34m2026-06-30-nightly\x1b[0m  \
          \x1b[1;34mrelease-0.9.4\x1b[0m  \x1b[1;34mrelease-0.9.5\x1b[0m"
