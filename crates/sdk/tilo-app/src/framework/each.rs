@@ -372,7 +372,9 @@ impl<R: Resource> Widget for Each<R> {
                 .draw_overlay(scene, transform, text, theme, presence);
         }
         if self.menu.menu.is_open() {
-            self.menu.menu.draw(scene, transform, text, theme, presence);
+            self.menu
+                .menu
+                .draw_overlay(scene, transform, text, theme, presence);
         }
     }
 
