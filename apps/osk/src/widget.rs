@@ -88,6 +88,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use crate::actions::SetPreference;
+use crate::learned::{LearnedTyping, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -188,8 +189,9 @@ pub struct OskWidget {
     /// Whether candidate chips are shown. Turning this off leaves the stable
     /// suggestion band in place, avoiding geometry churn while typing.
     suggestions_enabled: bool,
-    /// Whether the keyboard may adapt rankings from committed words. What it
-    /// learns stays in this process: it is neither saved nor shared.
+    /// Whether the keyboard may adapt rankings and tap targets to this
+    /// person's typing. What it learns is theirs alone: their host keeps it
+    /// in the person's own record ([`crate::learned`]).
     personalization_enabled: bool,
 
     // --- frame caches (populated in apply_layout) ---
@@ -294,6 +296,12 @@ pub struct OskWidget {
     structure_dirty: bool,
     /// Preference changes the keyboard made itself, for its host to submit.
     preference_edits: Vec<SetPreference>,
+    /// What typing taught since the host last saved it.
+    lesson: Lesson,
+    /// Whether what was learned is to be forgotten, saved copies included.
+    forget_learned: bool,
+    /// What the keyboard learned from this person, as last presented.
+    learned: std::rc::Rc<LearnedTyping>,
 
     /// Whether the keyboard is on screen. This is not the keyboard's own
     /// choice — visibility belongs to the compositor, which shows the keyboard
@@ -398,6 +406,9 @@ impl OskWidget {
             on_toolbar: None,
             structure_dirty: false,
             preference_edits: Vec::new(),
+            lesson: Lesson::default(),
+            forget_learned: false,
+            learned: std::rc::Rc::default(),
             visible: true,
         };
         // Seed the bar with cold-start (most-common-word) suggestions so it is
@@ -562,10 +573,13 @@ impl OskWidget {
             return;
         }
         self.personalization_enabled = enabled;
-        if !enabled {
+        if enabled {
+            self.adopt_learned();
+        } else {
             self.predictor.clear_learned();
             self.touch_model.clear();
             self.emoji_recents = emoji::Recents::default();
+            self.lesson = Lesson::default();
         }
         self.refresh_next_word_suggestions();
     }
@@ -579,6 +593,9 @@ impl OskWidget {
         if let Some(ac) = &mut self.autocorrect {
             ac.clear_kept();
         }
+        self.lesson = Lesson::default();
+        self.learned = std::rc::Rc::default();
+        self.forget_learned = true;
         if !self.emoji_recents.is_empty() {
             self.emoji_recents = emoji::Recents::default();
             self.stage_emoji_recents();
@@ -766,6 +783,44 @@ impl OskWidget {
         std::mem::take(&mut self.preference_edits)
     }
 
+    /// Take `learned`, what the keyboard learned from this person on any of
+    /// their devices, as what it knows about their typing.
+    pub fn present_learned(&mut self, learned: std::rc::Rc<LearnedTyping>) {
+        self.learned = learned;
+        if self.personalization_enabled {
+            self.adopt_learned();
+        }
+    }
+
+    /// What typing taught since the last call, for the host to save with
+    /// what the keyboard learned before.
+    pub fn take_lesson(&mut self) -> Option<Lesson> {
+        if self.lesson.is_empty() {
+            return None;
+        }
+        let mut lesson = std::mem::take(&mut self.lesson);
+        self.language.code().clone_into(&mut lesson.language);
+        Some(lesson)
+    }
+
+    /// Whether what was learned is to be forgotten, saved copies included,
+    /// since the last call.
+    pub fn take_forget_learned(&mut self) -> bool {
+        std::mem::take(&mut self.forget_learned)
+    }
+
+    /// Know what was learned for the typing language.
+    fn adopt_learned(&mut self) {
+        let learned = std::rc::Rc::clone(&self.learned);
+        if let Some(transitions) = learned.transitions.get(self.language.code()) {
+            self.predictor.adopt_learned(transitions);
+        }
+        self.touch_model.adopt(&learned.touch);
+        if let Some(ac) = &mut self.autocorrect {
+            ac.adopt_kept(&learned.kept);
+        }
+    }
+
     /// Follow what the compositor said about the focused text field over the
     /// input method: a new field drops the composition that belonged to the
     /// previous one, its purpose picks the layout, its hints decide secrecy
@@ -908,6 +963,11 @@ impl OskWidget {
         }
         self.language = language;
         self.predictor = Predictor::for_language(language);
+        if self.personalization_enabled
+            && let Some(transitions) = self.learned.transitions.get(language.code())
+        {
+            self.predictor.adopt_learned(transitions);
+        }
         self.swipe_model.set_language(language);
         self.autocorrect = None;
         self.last_correction = None;
@@ -1119,9 +1179,12 @@ impl OskWidget {
         self.current_word_overflowed = false;
         if !word.is_empty() && !self.is_secret_field() {
             let committed = word.to_lowercase();
-            if self.personalization_enabled {
-                self.predictor
-                    .learn_transition(self.prev_word.as_deref(), &committed);
+            if self.personalization_enabled
+                && let Some(learned) = self
+                    .predictor
+                    .learn_transition(self.prev_word.as_deref(), &committed)
+            {
+                self.lesson.transitions.push(learned);
             }
             self.prev_word = Some(committed);
         }
@@ -1154,9 +1217,12 @@ impl OskWidget {
         }
         let adjacency = KeyAdjacency::from_layout(self.current_layout());
         let dict = self.predictor.dictionary();
-        let ac = self
-            .autocorrect
-            .get_or_insert_with(|| Autocorrector::new(dict, KeyAdjacency::default()));
+        let learned = &self.learned;
+        let ac = self.autocorrect.get_or_insert_with(|| {
+            let mut ac = Autocorrector::new(dict, KeyAdjacency::default());
+            ac.adopt_kept(&learned.kept);
+            ac
+        });
         ac.set_adjacency(adjacency);
         ac.correct(word)
     }
@@ -1169,6 +1235,9 @@ impl OskWidget {
         }
         if let Some(ac) = &mut self.autocorrect {
             ac.keep(&c.typed);
+        }
+        if self.personalization_enabled && !self.is_secret_field() {
+            self.lesson.kept.push(c.typed.to_lowercase());
         }
         self.prev_word = Some(c.typed.to_lowercase());
         let mut text = c.typed;
@@ -1648,6 +1717,12 @@ impl OskWidget {
             && let Some(k) = keys.iter().find(|k| k.id == target)
         {
             self.touch_model.learn(k.ch, p, k.rect);
+            if !self.is_secret_field()
+                && let Some(offset) = self.touch_model.offset(k.ch)
+            {
+                self.lesson.touch.retain(|(letter, _)| *letter != k.ch);
+                self.lesson.touch.push((k.ch, offset));
+            }
         }
         target
     }

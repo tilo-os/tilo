@@ -216,9 +216,14 @@ mod tests {
     #[test]
     fn the_published_keyboard_offers_its_configuration_and_never_what_is_typed() {
         let mut app = keyboard();
-        for letter in ["s", "e", "c", "r", "e", "t"] {
+        for letter in ["s", "e", "c", "r", "e", "t", "space", "m", "a"] {
             tap(&mut app, letter);
         }
+        app.settle();
+        assert!(
+            !learned(&mut app).is_empty(),
+            "the committed word was learned, privately"
+        );
         let published = app.agent_surface().to_string();
         for address in [
             "osk.keyboard.layout",
@@ -230,8 +235,10 @@ mod tests {
             assert!(published.contains(address), "{address} is published");
         }
         assert!(
-            !published.contains("secret") && !published.contains("Composing"),
-            "the word being typed reaches no palette, agent or script: {published}"
+            !published.contains("secret")
+                && !published.contains("Composing")
+                && !published.contains("osk.learned"),
+            "neither the word being typed nor what was learned reaches a palette, agent or script: {published}"
         );
     }
 
@@ -300,6 +307,52 @@ mod tests {
         assert!(app.state().emoji_recents.is_empty());
         assert!(app.state().personalization);
         assert_eq!(OskEffect::ClearPersonal.id(), "clear-personal");
+    }
+
+    fn learned(app: &mut TestApp<OskShell>) -> crate::learned::LearnedTyping {
+        let record = app
+            .person::<crate::learned::Learned>()
+            .expect("the person's record of what the keyboard learned");
+        (*record.get()).clone()
+    }
+
+    #[test]
+    fn what_typing_teaches_is_the_persons_own_and_survives_a_relaunch() {
+        let mut app = keyboard();
+        for key in ["h", "i", "space", "y", "o", "u", "space"] {
+            tap(&mut app, key);
+        }
+        app.settle();
+        let taught = learned(&mut app);
+        assert_eq!(taught.transitions["en"][""]["hi"], 1);
+        assert_eq!(taught.transitions["en"]["hi"]["you"], 1);
+
+        let mut app = app.reopen().unwrap();
+        app.harness().relayout();
+        assert_eq!(learned(&mut app).transitions["en"]["hi"]["you"], 1);
+
+        app.call("set-personalization", serde_json::json!({ "value": false }))
+            .unwrap();
+        app.settle();
+        assert!(
+            learned(&mut app).is_empty(),
+            "turning personalization off forgets what was learned"
+        );
+    }
+
+    #[test]
+    fn clearing_learned_suggestions_forgets_the_saved_lessons() {
+        let mut app = keyboard();
+        for key in ["h", "i", "space"] {
+            tap(&mut app, key);
+        }
+        app.settle();
+        assert!(!learned(&mut app).is_empty());
+        app.effect_on_confirmed("osk.keyboard.suggestions", &OskEffect::ClearPersonal)
+            .unwrap();
+        app.settle();
+        assert!(learned(&mut app).is_empty());
+        assert!(app.state().personalization);
     }
 
     #[test]

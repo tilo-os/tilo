@@ -56,6 +56,7 @@ workspace-hack = { version = "0.1" }
 # keymaps and symbol resolution.
 xkbcommon = "0.8"
 tempfile.workspace = true
+tilo-automerge.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [[test]]

@@ -2,17 +2,23 @@
 //!
 //! [`OskSurface`] presents the preferences to the [`OskWidget`] and submits
 //! the changes the keyboard makes itself (a layout key, an emoji pick)
-//! through the dispatcher, like every other edit. In the keyboard's own
+//! through the dispatcher, like every other edit. What typing teaches the
+//! keyboard is kept in the person's own [`Learned`] record, which follows
+//! them to their other devices and never reaches a collaborator. In the
+//! keyboard's own
 //! process ([`crate::service::serve`]) a live surface also connects to the
 //! session: it follows the focused field over the input method and types
 //! into it.
 
 use std::rc::Rc;
 
-use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, ResourceSurface, SurfaceCx};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, Effected, PersonRecord, ResourceSurface, SurfaceCx,
+};
 use ui::widget::{AppModel, Decorator, ModelPath, Widget};
 
 use crate::actions::OskEffect;
+use crate::learned::{Learned, LearnedAction};
 use crate::resource::{
     HIT_OVERLAY_FLAG, INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, Osk, OskPreferences, PURPOSE_OPTION,
 };
@@ -36,6 +42,9 @@ pub(crate) const SCENARIOS: &[&str] = &[
 pub struct OskSurface {
     keyboard: OskWidget,
     dispatch: Option<Dispatcher<Osk>>,
+    /// What the keyboard learned from this person, and the revision of it
+    /// the keyboard was last presented.
+    learned: Option<(PersonRecord<Learned>, u64)>,
     /// Focus changes the input method reports, while the keyboard serves the
     /// session through one.
     focus: Option<service::FocusChanges>,
@@ -57,6 +66,7 @@ impl OskSurface {
         Self {
             keyboard,
             dispatch: None,
+            learned: None,
             focus: None,
         }
     }
@@ -66,13 +76,42 @@ impl OskSurface {
         &self.keyboard
     }
 
-    /// Submit the preference changes the keyboard made itself.
+    /// Submit the preference changes the keyboard made itself, and save
+    /// what typing taught it.
     fn submit_edits(&mut self) {
         let edits = self.keyboard.take_preference_edits();
         if let Some(dispatch) = &self.dispatch {
             for edit in &edits {
                 dispatch.apply(edit);
             }
+        }
+        let forget = self.keyboard.take_forget_learned();
+        let lesson = self.keyboard.take_lesson();
+        let Some((learned, _)) = &self.learned else {
+            return;
+        };
+        let saved = if forget {
+            learned.apply(&LearnedAction::Forget)
+        } else {
+            lesson.map_or(Ok(()), |lesson| {
+                learned.apply(&LearnedAction::Learn(lesson))
+            })
+        };
+        if let Err(error) = saved {
+            tracing::warn!(%error, "osk: what the keyboard learned could not be saved");
+        }
+    }
+
+    /// Present what the keyboard learned when it changed here or on another
+    /// of the person's devices.
+    fn present_learned(&mut self) {
+        let Some((learned, presented)) = &mut self.learned else {
+            return;
+        };
+        let revision = learned.revision();
+        if revision != *presented {
+            *presented = revision;
+            self.keyboard.present_learned(learned.get());
         }
     }
 
@@ -145,12 +184,22 @@ impl Decorator for OskSurface {
         }
         self.keyboard.sync(state, path);
         self.submit_edits();
+        self.present_learned();
     }
 }
 
 impl ResourceSurface<Osk, OskEffect> for OskSurface {
     fn present(&mut self, state: &Rc<OskPreferences>) {
         self.keyboard.present_preferences(state);
+        // Personalization turned off, here or on another device, forgets
+        // what was learned everywhere.
+        if !state.personalization
+            && let Some((learned, _)) = &self.learned
+            && !learned.with(crate::learned::LearnedTyping::is_empty)
+            && let Err(error) = learned.apply(&LearnedAction::Forget)
+        {
+            tracing::warn!(%error, "osk: what the keyboard learned could not be forgotten");
+        }
     }
 
     fn attach(&mut self, cx: SurfaceCx<Osk>) {
@@ -160,6 +209,12 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         self.keyboard
             .set_hit_overlay(cx.launch_flag(HIT_OVERLAY_FLAG));
         self.dispatch = Some(cx.dispatcher());
+        if cx.mode().is_live()
+            && let Some(learned) = cx.person::<Learned>()
+        {
+            self.keyboard.present_learned(learned.get());
+            self.learned = Some((learned.clone(), learned.revision()));
+        }
         if cx.mode().is_live() && service::serving() {
             self.connect(&cx);
         }
