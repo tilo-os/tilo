@@ -51,7 +51,6 @@ use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Effect as _;
@@ -603,14 +602,11 @@ pub struct CodeApp {
     /// presentation-only derived data; edits themselves remain native CRDT
     /// text splices.
     search_symbols: Vec<actions::SymbolRef>,
-    /// Complete retained search namespace. It is updated from current
-    /// collaborative state during `sync`; Ctrl+K receives only a cheap handle
-    /// and never rebuilds files, symbols, result previews, or an LSP index.
-    search_catalog: SearchCatalog,
-    /// Canonical ids currently indexed in `search_catalog`, used to remove
-    /// deleted/obsolete rows without rebuilding the catalogue (and without
-    /// invalidating paging cursors unless the namespace actually changed).
-    search_catalog_ids: HashSet<String>,
+    /// The symbols and project-search results as search entries. They are
+    /// updated from current collaborative state during `sync`; a search only
+    /// reads them and never rebuilds files, symbols, result previews, or an
+    /// LSP index.
+    search_entries: Vec<ui::tilo_resource::SearchEntry>,
     /// Revision gate for the expensive complete projection above. An idle
     /// `sync` compares this tiny value and does no project/body traversal.
     search_projection_revision: Option<SearchProjectionRevision>,
@@ -962,8 +958,7 @@ impl CodeApp {
             search_files_scanned: 0,
             last_search_needle: String::new(),
             search_symbols: Vec::new(),
-            search_catalog: SearchCatalog::new("Code"),
-            search_catalog_ids: HashSet::new(),
+            search_entries: Vec::new(),
             search_projection_revision: None,
             search_projection_local_generation: Some(0),
             #[cfg(test)]
@@ -1806,13 +1801,13 @@ impl CodeApp {
         self.palette.set_entries(entries);
     }
 
-    fn search_file_entries(&self) -> Vec<crate::search_provider::FileEntry> {
+    fn search_file_entries(&self) -> Vec<crate::search_entries::FileEntry> {
         self.session
             .project
             .nodes
             .iter()
             .filter(|(_, item)| matches!(item.kind, NodeKind::File { .. }))
-            .map(|(node, item)| crate::search_provider::FileEntry {
+            .map(|(node, item)| crate::search_entries::FileEntry {
                 node: *node,
                 resource_id: item.resource_id.clone(),
                 name: item.name.clone(),
@@ -1854,7 +1849,7 @@ impl CodeApp {
             .flat_map(|file| {
                 EditorDoc::read_buffer_key(doc, &self.buffer_key(file.node))
                     .map_or_else(Vec::new, |text| {
-                        crate::search_provider::symbols_in(&file.resource_id, &file.path, &text)
+                        crate::search_entries::symbols_in(&file.resource_id, &file.path, &text)
                     })
             })
             .collect();
@@ -1870,7 +1865,7 @@ impl CodeApp {
     /// document or a local project/result generation changed. This is
     /// intentionally separate from `search_providers`: opening the palette,
     /// typing, and unchanged frames do no filesystem, document, or LSP work.
-    fn refresh_search_catalog(&mut self, doc: &mut AutoCommit) {
+    fn refresh_search_entries(&mut self, doc: &mut AutoCommit) {
         let revision = SearchProjectionRevision {
             document_heads: doc.get_heads(),
             local_generation: self.search_projection_local_generation,
@@ -1889,22 +1884,8 @@ impl CodeApp {
             return;
         }
         self.refresh_search_symbols(doc);
-        let symbols = self.search_symbols.clone();
         let results = self.search_result_refs();
-        let ids = symbols
-            .iter()
-            .map(actions::symbol_resource_id)
-            .chain(results.iter().map(actions::result_resource_id))
-            .collect::<HashSet<_>>();
-        for removed in self.search_catalog_ids.difference(&ids) {
-            let _ = self.search_catalog.remove(removed);
-        }
-        crate::search_provider::FileSearchProvider::index_into(
-            &self.search_catalog,
-            symbols,
-            results,
-        );
-        self.search_catalog_ids = ids;
+        self.search_entries = crate::search_entries::code_entries(&self.search_symbols, &results);
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
@@ -1913,8 +1894,13 @@ impl CodeApp {
             self.search_refresh_stats.indexed_records = self
                 .search_refresh_stats
                 .indexed_records
-                .saturating_add(self.search_catalog_ids.len());
+                .saturating_add(self.search_entries.len());
         }
+    }
+
+    /// The symbols and project-search results as search entries.
+    pub(crate) fn code_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_entries.clone()
     }
 
     #[cfg(test)]
@@ -3428,10 +3414,7 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
@@ -3505,7 +3488,7 @@ impl Widget for CodeApp {
         self.ensure_buffers(state);
         self.demand_open_buffers(state);
         self.continue_staging(state);
-        self.refresh_search_catalog(state);
+        self.refresh_search_entries(state);
         self.editor.sync(state, path);
         self.dispatch_editor_text_edits(state);
         self.find.sync(state, path);
@@ -4135,17 +4118,6 @@ impl Widget for CodeApp {
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
-    }
-}
-
-impl ui::search::capability::SearchSource for CodeApp {
-    /// Publish canonical file, symbol and live project-result search rows. Each
-    /// row points at an exported resource action, so there is no callback-only
-    /// path with weaker semantics than the palette/agent door.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
-        )]
     }
 }
 
