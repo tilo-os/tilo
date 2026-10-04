@@ -215,10 +215,14 @@ fn connection_row(entry: &ListEntry<'_>, selected: Option<ConnId>, intents: &Int
         .map_or("Not set up on this device", |details| {
             endpoint_host(&details.endpoint)
         });
+    // The protocol at a glance: the list shares one badge column, so every
+    // title starts on one edge whichever protocols it holds.
     let row = ListRow::new(format!("vpn-connection-{id}"), &connection.name)
+        .badge(connection.kind.badge())
+        .badge_tooltip(connection.kind.long_name())
         .secondary(secondary)
         .selected(selected == Some(id))
-        .on_activate(intents.sender(Intent::Select(id)));
+        .on_view(intents.sender(Intent::Select(id)));
     let row = match connection.status {
         ConnStatus::Connected => row.active(),
         ConnStatus::Connecting => row.warning(),

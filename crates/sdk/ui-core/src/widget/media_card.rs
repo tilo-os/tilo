@@ -490,6 +490,20 @@ fn seat(ctx: &mut PaintCtx<'_>, art: Rect, radius: f64) {
 /// The seated edge's strength: the control hairline (HIG §9.5).
 const SEAT_ALPHA: u8 = 26;
 
+/// Paint `kind` as a small tile of art at `radius` (a list row's leading
+/// thumbnail): a picture cover-fitted, an app icon in its quiet tile, or the
+/// generated placeholder seeded with `title`'s initials.
+pub(crate) fn paint_art_tile(
+    ctx: &mut PaintCtx<'_>,
+    art: Rect,
+    kind: MediaArt<'_>,
+    title: &str,
+    radius: f64,
+) {
+    let m = MediaMetrics::new(ctx.theme);
+    paint_art(ctx, &m, art, radius, kind, title);
+}
+
 fn paint_art(
     ctx: &mut PaintCtx<'_>,
     m: &MediaMetrics,

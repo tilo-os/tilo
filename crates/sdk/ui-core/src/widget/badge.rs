@@ -246,6 +246,7 @@ fn paint_badge_pill(
             selected: false,
             hovered: false,
             remove: None,
+            menu: false,
             bare: false,
             opacity: 1.0,
             role: TextRole::Caption,
