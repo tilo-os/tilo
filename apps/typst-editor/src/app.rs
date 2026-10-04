@@ -38,7 +38,7 @@ use std::sync::Arc;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -213,9 +213,11 @@ pub struct TypstApp {
     /// when no Open / Save / Export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
     background_poll_deadline: Cell<Option<Instant>>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    pending_resource_io: Option<(tilo_actions::InvocationId, ResourceIo)>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// The answer owed to the file effect still running, given when its
+    /// chooser or its write settles.
+    file_reply: Option<ui::framework::EffectReply>,
+    /// A file effect's read or write, done on the next sync.
+    pending_resource_io: Option<ResourceIo>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -347,9 +349,8 @@ impl TypstApp {
             pending_current: None,
             io: None,
             background_poll_deadline: Cell::new(None),
-            resource_invocation: None,
+            file_reply: None,
             pending_resource_io: None,
-            resource_result: None,
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
@@ -756,44 +757,12 @@ impl TypstApp {
                         Err(e)
                     }
                 };
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(match result {
-                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                        Err(message) if message == "cancelled" => {
-                            tilo_actions::InvocationUpdate::Cancelled {
-                                invocation,
-                                message: Some(message),
-                            }
-                        }
-                        Err(message) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "typst.io_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                    });
-                }
+                self.finish_file_effect(result);
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.io = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "typst.portal_disconnected".into(),
-                            message: "file picker disconnected".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
+                self.finish_file_effect(Err("file picker disconnected".into()));
             }
         }
     }
@@ -821,43 +790,39 @@ impl TypstApp {
             TbAction::PrevDoc => self.step_file(-1),
             TbAction::NextDoc => self.step_file(1),
             TbAction::Compile => {
-                self.perform_resource_operation(crate::actions::TypstOperation::Compile);
+                self.perform_resource_operation(crate::actions::TypstEffect::Compile);
             }
             TbAction::Save => {
-                self.perform_resource_operation(crate::actions::TypstOperation::Save {
-                    path: None,
-                });
+                self.perform_resource_operation(crate::actions::TypstEffect::Save { path: None });
             }
             TbAction::Open => {
-                self.perform_resource_operation(crate::actions::TypstOperation::Open {
-                    path: None,
-                });
+                self.perform_resource_operation(crate::actions::TypstEffect::Open { path: None });
             }
             TbAction::ExportPdf => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ExportPdf {
+                self.perform_resource_operation(crate::actions::TypstEffect::ExportPdf {
                     path: None,
                 });
             }
             TbAction::ZoomOut => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ZoomOut);
+                self.perform_resource_operation(crate::actions::TypstEffect::ZoomOut);
                 self.set_compact_view(CompactPane::Preview);
             }
             TbAction::ZoomIn => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ZoomIn);
+                self.perform_resource_operation(crate::actions::TypstEffect::ZoomIn);
                 self.set_compact_view(CompactPane::Preview);
             }
             TbAction::Fit => {
-                self.perform_resource_operation(crate::actions::TypstOperation::FitWidth);
+                self.perform_resource_operation(crate::actions::TypstEffect::FitWidth);
                 self.set_compact_view(CompactPane::Preview);
             }
             TbAction::ToggleProblems => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ToggleProblems);
+                self.perform_resource_operation(crate::actions::TypstEffect::Problems);
             }
             TbAction::ShowEditor => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ShowEditor);
+                self.perform_resource_operation(crate::actions::TypstEffect::Editor);
             }
             TbAction::ShowPreview => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ShowPreview);
+                self.perform_resource_operation(crate::actions::TypstEffect::Preview);
             }
             TbAction::ToggleMenu => self.menu_open = !self.menu_open,
         }
@@ -869,24 +834,24 @@ impl TypstApp {
         clippy::needless_pass_by_value,
         reason = "operations are decoded as owned values and dispatched immediately"
     )]
-    fn perform_resource_operation(&mut self, operation: crate::actions::TypstOperation) {
-        use crate::actions::TypstOperation;
+    fn perform_resource_operation(&mut self, operation: crate::actions::TypstEffect) {
+        use crate::actions::TypstEffect;
         match operation {
-            TypstOperation::Compile => self.force_recompile(),
-            TypstOperation::Save { .. } => {
+            TypstEffect::Compile => self.force_recompile(),
+            TypstEffect::Save { .. } => {
                 let _ = self.save();
             }
-            TypstOperation::Open { .. } => self.open(),
-            TypstOperation::ExportPdf { .. } => self.export_pdf(),
-            TypstOperation::ZoomOut => self.preview.zoom_out(),
-            TypstOperation::ZoomIn => self.preview.zoom_in(),
-            TypstOperation::FitWidth => self.preview.fit_width(),
-            TypstOperation::ToggleProblems => {
+            TypstEffect::Open { .. } => self.open(),
+            TypstEffect::ExportPdf { .. } => self.export_pdf(),
+            TypstEffect::ZoomOut => self.preview.zoom_out(),
+            TypstEffect::ZoomIn => self.preview.zoom_in(),
+            TypstEffect::FitWidth => self.preview.fit_width(),
+            TypstEffect::Problems => {
                 self.show_diagnostics = !self.show_diagnostics;
             }
-            TypstOperation::ShowEditor => self.set_compact_view(CompactPane::Editor),
-            TypstOperation::ShowPreview => self.set_compact_view(CompactPane::Preview),
-            TypstOperation::GoToDiagnostic { index } => {
+            TypstEffect::Editor => self.set_compact_view(CompactPane::Editor),
+            TypstEffect::Preview => self.set_compact_view(CompactPane::Preview),
+            TypstEffect::GoToDiagnostic { index } => {
                 if let Some(diag) = self.diagnostics.diags().get(index)
                     && let Some(line) = diag.line
                 {
@@ -900,7 +865,7 @@ impl TypstApp {
                     }
                 }
             }
-            TypstOperation::GoToPage { page } => {
+            TypstEffect::GoToPage { page } => {
                 self.preview.scroll_to_page(page);
                 if self.compact {
                     self.set_compact_view(CompactPane::Preview);
@@ -1868,98 +1833,16 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 impl Widget for TypstApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested {
-            if self
-                .pending_resource_io
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-            {
-                self.pending_resource_io = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("cancelled before file I/O".into()),
-                });
-            }
-            if self.resource_invocation == Some(invocation) {
-                self.resource_invocation = None;
-                self.io = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("file selection cancelled".into()),
-                });
-            }
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
-    }
-
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
         self.background_poll_deadline.set(None);
-        if let Some((invocation, operation)) = self.pending_resource_io.take() {
+        if let Some(operation) = self.pending_resource_io.take() {
             let result = match operation {
                 ResourceIo::Open(path) => self.open_typ_from(&path),
                 ResourceIo::Save(path) => self.save_typ_to(&path),
                 ResourceIo::ExportPdf(path) => self.export_pdf_to_path(&path),
             };
-            self.resource_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "typst.io_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
+            self.finish_file_effect(result);
         }
         // Land a finished Open/Save/Export file dialog.
         self.drain_io();
@@ -2274,78 +2157,52 @@ impl ui::widget::controls::ActionControls for TypstApp {
 }
 
 impl TypstApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+    /// Answer the file effect's caller, if one is waiting.
+    fn finish_file_effect(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.file_reply.take() {
+            reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
         }
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation);
-        Ok(true)
     }
 
-    fn admit_resource_operation(
+    /// Answer `effect`: a file read or write with a path waits for the next
+    /// sync, one without asks the file chooser; the rest happen now.
+    pub(crate) fn answer_effect(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::TypstOperation;
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(None);
-        };
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+        effect: crate::actions::TypstEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::TypstEditor, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::TypstEffect;
+        let file = matches!(
+            effect,
+            TypstEffect::Open { .. } | TypstEffect::Save { .. } | TypstEffect::ExportPdf { .. }
+        );
+        if file && (self.file_reply.is_some() || self.pending_resource_io.is_some()) {
             return Err("another file operation is already running".into());
         }
-        let done = || {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                ui::tilo_actions::ActionOutput::default(),
-            )))
-        };
-        let resource = match operation {
-            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
-            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
-            TypstOperation::ExportPdf { path: Some(path) } => {
-                Some(ResourceIo::ExportPdf(path.into()))
+        match effect {
+            TypstEffect::Open { path: Some(path) } => {
+                self.pending_resource_io = Some(ResourceIo::Open(path.into()));
             }
-            TypstOperation::Open { path: None } => {
-                self.open();
-                None
+            TypstEffect::Save { path: Some(path) } => {
+                self.pending_resource_io = Some(ResourceIo::Save(path.into()));
             }
-            TypstOperation::Save { path: None } => {
+            TypstEffect::ExportPdf { path: Some(path) } => {
+                self.pending_resource_io = Some(ResourceIo::ExportPdf(path.into()));
+            }
+            TypstEffect::Open { path: None } => self.open(),
+            TypstEffect::Save { path: None } => {
                 if self.save()? {
-                    return done();
+                    return Ok(ui::framework::Effected::done());
                 }
-                None
             }
-            TypstOperation::ExportPdf { path: None } => {
-                self.export_pdf();
-                None
-            }
+            TypstEffect::ExportPdf { path: None } => self.export_pdf(),
             other => {
-                return self
-                    .answer_resource_operation(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                    )
-                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+                self.perform_resource_operation(other);
+                return Ok(ui::framework::Effected::done());
             }
-        };
-        if let Some(resource) = resource {
-            self.pending_resource_io = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.file_reply = Some(cx.reply());
+        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -2716,42 +2573,6 @@ mod tests {
 
     #[test]
     fn file_effects_save_and_export_real_files() {
-        // Case `direct_save_is_accepted_then_succeeds`.
-        {
-            let (mut app, mut doc) = fresh();
-            let dir = unique_dir("direct-lifecycle");
-            std::fs::create_dir_all(&dir).unwrap();
-            let destination = dir.join("saved.typ");
-            let invocation = tilo_actions::InvocationId::new();
-            let payload = serde_json::to_vec(&crate::actions::TypstOperation::Save {
-                path: Some(destination.display().to_string()),
-            })
-            .unwrap();
-            let started = Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::OPERATION_TYPE,
-                    &payload,
-                ),
-                &mut doc,
-                &ROOT,
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
-            app.sync(&mut doc, &ROOT);
-            assert!(matches!(
-                app.poll_resource_operation(invocation, false, &doc, &ROOT),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ));
-            assert_eq!(
-                std::fs::read_to_string(&destination).unwrap(),
-                shown_source(&app, &doc)
-            );
-            std::fs::remove_dir_all(dir).ok();
-        }
         // Case `export_pdf_writes_a_real_pdf_file`:
         // Exporting writes a real `.pdf` — the file on disk begins with the
         // `%PDF` magic. Driven against a scratch dir so it never touches the

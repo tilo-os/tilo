@@ -13,9 +13,7 @@ use ui::framework::{
     Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, ParamType,
-};
+use ui::tilo_actions::{Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ParamType};
 use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
 use ui::tilo_resource::{
     ActionDecl, Doc, Id, Invoke, ModelError, PlainText, Resource, SearchEntry, TextEdit,
@@ -438,10 +436,6 @@ impl ResourceApp for TypstEditorShell {
         cx.surface(TypstApp::new())
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::local_operations()
-    }
-
     /// A `.typ` path on the command line opens that file's own workspace.
     fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
         input.argument().map(RecordId::identify_file)
@@ -510,7 +504,15 @@ impl ResourceApp for TypstEditorShell {
 /// The file a capture shows first.
 pub(crate) struct CaptureFile(pub(crate) String);
 
-impl ResourceSurface<TypstEditor> for TypstApp {
+impl ResourceSurface<TypstEditor, crate::actions::TypstEffect> for TypstApp {
+    fn effect(
+        &mut self,
+        effect: crate::actions::TypstEffect,
+        cx: &mut ui::framework::EffectCx<TypstEditor, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
     fn present(&mut self, state: &Rc<TypstState>) {
         self.present_state(state);
     }
@@ -566,6 +568,18 @@ mod tests {
         let app = app.relaunch(&[&path]).unwrap();
         assert_eq!(app.record(), &record, "the file keeps its own workspace");
         assert_eq!(app.state().files.len(), 1, "a reopen adds nothing");
+    }
+
+    #[test]
+    fn saving_to_a_path_through_the_effect_writes_the_shown_source() {
+        let (dir, path) = typ_file("notes.typ", "= Notes\n");
+        let mut app = TestApp::<TypstEditorShell>::launched(&[&path]).unwrap();
+        let destination = dir.path().join("saved.typ");
+        app.effect_confirmed(&crate::actions::TypstEffect::Save {
+            path: Some(destination.display().to_string()),
+        })
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "= Notes\n");
     }
 
     #[test]

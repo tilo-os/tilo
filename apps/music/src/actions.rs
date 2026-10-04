@@ -37,7 +37,6 @@
 
 use std::collections::BTreeSet;
 
-use automerge::AutoCommit;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -307,19 +306,8 @@ pub enum MusicAction {
     RenamePlaylist { id: String, name: String },
     /// Delete a playlist by id.
     DeletePlaylist { id: String },
-    /// Append a track to a playlist (idempotent — a track already present is a
-    /// no-op, matching the on-screen affordance).
-    /// Legacy positional append retained for decoding existing history only.
-    AddTrackToPlaylist { playlist: String, track: String },
     /// Remove the first occurrence of a track from a playlist.
     RemoveTrackFromPlaylist { playlist: String, track: String },
-    /// Legacy positional move retained for decoding existing history only.
-    MoveTrackInPlaylist {
-        playlist: String,
-        track: String,
-        from: usize,
-        to: usize,
-    },
     /// Set a stable playlist membership to an absolute state and sparse rank.
     SetPlaylistMembership {
         playlist: String,
@@ -344,6 +332,12 @@ pub enum MusicAction {
     SetSavedAlbum { album: String, saved: bool },
     /// Set whether the user follows an artist to an explicit value.
     SetFollowedArtist { artist: String, followed: bool },
+    /// Add a catalogue track, with its album and artist, to the library: a
+    /// streamed track once it is played, so it stays playable, likeable and
+    /// listable on every device. Idempotent: an artist, album or track
+    /// already in the library is kept as it is. Content from outside the
+    /// library, so no undo step takes it back.
+    ImportTrack(Box<crate::model::CatalogueTrack>),
 }
 
 /// Durable, browseable history metadata for a library mutation.
@@ -353,8 +347,7 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
-        MusicAction::AddTrackToPlaylist { playlist, .. }
-        | MusicAction::SetPlaylistMembership {
+        MusicAction::SetPlaylistMembership {
             playlist,
             present: true,
             ..
@@ -375,8 +368,7 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
             "music.playlist",
             playlist,
         ),
-        MusicAction::MoveTrackInPlaylist { playlist, .. }
-        | MusicAction::SetTrackRank { playlist, .. } => {
+        MusicAction::SetTrackRank { playlist, .. } => {
             ("Reorder playlist", playlist, "music.playlist", playlist)
         }
         MusicAction::SetPlaylistCover { playlist, .. } => (
@@ -410,6 +402,12 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
             artist,
             "music.artist",
             artist,
+        ),
+        MusicAction::ImportTrack(imported) => (
+            "Add song to library",
+            &imported.track.id,
+            "music.track",
+            &imported.track.title,
         ),
     };
     context.action_label = label.to_string();
@@ -449,14 +447,6 @@ impl Action for MusicAction {
                 )?;
                 mdoc::delete_playlist(doc, id);
             }
-            MusicAction::AddTrackToPlaylist { playlist, track } => {
-                require(
-                    mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
-                    "playlist or track is no longer in the library",
-                )?;
-                let rank = mdoc::playlist_append_rank(doc, playlist);
-                mdoc::add_track_to_playlist(doc, playlist, track, rank);
-            }
             MusicAction::RemoveTrackFromPlaylist { playlist, track } => {
                 require(
                     mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
@@ -467,20 +457,6 @@ impl Action for MusicAction {
                     "playlist membership is no longer present",
                 )?;
                 mdoc::remove_track_from_playlist(doc, playlist, track);
-            }
-            MusicAction::MoveTrackInPlaylist {
-                playlist,
-                track,
-                from,
-                to,
-            } => {
-                require(
-                    mdoc::playlist_track_at(doc, playlist, *from).as_deref() == Some(track),
-                    "playlist membership moved or is no longer present",
-                )?;
-                let rank = mdoc::playlist_rank_for_move(doc, playlist, track, *to)
-                    .ok_or_else(|| ActionError::Refused("playlist membership is missing".into()))?;
-                mdoc::set_track_rank(doc, playlist, track, rank);
             }
             MusicAction::SetPlaylistMembership {
                 playlist,
@@ -549,12 +525,36 @@ impl Action for MusicAction {
                 )?;
                 mdoc::set_followed_artist(doc, artist, *followed);
             }
+            MusicAction::ImportTrack(imported) => {
+                let crate::model::CatalogueTrack {
+                    track,
+                    album,
+                    artist,
+                } = imported.as_ref();
+                require(
+                    !track.id.is_empty()
+                        && track.album_id == album.id
+                        && track.artist_id == artist.id
+                        && album.artist_id == artist.id
+                        && !album.id.is_empty()
+                        && !artist.id.is_empty(),
+                    "a track is imported with its own album and artist",
+                )?;
+                mdoc::import_track(doc, track, album, artist);
+            }
         }
         Ok(())
     }
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            MusicAction::ImportTrack(_) => tilo_actions::ChangeKind::External,
+            _ => tilo_actions::ChangeKind::Content,
+        }
     }
 }
 
@@ -709,6 +709,18 @@ pub fn set_saved_album_action(album: &str, saved: bool) -> MusicAction {
     }
 }
 
+pub fn import_track_action(
+    track: &crate::model::Track,
+    album: &crate::model::Album,
+    artist: &crate::model::Artist,
+) -> MusicAction {
+    MusicAction::ImportTrack(Box::new(crate::model::CatalogueTrack {
+        track: track.clone(),
+        album: album.clone(),
+        artist: artist.clone(),
+    }))
+}
+
 pub fn set_followed_artist_action(artist: &str, followed: bool) -> MusicAction {
     MusicAction::SetFollowedArtist {
         artist: artist.to_string(),
@@ -824,7 +836,7 @@ pub struct QueueItemResource {
     pub current: bool,
 }
 
-/// The presentation context Music hands [`provide_resources`]: the user's
+/// The presentation context Music publishes its rows from: the user's
 /// playlists and their tracks currently in the model cache. Everything here is
 /// derived from state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone, Default)]
@@ -897,7 +909,8 @@ impl MusicResourceCtx {
                     label: track_label(&track.id),
                     album_id: track.album_id.clone(),
                     artist_id: track.artist_id.clone(),
-                    offline: matches!(lib.cache_state(&track.id), crate::model::CacheState::Cached),
+                    // What this device keeps offline is not library state.
+                    offline: false,
                     liked: lib.is_liked(&track.id),
                 })
                 .collect(),
@@ -927,12 +940,6 @@ impl MusicResourceCtx {
     }
 }
 
-/// Library catalogue + navigation views for [`tilo_resource::publish`]. Player,
-/// queue and the open local file stay on the widget when hosted.
-pub(crate) fn document_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
-    catalogue_children(ctx)
-}
-
 fn known_track_ids(ctx: &MusicResourceCtx) -> BTreeSet<String> {
     let mut known_tracks = ctx
         .tracks
@@ -945,9 +952,10 @@ fn known_track_ids(ctx: &MusicResourceCtx) -> BTreeSet<String> {
     known_tracks
 }
 
-/// Playlists, tracks, albums, artists, and navigation views. Not the player,
-/// queue, or open file.
-pub(crate) fn catalogue_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
+/// The library's children for [`tilo_resource::publish`]: playlists, tracks,
+/// albums, artists, and navigation views. The player, queue and open file are
+/// the surface's live rows ([`live_device_resources`]).
+pub(crate) fn document_children(ctx: &MusicResourceCtx) -> Vec<Resource> {
     let known_tracks = known_track_ids(ctx);
     let mut children = Vec::new();
     let mut playlists = ctx.playlists.iter().collect::<Vec<_>>();
@@ -1744,49 +1752,11 @@ fn catalog_artist_resource(artist: &CatalogArtistResource) -> Resource {
     ))
 }
 
-/// Build the resource tree Music currently has open: the library (with a "New
-/// playlist" action), each playlist (rename + delete), and each track within a
-/// playlist (remove + toggle-like). Every document-mutating operation is
-/// exported as the same action the on-screen affordance dispatches.
-pub fn provide_resources(ctx: &MusicResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    // A document that already holds the library publishes those rows. An empty
-    // document has only navigation stubs; the ctx page under test replaces
-    // them. Player, queue, and the open file stay live extras.
-    let state =
-        <crate::resource::Music as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-    let mut root =
-        ui::tilo_resource::publish::<crate::resource::Music>("music.library", "Library", &state);
-    let published_catalogue = root.children.iter().any(|child| {
-        matches!(
-            child.kind.as_str(),
-            "music.track" | "music.playlist" | "music.album" | "music.artist"
-        )
-    });
-    if !published_catalogue {
-        root.children.retain(|child| child.kind != "music.view");
-        root.children.extend(catalogue_children(ctx));
-    }
-    root.children.extend(live_device_resources(ctx));
-    vec![root]
-}
-
 /// Resolve one catalog resource without first constructing the entire library
 /// tree. Search rows carry canonical resource/action addresses; at invocation
-/// time the host calls this method against the current model, so deleted or
+/// time the host calls this against the current model, so deleted or
 /// otherwise stale targets disappear instead of gaining authority from an old
 /// palette snapshot.
-fn find_music(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_music(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
     if id == LOCAL_FILE_RESOURCE_ID {
         return ctx
@@ -1864,11 +1834,24 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
         .map(|playlist| playlist_resource(playlist, &known_tracks, 0))
 }
 
-// Inherent resource publication (was ResourceProvider)
 impl crate::app::MusicApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let state =
-            <crate::resource::Music as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    /// The row `id` the surface shows — the player, the queue and its
+    /// entries, a track, album, artist, playlist or membership, a view, the
+    /// open file — resolved against what it shows now, so a stale address
+    /// from an old palette snapshot finds nothing.
+    pub fn publish_resource(&self, id: &str) -> Option<Resource> {
+        let ctx = self.music_resource_ctx_for_id(id)?;
+        resource_by_id(&ctx, id)
+    }
+}
+
+#[cfg(test)]
+impl crate::app::MusicApp {
+    /// What the palette and agents see of `doc` in a window showing this
+    /// surface: the library as the framework publishes it, with the
+    /// surface's live player, queue and open file beside its rows.
+    pub(crate) fn palette_tree(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
+        let state = crate::doc::load_library(doc);
         let mut root = ui::tilo_resource::publish::<crate::resource::Music>(
             "music.library",
             "Library",
@@ -1877,17 +1860,6 @@ impl crate::app::MusicApp {
         root.children
             .extend(live_device_resources(&self.music_resource_ctx()));
         vec![root]
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == "music.library" {
-            return self.publish_resources(doc).into_iter().next();
-        }
-        if let Some(found) = find_music(&self.publish_resources(doc), id) {
-            return Some(found);
-        }
-        let ctx = self.music_resource_ctx_for_id(id)?;
-        resource_by_id(&ctx, id)
     }
 }
 
@@ -1932,6 +1904,7 @@ fn local_file_resource(file: &CatalogTrackResource, playback: &crate::model::Pla
 mod tests {
     use super::*;
     use crate::app::MusicApp;
+    use automerge::AutoCommit;
     use tilo_actions::{ActionInput, ArgValue, LocalTransport};
     use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
@@ -1965,8 +1938,8 @@ mod tests {
     /// A Music app with the sample library synced into a fresh document.
     fn seeded() -> (MusicApp, AutoCommit) {
         let mut app = MusicApp::new();
-        app.seed_sample_library();
         let mut doc = AutoCommit::new();
+        crate::doc::seed(&mut doc, &crate::seed::sample_library());
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }
@@ -1979,11 +1952,24 @@ mod tests {
         seeded().1
     }
 
-    /// The sample library is deterministic, so a freshly seeded app publishes
-    /// the resources of any document seeded the same way.
+    /// What the palette sees of `doc`: the library as the framework
+    /// publishes it, and the surface's live player, queue and open file.
     fn contract_resources_for(doc: &AutoCommit) -> Vec<Resource> {
-        let (app, _) = seeded();
-        app.publish_resources(doc)
+        seeded().0.palette_tree(doc)
+    }
+
+    /// The tree the palette sees for the rows in `ctx`: the library the
+    /// framework publishes and the surface's live rows.
+    fn published_tree(ctx: &MusicResourceCtx) -> Vec<Resource> {
+        let mut root = ui::tilo_resource::publish::<crate::resource::Music>(
+            "music.library",
+            "Library",
+            &crate::model::Library::default(),
+        );
+        root.children.clear();
+        root.children.extend(document_children(ctx));
+        root.children.extend(live_device_resources(ctx));
+        vec![root]
     }
 
     fn playlist_key(res: &Resource) -> &str {
@@ -2113,7 +2099,7 @@ mod tests {
         // remove + toggle-like. Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.palette_tree(&doc);
             assert_eq!(resources.len(), 1, "one library root");
             let lib = &resources[0];
             assert_eq!(lib.kind, "music.library");
@@ -2215,7 +2201,7 @@ mod tests {
                     liked: false,
                 });
             }
-            let resources = provide_resources(&ctx, &AutoCommit::new());
+            let resources = published_tree(&ctx);
             let root = &resources[0];
             assert_eq!(
                 root.children
@@ -2281,7 +2267,7 @@ mod tests {
         // Phase `document_mutations_advertise_write_permission_and_views_advertise_read`.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.palette_tree(&doc);
             for flat in tilo_actions::flatten(&resources) {
                 let permission = flat.action.contract.permission;
                 match flat.action.kind {
@@ -2305,7 +2291,7 @@ mod tests {
         // Phase `every_top_level_destination_is_a_safe_canonical_view_resource`.
         {
             let ctx = MusicResourceCtx::default();
-            let root = provide_resources(&ctx, &AutoCommit::new())
+            let root = published_tree(&ctx)
                 .into_iter()
                 .next()
                 .expect("library root");
@@ -2347,7 +2333,7 @@ mod tests {
         // Phase `published_resource_action_surface_validates_with_music_handlers`.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.palette_tree(&doc);
             let operation_handlers =
                 std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
             let violations =
@@ -2425,7 +2411,7 @@ mod tests {
         // effect, not byte-equality against a second freshly-minted id).
         {
             let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.palette_tree(&doc);
             let spec = resources[0]
                 .actions
                 .iter()
@@ -2462,7 +2448,7 @@ mod tests {
             let mut ctx = MusicResourceCtx::default();
             ctx.playback.current = Some("track-1".into());
             ctx.playback.queue.push("track-1".into());
-            let resources = provide_resources(&ctx, &AutoCommit::new());
+            let resources = published_tree(&ctx);
             let root = resources[0]
                 .children
                 .iter()
@@ -2551,7 +2537,7 @@ mod tests {
                     current: false,
                 },
             ];
-            let root = provide_resources(&ctx, &AutoCommit::new()).pop().unwrap();
+            let root = published_tree(&ctx).pop().unwrap();
             let queue = root
                 .children
                 .iter()
@@ -2593,7 +2579,7 @@ mod tests {
         // Phase `resource_arguments_refuse_wrong_kind_and_stale_tracks`.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = app.palette_tree(&doc);
             let library = &resources[0];
             let player = library
                 .children
@@ -2642,10 +2628,7 @@ mod tests {
         // Phase `stale_replayed_library_actions_are_refused`.
         {
             let (_app, mut doc) = seeded();
-            let stale = MusicAction::AddTrackToPlaylist {
-                playlist: "gone".into(),
-                track: "gone".into(),
-            };
+            let stale = add_track_action("gone", "gone", 0);
             assert!(matches!(
                 stale.apply(&mut doc),
                 Err(ActionError::Refused(_))
@@ -2687,7 +2670,7 @@ mod tests {
                 }),
                 ..Default::default()
             };
-            let snapshot = provide_resources(&ctx, &AutoCommit::new());
+            let snapshot = published_tree(&ctx);
             let playlist_snapshot = snapshot[0]
                 .children
                 .iter()
@@ -2793,38 +2776,6 @@ mod tests {
             assert_eq!(left_playlist.track_ids, right_playlist.track_ids);
             assert!(!left_playlist.track_ids.contains(&removed));
             assert_eq!(left_playlist.track_ids.last(), Some(&moved));
-        }
-
-        // Phase `legacy_positional_membership_actions_remain_decodable`.
-        {
-            let (_app, mut doc) = seeded();
-            let append: MusicAction = serde_json::from_value(serde_json::json!({
-                "AddTrackToPlaylist": {
-                    "playlist": "pl_focus",
-                    "track": "tk_g1"
-                }
-            }))
-            .unwrap();
-            append.apply(&mut doc).unwrap();
-            assert!(crate::doc::playlist_contains_track(
-                &doc, "pl_focus", "tk_g1"
-            ));
-
-            let moved = crate::doc::playlist_track_at(&doc, "pl_focus", 0).unwrap();
-            let reorder: MusicAction = serde_json::from_value(serde_json::json!({
-                "MoveTrackInPlaylist": {
-                    "playlist": "pl_focus",
-                    "track": moved,
-                    "from": 0,
-                    "to": 1
-                }
-            }))
-            .unwrap();
-            reorder.apply(&mut doc).unwrap();
-            assert_eq!(
-                crate::doc::playlist_track_at(&doc, "pl_focus", 1),
-                Some(moved)
-            );
         }
     }
 }

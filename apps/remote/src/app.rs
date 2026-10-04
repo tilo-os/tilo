@@ -175,12 +175,13 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 enum PendingResourceOperation {
     Connect {
-        invocation: tilo_actions::InvocationId,
+        /// The caller to answer; a test drives the settlement without one.
+        reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
         session_generation: u64,
     },
     SshInput {
-        invocation: tilo_actions::InvocationId,
+        reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
@@ -2479,193 +2480,17 @@ impl Collaborative for RemoteApp {
 impl Widget for RemoteApp {
     ui::provides!(dyn ui::widget::Collaborative);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::REMOTE_OPERATION_TYPE]
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
-    )]
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let pending = self.pending_resource_operation.as_ref()?;
-        if cancellation_requested
-            && let PendingResourceOperation::Connect {
-                invocation: pending_invocation,
-                connection_id,
-                session_generation,
-            } = pending
-            && *pending_invocation == invocation
-        {
-            // Connect has not completed yet, so dropping its exact generation
-            // cancels the socket/relay attempt. Do not let a cancellation for
-            // an old invocation tear down a newer reconnect of the same saved
-            // profile.
-            if self.session_for == Some(*connection_id)
-                && self.session_generation == *session_generation
-            {
-                self.disconnect_session();
-            }
-            self.pending_resource_operation = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("remote connection attempt cancelled".into()),
-            });
-        }
-        let update = match pending {
-            PendingResourceOperation::Connect {
-                invocation: pending,
-                connection_id,
-                session_generation,
-            } if *pending == invocation => {
-                if self.session_for != Some(*connection_id)
-                    || self.session_generation != *session_generation
-                {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "remote.session_replaced".into(),
-                            message: "the connection attempt was superseded by a newer session"
-                                .into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
-                } else {
-                    match self.live.as_ref().map(LiveSession::status) {
-                        Some(SessionStatus::Connecting) => return None,
-                        Some(SessionStatus::Connected) => {
-                            tilo_actions::InvocationUpdate::Succeeded {
-                                invocation,
-                                output: tilo_actions::ActionOutput::default(),
-                            }
-                        }
-                        Some(SessionStatus::Failed(message)) => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.connect_failed".into(),
-                                    message,
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                        Some(SessionStatus::Unavailable(message)) => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.transport_unavailable".into(),
-                                    message,
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                        Some(SessionStatus::Closed) | None => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.connection_closed".into(),
-                                    message: "remote connection closed before it became ready"
-                                        .into(),
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                    }
-                }
-            }
-            PendingResourceOperation::SshInput {
-                invocation: pending,
-                connection_id,
-                session_generation,
-                acknowledgement,
-            } if *pending == invocation => {
-                if self.session_for != Some(*connection_id)
-                    || self.session_generation != *session_generation
-                {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "remote.session_replaced".into(),
-                            message: "the SSH session ended before input delivery was acknowledged"
-                                .into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
-                } else {
-                    match acknowledgement.try_recv() {
-                        Ok(Ok(())) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                        Ok(Err(message)) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "remote.input_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.input_worker_lost".into(),
-                                    message: "remote input worker stopped before acknowledgement"
-                                        .into(),
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                    }
-                }
-            }
-            _ => return None,
-        };
-        self.pending_resource_operation = None;
-        Some(update)
+    /// Answer a session effect once its transport settled.
+    fn sync(&mut self, _state: &mut ui::widget::AppModel, _path: &ui::widget::ModelPath) {
+        self.settle_pending_effect();
     }
 
     fn build_layout(
@@ -3612,6 +3437,7 @@ impl Widget for RemoteApp {
         (!self.motion_reduced && self.rail.is_animating(self.rail_layout))
             || self.tooltips.needs_frame()
             || self.live_active()
+            || self.pending_resource_operation.is_some()
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -3648,78 +3474,115 @@ impl RemoteApp {
         let Some(connection) = self.workspace.get(id) else {
             return Vec::new();
         };
-        let can_send_text = matches!(
-            &self.live,
-            Some(LiveSession::Ssh(session))
-                if session.status() == SessionStatus::Connected
-        );
         let host_key_issue = self.ssh_host_key_issue(id);
         vec![crate::actions::session_row(
             connection,
-            can_send_text,
             host_key_issue.as_ref(),
         )]
     }
 
-    fn answer_resource_operation(
+    /// Whether the open session is a connected SSH terminal text can reach.
+    pub(crate) fn can_send_text(&self) -> bool {
+        matches!(
+            &self.live,
+            Some(LiveSession::Ssh(session)) if session.status() == SessionStatus::Connected
+        )
+    }
+
+    /// Answer `effect`. Opening a session and sending text answer once the
+    /// transport says how it went ([`Self::settle_pending_effect`]).
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if kind != crate::actions::operation_kind(&operation) {
-            return Err("remote operation kind does not match its declared contract".into());
-        }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections => {
+        effect: crate::actions::RemoteEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::RemoteEffect;
+        let done = || Ok(ui::framework::Effected::done());
+        match effect {
+            RemoteEffect::Open => {
                 self.apply(Action::GoList);
+                done()
             }
-            crate::actions::RemoteOperation::NewConnectionForm => {
+            RemoteEffect::New => {
                 self.apply(Action::NewConnection);
+                done()
             }
-            crate::actions::RemoteOperation::EditConnection { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
+            RemoteEffect::EditConnection { connection } => {
+                if self.workspace.get(connection).is_none() {
                     return Err("saved connection no longer exists".into());
                 }
-                self.apply(Action::EditConnection(connection_id));
+                self.apply(Action::EditConnection(connection));
+                done()
             }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".to_string());
+            RemoteEffect::Connect { connection } => {
+                if self.pending_resource_operation.is_some() {
+                    return Err("another remote operation is still running".into());
                 }
-                self.open_session(connection_id);
+                let Some(saved) = self.workspace.get(connection) else {
+                    return Err("saved connection no longer exists".into());
+                };
+                let readiness = connection_readiness(saved);
+                if !readiness.can_connect() {
+                    let reason = if readiness == TransportReadiness::InvalidProfile {
+                        saved
+                            .profile_issue()
+                            .unwrap_or_else(|| readiness.detail(saved.kind))
+                    } else {
+                        readiness.detail(saved.kind)
+                    };
+                    return Err(reason.to_string());
+                }
+                self.open_session(connection);
+                match self.live.as_ref().map(LiveSession::status) {
+                    Some(SessionStatus::Connecting) => {
+                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                            reply: Some(cx.reply()),
+                            connection_id: connection,
+                            session_generation: self.session_generation,
+                        });
+                        Ok(ui::framework::Effected::Pending)
+                    }
+                    Some(SessionStatus::Connected) => done(),
+                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
+                        Err(message)
+                    }
+                    Some(SessionStatus::Closed) | None => {
+                        Err("remote transport did not start".into())
+                    }
+                }
             }
-            crate::actions::RemoteOperation::Disconnect { connection_id } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
+            RemoteEffect::SendText { connection, text } => {
+                if self.pending_resource_operation.is_some() {
+                    return Err("another remote operation is still running".into());
                 }
-                self.disconnect_session();
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
+                if self.session_for != Some(connection) {
+                    return Err("that remote session is no longer active".into());
                 }
-                match &self.live {
+                let acknowledgement = match &self.live {
                     Some(LiveSession::Ssh(session))
                         if session.status() == SessionStatus::Connected =>
                     {
-                        session.send_input(text.into_bytes())?;
-                        self.dirty = true;
+                        session.send_input_ack(text.into_bytes())?
                     }
-                    _ => return Err("text input requires a connected SSH terminal".to_string()),
-                }
+                    _ => return Err("text input requires a connected SSH terminal".into()),
+                };
+                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
+                    reply: Some(cx.reply()),
+                    connection_id: connection,
+                    session_generation: self.session_generation,
+                    acknowledgement,
+                });
+                Ok(ui::framework::Effected::Pending)
             }
-            crate::actions::RemoteOperation::TrustSshHostKey {
-                connection_id,
+            RemoteEffect::Disconnect { connection } => {
+                if self.session_for != Some(connection) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                self.disconnect_session();
+                done()
+            }
+            RemoteEffect::TrustHostKey {
+                connection: connection_id,
                 observed,
             } => {
                 let connection = self
@@ -3739,8 +3602,11 @@ impl RemoteApp {
                 crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
                     .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
                 self.open_session(connection_id);
+                done()
             }
-            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
+            RemoteEffect::ForgetHostKey {
+                connection: connection_id,
+            } => {
                 let connection = self
                     .workspace
                     .get(connection_id)
@@ -3759,105 +3625,108 @@ impl RemoteApp {
                 crate::ssh::forget_host_key(&path, &connection.host, connection.port)
                     .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
                 self.disconnect_session();
+                done()
             }
         }
-        Ok(true)
     }
 
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+    /// Answer the session effect still waiting, once its transport settled.
+    pub(crate) fn settle_pending_effect(&mut self) {
+        let cancelled = match &self.pending_resource_operation {
+            Some(
+                PendingResourceOperation::Connect { reply, .. }
+                | PendingResourceOperation::SshInput { reply, .. },
+            ) => reply
+                .as_ref()
+                .is_some_and(ui::framework::EffectReply::is_cancelled),
+            None => return,
         };
-        if self.pending_resource_operation.is_some() {
-            return Err("another remote operation is still running".into());
+        let Some(outcome) = self.pending_outcome(cancelled) else {
+            return;
+        };
+        if let Some(
+            PendingResourceOperation::Connect {
+                reply: Some(reply), ..
+            }
+            | PendingResourceOperation::SshInput {
+                reply: Some(reply), ..
+            },
+        ) = self.pending_resource_operation.take()
+        {
+            reply.finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
         }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections
-            | crate::actions::RemoteOperation::NewConnectionForm
-            | crate::actions::RemoteOperation::EditConnection { .. } => {
-                Err("view operations do not start background work".into())
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                let Some(connection) = self.workspace.get(connection_id) else {
-                    return Err("saved connection no longer exists".into());
-                };
-                let readiness = connection_readiness(connection);
-                if !readiness.can_connect() {
-                    let reason = if readiness == TransportReadiness::InvalidProfile {
-                        connection
-                            .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(connection.kind))
-                    } else {
-                        readiness.detail(connection.kind)
-                    };
-                    return Err(reason.to_string());
-                }
-                self.open_session(connection_id);
-                match self.live.as_ref().map(LiveSession::status) {
-                    Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            invocation,
-                            connection_id,
-                            session_generation: self.session_generation,
-                        });
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    Some(SessionStatus::Connected) => {
-                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )))
-                    }
-                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
-                        Err(message)
-                    }
-                    Some(SessionStatus::Closed) | None => {
-                        Err("remote transport did not start".into())
-                    }
-                }
-            }
-            crate::actions::RemoteOperation::SendText {
+    }
+
+    /// How the session effect still waiting ended, once it has; `cancelled`
+    /// when its caller gave up on it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
+    )]
+    pub(crate) fn pending_outcome(&mut self, cancelled: bool) -> Option<Result<(), String>> {
+        let pending = self.pending_resource_operation.as_ref()?;
+        if cancelled
+            && let PendingResourceOperation::Connect {
                 connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".into());
-                }
-                let acknowledgement = match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input_ack(text.into_bytes())?
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".into()),
-                };
-                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
-                    invocation,
-                    connection_id,
-                    session_generation: self.session_generation,
-                    acknowledgement,
-                });
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                session_generation,
+                ..
+            } = pending
+        {
+            // Connect has not completed yet, so dropping its exact generation
+            // cancels the socket/relay attempt. Do not let a cancellation for
+            // an old attempt tear down a newer reconnect of the same saved
+            // profile.
+            if self.session_for == Some(*connection_id)
+                && self.session_generation == *session_generation
+            {
+                self.disconnect_session();
             }
-            crate::actions::RemoteOperation::Disconnect { .. }
-            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
-            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
-                if !self.answer_resource_operation(kind, type_id, payload)? {
-                    return Ok(None);
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
+            return Some(Err("remote connection attempt cancelled".into()));
         }
+        Some(match pending {
+            PendingResourceOperation::Connect {
+                connection_id,
+                session_generation,
+                ..
+            } => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
+                    Err("the connection attempt was superseded by a newer session".into())
+                } else {
+                    match self.live.as_ref().map(LiveSession::status) {
+                        Some(SessionStatus::Connecting) => return None,
+                        Some(SessionStatus::Connected) => Ok(()),
+                        Some(
+                            SessionStatus::Failed(message) | SessionStatus::Unavailable(message),
+                        ) => Err(message),
+                        Some(SessionStatus::Closed) | None => {
+                            Err("remote connection closed before it became ready".into())
+                        }
+                    }
+                }
+            }
+            PendingResourceOperation::SshInput {
+                connection_id,
+                session_generation,
+                acknowledgement,
+                ..
+            } => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
+                    Err("the SSH session ended before input delivery was acknowledged".into())
+                } else {
+                    match acknowledgement.try_recv() {
+                        Ok(result) => result,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Err("remote input worker stopped before acknowledgement".into())
+                        }
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -6856,6 +6725,25 @@ mod tests {
         app
     }
 
+    /// A connection's settings open from the connection itself, through
+    /// the effect the palette and agents reach.
+    #[test]
+    fn editing_a_connection_opens_its_settings() {
+        let mut app = hosted_sample();
+        let id = app.state()[0].id;
+        app.call_on(
+            &crate::resource::connection_resource_id(id),
+            "edit-connection",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        app.settle();
+        let screen = app
+            .with_surface::<RemoteApp, _>(|app| app.screen.clone())
+            .expect("the window is mounted");
+        assert_eq!(screen, Screen::Form { editing: Some(id) });
+    }
+
     /// The semantic node the window publishes for `target`, if any.
     fn find_node(app: &mut TestApp<RemoteShell>, target: &str) -> Option<AccessNode> {
         fn walk(node: &ui::headless::InspectionNode, target: &str) -> Option<AccessNode> {
@@ -7518,46 +7406,6 @@ mod tests {
                 Some(LiveSession::Preview(SessionStatus::Connecting))
             ));
         }
-
-        eprintln!("phase view_resource_operations_open_the_exact_requested_ui");
-        {
-            let mut app = RemoteApp::sample();
-            let id = app.workspace.connections()[0].id;
-            let edit = tilo_actions::EncodedAction::encode_operation(
-                crate::actions::REMOTE_OPERATION_TYPE,
-                &crate::actions::RemoteOperation::EditConnection { connection_id: id },
-            )
-            .expect("serializable view operation");
-            assert!(matches!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        &edit.type_id,
-                        &edit.payload
-                    ),
-                    &mut doc(),
-                    &automerge::ROOT
-                )
-                .expect("view routed"),
-                Some(ui::widget::ResourceOperationStart::Completed(_))
-            ));
-            assert_eq!(app.screen, Screen::Form { editing: Some(id) });
-
-            assert!(
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        &edit.type_id,
-                        &edit.payload
-                    ),
-                    &mut doc(),
-                    &automerge::ROOT
-                )
-                .is_err()
-            );
-        }
     }
 
     #[serial_test::serial(clipboard)]
@@ -7798,38 +7646,31 @@ mod tests {
         {
             let mut app = RemoteApp::sample();
             let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-            let invocation = tilo_actions::InvocationId::new();
             app.session_for = Some(id);
             app.session_generation = 42;
             app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
             app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                invocation,
+                reply: None,
                 connection_id: id,
                 session_generation: 42,
             });
 
-            assert!(matches!(
-                app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
+            assert!(matches!(app.pending_outcome(true), Some(Err(_))));
+            app.pending_resource_operation = None;
             assert!(app.live.is_none());
             assert!(app.pending_resource_operation.is_none());
 
             // A delayed cancel for an older generation reports terminally but
             // cannot tear down a replacement session for the same saved profile.
-            let stale = tilo_actions::InvocationId::new();
             app.session_for = Some(id);
             app.session_generation = 99;
             app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
             app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                invocation: stale,
+                reply: None,
                 connection_id: id,
                 session_generation: 98,
             });
-            assert!(matches!(
-                app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
+            assert!(matches!(app.pending_outcome(true), Some(Err(_))));
             assert!(
                 app.live.is_some(),
                 "stale cancellation kept replacement live"
@@ -7924,7 +7765,6 @@ mod tests {
         eprintln!("phase unavailable_connect_operation_reports_a_distinct_non_retryable_result");
         {
             let mut app = RemoteApp::sample();
-            let invocation = tilo_actions::InvocationId::new();
             app.live = Some(LiveSession::Unavailable {
                 readiness: TransportReadiness::BackendUnavailable,
                 kind: ConnectionKind::Rdp,
@@ -7932,19 +7772,15 @@ mod tests {
             let id = app.first_of_kind(ConnectionKind::Rdp).unwrap();
             app.session_for = Some(id);
             app.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                invocation,
+                reply: None,
                 connection_id: id,
                 session_generation: app.session_generation,
             });
 
-            let update = app
-                .poll_resource_operation(invocation, false, &doc(), &automerge::ROOT)
+            let outcome = app
+                .pending_outcome(false)
                 .expect("unavailable transport reaches a terminal operation result");
-            assert!(matches!(
-                update,
-                tilo_actions::InvocationUpdate::Failed { error, .. }
-                    if error.code == "remote.transport_unavailable" && !error.retryable
-            ));
+            assert!(outcome.is_err());
         }
     }
 
