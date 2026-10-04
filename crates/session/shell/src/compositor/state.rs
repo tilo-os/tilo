@@ -1241,6 +1241,7 @@ impl State {
                         Ok(feedback) => {
                             // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
                             crate::compositor::render_node::set_advertised(node.path.clone());
+                            crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
                             tracing::info!(
                                 target: "shell::compositor::dmabuf",
                                 device = %node.path.display(),
@@ -1255,6 +1256,7 @@ impl State {
                             ))
                         }
                         Err(e) => {
+                            crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
                             // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
                             tracing::error!(
                                 target: "shell::compositor::dmabuf",
@@ -1267,6 +1269,9 @@ impl State {
                     }
                 }
                 Err(e) => {
+                    if !matches!(e, ProbeError::NoRenderNodes) {
+                        crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                    }
                     tracing::warn!(
                         target: "shell::compositor::dmabuf",
                         reason = %e,
