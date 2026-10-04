@@ -182,6 +182,16 @@ pub enum Icon {
     WandSparkles,
     /// Filling an area with colour. Lucide `paint-bucket`.
     PaintBucket,
+    /// Half light, half dark: inverting. Lucide `contrast`.
+    Contrast,
+    /// Shapes united into one. Lucide `squares-unite`.
+    SquaresUnite,
+    /// One shape taken out of another. Lucide `squares-subtract`.
+    SquaresSubtract,
+    /// Only where shapes overlap. Lucide `squares-intersect`.
+    SquaresIntersect,
+    /// Where either shape is, but not both. Lucide `squares-exclude`.
+    SquaresExclude,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -891,6 +901,47 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         .into_iter()
         .map(path_from_d)
         .collect(),
+        Icon::Contrast => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M12 18a6 6 0 0 0 0-12v12z"),
+        ],
+        Icon::SquaresUnite => vec![path_from_d(
+            "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 0 1 1h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-3a1 1 0 0 0-1-1z",
+        )],
+        Icon::SquaresSubtract => [
+            "M10 22a2 2 0 0 1-2-2",
+            "M16 22h-2",
+            "M16 4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3a1 1 0 0 0 1-1v-5a2 2 0 0 1 2-2h5a1 1 0 0 0 1-1z",
+            "M20 8a2 2 0 0 1 2 2",
+            "M22 14v2",
+            "M22 20a2 2 0 0 1-2 2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::SquaresIntersect => [
+            "M10 22a2 2 0 0 1-2-2",
+            "M14 2a2 2 0 0 1 2 2",
+            "M16 22h-2",
+            "M2 10V8",
+            "M2 4a2 2 0 0 1 2-2",
+            "M20 8a2 2 0 0 1 2 2",
+            "M22 14v2",
+            "M22 20a2 2 0 0 1-2 2",
+            "M4 16a2 2 0 0 1-2-2",
+            "M8 10a2 2 0 0 1 2-2h5a1 1 0 0 1 1 1v5a2 2 0 0 1-2 2H9a1 1 0 0 1-1-1z",
+            "M8 2h2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::SquaresExclude => [
+            "M16 12v2a2 2 0 0 1-2 2H9a1 1 0 0 0-1 1v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h0",
+            "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 1-1 1h-5a2 2 0 0 0-2 2v2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
     }
 }
 
@@ -1475,6 +1526,11 @@ mod tests {
                 Icon::Lasso,
                 Icon::WandSparkles,
                 Icon::PaintBucket,
+                Icon::Contrast,
+                Icon::SquaresUnite,
+                Icon::SquaresSubtract,
+                Icon::SquaresIntersect,
+                Icon::SquaresExclude,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
