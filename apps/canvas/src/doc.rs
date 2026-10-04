@@ -113,6 +113,7 @@ pub fn read(doc: &Doc) -> Artwork {
                 base: number(doc, &obj, "base").unwrap_or(1.0),
                 invert: flag(doc, &obj, "invert").unwrap_or(false),
                 clip: flag(doc, &obj, "clip").unwrap_or(false),
+                unlinked: flag(doc, &obj, "unlinked").unwrap_or(false),
                 id,
             })
         })
@@ -236,7 +237,11 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
             doc.put(&obj, "base", layer.base)?;
         }
     }
-    for (key, value) in [("invert", layer.invert), ("clip", layer.clip)] {
+    for (key, value) in [
+        ("invert", layer.invert),
+        ("clip", layer.clip),
+        ("unlinked", layer.unlinked),
+    ] {
         if flag(doc, &obj, key).unwrap_or(false) != value {
             doc.put(&obj, key, value)?;
         }
