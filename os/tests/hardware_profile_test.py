@@ -172,7 +172,12 @@ class HardwareProfileTest(unittest.TestCase):
             installed_spec.loader.exec_module(installed_parser)
             definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
             self.assertEqual(installed_parser.validate_definition(definition)["id"], "lenovo-83ed")
-            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut,
+            # The 83ED firmware reports a TPM no Linux driver serves; without
+            # this the generator holds sysinit.target for the 45 s device
+            # timeout in the initrd and again after switch-root.
+            kargs = self.root / prepare.KARGS_PATH
+            self.assertEqual(tomllib.loads(kargs.read_text())["kargs"], ["systemd.tpm2_wait=0"])
+            outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut, kargs,
                        *(installed / name for name in NAMES)]
             self.assertEqual(self.ownership.call_count, len(outputs))
             for output in outputs:
