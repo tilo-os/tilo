@@ -66,28 +66,45 @@ impl SessionPaths {
     }
 }
 
-/// What tells two versions of the copy apart. Every writer replaces the file
-/// by rename, so on Unix the inode alone changes with each write; the size
-/// and time cover the rest.
+/// What tells two versions of the copy apart without reading it: its size
+/// and modification time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CopyIdentity {
-    #[cfg(unix)]
-    inode: (u64, u64),
     len: u64,
-    modified: Option<std::time::SystemTime>,
+    modified: tilo_clock::SystemTime,
 }
 
+/// How long after its modification a file's time may still be shared by a
+/// later write of the same size: the file system's clock only ticks so often.
+const SAME_TICK: tilo_clock::Duration = tilo_clock::Duration::from_secs(2);
+
 fn copy_identity(path: &Path) -> Option<CopyIdentity> {
-    let meta = std::fs::metadata(path).ok()?;
+    let (dir, name) = tilo_files::file_at(path).ok()?;
+    let meta = tilo_files::blocking::metadata(&dir, &name).ok()?;
     Some(CopyIdentity {
-        #[cfg(unix)]
-        inode: {
-            use std::os::unix::fs::MetadataExt as _;
-            (meta.dev(), meta.ino())
-        },
-        len: meta.len(),
-        modified: meta.modified().ok(),
+        len: meta.len,
+        modified: meta.modified,
     })
+}
+
+/// Whether the copy is not what `state` last wrote or read. Size and time
+/// answer unless the copy is recent enough that a second write could share
+/// both; then its contents do.
+fn copy_changed(path: &Path, state: &State) -> bool {
+    let identity = copy_identity(path);
+    if identity != state.copy_identity {
+        return true;
+    }
+    let recent = identity.is_some_and(|identity| {
+        identity
+            .modified
+            .duration_since(tilo_clock::UNIX_EPOCH)
+            .map_or(true, |modified| {
+                u128::from(tilo_clock::unix_now_ms())
+                    < modified.as_millis().saturating_add(SAME_TICK.as_millis())
+            })
+    });
+    recent && load_at(path) != state.copy
 }
 
 struct State {
@@ -241,7 +258,7 @@ impl SessionSettings {
     )]
     fn refresh(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if copy_identity(&self.paths.copy) == state.copy_identity {
+        if !copy_changed(&self.paths.copy, &state) {
             return;
         }
         let Ok(_lock) = lock_copy(&self.paths.copy) else {
@@ -256,10 +273,10 @@ impl SessionSettings {
 
     /// With the copy locked: apply what another process wrote to it.
     fn take_in_copy(&self, state: &mut State) -> std::io::Result<()> {
-        let identity = copy_identity(&self.paths.copy);
-        if identity == state.copy_identity {
+        if !copy_changed(&self.paths.copy, state) {
             return Ok(());
         }
+        let identity = copy_identity(&self.paths.copy);
         let copy = load_at(&self.paths.copy);
         let (person, device) = (state.person.clone(), state.device.clone());
         let touched = state.take_in(&copy, &state.copy.clone());
@@ -353,11 +370,10 @@ pub(crate) fn lock_path(path: &Path) -> PathBuf {
 }
 
 /// Lock the settings file at `path`, creating its directory if needed.
-fn lock_copy(path: &Path) -> std::io::Result<advisory_lock::FileLock> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    advisory_lock::FileLock::open(&lock_path(path), advisory_lock::LockMode::Exclusive)
+fn lock_copy(path: &Path) -> std::io::Result<tilo_files::Lock> {
+    let (dir, name) = tilo_files::file_at(&lock_path(path)).map_err(std::io::Error::other)?;
+    tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
+        .map_err(std::io::Error::other)
 }
 
 #[cfg(test)]
