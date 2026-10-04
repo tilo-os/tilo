@@ -32,11 +32,15 @@ use ui::widget::Widget;
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    let entries = if std::env::var("TILO_LOGS_EMPTY").is_ok() || args.has("--error") {
-        Vec::new()
-    } else {
-        logs::journal::sample_entries()
-    };
+    let entries =
+        if std::env::var("TILO_LOGS_EMPTY").is_ok() || args.has("--error") || args.has("--loading")
+        {
+            Vec::new()
+        } else {
+            logs::journal::sample_entries()
+        };
+    // Captures never read the journal; the bundled sample stands in for it,
+    // and the journal's commands stay available as they are in a session.
     let mut app = if args.has("--error") {
         logs::LogsApp::new_with_source_error(
             entries,
@@ -44,7 +48,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             logs::journal::JournalLoadError::AccessDenied,
         )
     } else {
-        logs::LogsApp::new(entries, args.has("--actions"))
+        logs::LogsApp::new(entries, true)
     };
     if args.has("--detail") {
         app.shots_show_detail();
@@ -52,11 +56,11 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     if args.has("--filter-errors") {
         app.shots_filter_errors();
     }
+    if args.has("--no-matches") {
+        app.shots_search("printer queue");
+    }
     if args.has("--loading") {
         app.shots_show_loading();
-    }
-    if args.has("--actions") {
-        app.shots_show_actions();
     }
     Ok(Box::new(app))
 }
@@ -104,7 +108,7 @@ fn launch_spec_base(root: fn() -> Box<dyn Widget>) -> LaunchSpec {
             "--error",
             "--filter-errors",
             "--loading",
-            "--actions",
+            "--no-matches",
         ])
         .configure_app(configure_app)
 }

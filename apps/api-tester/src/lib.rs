@@ -2,7 +2,7 @@
 //!
 //! Build requests (method, URL, params, headers, auth, body), send them
 //! through `tilo_net`, and inspect the response: status, timing, size, headers,
-//! and a pretty/raw/preview body with syntax-highlighted, collapsible JSON.
+//! and a pretty or raw body with syntax-highlighted, collapsible JSON.
 //! Saved requests live in collections; `{{variable}}` placeholders resolve
 //! against the active environment. Collections, environments, the active
 //! request, and history are CRDT-backed, so a workspace can be edited
@@ -39,15 +39,22 @@ use ui::widget::Widget;
 
 pub mod actions;
 mod app;
+mod code_view;
+mod commands;
+mod dialog;
 mod doc;
 mod http;
+mod kv;
+mod locales;
 mod model;
-mod navrow;
 mod palette;
+mod request;
 pub mod resource;
-mod responsive;
+mod response;
 mod search_provider;
 mod seed;
+mod sidebar;
+mod swap;
 mod vars;
 
 pub use app::ApiTesterApp;

@@ -114,6 +114,8 @@ impl ResourceApp for DiskUsageShell {
             "analysis-hover-narrow",
             "home",
             "home-narrow",
+            "loading",
+            "error",
         ]
     }
 }

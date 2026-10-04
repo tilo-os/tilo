@@ -1,5 +1,0 @@
-# The copy ratchet for apps-code-editor: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/code-editor/src/explorer.rs to_uppercase 2
-apps/code-editor/src/status_bar.rs middle_dot_join 2

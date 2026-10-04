@@ -258,11 +258,6 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.apps_from_changes(["Cargo.lock"], catalog),
                 sorted(CATALOG),
             )
-        with self.subTest(phase='font sources under vendor/ rebuild no app'):
-            path = "vendor/fonts/tilo-sans/sources/TiloSans-Regular.ufo/glyphs/A_.glif"
-            self.assertEqual(app_release.apps_from_changes([path], CATALOG), [])
-            self.assertEqual(app_release.input_classification([path])["binary"], [])
-            self.assertEqual(app_release.apps_from_changes(["vendor/winit/src/lib.rs"], CATALOG), sorted(CATALOG))
         with self.subTest(phase='shared runtime change selects reverse dependent apps'):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

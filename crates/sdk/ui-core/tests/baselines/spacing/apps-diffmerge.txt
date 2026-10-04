@@ -1,6 +1,0 @@
-# The spacing ratchet for apps-diffmerge: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/diffmerge/src/app.rs pixel_const 7
-apps/diffmerge/src/diff_view.rs pixel_const 9
-apps/diffmerge/src/merge_view.rs pixel_const 13

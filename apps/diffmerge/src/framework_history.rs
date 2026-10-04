@@ -1,5 +1,7 @@
 //! Frozen merged output. The unsaved external originals cannot be reconstructed.
 use crate::doc::MergeDoc;
+use crate::i18n::{t, t_args, text};
+use crate::pane;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::fmt::Write as _;
 use ui::history_mode::adapter::{map_collection, navigate_pages};
@@ -11,17 +13,18 @@ use ui::history_mode::{
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
 use ui::paint::PaintCtx;
+use ui::tokens::TextRole;
 use ui::{TextRenderer, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Point, Rect, Stroke},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.diffmerge",
     scopes: &[HistoryScopeDefinition {
         key: "output",
-        title: "Merge output",
+        title: "Merged result",
         presentation: HistoryPresentation::Domain { create: preview },
         content_schema: Some(&SCHEMA),
     }],
@@ -108,26 +111,20 @@ impl HistoryPreview for OutputPreview {
         Ok(())
     }
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        // The preview is a surface of its own inside the history chrome: it
-        // closes with the edge derived from its fill (HIG §7, §9.5).
+        // The preview stands on the window's content ground; it paints no
+        // surface of its own.
         let inset = f64::from(theme.tokens.spacing.s4);
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            ui::surface::edge_on(theme.bg_primary),
-            None,
-            &ui::surface::edge_outline(self.bounds, 0.0),
-        );
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
         if self.view.page.as_deref() == Some("output") && self.recorded {
             let x = self.bounds.x0 + inset - self.view.scroll.0;
-            let (_, h) = tr.measure("M", 14., None);
-            let pitch = f64::from(h).max(20.);
+            let pitch = ctx.line_box(TextRole::Code).ceil();
             // Line numbers get a measured gutter (widest number + s3) so the
-            // code column never sits on a fixed 48 px it can outgrow.
+            // code column never sits on a fixed width it can outgrow.
             let count = self.output.lines().count().max(1);
-            let (gutter_w, _) = tr.measure(&count.to_string(), 12., None);
+            let number = pane::number_style(theme);
+            let (gutter_w, _) = ctx.text.measure_style(&count.to_string(), None, &number);
             let gutter = f64::from(gutter_w) + f64::from(theme.tokens.spacing.s3);
             let grammar =
                 crate::highlight::grammar_for_label(self.session.as_deref().unwrap_or_default());
@@ -140,36 +137,34 @@ impl HistoryPreview for OutputPreview {
                 if y > self.bounds.y1 {
                     break;
                 }
-                tr.draw_text(
-                    scene,
+                ctx.text(
                     &(i + 1).to_string(),
-                    12.,
+                    &number,
                     theme.text_dim,
-                    t * Affine::translate((x, y)),
+                    Point::new(x, y),
                     None,
                 );
                 crate::highlight::draw_line(
-                    &mut PaintCtx::new(scene, t, tr, theme),
+                    &mut ctx,
                     Point::new(x + gutter, y),
                     line,
                     spans.get(i).map_or(&[][..], Vec::as_slice),
-                    crate::merge_view::FONT_SIZE,
                 );
             }
         } else {
-            tr.draw_text(
-                scene,
-                &self.accessibility().description,
-                15.,
+            let description = self.accessibility().description;
+            ctx.text_role(
+                &description,
+                TextRole::Body,
                 theme.text_dim,
-                t * Affine::translate((
+                Point::new(
                     self.bounds.x0 + inset,
                     self.bounds.y0 + inset - self.view.scroll.1,
-                )),
-                Some((self.bounds.width() - 2.0 * inset) as f32),
+                ),
+                Some(pane::to_f32(self.bounds.width() - 2.0 * inset)),
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
     fn navigate(&mut self, c: PreviewNavigation) -> bool {
         let pages = self.accessibility().pages;
@@ -180,27 +175,35 @@ impl HistoryPreview for OutputPreview {
     }
     fn accessibility(&self) -> PreviewAccessibility {
         let description = if self.view.page.as_deref() == Some("originals") {
-            let mut s="Original inputs unavailable: base, ours and theirs were not recorded. Recorded choices are metadata only; historical hunk identity cannot be verified.".to_string();
+            let mut s = t("history-originals");
             if let Some(label) = &self.session {
-                let _ = write!(s, "\nSession label: {label}");
+                let _ = write!(
+                    s,
+                    "\n{}",
+                    t_args("history-session", &[("label", text(label))])
+                );
             }
             for (h, choice) in &self.resolutions {
-                let _ = write!(s, "\nRecorded hunk {h}: {choice}");
+                let _ = write!(
+                    s,
+                    "\n{}",
+                    t_args(
+                        "history-choice",
+                        &[("change", text(&h.to_string())), ("choice", text(choice))]
+                    )
+                );
             }
             s
         } else if self.recorded {
-            format!("Merged output\n{}", self.output)
+            format!("{}\n{}", t("history-output"), self.output)
         } else {
-            "No merged output recorded in this version".into()
+            t("history-none")
         };
         PreviewAccessibility {
             description,
             pages: vec![
-                ("output".into(), "Merged output".into()),
-                (
-                    "originals".into(),
-                    "Original inputs unavailable / recorded choices".into(),
-                ),
+                ("output".into(), t("history-page-output")),
+                ("originals".into(), t("history-page-originals")),
             ],
         }
     }
@@ -214,13 +217,13 @@ mod tests {
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
         let mut reference = Scene::new();
-        tr.draw_text(
+        tr.draw_style(
             &mut reference,
             "200",
-            12.,
             theme.text_dim,
             Affine::IDENTITY,
             None,
+            &pane::number_style(&theme),
         );
         let glyph_ids = |scene: &Scene, range: std::ops::Range<usize>| {
             scene.encoding().resources.glyphs[range]
@@ -232,8 +235,8 @@ mod tests {
             &reference,
             reference.encoding().resources.glyph_runs[0].glyphs.clone(),
         );
-        let (_, height) = tr.measure("M", 14., None);
-        let pitch = f64::from(height).max(20.);
+        let (_, height) = tr.measure_style("Ag", None, &theme.text(TextRole::Code));
+        let pitch = f64::from(height).ceil();
         for width in [360., 1000.] {
             let clip = Rect::new(0., 0., width, 240.);
             let mut preview = OutputPreview {

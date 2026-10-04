@@ -153,9 +153,6 @@ GLOBAL_PREFIXES = (
     ".config/",
     "vendor/",
 )
-# Under vendor/ but not a Cargo input: font sources build with their own
-# Python toolchain (vendor/fonts/*/build.py) and no crate reads them.
-NON_CARGO_VENDOR = ("vendor/fonts/",)
 HEAVY_PACKAGES = {
     "browser",
     "ebook",
@@ -631,7 +628,7 @@ def make_plan(
     global_change = any(
         (path in GLOBAL_FILES and path not in projected_quality_paths
          and path not in resolved_inputs)
-        or (path.startswith(GLOBAL_PREFIXES) and not path.startswith(NON_CARGO_VENDOR))
+        or path.startswith(GLOBAL_PREFIXES)
         for path in changes
     )
     workspace_source_roots = ("apps/", "crates/")

@@ -32,11 +32,16 @@ pub struct StoreState {
     pub reports: Vec<ReportProjection>,
 }
 
+/// The id of the catalogue's root resource: its kind, which is the id the
+/// framework publishes it under, so a control bound to it resolves in every
+/// host.
+pub const CATALOGUE_ID: &str = "store.catalog";
+
 /// The app-store catalogue resource.
 pub struct Store;
 
 impl Resource for Store {
-    const KIND: &'static str = "store.catalog";
+    const KIND: &'static str = CATALOGUE_ID;
     const LABEL: &'static str = "App Store";
     const ACTION_TYPE: &'static str = STORE_DOCUMENT_ACTION_TYPE;
 
@@ -112,18 +117,11 @@ impl Resource for Store {
             .iter()
             .map(|report| SearchEntry {
                 anchor: Some(format!("store.report:{}", report.app_id)),
-                title: format!("Report · {}", report.app_id),
+                title: format!("Report for {}", report.app_id),
                 text: report.status.clone(),
             })
             .collect()
     }
-}
-
-/// Hosted-only extras that are not document state: in-flight install /
-/// refresh progress. Live app rows stay addressable via `Widget::resource`
-/// and the search index; the catalogue door stays on [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &StoreApp) -> Vec<PublishedResource> {
-    app.live_progress_extras()
 }
 
 /// Framework app.
@@ -137,7 +135,16 @@ impl ResourceApp for StoreShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
-        cx.surface(StoreApp::new())
+        cx.surface(crate::live::LiveStore::new(None, None))
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::shots::SCENARIOS
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.ends_with("narrow")
+            .then_some(crate::shots::NARROW_VIEWPORT)
     }
 }
 
@@ -148,6 +155,10 @@ impl ResourceSurface<Store> for StoreApp {
 
     fn attach(&mut self, cx: SurfaceCx<Store>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        crate::shots::stage(self, scenario);
     }
 }
 
@@ -224,7 +235,7 @@ impl ActionSink {
 /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
 pub fn provide_resources(state: &StoreState) -> Vec<PublishedResource> {
     vec![ui::tilo_resource::publish::<Store>(
-        "store",
+        CATALOGUE_ID,
         "App Store",
         state,
     )]
@@ -242,7 +253,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
     )]
-    fn resource_publish_owns_catalog_door_and_hosted_keeps_only_live_extras() {
+    fn resource_publish_owns_catalog_door_and_hosted_publishes_the_live_resources_beside_it() {
         let mut doc = AutoCommit::new();
         StoreDocumentAction::CreateReportDraft {
             app_id: "so.tilo.notes".into(),
@@ -258,7 +269,7 @@ mod tests {
         doc.commit();
 
         let state = Store::read(&doc).expect("seeded store state");
-        let published = ui::tilo_resource::publish::<Store>("store", "App Store", &state);
+        let published = ui::tilo_resource::publish::<Store>(CATALOGUE_ID, "App Store", &state);
         assert_eq!(published.kind, "store.catalog");
         assert!(
             published
@@ -331,8 +342,22 @@ mod tests {
             "hosted must not republish store.catalog beside ResourceRoot: {:?}",
             extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
         );
-        assert_eq!(extras.len(), 1);
-        assert_eq!(extras[0].kind, "store.install-job");
+        let kinds: Vec<&str> = extras
+            .iter()
+            .map(|resource| resource.kind.as_str())
+            .collect();
+        for kind in [
+            "store.browse",
+            "store.navigation",
+            "store.publisher",
+            "store.remote-list",
+            "store.install-job",
+        ] {
+            assert!(
+                kinds.contains(&kind),
+                "hosted publishes the live {kind} beside the framework root: {kinds:?}"
+            );
+        }
 
         let door = provide_resources(&state);
         assert_eq!(door[0].kind, "store.catalog");

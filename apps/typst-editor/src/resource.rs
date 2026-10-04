@@ -114,9 +114,10 @@ impl ResourceApp for TypstEditorShell {
     fn scenarios() -> &'static [&'static str] {
         &[
             "preview",
-            "menu",
+            "documents",
+            "pages",
             "problems",
-            "scrolled",
+            "long-line",
             "errors",
             "editor-select",
             "preview-zoom",
@@ -125,6 +126,11 @@ impl ResourceApp for TypstEditorShell {
             "stale",
             "status",
         ]
+    }
+
+    /// The narrow-window scenarios are captured at a phone width.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        matches!(name, "preview" | "documents").then_some((520, 820))
     }
 }
 
@@ -137,6 +143,10 @@ impl ResourceSurface<TypstEditor> for TypstApp {
     fn attach(&mut self, cx: SurfaceCx<TypstEditor>) {
         self.attach_document_actions(cx.dispatcher());
         self.set_framework_hosted(true);
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_capture(scenario);
     }
 }
 

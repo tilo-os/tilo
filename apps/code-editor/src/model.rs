@@ -1049,6 +1049,11 @@ impl Session {
     pub fn active_buffer(&self) -> Option<&OpenBuffer> {
         self.active.and_then(|i| self.open.get(i))
     }
+
+    /// Mutable access to the active buffer.
+    pub fn active_buffer_mut(&mut self) -> Option<&mut OpenBuffer> {
+        self.active.and_then(|i| self.open.get_mut(i))
+    }
 }
 
 #[cfg(test)]
