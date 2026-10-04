@@ -503,6 +503,7 @@ impl<R: Resource> ResourceRoot<R> {
         self.feeds.refresh(doc);
         self.live
             .with(|state| self.effects.drain_projections(state, revision));
+        self.effects.poll_jobs();
     }
 }
 

@@ -595,7 +595,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
+        let jobs = self.effects.surface_jobs();
         surface.attach(SurfaceCx {
+            jobs: jobs.clone(),
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
             run: self.run.clone(),
@@ -608,6 +610,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.live.clone(),
             self.dispatch.clone(),
             &self.effects,
+            jobs,
             self.alive.clone(),
             surface,
         );
@@ -650,6 +653,12 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             self.effects.handle(self.alive.clone(), handle);
         }
         EffectsHandle { status }
+    }
+
+    /// Jobs the view starts on its own, with nobody invoking an effect: a
+    /// fetch when what it shows changes. See [`Jobs`](super::Jobs).
+    pub fn jobs(&self) -> super::Jobs<R> {
+        self.effects.view_jobs()
     }
 
     /// Drain a projection: what the resource's actions queued for the world
