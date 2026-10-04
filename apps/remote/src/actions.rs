@@ -34,137 +34,88 @@
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    ChangeKind, ConfirmationPolicy, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
-    OperationKind, ParamType, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    Action, ActionError, ActionRegistry, ActionSpec, ChangeKind, Doc, EncodedAction, ExecutionLocus,
 };
 use ui::framework::LiveRow;
+use ui::tilo_resource::{self, Effect};
 
 use crate::doc::CONNECTIONS;
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind};
 
 /// Registry `type_id` for every Remote action.
 pub const REMOTE_ACTION_TYPE: &str = "remote.action";
-pub const REMOTE_OPERATION_TYPE: &str = "remote.operation";
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum RemoteOperation {
-    ShowConnections,
-    NewConnectionForm,
+/// What Remote does that is no edit of the saved connections: showing them,
+/// opening and closing live sessions, typing into one, and the SSH host-key
+/// decisions this device keeps for itself.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "remote.effect")]
+pub enum RemoteEffect {
+    /// Show connections.
+    #[effect(view, idempotent)]
+    Open,
+    /// New connection.
+    #[effect(view)]
+    New,
+    /// Open connection settings.
+    #[effect(view, row)]
     EditConnection {
-        connection_id: ConnectionId,
+        #[param("The saved connection's id")]
+        connection: ConnectionId,
     },
+    /// Connect.
+    #[effect(row, job, privileged, permission = "read")]
     Connect {
-        connection_id: ConnectionId,
+        #[param("The saved connection's id")]
+        connection: ConnectionId,
     },
+    /// Disconnect session.
+    #[effect(row, idempotent)]
     Disconnect {
-        connection_id: ConnectionId,
+        #[param("The saved connection's id")]
+        connection: ConnectionId,
     },
+    /// Send text to session.
+    #[effect(job, privileged)]
     SendText {
-        connection_id: ConnectionId,
+        #[param("The saved connection whose session receives it")]
+        connection: ConnectionId,
+        #[param("Text to deliver to the connected SSH terminal")]
         text: String,
     },
-    TrustSshHostKey {
-        connection_id: ConnectionId,
+    /// Trust SSH host key.
+    #[effect(row, job, privileged)]
+    TrustHostKey {
+        #[param("The saved connection's id")]
+        connection: ConnectionId,
+        #[param("The host key observed on first contact")]
         observed: crate::ssh::HostKeyIdentity,
     },
-    ForgetSshHostKey {
-        connection_id: ConnectionId,
+    /// Forget SSH host key.
+    #[effect(row, job, destructive)]
+    ForgetHostKey {
+        #[param("The saved connection's id")]
+        connection: ConnectionId,
     },
-}
-
-pub fn operation_kind(operation: &RemoteOperation) -> OperationKind {
-    match operation {
-        RemoteOperation::ShowConnections
-        | RemoteOperation::NewConnectionForm
-        | RemoteOperation::EditConnection { .. } => OperationKind::View,
-        RemoteOperation::Connect { .. }
-        | RemoteOperation::Disconnect { .. }
-        | RemoteOperation::SendText { .. }
-        | RemoteOperation::TrustSshHostKey { .. }
-        | RemoteOperation::ForgetSshHostKey { .. } => OperationKind::Effect,
-    }
-}
-
-fn encode_operation(operation: &RemoteOperation) -> EncodedAction {
-    EncodedAction::encode_operation(REMOTE_OPERATION_TYPE, operation).unwrap_or_else(|_| {
-        EncodedAction {
-            type_id: REMOTE_OPERATION_TYPE.to_string(),
-            payload: Vec::new(),
-        }
-    })
-}
-
-/// Decode an operation published by this app.
-///
-/// # Errors
-///
-/// Returns the JSON decoding error when `type_id` identifies Remote but the
-/// payload is malformed.
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<RemoteOperation>, String> {
-    if type_id != REMOTE_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
-}
-
-fn operation_spec(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    operation: &RemoteOperation,
-) -> ActionSpec {
-    let fallback = operation.clone();
-    ActionSpec::operation(id, label, kind, REMOTE_OPERATION_TYPE, operation).unwrap_or_else(|_| {
-        ActionSpec::typed_operation(
-            id,
-            label,
-            "",
-            kind,
-            REMOTE_OPERATION_TYPE,
-            Vec::new(),
-            move |_| encode_operation(&fallback),
-        )
-    })
 }
 
 /// Open a connection's settings.
 pub(crate) fn open_spec(id: ConnectionId) -> ActionSpec {
-    operation_spec(
-        "open",
-        "Open connection settings",
-        OperationKind::View,
-        &RemoteOperation::EditConnection { connection_id: id },
-    )
+    RemoteEffect::EditConnection { connection: id }.bound()
 }
 
 /// Open a live session to a connection, when it can start one.
 pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
-    let spec = operation_spec(
-        "connect",
-        "Connect",
-        OperationKind::Effect,
-        &RemoteOperation::Connect {
-            connection_id: connection.id,
-        },
-    )
+    let readiness = crate::session::connection_readiness(connection);
+    let mut spec = RemoteEffect::Connect {
+        connection: connection.id,
+    }
+    .bound()
     .with_description(format!(
         "Open a live session to this saved connection. {}",
-        crate::session::connection_readiness(connection).detail(connection.kind)
-    ))
-    .with_contract(ActionContract {
-        permission: PermissionRequirement::Read,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        tags: vec!["network".into(), "session".into()],
-        ..ActionContract::default()
-    });
-    let readiness = crate::session::connection_readiness(connection);
+        readiness.detail(connection.kind)
+    ));
+    spec.contract.tags = vec!["network".into(), "session".into()];
     if readiness.can_connect() {
         spec
     } else {
@@ -181,130 +132,55 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the session resource intentionally keeps its lifecycle and trust affordances together"
-)]
+/// A host-key decision stays on this device.
+const HOST_KEY_TAGS: &[&str] = &["ssh", "host-key", "device-private"];
+
+/// `spec`, tagged with what it touches.
+fn tagged(mut spec: ActionSpec, tags: &[&str]) -> ActionSpec {
+    spec.contract.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
+    spec
+}
+
+/// The open session: disconnect it, and the SSH host-key decision its
+/// first contact or a changed key asks for. Text is sent with the
+/// `send-text` effect, naming the connection.
 pub fn session_row(
     connection: &Connection,
-    can_send_text: bool,
     host_key_issue: Option<&crate::ssh::HostKeyIssue>,
 ) -> LiveRow {
     let id = connection.id;
-    let disconnect = ActionSpec::operation(
-        "disconnect",
-        "Disconnect session",
-        OperationKind::Effect,
-        REMOTE_OPERATION_TYPE,
-        &RemoteOperation::Disconnect { connection_id: id },
-    )
-    .unwrap_or_else(|_| {
-        ActionSpec::typed_operation(
-            "disconnect",
-            "Disconnect session",
-            "",
-            OperationKind::Effect,
-            REMOTE_OPERATION_TYPE,
-            Vec::new(),
-            move |_| encode_operation(&RemoteOperation::Disconnect { connection_id: id }),
-        )
-    })
-    .with_contract(ActionContract {
-        retry: RetryPolicy::Idempotent,
-        tags: vec!["network".into(), "session".into()],
-        ..ActionContract::default()
-    });
-    let input = ActionSpec::typed_operation(
-        "send-text",
-        "Send text to session",
-        "command or text",
-        OperationKind::Effect,
-        REMOTE_OPERATION_TYPE,
-        vec![ActionParam::required_owned(
-            "text",
-            ParamType::Text,
-            "Text to deliver to the connected SSH terminal",
-        )],
-        move |args: &ActionArgs| {
-            encode_operation(&RemoteOperation::SendText {
-                connection_id: id,
-                text: args.text("text").unwrap_or("").to_string(),
-            })
-        },
-    )
-    .with_contract(ActionContract {
-        permission: PermissionRequirement::Write,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        tags: vec!["remote-input".into(), "session".into()],
-        ..ActionContract::default()
-    });
-    let mut row = LiveRow::new(
+    let row = LiveRow::new(
         format!("remote.session:{id}"),
         "remote.session",
         format!("{} session", connection.name),
     )
-    .operation(disconnect)
-    .operation(if can_send_text {
-        input
-    } else {
-        input.unavailable(
-            "terminal_not_connected",
-            "Text input requires a connected SSH terminal",
-        )
-    });
+    .operation(tagged(
+        RemoteEffect::Disconnect { connection: id }.bound(),
+        &["network", "session"],
+    ));
     match host_key_issue {
-        Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => {
-            let operation = RemoteOperation::TrustSshHostKey {
-                connection_id: id,
+        Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => row.operation(tagged(
+            RemoteEffect::TrustHostKey {
+                connection: id,
                 observed: observed.clone(),
-            };
-            row = row.operation(
-                operation_spec(
-                    "trust-host-key",
-                    "Trust SSH host key",
-                    OperationKind::Effect,
-                    &operation,
-                )
-                .with_description(format!(
-                    "Explicitly trust {} {} for this device only after out-of-band verification.",
-                    observed.algorithm, observed.fingerprint
-                ))
-                .with_contract(ActionContract {
-                    permission: PermissionRequirement::Write,
-                    risk: RiskLevel::Privileged,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    retry: RetryPolicy::AtMostOnce,
-                    execution: ExecutionMode::Background { cancellable: false },
-                    result: ResultSpec::Job,
-                    tags: vec!["ssh".into(), "host-key".into(), "device-private".into()],
-                    ..ActionContract::default()
-                }),
-            );
-        }
-        Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
-            let operation = RemoteOperation::ForgetSshHostKey { connection_id: id };
-            row = row.operation(
-                operation_spec("forget-host-key", "Forget SSH host key", OperationKind::Effect, &operation)
-                    .with_description("Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.")
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Write,
-                        risk: RiskLevel::Destructive,
-                        confirmation: ConfirmationPolicy::Confirm,
-                        retry: RetryPolicy::AtMostOnce,
-                        execution: ExecutionMode::Background { cancellable: false },
-                        result: ResultSpec::Job,
-                        tags: vec!["ssh".into(), "host-key".into(), "device-private".into()],
-                        ..ActionContract::default()
-                    }),
-            );
-        }
-        _ => {}
+            }
+            .bound()
+            .with_description(format!(
+                "Explicitly trust {} {} for this device only after out-of-band verification.",
+                observed.algorithm, observed.fingerprint
+            )),
+            HOST_KEY_TAGS,
+        )),
+        Some(crate::ssh::HostKeyIssue::Changed { .. }) => row.operation(tagged(
+            RemoteEffect::ForgetHostKey { connection: id }
+                .bound()
+                .with_description(
+                    "Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.",
+                ),
+            HOST_KEY_TAGS,
+        )),
+        _ => row,
     }
-    row
 }
 
 /// Every collaborative operation Remote exports on the shared document. Each
@@ -509,30 +385,16 @@ pub fn mark_used_action(id: ConnectionId, at_ms: i64) -> RemoteAction {
     RemoteAction::MarkUsed { id, at_ms }
 }
 
-/// List-level Views on the published connection list.
-pub(crate) fn list_view_specs() -> Vec<ActionSpec> {
-    vec![
-        operation_spec(
-            "open",
-            "Show connections",
-            OperationKind::View,
-            &RemoteOperation::ShowConnections,
-        ),
-        operation_spec(
-            "new",
-            "New connection",
-            OperationKind::View,
-            &RemoteOperation::NewConnectionForm,
-        ),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::doc::RemoteDoc;
     use crate::resource::{Remote, connection_resource_id};
     use automerge::AutoCommit;
+    use tilo_actions::{
+        ConfirmationPolicy, OperationKind, ParamType, PermissionRequirement, ResultSpec,
+        RetryPolicy, RiskLevel,
+    };
     use tilo_actions::{LocalTransport, Resource};
     use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
@@ -799,11 +661,7 @@ mod tests {
                 .iter()
                 .map(|action| (action.id.as_str(), action.kind))
                 .collect();
-            for expected in [
-                ("open", OperationKind::View),
-                ("new", OperationKind::View),
-                ("add-connection", OperationKind::Document),
-            ] {
+            for expected in [("add-connection", OperationKind::Document)] {
                 assert!(actions.contains(&expected), "{actions:?}");
             }
             assert_eq!(root.children.len(), 1, "one saved connection child");
@@ -814,7 +672,7 @@ mod tests {
             assert_eq!(
                 ids,
                 [
-                    "open",
+                    "edit-connection",
                     "connect",
                     "rename-connection",
                     "set-favorite",
@@ -834,10 +692,10 @@ mod tests {
                 "deleting asks first"
             );
             let encoded = ui::testing::action_contract::spec_encoding(connect, None);
-            assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
+            assert_eq!(encoded.type_id, RemoteEffect::OPERATION);
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(RemoteOperation::Connect { connection_id: id })
+                RemoteEffect::from_payload(&encoded.payload).unwrap(),
+                RemoteEffect::Connect { connection: id }
             );
 
             let mut palette = ui::ActionPalette::new();
@@ -938,10 +796,9 @@ mod tests {
 
     fn session_actions(
         connection: &Connection,
-        can_send_text: bool,
         issue: Option<&crate::ssh::HostKeyIssue>,
     ) -> (String, Vec<ActionSpec>) {
-        let row = session_row(connection, can_send_text, issue).into_resource();
+        let row = session_row(connection, issue).into_resource();
         (row.id.as_str().to_owned(), row.actions)
     }
 
@@ -960,8 +817,7 @@ mod tests {
             assert_eq!(connect.contract.retry, RetryPolicy::AtMostOnce);
             assert_eq!(connect.contract.result, ResultSpec::Job);
 
-            let input = session_actions(&connection, true, None)
-                .1
+            let input = RemoteEffect::specs()
                 .into_iter()
                 .find(|action| action.id == "send-text")
                 .expect("typed input action");
@@ -975,13 +831,20 @@ mod tests {
         eprintln!("phase active_session_exports_lifecycle_and_typed_input");
         {
             let id = Uuid::new_v4();
-            let (row, actions) = session_actions(&sample(id, "Build Box"), false, None);
+            let (row, actions) = session_actions(&sample(id, "Build Box"), None);
             assert_eq!(row, format!("remote.session:{id}"));
             let disconnect = actions.iter().find(|a| a.id == "disconnect").unwrap();
             assert_eq!(disconnect.contract.retry, RetryPolicy::Idempotent);
-            let input = actions.iter().find(|a| a.id == "send-text").unwrap();
-            assert_eq!(input.params()[0].ty, ParamType::Text);
-            assert!(!input.contract.availability.is_available());
+            let input = RemoteEffect::specs()
+                .into_iter()
+                .find(|a| a.id == "send-text")
+                .unwrap();
+            assert!(
+                input
+                    .params()
+                    .iter()
+                    .any(|param| param.name == "text" && param.ty == ParamType::Text)
+            );
         }
 
         eprintln!("phase first_contact_exports_an_explicit_device_private_trust_action");
@@ -992,7 +855,7 @@ mod tests {
                     fingerprint: "SHA256:example".into(),
                 },
             };
-            let trust = session_actions(&sample(Uuid::new_v4(), "Build Box"), false, Some(&issue))
+            let trust = session_actions(&sample(Uuid::new_v4(), "Build Box"), Some(&issue))
                 .1
                 .into_iter()
                 .find(|action| action.id == "trust-host-key")
