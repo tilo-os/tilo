@@ -415,3 +415,24 @@ and canonical caller remain on the History-held rich-paste branch. The current
 browser host also rejects HTML-only offers before dispatch; changing that host
 preflight requires its owner's scoped follow-up. Real Notes rich-paste
 undo/redo and full-browser caller qualification remain release gates.
+
+### Wayland paired clipboard transport (held for protocol qualification)
+
+The existing publication worker now requests HTML and its optional plain
+fallback from one focus-authorized `wl_data_offer`. Both formats have the shared
+1 MiB cap; nonblocking reads do at most eight 8 KiB syscalls per callback, validate
+UTF-8 at EOF, and expire after 40 ms. Replacement, keyboard Leave, seat removal,
+worker exit and backend teardown invalidate the cached offer and pending reads.
+An epoch prevents late publication after invalidation. Native backend forwarding
+uses the attached Wayland connection and does not acquire additional privileges.
+Existing image transfer limits and publication behavior are unchanged.
+
+Linux all-target compilation and strict Clippy pass with the installed target
+and Zig toolchain, offline and locked. Four production cache/reader tests compile;
+four new isolated compositor tests cover paired Unicode, completed-cache focus
+loss, plain replacement, NULL selection and deadline pipe closure/late-write
+refusal. Linux execution of these tests is still required before release.
+Deterministic selection-before-Enter, pending-pipe focus cancellation, and
+multi-seat orchestration remain additional qualification gaps; the current paired
+test does not establish exact protocol event ordering. This transport does not
+release the History-held Notes rich-paste consumer.
