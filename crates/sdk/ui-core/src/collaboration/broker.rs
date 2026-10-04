@@ -3527,6 +3527,8 @@ async fn spawn_content_stream(
     let Ok(stream) = channel.subscribe_blobs().await else {
         return;
     };
+    super::record_content::ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""))
+        .serve();
     let inbound_tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
         while let Ok(event) = stream.read().await {
