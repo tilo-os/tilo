@@ -187,7 +187,7 @@ touch. Expanded neighbouring targets must not overlap.
 | Crate | What it is |
 |---|---|
 | `mail` | Email client: MIME parse/build via mail-parser / mail-builder; live IMAP (async-imap) + SMTP (lettre) behind the `live` feature. |
-| `chat` | Workspace-scoped collaborative chat + calls; Automerge document persisted to disk; voice/screen-share over iroh QUIC + GStreamer + the ScreenCast portal behind `live-media`. |
+| `chat` | Workspace-scoped collaborative chat + calls; the room's own record, synced like every document; calls through the shell's native voice service. |
 | `remote` | Remote-access app: SSH terminals, VNC/RDP desktops, and Tilo-to-Tilo relay sessions (SSH opens an embedded terminal grid). |
 | `feeds` | RSS/Atom/JSON-feed + Gemini reader (feed-rs, reqwest, tokio-rustls TOFU); OPML import/export. |
 
