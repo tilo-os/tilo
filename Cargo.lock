@@ -13280,6 +13280,7 @@ dependencies = [
  "tilo-cli-kit",
  "tilo-clock",
  "tilo-content",
+ "tilo-control",
  "tilo-copy-lint",
  "tilo-cpu-raster",
  "tilo-delivery-protocol",
@@ -15191,6 +15192,15 @@ dependencies = [
  "tilo-paths",
  "tilo-xdg-paths",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-control"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
  "workspace-hack",
 ]
 

@@ -22,6 +22,7 @@ use std::time::{Duration, SystemTime};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -471,6 +472,50 @@ impl SearchProvider for FilesProvider {
         // Files isn't a tab-owning provider yet; the file explorer app owns tabs.
         false
     }
+
+    /// A file's address is its absolute path, so any file or folder under
+    /// the indexed home opens by its path — whether or not a search found it
+    /// first, and whether or not the background walk has reached it yet.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        let entry = self.entry_for_address(id)?;
+        let kind = if entry.is_dir {
+            ResourceKind::Folder
+        } else {
+            ResourceKind::File
+        };
+        ctx.wanted
+            .contains(&kind)
+            .then(|| make_result(&entry, MAX_SCORE, None))
+    }
+}
+
+impl FilesProvider {
+    /// The entry an absolute path names, if it exists under the indexed home
+    /// and is not one of the trees the walk deliberately skips. The path must
+    /// already be canonical: an address with `..` or a symlink that leaves
+    /// the home is not a file this provider offers.
+    fn entry_for_address(&self, id: &str) -> Option<NameEntry> {
+        let path = Path::new(id);
+        if !path.is_absolute() {
+            return None;
+        }
+        let canonical = std::fs::canonicalize(path).ok()?;
+        let home = std::fs::canonicalize(&self.home).ok()?;
+        if canonical.as_path() != path
+            || !canonical.starts_with(&home)
+            || should_skip(&canonical, &home)
+        {
+            return None;
+        }
+        let metadata = std::fs::metadata(&canonical).ok()?;
+        let display = display_path(&home, &canonical);
+        Some(NameEntry {
+            facts: NameFacts::new(&display, metadata.modified().ok()),
+            display,
+            is_dir: metadata.is_dir(),
+            path: canonical,
+        })
+    }
 }
 
 fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> SearchResult {
@@ -481,16 +526,14 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
     };
     let path = entry.path.clone();
     let is_dir = entry.is_dir;
-    SearchResult::nullary(
+    SearchResult::view_with_output(
         kind,
         "files",
         entry.path.display().to_string(),
         file_title(&entry.path),
         subtitle.or_else(|| Some(entry.display.clone())),
         score,
-        move |_doc, _root, chrome: &Chrome| {
-            open_search_hit(&path, is_dir, chrome);
-        },
+        move |chrome: &Chrome| open_search_hit(&path, is_dir, chrome),
     )
 }
 
@@ -779,26 +822,42 @@ fn path_depth(display_lower: &str) -> usize {
 /// Open a palette hit via [`crate::shell::doc_open`] when an installed app
 /// claims the type; unclaimed types and directories fall back to
 /// `xdg-open`, and a claimed type with no editor is reported, not silent.
-fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
+///
+/// A failure is both shown to the person and returned, so an action caller
+/// that cannot see the notification is told the file did not open; success
+/// answers what opened it.
+fn open_search_hit(
+    path: &Path,
+    is_dir: bool,
+    chrome: &Chrome,
+) -> Result<serde_json::Value, ActionError> {
     use crate::shell::doc_open::{self, DocumentTarget};
+    let handed_off =
+        || serde_json::json!({ "opened": "handed-off", "path": path, "with": "xdg-open" });
     if is_dir {
         spawn_open(path, is_dir);
-        return;
+        return Ok(handed_off());
     }
     match doc_open::resolve(path) {
         DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
-            if let Err(e) = doc_open::open_in_workspace(path, chrome) {
-                notify_open_failure(path, &e.user_message(), chrome);
-            }
+            doc_open::open_in_workspace(path, chrome)
+                .map(|opened| opened.to_value(path))
+                .map_err(|e| {
+                    let message = e.user_message();
+                    notify_open_failure(path, &message, chrome);
+                    ActionError::Refused(message)
+                })
         }
         DocumentTarget::NoAppForDocument { ext } => {
-            notify_open_failure(
-                path,
-                &crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]),
-                chrome,
-            );
+            let message =
+                crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]);
+            notify_open_failure(path, &message, chrome);
+            Err(ActionError::Refused(message))
         }
-        DocumentTarget::Unclaimed | DocumentTarget::Directory => spawn_open(path, is_dir),
+        DocumentTarget::Unclaimed | DocumentTarget::Directory => {
+            spawn_open(path, is_dir);
+            Ok(handed_off())
+        }
     }
 }
 
@@ -1915,5 +1974,59 @@ mod tests {
                 huge.rsplit('/').next().unwrap().len()
             );
         }
+    }
+
+    /// A file opens by its path on the first request: no search, no walk.
+    /// Only canonical paths under the indexed home, outside hidden and
+    /// skipped trees, are addresses.
+    #[test]
+    fn a_file_opens_by_its_path_without_any_search_first() {
+        let home = tempfile::tempdir().expect("home");
+        let home_path = std::fs::canonicalize(home.path()).expect("canonical home");
+        std::fs::create_dir_all(home_path.join("Documents")).expect("documents");
+        std::fs::create_dir_all(home_path.join(".secrets")).expect("hidden");
+        let report = home_path.join("Documents/report.md");
+        std::fs::write(&report, "# report").expect("report");
+        std::fs::write(home_path.join(".secrets/key"), "k").expect("hidden file");
+        let outside = tempfile::tempdir().expect("outside");
+        let stray = std::fs::canonicalize(outside.path())
+            .expect("outside")
+            .join("stray.md");
+        std::fs::write(&stray, "x").expect("stray");
+
+        let provider = FilesProvider::with_home(home_path.clone());
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let resolve = |id: &str| provider.resolve(id, ctx_for("", &wanted, &state, &doc));
+
+        let row = resolve(&report.display().to_string()).expect("the file resolves");
+        assert_eq!(row.title, "report.md");
+        assert_eq!(row.kind, ResourceKind::File);
+        let folder =
+            resolve(&home_path.join("Documents").display().to_string()).expect("a folder resolves");
+        assert_eq!(folder.kind, ResourceKind::Folder);
+        for refused in [
+            stray.display().to_string(),
+            home_path.join(".secrets/key").display().to_string(),
+            home_path
+                .join("Documents/../Documents/report.md")
+                .display()
+                .to_string(),
+            home_path.join("Documents/missing.md").display().to_string(),
+            "Documents/report.md".to_string(),
+        ] {
+            assert!(resolve(&refused).is_none(), "{refused} is not an address");
+        }
+        assert!(
+            provider
+                .resolve(
+                    &report.display().to_string(),
+                    ctx_for("", &[ResourceKind::Folder], &state, &doc)
+                )
+                .is_none(),
+            "a file is not offered where only folders are wanted"
+        );
     }
 }

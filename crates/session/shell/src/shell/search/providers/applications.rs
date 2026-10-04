@@ -10,7 +10,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::{Ref, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
@@ -404,6 +404,32 @@ impl ApplicationsProvider {
             });
         if spawned.is_ok() {
             *self.build.borrow_mut() = Some(receiver);
+        }
+    }
+
+    /// Wait, at most `bound`, for the index build [`Self::refresh_snapshot`]
+    /// starts. An invocation by address may be a session's first request,
+    /// with no earlier search whose build it could take in; refusing it while
+    /// a worker still reads the app list would make an address valid only
+    /// after some unrelated listing ran first.
+    fn settle_snapshot(&self, bound: std::time::Duration) {
+        let started = std::time::Instant::now();
+        loop {
+            self.refresh_snapshot();
+            if self.snapshot().is_some() {
+                return;
+            }
+            let Some(receiver) = self.build.borrow_mut().take() else {
+                return;
+            };
+            match receiver.recv_timeout(bound.saturating_sub(started.elapsed())) {
+                Ok(snapshot) => *self.snapshot.borrow_mut() = Some(snapshot),
+                Err(RecvTimeoutError::Timeout) => {
+                    *self.build.borrow_mut() = Some(receiver);
+                    return;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
         }
     }
 
@@ -1060,6 +1086,9 @@ impl SearchProvider for ApplicationsProvider {
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Application) {
             return None;
+        }
+        if self.snapshot().is_none() {
+            self.settle_snapshot(crate::shell::search::RESOLVE_INDEX_WAIT);
         }
         let snapshot = self.snapshot()?;
         snapshot
@@ -2310,32 +2339,20 @@ mod tests {
         let chrome = chrome_rc();
         let doc = AutoCommit::new();
         let resource = ResourceRef::new("applications", "so.tilo.calculator");
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
-        loop {
-            let opened = ActionCatalog::build_for_resource(
-                &registry,
-                &resource,
-                SearchScope::All,
-                None,
-                &chrome.borrow(),
-                &doc,
-                &automerge::ROOT,
-                &AllVisible,
-            )
-            .select(&resource)
-            .map(|action| action.title().to_string());
-            if let Some(title) = opened {
-                assert_eq!(title, "Open Calculator");
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "invoking by address alone never takes in the finished index"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        // The first request resolves: no listing beforehand, no retry.
+        let opened = ActionCatalog::build_for_resource(
+            &registry,
+            &resource,
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        )
+        .select(&resource)
+        .map(|action| action.title().to_string());
+        assert_eq!(opened.as_deref(), Some("Open Calculator"));
     }
 
     #[test]

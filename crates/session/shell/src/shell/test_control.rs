@@ -1519,7 +1519,33 @@ pub fn parse_request(line: &str) -> Result<Request, Response> {
 pub const AGENT_CONTROL_NOT_PERMITTED: &str =
     "the agent-control socket serves input, screenshots and the watch signal only";
 
+/// Protocol error for a command the device admin's control socket does not
+/// serve. It names where the rest of the protocol lives, so a caller that
+/// reached for input learns the semantic route rather than retrying.
+pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves the action model only \
+     (actions list/invoke/status/cancel, state-dump, foreign-frames); synthetic input and \
+     screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
+
 impl Command {
+    /// Whether the device admin's control socket serves this command: the
+    /// action model — enumerate, invoke, status, cancel — and read-only state.
+    /// Synthetic input, screenshots, grants, fixtures and agent seats are not:
+    /// the admin drives the session the way an assistive tool or an agent
+    /// does, through typed actions, and a person's screen is not something a
+    /// socket client reads or clicks.
+    #[must_use]
+    pub const fn admin_permitted(&self) -> bool {
+        matches!(
+            self,
+            Self::ActionsEnumerate { .. }
+                | Self::ActionsInvoke { .. }
+                | Self::ActionsStatus { .. }
+                | Self::ActionsCancel { .. }
+                | Self::StateDump
+                | Self::ForeignFrames
+        )
+    }
+
     /// Whether an agent-control connection may send this command: pointer,
     /// keyboard and clipboard input, screenshots, read-only frame and target
     /// inventories, and the partner watch signal, which only decides whether

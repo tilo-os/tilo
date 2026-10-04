@@ -94,8 +94,6 @@
 #
 # Not listed: /usr/libexec/tilo-local-model-service arrives with the
 # local-model system extension rather than from this image build.
-# `tilo-control` is listed, but as a dev-only component: production images do
-# not ship it.
 
 # Units provided by distribution packages rather than os/usr/lib/systemd.
 external_units = ["greetd.service"]
@@ -112,6 +110,21 @@ dev_features = ["dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "shell", to = "/usr/bin/shell", mode = "0755" },
+]
+
+# The control-socket CLI, the one way agents and scripts drive a running
+# desktop (AGENTS.md): the action model over the device admin's control socket
+# in every image, plus synthetic input over a dev session's test-control
+# socket. tilo-vmd's `control` passes through to it.
+[[component]]
+name = "control"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-control"]
+bins = ["tilo-control"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
 ]
 
 [[component]]
@@ -499,20 +512,6 @@ files = [
 # The `dev-tools` layer is installed by os/Containerfile.dev alone.
 # tools/policy/check_dev_image_contract.py fails if the production image builds
 # or copies any of it.
-
-# The compositor's control-socket CLI, the one way agents and scripts drive a
-# running desktop (AGENTS.md). tilo-vmd's `control` passes through to it.
-[[component]]
-name = "control"
-kind = "userspace"
-scope = "session"
-packages = ["shell"]
-bins = ["tilo-control"]
-dev_features = ["dev-overrides"]
-layer = "dev-tools"
-files = [
-  { from = "tilo-control", to = "/usr/bin/tilo-control", mode = "0755" },
-]
 
 # The dev-VM guest daemon. It is not a service: `tilo-vm` runs
 # `ssh <vm> tilo-vmd rpc` per call, hence the PATH link.
