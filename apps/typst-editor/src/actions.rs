@@ -232,12 +232,12 @@ fn diagnostic_resource(index: usize, diag: &crate::compile::Diagnostic) -> Resou
         DiagKind::Error => "Error",
         DiagKind::Warning => "Warning",
     };
-    let loc = match (diag.line, diag.col) {
-        (Some(line), Some(col)) => format!("{line}:{col}"),
-        (Some(line), None) => format!("{line}"),
-        _ => "—".to_owned(),
+    let message = truncate_label(&diag.message, 48);
+    let label = match (diag.line, diag.col) {
+        (Some(line), Some(col)) => format!("{severity} at {line}:{col}: {message}"),
+        (Some(line), None) => format!("{severity} on line {line}: {message}"),
+        _ => format!("{severity}: {message}"),
     };
-    let label = format!("{severity} · {loc} · {}", truncate_label(&diag.message, 48));
     Resource::new(
         format!("typst.diagnostic:{index}"),
         "typst.diagnostic",
@@ -277,7 +277,7 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
         let mut problems = Resource::new(
             "typst.problems",
             "typst.problems",
-            format!("Problems · {}", ctx.diagnostics.len()),
+            format!("Problems ({})", ctx.diagnostics.len()),
         );
         for (index, diag) in ctx
             .diagnostics
@@ -293,7 +293,7 @@ pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<Resource> {
         let mut pages = Resource::new(
             "typst.preview-pages",
             "typst.preview-pages",
-            format!("Preview pages · {}", ctx.page_count),
+            format!("Preview pages ({})", ctx.page_count),
         );
         for page in 0..ctx.page_count.min(LIVE_EXTRA_RESOURCE_LIMIT) {
             pages = pages.with_child(preview_page_resource(page));
