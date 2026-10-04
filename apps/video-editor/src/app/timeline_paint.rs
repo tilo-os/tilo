@@ -164,20 +164,42 @@ impl VideoEditorApp {
         let grid_ink = ui::surface::edge_on_with(ground, ui::chrome::HAIRLINE_ALPHA / 2);
         let label_top = r.ruler.y0 + (r.ruler.height() - label_h) / 2.0;
         let chip_x0 = self.zoom_chip_rect(r).x0;
-        // The named markers own their stretch of the ruler: a tick's time
-        // that would run into a marker's name is left out, the marker being
-        // the reading someone put there on purpose.
+        // The ruler's one row of readings, in order of who owns it: the
+        // playhead's time tag, then everyone else's playhead names, then the
+        // named markers, then the tick times. A reading that would run into
+        // one before it is left out rather than printed through it.
+        let (tag, tag_rect) = self.playhead_tag(r, tr, theme);
+        let mut claimed: Vec<(f64, f64)> = vec![(tag_rect.x0, tag_rect.x1)];
+        let peer_name = caption(theme);
+        let peer_tags = crate::presence::place_peer_tags(
+            presence,
+            r.lanes,
+            &claimed,
+            |t| self.time_to_x(t, &r.lanes),
+            // The chip's label plus its insets either side.
+            |name| text_width(tr, name, &peer_name) + 2.0 * S2,
+        );
+        claimed.extend(peer_tags.iter().filter(|p| p.row == 0).map(|p| p.span));
         let name_style = caption(theme);
-        let marker_names: Vec<(f64, f64)> = self
-            .project
-            .all_markers()
-            .into_iter()
-            .filter(|(_, m, on_clip)| on_clip.is_none() && !m.name.is_empty())
-            .map(|(at, m, _)| {
-                let x = self.time_to_x(at, &r.lanes) + S2;
-                (x, x + text_width(tr, &m.name, &name_style))
-            })
-            .collect();
+        let clear_of = |claimed: &[(f64, f64)], a: f64, b: f64| {
+            !claimed.iter().any(|(m0, m1)| a < m1 + S2 && b > m0 - S2)
+        };
+        let mut marker_names: Vec<(f64, f64)> = Vec::new();
+        let mut shown_names: Vec<(f64, &str)> = Vec::new();
+        let markers = self.project.all_markers();
+        for (at, m, on_clip) in &markers {
+            if on_clip.is_some() || m.name.is_empty() {
+                continue;
+            }
+            let x = self.time_to_x(*at, &r.lanes) + S2;
+            let span = (x, x + text_width(tr, &m.name, &name_style));
+            let all: Vec<(f64, f64)> = claimed.iter().chain(&marker_names).copied().collect();
+            if clear_of(&all, span.0, span.1) && span.1 <= chip_x0 - S1 {
+                marker_names.push(span);
+                shown_names.push((*at, m.name.as_str()));
+            }
+        }
+        claimed.extend(marker_names);
         for t in ticks {
             let x = self.time_to_x(t, &r.lanes);
             if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
@@ -188,10 +210,7 @@ impl VideoEditorApp {
                 // labels are helpful context, not a reason to draw through a
                 // control (especially when text scaling widens both).
                 let (a, b) = (x + S1, x + S1 + label_w);
-                let under_name = marker_names
-                    .iter()
-                    .any(|(m0, m1)| a < m1 + S2 && b > m0 - S2);
-                if b <= chip_x0 - S1 && !under_name {
+                if b <= chip_x0 - S1 && clear_of(&claimed, a, b) {
                     text(scene, tr, tf, &words, &label, c.text_dim, x + S1, label_top);
                 }
                 // faint grid line down the lanes
@@ -281,7 +300,15 @@ impl VideoEditorApp {
             let h = if on_clip.is_some() { 6.0 } else { 10.0 };
             let flag = Rect::new(x, r.ruler.y1 - h, x + 3.0, r.ruler.y1);
             fill_rect(scene, tf, flag, col);
-            if on_clip.is_none() && !marker.name.is_empty() {
+            #[expect(
+                clippy::float_cmp,
+                reason = "the shown names were taken from this very marker list, so equality is the lookup"
+            )]
+            let shown = on_clip.is_none()
+                && shown_names
+                    .iter()
+                    .any(|(t, n)| *t == at && *n == marker.name);
+            if shown {
                 text(
                     scene,
                     tr,
@@ -371,22 +398,36 @@ impl VideoEditorApp {
                     level.is_some_and(|l| l.clipped),
                 );
             }
-            // Mute, lock and solo: toggles that stay down while they are on.
+            // Mute, solo and lock: toggles that stay down while they are on.
+            // Lettered M, S and L, the mixing desk's own shorthand, so the
+            // three never read as one another; their full names are what a
+            // reader hears and what the hover says. The head is too narrow
+            // for a labelled face's insets, so the letter is set centred on
+            // the toolkit's toggle face rather than elided to nothing.
             let muted = track.is_some_and(|t| t.muted);
             let locked = track.is_some_and(|t| t.locked);
             let solo = track.is_some_and(|t| t.solo);
-            for (pill, on, icon, name) in [
-                (head.mute, muted, Icon::VolumeX, "Mute"),
-                (head.lock, locked, Icon::Pin, "Lock"),
-                (head.solo, solo, Icon::Volume2, "Solo"),
+            for (pill, on, letter) in [
+                (head.mute, muted, "M"),
+                (head.solo, solo, "S"),
+                (head.lock, locked, "L"),
             ] {
+                let hovered = pill.contains(self.last_mouse);
                 draw_toggle_button(
                     &mut PaintCtx::new(scene, tf, tr, theme),
                     pill,
-                    ToggleContent::Icon(icon, name),
+                    ToggleContent::Label(""),
                     on,
-                    pill.contains(self.last_mouse),
+                    hovered,
                 );
+                let style = theme.text(TextRole::Label).strong();
+                let at = text_centre(pill, letter, &style, tr);
+                let ink = if on || hovered {
+                    c.text_primary
+                } else {
+                    c.text_dim
+                };
+                text(scene, tr, tf, letter, &style, ink, at.x, at.y);
             }
         }
 
@@ -398,6 +439,16 @@ impl VideoEditorApp {
             tf,
             &Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
         );
+        // A locked lane says so across its whole width: a diagonal hatch on
+        // the lane itself, under its clips, so "my drag did nothing" always
+        // has a visible reason rather than reading as a dead app. The clips
+        // on it grey back (see `draw_clip`) with their names kept legible.
+        for (tid, _kind, lane) in &lanes {
+            if self.project.track(*tid).is_some_and(|t| t.locked) {
+                let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
+                hatch_rect(scene, tf, ui::surface::edge_on(ground), full, 0.0);
+            }
+        }
         let links = LinkMarks::build(&self.project, &self.selection);
         let mut drawn: Vec<(ClipId, Rect)> = Vec::new();
         let mut tied: Vec<(Uuid, Rect)> = Vec::new();
@@ -451,19 +502,9 @@ impl VideoEditorApp {
                 );
             }
         }
-        // What will not be heard, seen or written greys back toward the
-        // ground, over the clips it covers.
-        let veil = with_alpha(ground, f64::from(ui::overlay::scrim::MODAL_STRENGTH) + 0.1);
-        // A lane that will not be heard or seen — muted, or not soloed while
-        // something else of its kind is — so the toggle state is legible from
-        // the clips themselves and not only from the header.
-        for (tid, _kind, lane) in &lanes {
-            if self.project.track_audible(*tid) {
-                continue;
-            }
-            let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
-            fill_rect(scene, tf, full, veil);
-        }
+        // What will not be written greys back toward the ground, over the
+        // clips it covers.
+        let veil = clip_veil(theme);
         // Everything outside the render range: the range is what will be
         // written to a file, and a clip that will not be in it must not look
         // like one that will.
@@ -479,17 +520,6 @@ impl VideoEditorApp {
                     fill_rect(scene, tf, out, veil);
                 }
             }
-        }
-        // A locked lane says so across its whole width, drawn *over* its clips:
-        // they grey back under a diagonal hatch, so "my drag did nothing"
-        // always has a visible reason rather than reading as a dead app.
-        for (tid, _kind, lane) in &lanes {
-            if !self.project.track(*tid).is_some_and(|t| t.locked) {
-                continue;
-            }
-            let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
-            fill_rect(scene, tf, full, veil);
-            hatch_rect(scene, tf, ui::surface::edge_on(ground), full, 0.0);
         }
         // Which clips other participants are holding, outlined in their
         // colours. Over the mute/lock veils, because a peer's selection has
@@ -543,20 +573,10 @@ impl VideoEditorApp {
             scene.fill(Fill::NonZero, tf, head_ink, None, &head);
         }
         // playhead timecode tag in ruler: an inverted chip, ink on its fill.
-        let tag = timecode(self.playhead, self.project.fps);
-        let tag_style = caption(theme).numeric().strong();
-        let tw = text_width(tr, &tag, &tag_style);
-        let th = line_height(tr, &tag_style);
-        // The tag stops short of the zoom chip rather than running under it,
-        // so the chip's hit rect is never covered by a reading it does not
-        // answer for; the playhead's own head still reaches the ruler's end.
-        let tagx = (px + S2).min(chip.x0 - tw - S2).max(r.ruler.x0 + S1);
-        let tag_top = r.ruler.y0 + (r.ruler.height() - th) / 2.0;
-        let tagrect = Rect::new(tagx - S1, tag_top, tagx + tw + S1, tag_top + th);
         fill_round(
             scene,
             tf,
-            tagrect,
+            tag_rect,
             f64::from(theme.tokens.radii.detail),
             c.intent.inverted,
         );
@@ -565,10 +585,10 @@ impl VideoEditorApp {
             tr,
             tf,
             &tag,
-            &tag_style,
+            &caption(theme).numeric().strong(),
             c.intent.on_inverted,
-            tagx,
-            tag_top,
+            tag_rect.x0 + S1,
+            tag_rect.y0,
         );
 
         // Everyone else's playhead, after the local one so a peer parked on
@@ -576,9 +596,8 @@ impl VideoEditorApp {
         // that replaced it.
         crate::presence::draw_peer_playheads(
             &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
-            r.lanes,
+            &peer_tags,
             r.timeline.y1,
-            |t| self.time_to_x(t, &r.lanes),
         );
 
         // Empty timeline: say what to do, rather than showing bare lanes.
@@ -615,6 +634,32 @@ impl VideoEditorApp {
 
         // Horizontal scrollbar, floated over the bottom of the lane area.
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Timeline, r);
+    }
+
+    /// The playhead's time tag in the ruler: its words and its chip.
+    ///
+    /// The tag follows the playhead but stops a sibling step short of the zoom
+    /// chip rather than running under it, so the chip's hit rect is never
+    /// covered by a reading it does not answer for; the playhead's own head
+    /// still reaches the ruler's end.
+    pub(super) fn playhead_tag(
+        &self,
+        r: &Regions,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> (String, Rect) {
+        let tag = timecode(self.playhead, self.project.fps);
+        let tag_style = caption(theme).numeric().strong();
+        let tw = text_width(tr, &tag, &tag_style);
+        let th = line_height(tr, &tag_style);
+        let px = self.time_to_x(self.playhead, &r.lanes);
+        let chip = self.zoom_chip_rect(r);
+        let tagx = (px + S2).min(chip.x0 - tw - S1 - S2).max(r.ruler.x0 + S1);
+        let tag_top = r.ruler.y0 + (r.ruler.height() - th) / 2.0;
+        (
+            tag,
+            Rect::new(tagx - S1, tag_top, tagx + tw + S1, tag_top + th),
+        )
     }
 
     /// What the zoom chip says: how many pixels a second of timeline takes.
@@ -687,7 +732,7 @@ impl VideoEditorApp {
         );
         // The header strip: the label colour deepened until its name reads.
         let strip = self.clip_header_rect(cr);
-        let (strip_fill, head_col) = on_fill(theme, base);
+        let (strip_fill, mut head_col) = on_fill(theme, base);
         fill_round(ctx.scene, ctx.transform, strip, radius, strip_fill);
 
         // content: filmstrip or waveform
@@ -797,6 +842,18 @@ impl VideoEditorApp {
                     .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Warning))
                     .paint(ctx.scene, ctx.transform, ctx.text, theme);
             }
+        }
+        // A clip on a lane that will not be heard or seen (muted, or not
+        // soloed while something else of its kind is) or that is locked greys
+        // back toward the ground, so the lane's state is legible from the
+        // clips themselves and not only from the header. Its name and marks
+        // are then lettered in the ground's own ink, over the veil, so they
+        // stay as readable as anything else on the timeline.
+        let dimmed = !self.project.track_audible(clip.track)
+            || self.project.track(clip.track).is_some_and(|t| t.locked);
+        if dimmed {
+            fill_round(ctx.scene, ctx.transform, cr, radius, clip_veil(theme));
+            head_col = c.text_primary;
         }
         // The part of the clip the lane actually shows. The lane layer is
         // clipped, so a clip whose start is scrolled off to the left had its
@@ -926,6 +983,19 @@ impl VideoEditorApp {
         // always clear which clip a trim or a grade will land on.
         let you = c.intent.you;
         let primary = self.selection.primary() == Some(clip.id);
+        // Clips abut, and your colour can be any clip's label colour too, so a
+        // selected clip is parted from its neighbours by a line of the ground
+        // just outside its outline: the ring never merges into the next clip.
+        if selected {
+            stroke_round(
+                ctx.scene,
+                ctx.transform,
+                cr.inflate(1.0, 1.0),
+                radius + 1.0,
+                theme.tokens.colors.surfaces.content,
+                2.0,
+            );
+        }
         if primary {
             stroke_round(ctx.scene, ctx.transform, cr, radius, you, 2.0);
             for hx in [cr.x0, cr.x1] {
@@ -979,4 +1049,12 @@ pub(super) fn add_track_label(kind: TrackKind) -> &'static str {
     } else {
         "Audio track"
     }
+}
+
+/// The ground pulled over what will not be heard, seen or written.
+fn clip_veil(theme: &Theme) -> Color {
+    with_alpha(
+        theme.tokens.colors.surfaces.content,
+        f64::from(ui::overlay::scrim::MODAL_STRENGTH) + 0.1,
+    )
 }

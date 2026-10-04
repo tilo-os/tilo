@@ -292,7 +292,11 @@ impl VideoEditorApp {
         }
         self.shot_scenario = match scenario {
             // The real live app on a blank project, as a fresh machine shows.
-            Some(EMPTY_CAPTURE) => return,
+            Some(EMPTY_CAPTURE) => {
+                // Nothing on the timeline, so nothing to be part-way through.
+                self.playhead = 0.0;
+                return;
+            }
             Some(NARROW_CAPTURE) => {
                 // The collapsed bin revealed over the editor behind its scrim;
                 // the animation never runs in a one-shot render.
@@ -376,10 +380,10 @@ impl VideoEditorApp {
                 self.presentation.export_open = review_dialog;
                 self.export_status = ExportStatus::Failed {
                     reason: if review_dialog {
-                        "No H.264 encoder is available for the selected export preset. Install an H.264-capable GStreamer plugin, then retry the export."
+                        "This computer has no H.264 encoder. Choose WebM / VP8, or add H.264 support in Software and export again."
                             .to_string()
                     } else {
-                        "no encoder for H.264 on this machine".to_string()
+                        "This computer has no H.264 encoder.".to_string()
                     },
                 };
             }
@@ -560,7 +564,7 @@ impl VideoEditorApp {
             }
             ShotScenario::SavedProject => {
                 let path = PathBuf::from("/home/you/Videos/Coastline_Doc_v3.qvp");
-                self.project_notice = Some(Notice::ok(format!("Saved to {}", path.display())));
+                self.project_notice = Some(Notice::ok(project_workflow::saved_words(&path)));
                 self.project_path = Some(path);
                 // Saved *as it stands*, so the badge is off — which is the
                 // half of the button this scenario exists to show.
@@ -606,7 +610,7 @@ impl VideoEditorApp {
                     path: String::new(),
                     hydration: crate::media::Hydration::Local,
                     text: Some(crate::model::TextSource {
-                        content: "COASTLINE\nepisode two".into(),
+                        content: "Coastline\nEpisode two".into(),
                         size: 0.14,
                         align: crate::model::TextAlign::Left,
                         ..crate::model::TextSource::default()
@@ -705,6 +709,17 @@ impl VideoEditorApp {
         self.shot_presence = Some(ctx);
     }
 
+    /// The regions with the bin showing: folded away on a narrow window, the
+    /// bin is opened (settled, since a one-shot render runs no animation).
+    fn reveal_bin_for_capture(&mut self, r: &Regions) -> Regions {
+        if !r.bin_overlay {
+            return *r;
+        }
+        self.reconcile_flaps();
+        self.bin_flap.snap(true);
+        self.regions()
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the capture script: one arm per shot, each setting up exactly what it shows"
@@ -763,7 +778,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Mix)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
                 // …with the keyboard cursor on the button that puts the lane
@@ -812,12 +827,17 @@ impl VideoEditorApp {
                 }
             }
             ShotScenario::BinMenu => {
+                // A row is only pressed where it can be seen: on a window
+                // narrow enough to fold the bin away, the bin is summoned
+                // first, as a person would have to.
+                let r = &self.reveal_bin_for_capture(r);
                 if let Some((mid, row)) = self.bin_item_rects(r).into_iter().nth(2) {
                     let at = Point::new(row.center().x, row.center().y);
                     self.open_bin_menu(mid, at);
                 }
             }
             ShotScenario::BinRename => {
+                let r = &self.reveal_bin_for_capture(r);
                 if let Some((mid, _row)) = self.bin_item_rects(r).into_iter().nth(2) {
                     self.begin_rename(mid);
                 }
@@ -923,7 +943,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Curves)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -971,9 +991,8 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Key)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    // Land the header a little below the panel's top edge:
-                    // flush against it, its own row is clipped.
-                    let want = y - r.inspector.y0 - 22.0;
+                    // Land the header at the top of the scrolled body, whole.
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }
@@ -983,7 +1002,7 @@ impl VideoEditorApp {
                 // not an inspector posed to look like one.
                 let item = MediaItem {
                     id: Uuid::new_v4(),
-                    name: "COASTLINE".into(),
+                    name: "Coastline".into(),
                     kind: MediaKind::Text,
                     duration: 6.0,
                     width: self.project.width,
@@ -993,7 +1012,7 @@ impl VideoEditorApp {
                     path: String::new(),
                     hydration: crate::media::Hydration::Local,
                     text: Some(TextSource {
-                        content: "COASTLINE".into(),
+                        content: "Coastline".into(),
                         size: 0.16,
                         color: TITLE_COLORS[2],
                         align: TextAlign::Left,
@@ -1010,12 +1029,14 @@ impl VideoEditorApp {
                     .into_iter()
                     .find(|t| t.kind == TrackKind::Video)
                     .map(|t| t.id);
+                // On the top lane's free stretch, after the logo bug and well
+                // before the sunset, so it shares the lane with nothing.
                 if let Some(track) = track
-                    && let Some(cid) = self.project.add_clip(track, mid, 4.0)
+                    && let Some(cid) = self.project.add_clip(track, mid, 7.0)
                 {
                     self.selection.select_only(cid);
                     self.selected_media = Some(mid);
-                    self.playhead = 6.0;
+                    self.playhead = 11.5;
                 }
                 self.project.add_marker(9.0, "act two", 1);
                 self.project.add_marker(18.5, "sunset", 3);
@@ -1035,7 +1056,7 @@ impl VideoEditorApp {
                     .find(|(s, _)| *s == Section::Title)
                     .map(|(_, rect)| rect.y0);
                 if let Some(y) = head {
-                    let want = y - r.inspector.y0 - 22.0;
+                    let want = y - self.inspector_viewport(r).y0;
                     self.inspector_scroll = want.clamp(0.0, self.inspector_max_scroll(r));
                 }
             }

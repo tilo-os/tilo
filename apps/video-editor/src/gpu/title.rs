@@ -332,9 +332,9 @@ mod tests {
             let mut tr = ui::text_render::TextRenderer::new();
             let family = ui::text_render::FontChoice::default();
             let weight = ui::text_render::TextWeight::Bold;
-            // 1280x720 at size 0.55 — the export fixture's title, which measures
+            // 1280x720 at size 0.52, at which the bold UI face sets the word
             // wider than 0.84 of the frame but narrower than the frame.
-            let size = 0.55 * 720.0;
+            let size = 0.52 * 720.0;
             let safe = 1280.0 * 0.84;
             let frame = 1280.0;
             let w = f64::from(
