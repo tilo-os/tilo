@@ -616,35 +616,13 @@ impl CameraApp {
     }
 
     fn media_handoff_resource(app_id: &str, label: &str) -> tilo_actions::Resource {
-        use tilo_actions::{
-            ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
-        };
+        use tilo_actions::Resource;
 
-        let launch_app_id = app_id.to_owned();
-        let spec = ActionSpec::typed_operation(
+        let spec = crate::actions::ApplicationLaunch::content_spec(
+            app_id,
             "open",
-            format!("Open {label}"),
-            format!("Open the latest capture in {label}"),
-            OperationKind::Effect,
-            crate::actions::APPLICATION_LAUNCH_TYPE,
-            vec![ActionParam::required(
-                "content_hash",
-                ParamType::Text,
-                "Verified portable BLAKE3 media hash",
-            )],
-            move |args| {
-                EncodedAction::encode_operation(
-                    crate::actions::APPLICATION_LAUNCH_TYPE,
-                    &serde_json::json!({
-                        "app_id": launch_app_id,
-                        "content_hash": args.text("content_hash").unwrap_or(""),
-                    }),
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: crate::actions::APPLICATION_LAUNCH_TYPE.into(),
-                    payload: Vec::new(),
-                })
-            },
+            &format!("Open {label}"),
+            &format!("Open the latest capture in {label}"),
         );
         Resource::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
     }
@@ -7516,6 +7494,28 @@ mod tests {
             }),
             Some(true)
         );
+    }
+
+    /// A photo whose caller cancelled it while it was being saved is
+    /// dropped when it arrives, with its file: nothing is registered.
+    #[test]
+    fn a_cancelled_capture_is_discarded_with_its_file() {
+        let (mut app, dir) = disk_camera("photo-cancelled");
+        push_frame(&mut app, 1);
+        let invocation = app
+            .start_effect_on(crate::actions::CAPTURE_ROW, &CameraEffect::Capture)
+            .expect("the photo is being saved");
+        assert!(matches!(
+            app.cancel_effect(invocation),
+            Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(2), |_| false);
+        assert!(app.state().recent.is_none(), "nothing is registered");
+        let photos =
+            std::fs::read_dir(&dir).map_or(0, |entries| entries.filter_map(Result::ok).count());
+        assert_eq!(photos, 0, "the saved file is removed");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
