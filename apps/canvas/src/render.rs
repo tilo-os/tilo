@@ -425,9 +425,9 @@ impl Renderer {
             let plain = art
                 .layer(&mark.layer)
                 .is_some_and(|layer| layer.medium.is_empty());
-            let Some((points, size)) = crate::brushes::stroke_of(mark) else {
+            if crate::brushes::stroke_of(mark).is_none() {
                 continue;
-            };
+            }
             let preset = crate::brushes::Preset::of(&mark.style);
             if !plain || !preset.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
                 continue;
@@ -446,8 +446,7 @@ impl Renderer {
                 continue;
             };
             let Some(dabs) = crate::brushes::dab(&crate::brushes::DabInput {
-                points,
-                size,
+                pieces: &crate::brushes::pieces(mark),
                 style: &mark.style,
                 scale,
                 rgb: [ink.r, ink.g, ink.b],
@@ -684,7 +683,7 @@ impl Renderer {
         let palette = preset.palette;
         let marks: Vec<Painted> = art
             .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, &art.clips_of(mark), &palette, scale))
+            .flat_map(|mark| wet_marks(mark, wet_cut(art, mark).as_ref(), &palette, scale))
             .collect();
         let mut key = blake3::Hasher::new();
         for mark in &marks {
@@ -711,7 +710,7 @@ impl Renderer {
             entry.image = Some(image(pixels, canvas.width, canvas.height));
             entry.key = key;
         }
-        let strokes = wet.map(|wet| wet_marks(wet, &art.clips_of(wet), &palette, scale));
+        let strokes = wet.map(|wet| wet_marks(wet, wet_cut(art, wet).as_ref(), &palette, scale));
         let shown = shown_painting(
             &mut self.wet,
             entry,
@@ -1075,11 +1074,9 @@ fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
 }
 
 /// The outline a stroke's paint is cut to, in cells: its clip's silhouette.
-fn clip_contours(clips: &[&Mark], scale: f64) -> Vec<Vec<(f32, f32)>> {
-    clips
-        .iter()
-        .flat_map(|clip| contours(&silhouette(clip), Affine::scale(scale) * clip.affine()))
-        .collect()
+fn clip_contours(cut: Option<&BezPath>, scale: f64) -> Vec<Vec<(f32, f32)>> {
+    cut.map(|outline| contours(outline, Affine::scale(scale)))
+        .unwrap_or_default()
 }
 
 /// The outline of what a mark is cut to, in artwork units: its clip's
@@ -1092,6 +1089,23 @@ fn clip_path(clips: &[&Mark]) -> BezPath {
         path.extend(outline);
     }
     path
+}
+
+/// The outlines `mark` is cut to, in artwork units: what its clip names
+/// and the area it is kept inside. It shows only where all of them cover.
+pub fn cuts(art: &Artwork, mark: &Mark) -> Vec<BezPath> {
+    let clips = art.clips_of(mark);
+    (!clips.is_empty())
+        .then(|| clip_path(&clips))
+        .into_iter()
+        .chain(mark.area())
+        .collect()
+}
+
+/// The one outline a painted mark is kept inside (the medium keeps a
+/// stroke inside one): its area, else what its clip names.
+fn wet_cut(art: &Artwork, mark: &Mark) -> Option<BezPath> {
+    cuts(art, mark).pop()
 }
 
 /// A stroke's points in cells, with their pressure.
@@ -1115,7 +1129,7 @@ fn cell_points(points: &[Vec<f64>], to_cells: Affine) -> Vec<WetPoint> {
 
 /// What a mark is as paint: a laid-in region, a stroke, or both. A stroke
 /// stays inside `clip` when it is cut to one.
-fn wet_marks(mark: &Mark, clip: &[&Mark], palette: &[Pigment], scale: f64) -> Vec<Painted> {
+fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f64) -> Vec<Painted> {
     let style = &mark.style;
     let to_cells = Affine::scale(scale) * mark.affine();
     let params = style
@@ -1339,13 +1353,13 @@ pub fn mix(blend: &str) -> Option<Mix> {
 /// outline as its preset lays it, a text's box, any other shape's outline.
 pub fn silhouette(mark: &Mark) -> BezPath {
     match &mark.shape {
-        Shape::Stroke { points, size, .. }
+        Shape::Stroke { .. }
             if crate::brushes::Preset::of(&mark.style) == crate::brushes::Preset::Round =>
         {
-            ink_path(points, *size)
+            ink_strokes(mark)
         }
-        Shape::Stroke { points, size, .. } => {
-            crate::brushes::silhouette(points, *size, &mark.style)
+        Shape::Stroke { .. } => {
+            crate::brushes::silhouette(&crate::brushes::pieces(mark), &mark.style)
         }
         shape => shape.path(),
     }
@@ -1364,35 +1378,20 @@ fn wet_points(points: &[Vec<f64>]) -> Vec<WetPoint> {
         .collect()
 }
 
-fn ink_path(points: &[Vec<f64>], size: f64) -> BezPath {
-    ink_outline(&wet_points(points), narrow(size))
-}
-
-/// A stroke drawn in ink on a plain layer: its own line, or every twig or
-/// dab it grows into, grown from the mark's id as a painted layer grows it.
-fn ink_strokes(mark: &Mark, points: &[Vec<f64>], size: f64) -> BezPath {
-    let Some(form) = mark.shape.form(mark.style.angle) else {
-        return ink_path(points, size);
-    };
-    let stroke = WetStroke {
-        points: wet_points(points),
-        size: narrow(size),
-        paint: tilo_wet_media::Paint {
-            colour: tilo_wet_media::Rgb::WHITE,
-            alpha: 1.0,
-            granulation: 0.0,
-            strength: 1.0,
-        },
-        opacity: 1.0,
-        wet: false,
-        params: std::collections::BTreeMap::new(),
-        form: Some(form),
-        clip: Vec::new(),
-    };
+/// A stroke drawn by the round ink brush: its own line, or every twig or
+/// dab it grows into, each after the stroke's smoothing.
+fn ink_strokes(mark: &Mark) -> BezPath {
+    let smoothing = crate::brushes::Dynamics::of_mark(mark).smoothing;
     let mut path = BezPath::new();
-    for (piece, _) in stroke.pieces(tilo_wet_media::painter::seed_of(&mark.id)) {
+    for (points, size) in crate::brushes::pieces(mark) {
+        let points = crate::brushes::steady_ends(&points, size);
+        let points = if smoothing > 0.0 {
+            crate::brushes::smoothed(&points, smoothing)
+        } else {
+            points
+        };
         path.extend(
-            ink_outline(&piece.points, piece.size)
+            ink_outline(&wet_points(&points), narrow(size))
                 .elements()
                 .iter()
                 .copied(),
@@ -1445,14 +1444,13 @@ fn draw_mark(
         &graded
     };
     let mut layers = 0;
-    let clips = art.clips_of(mark);
-    if !clips.is_empty() {
+    for outline in cuts(art, mark) {
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
             transform,
-            &clip_path(&clips),
+            &outline,
         );
         layers += 1;
     }
@@ -1539,16 +1537,9 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     );
     // Cut to its clip inside the erasing group, so only what it covers
     // within the clip is taken out.
-    let clips = art.clips_of(mark);
-    let clipped = !clips.is_empty();
-    if clipped {
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &clip_path(&clips),
-        );
+    let cuts = cuts(art, mark);
+    for outline in &cuts {
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, outline);
     }
     if crate::brushes::Preset::Eraser.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
         draw_dabbed(mark, &[], scene, cx, Compose::SrcOver);
@@ -1561,7 +1552,7 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
             &silhouette(mark),
         );
     }
-    if clipped {
+    for _ in &cuts {
         scene.pop_layer();
     }
     scene.pop_layer();
@@ -1600,9 +1591,9 @@ fn draw_dabbed(
     cx: &mut MarkCx<'_>,
     compose: Compose,
 ) {
-    let Some((points, size)) = crate::brushes::stroke_of(mark) else {
+    if crate::brushes::stroke_of(mark).is_none() {
         return;
-    };
+    }
     let style = &mark.style;
     let eraser = crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser;
     let ink = if eraser {
@@ -1624,31 +1615,14 @@ fn draw_dabbed(
     // again at every frame.
     let scale = 2.0_f64.powi(zoom.log2().ceil().clamp(-2.0, 2.0) as i32);
     let rgba = ink.to_rgba8();
-    let mut key = blake3::Hasher::new();
-    key.update(mark.id.as_bytes());
-    // Hashed as bytes: this runs for every dabbed stroke every frame.
-    for point in points {
-        for value in point {
-            key.update(&value.to_le_bytes());
-        }
-        key.update(&[0xff]);
-    }
-    key.update(&size.to_le_bytes());
-    key.update(format!("{:?}{:?}{:?}", style.brush, style.params, style.angle).as_bytes());
-    key.update(&[rgba.r, rgba.g, rgba.b]);
-    key.update(&scale.to_le_bytes());
-    key.update(format!("{:?}", mark.transform).as_bytes());
-    key.update(&cx.ground.1.to_le_bytes());
-    key.update(format!("{:?}", cx.ground.0.texture).as_bytes());
-    let key = *key.finalize().as_bytes();
+    let key = dab_key(mark, [rgba.r, rgba.g, rgba.b], scale, cx);
     cx.brushes.tick = cx.brushes.tick.saturating_add(1);
     let tick = cx.brushes.tick;
     if !cx.brushes.entries.contains_key(&key) {
         let (field, cells) = cx.ground;
         let tooth = |at: Point| tooth_at(field, cells, at);
         let Some(dabs) = crate::brushes::dab(&crate::brushes::DabInput {
-            points,
-            size,
+            pieces: &crate::brushes::pieces(mark),
             style,
             scale,
             rgb: [rgba.r, rgba.g, rgba.b],
@@ -1702,6 +1676,41 @@ fn draw_dabbed(
         scene.fill(Fill::NonZero, to_screen, &brush, Some(place), &area);
         scene.pop_layer();
     }
+}
+
+/// What a dabbed stroke's laid pixels depend on: the stroke, its ink, how
+/// finely it is laid and the ground it catches on.
+fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
+    let style = &mark.style;
+    let mut key = blake3::Hasher::new();
+    key.update(mark.id.as_bytes());
+    if let Shape::Stroke {
+        points,
+        size,
+        forks,
+        spread,
+        dabs,
+        scatter,
+        dab_length,
+    } = &mark.shape
+    {
+        // Hashed as bytes: this runs for every dabbed stroke every frame.
+        for point in points {
+            for value in point {
+                key.update(&value.to_le_bytes());
+            }
+            key.update(&[0xff]);
+        }
+        key.update(&size.to_le_bytes());
+        key.update(format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}").as_bytes());
+    }
+    key.update(format!("{:?}{:?}{:?}", style.brush, style.params, style.angle).as_bytes());
+    key.update(&rgb);
+    key.update(&scale.to_le_bytes());
+    key.update(format!("{:?}", mark.transform).as_bytes());
+    key.update(&cx.ground.1.to_le_bytes());
+    key.update(format!("{:?}", cx.ground.0.texture).as_bytes());
+    *key.finalize().as_bytes()
 }
 
 /// Whether `mark` paints its whole outline solidly: no clear stop in its
@@ -2301,7 +2310,7 @@ pub fn draw_vector(
             .map(|value| with_opacity(value, opacity))
     };
     match &mark.shape {
-        Shape::Stroke { points, size, .. } => {
+        Shape::Stroke { .. } => {
             let preset = crate::brushes::Preset::of(style);
             if preset == crate::brushes::Preset::Eraser {
                 return;
@@ -2309,11 +2318,7 @@ pub fn draw_vector(
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
                 return;
             };
-            let path = if preset == crate::brushes::Preset::Round {
-                ink_strokes(mark, points, *size)
-            } else {
-                silhouette(mark)
-            };
+            let path = silhouette(mark);
             let ink = ink.multiply_alpha(narrow(crate::brushes::ink_alpha(style)));
             scene.fill(Fill::NonZero, at, ink, None, &path);
         }

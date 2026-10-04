@@ -568,6 +568,18 @@ fn target_operations() -> Vec<ActionSpec> {
         .privileged()
         .retry_policy(RetryPolicy::AtMostOnce),
     );
+    out.extend(environment_operations());
+    out
+}
+
+/// The environments a session can run in, managed from the session: create,
+/// grant a folder, rename.
+#[allow(
+    clippy::expect_used,
+    reason = "string payloads for environment effects always encode"
+)]
+fn environment_operations() -> Vec<ActionSpec> {
+    let mut out = Vec::new();
     out.push(
         ActionSpec::typed_operation(
             "create-environment",
@@ -593,6 +605,40 @@ fn target_operations() -> Vec<ActionSpec> {
             },
         )
         .with_description("Creates an environment on the default runtime with nothing added.")
+        .privileged()
+        .retry_policy(RetryPolicy::AtMostOnce),
+    );
+    out.push(
+        ActionSpec::typed_operation(
+            "grant-folder",
+            "Grant folder to environment",
+            "path",
+            OperationKind::Effect,
+            "terminal.environment",
+            vec![
+                ActionParam::required("record", ParamType::Text, "The environment's record"),
+                ActionParam::required(
+                    "path",
+                    ParamType::Text,
+                    "An absolute folder path; it appears at the same path in the environment",
+                ),
+            ],
+            |args| {
+                EncodedAction::encode_operation(
+                    "terminal.environment",
+                    &serde_json::json!({
+                        "op": "grant-folder",
+                        "record": args.text("record").unwrap_or_default(),
+                        "path": args.text("path").unwrap_or_default(),
+                    })
+                    .to_string(),
+                )
+                .expect("a borrowed string always serializes")
+            },
+        )
+        .with_description(
+            "Binds a host folder into the environment, read-write; confirmation is required.",
+        )
         .privileged()
         .retry_policy(RetryPolicy::AtMostOnce),
     );

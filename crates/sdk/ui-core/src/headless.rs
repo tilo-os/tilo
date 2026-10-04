@@ -5795,11 +5795,10 @@ impl FrameHarness {
                 {
                     resources.push(resource);
                 }
+                let app_id = crate::collaboration::local_app_id();
                 resources = resources
                     .into_iter()
-                    .filter_map(|resource| {
-                        Self::filter_pending_resource_for_authority(&self.permissions, resource)
-                    })
+                    .filter_map(|resource| self.permissions.permitted_resource(&app_id, resource))
                     .collect();
                 let (arguments, resource, spec) =
                     crate::bound_dispatch::resolve_resource_invocation(
@@ -5847,33 +5846,6 @@ impl FrameHarness {
             }
         };
         Ok(started)
-    }
-
-    fn filter_pending_resource_for_authority(
-        authority: &PermissionContext,
-        mut resource: tilo_actions::Resource,
-    ) -> Option<tilo_actions::Resource> {
-        use crate::permissions::Verb;
-        resource.actions.retain(|action| {
-            let verb = match action.contract.permission {
-                tilo_actions::PermissionRequirement::None => return true,
-                tilo_actions::PermissionRequirement::Read => Verb::Read,
-                tilo_actions::PermissionRequirement::Comment => Verb::Comment,
-                tilo_actions::PermissionRequirement::Write => Verb::Write,
-                tilo_actions::PermissionRequirement::Invite => Verb::Invite,
-                tilo_actions::PermissionRequirement::Admin => Verb::Admin,
-            };
-            authority.check(&crate::permissions::PermissionScope::app(
-                crate::collaboration::local_app_id(),
-                verb,
-            ))
-        });
-        resource.children = resource
-            .children
-            .into_iter()
-            .filter_map(|child| Self::filter_pending_resource_for_authority(authority, child))
-            .collect();
-        (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
     }
 
     fn dispatch_control_invocations(&mut self) {
