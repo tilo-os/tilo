@@ -104,8 +104,10 @@ pub struct EffectDecl {
     pub description: &'static str,
     pub params: Vec<ActionParam>,
     pub answers: Answers,
-    /// Asks for confirmation: deletes, overwrites, sends.
-    pub destructive: bool,
+    /// How much harm invoking it can do. A destructive effect (deletes,
+    /// overwrites, sends) or a privileged one (creates or reveals a
+    /// credential) asks for confirmation.
+    pub risk: RiskLevel,
     pub permission: PermissionRequirement,
 }
 
@@ -150,12 +152,8 @@ impl EffectDecl {
         }
         spec.contract = ActionContract {
             permission: self.permission,
-            risk: if self.destructive {
-                RiskLevel::Destructive
-            } else {
-                RiskLevel::Low
-            },
-            confirmation: if self.destructive {
+            risk: self.risk,
+            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
@@ -264,13 +262,18 @@ mod tests {
         },
         #[effect(label = "Wipe", job, cancellable, destructive)]
         Wipe { passes: u32 },
+        /// Reveal the signing key.
+        #[effect(privileged, permission = "admin")]
+        RevealKey,
     }
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "reveal-key"]);
+        assert_eq!(specs[0].contract.risk, RiskLevel::Low);
+        assert_eq!(specs[0].contract.confirmation, ConfirmationPolicy::None);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -291,6 +294,11 @@ mod tests {
             wipe.contract.execution,
             ExecutionMode::Background { cancellable: true }
         );
+
+        let reveal = &specs[3];
+        assert_eq!(reveal.contract.risk, RiskLevel::Privileged);
+        assert_eq!(reveal.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(reveal.contract.permission, PermissionRequirement::Admin);
 
         // A caller's arguments, encoded by the published spec, decode to the
         // value the handler receives.

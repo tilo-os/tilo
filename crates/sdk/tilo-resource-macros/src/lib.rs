@@ -69,7 +69,7 @@ mod schema;
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", job, cancellable, returns, destructive,
-/// permission = "read")]`. Generates `impl Effect` and one `ActionRef`
+/// privileged, permission = "read")]`. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {
