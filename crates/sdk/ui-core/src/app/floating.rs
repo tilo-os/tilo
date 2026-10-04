@@ -32,6 +32,8 @@ pub(super) struct FloatingRuntime {
     /// What the shell was last told (it starts unprotected), so the
     /// request goes out once per change.
     pub capture_protection_sent: bool,
+    /// The shell was told this app can stream its page.
+    pub paint_capable_sent: bool,
     /// Outside a Tilo session, "close this tab" closes this window.
     pub close_window_requested: bool,
 }
@@ -49,6 +51,7 @@ impl FloatingRuntime {
             capture_protected: false,
             secret_on_screen: false,
             capture_protection_sent: false,
+            paint_capable_sent: false,
             close_window_requested: false,
         }
     }
@@ -176,6 +179,24 @@ impl App {
         changed: &mut bool,
     ) -> Result<(), String> {
         let protected = self.wants_capture_protection();
+        if !self.floating.paint_capable_sent && crate::webview::paint::share_capable() {
+            client.send(&crate::floating_surface::FloatingSurfaceClientMessage::PaintCapable)?;
+            self.floating.paint_capable_sent = true;
+        }
+        // A window withheld from captures shares no page either.
+        let shared = crate::webview::paint::take_share_frames();
+        if !protected {
+            use base64::Engine as _;
+            for frame in shared {
+                client.send(
+                    &crate::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                        payload: base64::engine::general_purpose::STANDARD.encode(&frame.payload),
+                        page: frame.page,
+                        scale: frame.scale,
+                    },
+                )?;
+            }
+        }
         if self.floating.capture_protection_sent != protected {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
@@ -389,6 +410,12 @@ impl App {
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
                 }
+                FloatingSurfaceHostMessage::PaintKeyframe => {
+                    crate::webview::paint::set_share_watched(true);
+                }
+                FloatingSurfaceHostMessage::PaintStop => {
+                    crate::webview::paint::set_share_watched(false);
+                }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
@@ -405,6 +432,8 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        // Without the shell nobody can be watching the shared page.
+        crate::webview::paint::set_share_watched(false);
         let ids = self
             .floating
             .presentations

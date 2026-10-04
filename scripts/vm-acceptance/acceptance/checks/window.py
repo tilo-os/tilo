@@ -411,6 +411,49 @@ def on_screen_keyboard_in_the_shell(ctx, res):
     ctx.vm.key("Escape")
 
 
+def _lock_auth(st) -> dict:
+    return st["chrome"].get("lock_auth") or {}
+
+
+@check("W21", AREA, "Touch unlock: the lock screen draws its own keyboard on touch, and tapping the "
+                    "passcode on it unlocks the session")
+def touch_unlock(ctx, res):
+    ctx.reset()
+    # The slot user's account password is what the lock verifies (PAM through
+    # the unlock helper). This throwaway VM's account gets a known one.
+    passcode = "touch7"
+    uid = ctx.vm.slot_uid()
+    ctx.vm.root_exec(f'user=$(getent passwd {uid} | cut -d: -f1) && '
+                     f'echo "$user:{passcode}" | chpasswd')
+    ctx.vm.key("super+l")
+    ctx.wait_state(lambda s: s["chrome"].get("session_locked"), 10, "the session locked")
+    expect(not _lock_auth(ctx.state()).get("keyboard"),
+           "no keyboard on the lock screen before a touch")
+    # A touch near the top wakes the lock screen and brings its keyboard up;
+    # that touch itself types nothing.
+    d0 = core.display_rects(ctx.state())[0]
+    ctx.vm.input("touch", "tap", str(int(d0[0] + d0[2] / 2)), str(int(d0[1] + d0[3] * 0.08)))
+    st = ctx.wait_state(lambda s: _lock_auth(s).get("keyboard"), 10,
+                        "the lock screen's keyboard shown after a touch")
+    expect(_lock_auth(st).get("password_len") == 0, "the touch that showed the keyboard typed nothing")
+    keys = {k["key"]: k for k in _lock_auth(st)["keyboard"]}
+    ctx.shot("W21-lock-keyboard")
+
+    def tap(name):
+        k = keys[name]
+        ctx.vm.input("touch", "tap", str(int(k["x"] + k["w"] / 2)), str(int(k["y"] + k["h"] / 2)))
+        ctx.settle(0.3)
+
+    for c in passcode:
+        tap(c)
+    ctx.wait_state(lambda s: _lock_auth(s).get("password_len") == len(passcode), 10,
+                   f"{len(passcode)} characters typed on the lock screen's keyboard")
+    tap("enter")
+    ctx.wait_state(lambda s: not s["chrome"].get("session_locked"), 20,
+                   "the session unlocked with the passcode typed by touch")
+    res.metrics["keys"] = len(keys)
+
+
 def _strip_scroll(st, sid):
     return next(x for x in st["chrome"]["strip_scroll"] if x["strip"] == sid)
 

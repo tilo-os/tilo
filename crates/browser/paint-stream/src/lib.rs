@@ -17,6 +17,7 @@ mod model;
 mod patch;
 pub mod snapshot;
 pub mod svg;
+pub mod wire;
 
 pub use model::{
     Anchor, BlobRef, Color, FontSpec, Frame, Item, ItemKey, Layer, LayerId, Point, ROOT, Rect,

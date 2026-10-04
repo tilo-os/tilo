@@ -18,6 +18,7 @@ pub use tilo_paint_stream as stream;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use tilo_paint_stream::wire::Payload;
 use tilo_paint_stream::{BlobRef, Color as PaintColor, Frame, Item, LayerId, Patch, Point, ROOT};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
@@ -39,6 +40,13 @@ const MAX_RESOURCE_REQUESTS: usize = 8;
 const MAX_BLOB_BYTES: usize = 16 << 20;
 /// Patches queued for a stream consumer before it must take a whole frame.
 const MAX_QUEUED_PATCHES: usize = 64;
+/// Largest encoded payload the app → shell channel carries once base64
+/// encoded (its frames are at most 1 MiB).
+pub const MAX_SHARE_PAYLOAD: usize = 700 * 1024;
+/// Largest image shared whole; larger ones stay unrendered for viewers.
+const MAX_SHARE_BLOB: usize = MAX_SHARE_PAYLOAD - 1024;
+/// Shared frames waiting for the app to send them before it must start over.
+const MAX_SHARE_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Resource {
@@ -319,6 +327,92 @@ impl PaintSource {
     }
 }
 
+/// One encoded frame of the page this app shares, for the session.
+pub struct SharedFrame {
+    pub payload: Vec<u8>,
+    /// Where the page sits in the window, logical pixels: x, y, w, h.
+    pub page: [f64; 4],
+    /// The window's buffer scale.
+    pub scale: f64,
+}
+
+/// Whether this process made an engine that can stream its page.
+static PAINT_CAPABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this app can stream a page, for it to tell the session.
+#[must_use]
+pub fn share_capable() -> bool {
+    PAINT_CAPABLE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+struct ShareOutbox {
+    watched: bool,
+    keyframe: bool,
+    frames: VecDeque<SharedFrame>,
+    bytes: usize,
+}
+
+/// The app's one share channel: a window has one page the session shares.
+static SHARE: Mutex<ShareOutbox> = Mutex::new(ShareOutbox {
+    watched: false,
+    keyframe: false,
+    frames: VecDeque::new(),
+    bytes: 0,
+});
+
+fn share() -> std::sync::MutexGuard<'static, ShareOutbox> {
+    SHARE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Whether the session shares this app's page with someone watching.
+#[must_use]
+pub fn share_watched() -> bool {
+    share().watched
+}
+
+/// The session started (`true`) or stopped (`false`) sharing the page. A
+/// start asks for a whole frame; a stop discards what was not sent.
+pub fn set_share_watched(watched: bool) {
+    let mut outbox = share();
+    outbox.watched = watched;
+    outbox.keyframe = watched;
+    if !watched {
+        outbox.frames.clear();
+        outbox.bytes = 0;
+    }
+}
+
+/// Whether the next shared frame must be a whole one; asking clears it.
+#[must_use]
+pub fn take_share_keyframe() -> bool {
+    std::mem::take(&mut share().keyframe)
+}
+
+/// Queue one frame for the session. A consumer that fell this far behind
+/// starts over from a whole frame.
+pub fn queue_share(frame: SharedFrame) {
+    let mut outbox = share();
+    if !outbox.watched {
+        return;
+    }
+    let bytes = outbox.bytes.saturating_add(frame.payload.len());
+    if bytes > MAX_SHARE_QUEUE_BYTES {
+        outbox.frames.clear();
+        outbox.bytes = 0;
+        outbox.keyframe = true;
+        return;
+    }
+    outbox.bytes = bytes;
+    outbox.frames.push_back(frame);
+}
+
+/// The frames to send the session, oldest first.
+pub fn take_share_frames() -> Vec<SharedFrame> {
+    let mut outbox = share();
+    outbox.bytes = 0;
+    outbox.frames.drain(..).collect()
+}
+
 fn data_url_bytes(url: &str) -> Option<Vec<u8>> {
     let rest = url.strip_prefix("data:")?;
     let (meta, data) = rest.split_once(',')?;
@@ -336,6 +430,8 @@ struct PaintState {
     patches: VecDeque<Patch>,
     /// A consumer fell behind or just joined: it needs a whole frame.
     keyframe_needed: bool,
+    /// Blobs the stream consumer was sent since its last whole frame.
+    sent_blobs: std::collections::HashSet<[u8; 32]>,
 }
 
 /// Any engine, drawn as a display list. Commands and events pass through;
@@ -343,17 +439,33 @@ struct PaintState {
 pub struct PaintEngine {
     inner: SharedEngine,
     state: Mutex<PaintState>,
+    /// Draw this view from the display list. Otherwise the list exists only
+    /// for a session that shares the page, and is captured only while one
+    /// watches ([`share_watched`]).
+    draws: bool,
 }
 
 impl PaintEngine {
     #[must_use]
     pub fn new(inner: SharedEngine) -> Arc<Self> {
-        Self::with_interval(inner, MIN_CAPTURE_INTERVAL)
+        Self::build(inner, MIN_CAPTURE_INTERVAL, true)
     }
 
     /// As [`Self::new`], capturing at most once per `interval`.
     #[must_use]
     pub fn with_interval(inner: SharedEngine, interval: Duration) -> Arc<Self> {
+        Self::build(inner, interval, true)
+    }
+
+    /// An engine drawn from its own pixels, whose page is captured as a
+    /// display list only while a session shares it with someone watching.
+    #[must_use]
+    pub fn streaming(inner: SharedEngine) -> Arc<Self> {
+        Self::build(inner, MIN_CAPTURE_INTERVAL, false)
+    }
+
+    fn build(inner: SharedEngine, interval: Duration, draws: bool) -> Arc<Self> {
+        PAINT_CAPABLE.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut source = PaintSource::new(Point { x: 800.0, y: 600.0 });
         source.set_min_interval(interval);
         Arc::new(Self {
@@ -363,7 +475,9 @@ impl PaintEngine {
                 last_pixels: 0,
                 patches: VecDeque::new(),
                 keyframe_needed: true,
+                sent_blobs: std::collections::HashSet::new(),
             }),
+            draws,
         })
     }
 
@@ -374,11 +488,16 @@ impl PaintEngine {
     /// The patches since the last call, oldest first, or `Err` with the
     /// current frame when the consumer must start over from a whole frame.
     pub fn take_stream(&self) -> Result<Vec<Patch>, Option<Arc<Frame>>> {
-        let mut state = self.lock();
+        Self::take_stream_locked(&mut self.lock())
+    }
+
+    fn take_stream_locked(state: &mut PaintState) -> Result<Vec<Patch>, Option<Arc<Frame>>> {
         if state.keyframe_needed {
-            state.keyframe_needed = false;
             state.patches.clear();
-            return Err(state.source.frame());
+            let frame = state.source.frame();
+            // Until there is a frame, the consumer still needs a whole one.
+            state.keyframe_needed = frame.is_none();
+            return Err(frame);
         }
         Ok(state.patches.drain(..).collect())
     }
@@ -386,6 +505,9 @@ impl PaintEngine {
     /// Run the source: notice new pixels (the page changed) and issue its
     /// requests. Called on every read, so whoever watches the page drives it.
     fn pump(&self, state: &mut PaintState) {
+        if !self.draws && !share_watched() {
+            return;
+        }
         let pixels = self
             .inner
             .frames()
@@ -416,7 +538,8 @@ impl PaintEngine {
 
 impl WebViewEngine for PaintEngine {
     fn create_tab(&self) -> Result<SharedEngine, String> {
-        let tab: SharedEngine = Self::new(self.inner.create_tab()?);
+        let tab: SharedEngine =
+            Self::build(self.inner.create_tab()?, MIN_CAPTURE_INTERVAL, self.draws);
         Ok(tab)
     }
     fn set_visible(&self, visible: bool) {
@@ -486,7 +609,46 @@ impl WebViewEngine for PaintEngine {
     fn paint_frame(&self) -> Option<Arc<Frame>> {
         let mut state = self.lock();
         self.pump(&mut state);
+        if !self.draws {
+            return None;
+        }
         state.source.frame()
+    }
+    fn take_paint_stream(&self, keyframe: bool) -> Vec<Payload> {
+        let mut state = self.lock();
+        self.pump(&mut state);
+        if keyframe {
+            state.keyframe_needed = true;
+        }
+        let mut out = Vec::new();
+        match Self::take_stream_locked(&mut state) {
+            Err(Some(frame)) => {
+                state.sent_blobs.clear();
+                out.push(Payload::Key((*frame).clone()));
+            }
+            Err(None) => return out,
+            Ok(patches) if patches.is_empty() => {}
+            Ok(patches) => out.push(Payload::Patches(patches)),
+        }
+        // Then the images the frame references that the consumer lacks.
+        let Some(frame) = state.source.frame() else {
+            return out;
+        };
+        for hash in frame.blobs().filter_map(|b| match b {
+            BlobRef::Hash(h) => Some(*h),
+            BlobRef::Url(_) => None,
+        }) {
+            if state.sent_blobs.insert(hash)
+                && let Some(bytes) = state.source.blob(&hash)
+                && bytes.len() <= MAX_SHARE_BLOB
+            {
+                out.push(Payload::Blob {
+                    hash,
+                    bytes: bytes.to_vec(),
+                });
+            }
+        }
+        out
     }
     fn paint_blob(&self, hash: &[u8; 32]) -> Option<Arc<Vec<u8>>> {
         self.lock().source.blob(hash)
@@ -980,6 +1142,58 @@ mod tests {
             client.apply(&wire).expect("apply");
         }
         assert_eq!(&client, &*engine.paint_frame().expect("frame"));
+    }
+
+    #[test]
+    fn a_streaming_engine_captures_only_while_a_session_watches() {
+        let test = TestEngine::new();
+        test.set_paint_snapshot(TOP);
+        let engine = PaintEngine::streaming(test.clone());
+        engine.send(WebViewCommand::Resize {
+            width: 800,
+            height: 600,
+            scale_factor: 1.0,
+        });
+        set_share_watched(false);
+        settle(&engine);
+        assert!(
+            engine.take_paint_stream(true).is_empty(),
+            "nobody watches: nothing captured"
+        );
+        assert!(
+            !test
+                .commands()
+                .iter()
+                .any(|c| matches!(c, WebViewCommand::PaintCapture { .. })),
+            "an unwatched page costs the engine nothing"
+        );
+        assert!(share_capable(), "the app can tell the session it streams");
+
+        set_share_watched(true);
+        assert!(
+            take_share_keyframe(),
+            "a new watcher starts from a whole frame"
+        );
+        settle(&engine);
+        let payloads = engine.take_paint_stream(true);
+        assert!(
+            matches!(payloads.first(), Some(Payload::Key(_))),
+            "{} payloads",
+            payloads.len()
+        );
+        assert!(
+            payloads.iter().any(|p| matches!(p, Payload::Blob { .. })),
+            "with the images the page shows"
+        );
+        assert!(
+            engine.paint_frame().is_none(),
+            "the view itself still draws pixels"
+        );
+        assert!(
+            engine.take_paint_stream(false).is_empty(),
+            "nothing changed since"
+        );
+        set_share_watched(false);
     }
 
     #[test]

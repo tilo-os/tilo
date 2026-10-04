@@ -22,13 +22,13 @@
 #      second rollback to the image's version.
 #   4. `tilo app update` updates every app with an update, saying what it
 #      does as it goes, within a bound.
-#   5. The App Store, sandboxed, configures the official registry from the
-#      image's trust anchor by itself; with the test registry added, its
-#      Update all updates Settings, and Settings' details show the
-#      catalogue's description and version.
+#   5. The App Store reads the repositories `app repo` edits (the test
+#      registry added there), keeps no list of its own, its Update all
+#      updates Settings, and Settings' details show the catalogue's
+#      description and version.
 #
 # The registry runs in the guest on loopback. The command-line steps use a
-# scratch repository configuration; the App Store step edits the Store's
+# scratch repository configuration; the App Store step edits the person's
 # own, on a throwaway VM. Exit codes: 0 every step held; 1 one failed.
 set -uo pipefail
 
@@ -167,23 +167,10 @@ ok "tilo app update updated $APP and said so as it went"
 rollback_to_image
 
 # --- 5. the App Store ------------------------------------------------------------
-opened="$(open_app "$STORE_NAME")"
-store_pid="${opened##* }"
-[[ $store_pid =~ ^[0-9]+$ ]] || die "the App Store did not open: '$opened'"
-store_config=""
-for _ in $(seq 1 60); do
-  store_config="$(on "ls -dt \$HOME/.local/share/tilo-rooms/*/so.tilo.store/.config/tilo-store 2>/dev/null | head -1" | tr -d '\r')"
-  [ -n "$store_config" ] && on "grep -q 'Tilo main' $store_config/registries.toml" && break
-  sleep 1
-done
-on "grep -q 'Tilo main' $store_config/registries.toml" \
-  || die "the sandboxed App Store did not configure the official registry: $(on "cat $store_config/registries.toml" 2>&1)"
-ok "the sandboxed App Store configured the official registry from the image's trust anchor"
-on "kill $store_pid" >/dev/null 2>&1 || true
-store_app() { on "TILO_STORE_CONFIG_DIR=$store_config app $*"; }
-store_app repo add test "$url" --owner-key "$owner" >/dev/null || die "could not add the test registry to the App Store"
-store_app repo disable "'Tilo main'" >/dev/null || die "could not disable the main repository in the App Store"
-
+# The Store reads the person's repositories, the ones `app repo` edits,
+# through the app host; its sandbox keeps no list of its own.
+on "app repo add test '$url' --owner-key '$owner'" >/dev/null || die "app repo add test failed"
+on "app repo disable 'Tilo main'" >/dev/null || die "could not disable the main repository"
 opened="$(open_app "$STORE_NAME")"
 store_bus="${opened% *}"
 store_pid="${opened##* }"
@@ -210,6 +197,9 @@ done
 grep -q "Catalogue details are unavailable" <<<"$details" \
   && die "the App Store still says its catalogue details are unavailable"
 ok "the App Store shows $APP_NAME's description and version $NEWER"
+on "ls \$HOME/.local/share/tilo-rooms/*/so.tilo.store/.config/tilo-store/registries.toml" >/dev/null 2>&1 \
+  && die "the App Store keeps a repository list of its own in its sandbox"
+ok "the App Store used the repositories app repo edits, and kept no copy"
 on "kill $store_pid" >/dev/null 2>&1 || true
 expect_launch "$(running_package)"
 

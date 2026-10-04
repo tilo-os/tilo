@@ -187,10 +187,23 @@ enum Cmd {
         valid_for_seconds: u64,
     },
     /// Delete staged packages, thin packages and payload blobs that no
-    /// published, quarantined or pending entry references any more, and keep
-    /// remaining staged packages as their thin form and shared blobs.
-    /// Promotion does this after every publish.
-    PruneStorage,
+    /// published, quarantined or pending entry, retained snapshot or served
+    /// version index references any more, and keep remaining staged packages
+    /// as their thin form and shared blobs. Promotion does this after every
+    /// publish.
+    PruneStorage {
+        /// Report what would be deleted and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// With --dry-run, also report which published versions publishers
+        /// keeping this many releases per target would drop, and what
+        /// pruning would then delete.
+        #[arg(long, requires = "dry_run")]
+        keep_releases: Option<usize>,
+        /// As --keep-releases, for pre-releases.
+        #[arg(long, requires = "dry_run")]
+        keep_prereleases: Option<usize>,
+    },
     /// Refresh the current catalogue expiry with the networkless delegated
     /// channel key. Refuses to overtake staged promotion work.
     SignDelegatedSnapshot {
@@ -317,7 +330,9 @@ fn main() -> anyhow::Result<()> {
 
 #[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
+    // Commands print their JSON result on stdout; logs go to stderr.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
@@ -399,7 +414,17 @@ async fn serve_cli() -> anyhow::Result<()> {
             &reason,
             valid_for_seconds,
         ),
-        Cmd::PruneStorage => cmd_prune_storage(&storage),
+        Cmd::PruneStorage {
+            dry_run,
+            keep_releases,
+            keep_prereleases,
+        } => {
+            if dry_run {
+                cmd_preview_prune(&storage, keep_releases, keep_prereleases)
+            } else {
+                cmd_prune_storage(&storage)
+            }
+        }
         Cmd::SignDelegatedSnapshot {
             channel_key_file,
             valid_for_seconds,
@@ -1018,6 +1043,7 @@ fn compact_after_prune(
         "staged_artifacts": pruned.staged_artifacts,
         "thin_packages": pruned.thin_packages,
         "payload_blobs": pruned.payload_blobs,
+        "bytes": pruned.bytes,
         "compacted_staged_artifacts": compacted,
     }))
 }
@@ -1031,6 +1057,28 @@ fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
     println!(
         "{}",
         serde_json::json!({"status": "pruned", "pruned": pruned, "history": history})
+    );
+    Ok(())
+}
+
+fn cmd_preview_prune(
+    storage: &Storage,
+    keep_releases: Option<usize>,
+    keep_prereleases: Option<usize>,
+) -> anyhow::Result<()> {
+    let retention = (keep_releases.is_some() || keep_prereleases.is_some()).then(|| {
+        let default = registry_types::retention::RetentionPolicy::default();
+        registry_types::retention::RetentionPolicy {
+            releases: keep_releases.unwrap_or(default.releases),
+            prereleases: keep_prereleases.unwrap_or(default.prereleases),
+        }
+    });
+    let writer = storage.lock_snapshot()?;
+    let preview = writer.preview_prune(retention.as_ref())?;
+    drop(writer);
+    println!(
+        "{}",
+        serde_json::json!({"status": "dry-run", "preview": preview})
     );
     Ok(())
 }

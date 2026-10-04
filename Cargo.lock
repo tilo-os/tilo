@@ -15038,6 +15038,7 @@ dependencies = [
  "tilo-joined-room",
  "tilo-moq",
  "tilo-net",
+ "tilo-paint-stream",
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-client",
