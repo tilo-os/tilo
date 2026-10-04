@@ -129,7 +129,7 @@ fn greetd_login(
             && s.leader > 0
             && greetd > 0
             && parent(s.leader) == Some(greetd)
-            && s.scope.ends_with(".scope")
+            && s.scope.starts_with("session-")
     })
 }
 

@@ -1449,10 +1449,8 @@ mod tests {
     fn a_laptops_device_slot_shares_the_system_wide_layers_with_the_vm_slot() {
         let root = tempfile::tempdir().unwrap();
         let mirror = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let apply = RecordingApply {
-            mirror: Some(mirror.clone()),
-            ..RecordingApply::with_login("quickuser")
-        };
+        let mut apply = RecordingApply::with_login("quickuser");
+        apply.mirror = Some(mirror.clone());
         let mut daemon = Daemon::new(root.path(), Box::new(apply), None, BaseInfo::default());
         daemon
             .handle(Request::Hello(tilo_vm_protocol::Hello {

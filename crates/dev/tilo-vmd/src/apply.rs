@@ -633,8 +633,6 @@ pub struct RecordingApply {
     pub control_replies: std::collections::VecDeque<ControlResult>,
     /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
-    /// How many times each login's desktop restarted.
-    pub desktop_restarts: u32,
     /// Every call is copied here too, for a test that hands this to a daemon.
     pub mirror: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
 }
@@ -648,6 +646,7 @@ impl RecordingApply {
                 account: account.to_owned(),
                 units: vec!["tilo-board-drm-session.service".into()],
                 control_socket: PathBuf::from("/run/user/1000/tilo-session/test-control.sock"),
+                login: None,
             }),
             ..Self::default()
         }
@@ -738,7 +737,6 @@ impl Apply for RecordingApply {
     }
     fn restart_desktop(&mut self, session: &Session) -> Result<(), DaemonError> {
         self.call(format!("restart_desktop {}", session.user));
-        self.desktop_restarts += 1;
         Ok(())
     }
     fn restart_user_unit(&mut self, user: &str, unit: &str) -> Result<(), DaemonError> {
