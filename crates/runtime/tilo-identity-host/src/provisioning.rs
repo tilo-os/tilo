@@ -655,6 +655,7 @@ fn copy_home_peers(
             user_public_key: identity_id.clone(),
             device_cert: Some(local_cert.clone()),
             relay_workspace_ids: vec![topic],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         if !relay_is_dialable(&entries, &registration) {
             entries.push(registration);
@@ -1404,6 +1405,7 @@ mod tests {
             user_public_key: identity_id.clone(),
             device_cert: None,
             relay_workspace_ids: vec![1],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         };
         let other = HomePeerRegistration {
             user_public_key: hex::encode([9_u8; 32]),
@@ -1565,6 +1567,7 @@ mod tests {
                 user_public_key: identity_id,
                 device_cert: None,
                 relay_workspace_ids: vec![1],
+                environments: tilo_relay_protocol::RelayEnvironments::default(),
             }])
             .unwrap(),
         )
