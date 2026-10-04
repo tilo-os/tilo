@@ -622,7 +622,7 @@ fn send_key_with_modifiers(
 /// Same as [`send_key_with_modifiers`], but leave `KeyEvent::text` empty.
 /// Hardware Space and control-socket keys often arrive that way; the PTY
 /// must still see the glyphs or App/Frame steal Space/Enter as Activate.
-fn send_key_without_text(
+pub(crate) fn send_key_without_text(
     widget: &mut TerminalWidget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,
