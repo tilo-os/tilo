@@ -52,7 +52,6 @@ pub mod model;
 mod outbox;
 pub mod resource;
 mod sidebar;
-pub mod store;
 mod timeline_interaction;
 mod timeline_viewport;
 pub mod timezone;
