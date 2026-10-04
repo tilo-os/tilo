@@ -1805,6 +1805,10 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
+/// Set to `keep` by a dev image's login wrapper, which gives a person's own
+/// login the control socket: that session is not a harness's and keeps first
+/// use.
+const TEST_CONTROL_FIRST_USE_ENV: &str = "TILO_TEST_CONTROL_FIRST_USE";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -7592,11 +7596,14 @@ pub fn run() {
     // Release builds ignore TILO_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
     // A hosted machine an agent drives has no person at first login either;
     // its identity is provisioned without the ceremony.
+    // A dev image's login wrapper hands a person's own login the socket too,
+    // and says so: that login keeps first use.
     let test_control_session = test_control_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )
     .is_some()
+        && std::env::var_os(TEST_CONTROL_FIRST_USE_ENV).is_none_or(|value| value != "keep")
         || agent_control_path(
             cfg!(feature = "agent-control"),
             backend_kind == BackendKind::Headless,

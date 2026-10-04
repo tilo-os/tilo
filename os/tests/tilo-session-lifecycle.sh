@@ -179,7 +179,8 @@ runs=0
 [ ! -f "$runs_file" ] || runs=$(cat "$runs_file")
 runs=$((runs + 1))
 printf '%s\n' "$runs" >"$runs_file"
-printf 'control=%s\n' "${TILO_TEST_CONTROL:-}" >"$TILO_SESSION_TEST_LOG.control"
+printf 'control=%s\nfirst-use=%s\n' "${TILO_TEST_CONTROL:-}" "${TILO_TEST_CONTROL_FIRST_USE:-}" \
+  >"$TILO_SESSION_TEST_LOG.control"
 printf 'desktop-output %s trace=%s\n' "$*" "${TILO_FRAME_TRACE:-}"
 if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
   case "${TILO_SESSION_LOGOUT_REQUEST:-}" in
@@ -235,6 +236,8 @@ tail -n 1 "$flight_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* sta
 [ "$(stat -c %a "$flight_dir")" = 700 ]
 # A dev image's compositor gets the control socket tilo-vm drives it through.
 grep -Fqx "control=$runtime_dir/tilo-session/test-control.sock" "$log.control"
+# It is still the person's login: a first login keeps identity setup.
+grep -Fqx 'first-use=keep' "$log.control"
 [ "$(stat -c %a "$flight_dir/latest.log")" = 600 ]
 [ "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600 ]
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
@@ -264,6 +267,7 @@ set -e
 [ "$status" = 5 ]
 # Other images set no control socket.
 grep -Fqx 'control=' "$tmp/slow-log.control"
+grep -Fqx 'first-use=' "$tmp/slow-log.control"
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$tmp/slow-stdout"
 head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid=[0-9]+ shell='
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
