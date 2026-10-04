@@ -88,7 +88,7 @@ mod tests {
             let mut document = AutoCommit::new();
             files.sync(&mut document, &ROOT);
 
-            let resources = ui::resources::resources(&files, &document);
+            let resources = files.published_rows();
             assert!(
                 resources
                     .iter()

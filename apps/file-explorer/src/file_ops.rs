@@ -1,6 +1,6 @@
 //! Filesystem changes as the Files document records them.
 //!
-//! Creating a folder, renaming, moving to Trash and moving files are document
+//! Creating a folder, renaming, moving to Trash, moving and copying files are document
 //! actions: [`FileOp`]s queued in the Files document
 //! ([`crate::resource::FilesDocAction::QueueFileOp`]) by the device whose
 //! filesystem they change, then carried out there by a projection drain that
@@ -9,7 +9,8 @@
 //! they are in the document's history and undoable: undoing one queues a
 //! [`FileOp::Revert`], which the same drain carries out by compensating each
 //! recorded [`Change`] in reverse order — renaming back, moving back,
-//! restoring from Trash, removing the created folder.
+//! restoring from Trash, removing the created folder, moving a copy to
+//! Trash.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +34,9 @@ pub enum FileOp {
         folder: String,
         create: bool,
     },
+    /// Copy `paths` into `folder`; a copy whose name is taken gets a free
+    /// one.
+    Copy { paths: Vec<String>, folder: String },
     /// Undo the queued operation `op`: compensate what it changed.
     Revert { op: String },
 }
@@ -44,6 +48,8 @@ pub enum Change {
     Created { path: String },
     /// `from` was renamed (or moved) to `to`.
     Moved { from: String, to: String },
+    /// `from` was copied to `to`.
+    Copied { from: String, to: String },
     /// `from` was moved to Trash as the Trash entry `entry` (when Files
     /// could tell which one it became).
     Trashed { from: String, entry: Option<String> },
@@ -123,6 +129,14 @@ pub fn execute(op: &FileOp, reverting: Option<&Outcome>) -> Outcome {
             folder,
             create,
         } => move_into(paths, Path::new(folder), *create, &mut changes),
+        FileOp::Copy { paths, folder } => paths.iter().try_for_each(|path| {
+            fileops::copy_into(Path::new(path), Path::new(folder)).map(|copied| {
+                changes.push(Change::Copied {
+                    from: path.clone(),
+                    to: text(&copied),
+                });
+            })
+        }),
         FileOp::Revert { .. } => match reverting {
             Some(outcome) => outcome
                 .changes()
@@ -227,11 +241,13 @@ fn compensate(change: &Change) -> Result<Change, String> {
                 to: from.clone(),
             })
         }
-        Change::Restored { to, .. } => trash(Path::new(to)),
+        // A restored entry goes back to Trash; so does a copy, which is not
+        // deleted, so undoing the undo puts it back.
+        Change::Restored { to, .. } | Change::Copied { to, .. } => trash(Path::new(to)),
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
