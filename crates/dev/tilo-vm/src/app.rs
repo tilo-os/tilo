@@ -382,6 +382,34 @@ fn short(hash: &str) -> &str {
 }
 
 /// What an apply did, in one sentence per consequence.
+/// The rest of [`describe_apply`] for a laptop's `device` slot, the owner's
+/// login: what merged, which services and desktops restarted, or why not.
+fn describe_login(result: &ApplyResult, desktops: &[&str], text: &mut String) {
+    text.push_str("; merged into the machine's /usr with systemd-sysext");
+    let services: Vec<&str> = result
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RestartUserUnit { unit, .. } => Some(unit.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !services.is_empty() {
+        let _ = write!(text, "; restarted {}", services.join(", "));
+    }
+    for user in desktops {
+        let _ = write!(
+            text,
+            "; {user}'s desktop restarted in place (still logged in; apps reopen)"
+        );
+    }
+    for action in &result.actions {
+        if let Action::Deferred { reason } = action {
+            let _ = write!(text, "; {reason}");
+        }
+    }
+}
+
 pub fn describe_apply(result: &ApplyResult) -> String {
     if !result.changed {
         return format!(
@@ -403,7 +431,19 @@ pub fn describe_apply(result: &ApplyResult) -> String {
             _ => None,
         })
         .collect();
+    let desktops: Vec<&str> = result
+        .actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::RestartDesktop { user } => Some(user.as_str()),
+            _ => None,
+        })
+        .collect();
+    let login = !desktops.is_empty()
+        || (result.slot == tilo_vm_protocol::DEVICE_SLOT
+            && result.actions.contains(&Action::SysextRefresh));
     match result.policy {
+        Policy::SessionRestart if login => describe_login(result, &desktops, &mut text),
         Policy::SessionRestart => {
             text.push_str("; session restarted (logout, user manager restart, login)");
         }
@@ -430,6 +470,12 @@ pub fn describe_apply(result: &ApplyResult) -> String {
                     text,
                     "; restarted the sessions of every slot so they see it: {}",
                     restarted_sessions.join(", ")
+                );
+            }
+            for user in &desktops {
+                let _ = write!(
+                    text,
+                    "; {user}'s desktop restarted in place (still logged in)"
                 );
             }
         }
@@ -5513,6 +5559,17 @@ fn slot_line(info: &SlotInfo) -> String {
 /// `status` for a slot that does not exist: create it when the VM has no
 /// slots, else show the ones it has rather than suggest yet another.
 fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
+    if name == tilo_vm_protocol::DEVICE_SLOT {
+        return (
+            vec![format!(
+                "slot: {name} (none here: no board session, and nobody is logged in to Tilo on the display)"
+            )],
+            vec![
+                "log in at the machine, then: tilo-vm status --slot device".into(),
+                "tilo-vm guide devices".into(),
+            ],
+        );
+    }
     let others: Vec<&SlotInfo> = slots.iter().filter(|s| s.kind != SlotKind::Vm).collect();
     if others.is_empty() {
         return (
@@ -6330,6 +6387,20 @@ mod tests {
             );
             assert!(
                 describe_apply(&result(Policy::NoRestart, vec![], false)).contains("nothing to do")
+            );
+            let mut login = result(
+                Policy::SessionRestart,
+                vec![
+                    Action::SysextRefresh,
+                    Action::RestartDesktop { user: "me".into() },
+                ],
+                true,
+            );
+            login.slot = "device".into();
+            assert_eq!(
+                describe_apply(&login),
+                "generation 4 applied to slot device; merged into the machine's /usr with \
+                 systemd-sysext; me's desktop restarted in place (still logged in; apps reopen)"
             );
             let vm = describe_apply(&result(
                 Policy::VmRefresh,
