@@ -327,6 +327,9 @@ pub struct AccountsPane {
     /// model a test drives directly.
     cx: Option<PaneCx>,
     account_root: AccountRoot,
+    /// The revision of the person's accounts last shown, so an edit from
+    /// another window or device is shown too.
+    seen_accounts: Option<u64>,
     dir: AccountDirectory,
     sync_statuses: accounts::AccountSyncStatusStore,
     vault: accounts::SecretVault,
@@ -396,6 +399,7 @@ impl AccountsPane {
             changed: false,
             cx: None,
             account_root,
+            seen_accounts: None,
         }
     }
 
@@ -435,6 +439,7 @@ impl AccountsPane {
             changed: false,
             cx: None,
             account_root,
+            seen_accounts: None,
         }
     }
 
@@ -1802,6 +1807,17 @@ impl AccountsPane {
     /// Take in finished checks and sign-in steps; whether anything shown
     /// changed.
     pub fn poll(&mut self) -> bool {
+        let revision = self.account_root.revision();
+        if !self.is_sample && revision != self.seen_accounts {
+            if self.seen_accounts.is_some() {
+                self.reload();
+                if let Err(error) = self.account_root.project() {
+                    tracing::warn!(%error, "the device's account file could not follow the person's accounts");
+                }
+                self.changed = true;
+            }
+            self.seen_accounts = revision;
+        }
         self.poll_form_probe();
         self.poll_sign_in();
         self.poll_reauth_probe();

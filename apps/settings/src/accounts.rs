@@ -30,6 +30,14 @@
 //! view-models** populated from the shared store; every account kind writes
 //! the canonical store.
 //!
+//! # Whose accounts these are
+//!
+//! In a host the accounts are the person's own record
+//! ([`accounts::person::PersonAccounts`]), which follows them to every
+//! device they sign in on and which Settings alone edits; the device's
+//! `store.json` is kept its projection for the services that read it.
+//! Outside a host (a bare app in a test) the file is the store.
+//!
 //! # Credentials are never serialised
 //!
 //! Passwords / tokens live in the OS secret store, not these JSON files.
@@ -60,7 +68,29 @@ pub struct AccountMutationJournal {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountRoot {
     explicit: Option<PathBuf>,
+    /// The person's accounts, when a host opened their record.
+    person: Option<PersonAccountsRecord>,
 }
+
+/// The person's record of their accounts, as [`AccountRoot`] keeps it.
+#[derive(Clone)]
+struct PersonAccountsRecord(ui::framework::PersonRecord<accounts::person::PersonAccounts>);
+
+impl std::fmt::Debug for PersonAccountsRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PersonAccounts")
+    }
+}
+
+/// A root is told apart by where its files live; the person has one
+/// record of their accounts.
+impl PartialEq for PersonAccountsRecord {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for PersonAccountsRecord {}
 
 impl AccountRoot {
     /// The user's config root, resolved when each store is opened.
@@ -73,7 +103,18 @@ impl AccountRoot {
     pub fn at(config_root: impl Into<PathBuf>) -> Self {
         Self {
             explicit: Some(config_root.into()),
+            person: None,
         }
+    }
+
+    /// The same root, with the person's accounts kept in `record`.
+    #[must_use]
+    pub fn with_person(
+        mut self,
+        record: ui::framework::PersonRecord<accounts::person::PersonAccounts>,
+    ) -> Self {
+        self.person = Some(PersonAccountsRecord(record));
+        self
     }
 
     /// The explicit config root, `None` for the live root.
@@ -100,19 +141,128 @@ impl AccountRoot {
             .ok_or_else(|| std::io::Error::other("no config dir"))
     }
 
-    /// The canonical account metadata store.
+    /// The person's accounts: their record in a host, else this device's
+    /// file.
     pub fn store(&self) -> accounts::AccountStore {
+        if let Some(PersonAccountsRecord(record)) = &self.person {
+            return record.get().store();
+        }
         self.path()
             .map(|root| accounts::AccountStore::load_in(&root))
             .unwrap_or_default()
     }
 
+    /// Increases whenever the person's accounts change; `None` outside a
+    /// host.
+    pub fn revision(&self) -> Option<u64> {
+        self.person
+            .as_ref()
+            .map(|PersonAccountsRecord(record)| record.revision())
+    }
+
+    /// Take into the person's accounts every account this device's file
+    /// holds that their record does not: those added before Settings kept
+    /// the record, and those Mail's own setup sheet still writes to the
+    /// file. Nothing to do outside a host.
+    ///
     /// # Errors
     ///
-    /// Returns an error when no config root resolves or the store cannot be
+    /// Returns an error when the record refuses an account.
+    pub fn take_in_device_accounts(&self) -> std::io::Result<()> {
+        let Some(PersonAccountsRecord(record)) = &self.person else {
+            return Ok(());
+        };
+        let Some(root) = self.path() else {
+            return Ok(());
+        };
+        let device = accounts::AccountStore::load_in(&root);
+        let mut store = record.get().store();
+        let mut missing = false;
+        for account in device.all() {
+            if store.get(&account.id).is_none() {
+                store.upsert(account.clone());
+                if device.active_id(&account.type_id) == Some(&account.id)
+                    && store.list(&account.type_id).len() == 1
+                {
+                    store.set_active(&account.type_id, &account.id);
+                }
+                missing = true;
+            }
+        }
+        if missing {
+            self.save_store(&store)?;
+        }
+        Ok(())
+    }
+
+    /// Keep this device's account file the projection of the person's
+    /// accounts, for the services outside any app that read it. Nothing to
+    /// do outside a host, where the file is the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no config root resolves or the file cannot be
     /// written.
+    pub fn project(&self) -> std::io::Result<()> {
+        match &self.person {
+            Some(PersonAccountsRecord(record)) => {
+                record.get().project_in(&self.require_io()?).map(|_| ())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Make the person's accounts `store`: in a host, the edits that turn
+    /// their record into it, then the device file its projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record refuses an edit, no config root
+    /// resolves or the file cannot be written.
     pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
-        store.save_in(&self.require_io()?)
+        let root = self.require_io()?;
+        let Some(PersonAccountsRecord(record)) = &self.person else {
+            return store.save_in(&root);
+        };
+        let refused =
+            |error: ui::tilo_actions::ActionError| std::io::Error::other(error.to_string());
+        let current = record.get().store();
+        for account in current.all() {
+            if store.get(&account.id).is_none() {
+                record
+                    .invoke(
+                        &accounts::person::PersonAccounts::REMOVE_ACCOUNT
+                            .with(ui::tilo_resource::Id::from_raw(account.id.0.clone())),
+                    )
+                    .map_err(refused)?;
+            }
+        }
+        for account in store.all() {
+            // The record keeps connection settings as an object; none is an
+            // empty one.
+            let mut account = account.clone();
+            if account.config.is_null() {
+                account.config = serde_json::json!({});
+            }
+            if current.get(&account.id) != Some(&account) {
+                record
+                    .invoke(&accounts::person::PersonAccounts::saving(&account))
+                    .map_err(refused)?;
+            }
+        }
+        let now = record.get().store();
+        for account in store.all() {
+            let wanted = store.active_id(&account.type_id);
+            if wanted == Some(&account.id) && now.active_id(&account.type_id) != wanted {
+                record
+                    .invoke(
+                        &accounts::person::PersonAccounts::SET_ACTIVE_ACCOUNT
+                            .with(ui::tilo_resource::Id::from_raw(account.id.0.clone())),
+                    )
+                    .map_err(refused)?;
+            }
+        }
+        record.get().project_in(&root).map(|_| ())
     }
 
     /// Operational sync health per account.
@@ -1009,6 +1159,72 @@ pub fn sample_directory() -> AccountDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In a host the accounts are the person's record: saving edits it,
+    /// reading reads it, and this device's file follows as its projection.
+    #[test]
+    fn in_a_host_the_accounts_are_the_persons_record_and_the_file_follows() {
+        use accounts::person::PersonAccounts;
+        let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
+            .expect("settings opens headlessly");
+        let record = app
+            .person::<PersonAccounts>()
+            .expect("Settings keeps the person's accounts");
+        assert!(record.editable(), "Settings edits the person's accounts");
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path()).with_person(record.clone());
+
+        let mut account = accounts::Account::new("a@x.example", "email");
+        account.display_name = "Work".into();
+        account.config = serde_json::json!({ "imap_host": "imap.x.example" });
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        assert_eq!(record.get().store().get(&account.id), Some(&account));
+        assert_eq!(root.store().get(&account.id), Some(&account));
+        assert_eq!(
+            accounts::AccountStore::load_in(dir.path()).get(&account.id),
+            Some(&account),
+            "the device file is the record's projection"
+        );
+
+        store.remove(&account.id);
+        root.save_store(&store).unwrap();
+        assert!(record.get().store().is_empty());
+        assert!(accounts::AccountStore::load_in(dir.path()).is_empty());
+    }
+
+    /// An account this device's file holds and the person's record does not
+    /// (added before Settings kept the record, or by Mail's setup sheet) is
+    /// taken into the record, and the record's own accounts stay.
+    #[test]
+    fn the_device_files_accounts_are_taken_into_the_persons_record() {
+        use accounts::person::PersonAccounts;
+        let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
+            .expect("settings opens headlessly");
+        let record = app.person::<PersonAccounts>().expect("person accounts");
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path()).with_person(record.clone());
+        // An account without connection settings is kept with empty ones.
+        let roamed = accounts::Account::new("roamed@x.example", "email");
+        let mut store = accounts::AccountStore::new();
+        store.upsert(roamed.clone());
+        root.save_store(&store).unwrap();
+        let mut roamed = roamed;
+        roamed.config = serde_json::json!({});
+
+        let mut local = accounts::Account::new("cal-1", "caldav");
+        local.config = serde_json::json!({ "url": "https://dav.example" });
+        let mut device = accounts::AccountStore::load_in(dir.path());
+        device.upsert(local.clone());
+        device.save_in(dir.path()).unwrap();
+
+        root.take_in_device_accounts().unwrap();
+        let person = record.get().store();
+        assert_eq!(person.get(&local.id), Some(&local));
+        assert_eq!(person.get(&roamed.id), Some(&roamed));
+        assert_eq!(accounts::AccountStore::load_in(dir.path()), person);
+    }
 
     /// Every account store round-trips through JSON at its contract path, and
     /// no store ever writes a password.

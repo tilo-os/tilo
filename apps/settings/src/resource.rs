@@ -82,7 +82,8 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     fn present(&mut self, _state: &Rc<()>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
-        self.attach_host(PaneCx::attached(&cx));
+        let accounts = cx.person::<accounts::person::PersonAccounts>();
+        self.attach_host(PaneCx::attached(&cx), accounts);
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
