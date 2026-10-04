@@ -11,8 +11,8 @@ use ui::theme::Preset;
 
 #[test]
 fn the_gallery_previews_every_preset() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
-    app.stage(Some(themes::GALLERY_SCENARIO)).expect("staged");
+    let mut app =
+        TestApp::<App>::capture(Some(themes::GALLERY_SCENARIO)).expect("the scenario stages");
     for preset in Preset::ALL {
         app.harness()
             .expect(
@@ -25,8 +25,7 @@ fn the_gallery_previews_every_preset() {
 
 #[test]
 fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
-    app.stage(Some("editor")).expect("staged");
+    let mut app = TestApp::<App>::capture(Some("editor")).expect("the scenario stages");
     app.harness()
         .expect(
             &SemanticExpectation::named("contrast-findings")
@@ -56,8 +55,7 @@ fn the_editor_measures_contrast_as_the_theme_changes_and_gates_apply() {
 
 #[test]
 fn agents_shape_a_theme_through_the_same_actions() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
-    app.stage(Some("tinted")).expect("staged");
+    let mut app = TestApp::<App>::capture(Some("tinted")).expect("the scenario stages");
     let state = app.state();
     let theme = state
         .themes

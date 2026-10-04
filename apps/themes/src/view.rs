@@ -8,7 +8,7 @@
 use ui::prelude::*;
 use ui::theme::{Preset, ThemeDocument};
 use ui::tokens::Emphasis;
-use ui::widget::{Field, Form, FormSection};
+use ui::widget::{ButtonRole, Field, Form, FormSection};
 
 use crate::preview::ThemePreview;
 use crate::studio::{Rung, Studio, Theme};
@@ -25,7 +25,7 @@ pub enum Page {
 #[derive(Clone)]
 struct Ui {
     page: LocalState<Page>,
-    narrow: LocalState<NarrowScreen>,
+    pane: LocalState<NavPane>,
     notice: LocalState<String>,
     dispatcher: Dispatcher<Studio>,
     live: Live<Studio>,
@@ -34,7 +34,7 @@ struct Ui {
 impl Ui {
     fn open(&self, page: Page) {
         self.page.set(page);
-        self.narrow.set(NarrowScreen::Content);
+        self.pane.set(NavPane::Content);
         self.notice.set(String::new());
     }
 
@@ -86,7 +86,7 @@ impl Ui {
 pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
     let ui = Ui {
         page: LocalState::new(Page::Gallery),
-        narrow: LocalState::new(NarrowScreen::Content),
+        pane: LocalState::new(NavPane::Content),
         notice: LocalState::new(String::new()),
         dispatcher: cx.dispatcher(),
         live: cx.live().clone(),
@@ -110,10 +110,12 @@ pub(crate) fn root(cx: &ViewCx<Studio>) -> Element {
         })
     };
     Box::new(
-        AppShell::new(nav, content)
+        NavShell::new()
             .with_id("themes-shell")
-            .with_sidebar_width(260.0)
-            .with_narrow_screen_state(&ui.narrow),
+            .mode(NavMode::Push)
+            .with_pane_state(&ui.pane)
+            .sidebar(nav)
+            .content(content),
     )
 }
 
@@ -144,7 +146,7 @@ fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
             Box::new(if *page == Page::Gallery {
                 button
             } else {
-                button.ghost()
+                button.role(ButtonRole::Plain)
             })
         })
     };
@@ -177,7 +179,11 @@ fn sidebar(cx: &ViewCx<Studio>, ui: &Ui) -> Element {
                             };
                             let button = Button::new(&format!("theme-{id}"), label, None)
                                 .on_view(move || target.open(page.clone()));
-                            Box::new(if *open { button } else { button.ghost() })
+                            Box::new(if *open {
+                                button
+                            } else {
+                                button.role(ButtonRole::Plain)
+                            })
                         }
                     },
                 ))
@@ -233,7 +239,7 @@ fn preset_card(ui: &Ui, preset: Preset) -> Element {
             "themes-customize",
             None,
         )
-        .ghost()
+        .role(ButtonRole::Plain)
         .on_view(move || ui.start_from(preset.id()))
     };
     Box::new(
@@ -404,7 +410,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                 let ui = ui.clone();
                 let raw = raw.clone();
                 Button::new("theme-apply", "themes-apply", None)
-                    .primary()
+                    .role(ButtonRole::Primary)
                     .with_enabled(*legible)
                     .on_view(move || ui.apply(ui.document(&raw).as_ref()))
             };
@@ -419,14 +425,14 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                 let ui = ui.clone();
                 let raw = raw.clone();
                 Button::new("theme-duplicate", "themes-duplicate", None)
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .on_view(move || ui.start_from(&raw))
             };
             let delete = {
                 let ui = ui.clone();
                 let raw = raw.clone();
                 Button::new("theme-delete", "themes-delete", None)
-                    .danger_outline()
+                    .role(ButtonRole::Destructive)
                     .on_view(move || {
                         ui.dispatcher
                             .invoke(Studio::DELETE.with(Id::from_raw(raw.clone())));
