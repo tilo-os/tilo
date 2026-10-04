@@ -5593,23 +5593,10 @@ fn bound() -> (ui::State, WordProcessorWidget) {
 }
 
 #[test]
-fn hosted_lookup_returns_a_published_child_not_the_document_root() {
+fn hosted_lookup_offers_caret_edits_not_a_second_document() {
     let (state, mut wp) = bound();
     wp.mark_resource_hosted_for_test();
     assert!(ui::resources::resource(&wp, &state.doc, "word-processor.document").is_none());
-    let child_id = wp
-        .publish_resources(&state.doc)
-        .into_iter()
-        .find_map(|root| {
-            root.children
-                .first()
-                .map(|child| child.id.as_str().to_owned())
-        })
-        .expect("the hosted document still publishes a child");
-    assert!(
-        ui::resources::resource(&wp, &state.doc, &child_id).is_some(),
-        "a hosted child stays the published row"
-    );
     let hosted = ui::resources::resources(&wp, &state.doc);
     assert!(
         hosted

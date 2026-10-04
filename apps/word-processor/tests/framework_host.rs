@@ -564,3 +564,82 @@ fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() 
     assert_eq!(paragraphs(&app), ["Report", "Our comittee met."]);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// A launch naming a file opens the file's own record with the file
+/// imported; launched on it again, the record — with the edits made since —
+/// is the document, and another file is another record.
+#[test]
+fn a_file_launch_opens_the_files_own_record() {
+    ui::i18n::I18nManager::init("en-US");
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("report.md");
+    std::fs::write(&report, "# Report\n\nOur committee met.\n").unwrap();
+    let report = report.to_string_lossy().into_owned();
+
+    let mut app = TestApp::<WordProcessorApp>::launched(&[&report]).unwrap();
+    assert_eq!(app.record(), &ui::record::RecordId::for_file(&report));
+    assert_eq!(paragraphs(&app), ["Report", "Our committee met."]);
+    app.harness().type_text("Draft: ");
+    let edited = paragraphs(&app);
+    assert_ne!(edited, ["Report", "Our committee met."]);
+
+    let app = app.relaunch(&[&report]).unwrap();
+    assert_eq!(paragraphs(&app), edited, "a reopened file keeps its record");
+
+    let notes = directory.path().join("notes.txt");
+    std::fs::write(&notes, "first line\nsecond line\n").unwrap();
+    let notes = notes.to_string_lossy().into_owned();
+    let app = app.relaunch(&[&notes]).unwrap();
+    assert_eq!(app.record(), &ui::record::RecordId::for_file(&notes));
+    assert_eq!(paragraphs(&app), ["first line", "second line"]);
+}
+
+/// Every screenshot scenario stages the document through actions the
+/// record keeps: the review a collaborator left, a framed image.
+#[test]
+fn scenarios_stage_the_document_through_actions() {
+    ui::i18n::I18nManager::init("en-US");
+    for scenario in <WordProcessorApp as ui::framework::ResourceApp>::scenarios() {
+        let app = TestApp::<WordProcessorApp>::capture(Some(scenario)).unwrap();
+        let document = snapshot(&app);
+        match *scenario {
+            "comments" | "threaded-comments" => {
+                let comment = document.comments.first().expect("a staged comment");
+                assert_eq!(comment.author, "Maya Chen");
+                let replies = if *scenario == "comments" { 0 } else { 2 };
+                assert_eq!(comment.replies.len(), replies, "{scenario}");
+                assert!(
+                    document.blocks[0].text.ends_with(" — reviewed"),
+                    "a tracked insertion: {:?}",
+                    document.blocks[0].text
+                );
+            }
+            "image-object" => {
+                let image = document
+                    .blocks
+                    .iter()
+                    .find(|block| block.kind == "image")
+                    .expect("a staged image");
+                assert_eq!(
+                    image.attrs.get("width"),
+                    Some(&tilo_doc::snapshot::AttrVal::Int(300))
+                );
+            }
+            "find" => assert!(
+                document
+                    .blocks
+                    .iter()
+                    .any(|block| block.text.contains("report")),
+                "the find scenario searches text it has"
+            ),
+            _ => assert_eq!(
+                document
+                    .blocks
+                    .iter()
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>(),
+                [""]
+            ),
+        }
+    }
+}
