@@ -131,3 +131,5 @@ mod clipboard_safety;
 
 #[path = "find_replace.rs"]
 mod find_replace;
+
+mod slash_text_input;
