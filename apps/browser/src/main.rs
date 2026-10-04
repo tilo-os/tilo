@@ -307,6 +307,10 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
             let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
         }));
     });
+    // Every Browser tab of this profile browses through one Chromium host.
+    // When it is this process's, the window closing must not take the
+    // other tabs' pages down with it.
+    ui::webview::chromium::serve_shared_until_idle();
     Ok(())
 }
 
