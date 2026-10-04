@@ -154,7 +154,10 @@
 //!   [`EffectCx`] ([`thread`](EffectCx::thread), [`spawn`](EffectCx::spawn),
 //!   [`reply`](EffectCx::reply)): it reports progress, may be cancelled, and
 //!   finishes on the UI thread, changing the document with ordinary actions
-//!   and answering its caller. Effects never run in History mode. A variant
+//!   and answering its caller. Importing and exporting is such a job: the
+//!   host's file chooser opens through [`EffectCx::choose_file`] and
+//!   [`EffectCx::save_file`], the same on every host, a browser page
+//!   included. Effects never run in History mode. A variant
 //!   that only changes what its caller sees (open, reveal, show) is
 //!   `#[effect(view)]`, published as a View operation and answered by the
 //!   same handler.
