@@ -4176,6 +4176,89 @@ mod tests {
     }
 
     #[test]
+    fn administrator_prompt_raised_during_onboarding_is_drawn_above_it_and_takes_the_keyboard() {
+        use crate::shell::portal_dialog::{
+            AuthenticationDecision, AuthenticationRequest, PortalDialogQueue,
+        };
+
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        fb.reconcile_native_focus(&mut focus);
+        let onboarding_focus = focused_name(&fb, focus);
+        assert!(onboarding_focus.is_some(), "onboarding holds focus");
+
+        // The polkit agent enqueues on the session queue while first-use
+        // setup is still on screen.
+        let queue = PortalDialogQueue::default();
+        let mut receiver = queue
+            .enqueue_authentication(AuthenticationRequest {
+                handle: "polkit:onboarding".into(),
+                message: "Administrator approval is required".into(),
+                action_id: "org.tilo.example".into(),
+                identities: vec!["quinn".into()],
+                identity: 0,
+                prompt: "Password:".into(),
+                echo: false,
+                notice: None,
+            })
+            .expect("queued");
+        fb.host_mut().set_portal_dialog_queue(queue);
+        assert!(fb.host().onboarding_active());
+
+        // The ordinary onboarding tick must bring the sheet up.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        let state = fb.host().portal_dialog_state_json();
+        assert_eq!(state["kind"], "authentication", "sheet is up: {state}");
+        assert!(
+            fb.widget_registry()
+                .contains_key(crate::shell::trusted_ui::PORTAL_DIALOG_TARGET),
+            "the sheet is on screen above onboarding"
+        );
+        let _ = fb.paint();
+
+        // Typed keys reach the sheet's secret field, not the focused setup
+        // control underneath.
+        for key in ["h", "u", "n", "t"] {
+            let mut typed = key_press(Key::Character(key.into()));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+                event.text = Some(key.into());
+            }
+            assert!(fb.dispatch_event(
+                &typed,
+                &Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut focus,
+            ));
+        }
+        assert_eq!(fb.host().portal_dialog_state_json()["secret_len"], 4);
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(AuthenticationDecision::Answered {
+                identity: 0,
+                secret: "hunt".into(),
+            })
+        );
+
+        // Answered: the sheet is gone and onboarding keeps its focus.
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        assert!(!fb.host().portal_dialog_open());
+        assert!(fb.host().onboarding_active());
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(focused_name(&fb, focus), onboarding_focus);
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"

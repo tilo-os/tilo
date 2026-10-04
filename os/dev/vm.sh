@@ -7,6 +7,8 @@
 #                       [--validation-sysext PATH]
 #                                              start the VM (detached); --serial gives
 #                                              the boot disk a stable hardware serial
+#                                              TILO_VM_LAN_PORT/_PEER/_MAC add a NIC on an
+#                                              L2 segment shared with one peer VM
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   TILO_VM_CYCLE=NAME ./os/dev/vm.sh init-cycle
@@ -158,7 +160,7 @@ cmd_boot() {
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
     $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
-    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
+    $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(lan_qemu_args) $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo"

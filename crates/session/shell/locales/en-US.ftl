@@ -1699,6 +1699,7 @@ onboarding-nearby-connected = Connected. Your workspaces will appear automatical
 onboarding-nearby-invalid-identity = Your other device returned an invalid identity. Choose Try again.
 onboarding-nearby-failed = Pairing did not finish: the pairing window closed or approval was cancelled. Choose Try again.
 onboarding-nearby-failed-detail = Pairing did not finish: { $detail }. Choose Try again.
+onboarding-nearby-timed-out = Pairing did not finish: no trusted device approved it in time. Choose Try again.
 
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
