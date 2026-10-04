@@ -168,6 +168,11 @@
 //!   resource's publication and nothing beside it that changes the document:
 //!   a document action a content widget publishes through its own
 //!   `PublishesResources` is dropped (a debug build stops at it).
+//! * **A participant without a window** — an agent, a service, a script —
+//!   holds a replica of a record and edits it through the same door as a
+//!   person: a [`Participant`] of the record's kind (each app's kind is
+//!   [`resource_kind`]), checked against its permissions, attributed to it
+//!   and recorded in history with the task it belongs to.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
 //!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
 //!   in three parts. What the resource does not hold is the scenario's
@@ -197,6 +202,7 @@ pub mod history;
 mod kinds;
 mod launch;
 mod live;
+mod participant;
 mod preview;
 mod root;
 mod rows;
@@ -224,6 +230,7 @@ pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Pr
 pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
 pub use live::Live;
+pub use participant::Participant;
 pub use preview::PastVersion;
 pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
