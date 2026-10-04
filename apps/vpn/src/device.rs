@@ -45,7 +45,9 @@ impl DeviceFacts {
         let profiles = vault
             .connections
             .iter()
-            .map(|connection| {
+            .enumerate()
+            .map(|(index, connection)| {
+                let network_manager_uuid = format!("c0ffee00-0000-4000-8000-{index:012}");
                 let details = match connection.kind {
                     ConnKind::WireGuard => LocalProfileDetails {
                         endpoint: "demo-gateway.example:51820".into(),
@@ -53,14 +55,15 @@ impl DeviceFacts {
                         dns: "10.77.0.1".into(),
                         public_key: "demo public key ••••7Jq".into(),
                         allowed_ips: "0.0.0.0/0, ::/0".into(),
-                        ..LocalProfileDetails::default()
+                        network_manager_uuid,
                     },
                     ConnKind::OpenVpn => LocalProfileDetails {
                         endpoint: "demo-vpn.example:1194 (UDP)".into(),
                         address: "172.20.77.2/24".into(),
                         dns: "172.20.77.1".into(),
                         allowed_ips: "172.20.0.0/16".into(),
-                        ..LocalProfileDetails::default()
+                        public_key: String::new(),
+                        network_manager_uuid,
                     },
                 };
                 (connection.id, details)
