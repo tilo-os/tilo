@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use ui::widget::Widget;
 
@@ -22,7 +23,7 @@ fn tab(
     let opened: Opened = Rc::default();
     let log = opened.clone();
     let mut widget = TerminalWidget::spawn_headless().unwrap();
-    widget.set_sessions(Sessions::scripted(recent, move |target, by| {
+    widget.set_sessions(Sessions::scripted(recent, move |target, by, _attach| {
         log.borrow_mut().push((target.clone(), by));
         answer(target).map(|()| crate::inner::TerminalBackend::for_test())
     }));
@@ -263,7 +264,7 @@ fn supervisor_replies_say_what_to_do_next() {
     #[cfg(unix)]
     {
         let request =
-            crate::inner::ush_request(&[], &SessionTarget::Host, Requester::Person, (80, 24))
+            crate::inner::ush_request(&[], &SessionTarget::Host, Requester::Person, None, (80, 24))
                 .unwrap();
         let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
         assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
@@ -273,6 +274,7 @@ fn supervisor_replies_say_what_to_do_next() {
                 &[],
                 &SessionTarget::Legacy { vm: "linux".into() },
                 Requester::Person,
+                None,
                 (80, 24)
             )
             .is_err(),
@@ -318,5 +320,151 @@ fn legacy_vms_appear_once_the_legacy_vm_service_has_made_one() {
     assert_eq!(
         crate::sessions::legacy_vms_under(dir.path()),
         vec!["linux".to_string()]
+    );
+}
+
+const RELAY: &str = "abababababababababababababababababababababababababababababababab";
+
+fn on_relay(record: &str) -> SessionTarget {
+    SessionTarget::environment(record).at(crate::target::Location::Relay {
+        relay: RELAY.into(),
+    })
+}
+
+#[test]
+fn a_relay_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() {
+    let attaches: Rc<RefCell<Vec<Option<String>>>> = Rc::default();
+    let seen = attaches.clone();
+    let session = "0123456789abcdef0123456789abcdef";
+    let mut widget = TerminalWidget::spawn_headless().unwrap();
+    widget.set_sessions(Sessions::scripted(
+        RecentTarget::none(),
+        move |_, _, attach| {
+            seen.borrow_mut().push(attach.map(str::to_owned));
+            if attach == Some("ffffffffffffffffffffffffffffffff") {
+                return Err(OpenError::Refused("unknown session".into()));
+            }
+            let mut backend = crate::inner::TerminalBackend::for_test();
+            backend.relay_session = Some(session.into());
+            Ok(backend)
+        },
+    ));
+    let mut doc = AutoCommit::new();
+    widget.sync(&mut doc, &ROOT);
+    widget
+        .switch_target(&mut doc, &ROOT, &on_relay("work"), Requester::Person)
+        .unwrap();
+    let kept = |doc: &AutoCommit| {
+        doc.get(ROOT, crate::target::RELAY_SESSION_KEY)
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+    };
+    assert_eq!(kept(&doc).as_deref(), Some(session));
+
+    // Reopened — here or on another device — it re-attaches.
+    let mut reopened = doc.fork();
+    let (mut again, _) = tab(RecentTarget::none(), |_| Ok(()));
+    let again_seen = attaches.clone();
+    again.set_sessions(Sessions::scripted(
+        RecentTarget::none(),
+        move |_, _, attach| {
+            again_seen.borrow_mut().push(attach.map(str::to_owned));
+            Ok(crate::inner::TerminalBackend::for_test())
+        },
+    ));
+    again.sync(&mut reopened, &ROOT);
+    assert_eq!(attaches.borrow().last(), Some(&Some(session.to_owned())));
+
+    // A session the relay no longer has is replaced by a new one.
+    let mut stale = AutoCommit::new();
+    stale
+        .put(ROOT, crate::target::TARGET_KEY, on_relay("work").encode())
+        .unwrap();
+    stale
+        .put(
+            ROOT,
+            crate::target::RELAY_SESSION_KEY,
+            "ffffffffffffffffffffffffffffffff",
+        )
+        .unwrap();
+    let before = attaches.borrow().len();
+    widget.set_sessions(Sessions::scripted(RecentTarget::none(), {
+        let seen = attaches.clone();
+        move |target: &SessionTarget, _, attach: Option<&str>| {
+            seen.borrow_mut().push(attach.map(str::to_owned));
+            if attach.is_some() {
+                return Err(OpenError::Refused("unknown session".into()));
+            }
+            let mut backend = crate::inner::TerminalBackend::for_test();
+            if target.location().is_some_and(|l| !l.is_this_device()) {
+                backend.relay_session = Some(session.into());
+            }
+            Ok(backend)
+        }
+    }));
+    widget.sync(&mut stale, &ROOT);
+    assert_eq!(
+        attaches.borrow()[before..],
+        [Some("ffffffffffffffffffffffffffffffff".to_owned()), None]
+    );
+    assert_eq!(widget.session_state(), &OpenState::Open);
+    assert_eq!(kept(&stale).as_deref(), Some(session));
+
+    // Back on this device, nothing is left to re-attach to.
+    widget
+        .switch_target(
+            &mut stale,
+            &ROOT,
+            &SessionTarget::environment("work"),
+            Requester::Person,
+        )
+        .unwrap();
+    assert_eq!(kept(&stale), None);
+}
+
+#[test]
+fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
+    let (mut widget, opened) = tab(RecentTarget::none(), |_| Ok(()));
+    let mut doc = AutoCommit::new();
+    widget.sync(&mut doc, &ROOT);
+    widget.open_target_menu();
+    let labels = widget.target_menu_labels().unwrap();
+    let run_on = ui::i18n::I18nManager::lookup("terminal-run-on", None);
+    assert!(
+        !labels.iter().any(|l| l.contains(&run_on)),
+        "without relays there is nowhere else to run: {labels:?}"
+    );
+
+    widget.set_relays(vec![crate::target::RelaySummary {
+        relay: RELAY.into(),
+        label: "Home".into(),
+    }]);
+    widget.open_target_menu();
+    let labels = widget.target_menu_labels().unwrap();
+    let here = ui::i18n::I18nManager::lookup("terminal-run-on-this-device", None);
+    assert!(labels.contains(&format!("✓ {run_on} {here}")), "{labels:?}");
+    assert!(labels.contains(&format!("{run_on} Home")), "{labels:?}");
+
+    // An agent names the relay with the environment.
+    let payload = serde_json::to_vec(&format!("environment:work@{RELAY}")).unwrap();
+    let op = ui::widget::ResourceOperation::local(
+        ui::tilo_actions::InvocationId::new(),
+        ui::tilo_actions::OperationKind::Effect,
+        "terminal.target",
+        &payload,
+    );
+    let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
+        "agent:helper",
+    ));
+    Widget::start_operation(&mut widget, &op, &mut doc, &ROOT).unwrap();
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&(on_relay("work"), Requester::Agent))
+    );
+    assert_eq!(crate::parse_target_argument("host@ab"), None);
+    assert_eq!(
+        crate::parse_target_argument("environment:work@home"),
+        None,
+        "a relay is named by its endpoint id"
     );
 }
