@@ -38,6 +38,7 @@ pub mod drag_feedback;
 pub mod floating_service;
 pub mod foreign;
 pub mod frame;
+pub mod frame_stall;
 #[cfg(target_os = "linux")]
 pub mod gpu_health;
 pub mod gpu_import;

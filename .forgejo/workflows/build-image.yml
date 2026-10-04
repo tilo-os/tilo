@@ -2793,6 +2793,12 @@ jobs:
             # The image's apps are installed packages: Settings updates from
             # a registry, launches as the new version, and rolls back.
             RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh
+            # Last, because it ends this session: signed in again with every
+            # frame stalled 50-130 ms, as on a slow laptop, apps opened one
+            # beside another keep their windows, are never configured larger
+            # than the display, and never exit. Only the dev image's
+            # compositor honours the stall.
+            ./os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130
           fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
