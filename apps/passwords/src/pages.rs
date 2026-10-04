@@ -594,15 +594,26 @@ fn secret_input(shared: &Shared, confirmation: bool, label: &str, error: Option<
         .with_initial_value(&value)
         .on_change(move |value| {
             let mut core = core.borrow_mut();
+            let before = core.backup_confirmation_problem();
             let slot = if confirmation {
                 &mut core.backup_confirmation
             } else {
                 &mut core.backup_password
             };
             *slot = zeroize::Zeroizing::new(value.to_owned());
+            // The form is built again only when what it says changes; the
+            // fields keep their caret by id.
+            if core.backup_confirmation_problem() != before {
+                core.touch_page();
+            }
         });
     let field = Field::new(label, input).with_label_placement(Some(LabelPlacement::Above));
-    match error {
+    let live = if confirmation {
+        shared.borrow().backup_confirmation_problem()
+    } else {
+        None
+    };
+    match error.or(live) {
         Some(error) => field.with_error(error),
         None if !confirmation => field.with_help("Use at least 12 characters"),
         None => field,
@@ -694,6 +705,23 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
         .secondary_action("Cancel", ask(requests, Request::CloseDialog))
 }
 
+/// The backup form. Its values live in the shared core, and "Choose file…"
+/// waits there until the password is long enough and confirmed.
+fn backup_dialog(
+    shared: &Shared,
+    error: Option<&'static str>,
+    requests: &Requests,
+) -> ModalDialog<Column> {
+    let fields: Vec<Element> = vec![
+        Box::new(secret_input(shared, false, "Backup password", None)),
+        Box::new(secret_input(shared, true, "Confirm backup password", error)),
+    ];
+    let core = Rc::clone(shared);
+    ModalDialog::new("Back up vault", body(fields))
+        .primary_action("Choose file…", ask(requests, Request::ConfirmBackup))
+        .primary_enabled_if(move |_| core.borrow().backup_form_error(true).is_none())
+}
+
 fn dialog(core: &Core, shared: &Shared, requests: &Requests) -> Option<Element> {
     let dialog = core.dialog.as_ref()?;
     let close = ask(requests, Request::CloseDialog);
@@ -704,18 +732,7 @@ fn dialog(core: &Core, shared: &Shared, requests: &Requests) -> Option<Element> 
             reminded,
         } => export_dialog(*acknowledged, *reminded, requests),
         Dialog::Backup { error } => {
-            let fields: Vec<Element> = vec![
-                Box::new(secret_input(shared, false, "Backup password", None)),
-                Box::new(secret_input(
-                    shared,
-                    true,
-                    "Confirm backup password",
-                    *error,
-                )),
-            ];
-            ModalDialog::new("Back up vault", body(fields))
-                .primary_action("Choose file…", ask(requests, Request::ConfirmBackup))
-                .secondary_action("Cancel", close)
+            backup_dialog(shared, *error, requests).secondary_action("Cancel", close)
         }
         Dialog::Restore { error, .. } => {
             let field: Element = Box::new(secret_input(
@@ -745,4 +762,43 @@ fn dialog(core: &Core, shared: &Shared, requests: &Requests) -> Option<Element> 
             .on_dismiss(ask(requests, Request::CloseDialog))
             .open(true),
     ))
+}
+
+#[cfg(test)]
+mod backup_form_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use zeroize::Zeroizing;
+
+    /// "Choose file…" waits for a long, confirmed password in the shared
+    /// core, and the confirmation field says so while it is typed.
+    #[test]
+    fn the_backup_form_gates_its_file_choice_and_checks_inline() {
+        let shared: Shared = Rc::new(RefCell::new(Core::demo()));
+        let requests: Requests = Rc::default();
+        let dialog = backup_dialog(&shared, None, &requests);
+        assert!(!dialog.primary_enabled(), "an empty form cannot go on");
+
+        shared.borrow_mut().backup_password = Zeroizing::new("short".into());
+        assert!(!dialog.primary_enabled(), "too short");
+
+        shared.borrow_mut().backup_password = Zeroizing::new("a memorable backup password".into());
+        shared.borrow_mut().backup_confirmation = Zeroizing::new("a memorable".into());
+        assert_eq!(
+            shared.borrow().backup_confirmation_problem(),
+            None,
+            "a confirmation on its way to the password is not an error yet"
+        );
+        assert!(!dialog.primary_enabled(), "not confirmed yet");
+
+        shared.borrow_mut().backup_confirmation = Zeroizing::new("a mistake".into());
+        assert_eq!(
+            shared.borrow().backup_confirmation_problem(),
+            Some("The passwords do not match")
+        );
+
+        shared.borrow_mut().backup_confirmation =
+            Zeroizing::new("a memorable backup password".into());
+        assert!(dialog.primary_enabled(), "a confirmed password can go on");
+    }
 }

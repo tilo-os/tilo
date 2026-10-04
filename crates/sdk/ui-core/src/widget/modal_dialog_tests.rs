@@ -1077,6 +1077,38 @@ fn enter_in_a_destructive_confirmation_is_the_safe_answer() {
 }
 
 #[test]
+fn a_gate_may_read_state_the_content_writes_elsewhere() {
+    // A form whose fields write into an app's shared core is gated on that
+    // core, and its footer button is announced with the state it is painted
+    // with.
+    let valid = Rc::new(Cell::new(false));
+    let (saved, save) = counter();
+    let gate = Rc::clone(&valid);
+    let mut d = ModalDialog::new("Back up vault", TestContent)
+        .primary_action("Choose file…", save)
+        .secondary_action("Cancel", || {})
+        .primary_enabled_if(move |_| gate.get())
+        .open(true);
+    lay_out(&mut d, WINDOW, &Theme::dark());
+    present(&mut d, WINDOW, &Theme::dark());
+    let primary = |d: &ModalDialog<TestContent>| {
+        footer_buttons(d)
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Choose file…"))
+            .expect("the primary button")
+    };
+    assert!(primary(&d).state.disabled, "an invalid form cannot go on");
+    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    assert_eq!(saved.get(), 0);
+
+    valid.set(true);
+    present(&mut d, WINDOW, &Theme::dark());
+    assert!(!primary(&d).state.disabled, "a valid form can");
+    dispatch(&mut d, &key_press_event(NamedKey::Enter));
+    assert_eq!(saved.get(), 1);
+}
+
+#[test]
 fn a_disabled_or_gated_primary_action_is_inert_and_announced() {
     let (fired, fire) = counter();
     let mut d = ModalDialog::new("Erase disk", TestContent)
