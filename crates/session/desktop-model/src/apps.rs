@@ -23,7 +23,8 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
         }
         TileContent::Foreign { app_id, .. }
         | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => Some(app_id.clone()),
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
     }
 }
 
