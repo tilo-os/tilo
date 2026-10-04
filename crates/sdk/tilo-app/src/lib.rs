@@ -139,7 +139,7 @@ pub mod prelude {
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Command, Dispatcher, Each, EditsText, EffectCx, EffectStatus,
-        Effected, Fixture, LaunchInput, Live, LiveRow, PersonRecord, ResourceApp,
+        Effected, Fixture, Jobs, LaunchInput, Live, LiveRow, PersonRecord, ResourceApp,
         ResourceSelection, ResourceSurface, RunMode, SeedCx, Setting, SurfaceCx, TextControl,
         ViewCx,
     };

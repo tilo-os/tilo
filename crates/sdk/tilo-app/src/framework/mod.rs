@@ -174,6 +174,10 @@
 //!   is `#[effect(row)]`, so the resource does not also offer it with an id
 //!   to type. No view or surface answers a raw `Widget::start_operation`
 //!   for it.
+//! * **Jobs nobody invoked** — a route fetched when the destination
+//!   changes, a feed refreshed when it opens — start through the view's or
+//!   surface's [`Jobs`] ([`ViewCx::jobs`], [`SurfaceCx::jobs`]), under a key
+//!   the latest request takes over, and finish like an effect's.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
@@ -267,7 +271,7 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress, Projection,
+    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Jobs, Progress, Projection,
 };
 pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};
