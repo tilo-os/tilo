@@ -713,7 +713,7 @@ impl CameraApp {
     }
 
     /// True while a video recording is in progress.
-    fn is_recording(&self) -> bool {
+    pub(crate) fn is_recording(&self) -> bool {
         self.recording.is_some()
     }
 
