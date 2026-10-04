@@ -420,3 +420,9 @@ widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizi
 
 widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
 widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
+
+block-editor-replace-placeholder = Ersetzen durch
+block-editor-replace = Ersetzen
+
+block-editor-replace-all = Alle ersetzen
+block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld

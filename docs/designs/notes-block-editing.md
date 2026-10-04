@@ -44,7 +44,7 @@ Unchecked entries need implementation or caller-level qualification.
 | P0 | IME / Unicode / caret | Shared line/table composition guards, Unicode joins, safe copy selection | Browser/OS input-method qualification |
 | P0 | Keyboard / accessibility | Focus escape, canonical read-only refusals and semantic duplication | Pointer command menu and browser/native assistive-technology qualification |
 | P1 | Tables as content | Shared source/grid table editor and canonical cells | Qualify cell navigation, paste and round-trip consistency |
-| P1 | Find / replace | Shared `open_find`; Notes search provider | Replace absent; selection-safe Unicode replacement |
+| P1 | Find / replace | Shared find overlay, current-match and atomic Replace all actions | Advanced matching options and broader qualification |
 | P2 | Block anchors / mentions / backlinks | Notes resources, links and backlinks | Qualify reusable block links and cross-note references |
 
 ## Implementation sequence
@@ -275,3 +275,110 @@ step; redo restores the image. No History implementation or schema changes.
 - Required shell test compilation reproduces the same 22 Darwin-only unresolved
   compositor imports documented and proven at the clipboard-safety base. The
   affected compositor modules are unchanged in this increment.
+
+### Independent increment: slash commands from committed text
+
+The shared editor now recognizes a single committed `/` as the same trigger as
+its native slash key. This matches browser `beforeinput` delivery without changing
+browser host routing. Preedit and multi-character inserts remain literal; code
+blocks retain their literal slash behavior. The existing menu owns subsequent
+committed filter text, keyboard navigation and conversion.
+
+- On exact main `945d8345b5`, the new mounted Notes regression inserted `/quote`
+  into the body instead of filtering the menu. It now passes with stable block
+  identity and direct one-step conversion undo/redo.
+- The first three focused Notes tests pass, including preedit/multi-character
+  refusal, literal code slashes and Escape preserving the typed source. The
+  existing Notes slash-menu focus/navigation caller also passes.
+- Review found the existing native slash anchor used the old caret when replacing
+  a forward selection. A new caller regression reproduced the leftover slash.
+  Both input routes now capture the normalized selection start; the regression
+  covers forward/reverse Unicode selections, surrounding source and stable IDs.
+- This does not release the held whole-block/callout conversions: their shared
+  History resurrection defect is independent of how the menu opens.
+- All four new Notes cases, the existing Notes focus case, all 60 shared
+  block-editor cases and four menu tests pass. Strict all-target Notes/UI Clippy
+  passes. Required shell compilation hits the same 22 Darwin-only unresolved
+  Linux compositor imports. Independent review found no remaining issues.
+- The standard offline WASM build and three disposable Chrome checks pass:
+  slash opening/filtering/conversion with direct undo/redo, Unicode with a soft
+  break, and forward-selection replacement preserving surrounding source and
+  one-step conversion undo/redo. No browser errors were recorded. WASM SHA-256:
+  `6a41395b0a98eae232a3c026b8647eb7324770f6499981ca31cfdd4963961231`.
+
+
+### Independent increment: replace the current find match
+
+The shared Find overlay adds a replacement field and Replace button. Tab moves
+between the two inputs, Enter in the replacement field replaces one match, F3
+navigates matches, and Escape closes the overlay. Pointer and semantic actions
+use the same command. The shared rich-text surface validates the captured block
+and match before one existing canonical `SpliceText` action; no schema or History
+changes are involved. Empty replacement deletes the match. Replacement is
+single-line (tabs allowed); Replace all and advanced matching options remain open.
+
+- Red: the mounted Notes caller had no find-query/replacement semantic targets.
+- Six actual Notes regressions pass: Unicode replacement, one-step undo/redo,
+  keyboard and pointer activation, marked suffix preservation, empty replacement,
+  peer text surviving undo, stale peer target refusal, viewer and IME safety,
+  and exclusive focus after navigation or replacing the final match.
+- This operation's concurrent-undo test passes independently of the unpublished
+  formatting increment's mark-inheritance failure. It edits a single existing
+  text object and does not recreate blocks.
+- Strict all-target Notes and SDK Clippy passes. Remaining SDK/browser results
+  are recorded after validation; no browser pass is inferred from compilation.
+- All 60 block-editor tests (including bounded typing work), both SearchField
+  tests and all 37 rich-text tests pass. Independent final review has no findings.
+- The standard offline WASM bundle builds. Disposable Chrome passes actual
+  Ctrl/Cmd+F entry, semantic Unicode replacement, empty replacement, atomic
+  undo/redo, and Tab/Enter replacement input. No browser errors were recorded.
+- Visual inspection found the default button footprint overlapping the input;
+  an explicit theme-scaled button size fixes it. The native pointer caller now
+  asserts the controls do not overlap; that regression and strict Clippy pass.
+- Required shell test compilation reproduces the same 22 baseline Darwin
+  compositor import errors. No compositor or History implementation was changed.
+
+
+### Independent increment: replace all find matches
+
+The shared replacement field supports a Replace all button and Shift+Enter.
+Both keyboard and semantic `notes.find:replace-all` activation use one canonical
+`ReplaceMatches` action. It validates disjoint character ranges and the aggregate
+text budget before mutation, then splices back to front without recreating blocks.
+This extends the action vocabulary without migrating stored documents or changing
+History. Matching retains the existing case-insensitive literal search behavior;
+regular expressions and whole-word options remain open.
+
+- The original real Notes caller regression failed because no Replace all target
+  existed. Twelve current Notes find/replace tests pass, including single and batch
+  replacement, Unicode, stable block IDs, one-step undo/redo, shortcut modifiers,
+  pointer activation, empty replacements, surviving link marks, IME/viewer refusal,
+  stale matches and newly inserted peer blocks, concurrent text surviving undo,
+  exclusive input focus, and replacements that themselves contain the query.
+- Two canonical tests cover shuffled Unicode character ranges, one replay envelope,
+  missing blocks, out-of-bounds/empty/reversed/overlapping/duplicate ranges, batch
+  size and aggregate insertion limits. Invalid batches leave document heads unchanged.
+- Each search captures one linear-size body snapshot. Replace all refuses if its
+  order or projected content changed; refreshing the query captures the new body.
+  Character offset conversion advances once through each source paragraph instead
+  of repeatedly scanning its prefix. The user must explicitly refresh a stale search.
+- Independent review found no remaining issues after adding keyboard activation and
+  reflecting the canonical insertion budget in button eligibility.
+- All 60 SDK block-editor tests and all 37 rich-text tests pass, including bounded
+  typing-work regressions. Strict all-target Clippy and repository checks pass.
+  Required shell test compilation reproduces the same 22 Darwin-only unresolved
+  Linux imports as the verified previous base; those compositor files are unchanged.
+- The standard offline Notes WASM bundle builds. Three disposable Chrome checks
+  pass for Unicode Replace all with stable IDs and one-step undo/redo, empty
+  replacements, and Shift+Enter when the replacement contains the query. No
+  browser errors were recorded. Final WASM SHA-256:
+  `82ab5a487728c603e2f1981a6f09bcb7d1c82f2ec5602a10260c3982f67d3962`.
+  Shift+Enter is the advertised cross-platform shortcut; the shared browser host
+  retains Ctrl/Cmd+Enter inside native text inputs, so no host routing was changed.
+- The Agent adapter maps every batch replacement span to the original block and
+  character range for its interaction anchor. A focused regression covers two
+  blocks, Unicode replacement text and unrelated focus. Strict Agent library
+  Clippy passes; independent review found no remaining issues in the adapter.
+  The focused Agent test and all-target check cannot run through their shell
+  dependency on Darwin: the same 22 unresolved Linux compositor imports stop
+  compilation before the new assertion. Linux CI must execute that regression.

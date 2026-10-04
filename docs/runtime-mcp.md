@@ -360,7 +360,15 @@ resource id longer than 24 characters is shown as a session handle such as
 `r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
 which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
-they take a resource, and full ids keep working. In `tilo_invoke`'s
+they take a resource, and full ids and a resource's kind or label
+(`canvas.artwork`) keep working. A `parent_resource` that lists nothing and
+names no resource is refused with the resources there are, rather than
+answered with an empty page. A compact session's `tilo_resolve` names the
+resource by its handle and says each parameter schema once: an optional
+property does not also list `null` (absent and `null` read alike), a `const`
+carries no `type`, bounds that only restate an integer type's range are left
+out, and a subschema repeated under several properties is one `$defs` entry
+each place `$ref`s, keeping its own description. In `tilo_invoke`'s
 `arguments`, a handle this session issued is replaced by its id where the
 action declares a `resource` parameter. Where the parameter is text, the handle
 goes as given, since it may be meant literally. If the action refuses it, the
