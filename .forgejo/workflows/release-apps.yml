@@ -1,13 +1,10 @@
 name: Release / apps
 
-# PRs select affected apps without release-mode packaging. Main publishes only
+# Pull requests start no jobs here; CI covers their builds. Main publishes only
 # affected tapps and reuses unchanged members of the prior immutable collection.
 # Tags remain credential-free validation inputs only until a trusted
 # default-branch controller or server-enforced tag policy can authorize them.
 on:
-  pull_request:
-    branches: [main]
-    # Always run the cheap plan; app_release.py owns dependency applicability.
   push:
     branches: [main]
     tags: ["apps-v*", "app-*-v*"]
@@ -39,6 +36,7 @@ on:
       - "tools/ci/app_release_history.py"
       - "tools/ci/python.py"
       - "tools/ci/resolve_builder.py"
+      - "tools/ci/images.toml"
       - "tools/ci/rustc-thin-app-wrapper.sh"
       - "tools/ci/sccache.sh"
       - "dist/apps/assemble-collection.sh"
@@ -99,9 +97,8 @@ on:
 
 concurrency:
   group: release-apps-${{ github.ref }}
-  # Published collections advance in commit order; PR validation may supersede
-  # older validation because it does not mutate a channel.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Published collections advance in commit order.
+  cancel-in-progress: false
 
 jobs:
   tag-validation:
@@ -157,7 +154,8 @@ jobs:
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4352, 'd376bc605d185b6a235db30dfac79d9f0825db96d38b19ac5e9f1e174a242a57'),
-              ('tools/ci/resolve_builder.py', 7138, 'dd2642f1c7d54c94ef2daf25b18052918a9a9bc9784dff2c1a57ae1a315d1fb4'),
+              ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
+              ('tools/ci/images.toml', 1669, '119eb714107c17077517670487460a66748cfe062ef261a2b6b6ca40e7b7effa'),
           )
 
           class NoRedirect(HTTPRedirectHandler):
@@ -229,7 +227,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     outputs:
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
@@ -260,8 +258,6 @@ jobs:
           persist-credentials: false
       - name: Resolve one immutable builder for every architecture
         id: builder
-        # PRs only select affected apps; no builder-dependent job runs for them.
-        if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')"
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
         run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
@@ -281,8 +277,6 @@ jobs:
             base=${BASELINE_SHA:-}
           elif [[ $GITHUB_EVENT_NAME == push ]]; then
             base=${COLLECTION_SOURCE:-}
-          elif [[ $GITHUB_EVENT_NAME != workflow_dispatch ]]; then
-            base='${{ github.event.pull_request.base.sha }}'
           fi
           [[ $base != null ]] || base=
           if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
@@ -410,13 +404,6 @@ jobs:
             if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then
               args+=(--collection default)
             fi
-          else
-            base='${{ github.event.pull_request.base.sha }}'
-            if [[ -z $base || $base == null ]]; then
-              args+=(--collection default)
-            else
-              use_base "$base"
-            fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
           python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
@@ -467,7 +454,7 @@ jobs:
           BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
           BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
         run: python3 -I tools/ci/python.py tools/app_packaging_plan.py
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: github.event.inputs.coordinator_intent != ''
         with:
           name: coordinator-plan-${{ github.run_attempt }}
@@ -615,7 +602,7 @@ jobs:
             --runtime-binary target/release/tilo-runtime-bundle \
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-apps-${{ matrix.arch }}
           path: |
@@ -644,7 +631,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Assemble and verify without publication
@@ -687,7 +674,7 @@ jobs:
               --baseline-proof "$baseline" --baseline-proof-sha256 "$BASELINE_RECEIPT_SHA256" \
               --baseline-source "$BASELINE_SHA"
           done < <(jq -r '.include[].arch' <<< "$MATRIX")
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: contains(github.event.inputs.architectures, 'x86_64')
         with:
           name: final-app-collection-x86_64
@@ -696,7 +683,7 @@ jobs:
             dist/qualified-apps/x86_64/final-publication-receipt.json
             dist/qualified-apps/x86_64/assembly-provenance.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: contains(github.event.inputs.architectures, 'aarch64')
         with:
           name: final-app-collection-aarch64
@@ -726,7 +713,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Publish reusable tapps and assemble immutable collections

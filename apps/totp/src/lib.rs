@@ -13,6 +13,8 @@
 //! # Architecture
 //! * [`model`] — the [`model::Account`] / [`model::Vault`] data, the
 //!   `otpauth://` URI parser, and the theme-derived account palette.
+//! * [`resource`] — the [`Totp`] resource, its effects and the
+//!   [`TotpShell`] app.
 //! * [`totp`] — RFC 6238 code generation on the `RustCrypto` HMAC/SHA
 //!   primitives, plus period timing for the ring.
 //! * [`doc`] — the secret-free Automerge account-metadata mirror.
@@ -20,12 +22,8 @@
 //! * [`list`] — the [`list::AccountList`] main screen.
 //! * [`add_panel`] — the [`add_panel::AddAccountPanel`] modal.
 //! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.
-//! * [`app`] — the [`app::AuthenticatorApp`] root that ties them together.
-//! * [`storage`] — encrypted local vault persistence with explicit durability
-//!   status.
-//!
-//! [`app_root`] is the single integration point used by `main.rs` for
-//! both the live event loop and the `--shots` offscreen renderer.
+//! * [`app`] — the [`app::AuthenticatorApp`] surface that ties them together.
+//! * `secrets` — each account's seed in this device's secret store.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -65,8 +63,7 @@ pub mod model;
 pub mod qr;
 pub mod resource;
 pub mod ring;
-pub mod search_provider;
-pub mod storage;
+mod secrets;
 pub mod totp;
 
 #[cfg(test)]
@@ -75,79 +72,9 @@ pub(crate) mod test_events;
 pub use app::AuthenticatorApp;
 pub use model::{Account, Algorithm, Vault};
 
-use ui::widget::Widget;
+pub use resource::{Totp, TotpEffect, TotpShell};
 
-/// Build the app's root widget for the **live** session: it loads the
-/// user's persisted vault and shows the empty state on a fresh install.
-/// It never fabricates sample accounts.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(AuthenticatorApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.totp", app_root)
-        .component_actions(actions::register)
-        .as_definition("TOTP")
+    ui::framework::definition::<TotpShell>()
 }
-
-/// Build the root widget seeded with a deterministic sample vault. Used by
-/// the `--shots` renderer and demos so the frame is populated and
-/// reproducible without touching (or leaking) the real on-disk vault.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(AuthenticatorApp::demo())
-}
-
-/// Build the root widget with no accounts — the first-run empty state. Used
-/// by the `--shots` renderer to capture that experience deterministically.
-pub fn app_root_empty() -> Box<dyn Widget> {
-    Box::new(AuthenticatorApp::empty())
-}
-
-/// Build the sample-seeded root already showing the Add-account screen.
-/// Used by the `--shots` renderer to capture the add flow.
-pub fn app_root_add_screen() -> Box<dyn Widget> {
-    let mut app = AuthenticatorApp::demo();
-    app.seed_open_add();
-    Box::new(app)
-}
-
-/// Build the sample-seeded root on the Add-account screen with Advanced
-/// options expanded — the `--shots` renderer uses it to capture the tall,
-/// scrolling form.
-pub fn app_root_add_advanced_screen() -> Box<dyn Widget> {
-    let mut app = AuthenticatorApp::demo();
-    app.seed_open_add_advanced();
-    Box::new(app)
-}
-
-/// Build the sample-seeded root on the Add-account screen — the entry point
-/// the "Scan a QR image" import flow starts from. At runtime that action hands
-/// off to the **host** file chooser via the XDG Desktop Portal (there is no
-/// app-drawn picker to capture offscreen, per HIG §5), so this shot shows the
-/// add screen with its import method cards; the host dialog itself is rendered
-/// by the compositor's portal backend.
-pub fn app_root_add_picker_screen() -> Box<dyn Widget> {
-    let mut app = AuthenticatorApp::demo();
-    app.seed_open_add_picker();
-    Box::new(app)
-}
-
-/// Deterministic secret-free shared-account state for visual/a11y review of
-/// the local provisioning flow. No real vault material is read or rendered.
-pub fn app_root_provision_screen() -> Box<dyn Widget> {
-    Box::new(AuthenticatorApp::demo_provision())
-}
-
-/// Deterministic durability-warning state for visual review. It contains only
-/// demo accounts and no real keyring/storage failure details.
-pub fn app_root_persistence_error() -> Box<dyn Widget> {
-    Box::new(AuthenticatorApp::demo_persistence_error())
-}
-
-/// Deterministic shared-account preview with one account lacking this
-/// device's secret, used to review the honest setup affordance.
-pub fn app_root_missing_secret() -> Box<dyn Widget> {
-    Box::new(AuthenticatorApp::demo_missing_secret())
-}
-pub use resource::{Totp, TotpShell, launch_spec};

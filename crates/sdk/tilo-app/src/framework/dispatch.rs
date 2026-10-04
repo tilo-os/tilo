@@ -205,8 +205,25 @@ impl<R: Resource> Dispatcher<R> {
         });
     }
 
-    /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`).
+    /// Invoke `effect` as the live row `row` offers it
+    /// ([`LiveRow::effect`](super::LiveRow::effect)): under the row's
+    /// contract, so a confirmation the row asks for (typing the name of the
+    /// device it erases) is asked here too.
+    pub fn effect_on<E: Effect>(&self, row: &str, effect: &E) {
+        self.queue.borrow_mut().push_back(ControlInvocation {
+            address: ActionAddress::new(row, effect.id()),
+            arguments: serde_json::Map::new(),
+        });
+    }
+
+    /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
+    /// or an effect ([`Invoke::effect`]), which reaches its handler as
+    /// [`Self::effect`] does.
     pub fn invoke(&self, invoke: Invoke<R>) {
+        if invoke.is_effect() {
+            self.submit(invoke);
+            return;
+        }
         if self.read_only() {
             self.refuse(invoke.id, Self::view_only());
             return;

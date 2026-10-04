@@ -65,6 +65,9 @@
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **lookup by kind** — a host that works with whatever a room holds
+//!   reads, publishes and replays any registered type from the kind its
+//!   record names ([`Kinds`], [`ResourceKind`]);
 //! * **document machinery** — fractional [`order`] keys, stamped commits and
 //!   positional replay ([`history`]), writing large content as a few changes
 //!   ([`batch`]) and id-aligned structural [`diff`]s, shared by every
@@ -113,6 +116,7 @@ pub mod effect;
 pub mod group;
 pub mod history;
 pub mod items;
+pub mod kind;
 pub mod model;
 pub mod order;
 pub mod reader;
@@ -130,14 +134,15 @@ pub use collection::{Collection, Id};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
+pub use kind::{Kinds, ResourceKind};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, action_label, build_action,
-    declaration_spec, encode, origin_now_ms, publish,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Resource, SearchEntry, action_label,
+    build_action, declaration_spec, encode, origin_now_ms, publish,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
@@ -151,7 +156,8 @@ pub mod __private {
     pub use serde;
     pub use serde_json;
     pub use tilo_actions::{
-        ActionArgs, ActionParam, ChangeKind, ParamType, PermissionRequirement, Resource, RiskLevel,
+        ActionArgs, ActionParam, ChangeKind, OperationKind, ParamType, PermissionRequirement,
+        Resource, RiskLevel,
     };
 
     /// The default search entry of a record: all of its text, in one entry.
