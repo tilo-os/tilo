@@ -82,53 +82,6 @@ pub mod widgets;
 
 pub use settings_app::SettingsApp;
 
-/// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.
-///
-/// A `TextInput` bound via `with_on_change_path` persists typed characters by
-/// splicing into an **existing** `Text` object — it never creates one. So any
-/// field the user is meant to type into (the settings search, the add-account
-/// form, a Wi-Fi password) must have its backing object seeded first. Without
-/// this, edits update only the widget's local buffer and are silently lost on
-/// the next structure rebuild — which is exactly why those fields read as dead.
-///
-/// Idempotent: returns the existing object when one is already present, and
-/// preserves a scalar string previously parked at the key (e.g. a seeded value)
-/// by splicing it into the new object.
-pub(crate) fn ensure_text_object(
-    state: &mut automerge::AutoCommit,
-    root: &automerge::ObjId,
-    key: &str,
-) -> automerge::ObjId {
-    use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};
-    if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, key) {
-        return obj;
-    }
-    let existing = match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(t) => t.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    };
-    // `put_object` only fails when `root` doesn't exist or isn't a keyed
-    // (Map/Table) object; every caller passes either the document root or a
-    // map key resolved earlier in the same synchronous `sync`, so neither
-    // case is reachable here. There is no meaningful fallback `ObjId` to
-    // return instead — `automerge::ROOT` would silently redirect the
-    // caller's later `splice_text` onto the wrong (non-Text) object.
-    #[allow(
-        clippy::expect_used,
-        reason = "root is always a live keyed object in the current transaction; see comment above"
-    )]
-    let obj = state
-        .put_object(root, key, ObjType::Text)
-        .expect("seed a Text object for an editable field");
-    if !existing.is_empty() {
-        let _ = state.splice_text(&obj, 0, 0, &existing);
-    }
-    obj
-}
-
 pub use resource::{Settings, SettingsShell};
 
 /// The app as every host mounts it.

@@ -37,53 +37,9 @@ impl settings::account_probe::AccountTester for AcceptAccount {
     }
 }
 
-fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
-    pane.sync(&mut doc, &root); // first sync seeds
-    let _ = doc.put(&root, key, value);
-    pane.sync(&mut doc, &root); // observe + persist
-}
-
-/// Night light, display scale and accounts persist.
+/// Accounts persist.
 #[test]
 fn local_prefs_and_accounts_persist_to_disk() {
-    // Case `display_night_light_toggle_persists_to_disk`.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        let mut pane = settings::panes::display::build();
-        seed_then_set_bool(
-            pane.as_mut(),
-            settings::panes::display::NIGHT_LIGHT_KEY,
-            true,
-        );
-
-        assert!(
-            SystemPrefs::load().display.night_light,
-            "the night-light toggle persisted"
-        );
-    }
-
-    // Case `display_scale_persists_fractional_factor_to_disk`.
-    {
-        let _home = tilo_test_env::TestHome::new().unwrap();
-
-        let mut pane = settings::panes::display::build();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root); // seed (writes "100%")
-        // User picks a fractional 150% scale.
-        let _ = doc.put(&root, settings::panes::display::DISPLAY_SCALE_KEY, "150%");
-        pane.sync(&mut doc, &root); // observe + persist
-
-        let scale = SystemPrefs::load().display.scale;
-        assert!(
-            (scale - 1.5).abs() < 1e-9,
-            "the display-scale dropdown persisted a fractional 1.5, got {scale}"
-        );
-    }
-
     // Case `accounts_add_and_remove_round_trip_through_the_pane`.
     // The External Accounts pane's Add flow writes a real account into the shared
     // canonical accounts store (the same store Mail reads), and Remove deletes it

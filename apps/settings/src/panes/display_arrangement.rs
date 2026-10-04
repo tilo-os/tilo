@@ -620,9 +620,29 @@ mod tests {
     fn canvas() -> DisplayArrangement {
         let moves = displays()
             .iter()
-            .filter_map(|display| {
-                crate::actions::display_output_move_binding(display.connector.clone())
-                    .map(|binding| (display.connector.clone(), binding))
+            .map(|display| {
+                use ui::tilo_resource::Effect as _;
+                let spec = crate::effects::SettingsEffect::specs()
+                    .into_iter()
+                    .find(|spec| spec.id == "move-display")
+                    .expect("moving a display is an effect");
+                let resource =
+                    ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
+                        .with_action(spec.clone());
+                let connector = display.connector.clone();
+                let binding = ui::tilo_actions::ActionBinding::new(
+                    &resource,
+                    &spec,
+                    move |(x, y): (i32, i32)| {
+                        crate::panes::display::DisplayEffect::MOVE_DISPLAY.arguments(&(
+                            connector.clone(),
+                            x,
+                            y,
+                        ))
+                    },
+                )
+                .expect("the move effect is exported");
+                (display.connector.clone(), binding)
             })
             .collect();
         let mut canvas = DisplayArrangement::new(displays(), moves, ui::LocalState::new(None));
@@ -647,7 +667,7 @@ mod tests {
 
         let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
             .expect("the drop is sent as the display's move action");
-        assert_eq!(invocation.address.action, "move");
+        assert_eq!(invocation.address.action, "move-display");
         let x = invocation.arguments["x"].as_i64().unwrap();
         let y = invocation.arguments["y"].as_i64().unwrap();
         assert_eq!((x, y), (0, 1080), "snapped flush under the panel");
