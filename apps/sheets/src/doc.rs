@@ -966,33 +966,61 @@ impl SheetsDoc {
             return snap;
         };
         snap.name = read_str(doc, &sheet, "name").unwrap_or_default();
-        let Ok(Some((Value::Object(ObjType::Map), cells))) = doc.get(&sheet, "cells") else {
+        let Some(cells) = Self::cells_object(doc, &sheet) else {
             return snap;
         };
         for key in doc.keys(&cells) {
-            let Some(addr) = Self::parse_cell_key(&key) else {
-                continue;
-            };
-            let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str())
-            else {
-                continue;
-            };
-            if let Some(s) = read_str(doc, &cell, "raw")
-                && !s.is_empty()
-            {
-                snap.raw.insert(addr, s);
-            }
-            if let Some(s) = read_str(doc, &cell, "fmt") {
-                let f = CellFormat::from_str_with(&s, default_currency);
-                if f != CellFormat::General {
-                    snap.fmt.insert(addr, f);
-                }
-            }
-            if read_bool(doc, &cell, "b") == Some(true) {
-                snap.bold.insert(addr);
-            }
+            Self::read_cell_into(doc, &cells, &key, &mut snap, default_currency);
         }
         snap
+    }
+
+    /// The map of sheet `idx`, which a reader follows across changes.
+    pub fn sheet_object(doc: &AutoCommit, idx: usize) -> Option<ObjId> {
+        Self::sheet_map(doc, idx)
+    }
+
+    /// The `cells` map of the sheet map `sheet`.
+    pub fn cells_object(doc: &AutoCommit, sheet: &ObjId) -> Option<ObjId> {
+        match doc.get(sheet, "cells") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Read the cell at `key` of the `cells` map into `snap`, replacing what
+    /// `snap` held for it: a cell removed, cleared or restyled since `snap`
+    /// was taken reads as it is now.
+    pub fn read_cell_into(
+        doc: &AutoCommit,
+        cells: &ObjId,
+        key: &str,
+        snap: &mut SheetSnapshot,
+        default_currency: Currency,
+    ) {
+        let Some(addr) = Self::parse_cell_key(key) else {
+            return;
+        };
+        snap.raw.remove(&addr);
+        snap.fmt.remove(&addr);
+        snap.bold.remove(&addr);
+        let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(cells, key) else {
+            return;
+        };
+        if let Some(s) = read_str(doc, &cell, "raw")
+            && !s.is_empty()
+        {
+            snap.raw.insert(addr, s);
+        }
+        if let Some(s) = read_str(doc, &cell, "fmt") {
+            let f = CellFormat::from_str_with(&s, default_currency);
+            if f != CellFormat::General {
+                snap.fmt.insert(addr, f);
+            }
+        }
+        if read_bool(doc, &cell, "b") == Some(true) {
+            snap.bold.insert(addr);
+        }
     }
 }
 
