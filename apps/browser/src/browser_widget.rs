@@ -46,15 +46,14 @@ use ui::widget::{
     Spacer, Text, TextInput, TextInputKind, WebView, Widget,
 };
 
-use crate::actions::{
-    BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, history_resource_id,
-};
+use crate::actions::{BrowserAction, bookmark_resource_id, history_resource_id};
 use crate::address_overlay::AddressSuggestions;
 use crate::browsing_mode::BrowsingMode;
 use crate::downloads::{DownloadStatus, Downloads};
 use crate::history::History;
 use crate::library::Bookmarks;
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use ui::tilo_resource::Resource as _;
 
 const PIP_ID: &str = "browser.media-pip";
 const PIP_ELEMENT_REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
@@ -590,7 +589,7 @@ fn local_effect_contract(tags: &[&str]) -> ActionContract {
 
 /// Open the bookmarks library. Published on the bookmarks child so the
 /// palette and a hosted browser share one view action.
-pub(crate) fn bookmark_library_show() -> Option<ActionSpec> {
+fn bookmark_library_show() -> Option<ActionSpec> {
     ActionSpec::operation(
         "show",
         "Show bookmarks",
@@ -603,10 +602,24 @@ pub(crate) fn bookmark_library_show() -> Option<ActionSpec> {
     .ok()
 }
 
-/// Settings door published with the browser document. Homepage, search
-/// engine, ad blocking, and clear-on-exit are document actions; show and
-/// site-data clear stay effects on the same resource.
-pub(crate) fn settings_resource() -> Resource {
+/// The operations every browser window answers on the resource itself:
+/// leaving the library or settings for the page.
+pub(crate) fn window_presentation_operations() -> Vec<ActionSpec> {
+    ActionSpec::operation(
+        "show-page",
+        "Show current page",
+        OperationKind::View,
+        BROWSER_OPERATION_TYPE,
+        &browser_operation_payload(&BrowserOperation::ShowPage),
+    )
+    .ok()
+    .into_iter()
+    .collect()
+}
+
+/// The settings presentation and this profile's one-shot site-data clear,
+/// joined to the document's settings, whose actions set the preferences.
+fn settings_presentation_resource() -> Resource {
     let mut settings = Resource::new("browser.settings", "browser.settings", "Settings");
     if let Ok(spec) = ActionSpec::operation(
         "show",
@@ -631,83 +644,6 @@ pub(crate) fn settings_resource() -> Resource {
                 "sensitive-data",
             ]))
             .destructive(),
-        );
-    }
-    for (id, label, adblock) in [
-        ("set-adblock", "Set ad and tracker blocking", true),
-        ("set-clear-on-exit", "Set clear data on exit", false),
-    ] {
-        settings.actions.push(
-            ActionSpec::typed(
-                id,
-                label,
-                "enabled",
-                ui::tilo_actions::ExecutionLocus::ClientLocal,
-                vec![ActionParam::required_owned(
-                    "enabled",
-                    ParamType::Boolean,
-                    "Whether the setting is enabled",
-                )],
-                move |args: &ActionArgs| {
-                    let action = if adblock {
-                        BrowserAction::SetAdblock {
-                            enabled: args.boolean("enabled").unwrap_or(false),
-                        }
-                    } else {
-                        BrowserAction::SetClearOnExit {
-                            enabled: args.boolean("enabled").unwrap_or(false),
-                        }
-                    };
-                    EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                        EncodedAction {
-                            type_id: BROWSER_ACTION_TYPE.into(),
-                            payload: Vec::new(),
-                        }
-                    })
-                },
-            )
-            .reversible(),
-        );
-    }
-    for (id, label, parameter, homepage) in [
-        ("set-homepage", "Set homepage", "url", true),
-        (
-            "set-search-engine",
-            "Set search engine template",
-            "template",
-            false,
-        ),
-    ] {
-        settings.actions.push(
-            ActionSpec::typed(
-                id,
-                label,
-                parameter,
-                ui::tilo_actions::ExecutionLocus::ClientLocal,
-                vec![ActionParam::required_owned(
-                    parameter,
-                    ParamType::Text,
-                    parameter,
-                )],
-                move |args: &ActionArgs| {
-                    let action = if homepage {
-                        BrowserAction::SetHomepage {
-                            url: args.text(parameter).unwrap_or_default().into(),
-                        }
-                    } else {
-                        BrowserAction::SetSearchEngine {
-                            template: args.text(parameter).unwrap_or_default().into(),
-                        }
-                    };
-                    EncodedAction::encode(BROWSER_ACTION_TYPE, &action).unwrap_or_else(|_| {
-                        EncodedAction {
-                            type_id: BROWSER_ACTION_TYPE.into(),
-                            payload: Vec::new(),
-                        }
-                    })
-                },
-            )
-            .reversible(),
         );
     }
     settings
@@ -830,11 +766,10 @@ pub struct BrowserWidget {
     bootstrap_done: bool,
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
-    /// Framework dispatcher when hosted; local action host otherwise.
-    /// Bookmarks and preferences are [`BrowserAction`]s on this sink.
-    actions: crate::resource::ActionSink,
-    /// Hosted bookmark and preference edits, applied on the next sync.
-    pending_library_edits: ui::LocalState<Vec<BrowserAction>>,
+    /// The resource's dispatcher: bookmarks and preferences are
+    /// [`BrowserAction`]s submitted through it. `None` until a host attaches
+    /// one; a bare widget changes no document.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::Browser>>,
     initial_url: String,
     session_url: String,
     session_first_commit: bool,
@@ -906,7 +841,6 @@ pub struct BrowserWidget {
     /// Retained full-corpus index. Provider handles are cheap and unchanged
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
-    projected_heads: Option<Vec<automerge::ChangeHash>>,
     /// Fuzzy suggestion dropdown under the address bar (a field, not a
     /// tree child: driven here and painted in `draw_overlay`).
     suggestions: AddressSuggestions,
@@ -992,18 +926,6 @@ pub struct BrowserWidget {
     fact_label_w: Option<f32>,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
-}
-
-/// A library remove queued before the document is in hand still tombstones
-/// the tags the document actually holds.
-fn bookmark_remove_with_observed_tags(doc: &AutoCommit, action: BrowserAction) -> BrowserAction {
-    match action {
-        BrowserAction::RemoveBookmark { url, observed_tags } if observed_tags.is_empty() => {
-            let observed_tags = crate::actions::observed_bookmark_tags(doc, &url);
-            BrowserAction::RemoveBookmark { url, observed_tags }
-        }
-        other => other,
-    }
 }
 
 impl BrowserWidget {
@@ -1239,24 +1161,17 @@ impl BrowserWidget {
         headless: bool,
         browsing_mode: BrowsingMode,
     ) -> Self {
-        // Persisted state; `load()` returns defaults/empty when absent, so
+        // Device-local state; `load()` returns empty when absent, so
         // `--shots` runs are unaffected by (and don't write) real files.
+        // Preferences and bookmarks are the document's, presented later.
         let persistent = !headless && browsing_mode.persists_personal_state();
-        let settings = if persistent {
-            Settings::load()
-        } else {
-            Settings::default()
-        };
+        let settings = Settings::default();
         let history = if persistent {
             History::load()
         } else {
             History::default()
         };
-        let bookmarks = if persistent {
-            Bookmarks::load()
-        } else {
-            Bookmarks::default()
-        };
+        let bookmarks = Bookmarks::default();
         let downloads = if headless {
             Downloads::default()
         } else {
@@ -1277,8 +1192,7 @@ impl BrowserWidget {
             composed: None,
             bootstrap_done: false,
             headless,
-            actions: crate::resource::ActionSink::default(),
-            pending_library_edits: ui::LocalState::new(Vec::new()),
+            dispatch: None,
             address: ui::LocalState::new(initial_url.clone()),
             address_navigation_value: None,
             daily: crate::daily_controls::DailyControls::default(),
@@ -1331,7 +1245,6 @@ impl BrowserWidget {
             download_picker_queue: std::collections::VecDeque::new(),
             download_save_due: None,
             search_index,
-            projected_heads: None,
             suggestions: AddressSuggestions::new(),
             navigation_hold: crate::back_hold::NavigationHold::default(),
             navigation_pointer_down: None,
@@ -1388,70 +1301,31 @@ impl BrowserWidget {
         }
     }
 
-    /// Mark this browser as a framework-hosted surface so
-    /// [`Widget::resources`] defers the document root to `tilo_resource::publish`.
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.actions.set_hosted(hosted);
-    }
-
-    /// Attach the framework dispatcher. Hosted bookmark and preference edits
-    /// then go through [`Dispatcher::apply_now_with`](ui::framework::Dispatcher::apply_now_with).
-    pub(crate) fn attach_framework(
+    /// Submit bookmark and preference edits through `dispatcher`.
+    pub(crate) fn attach_dispatcher(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Browser>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatch = Some(dispatcher);
+        self.structure_dirty = true;
     }
 
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Submit one bookmark or preference edit. Hosted surfaces with a
-    /// dispatcher use `apply_now_with`; standalone uses the local action host.
-    pub(crate) fn submit_library_action(&mut self, doc: &mut AutoCommit, action: &BrowserAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            BROWSER_ACTION_TYPE,
-            action,
-            crate::actions::history_context(action),
-        );
-    }
-
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn last_library_action(&self) -> Option<&EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    fn enqueue_library_action(&self, action: BrowserAction) {
-        self.pending_library_edits
-            .update(|queue| queue.push(action));
-    }
-
-    fn flush_library_edits(&mut self, doc: &mut AutoCommit) {
-        let waiting = self.pending_library_edits.with(|queue| !queue.is_empty());
-        if !waiting {
-            return;
+    /// Submit one bookmark or preference edit through the resource's door.
+    fn submit(&self, action: &BrowserAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
         }
-        let mut pending = Vec::new();
-        let taken = self
-            .pending_library_edits
-            .try_update(|queue| pending.append(queue));
-        if !taken {
-            return;
+    }
+
+    /// Present the document's bookmarks and preferences: the chrome shows
+    /// them, and the engine follows the preferences.
+    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
+        if state.bookmarks != self.bookmarks {
+            self.bookmarks = state.bookmarks.clone();
+            self.search_index.invalidate();
+            self.structure_dirty = true;
         }
-        for action in pending {
-            let action = bookmark_remove_with_observed_tags(doc, action);
-            self.submit_library_action(doc, &action);
-        }
+        self.apply_preferences(state.preferences.clone());
     }
 
     /// Add the current page, unless it is already bookmarked. Removal stays
@@ -1467,25 +1341,40 @@ impl BrowserWidget {
         })
     }
 
-    /// Standalone keeps the published binding. Hosted document edits queue a
-    /// [`BrowserAction`] for the action sink instead of a second resource tree.
-    fn route_document_button(
+    /// `button` submits `action` through the resource's door; without one
+    /// (nothing to edit, or no dispatcher) it does nothing.
+    fn document_button(
         &self,
         button: ui::widget::Button,
-        resource: &str,
-        action_id: &str,
-        hosted_action: Option<BrowserAction>,
+        action: Option<BrowserAction>,
     ) -> ui::widget::Button {
-        if !self.is_framework_hosted() {
-            return self.bind_button(button, resource, action_id);
+        match (action, self.dispatch.clone()) {
+            (Some(action), Some(dispatch)) => button.on_effect(move || dispatch.apply(&action)),
+            _ => button,
         }
-        let Some(action) = hosted_action else {
-            return button;
-        };
-        let edits = self.pending_library_edits.clone();
-        button.on_effect(move || {
-            edits.update(|queue| queue.push(action.clone()));
-        })
+    }
+
+    /// "Bookmark this page", bound to the page this window shows: offered
+    /// while it shows one that is not bookmarked yet.
+    pub(crate) fn page_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Browser>> {
+        if self.page_bookmark_action().is_none() {
+            return Vec::new();
+        }
+        let (url, title) = (self.current_uri.clone(), self.title.clone());
+        vec![ui::tilo_resource::ActionDecl::new(
+            "bookmark-page",
+            "Bookmark this page",
+            vec![],
+            move |_, _| {
+                Ok(BrowserAction::AddBookmark {
+                    url: url.clone(),
+                    title: title.clone(),
+                    tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
+                })
+            },
+        )]
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
@@ -1556,12 +1445,6 @@ impl BrowserWidget {
         );
         self.history
             .record_at("https://example.org/long-form", "Long-form reading", 1);
-        let _ = self
-            .bookmarks
-            .add("https://www.rust-lang.org/learn", "Learn Rust");
-        let _ = self
-            .bookmarks
-            .add("https://developer.mozilla.org/", "MDN Web Docs");
         self.library_section = match section {
             "bookmarks" => LibrarySection::Bookmarks,
             "downloads" => LibrarySection::Downloads,
@@ -2180,7 +2063,7 @@ impl BrowserWidget {
                     .or_else(|| walk(&resource.children, wanted))
             })
         }
-        walk(&ui::resources::resources(self, &AutoCommit::new()), wanted)
+        walk(&[self.published()], wanted)
     }
 
     fn unit_binding(&self, resource: &str, action: &str) -> Option<ActionBinding<()>> {
@@ -2188,48 +2071,12 @@ impl BrowserWidget {
         ActionBinding::unit_for(&resource, action).ok()
     }
 
-    fn boolean_binding(
-        &self,
-        resource: &str,
-        action: &str,
-        parameter: &'static str,
-    ) -> Option<ActionBinding<bool>> {
-        let resource = self.resource_by_id(resource)?;
-        let spec = resource.actions.iter().find(|spec| spec.id == action)?;
-        ActionBinding::new(&resource, spec, move |value| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(parameter.into(), serde_json::Value::Bool(value));
-            arguments
-        })
-        .ok()
-    }
-
-    fn text_binding(
-        &self,
-        resource: &str,
-        action: &str,
-        parameter: &'static str,
-    ) -> Option<ActionBinding<String>> {
-        let resource = self.resource_by_id(resource)?;
-        let spec = resource.actions.iter().find(|spec| spec.id == action)?;
-        ActionBinding::new(&resource, spec, move |value| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(parameter.into(), serde_json::Value::String(value));
-            arguments
-        })
-        .ok()
-    }
-
     fn settings_action_bindings(&self) -> SettingsActionBindings {
         SettingsActionBindings {
-            adblock: self.boolean_binding("browser.settings", "set-adblock", "enabled"),
-            clear_on_exit: self.boolean_binding("browser.settings", "set-clear-on-exit", "enabled"),
-            homepage: self.text_binding("browser.settings", "set-homepage", "url"),
-            search_engine: self.text_binding("browser.settings", "set-search-engine", "template"),
+            edits: self.dispatch.clone(),
             clear_history: self.unit_binding("browser.history", "clear"),
             clear_site_data: self.unit_binding("browser.settings", "request-site-data-clear"),
-            close: self.unit_binding("browser", "show-page"),
-            document_edits: Some(self.pending_library_edits.clone()),
+            close: self.unit_binding(crate::resource::Browser::KIND, "show-page"),
         }
     }
 
@@ -2700,7 +2547,7 @@ impl BrowserWidget {
         // the matching view action instead of leaving a misleading
         // "close" affordance wired to a `show` operation.
         let (settings_resource, settings_action) = if self.show_settings {
-            ("browser", "show-page")
+            (crate::resource::Browser::KIND, "show-page")
         } else {
             ("browser.settings", "show")
         };
@@ -2834,24 +2681,17 @@ impl BrowserWidget {
         } else {
             "Bookmark this page"
         };
-        let hosted_bookmark = if self.is_framework_hosted() {
-            self.page_bookmark_action()
-        } else {
-            None
-        };
-        let bookmark_btn = self.route_document_button(
+        let bookmark_btn = self.document_button(
             Button::new("browser.bookmark", "", None)
                 .with_icon(Icon::Star)
                 .with_accessible_name(bookmark_label)
                 .tooltip(bookmark_label)
                 .with_enabled(!self.current_uri.trim().is_empty())
                 .with_size(nav_btn.0, nav_btn.1),
-            "browser.page",
-            "bookmark",
-            hosted_bookmark,
+            self.page_bookmark_action(),
         );
         let (library_resource, library_action) = if self.show_library {
-            ("browser", "show-page")
+            (crate::resource::Browser::KIND, "show-page")
         } else {
             ("browser.history", "show")
         };
@@ -3091,7 +2931,7 @@ impl BrowserWidget {
             self.bind_button(
                 Button::new("browser.library.close", "Done", None)
                     .with_size(self.labelled_width(96.0), action_height),
-                "browser",
+                crate::resource::Browser::KIND,
                 "show-page",
             ),
         ));
@@ -3366,18 +3206,15 @@ impl BrowserWidget {
                         &resource_id,
                         "open",
                     );
-                    let remove = self.route_document_button(
+                    let remove = self.document_button(
                         Button::new(&remove_control_id, "Remove", None)
                             .with_accessible_name(&format!("Remove bookmark {}", entry.title))
                             .tooltip("Remove bookmark")
                             .with_size(if large_text { 150.0 } else { 96.0 }, action_height),
-                        &resource_id,
-                        "remove",
-                        self.is_framework_hosted()
-                            .then(|| BrowserAction::RemoveBookmark {
-                                url: entry.url.clone(),
-                                observed_tags: entry.tags.clone(),
-                            }),
+                        Some(BrowserAction::RemoveBookmark {
+                            url: entry.url.clone(),
+                            observed_tags: entry.tags.clone(),
+                        }),
                     );
                     let row_content: Box<dyn Widget> = if self.compact_chrome && large_text {
                         Box::new(
@@ -3839,56 +3676,31 @@ impl BrowserWidget {
         )
     }
 
-    fn sync_bookmarks(&mut self, state: &AutoCommit, _root: &ObjId) {
-        let Some(incoming) = crate::actions::bookmarks_from_doc(state) else {
-            return;
-        };
-        if incoming != self.bookmarks {
-            self.bookmarks = incoming;
-            self.search_index.invalidate();
-            if !self.headless && self.browsing_mode.persists_personal_state() {
-                let _ = self.bookmarks.save();
-            }
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Project only action-applied preference fields from the shared document
-    /// into this process's browser engine and retained control mirrors. No UI
-    /// event writes the document here: `BrowserAction` is the sole mutation
-    /// path, preserving action history and collaboration attribution.
-    fn sync_settings_from_document(&mut self, state: &AutoCommit, root: &ObjId) {
-        use ui::doc::{read_bool, read_text};
-
-        let mut next = self.settings.clone();
-        if let Some(enabled) = read_bool(state, root, crate::settings::ADBLOCK_PATH) {
-            next.adblock_enabled = enabled;
-        }
-        if let Some(enabled) = read_bool(state, root, crate::settings::CLEAR_ON_EXIT_PATH) {
-            next.clear_on_exit = enabled;
-        }
-        if let Some(value) = read_text(state, root, crate::settings::HOMEPAGE_PATH)
-            && is_supported_web_url(&value)
-        {
-            next.homepage = value;
-        }
-        if let Some(value) = read_text(state, root, crate::settings::SEARCH_ENGINE_PATH)
-            && is_supported_web_url(&value)
-        {
-            next.search_engine = value;
-        }
+    /// Follow the document's preferences: the engine takes what changed,
+    /// and the settings pane shows them.
+    fn apply_preferences(&mut self, next: Settings) {
         if next != self.settings {
-            if next.adblock_enabled != self.settings.adblock_enabled {
+            // Before its first sync the window bootstraps the engine with
+            // whatever it holds then.
+            if self.bootstrap_done && next.adblock_enabled != self.settings.adblock_enabled {
                 self.set_adblock(next.adblock_enabled);
             }
-            if next.clear_on_exit != self.settings.clear_on_exit {
+            if self.bootstrap_done && next.clear_on_exit != self.settings.clear_on_exit {
                 self.engine
                     .send(WebViewCommand::SetClearOnExit(next.clear_on_exit));
             }
-            self.settings = next;
-            if !self.headless && self.browsing_mode.persists_personal_state() {
-                self.settings.save();
+            // A window that has not loaded its first page yet opens on the
+            // homepage the person chose, unless its launch named a page.
+            if !self.bootstrap_done
+                && self.initial_url == self.settings.homepage
+                && self.session_url == self.initial_url
+                && is_supported_web_url(&next.homepage)
+            {
+                self.initial_url.clone_from(&next.homepage);
+                self.session_url.clone_from(&next.homepage);
+                self.address.set(next.homepage.clone());
             }
+            self.settings = next;
         }
         self.settings_presentation.reflect(&self.settings);
     }
@@ -4589,12 +4401,8 @@ impl BrowserWidget {
                 WKey::Character(c) if c == "-" => Some(Action::Zoom(-1)),
                 WKey::Character(c) if c == "0" => Some(Action::Zoom(0)),
                 WKey::Character(c) if c.eq_ignore_ascii_case("d") => {
-                    if self.is_framework_hosted() {
-                        if let Some(action) = self.page_bookmark_action() {
-                            self.enqueue_library_action(action);
-                        }
-                    } else {
-                        self.queue_unit_operation("browser.page", "bookmark");
+                    if let Some(action) = self.page_bookmark_action() {
+                        self.submit(&action);
                     }
                     return true;
                 }
@@ -4978,7 +4786,6 @@ impl Widget for BrowserWidget {
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
     );
 
@@ -5150,13 +4957,6 @@ impl Widget for BrowserWidget {
         self.apply_engine_events();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
-        self.flush_library_edits(state);
-        let heads = state.get_heads();
-        if self.projected_heads.as_ref() != Some(&heads) {
-            self.sync_settings_from_document(state, path);
-            self.sync_bookmarks(state, path);
-            self.projected_heads = Some(heads);
-        }
         self.sync_search_and_suggestions();
 
         if let Some(c) = &mut self.composed {
@@ -5962,20 +5762,28 @@ impl ui::search::capability::SearchSource for BrowserWidget {
     }
 }
 
-impl ui::resources::PublishesResources for BrowserWidget {
+impl BrowserWidget {
+    /// What only this window knows, as rows beneath the browser resource:
+    /// the page it shows, its history session, history, downloads,
+    /// extensions and the library and settings presentations, each with the
+    /// view and effect operations it offers. Bookmark rows add their
+    /// "open" to the document's bookmarks.
+    pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.published()
+            .children
+            .into_iter()
+            .map(live_row)
+            .collect()
+    }
+
+    /// [`Self::live_rows`] beneath the resource root they join, which the
+    /// window's own controls bind to.
     #[allow(
         clippy::too_many_lines,
         reason = "Resource definitions stay together so their action contracts remain discoverable."
     )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+    pub(crate) fn published(&self) -> Resource {
         const MATERIALIZED_LIMIT: usize = 100;
-        // Hosted: ResourceRoot already published bookmarks + window navigation
-        // via tilo_resource::publish. Live extras (find-in-page session, load
-        // progress) are not resource actions today, so there is nothing left
-        // to add beside that door.
-        if self.is_framework_hosted() {
-            return Vec::new();
-        }
         let operation =
             |id: &str, label: &str, kind: OperationKind, operation: BrowserOperation| {
                 ActionSpec::operation(
@@ -6060,24 +5868,6 @@ impl ui::resources::PublishesResources for BrowserWidget {
             )
             .with_contract(navigation_contract()),
         );
-        if let Ok(spec) = ActionSpec::immediate(
-            "bookmark",
-            "Bookmark this page",
-            BROWSER_ACTION_TYPE,
-            &BrowserAction::AddBookmark {
-                url: self.current_uri.clone(),
-                title: self.title.clone(),
-                tag: format!("bookmark:{}", uuid::Uuid::new_v4().simple()),
-            },
-        ) {
-            page.actions.push(if self.current_uri.trim().is_empty() {
-                spec.unavailable("no_page", "Open a page before bookmarking it")
-            } else if self.bookmarks.contains(&self.current_uri) {
-                spec.unavailable("already_bookmarked", "This page is already bookmarked")
-            } else {
-                spec.reversible()
-            });
-        }
         if let Some(spec) = operation(
             "picture-in-picture",
             if self.active_pip {
@@ -6186,15 +5976,9 @@ impl ui::resources::PublishesResources for BrowserWidget {
         }
 
         let mut bookmarks = Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
-        let documented_bookmarks: std::collections::HashSet<String> =
-            crate::actions::bookmarks_from_doc(doc)
-                .map(|book| {
-                    book.entries()
-                        .iter()
-                        .map(|entry| bookmark_resource_id(&entry.url))
-                        .collect()
-                })
-                .unwrap_or_default();
+        if let Some(spec) = bookmark_library_show() {
+            bookmarks.actions.push(spec);
+        }
         for entry in self.bookmarks.entries().iter().take(MATERIALIZED_LIMIT) {
             let mut child = Resource::new(
                 bookmark_resource_id(&entry.url),
@@ -6212,21 +5996,6 @@ impl ui::resources::PublishesResources for BrowserWidget {
                 child
                     .actions
                     .push(spec.with_contract(navigation_contract()));
-            }
-            // Remove is the published document action. A bookmark that exists
-            // only in this window's file cache still needs it here.
-            if !documented_bookmarks.contains(child.id.as_str())
-                && let Ok(spec) = ActionSpec::immediate(
-                    "remove",
-                    "Remove bookmark",
-                    BROWSER_ACTION_TYPE,
-                    &BrowserAction::RemoveBookmark {
-                        url: entry.url.clone(),
-                        observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
-                    },
-                )
-            {
-                child.actions.push(spec);
             }
             bookmarks.children.push(child);
         }
@@ -6465,90 +6234,43 @@ impl ui::resources::PublishesResources for BrowserWidget {
                     spec
                 });
         }
-        let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut browser =
-            ui::tilo_resource::publish::<crate::resource::Browser>("browser", "Browser", &state);
-        if !browser
-            .actions
-            .iter()
-            .any(|action| action.id == "show-page")
-            && let Some(spec) = operation(
-                "show-page",
-                "Show current page",
-                OperationKind::View,
-                BrowserOperation::ShowPage,
-            )
-        {
-            browser.actions.push(spec);
-        }
-        let published = std::mem::take(&mut browser.children);
-        let mut bookmarks = bookmarks;
-        let mut settings = None;
-        let mut extra = Vec::new();
-        for document in published {
-            if document.id.as_str() == "browser.bookmarks" {
-                for action in document.actions {
-                    if !bookmarks.actions.iter().any(|have| have.id == action.id) {
-                        bookmarks.actions.push(action);
-                    }
-                }
-                let hand_children = std::mem::take(&mut bookmarks.children);
-                bookmarks.children = document.children;
-                for hand in hand_children {
-                    if let Some(existing) = bookmarks
-                        .children
-                        .iter_mut()
-                        .find(|child| child.id == hand.id)
-                    {
-                        for action in hand.actions {
-                            if !existing.actions.iter().any(|have| have.id == action.id) {
-                                existing.actions.push(action);
-                            }
-                        }
-                    } else {
-                        bookmarks.children.push(hand);
-                    }
-                }
-            } else if document.id.as_str() == "browser.settings" {
-                settings = Some(document);
-            } else {
-                extra.push(document);
-            }
-        }
-        let settings = settings.unwrap_or_else(settings_resource);
+        let mut browser = Resource::new(
+            crate::resource::Browser::KIND,
+            crate::resource::Browser::KIND,
+            "Browser",
+        );
+        browser.actions = window_presentation_operations();
         browser.children = vec![
-            page, session, history, bookmarks, downloads, extensions, library, settings,
+            page,
+            session,
+            history,
+            bookmarks,
+            downloads,
+            extensions,
+            library,
+            settings_presentation_resource(),
         ];
-        browser.children.extend(extra);
-        vec![browser]
+        browser
     }
+}
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if self.is_framework_hosted() {
-            if id == "browser" {
-                return None;
-            }
-            let state = <crate::resource::Browser as ui::tilo_resource::Resource>::read(doc)
-                .unwrap_or_default();
-            let root = ui::tilo_resource::publish::<crate::resource::Browser>(
-                "browser", "Browser", &state,
-            );
-            return find(&[root], id);
-        }
-        find(&self.resources(doc), id)
+/// `resource` as the live row it is published as.
+fn live_row(resource: Resource) -> ui::framework::LiveRow {
+    let mut row = ui::framework::LiveRow::new(
+        resource.id.as_str(),
+        resource.kind.clone(),
+        resource.label.clone(),
+    );
+    if let Some(presentation) = resource.presentation {
+        row = row.presentation(presentation);
     }
+    for action in resource.actions {
+        row = row.operation(action);
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
 }
 
 impl ui::widget::controls::ActionControls for BrowserWidget {
@@ -6735,43 +6457,6 @@ mod architecture_tests {
                         )
                 }),
             "{control_id} must retain its canonical {resource}/{action} address"
-        );
-    }
-
-    #[test]
-    #[ignore = "manual hot-path benchmark"]
-    fn bookmark_projection_benchmark() {
-        use automerge::transaction::Transactable;
-        let mut doc = AutoCommit::new();
-        for i in 0..1000 {
-            let row = doc
-                .put_object(
-                    automerge::ROOT,
-                    format!("browser.bookmarks.v2.add:{i}"),
-                    automerge::ObjType::Map,
-                )
-                .unwrap();
-            doc.put(&row, "url", format!("https://example.test/{i}"))
-                .unwrap();
-            doc.put(&row, "title", format!("Page {i}")).unwrap();
-        }
-        let mut widget = BrowserWidget::new_headless();
-        widget.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(widget.bookmarks.entries().len(), 1000);
-        let started = ui::time::now();
-        for _ in 0..100 {
-            widget.sync(&mut doc, &automerge::ROOT);
-        }
-        let elapsed = started.elapsed();
-        eprintln!("100 browser syncs / 1000 bookmarks: {elapsed:?}");
-        let reference = ui::time::now();
-        for _ in 0..100 {
-            std::hint::black_box(crate::actions::bookmarks_from_doc(&doc));
-        }
-        let uncached = reference.elapsed();
-        assert!(
-            elapsed < uncached / 5,
-            "unchanged frame sync {elapsed:?} should avoid full projection {uncached:?}"
         );
     }
 
@@ -7007,7 +6692,7 @@ mod architecture_tests {
             widget.resource_navigation_invocation = Some(invocation);
             widget.set_loading_progress(0.2);
             let mut doc = AutoCommit::new();
-            let resources = ui::resources::resources(&widget, &doc);
+            let resources = [widget.published()];
             let stop = resources[0]
                 .children
                 .iter()
@@ -7179,29 +6864,6 @@ mod architecture_tests {
             );
         }
 
-        // Phase `cached_document_projection_observes_new_bookmark_actions`.
-        {
-            use automerge::transaction::Transactable;
-            let mut widget = BrowserWidget::new_headless();
-            let mut doc = AutoCommit::new();
-            widget.sync(&mut doc, &automerge::ROOT);
-            let row = doc
-                .put_object(
-                    automerge::ROOT,
-                    "browser.bookmarks.v2.add:one",
-                    automerge::ObjType::Map,
-                )
-                .unwrap();
-            doc.put(&row, "url", "https://new.test").unwrap();
-            doc.put(&row, "title", "New").unwrap();
-            widget.sync(&mut doc, &automerge::ROOT);
-            assert!(widget.bookmarks.contains("https://new.test"));
-            doc.put(automerge::ROOT, "browser.bookmarks.v2.remove:one", true)
-                .unwrap();
-            widget.sync(&mut doc, &automerge::ROOT);
-            assert!(!widget.bookmarks.contains("https://new.test"));
-        }
-
         // Phase `presentation_operations_are_peer_local_and_do_not_mutate_the_document`.
         {
             let mut left = BrowserWidget::new_headless();
@@ -7230,7 +6892,6 @@ mod architecture_tests {
                 ("browser.back", "browser.page", "back"),
                 ("browser.forward", "browser.page", "forward"),
                 ("browser.reload", "browser.page", "reload"),
-                ("browser.bookmark", "browser.page", "bookmark"),
                 (
                     "browser.history-pause",
                     "browser.session",
@@ -7259,13 +6920,15 @@ mod architecture_tests {
             compose(&mut settings);
             assert_no_document_control_paths(&settings);
             for (control, resource, action) in [
-                ("browser.settings", "browser", "show-page"),
-                ("settings.close", "browser", "show-page"),
-                ("settings.adblock", "browser.settings", "set-adblock"),
                 (
-                    "settings.clear_on_exit",
                     "browser.settings",
-                    "set-clear-on-exit",
+                    crate::resource::Browser::KIND,
+                    "show-page",
+                ),
+                (
+                    "settings.close",
+                    crate::resource::Browser::KIND,
+                    "show-page",
                 ),
                 ("settings.clear_history", "browser.history", "clear"),
                 (
@@ -7857,7 +7520,8 @@ mod tests {
             (engine, widget, doc, root)
         }
         fn page_action(widget: &BrowserWidget, doc: &AutoCommit, id: &str) -> ActionSpec {
-            ui::resources::resources(widget, doc)[0]
+            widget
+                .published()
                 .children
                 .iter()
                 .find(|resource| resource.id.0 == "browser.page")
@@ -8546,6 +8210,14 @@ mod tests {
 
             let mut narrow = BrowserWidget::new_headless();
             narrow.debug_show_library("bookmarks");
+            narrow.present_state(&crate::resource::BrowserState {
+                bookmarks: Bookmarks::from_entries(vec![crate::library::Bookmark {
+                    url: "https://www.rust-lang.org/learn".into(),
+                    title: "Learn Rust".into(),
+                    tags: vec!["bookmark:rust".into()],
+                }]),
+                preferences: Settings::default(),
+            });
             narrow.debug_set_viewport_width(390);
             layout_at(&mut narrow, 390.0, 844.0);
             let open = narrow
@@ -9762,7 +9434,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(engine, true);
             let (mut doc, root) = synced(&mut w);
             w.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
-            let resources = ui::resources::resources(&w, &doc);
+            let resources = [w.published()];
             let page = resources[0]
                 .children
                 .iter()
@@ -9864,8 +9536,8 @@ mod tests {
             let engine = TestEngine::new();
             let mut w = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut w);
-            let resources = ui::resources::resources(&w, &doc);
-            assert_eq!(resources[0].id.0, "browser");
+            let resources = [w.published()];
+            assert_eq!(resources[0].id.0, crate::resource::Browser::KIND);
             for expected in [
                 "browser.page",
                 "browser.history",
@@ -9887,8 +9559,12 @@ mod tests {
                 .iter()
                 .find(|child| child.id.0 == "browser.page")
                 .unwrap();
-            let bookmark = page.actions.iter().find(|a| a.id == "bookmark").unwrap();
-            assert_eq!(bookmark.kind, OperationKind::Document);
+            assert!(
+                page.actions
+                    .iter()
+                    .all(|action| action.kind != OperationKind::Document),
+                "the page row offers only what this window does"
+            );
             let back = page.actions.iter().find(|a| a.id == "back").unwrap();
             assert!(!back.contract.availability.is_available());
             let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
@@ -9926,14 +9602,12 @@ mod tests {
             assert_eq!(filter.kind, OperationKind::View);
             assert_eq!(filter.params()[0].name.as_ref(), "query");
             assert!(filter.contract.validate_declaration().is_empty());
-            assert_eq!(
+            assert!(
                 settings
                     .actions
                     .iter()
-                    .find(|a| a.id == "set-adblock")
-                    .unwrap()
-                    .kind,
-                OperationKind::Document
+                    .all(|action| action.kind != OperationKind::Document),
+                "the preferences are the resource's own document actions"
             );
             let mut args = serde_json::Map::new();
             args.insert("url".into(), serde_json::json!("example.test"));
@@ -10068,7 +9742,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(engine.clone(), true);
             let (mut doc, root) = synced(&mut w);
             w.history.record_at("https://private.example", "Private", 1);
-            let resources = ui::resources::resources(&w, &doc);
+            let resources = [w.published()];
             let browser = &resources[0];
             let history = browser
                 .children
@@ -10170,7 +9844,7 @@ mod tests {
             let (mut doc, root) = synced(&mut w);
             w.history
                 .record_at("https://sensitive.example", "Sensitive", 1);
-            let resources = ui::resources::resources(&w, &doc);
+            let resources = [w.published()];
             let pause = resources[0]
                 .children
                 .iter()
@@ -10212,7 +9886,7 @@ mod tests {
                 panic!("history pausing changes only this running browser");
             };
             assert!(toggle.contract.result.validate(&output).is_ok());
-            let resources = ui::resources::resources(&w, &doc);
+            let resources = [w.published()];
             let history = resources[0]
                 .children
                 .iter()
@@ -10260,7 +9934,7 @@ mod tests {
                     && message.contains("Previous history was kept")
             }));
 
-            let resources = ui::resources::resources(&w, &doc);
+            let resources = [w.published()];
             let history = resources[0]
                 .children
                 .iter()
@@ -10293,70 +9967,50 @@ mod tests {
     /// Bookmark removal and row control identities.
     #[test]
     fn bookmark_rows_are_reversible_uniquely_addressed_actions() {
-        // Phase `removing_one_bookmark_is_an_ordinary_reversible_document_action`.
+        // Phase `bookmark_row_controls_use_unique_normalized_identities`.
         {
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            w.bookmarks.add("https://test.example", "Test bookmark");
-            let (doc, _root) = synced(&mut w);
-            let resources = ui::resources::resources(&w, &doc);
-            let bookmarks = resources[0]
-                .children
-                .iter()
-                .find(|r| r.id.0 == "browser.bookmarks")
-                .unwrap();
-            let remove = bookmarks.children[0]
-                .actions
-                .iter()
-                .find(|a| a.id == "remove")
-                .unwrap();
-            assert_eq!(
-                remove.contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::None
-            );
-            assert_eq!(remove.kind, OperationKind::Document);
-        }
-
-        // Phase `bookmark_row_controls_use_unique_normalized_action_identities`.
-        {
+            fn test_ids(widget: &dyn Widget, into: &mut Vec<String>) {
+                if let Some(id) = widget.test_id() {
+                    into.push(id.to_owned());
+                }
+                for child in widget.children() {
+                    test_ids(child, into);
+                }
+            }
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             w.debug_show_library("bookmarks");
-            assert!(w.bookmarks.add("https://legacy.example", "Legacy bookmark"));
+            let urls = [
+                "https://www.rust-lang.org/learn",
+                "https://developer.mozilla.org/",
+                "https://legacy.example/",
+            ];
+            w.present_state(&crate::resource::BrowserState {
+                bookmarks: Bookmarks::from_entries(
+                    urls.iter()
+                        .map(|url| crate::library::Bookmark {
+                            url: (*url).into(),
+                            title: (*url).into(),
+                            tags: vec![format!("bookmark:{url}")],
+                        })
+                        .collect(),
+                ),
+                preferences: Settings::default(),
+            });
             let (mut doc, root) = synced(&mut w);
             let mut tree = TaffyTree::<()>::new();
             let mut node_map = std::collections::HashMap::new();
             w.build_layout(&mut tree, &Theme::dark(), &mut node_map);
 
-            let expected = [
-                bookmark_resource_id("https://www.rust-lang.org/learn"),
-                bookmark_resource_id("https://developer.mozilla.org/"),
-                bookmark_resource_id("https://legacy.example"),
-            ];
-            let controls = ui::widget::controls::control_action_bindings(&w)
-                .into_iter()
-                .filter_map(|binding| match binding.kind {
-                    ui::widget::ControlBindingKind::Action(address)
-                        if address.action == "remove" =>
-                    {
-                        Some((binding.control_id, address))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(controls.len(), expected.len());
-            assert_eq!(
-                controls
-                    .iter()
-                    .map(|(id, _)| id)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len(),
-                controls.len(),
-                "each row needs a durable, unique semantic key"
-            );
-            for resource_id in expected {
-                assert!(controls.iter().any(|(control_id, address)| {
-                    control_id == &format!("{resource_id}.remove")
-                        && address.resource == resource_id
-                }));
+            let mut ids = Vec::new();
+            test_ids(&w, &mut ids);
+            let removes: Vec<&String> = ids.iter().filter(|id| id.ends_with(".remove")).collect();
+            assert_eq!(removes.len(), urls.len());
+            for url in urls {
+                let control = format!("{}.remove", bookmark_resource_id(url));
+                assert!(
+                    removes.iter().any(|id| **id == control),
+                    "each row needs a durable, unique semantic key: {control}"
+                );
             }
 
             let mut semantic = ui::a11y_tree::SemanticTree::new();

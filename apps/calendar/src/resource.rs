@@ -147,15 +147,17 @@ pub enum CalendarEffect {
     /// Sync calendars
     ///
     /// Pulls the calendars of this device's accounts from their servers.
-    #[effect(job)]
+    #[effect(job, device_only)]
     Sync,
     /// Export ICS
     ///
     /// Writes every event and task to an iCalendar file in Downloads.
+    #[effect(device_only)]
     ExportIcs,
     /// Import latest ICS
     ///
     /// Imports the newest iCalendar file in Downloads.
+    #[effect(device_only)]
     ImportLatestIcs,
     /// Prepare invitation in Mail
     ///

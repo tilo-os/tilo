@@ -79,7 +79,7 @@ impl SpeedTest {
 
 /// What anyone can do with a run: the button, the palette, an agent.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.speed-test.run")]
+#[effect(operation = "so.tilo.speed-test.run", device_only)]
 pub enum SpeedEffect {
     /// Run speed test.
     #[effect(job, cancellable)]

@@ -39,7 +39,6 @@ pub mod collab;
 mod kept;
 mod preferences;
 pub mod resource;
-pub mod search;
 pub mod shared;
 pub use app::{PlayerApp, source_for_argument, source_for_path};
 pub use resource::{VideoPlayer, VideoPlayerShell};

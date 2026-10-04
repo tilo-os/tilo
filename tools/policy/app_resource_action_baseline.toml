@@ -19,7 +19,6 @@
 # for every table is empty.
 
 [ratchets.app_action_host]
-"apps/browser/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
 "apps/music/src/resource.rs" = 2
@@ -29,7 +28,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/slides/src/app.rs" = 1
 "apps/video-editor/src/resource.rs" = 1
-"apps/video-player/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/chat/src/main.rs" = 1
@@ -47,7 +45,6 @@
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
-"apps/browser/src/browser_widget.rs" = 1
 "apps/music/src/doc.rs" = 1
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
@@ -63,8 +60,6 @@
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/video-editor/src/project_file.rs" = 2
-"apps/video-player/src/actions.rs" = 1
-"apps/video-player/src/resource.rs" = 1
 "apps/word-processor/src/actions/editing.rs" = 1
 "apps/word-processor/src/actions.rs" = 1
 
