@@ -348,21 +348,21 @@ impl DiffView {
             c.surfaces.content
         };
         let filler = c.lift_on(ground, 0.5);
-        let washed = |tone| pane::washed(c.surfaces.content, tone, active);
+        let washed = |tone| pane::washed(theme, tone, active);
         match (kind, side) {
             (RowKind::Equal, _) => active.then_some(ground),
             (RowKind::Insert, Side::Left) | (RowKind::Delete, Side::Right) => Some(filler),
             (RowKind::Insert, Side::Right) => Some(if present {
-                washed(c.semantic.success)
+                washed(ui::widget::Tone::Success)
             } else {
                 filler
             }),
             (RowKind::Delete, Side::Left) => Some(if present {
-                washed(c.semantic.danger)
+                washed(ui::widget::Tone::Danger)
             } else {
                 filler
             }),
-            (RowKind::Modify, _) => Some(washed(c.semantic.warning)),
+            (RowKind::Modify, _) => Some(washed(ui::widget::Tone::Warning)),
         }
     }
 

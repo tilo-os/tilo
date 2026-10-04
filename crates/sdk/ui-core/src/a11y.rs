@@ -356,7 +356,6 @@ impl AccessNode {
                     | Role::Switch
                     | Role::ComboBox
                     | Role::Slider
-                    | Role::Separator
                     | Role::SpinButton
                     | Role::TextInput
                     | Role::MultilineTextInput

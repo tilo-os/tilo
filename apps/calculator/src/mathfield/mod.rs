@@ -20,7 +20,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
-use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::Modifiers;
 use winit::keyboard::{Key as WKey, NamedKey};
 
@@ -324,12 +324,24 @@ impl MathField {
         // A formula wider than its field says so: it fades out where it runs
         // on past an edge instead of being cut off.
         let (max_x, _) = self.scroll_bounds();
-        let reach = f64::from(theme.tokens.spacing.s8).min(self.rect.width() / 3.0);
+        let ground = theme.tokens.colors.surfaces.content;
         if self.scroll.x > 0.5 {
-            fade_edge(&mut ctx, self.rect, reach, true);
+            ui::surface::content_edge_fade(
+                ctx.scene,
+                t,
+                self.rect,
+                ui::surface::ContentEdge::Leading,
+                ground,
+            );
         }
         if self.scroll.x < max_x - 0.5 {
-            fade_edge(&mut ctx, self.rect, reach, false);
+            ui::surface::content_edge_fade(
+                ctx.scene,
+                t,
+                self.rect,
+                ui::surface::ContentEdge::Trailing,
+                ground,
+            );
         }
         scene.pop_layer();
     }
@@ -577,45 +589,6 @@ pub const CARD_MAX_H: f64 = 2.0 * ui::tokens::Metrics::BASE.panel_row_height as 
 /// so the caller knows the formula scrolls within the card.
 pub fn card_view_height(content_h: f64) -> f64 {
     content_h.clamp(CARD_MIN_H, CARD_MAX_H)
-}
-
-/// Fade out the `reach` px of the current layer at `rect`'s leading or
-/// trailing edge, so whatever is drawn there dissolves into the ground behind
-/// it whatever that ground is. A layer of one-pixel columns, each as opaque as
-/// the content must be erased there, composited out of what is under it.
-fn fade_edge(ctx: &mut PaintCtx<'_>, rect: Rect, reach: f64, leading: bool) {
-    let count = reach.ceil().max(1.0) as usize;
-    let columns = count as f64;
-    // Only the alpha matters to the erase; the theme's ink carries it.
-    let carrier = ctx.theme.tokens.colors.text_primary;
-    let band = if leading {
-        Rect::new(rect.x0, rect.y0, rect.x0 + columns, rect.y1)
-    } else {
-        Rect::new(rect.x1 - columns, rect.y0, rect.x1, rect.y1)
-    };
-    ctx.scene.push_layer(
-        Fill::NonZero,
-        BlendMode::new(Mix::Normal, Compose::DestOut),
-        1.0,
-        ctx.transform,
-        &band,
-    );
-    for column in 0..count {
-        let x = column as f64;
-        // 1 at the edge, easing to 0 where the content is whole again.
-        let t = ((x + 0.5) / columns).clamp(0.0, 1.0);
-        let erase = 1.0 - t * t * (3.0 - 2.0 * t);
-        let x0 = if leading {
-            rect.x0 + x
-        } else {
-            rect.x1 - x - 1.0
-        };
-        ctx.fill_rect(
-            Rect::new(x0, rect.y0, x0 + 1.0, rect.y1),
-            carrier.with_alpha(erase as f32),
-        );
-    }
-    ctx.scene.pop_layer();
 }
 
 /// The formula as it is drawn: the engine's ASCII hyphen reads as the true

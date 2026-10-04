@@ -80,7 +80,7 @@ impl StoreApp {
     ) -> Element {
         let mut column = Column::new()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.rhythm.group);
+            .with_rhythm(ui::tokens::Rhythm::Group);
         for child in children {
             column = column.push(child);
         }
@@ -88,23 +88,16 @@ impl StoreApp {
         if keeps_scroll {
             scroll = scroll.with_persisted_offset(self.scroll_offset.clone());
         }
-        // Every page sits in the catalogue's column. A reading page bounds
-        // its content inside that column from the leading edge, a spacer
-        // taking what the bound leaves, so the inset never changes.
+        // Every page sits in the catalogue's column. A reading page keeps
+        // its content to the readable width at that column's leading edge,
+        // so the inset never changes.
         let content: Element = match measure {
             Measure::Catalogue => Box::new(column),
             Measure::Reading => Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_centered_max_width(measure.width(theme))
-                            .with_child(Box::new(column)),
-                    ))
-                    .push(Box::new(
-                        Container::new().with_no_padding().with_flex_grow(),
-                    )),
+                Container::new()
+                    .with_no_padding()
+                    .readable()
+                    .with_child(Box::new(column)),
             ),
         };
         Box::new(
@@ -150,7 +143,7 @@ impl StoreApp {
     /// transient overlay. `Banner` is the shared native alert treatment: it
     /// honours every theme, keeps a readable measure at large type, and
     /// exposes a status role to assistive technology.
-    pub(super) fn operation_notice(&self, theme: &Theme) -> Option<Element> {
+    pub(super) fn operation_notice(&self) -> Option<Element> {
         if self.worker_busy {
             let detail = if self.status_line.is_empty() {
                 "Package operation in progress…".to_string()
@@ -164,7 +157,7 @@ impl StoreApp {
             return Some(Box::new(
                 Row::new()
                     .no_wrap()
-                    .with_gap(theme.tokens.spacing.s3)
+                    .with_rhythm(ui::tokens::Rhythm::Sibling)
                     .with_align_items(taffy::AlignItems::Center)
                     .push(Box::new(Spinner::new()))
                     .push(Box::new(
@@ -212,7 +205,7 @@ impl StoreApp {
     /// The top of the catalogue: what it holds on the leading edge, and the
     /// window's actions on the trailing edge. Every action is an icon, so
     /// the row never outgrows a narrow window.
-    fn catalogue_toolbar(&self, theme: &Theme, shown: usize) -> Element {
+    fn catalogue_toolbar(&self, shown: usize) -> Element {
         let mut remotes = Button::icon_only("store.remotes", Icon::Globe, "Flatpak remotes");
         if let Some(binding) = open_surface_binding(
             "store:remotes",
@@ -244,7 +237,7 @@ impl StoreApp {
         // width and push the summary onto its own line).
         let mut row = Row::new()
             .no_wrap()
-            .with_gap(theme.tokens.spacing.s1)
+            .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
@@ -281,7 +274,7 @@ impl StoreApp {
     }
 
     /// The card of one catalogue entry, wired to its typed actions.
-    fn catalogue_card(&self, item: &StoreItem, theme: &Theme) -> Element {
+    fn catalogue_card(&self, item: &StoreItem) -> Element {
         let action = item.action_kind(self.flatpak_available);
         let operation_active = self
             .active_operation
@@ -302,7 +295,6 @@ impl StoreApp {
                 binding: detail_binding(item),
             },
             self.images.as_ref(),
-            theme,
         )
     }
 
@@ -351,9 +343,9 @@ impl StoreApp {
     /// one relevance-ranked list while a search is active.
     pub(super) fn build_list(&self, theme: &Theme) -> Element {
         let visible = self.visible_items();
-        let mut children = vec![self.catalogue_toolbar(theme, visible.len())];
+        let mut children = vec![self.catalogue_toolbar(visible.len())];
         if !self.items.is_empty()
-            && let Some(notice) = self.operation_notice(theme)
+            && let Some(notice) = self.operation_notice()
         {
             children.push(notice);
         }
@@ -371,7 +363,7 @@ impl StoreApp {
         let mut discover: Vec<Element> = Vec::new();
         let mut matches: Vec<Element> = Vec::new();
         for item in visible.into_iter().skip(start).take(PAGE_SIZE) {
-            let card = self.catalogue_card(item, theme);
+            let card = self.catalogue_card(item);
             if !grouped {
                 matches.push(card);
             } else if item.installed.update_available() {
@@ -396,14 +388,14 @@ impl StoreApp {
         children.extend(section("Discover", discover));
         children.extend(section("Search results", matches));
         if page_count > 1 {
-            children.push(Self::paging(theme, page, page_count));
+            children.push(Self::paging(page, page_count));
         }
         self.page(theme, Measure::Catalogue, true, children)
     }
 
     /// Previous and next page of a catalogue longer than one page.
-    fn paging(theme: &Theme, page: usize, page_count: usize) -> Element {
-        let mut row = Row::new().with_gap(theme.tokens.spacing.s2);
+    fn paging(page: usize, page_count: usize) -> Element {
+        let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Related);
         if page > 0 {
             let mut previous = Button::new("store.page.previous", "Previous", None)
                 .tooltip("Previous catalogue page");
@@ -472,7 +464,7 @@ impl StoreApp {
 
     /// The decision actions of the details page: the app's one main action,
     /// then keeping it on the device and removing it.
-    fn detail_actions(&self, item: &StoreItem, theme: &Theme) -> Element {
+    fn detail_actions(&self, item: &StoreItem) -> Element {
         let action = item.action_kind(self.flatpak_available);
         let mut primary = Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
@@ -485,7 +477,7 @@ impl StoreApp {
             primary = primary.on_action(binding);
         }
         let mut row = Row::new()
-            .with_gap(theme.tokens.spacing.s2)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(primary));
         if let Some(pin_action) = item.pin_action() {
             let mut button = Button::new(
@@ -518,7 +510,7 @@ impl StoreApp {
         let identity = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(sp.s2)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(
                 Text::new(&item.name)
                     .with_role(TextRole::LargeTitle)
@@ -532,7 +524,7 @@ impl StoreApp {
             .push(self.detail_badges(item, sp.s2));
         let hero = Row::new()
             .no_wrap()
-            .with_gap(sp.s4)
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .align_start()
             .push(Box::new(app_icon(
                 item,
@@ -549,9 +541,9 @@ impl StoreApp {
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(sp.s4)
+                .with_rhythm(ui::tokens::Rhythm::Section)
                 .push(Box::new(hero))
-                .push(self.detail_actions(item, theme))
+                .push(self.detail_actions(item))
                 .push(Box::new(
                     Text::new(&item.description).with_role(TextRole::Body),
                 )),
@@ -563,7 +555,7 @@ impl StoreApp {
         let id = self.focused_detail.as_ref()?;
         let item = self.items.iter().find(|item| &item.id == id)?;
         let mut children: Vec<Element> = vec![Self::back_row("store.detail.back")];
-        if let Some(notice) = self.operation_notice(theme) {
+        if let Some(notice) = self.operation_notice() {
             children.push(notice);
         }
         children.push(self.detail_summary(item, theme));
@@ -607,12 +599,12 @@ impl StoreApp {
                 )],
             )));
         }
-        children.push(Self::report_section(item, theme));
+        children.push(Self::report_section(item));
         Some(self.page(theme, Measure::Reading, false, children))
     }
 
     /// Reporting a problem with the app, or reading how decisions are made.
-    fn report_section(item: &StoreItem, theme: &Theme) -> Element {
+    fn report_section(item: &StoreItem) -> Element {
         let mut report = Button::new(
             &format!("store.report.create.{}", item.id),
             "Create report draft",
@@ -643,7 +635,7 @@ impl StoreApp {
                 ),
                 Box::new(
                     Row::new()
-                        .with_gap(theme.tokens.spacing.s2)
+                        .with_rhythm(ui::tokens::Rhythm::Related)
                         .push(Box::new(report))
                         .push(Box::new(moderation)),
                 ),
@@ -660,7 +652,7 @@ impl StoreApp {
             Self::back_row("store.safety.back"),
             Self::page_title("Trust and moderation"),
         ];
-        children.extend(self.operation_notice(theme));
+        children.extend(self.operation_notice());
         if self.reports.is_empty() {
             children.push(Box::new(
                 EmptyState::new("No report drafts")
@@ -668,7 +660,7 @@ impl StoreApp {
             ));
         }
         for report in &self.reports {
-            children.push(self.report_form(report, theme));
+            children.push(self.report_form(report));
         }
         let explainers: [(&str, &str); 3] = [
             (
@@ -692,7 +684,7 @@ impl StoreApp {
 
     /// One report draft or moderation case: its status, the concern field
     /// and what can be done with it.
-    fn report_form(&self, report: &super::ReportRecord, theme: &Theme) -> Element {
+    fn report_form(&self, report: &super::ReportRecord) -> Element {
         let item = self.items.iter().find(|item| item.id == report.app_id);
         let note = self
             .report_notes
@@ -753,7 +745,7 @@ impl StoreApp {
         };
         let name = item.map_or(report.app_id.as_str(), |item| item.name.as_str());
         let mut actions = Row::new()
-            .with_gap(theme.tokens.spacing.s2)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .with_justify(taffy::JustifyContent::End)
             .push(Box::new(export));
         for button in buttons {
@@ -774,7 +766,7 @@ impl StoreApp {
                 Box::new(
                     Row::new()
                         .no_wrap()
-                        .with_gap(theme.tokens.spacing.s2)
+                        .with_rhythm(ui::tokens::Rhythm::Related)
                         .with_align_items(taffy::AlignItems::Center)
                         .push(Box::new(
                             Text::new(kind).with_role(TextRole::Caption).dimmed(),
@@ -854,7 +846,7 @@ impl StoreApp {
             Self::back_row("store.remotes.back"),
             Self::page_title("Flatpak remotes"),
         ];
-        children.extend(self.operation_notice(theme));
+        children.extend(self.operation_notice());
         children.push(Box::new(form));
         if !rows.is_empty() {
             let count = rows.len();

@@ -522,11 +522,12 @@ fn page(ui: &Ui, items: Vec<Element>) -> Element {
     for item in items {
         page = page.push(item);
     }
-    // Forms and prose stay at a readable width however wide the window is.
+    // Forms and prose stay at the readable width on the leading edge,
+    // however wide the window is.
     Box::new(
         Container::new()
             .with_no_padding()
-            .with_centered_max_width(720.0)
+            .readable()
             .with_child(Box::new(page)),
     )
 }
@@ -549,7 +550,7 @@ fn notice(ui: &Ui) -> Element {
                         .with_message(reason.clone())
                         .dismissible(),
                 ),
-                None => Box::new(Spacer::token(ui::tokens::SpacingStep::S0)),
+                None => ui::widget::optional(None),
             }
         },
     ))
@@ -975,7 +976,7 @@ impl<K: PartialEq + 'static> Keyed<K> {
             key: Box::new(key),
             build: Box::new(build),
             current: None,
-            part: Box::new(Spacer::token(ui::tokens::SpacingStep::S0)),
+            part: ui::widget::optional(None),
             dirty: false,
         }
     }
@@ -1836,7 +1837,7 @@ fn literal_control(
 /// What the shortcut will be allowed to do, shown before it is saved.
 fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     let Some((_, draft)) = &input.draft else {
-        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
+        return ui::widget::optional(None);
     };
     let permissions: Vec<Permission> =
         grant::least_privilege(&draft.program.0.steps, &input.catalog);

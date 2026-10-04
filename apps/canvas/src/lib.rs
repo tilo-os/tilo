@@ -191,12 +191,12 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
             .push(Box::new(Spacer::new())),
         Row::push,
     );
-    // The name and what it holds belong together: no gap between them.
+    // The name and what it holds belong together: a label and its caption.
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(ui::tokens::Spacing::BASE.s0)
+            .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(Box::new(line))
             .push(Box::new(summary)),
     )
@@ -272,13 +272,11 @@ fn inspector(cx: &ViewCx<ArtworkResource>, tools: &surface::Tools) -> Column {
             items,
         ))
     };
-    // The inspector is a dense tool panel: one `s3` inset on every side, so
-    // all of it fits a window of the shot height without scrolling.
-    let gutter = ui::tokens::Spacing::BASE.s3;
+    // The inspector is a dense tool panel: a sibling inset on every side,
+    // so all of it fits a window of the shot height without scrolling.
     Column::new()
         .with_intrinsic_height()
-        .with_vertical_padding(gutter)
-        .with_horizontal_padding(gutter, gutter)
+        .with_padding_rhythm(ui::tokens::Rhythm::Sibling, ui::tokens::Rhythm::Sibling)
         .push(section(
             "canvas-colour",
             vec![Box::new(ui::widget::ColorPicker::from_state(&tools.colour))],

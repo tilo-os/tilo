@@ -577,56 +577,12 @@ pub(crate) fn line_severity(line: &str) -> Tone {
 
 /// One line of output, in the ink of its severity: a warning or an error
 /// reads at a glance, as it does in a terminal.
-struct LogLine {
-    text: Text,
-    tone: Tone,
-    ink: Option<ui::vello::peniko::Color>,
-}
-
-impl LogLine {
-    fn new(line: &str) -> Self {
-        Self {
-            text: Text::new(line).with_role(TextRole::Code),
-            tone: line_severity(line),
-            ink: None,
-        }
-    }
-}
-
-impl ui::widget::Decorator for LogLine {
-    type Inner = Text;
-
-    fn inner(&self) -> &Text {
-        &self.text
-    }
-
-    fn inner_mut(&mut self) -> &mut Text {
-        &mut self.text
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::vello::kurbo::Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if self.tone != Tone::Neutral {
-            // The status colour, made legible on the well the line sits on.
-            let colors = &theme.tokens.colors;
-            let ink = colors.ink_on_any(
-                &[colors.surfaces.content],
-                self.tone.colour(theme),
-                ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-            );
-            if self.ink != Some(ink) {
-                self.ink = Some(ink);
-                self.text = std::mem::replace(&mut self.text, Text::new("")).with_color(ink);
-            }
-        }
-        self.text.draw(scene, transform, text, theme, presence);
-    }
+fn log_line(line: &str) -> Element {
+    let text = Text::new(line).with_role(TextRole::Code);
+    Box::new(match line_severity(line) {
+        Tone::Neutral => text,
+        tone => text.tone(tone),
+    })
 }
 
 fn logs(c: &Container) -> Element {
@@ -639,12 +595,9 @@ fn logs(c: &Container) -> Element {
 /// Output as the process wrote it, in a well: one line per line, never
 /// broken inside a word. A line wider than the column scrolls sideways.
 fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
-    let mut lines: Vec<Element> = lines
-        .map(|line| Box::new(LogLine::new(line)) as Element)
-        .collect();
-    // Room under the last line for the sideways scroll bar, which the
-    // scroll view lays over its content.
-    lines.push(Box::new(Spacer::token(SpacingStep::S2)));
+    // A line wider than the well scrolls sideways; the scroll view keeps
+    // the bar's lane under the last line while it does.
+    let lines: Vec<Element> = lines.map(log_line).collect();
     Box::new(
         Well::new().with_background().with_child(Box::new(
             Scrollable::new_horizontal()

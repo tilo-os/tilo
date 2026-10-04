@@ -7,7 +7,7 @@
 //! toolkit's content widgets and holds no colour, size or padding of its own.
 
 use ui::icons::Icon;
-use ui::tokens::{Spacing, TextRole};
+use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{Button, Column, Element, ListRow, Scrollable, Section, SectionHeader, Text};
 
 use crate::commands::{Cmd, FormMode, FormTarget, Sink};
@@ -34,11 +34,9 @@ fn quiet(text: &str) -> Element {
 pub(crate) fn frame(environment: Element, lists: Element) -> Element {
     // The rows carry their own inset, so the column's gutter is the narrow
     // one the sidebar region uses.
-    let gutter = Spacing::BASE.s3;
     Box::new(
         Column::new()
-            .with_horizontal_padding(gutter, gutter)
-            .with_vertical_padding(0.0)
+            .with_padding_rhythm(Rhythm::Sibling, None)
             .push(environment)
             .push(Box::new(
                 Column::new()

@@ -100,7 +100,7 @@ fn test_column(
 
     let mut column = Column::new()
         .with_intrinsic_height()
-        .with_gap(theme.tokens.spacing.rhythm.section)
+        .with_rhythm(ui::tokens::Rhythm::Section)
         .push(centred(Box::new(Dial::new(shared, &model.dial()))))
         .push(centred(Box::new(
             Text::new(status).with_role(TextRole::Subheading),
@@ -251,7 +251,7 @@ fn block(theme: &Theme, title: &str, body: Element, own_inset: f32) -> Element {
         Column::new()
             .with_intrinsic_height()
             .with_no_padding()
-            .with_gap(theme.tokens.spacing.rhythm.related)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .push(indented(
                 Box::new(Section::new(Vec::new()).with_header(SectionHeader::heading(title))),
                 edge,

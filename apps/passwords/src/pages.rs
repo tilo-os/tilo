@@ -8,13 +8,13 @@ use accounts::{SecretItem, SecretItemKind};
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
-use ui::tokens::SpacingStep;
+use ui::tokens::Rhythm;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Avatar, AvatarSize, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState,
-    Field, Form, FormSection, LabelPlacement, ListRow, ModalDialog, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, Stack, StatGroup, StatTile, Text, TextInput,
-    TextInputKind, ToggleGroup, Tone,
+    Field, Form, FormPage, FormSection, LabelPlacement, ListRow, ModalDialog, Property,
+    PropertyList, Row, Scrollable, Section, SectionHeader, Stack, StatGroup, StatTile, Text,
+    TextInput, TextInputKind, ToggleGroup, Tone,
 };
 
 use crate::vault::{
@@ -63,19 +63,24 @@ fn page(children: Vec<Element>) -> Element {
     Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
 }
 
-/// A tool page: its title, an optional sentence under it, then `groups`.
-/// Groups stand a group gap apart: an empty spacer between two of them
-/// takes the column's gap twice.
+/// A tool page: its title, an optional sentence under it, then `groups`
+/// a group apart.
 fn titled_page(title: &str, lead: Option<&str>, groups: Vec<Element>) -> Element {
-    let mut children = vec![text(title, TextRole::Title)];
+    let mut head = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(text(title, TextRole::Title));
     if let Some(lead) = lead {
-        children.push(text(lead, TextRole::Body));
+        head = head.push(text(lead, TextRole::Body));
     }
-    for group in groups {
-        children.push(Box::new(Spacer::token(SpacingStep::S0)));
-        children.push(group);
-    }
-    page(children)
+    let column = groups.into_iter().fold(
+        Column::new()
+            .with_intrinsic_height()
+            .with_rhythm(Rhythm::Group)
+            .push(Box::new(head)),
+        Column::push,
+    );
+    Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
 }
 
 /// The content column: the page for the current screen, and the dialog
@@ -376,14 +381,14 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     let form = Form::new()
         .with_label_placement(Some(LabelPlacement::Above))
         .section(details)
-        .section(more)
-        .with_actions(actions);
+        .section(more);
     let title = if core.editing.is_some() {
         "Edit item"
     } else {
         "New item"
     };
-    titled_page(title, None, vec![Box::new(form)])
+    // Save and Cancel stay in reach however long the item gets.
+    Box::new(FormPage::new(title, form).with_pinned_actions(actions))
 }
 
 // --- password review ----------------------------------------------------

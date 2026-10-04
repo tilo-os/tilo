@@ -15,7 +15,7 @@ use ui::LocalState;
 use ui::a11y::AccessNode;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
-use ui::tokens::{SpacingStep, TextRole};
+use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -324,26 +324,32 @@ pub(crate) fn zone_page(
     switches: &Switches,
     offset: &Rc<Cell<(f32, f32)>>,
 ) -> Element {
-    let mut page = Column::new().with_intrinsic_height();
+    // The banners, the zone's state, its numbers, its details and the
+    // tabbed rules are groups of the page, a group apart; a tab sits a
+    // sibling step over its content.
+    let mut page = Column::new()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Group);
     let banners = banners(model.config);
-    let warned = !banners.is_empty();
-    for banner in banners {
-        page = page.push(banner);
+    if !banners.is_empty() {
+        page = page.push(Box::new(banners.into_iter().fold(
+            Column::new().with_no_padding().with_intrinsic_height(),
+            Column::push,
+        )));
     }
-    if warned {
-        page = page.push(group_gap());
-    }
-    page = page.push(Box::new(zone_status(model, intents)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(stats(model.zone)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(details(model.zone)));
-    page = page.push(group_gap());
-    page = page.push(Box::new(tab_bar(model.tab, intents)));
-    page = match model.tab {
-        Tab::Rules => page.push(rules(model, intents, switches)),
-        Tab::Services => page.push(Box::new(services(model.zone, model.wide, switches))),
+    let tab = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(tab_bar(model.tab, intents)));
+    let tab = match model.tab {
+        Tab::Rules => tab.push(rules(model, intents, switches)),
+        Tab::Services => tab.push(Box::new(services(model.zone, model.wide, switches))),
     };
+    page = page
+        .push(Box::new(zone_status(model, intents)))
+        .push(Box::new(stats(model.zone)))
+        .push(Box::new(details(model.zone)))
+        .push(Box::new(tab));
     if model.adding {
         page = page.push(Box::new(add_rule_dialog(
             model.zone.kind,
@@ -360,11 +366,6 @@ pub(crate) fn zone_page(
             .with_persisted_offset(Rc::clone(offset))
             .with_child(Box::new(page)),
     )
-}
-
-/// Two sibling gaps either side of nothing: the space between page groups.
-fn group_gap() -> Element {
-    Box::new(Spacer::token(SpacingStep::S0))
 }
 
 /// The firewall-wide states that change what every rule means.
@@ -504,8 +505,10 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
                 .dimmed(),
         );
     }
-    let mut groups = Column::new().with_intrinsic_height().with_no_padding();
-    let mut shown = false;
+    let mut groups = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_rhythm(Rhythm::Group);
     for action in [Action::Allow, Action::Deny] {
         let rows: Vec<RuleRow> = model
             .zone
@@ -517,10 +520,6 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
         if rows.is_empty() {
             continue;
         }
-        if shown {
-            groups = groups.push(group_gap());
-        }
-        shown = true;
         let title = match action {
             Action::Allow => "Allow rules",
             Action::Deny => "Deny rules",
@@ -747,13 +746,13 @@ fn add_rule_dialog(zone: ZoneKind, draft: &Draft, intents: &Intents) -> ModalDia
         Some(error) => source.with_error(error),
         None => source.with_help("An IPv4 address or network, such as 192.168.1.0/24"),
     });
-    let mut body = Column::new().with_no_padding().with_intrinsic_height();
-    for (index, field) in fields.into_iter().enumerate() {
-        if index > 0 {
-            body = body.push(group_gap());
-        }
-        body = body.push(Box::new(field));
-    }
+    let body = fields.into_iter().fold(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_rhythm(Rhythm::Group),
+        |body, field| body.push(Box::new(field)),
+    );
     let add = intents.clone();
     let cancel = intents.clone();
     let dismiss = intents.clone();

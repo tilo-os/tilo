@@ -417,13 +417,22 @@ impl Field {
     }
 
     fn needs(&mut self, tree: &TaffyTree<()>, text: &mut TextRenderer) -> (f32, f32) {
-        let label = if self.kind == FieldKind::Row {
+        let mut label = if self.kind == FieldKind::Row {
             0.0
         } else {
             self.parts.children.first_mut().map_or(0.0, |child| {
                 measure_owned(child.as_mut(), AvailableSpace::MaxContent, text).width
             })
         };
+        // Help reads under a beside label, so the label column keeps room
+        // for it to wrap into a few lines, not a word a line: as wide as the
+        // help wants, up to a chooser's measure.
+        if self.has_help
+            && let Some(help) = self.parts.children.get_mut(2)
+        {
+            let help = measure_owned(help.as_mut(), AvailableSpace::MaxContent, text).width;
+            label = label.max(help.min(self.comfortable_control));
+        }
         // The body owns its control directly; help/error do not set its minimum.
         let control_node = self
             .parts

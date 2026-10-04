@@ -7214,7 +7214,6 @@ fn collect_effect_access_nodes(
                 | Role::Switch
                 | Role::ComboBox
                 | Role::Slider
-                | Role::Separator
                 | Role::SpinButton
                 | Role::TextInput
                 | Role::MultilineTextInput
