@@ -3,6 +3,8 @@
 # laptop that came with Windows. Run IN a booted guest, as root, on a throwaway
 # disk:
 #
+#   shared_disk_esp.sh hold-size      keep the root partition from growing
+#   (power off, grow the disk image, boot)
 #   shared_disk_esp.sh prepare        add a foreign ESP ahead of this system's
 #   (reboot)
 #   shared_disk_esp.sh check IMAGE    bootc status, then `bootc switch IMAGE`
@@ -10,10 +12,11 @@
 # Windows' ESP is usually the disk's first partition and Tilo's comes later.
 # bootc used to take the first ESP on the root's disk, so on such a machine
 # `bootc status`, `upgrade` and `switch` all failed reading loader entries the
-# foreign ESP does not have. `prepare` reproduces that layout: it needs free
-# space at the end of the disk (grow the disk image first), creates a FAT ESP
-# with only a Windows boot manager path in it, and gives it this system's ESP's
-# partition number, so it comes first. The firmware still starts systemd-boot
+# foreign ESP does not have. `prepare` reproduces that layout. It needs free
+# space at the end of the disk, which a grown disk image keeps only when
+# `hold-size` stopped the boot from growing the root into it. It creates a FAT
+# ESP with only a Windows boot manager path in it and gives it this system's
+# ESP's partition number, so it comes first. The firmware still starts systemd-boot
 # from this system's ESP through the removable-media path, which the foreign
 # ESP lacks. `check` fails unless the layout is really in place, so it cannot
 # pass on a disk with a single ESP.
@@ -57,6 +60,14 @@ esps_of() {
     [ "${type,,}" = "$ESP_TYPE" ] || continue
     printf '%s %s %s %s\n' "$(partnum "$name")" "$name" "${uuid,,}" "$label"
   done | sort -n
+}
+
+# The boot grows the root partition and filesystem into free space at the end
+# of the disk; the foreign ESP needs that space.
+cmd_hold_size() {
+  systemctl mask bootc-generic-growpart.service systemd-growfs-root.service \
+    tilo-growfs-sysroot.service tilo-growfs-sysroot.timer
+  ok "the root partition keeps its size from the next boot"
 }
 
 cmd_prepare() {
@@ -144,7 +155,8 @@ assert image == target, f"staged {image}, not {target}"
 }
 
 case "${1:-}" in
+  hold-size) cmd_hold_size ;;
   prepare) cmd_prepare ;;
   check) shift; cmd_check "$@" ;;
-  *) die "usage: $0 prepare | check IMAGE" ;;
+  *) die "usage: $0 hold-size | prepare | check IMAGE" ;;
 esac
