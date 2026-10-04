@@ -150,12 +150,11 @@ work on a device too, beside the device's session.
   aarch64 and leaves the binaries in the target dir `cargo metadata` names
   (set `CARGO_TARGET_DIR` to where the drop-in puts them). The layer's target
   and rustc are read from the binary it built, and the device refuses any
-  other architecture. With rcargo's ARM builder, for example:
+  other architecture. With a drop-in `$CARGO_AARCH64` that runs cargo on an
+  aarch64 machine and brings the binaries back:
 
   ```sh
-  printf '#!/bin/sh\nexec env RCARGO_CONFIG=$HOME/.config/rcargo/arm.toml rcargo --fetch release/shell "$@"\n' > ~/.local/bin/cargo-arm-shell
-  chmod +x ~/.local/bin/cargo-arm-shell
-  CARGO_TARGET_DIR=$PWD/target/aarch64 TILO_VM_CARGO=cargo-arm-shell \
+  CARGO_TARGET_DIR=$PWD/target/aarch64 TILO_VM_CARGO=$CARGO_AARCH64 \
     tilo-vm swap --slot device shell --builder host
   ```
 - **Your worktree on the device** (`--builder vm`, the default when the
