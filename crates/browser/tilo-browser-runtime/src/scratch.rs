@@ -1,6 +1,6 @@
 //! A built-in application that proves the component path end to end: a
 //! title the input edits and the heading shows, stored as an ordinary record.
-//! The input keeps what is typed; the page commits it to its record.
+//! Every edit of the title is the page's published `rename` action.
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, LaunchTarget, RestoreInput,
 };
@@ -12,6 +12,44 @@ use ui::ui_graph::{
     UiTextSource, UiValues,
 };
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+
+/// The action that names the page.
+const RENAME_TYPE: &str = "browser-scratch.rename";
+/// The page, as the resource its actions belong to.
+const PAGE: &str = "browser-scratch:page";
+
+/// Name the page `title`: the title's text becomes `title`, spliced where it
+/// changed so a collaborator's concurrent typing survives.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct Rename {
+    title: String,
+}
+
+impl tilo_actions::Action for Rename {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        ui::doc::put_text_diffed(doc, &ui::automerge::ROOT, TITLE, &self.title);
+        Ok(())
+    }
+}
+
+fn page_resource() -> tilo_actions::Resource {
+    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::Resource::new(PAGE, "browser-scratch.page", "Scratch page").with_action(
+        ActionSpec::typed(
+            "rename",
+            "Rename",
+            "Title",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required("title", ParamType::Text, "Title")],
+            |args| EncodedAction {
+                type_id: RENAME_TYPE.into(),
+                payload: serde_json::json!({ "title": args.text("title").unwrap_or_default() })
+                    .to_string()
+                    .into_bytes(),
+            },
+        ),
+    )
+}
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
@@ -44,34 +82,51 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
             })
             .map_err(LaunchError::Record)?;
     }
+    let resource = page_resource();
+    let rename = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |title| {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("title".into(), serde_json::Value::String(title));
+        arguments
+    })
+    .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let title = ui::LocalState::new(String::new());
     let values = UiValues::default();
+    values.route(TITLE, title.clone(), rename);
     let root = surface()
         .build_with(
             &Theme::dark(),
-            &UiBuildContext::default().with_values(values.clone()),
+            &UiBuildContext::default().with_values(values),
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let mut actions = tilo_actions::ActionRegistry::new();
+    actions.register::<Rename>(RENAME_TYPE);
     Ok(AppComponent::new(
         context,
         Box::new(Page {
             root,
-            values,
-            committed: None,
+            title,
+            resource,
         }),
-        tilo_actions::ActionRegistry::new(),
+        actions,
     ))
 }
 
 /// The graph-built surface as the component's application root. It owns a
 /// layout node around the surface's, so traversal pairs widgets with nodes,
 /// and forwards input, updates and presence, whose `Widget` defaults do not
-/// reach children. It owns the record: what the title input types is
-/// committed to it here.
+/// reach children. It shows the record's title in the title input and
+/// publishes the page's `rename`, which the input's edits invoke.
 struct Page {
     root: ui::widget::Element,
-    values: UiValues,
-    /// The title last read from or committed to the record.
-    committed: Option<String>,
+    /// The record's title, as the title input shows it.
+    title: ui::LocalState<String>,
+    resource: tilo_actions::Resource,
+}
+
+impl ui::resources::PublishesResources for Page {
+    fn resources(&self, _doc: &ui::automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![self.resource.clone()]
+    }
 }
 
 /// The value path of the title input and the record field it is kept in.
@@ -93,6 +148,8 @@ impl AppWidget for Page {
 }
 
 impl Widget for Page {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn name(&self) -> &'static str {
         "ScratchPage"
     }
@@ -103,25 +160,17 @@ impl Widget for Page {
         vec![self.root.as_mut()]
     }
     fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        if self.committed.is_none() {
+        {
             let (doc, root) = ui::doc::document(state, path);
-            let title = ui::doc::read_text(&*doc, root, TITLE).unwrap_or_default();
-            self.values.text(TITLE).set(title.clone());
-            self.committed = Some(title);
+            let stored = ui::doc::read_text(&*doc, root, TITLE).unwrap_or_default();
+            if self.title.with(|shown| *shown != stored) {
+                self.title.set(stored);
+            }
         }
         self.root.sync(state, path);
     }
     fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
-        let mut changed = self.root.update(state, path);
-        let typed = self.values.get(TITLE);
-        if typed.is_some() && typed != self.committed {
-            let (doc, root) = ui::doc::document(state, path);
-            let title = typed.unwrap_or_default();
-            ui::doc::put_text_diffed(doc, root, TITLE, &title);
-            self.committed = Some(title);
-            changed = true;
-        }
-        changed
+        self.root.update(state, path)
     }
     fn handle_event(
         &mut self,

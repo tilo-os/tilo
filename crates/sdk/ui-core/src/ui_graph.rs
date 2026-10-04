@@ -53,15 +53,20 @@ pub struct UiComponentRequest<'a> {
 ///
 /// The values are view state, never written to the document: every input
 /// naming one path shows and edits the same value, and the app reads them
-/// when it acts on them, submitting its own resource actions.
+/// when it acts on them, submitting its own resource actions. A path the app
+/// routes ([`Self::route`]) instead shows the app's own value, and each edit
+/// of it is the app's action.
 #[derive(Clone, Default)]
-pub struct UiValues(Rc<RefCell<HashMap<String, LocalState<String>>>>);
+pub struct UiValues {
+    texts: Rc<RefCell<HashMap<String, LocalState<String>>>>,
+    routes: Rc<RefCell<HashMap<String, tilo_actions::ActionBinding<String>>>>,
+}
 
 impl UiValues {
     /// The value inputs naming `path` edit, starting empty.
     #[must_use]
     pub fn text(&self, path: &str) -> LocalState<String> {
-        self.0
+        self.texts
             .borrow_mut()
             .entry(path.to_owned())
             .or_insert_with(|| LocalState::new(String::new()))
@@ -71,15 +76,50 @@ impl UiValues {
     /// What is typed at `path`, if an input names it.
     #[must_use]
     pub fn get(&self, path: &str) -> Option<String> {
-        self.0.borrow().get(path).map(LocalState::get)
+        self.texts.borrow().get(path).map(LocalState::get)
+    }
+
+    /// Route the inputs naming `path` through the app: they show `shown`,
+    /// which the app keeps current, and each edit invokes `action` with the
+    /// whole new text, so it is checked, attributed and undone like every
+    /// other edit of the app.
+    pub fn route(
+        &self,
+        path: &str,
+        shown: LocalState<String>,
+        action: tilo_actions::ActionBinding<String>,
+    ) {
+        self.texts.borrow_mut().insert(path.to_owned(), shown);
+        self.routes.borrow_mut().insert(path.to_owned(), action);
+    }
+
+    /// An input over `path`: the app's value edited through its action when
+    /// the path is routed, else the shared typed value, which starts as
+    /// `initial`.
+    #[must_use]
+    pub fn input(&self, path: &str, initial: &str) -> TextInput {
+        let value = self.text(path);
+        if let Some(action) = self.routes.borrow().get(path) {
+            return TextInput::from_state(&value).on_action(action.clone());
+        }
+        if value.with(String::is_empty) && !initial.is_empty() {
+            value.set(initial.to_owned());
+        }
+        TextInput::from_state(&value)
     }
 }
 
 impl fmt::Debug for UiValues {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut paths: Vec<String> = self.0.borrow().keys().cloned().collect();
+        let mut paths: Vec<String> = self.texts.borrow().keys().cloned().collect();
         paths.sort_unstable();
-        formatter.debug_tuple("UiValues").field(&paths).finish()
+        let mut routes: Vec<String> = self.routes.borrow().keys().cloned().collect();
+        routes.sort_unstable();
+        formatter
+            .debug_struct("UiValues")
+            .field("paths", &paths)
+            .field("routes", &routes)
+            .finish()
     }
 }
 
@@ -402,13 +442,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
         } => {
             let name = label.as_deref().unwrap_or(accessible_name);
             let input = match value_path {
-                Some(path) => {
-                    let value = context.values.text(path);
-                    if value.with(String::is_empty) && !initial_value.is_empty() {
-                        value.set(initial_value.clone());
-                    }
-                    TextInput::from_state(&value)
-                }
+                Some(path) => context.values.input(path, initial_value),
                 None => TextInput::local().with_initial_value(initial_value),
             }
             .with_id(id)
@@ -3263,6 +3297,135 @@ mod tests {
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
+
+    fn graph_field(id: &str, value_path: &str) -> UiNode {
+        UiNode::TextInput {
+            id: id.into(),
+            label: None,
+            accessible_name: id.into(),
+            placeholder: String::new(),
+            value_path: Some(value_path.into()),
+            initial_value: String::new(),
+            multiline: false,
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn a_routed_path_edits_through_the_apps_action_and_shows_its_value() {
+        use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
+        let spec = ActionSpec::typed_operation(
+            "rename",
+            "Rename",
+            "The new title",
+            OperationKind::Effect,
+            "graph.rename",
+            vec![ActionParam::required("title", ParamType::Text, "Title")],
+            |args| EncodedAction::encode_operation("graph.rename", &args.to_json()).unwrap(),
+        );
+        let resource =
+            tilo_actions::Resource::new("ordinary:graph", "graph", "Graph").with_action(spec);
+        let action = tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |title| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("title".into(), serde_json::Value::String(title));
+            arguments
+        })
+        .unwrap();
+        let title = LocalState::new("Atlas".to_owned());
+        let values = UiValues::default();
+        values.route("title", title.clone(), action);
+        let context = UiBuildContext::default().with_values(values.clone());
+        let document = UiDocument::new(UiNode::Column {
+            id: "root".into(),
+            children: vec![
+                graph_field("title-a", "title"),
+                graph_field("title-b", "title"),
+                graph_field("draft", "draft"),
+            ],
+            gap: None,
+            no_padding: false,
+            intrinsic_height: false,
+            fill_remaining_height: false,
+        });
+        let mut root = document.build_with(&Theme::dark(), &context).unwrap();
+        crate::widget::controls::refresh_control_action_availability(
+            root.as_mut(),
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                "ordinary:graph",
+                "rename",
+            )]),
+        );
+        let mut doc = AutoCommit::new();
+        Widget::sync(root.as_mut(), &mut doc, &ROOT);
+        assert_eq!(
+            named_value(root.as_ref(), "title-b").as_deref(),
+            Some("Atlas")
+        );
+
+        let set = |root: &mut Element, doc: &mut AutoCommit, id: &str, value: &str| {
+            assert!(perform_named(
+                root.as_mut(),
+                id,
+                &Action::SetValue(value.into()),
+                doc
+            ));
+        };
+        set(&mut root, &mut doc, "title-a", "Atlas II");
+        let invocation = crate::widget::controls::take_control_invocation(root.as_mut())
+            .expect("the edit is the app's action");
+        assert_eq!(invocation.address.action, "rename");
+        assert_eq!(invocation.arguments["title"], "Atlas II");
+        assert!(
+            automerge::ReadDoc::get(&doc, &ROOT, "title")
+                .unwrap()
+                .is_none(),
+            "the input never writes the document"
+        );
+        // What every input over the path shows is the app's value.
+        title.set("Atlas II".to_owned());
+        Widget::sync(root.as_mut(), &mut doc, &ROOT);
+        assert_eq!(
+            named_value(root.as_ref(), "title-b").as_deref(),
+            Some("Atlas II")
+        );
+
+        set(&mut root, &mut doc, "draft", "Notes");
+        assert!(
+            crate::widget::controls::take_control_invocation(root.as_mut()).is_none(),
+            "an unrouted path invokes nothing"
+        );
+        assert_eq!(values.get("draft").as_deref(), Some("Notes"));
+        assert!(
+            automerge::ReadDoc::get(&doc, &ROOT, "draft")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    fn perform_named(
+        widget: &mut dyn Widget,
+        id: &str,
+        action: &Action,
+        doc: &mut AutoCommit,
+    ) -> bool {
+        if widget.test_id() == Some(id) {
+            return Widget::perform_action(widget, action, doc, &ROOT);
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| perform_named(child, id, action, doc))
+    }
+
+    fn named_value(widget: &dyn Widget, id: &str) -> Option<String> {
+        if widget.test_id() == Some(id) {
+            return widget.accessibility().and_then(|node| node.value);
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| named_value(child, id))
+    }
 
     fn run_operation(
         live: &mut impl Widget,

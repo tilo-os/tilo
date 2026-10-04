@@ -462,6 +462,27 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         }
     }
 
+    /// Route a serialized screen's text inputs over `path` through the
+    /// resource ([`UiValues::route`](ui_core::UiValues::route)): they show
+    /// `read` of it and each edit invokes `action` with the input's new text.
+    /// A view that may not invoke `action` leaves the path unrouted.
+    pub fn route_graph_text(
+        &self,
+        values: &ui_core::UiValues,
+        path: &str,
+        read: impl Fn(&T) -> String + 'static,
+        action: impl Binds<R, String>,
+    ) {
+        let Some(binding) = self.binding(action) else {
+            return;
+        };
+        let shown = LocalState::new(String::new());
+        let sink = shown.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        shown.set(initial);
+        values.route(path, shown, binding);
+    }
+
     /// A checkbox showing `read` of the resource; toggling invokes `action`
     /// with the new value.
     pub fn checkbox(
