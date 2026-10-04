@@ -93,8 +93,11 @@ pub fn filesystem_xml(share: &HostShare, socket: &Path) -> Result<String, Domain
 /// Whether a defined domain carries Tilo's marker.
 #[must_use]
 pub fn is_ours(domain_xml: &str, config: &VmConfig) -> bool {
+    // libvirt re-serialises metadata with double quotes.
+    let guest = config.guest.as_str();
     domain_xml.contains(METADATA_ELEMENT)
-        && domain_xml.contains(&format!("guest='{}'", config.guest.as_str()))
+        && (domain_xml.contains(&format!("guest='{guest}'"))
+            || domain_xml.contains(&format!("guest=\"{guest}\"")))
 }
 
 /// The tags of virtio-fs shares attached to a live domain.
@@ -170,6 +173,13 @@ mod tests {
             assert!(hybrid.contains("vhost-user-vsock-pci"));
             assert!(!hybrid.contains("<vsock"));
             assert!(is_ours(&hybrid, &config));
+            assert!(
+                is_ours(
+                    "<metadata><tilo:legacy-vm xmlns:tilo=\"https://tilo.sh/vm/1\" guest=\"linux\"/></metadata>",
+                    &config
+                ),
+                "libvirt's own serialisation is still ours"
+            );
             assert!(!is_ours(
                 "<domain><name>tilo-legacy-linux</name></domain>",
                 &config
