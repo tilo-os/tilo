@@ -1,5 +1,5 @@
 use super::*;
-use crate::actions::{PHOTOS_OPERATION_TYPE, PhotosOperation, PhotosResources};
+use crate::actions::{PhotosEffect, PhotosResources};
 use crate::model::{Album, LibraryPhoto};
 use crate::shots_pattern;
 use automerge::ROOT;
@@ -515,7 +515,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
         );
         let mut app = test_app();
         app.view_timeline(
-            &doc,
+            &PhotosDoc::library(&doc),
             Some(&crate::actions::TimelineAnchor::Day {
                 day: "2026-08-01".into(),
             }),
@@ -586,7 +586,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             })
             .unwrap();
         app.drain_analysis_results(&mut doc);
-        assert!(app.resource_result.is_none());
+        assert!(app.take_settled(cancelled).is_none());
 
         let stale = tilo_actions::InvocationId::new();
         sender
@@ -605,7 +605,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             .unwrap();
         app.drain_analysis_results(&mut doc);
         assert!(matches!(
-            app.resource_result,
+            app.take_settled(stale),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "photos.analysis_stale"
         ));
@@ -756,7 +756,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             crate::library_analysis::LibraryAnalysisPhase::Complete
         );
         assert!(matches!(
-            app.resource_result,
+            app.take_settled(invocation),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
@@ -974,28 +974,18 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         });
         PhotosDoc::set_library(&mut doc, &library);
         let before = PhotosDoc::library(&doc);
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ViewAlbum {
-                album_id: "photos.album:trip".into(),
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    PHOTOS_OPERATION_TYPE,
-                    &payload.payload
-                ),
-                &mut doc,
-                &ROOT
+        let payload = PhotosEffect::ViewAlbum {
+            album_id: "photos.album:trip".into(),
+        };
+        assert!(
+            app.answer_effect(
+                payload,
+                ui::tilo_actions::InvocationId::new(),
+                &PhotosDoc::library(&doc)
             )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+            .unwrap()
+            .is_some()
+        );
         assert!(app.library_mode);
         assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
         assert_eq!(
@@ -1004,24 +994,14 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
             "navigation must not alter membership"
         );
 
-        let stale = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ViewAlbum {
-                album_id: "photos.album:gone".into(),
-            },
-        )
-        .unwrap();
+        let stale = PhotosEffect::ViewAlbum {
+            album_id: "photos.album:gone".into(),
+        };
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    PHOTOS_OPERATION_TYPE,
-                    &stale.payload
-                ),
-                &mut doc,
-                &ROOT
+            app.answer_effect(
+                stale,
+                ui::tilo_actions::InvocationId::new(),
+                &PhotosDoc::library(&doc)
             )
             .is_err()
         );
@@ -1043,26 +1023,16 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
             },
         );
         let before = PhotosDoc::library(&doc);
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ViewFavorites,
-        )
-        .expect("favorite view operation encodes");
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    PHOTOS_OPERATION_TYPE,
-                    &payload.payload
-                ),
-                &mut doc,
-                &ROOT
+        let payload = PhotosEffect::ViewFavorites;
+        assert!(
+            app.answer_effect(
+                payload.clone(),
+                ui::tilo_actions::InvocationId::new(),
+                &PhotosDoc::library(&doc)
             )
-            .expect("favorite collection is present"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+            .expect("favorite collection is present")
+            .is_some()
+        );
         assert!(app.library_mode);
         assert!(app.active_favorites);
         assert_eq!(
@@ -1073,16 +1043,10 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
         PhotosDoc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    PHOTOS_OPERATION_TYPE,
-                    &payload.payload
-                ),
-                &mut doc,
-                &ROOT
+            app.answer_effect(
+                payload,
+                ui::tilo_actions::InvocationId::new(),
+                &PhotosDoc::library(&doc)
             )
             .is_err()
         );
@@ -1104,7 +1068,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         };
         PhotosDoc::set_library(&mut doc, &library);
 
-        app.view_metadata_filter(&doc, Some("Travel".into()), None, None)
+        app.view_metadata_filter(&PhotosDoc::library(&doc), Some("Travel".into()), None, None)
             .expect("existing folder enters a view");
         app.sync(&mut doc, &ROOT);
         assert!(app.library_mode);
@@ -1112,22 +1076,32 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         assert_eq!(app.active_folder.as_deref(), Some("Travel"));
         assert!(app.active_person.is_none());
 
-        app.view_metadata_filter(&doc, None, Some("Élodie".into()), None)
+        app.view_metadata_filter(&PhotosDoc::library(&doc), None, Some("Élodie".into()), None)
             .expect("existing person enters a view");
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.library_total, 1);
         assert_eq!(app.active_person.as_deref(), Some("Élodie"));
         assert!(app.active_folder.is_none());
-        app.view_metadata_filter(&doc, None, None, Some("golden-hour".into()))
-            .expect("existing tag enters a view");
+        app.view_metadata_filter(
+            &PhotosDoc::library(&doc),
+            None,
+            None,
+            Some("golden-hour".into()),
+        )
+        .expect("existing tag enters a view");
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.library_total, 1);
         assert_eq!(app.active_tag.as_deref(), Some("golden-hour"));
         assert!(app.active_folder.is_none());
         assert!(app.active_person.is_none());
         assert!(
-            app.view_metadata_filter(&doc, Some("Missing".into()), None, None)
-                .is_err()
+            app.view_metadata_filter(
+                &PhotosDoc::library(&doc),
+                Some("Missing".into()),
+                None,
+                None
+            )
+            .is_err()
         );
     }
 
@@ -1538,27 +1512,18 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     eprintln!("phase unresolved_share_reference_returns_a_canonical_operation_failure");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ShareReference {
-                resource_id: "photos.photo:missing".into(),
-            },
-        )
-        .expect("share operation encodes");
+        let doc = AutoCommit::new();
+        let payload = PhotosEffect::ShareReference {
+            resource_id: "photos.photo:missing".into(),
+        };
 
-        let error = Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
+        let error = app
+            .answer_effect(
+                payload,
                 ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-            ),
-            &mut doc,
-            &ROOT,
-        )
-        .expect_err("a missing resource cannot claim that its reference was shared");
+                &PhotosDoc::library(&doc),
+            )
+            .expect_err("a missing resource cannot claim that its reference was shared");
         assert_eq!(error, tr("photos-share-failed"));
         assert_eq!(
             app.notice.as_deref(),
@@ -1569,18 +1534,12 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     eprintln!("phase cancelling_a_portal_invocation_is_terminal_and_drops_late_results");
     {
         let mut app = test_app();
-        let doc = AutoCommit::new();
         let invocation = tilo_actions::InvocationId::new();
         let (tx, rx) = std::sync::mpsc::channel();
         app.picker = Some(rx);
         app.resource_invocation = Some(invocation);
 
-        let update = Widget::poll_resource_operation(&mut app, invocation, true, &doc, &ROOT)
-            .expect("cancellation must resolve the accepted invocation");
-        assert!(matches!(
-            update,
-            tilo_actions::InvocationUpdate::Cancelled { invocation: id, .. } if id == invocation
-        ));
+        app.cancel_invocation(invocation);
         assert!(app.picker.is_none());
         assert!(app.resource_invocation.is_none());
         assert!(
@@ -1591,11 +1550,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
 
         let direct = tilo_actions::InvocationId::new();
         app.pending_resource_open = Some((direct, "/late-direct.png".into()));
-        assert!(matches!(
-            Widget::poll_resource_operation(&mut app, direct, true, &doc, &ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { invocation, .. })
-                if invocation == direct
-        ));
+        app.cancel_invocation(direct);
         assert!(app.pending_resource_open.is_none());
     }
 
@@ -1914,9 +1869,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
-    eprintln!("phase synchronized_app_registers_the_canonical_photo_search_provider");
+    eprintln!("phase the_system_searches_the_library_and_the_window_keeps_its_own_filter");
     {
         let mut app = test_app();
         let mut doc = AutoCommit::new();
@@ -1931,11 +1887,17 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             "unchanged sync rebuilt search"
         );
 
-        let providers = ui::search::capability::search_providers(&app);
-        assert_eq!(providers.len(), 1);
-        let hit = providers[0].search("夏").pop().unwrap();
-        let address = hit.action_address().unwrap();
-        assert!(matches!(address.action.as_str(), "view" | "open"));
+        assert!(
+            ui::search::capability::search_providers(&app).is_empty(),
+            "the system searches the library's own entries, not a second index"
+        );
+        let state = <crate::resource::Photos as ui::tilo_resource::Resource>::read(&doc).unwrap();
+        let entry = <crate::resource::Photos as ui::tilo_resource::Resource>::search(&state)
+            .into_iter()
+            .find(|entry| entry.title.contains('夏'))
+            .expect("the photograph is a search entry");
+        let address = entry.action.expect("a hit opens what it found");
+        assert_eq!(address.action, "open");
         assert!(
             PhotosResources
                 .publish_resources(&doc)
@@ -2005,14 +1967,17 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         assert!(app.search_provider.resource(&first_id).is_some());
         assert!(app.search_provider.resource(&second_id).is_none());
         assert!(app.status.contains("kept its previous index"));
-        let diagnostic = ui::resources::resource(&app, &doc, "photos.search-status")
-            .expect("rejected refresh is an exact addressable resource");
+        let diagnostic = app
+            .search_status_row()
+            .expect("a rejected refresh is a row a caller can read")
+            .into_resource();
+        assert_eq!(diagnostic.id.0, "photos.search-status");
         assert_eq!(diagnostic.kind, "photos.diagnostic");
-        assert!(diagnostic.actions.iter().any(|action| action.id == "open"));
         assert!(
-            ui::resources::resources(&app, &doc)
+            diagnostic
+                .actions
                 .iter()
-                .any(|resource| resource.id.0 == "photos.search-status")
+                .any(|action| action.id == "view-library")
         );
     }
 }
@@ -2304,14 +2269,6 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert_eq!(
             app.library_analysis.phase,
             crate::library_analysis::LibraryAnalysisPhase::Paused
-        );
-        let encoded = app
-            .last_library_action
-            .as_ref()
-            .expect("visible control records its canonical operation");
-        assert_eq!(
-            crate::actions::decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(crate::actions::PhotosOperation::PauseLibraryAnalysis)
         );
     }
 
@@ -2609,30 +2566,20 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             }
         );
 
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ExportEditedContent {
-                resource_id: resource_id.clone(),
-                source_content: source_hash.clone(),
-                edits,
-            },
-        )
-        .expect("export operation encodes");
+        let payload = PhotosEffect::ExportEditedContent {
+            resource_id: resource_id.clone(),
+            source_content: source_hash.clone(),
+            edits,
+        };
         let mut app = editing(PhotosApp::with_content(store.clone()));
-        let started = Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
+        let started = app
+            .answer_effect(
+                payload.clone(),
                 tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-            ),
-            &mut doc,
-            &ROOT,
-        )
-        .expect("export succeeds")
-        .expect("Photos handles its operation");
-        let ui::widget::ResourceOperationStart::Completed(output) = started else {
+                &PhotosDoc::library(&doc),
+            )
+            .expect("export succeeds");
+        let Some(output) = started else {
             panic!("bounded content production completes with its live output");
         };
         assert_eq!(output.resources.len(), 1);
@@ -2660,16 +2607,10 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
 
         PhotosDoc::set_photo_edits(&mut doc, &resource_id, crate::model::Edits::default());
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    PHOTOS_OPERATION_TYPE,
-                    &payload.payload
-                ),
-                &mut doc,
-                &ROOT
+            app.answer_effect(
+                payload,
+                tilo_actions::InvocationId::new(),
+                &PhotosDoc::library(&doc)
             )
             .is_err(),
             "a stale edit snapshot must not produce different content"
@@ -2683,16 +2624,10 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         let mut doc = AutoCommit::new();
         let photo_id = PhotosDoc::put_image(&mut doc, &open);
         let edits = PhotosDoc::photo_edits(&doc, &photo_id);
-        let encoded = |resource_id: String| {
-            tilo_actions::EncodedAction::encode_operation(
-                PHOTOS_OPERATION_TYPE,
-                &PhotosOperation::ExportEditedContent {
-                    resource_id,
-                    source_content: missing.clone(),
-                    edits,
-                },
-            )
-            .expect("export operation encodes")
+        let encoded = |resource_id: String| PhotosEffect::ExportEditedContent {
+            resource_id,
+            source_content: missing.clone(),
+            edits,
         };
         let mut app = test_app();
         for payload in [
@@ -2700,16 +2635,10 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             encoded("photos.photo:wrong-target".into()),
         ] {
             assert!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        PHOTOS_OPERATION_TYPE,
-                        &payload.payload
-                    ),
-                    &mut doc,
-                    &ROOT
+                app.answer_effect(
+                    payload.clone(),
+                    tilo_actions::InvocationId::new(),
+                    &PhotosDoc::library(&doc)
                 )
                 .is_err()
             );
