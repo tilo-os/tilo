@@ -918,6 +918,11 @@ pub fn decode_live_frame(frame: &[u8]) -> Result<String, JsError> {
         LiveFrame::Ops(OpsFrame::End { record }) => JsDecoded::PreviewEnd {
             record: record_to_js(record),
         },
+        LiveFrame::Ops(OpsFrame::Semantic { .. }) => {
+            return Err(JsError::new(
+                "semantic activity requires an authenticated record consumer",
+            ));
+        }
     };
     serde_json::to_string(&decoded).map_err(js_error)
 }

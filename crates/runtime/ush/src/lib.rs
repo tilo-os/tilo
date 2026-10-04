@@ -30,7 +30,9 @@
 //! 2. **The guest** ([`guest`]) is everything the user runs — untrusted. It
 //!    runs as the real uid in its own user namespace, which maps that one id
 //!    and nothing else, so nothing in it is root and a file it writes to a
-//!    granted directory is the user's. Its seccomp filter denies
+//!    granted directory is the user's. It has a network namespace of its
+//!    own, reaching only the hosts its record grants ([`tilo_egress`]),
+//!    owned by a user namespace above its own. Its seccomp filter denies
 //!    `unshare`/`mount`/`pivot_root`/`setns`/`chroot`, so it cannot open a
 //!    second namespace and climb out of the first — `bwrap` installs the
 //!    filter after mounting and immediately before exec, so the supervisor's
