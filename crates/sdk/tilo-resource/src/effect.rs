@@ -159,11 +159,10 @@ pub struct EffectDecl {
     /// Offered only bound to the items it acts on, not on the resource.
     pub row: bool,
     pub answers: Answers,
-    /// Asks for confirmation: deletes, overwrites, sends.
-    pub destructive: bool,
-    /// Hands out or shows a credential (copies a one-time code, reveals a
-    /// password): asks for confirmation, though nothing is lost.
-    pub privileged: bool,
+    /// How much harm invoking it can do: `Destructive` (deletes,
+    /// overwrites, sends) and `Privileged` (hands out or shows a credential)
+    /// ask for confirmation; a view is `None`.
+    pub risk: RiskLevel,
     /// Safe to repeat after an uncertain outcome.
     pub idempotent: bool,
     pub permission: PermissionRequirement,
@@ -231,16 +230,8 @@ impl EffectDecl {
         };
         spec.contract = ActionContract {
             permission: self.permission,
-            risk: if self.destructive {
-                RiskLevel::Destructive
-            } else if self.privileged {
-                RiskLevel::Privileged
-            } else if view {
-                RiskLevel::None
-            } else {
-                RiskLevel::Low
-            },
-            confirmation: if self.destructive || self.privileged {
+            risk: self.risk,
+            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
