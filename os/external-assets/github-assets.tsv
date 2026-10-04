@@ -11,6 +11,7 @@ e264f0639ab775338311036f207b35cebe99bc417b016b53931ebca8b30b3d94	steam-runtime-s
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
+e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
 d15d7e476feec78d0ec9edc27b8f77279ec7a3e6227756e7036e5cd2066800f4	wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz	https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.108/wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz

@@ -37,6 +37,7 @@ pub mod svg;
 pub mod thumb;
 pub mod tools;
 pub mod view_ops;
+pub mod wand;
 
 pub use actions::CanvasAction;
 pub use model::Artwork;

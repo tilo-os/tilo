@@ -215,6 +215,9 @@ struct Pending {
     /// Set once the lent input method has committed; the request finishes
     /// when the compositor has processed the commit.
     committed_sensitive: Option<bool>,
+    /// Whether the shell picked the text here and keeps it among its
+    /// recents; text another device typed is delivered and forgotten.
+    picked_here: bool,
 }
 
 /// The request in flight (at most one: a new pick replaces an undelivered
@@ -228,11 +231,22 @@ pub struct TextCommit {
 impl State {
     /// Commit `text` into the focused field as soon as it takes text.
     pub fn request_text_commit(&mut self, text: String, now: Instant) {
+        self.queue_text_commit(text, now, true);
+    }
+
+    /// Commit text another device's input method composed into the focused
+    /// field, without reporting it back as something picked here.
+    pub fn request_remote_text_commit(&mut self, text: String, now: Instant) {
+        self.queue_text_commit(text, now, false);
+    }
+
+    fn queue_text_commit(&mut self, text: String, now: Instant, picked_here: bool) {
         self.text_commit.pending = Some(Pending {
             text,
             deadline: now.checked_add(DELIVERY_WINDOW).unwrap_or(now),
             lent: None,
             committed_sensitive: None,
+            picked_here,
         });
         self.advance_text_commit(now);
     }
@@ -263,11 +277,13 @@ impl State {
                 .as_mut()
                 .is_none_or(|lent| !matches!(lent.pump(), Progress::Waiting | Progress::Active));
             if finished || now >= pending.deadline {
-                self.text_commit.delivered.push(DeliveredText {
-                    text: pending.text,
-                    sensitive,
-                    through: TrustedInputMethod::Compositor,
-                });
+                if pending.picked_here {
+                    self.text_commit.delivered.push(DeliveredText {
+                        text: pending.text,
+                        sensitive,
+                        through: TrustedInputMethod::Compositor,
+                    });
+                }
             } else {
                 self.text_commit.pending = Some(pending);
             }
@@ -282,11 +298,13 @@ impl State {
             // owner's session carries the commit instead.
             pending.lent = None;
             if let Some(sensitive) = self.commit_through_owner(&pending.text) {
-                self.text_commit.delivered.push(DeliveredText {
-                    text: pending.text,
-                    sensitive,
-                    through: owner,
-                });
+                if pending.picked_here {
+                    self.text_commit.delivered.push(DeliveredText {
+                        text: pending.text,
+                        sensitive,
+                        through: owner,
+                    });
+                }
                 return;
             }
             self.text_commit.pending = Some(pending);
