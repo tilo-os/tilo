@@ -37,7 +37,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use ui::time::{Duration, Instant};
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
@@ -55,13 +55,12 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{
-    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor,
-    Widget,
+    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, Text, Widget,
 };
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
@@ -374,19 +373,18 @@ fn themes() -> Vec<Theme> {
     ]
 }
 
-/// A tab's accent by the language of the buffer it holds, read entirely off
-/// theme tokens so it re-tints with every theme instead of a fixed palette
-/// of its own.
-fn lang_accent(language: Language, theme: &Theme) -> Color {
-    let c = &theme.tokens.colors;
-    match language {
-        Language::Rust | Language::JavaScript | Language::TypeScript => c.semantic.warning,
-        Language::Python | Language::C | Language::Cpp | Language::Go => c.semantic.info,
-        Language::Toml | Language::Yaml => c.accent[5],
-        Language::Json | Language::Shell => c.semantic.success,
-        Language::Markdown | Language::PlainText => c.text_dim,
-        Language::Html | Language::Css => c.semantic.danger,
-    }
+/// The editor header's file-name text, and the label it reads.
+fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<String>>) {
+    let label = std::rc::Rc::new(std::cell::RefCell::new(
+        session
+            .active_buffer()
+            .map_or_else(String::new, |buffer| buffer.name.clone()),
+    ));
+    let source = label.clone();
+    (
+        Text::dynamic(move || source.borrow().clone()).with_id("code-editor.file"),
+        label,
+    )
 }
 
 fn language_from_label(label: &str) -> Option<Language> {
@@ -456,12 +454,10 @@ pub struct CodeApp {
     /// expansion signals land in `explorer_events`.
     sidebar: Explorer,
     explorer_events: ExplorerEvents,
-    tabs: TabBar,
-    /// Sweep timer for a pill's close-fade, keyed by tab id (== node id).
-    /// `TabBar::start_closing` runs the fade on its own clock; this is only
-    /// so `reconcile_tabs` knows when to call `finalize_close` and free the
-    /// widget's bookkeeping, the same job `WindowGroup::closing_hosts` does.
-    closing_since: HashMap<u64, Instant>,
+    /// The editor header's file name. A window shows one file; other files
+    /// open beside it as desktop tabs, so there is no tab strip here.
+    header: Text,
+    header_label: std::rc::Rc<std::cell::RefCell<String>>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, surfaced as a transient
     /// floating bubble (see `draw_status_bubble`) instead of a permanent bottom
@@ -487,10 +483,10 @@ pub struct CodeApp {
     /// nothing.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::CodeEditor>>,
     /// The project as it was last presented, and the live handle that asks
-    /// for the text of the files the tabs show.
+    /// for the text of the file the window shows.
     presented: std::rc::Rc<crate::resource::ProjectState>,
     live_state: Option<ui::framework::Live<crate::resource::CodeEditor>>,
-    /// The file ids whose text the tabs demanded last.
+    /// The file ids whose text the window demanded last.
     demanded: Vec<String>,
     /// A command invoked through its published effect. An effect handler has
     /// no document, so the next sync runs the command with it.
@@ -523,7 +519,8 @@ pub struct CodeApp {
 
     rect: Rect,
     sidebar_node: Option<NodeId>,
-    tabs_node: Option<NodeId>,
+    header_node: Option<NodeId>,
+    header_text_node: Option<NodeId>,
     editor_header_node: Option<NodeId>,
     panel_toggle_node: Option<NodeId>,
     editor_node: Option<NodeId>,
@@ -705,6 +702,8 @@ enum ConflictChoice {
 struct ClosePrompt {
     node: TreeId,
     name: String,
+    /// The file to show once this one is saved or discarded.
+    then_open: Option<TreeId>,
 }
 
 /// The three ways out of an unsaved-close prompt.
@@ -881,11 +880,7 @@ impl CodeApp {
         let mut sidebar = explorer::explorer(&session.project, &explorer_events);
         explorer::set_current(&mut sidebar, default);
 
-        let mut tabs = TabBar::new("code-editor", Vec::new(), 0);
-        // Tabs here are document buffers, not windows — there is nothing for
-        // a maximize chip to do, and a chip that appears under the pointer
-        // and then does nothing is worse than no chip.
-        tabs.set_show_maximize(false);
+        let (header, header_label) = file_header(&session);
 
         let panel_toggle = BottomPanelToggle::new(effect_binding(
             &crate::effects::CodeEditorEffect::ToggleBottomPanel,
@@ -895,8 +890,8 @@ impl CodeApp {
             session,
             sidebar,
             explorer_events,
-            tabs,
-            closing_since: HashMap::new(),
+            header,
+            header_label,
             editor: EditorView::new(),
             status: StatusModel::new(),
             status_bubble: ui::StatusBubble::new(),
@@ -926,7 +921,8 @@ impl CodeApp {
             theme_index: None,
             rect: Rect::ZERO,
             sidebar_node: None,
-            tabs_node: None,
+            header_node: None,
+            header_text_node: None,
             editor_header_node: None,
             panel_toggle_node: None,
             editor_node: None,
@@ -1089,7 +1085,7 @@ impl CodeApp {
     fn draw_hamburger(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         // The bar is inset by HAMBURGER_W in overlay mode, so the hamburger
         // occupies the reserved strip from the window's left edge up to it.
-        let bar = self.tabs.get_rect();
+        let bar = self.header_rect();
         let left = self.rect.x0;
         let rect = Rect::new(left, bar.y0, left + HAMBURGER_W, bar.y1);
         self.hamburger_rect = rect;
@@ -1175,7 +1171,7 @@ impl CodeApp {
             self.pending_open = None;
             self.open_node(node);
         }
-        for buffer in &mut self.session.open {
+        if let Some(buffer) = self.session.buffer.as_mut() {
             // A buffer with no file on disk (a scratch file, a collaborator's
             // file) is saved when its text is first here: an untouched one is
             // clean and closes without a prompt.
@@ -1195,21 +1191,12 @@ impl CodeApp {
         // Dirty is a comparison against the bytes on disk, recomputed here, so
         // undoing back to the original clears the indicator rather than leaving
         // it stuck on.
-        for i in 0..self.session.open.len() {
-            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
-                continue;
-            };
+        if let Some(node) = self.session.active_buffer().map(|b| b.node) {
             let key = self.buffer_key(node);
-            let Some(current) = self.presented.buffers.get(&key) else {
-                continue;
-            };
-            let dirty = self
-                .session
-                .open
-                .get(i)
-                .is_some_and(|buffer| buffer.is_dirty(current));
-            if let Some(buf) = self.session.open.get_mut(i) {
-                buf.dirty = dirty;
+            if let Some(current) = self.presented.buffers.get(&key)
+                && let Some(buf) = self.session.buffer.as_mut()
+            {
+                buf.dirty = buf.is_dirty(current);
             }
         }
 
@@ -1233,11 +1220,11 @@ impl CodeApp {
         }
     }
 
-    /// Ask for the text of the files the tabs show, and only those.
+    /// Ask for the text of the file the window shows, and only that.
     fn demand_open_buffers(&mut self, doc: &AutoCommit) {
         let open: Vec<String> = self
             .session
-            .open
+            .buffer
             .iter()
             .map(|buffer| self.buffer_key(buffer.node))
             .collect();
@@ -1281,8 +1268,8 @@ impl CodeApp {
                 }
             }
             Err(error) => {
-                if let Some(index) = self.session.open.iter().position(|b| b.node == node) {
-                    self.session.close_tab(index);
+                if self.session.buffer_of(node).is_some() {
+                    self.session.close_file(node);
                     self.invalidate_search_projection();
                 }
                 self.note(format!("Could not open {name}: {error}"), true);
@@ -1389,14 +1376,8 @@ impl CodeApp {
             .collect();
         for file in files {
             if file.deleted {
-                if let Some(node) = self.session.project.remove_collaborative_file(&file.id)
-                    && let Some(tab) = self
-                        .session
-                        .open
-                        .iter()
-                        .position(|buffer| buffer.node == node)
-                {
-                    self.session.close_tab(tab);
+                if let Some(node) = self.session.project.remove_collaborative_file(&file.id) {
+                    self.session.close_file(node);
                 }
                 continue;
             }
@@ -1461,79 +1442,34 @@ impl CodeApp {
         self.submit_now(doc, &actions::text_edit_action(file_id, base, next))
     }
 
-    /// Reconcile the shared tab bar's pills against `session.open`, by node
-    /// id: insert what's new, fade out what closed by some path other than
-    /// its own pill (Ctrl+W, the file tree), and keep title + the
-    /// unsaved-changes marker in step. A pill mid close-fade is left alone —
-    /// it reappears once the fade finishes if the buffer is still open (a
-    /// cancelled close). Idempotent: safe to call more than once a frame.
-    fn reconcile_tabs(&mut self) {
-        self.sweep_closing_tabs();
-
-        let live: HashSet<u64> = self.session.open.iter().map(|b| b.node as u64).collect();
-        let stale: Vec<u64> = self
-            .tabs
-            .tabs()
-            .iter()
-            .map(|t| t.id)
-            .filter(|id| !live.contains(id) && !self.tabs.is_closing(*id))
-            .collect();
-        for id in stale {
-            self.tabs.start_closing(id);
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-        }
-
-        for (i, buf) in self.session.open.iter().enumerate() {
-            let id = buf.node as u64;
-            if self.tabs.is_closing(id) || self.tabs.tabs().iter().any(|t| t.id == id) {
-                continue;
-            }
-            let idx = i.min(self.tabs.tabs().len());
-            self.tabs
-                .insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
-        }
-
-        for buf in &self.session.open {
-            let id = buf.node as u64;
-            self.tabs.set_modified(id, buf.dirty);
-            if let Some(t) = self.tabs.tabs_mut().iter_mut().find(|t| t.id == id)
-                && t.title != buf.name
-            {
-                t.title.clone_from(&buf.name);
-            }
-        }
-
-        if let Some(buf) = self.session.active_buffer() {
-            self.tabs.set_active(buf.node as u64);
+    /// Keep the header naming the shown file, with a marker while it has
+    /// unsaved edits. Idempotent: safe to call more than once a frame.
+    fn refresh_header(&self) {
+        let label = self
+            .session
+            .active_buffer()
+            .map_or_else(String::new, |buffer| {
+                if buffer.dirty {
+                    format!("{} \u{2022}", buffer.name)
+                } else {
+                    buffer.name.clone()
+                }
+            });
+        if *self.header_label.borrow() != label {
+            *self.header_label.borrow_mut() = label;
         }
     }
 
-    /// Tint each pill by its buffer's language, read off the theme in use —
-    /// only `draw` has one, so this runs there rather than from
-    /// `reconcile_tabs`.
-    fn sync_tab_accents(&mut self, theme: &Theme) {
-        for buf in &self.session.open {
-            let id = buf.node as u64;
-            self.tabs.set_accent(id, lang_accent(buf.language, theme));
-        }
-    }
-
-    /// Frees a faded pill's bookkeeping once `CLOSE_FADE_MS` has actually
-    /// elapsed — `TabBar` stops painting it on its own, but only
-    /// `finalize_close` drops the entry and lets `needs_animation_frame` go
-    /// quiet. Mirrors `WindowGroup`'s own sweep of `closing_hosts`.
-    fn sweep_closing_tabs(&mut self) {
-        let window = Duration::from_millis(ui::widget::tabs::CLOSE_FADE_MS as u64);
-        let expired: Vec<u64> = self
-            .closing_since
-            .iter()
-            .filter(|(_, t)| t.elapsed() >= window)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in expired {
-            self.closing_since.remove(&id);
-            self.tabs.finalize_close(id);
-        }
+    /// Where the header sits: the band above the editor.
+    fn header_rect(&self) -> Rect {
+        let text = self.header.get_rect();
+        let editor = self.editor.get_rect();
+        Rect::new(
+            self.rect.x0,
+            editor.y0 - f64::from(EDITOR_CHROME_H),
+            editor.x1.max(text.x1),
+            editor.y0,
+        )
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
@@ -1908,14 +1844,33 @@ impl CodeApp {
         self.lsp_failed.clear();
     }
 
-    /// Open a file node into a tab and bind the editor.
+    /// Show the file `node` in this window and bind the editor. A shown file
+    /// with unsaved edits is not dropped: the person decides first, and the
+    /// new file opens once it was saved or discarded.
     fn open_node(&mut self, node: TreeId) {
-        self.session.open_file(node);
+        if let Some(shown) = self.session.active_buffer()
+            && shown.node != node
+            && shown.dirty
+        {
+            self.close_prompt = Some(ClosePrompt {
+                node: shown.node,
+                name: shown.name.clone(),
+                then_open: Some(node),
+            });
+            return;
+        }
+        self.show_node(node);
+    }
+
+    fn show_node(&mut self, node: TreeId) {
+        if !self.session.open_file(node) {
+            return;
+        }
         self.seed_buffer(node);
         self.invalidate_search_projection();
         explorer::set_current(&mut self.sidebar, Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.reconcile_tabs();
+        self.refresh_header();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1990,94 +1945,19 @@ impl CodeApp {
         }
     }
 
-    /// Close the tab at session index `idx` — immediately if it is clean, or
-    /// by raising the unsaved-changes prompt if it has edits (closing would
-    /// silently discard them). The one entry point every close path funnels
-    /// through — a pill's ×, Ctrl+W, the file tree — so they all read the
-    /// same and none skips the prompt.
-    fn request_close_tab(&mut self, idx: usize) {
-        let Some(buf) = self.session.open.get(idx) else {
-            return;
-        };
-        if buf.dirty {
-            self.close_prompt = Some(ClosePrompt {
-                node: buf.node,
-                name: buf.name.clone(),
-            });
-            return;
-        }
-        let node = buf.node;
-        self.close_node_tab(node);
-    }
-
-    /// Close the tab holding `node`, if it is still open — the low-level
-    /// removal used once a close is actually decided: already clean, a
-    /// discarded prompt, or a save that landed. Starts the pill's fade if
-    /// nothing already did — a pill's own × starts it before the app even
-    /// learns of the close; every other path has to ask here.
-    fn close_node_tab(&mut self, node: TreeId) {
-        if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
-            self.session.close_tab(idx);
+    /// Stop showing `node` once that is decided — already clean, a discarded
+    /// prompt, or a save that landed — and show the file the person asked
+    /// for next, if any.
+    fn close_node(&mut self, node: TreeId, then_open: Option<TreeId>) {
+        if self.session.buffer_of(node).is_some() {
+            self.session.close_file(node);
             self.invalidate_search_projection();
             self.bound_node = None;
-            let id = node as u64;
-            if !self.tabs.is_closing(id) {
-                self.tabs.start_closing(id);
-            }
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-            explorer::set_current(
-                &mut self.sidebar,
-                self.session.active_buffer().map(|b| b.node),
-            );
-            self.reconcile_tabs();
+            explorer::set_current(&mut self.sidebar, None);
+            self.refresh_header();
         }
-    }
-
-    /// Read back everything the shared tab bar did with the pointer this
-    /// frame: which pill is selected (the bar already moved its own
-    /// `active_id` on press — this mirrors it into the session), a
-    /// drag-reorder, a close, and the per-tab search chip — routed to Find,
-    /// this app's equivalent of "search within this tab".
-    fn drain_tab_bar(&mut self, doc: &AutoCommit) {
-        let selected = self.tabs.active_id();
-        if let Some(idx) = self
-            .session
-            .open
-            .iter()
-            .position(|b| b.node as u64 == selected)
-            && self.session.active != Some(idx)
-        {
-            self.session.active = Some(idx);
-            self.bound_node = None;
-            explorer::set_current(
-                &mut self.sidebar,
-                self.session.active_buffer().map(|b| b.node),
-            );
-        }
-
-        if let Some((from, to)) = self.tabs.take_reorder() {
-            self.session.reorder_tab(from, to);
-        }
-
-        if let Some(id) = self.tabs.take_close() {
-            // Always start the sweep, even if this ends up only raising a
-            // prompt: `TabBar::start_closing` has already faded the pill
-            // regardless of what the app decides, so this id must still get
-            // `finalize_close`d once the fade elapses, or a cancelled close
-            // would leave it permanently marked "closing" and never come
-            // back — see `TabBar::is_closing`.
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-            if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id) {
-                self.request_close_tab(idx);
-            }
-        }
-
-        if let Some(id) = self.tabs.take_search()
-            && let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id)
-        {
-            self.session.active = Some(idx);
-            self.bound_node = None;
-            self.open_find(false, doc);
+        if let Some(next) = then_open {
+            self.show_node(next);
         }
     }
 
@@ -2098,7 +1978,7 @@ impl CodeApp {
                     // conflict prompt (now showing) gets answered first.
                     let snapshot = doc.clone();
                     if self.save_buffer(&snapshot, prompt.node, false) {
-                        self.close_node_tab(prompt.node);
+                        self.close_node(prompt.node, prompt.then_open);
                     }
                 } else {
                     // No file yet: the destination has to be chosen first. The
@@ -2108,7 +1988,7 @@ impl CodeApp {
                     self.request_save_as(prompt.node);
                 }
             }
-            CloseChoice::Discard => self.close_node_tab(prompt.node),
+            CloseChoice::Discard => self.close_node(prompt.node, prompt.then_open),
             CloseChoice::Cancel => {}
         }
     }
@@ -2276,11 +2156,6 @@ impl CodeApp {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
             }
-            Command::CloseTab => {
-                if let Some(i) = self.session.active {
-                    self.request_close_tab(i);
-                }
-            }
             Command::ToggleBottomPanel => {
                 if self.panel_visible {
                     self.close_bottom_panel();
@@ -2321,9 +2196,8 @@ impl CodeApp {
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
-    fn drain_child_events(&mut self, doc: &AutoCommit) {
+    fn drain_child_events(&mut self) {
         self.drain_explorer_events();
-        self.drain_tab_bar(doc);
         if let Some(index) = self.panel.take_activated_hit() {
             self.open_search_hit(index);
         }
@@ -2772,6 +2646,7 @@ impl CodeApp {
             self.close_prompt = Some(ClosePrompt {
                 node: buf.node,
                 name: buf.name.clone(),
+                then_open: None,
             });
         }
     }
@@ -2910,7 +2785,57 @@ impl CodeApp {
         sidebar_node
     }
 
-    /// Lay out the editor column: tab bar, find bar, editor, and (when
+    /// The header above the editor: the shown file's name, clear of the
+    /// overlay hamburger.
+    fn build_header(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let header_text_node = self.header.build_layout(taffy, theme, node_map);
+        self.header_text_node = Some(header_text_node);
+        // The overlay hamburger owns the header's left edge.
+        let inset = if self.sidebar_layout() == SplitLayout::Overlay {
+            HAMBURGER_W as f32
+        } else {
+            0.0
+        } + theme.gap_standard;
+        #[allow(
+            clippy::unwrap_used,
+            reason = "the header wraps one freshly-created child in the same app-owned taffy arena"
+        )]
+        let header_node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    align_items: Some(taffy::AlignItems::Center),
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    padding: taffy::Rect {
+                        left: taffy::LengthPercentage::length(inset),
+                        right: taffy::LengthPercentage::length(0.0),
+                        top: taffy::LengthPercentage::length(0.0),
+                        bottom: taffy::LengthPercentage::length(0.0),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    min_size: Size {
+                        width: Dimension::length(0.0),
+                        height: Dimension::auto(),
+                    },
+                    ..Default::default()
+                },
+                &[header_text_node],
+            )
+            .unwrap();
+        self.header_node = Some(header_node);
+        header_node
+    }
+
+    /// Lay out the editor column: header, find bar, editor, and (when
     /// visible) the bottom panel, stacked into one flex column.
     ///
     /// # Panics
@@ -2924,22 +2849,7 @@ impl CodeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(tabs_node).cloned() {
-            let _ = taffy.set_style(
-                tabs_node,
-                Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::length(EDITOR_CHROME_H),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..existing
-                },
-            );
-        }
-        self.tabs_node = Some(tabs_node);
+        let header_node = self.build_header(taffy, theme, node_map);
 
         self.panel_toggle.set_expanded(self.panel_visible);
         let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
@@ -2960,7 +2870,7 @@ impl CodeApp {
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
-                &[tabs_node, panel_toggle_node],
+                &[header_node, panel_toggle_node],
             )
             .unwrap();
         self.editor_header_node = Some(editor_header_node);
@@ -2982,7 +2892,7 @@ impl CodeApp {
         }
         self.editor_node = Some(editor_node);
 
-        // The find bar sits between the tabs and the buffer, so it never covers
+        // The find bar sits between the header and the buffer, so it never covers
         // the code it is searching.
         let find_node = self.find.build_layout(taffy, theme, node_map);
         self.find_node = Some(find_node);
@@ -3040,7 +2950,7 @@ impl CodeApp {
             && self.palette.handle_key(event, modifiers, state)
         {
             *handled = true;
-            self.drain_child_events(state);
+            self.drain_child_events();
             return true;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -3210,7 +3120,6 @@ impl CodeApp {
             "f" => Some(Command::Find),
             "h" => Some(Command::Replace),
             "g" => Some(Command::GoToLine),
-            "w" => Some(Command::CloseTab),
             _ => None,
         };
         if let Some(command) = command {
@@ -3341,12 +3250,6 @@ impl CodeApp {
 
         if let Some(n) = self.panel_toggle_node {
             self.panel_toggle
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
-        if !*ctx.handled
-            && let Some(n) = self.tabs_node
-        {
-            self.tabs
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         if self.panel_visible
@@ -3546,7 +3449,7 @@ impl Widget for CodeApp {
 
         self.check_disk_staleness();
         self.refresh_find(state);
-        self.reconcile_tabs();
+        self.refresh_header();
         self.refresh_diagnostics(state);
         self.refresh_status();
         let chrome = (
@@ -3680,13 +3583,14 @@ impl Widget for CodeApp {
                         col_origin.x + f64::from(header_layout.location.x),
                         col_origin.y + f64::from(header_layout.location.y),
                     );
-                    if let Some(n) = self.tabs_node {
-                        self.tabs.apply_layout(taffy, n, header_origin);
-                        // Reserve the bar's left edge for the overlay hamburger so
-                        // the first tab isn't drawn beneath it.
-                        if self.sidebar_layout() == SplitLayout::Overlay {
-                            self.tabs.inset_left(HAMBURGER_W);
-                        }
+                    if let (Some(n), Some(text)) = (self.header_node, self.header_text_node)
+                        && let Ok(bar) = taffy.layout(n)
+                    {
+                        let bar_origin = Point::new(
+                            header_origin.x + f64::from(bar.location.x),
+                            header_origin.y + f64::from(bar.location.y),
+                        );
+                        self.header.apply_layout(taffy, text, bar_origin);
                     }
                     if let Some(n) = self.panel_toggle_node {
                         self.panel_toggle.apply_layout(taffy, n, header_origin);
@@ -3716,8 +3620,6 @@ impl Widget for CodeApp {
     ) {
         let active = self.active_theme(theme);
         let theme = active.as_ref();
-        // Only `draw` has a `Theme` to read the accent colours off of.
-        self.sync_tab_accents(theme);
 
         // Advance the flap easing (frame-rate independent) before computing
         // geometry, so the slide + scrim fade animate while the host keeps
@@ -3747,7 +3649,7 @@ impl Widget for CodeApp {
                     self.sidebar
                         .draw(scene, transform, text_renderer, theme, presence);
                 }
-                self.tabs
+                self.header
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -3763,7 +3665,7 @@ impl Widget for CodeApp {
             SplitLayout::Overlay => {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
-                self.tabs
+                self.header
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -3780,7 +3682,7 @@ impl Widget for CodeApp {
                 if reveal > 0.001 {
                     self.scrim_rect = Rect::new(
                         self.rect.x0,
-                        self.tabs.get_rect().y0,
+                        self.header_rect().y0,
                         self.rect.x1,
                         self.editor.get_rect().y1.max(self.panel_bottom()),
                     );
@@ -3797,7 +3699,7 @@ impl Widget for CodeApp {
                 // The sidebar slides in from the left over the content. Off
                 // fully at reveal 0; flush at reveal 1.
                 let slide = self.flap.slide();
-                let top = self.tabs.get_rect().y0;
+                let top = self.header_rect().y0;
                 let bottom = self.editor.get_rect().y1.max(self.panel_bottom());
                 let x0 = self.rect.x0 - SIDEBAR_WIDTH * (1.0 - slide);
                 let sidebar_rect = Rect::new(x0, top, x0 + SIDEBAR_WIDTH, bottom);
@@ -3950,7 +3852,7 @@ impl Widget for CodeApp {
         }
 
         // Drain whatever the children produced, then refresh derived views.
-        self.drain_child_events(ctx.state);
+        self.drain_child_events();
         self.refresh_diagnostics(ctx.state);
         self.refresh_status();
         // Mirror panel tab changes into focus, if the panel switched itself.
@@ -3974,7 +3876,6 @@ impl Widget for CodeApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        let tab_count = self.session.open.len();
         let active = self
             .session
             .active_buffer()
@@ -3982,10 +3883,7 @@ impl Widget for CodeApp {
         let mut children = vec![
             AccessNode::new(Role::Heading { level: 1 })
                 .with_name(self.session.project.name.clone()),
-            AccessNode::new(Role::StaticText).with_name(format!(
-                "{active}; {tab_count} open {}",
-                if tab_count == 1 { "file" } else { "files" }
-            )),
+            AccessNode::new(Role::StaticText).with_name(active.to_string()),
         ];
         if let Some(notice) = &self.notice {
             children.push(
@@ -4022,7 +3920,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs, &self.panel_toggle];
+        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.header, &self.panel_toggle];
         if self.find.is_visible() {
             out.push(&self.find);
         }
@@ -4035,7 +3933,7 @@ impl Widget for CodeApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut out: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.sidebar, &mut self.tabs, &mut self.panel_toggle];
+            vec![&mut self.sidebar, &mut self.header, &mut self.panel_toggle];
         if self.find.is_visible() {
             out.push(&mut self.find);
         }
@@ -4068,7 +3966,6 @@ impl Widget for CodeApp {
 
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
-            || self.tabs.needs_redraw()
             || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
@@ -4121,7 +4018,6 @@ impl Widget for CodeApp {
 
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
-        self.tabs.mark_drawn();
         self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
