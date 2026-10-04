@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
@@ -894,40 +894,29 @@ impl Default for SnippetsApp {
 }
 
 impl SnippetsApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            actions::SnippetsOperation::OpenSnippet { id } => {
-                if self.library.get(id).is_none() {
+    /// Show what `view` names, invoked from the snippet or tag it rides, the
+    /// palette, search or an agent.
+    pub(crate) fn show(&mut self, view: actions::SnippetsView) -> ui::framework::EffectAnswer {
+        match view {
+            actions::SnippetsView::Open { snippet } => {
+                if self.library.get(snippet).is_none() {
                     return Err("snippet no longer exists".into());
                 }
-                self.open_snippet(id);
+                self.open_snippet(snippet);
             }
-            actions::SnippetsOperation::RevealTag { tag } => {
+            actions::SnippetsView::Reveal { tag } => {
                 if !self.library.tags().iter().any(|(known, _)| known == &tag) {
                     return Err("tag no longer exists".into());
                 }
                 self.search_input.set_text("");
                 self.select(Selection::Tag(tag));
             }
-            actions::SnippetsOperation::FocusSearch => {
+            actions::SnippetsView::Search => {
                 self.body_editor.set_focused(false);
                 self.search_input.set_focus(true);
             }
         }
-        Ok(true)
+        Ok(ui::framework::Effected::done())
     }
 }
 
@@ -936,31 +925,6 @@ impl ui::widget::Widget for SnippetsApp {
         dyn ui::widget::controls::ActionControls,
         dyn ui::undo::UndoPoints
     );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::SNIPPETS_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.sync_body_editor();
