@@ -2064,8 +2064,13 @@ fn search_field_focus_and_typing_narrow_the_list() {
         // Focus the search field with '/', then type a query via keystrokes.
         assert!(h.press_char("/"), "'/' focuses search");
         assert!(h.app.search.is_focused());
+        let versions = h.app.app.versions().len();
         h.type_text("hopper");
         assert_eq!(h.app.search.value(), "hopper");
+        assert!(
+            !ui::undo::needs_commit(&*h.app) && h.app.app.versions().len() == versions,
+            "a query is the window's own, never a document edit"
+        );
         let visible = h.app.visible_ids();
         assert_eq!(visible.len(), 1, "only Grace Hopper matches 'hopper'");
         assert_eq!(h.app.store.get(visible[0]).unwrap().last, "Hopper");

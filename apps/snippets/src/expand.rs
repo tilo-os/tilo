@@ -576,16 +576,6 @@ impl ExpandModal {
         field.input.take_dirty();
         accepted.then_some(ExpandOutcome::Stay)
     }
-
-    pub fn needs_commit(&self) -> bool {
-        self.fields.iter().any(|f| ui::undo::needs_commit(&f.input))
-    }
-
-    pub fn on_commit(&mut self) {
-        for field in &mut self.fields {
-            ui::undo::on_commit(&mut field.input);
-        }
-    }
 }
 
 #[cfg(test)]
