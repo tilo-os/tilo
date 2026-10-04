@@ -70,13 +70,12 @@ pub struct OutputMode {
 }
 
 impl OutputMode {
+    /// How a person reads the mode: `1920 × 1080 at 60 Hz`, with the rate's
+    /// fraction only when it has one (`59.94 Hz`).
     pub fn label(self) -> String {
-        format!(
-            "{} × {} · {:.2} Hz",
-            self.width,
-            self.height,
-            f64::from(self.refresh_mhz) / 1000.0
-        )
+        let hz = format!("{:.2}", f64::from(self.refresh_mhz) / 1000.0);
+        let hz = hz.trim_end_matches('0').trim_end_matches('.');
+        format!("{} × {} at {hz} Hz", self.width, self.height)
     }
 }
 
