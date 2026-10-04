@@ -436,7 +436,8 @@ pub fn open_ush_session(
         | ush::supervisor::ServeResponse::HostNotAllowed { reason } => {
             return Err(LaunchError::Failed(format!("supervisor denied: {reason}")));
         }
-        other @ ush::supervisor::ServeResponse::Environments { .. } => {
+        other @ (ush::supervisor::ServeResponse::Environments { .. }
+        | ush::supervisor::ServeResponse::Allowed) => {
             return Err(LaunchError::Failed(format!(
                 "supervisor answered {other:?} to a session request"
             )));
