@@ -896,7 +896,10 @@ impl Settings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     pub chapter: usize,
-    pub page: usize,
+    /// The first block (paragraph, heading, …) on screen, counted from 0 in
+    /// the chapter. A block, not a page number, so the reader lands on the
+    /// same passage at any window or text size.
+    pub block: usize,
     /// 0.0..=1.0 fraction through the whole book, for the shelf bar.
     pub fraction: f32,
     /// ms-since-epoch this book was last opened, for the "recently opened"
