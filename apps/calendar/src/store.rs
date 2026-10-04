@@ -1,36 +1,6 @@
-//! On-disk persistence for the calendar's CRDT document, plus the
-//! filesystem locations the import/export actions use.
-//!
-//! The whole calendar (projects / events / tasks and every item's
-//! rich-text notes) lives in one Automerge document. The document's `save()`
-//! bytes are written atomically to a single file, so events and notes survive
-//! a restart and peers can converge on the same bytes. A fresh machine starts
-//! with an empty document.
+//! The filesystem locations the calendar's import and export use.
 
-use std::io;
 use std::path::{Path, PathBuf};
-
-use automerge::AutoCommit;
-
-/// Load a previously-saved calendar document. Returns `None` when the file
-/// does not exist yet (first launch) or cannot be parsed.
-pub fn load(path: &Path) -> Option<AutoCommit> {
-    let (dir, name) = tilo_files::file_at(path).ok()?;
-    let bytes = tilo_files::blocking::read(&dir, &name).ok()?;
-    AutoCommit::load(&bytes).ok()
-}
-
-/// Write the document to `path` atomically (temp file + rename) so a crash
-/// mid-write can never leave a half-written, unloadable file behind.
-///
-/// # Errors
-///
-/// Returns an error if `path`'s parent directory cannot be created, or if
-/// the atomic write (temp file creation, write, or rename) fails.
-pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
-    let (dir, name) = tilo_files::file_at(path).map_err(io::Error::other)?;
-    tilo_files::blocking::write_atomic(&dir, &name, &doc.save()).map_err(io::Error::other)
-}
 
 /// Directory the import/export actions read from and write to. In place of a
 /// file picker, use the
@@ -87,34 +57,11 @@ pub fn newest_ics(dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
-    use automerge::{ObjType, ROOT, ReadDoc};
 
     fn tmp_dir() -> PathBuf {
         let p = std::env::temp_dir().join(format!("cal-store-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&p).unwrap();
         p
-    }
-
-    #[test]
-    fn save_then_load_round_trips_and_a_missing_file_is_none() {
-        let dir = tmp_dir();
-        let path = dir.join("calendar.automerge");
-        let mut doc = AutoCommit::new();
-        doc.put_object(&ROOT, "events", ObjType::Map).unwrap();
-        save(&path, &mut doc).unwrap();
-
-        let loaded = load(&path).expect("file present after save");
-        assert!(matches!(
-            loaded.get(&ROOT, "events"),
-            Ok(Some((automerge::Value::Object(ObjType::Map), _)))
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-
-        // Missing file.
-        let dir = tmp_dir();
-        assert!(load(&dir.join("nope.automerge")).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

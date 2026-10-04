@@ -4,7 +4,6 @@
 
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
@@ -18,7 +17,7 @@ use uuid::Uuid;
 
 use crate::actions::{
     CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
-    NoteOwner, ProjectData, TaskData, encode,
+    NoteOwner, ProjectData, TaskData,
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
@@ -550,75 +549,6 @@ impl ResourceApp for CalendarShell {
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
             .collect()
-    }
-}
-
-/// Framework dispatcher when hosted; local action host for standalone tests.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Calendar>>,
-    last: Option<EncodedAction>,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Calendar>) {
-        self.framework = Some(dispatcher);
-    }
-
-    /// The framework's dispatcher, once the calendar is hosted.
-    pub(crate) fn framework(&self) -> Option<&Dispatcher<Calendar>> {
-        self.framework.as_ref()
-    }
-
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &CalendarAction) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(encode(action));
-                let _ =
-                    dispatcher.apply_now_with(doc, action, crate::actions::history_context(action));
-            }
-            None => {
-                self.local.dispatch_with_context(
-                    doc,
-                    CALENDAR_ACTION_TYPE,
-                    action,
-                    crate::actions::history_context(action),
-                );
-            }
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &CalendarAction,
-        context: tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(encode(action));
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
     }
 }
 
