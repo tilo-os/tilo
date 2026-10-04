@@ -206,10 +206,8 @@ struct Runtime {
     next_tab: AtomicU32,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
     /// The profile socket this process serves its host on.
-    #[cfg(unix)]
     server: std::sync::OnceLock<Arc<shared::Server>>,
     /// Set when another process's host runs this profile.
-    #[cfg(unix)]
     link: Option<shared::ClientLink>,
 }
 impl Runtime {
@@ -238,14 +236,12 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.process.stopping.store(true, Ordering::Release);
-        #[cfg(unix)]
         if self.link.is_some() {
             // The command writer sends what is queued, then hangs up; the
             // owner closes whatever this process left open.
             self.tx.close();
             return;
         }
-        #[cfg(unix)]
         if let Some(server) = self.server.get() {
             server.stop();
         }
@@ -411,27 +407,40 @@ fn host_path() -> Result<PathBuf, String> {
     Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
 }
 
+/// Every thread the Chromium transport runs is named and spawned here.
+fn spawn_named(
+    name: &str,
+    work: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name(name.into()).spawn(work)
+}
+
+/// The profile directory, created and canonicalized: the host requires an
+/// absolute profile, and every process must name one profile identically.
+fn prepare_profile(profile: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
+    profile.canonicalize().map_err(|error| error.to_string())
+}
+
 fn spawn_command_writer(
     stdin: std::process::ChildStdin,
     rx: Arc<CommandQueue>,
     writer_shared: Arc<Shared>,
     writer_routes: Routes,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("chromium-commands".into())
-        .spawn(move || {
-            let mut writer = stdin;
-            while let Some(command) = rx.pop() {
-                if let Err(error) = protocol::write_json(&mut writer, &command) {
-                    writer_shared.fail(format!("Chromium command channel closed: {error}"));
-                    fail_routes(
-                        &writer_routes,
-                        &format!("Chromium command channel closed: {error}"),
-                    );
-                    break;
-                }
+    spawn_named("chromium-commands", move || {
+        let mut writer = stdin;
+        while let Some(command) = rx.pop() {
+            if let Err(error) = protocol::write_json(&mut writer, &command) {
+                writer_shared.fail(format!("Chromium command channel closed: {error}"));
+                fail_routes(
+                    &writer_routes,
+                    &format!("Chromium command channel closed: {error}"),
+                );
+                break;
             }
-        })
+        }
+    })
 }
 
 fn spawn_frame_reader(
@@ -442,54 +451,52 @@ fn spawn_frame_reader(
     ready_tx: std::sync::mpsc::SyncSender<()>,
     hub: Arc<shared::Hub>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new()
-        .name("chromium-frames".into())
-        .spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                match protocol::read_packet(&mut reader) {
-                    Ok(Some(protocol::Packet::Frame(frame))) => {
-                        deliver_frame(&reader_routes, 1, frame);
-                    }
-                    Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
-                        deliver_frame(&reader_routes, tab, frame);
-                    }
-                    Ok(Some(protocol::Packet::Json(value))) => {
-                        if let Err(error) =
-                            route_native_event(&value, &reader_routes, &download_events, &ready_tx)
-                        {
-                            reader_shared.fail(format!("Invalid Chromium event: {error}"));
-                            break;
-                        }
-                        if matches!(
-                            value.get("event").and_then(Value::as_str),
-                            Some("download_prompt" | "download" | "download_runtime" | "ready")
-                        ) {
-                            hub.broadcast(&value);
-                        }
-                    }
-                    Ok(None) => {
-                        reader_shared.fail("Chromium engine disconnected".into());
+    spawn_named("chromium-frames", move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            match protocol::read_packet(&mut reader) {
+                Ok(Some(protocol::Packet::Frame(frame))) => {
+                    deliver_frame(&reader_routes, 1, frame);
+                }
+                Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
+                    deliver_frame(&reader_routes, tab, frame);
+                }
+                Ok(Some(protocol::Packet::Json(value))) => {
+                    if let Err(error) =
+                        route_native_event(&value, &reader_routes, &download_events, &ready_tx)
+                    {
+                        reader_shared.fail(format!("Invalid Chromium event: {error}"));
                         break;
                     }
-                    Err(error) => {
-                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
-                        break;
+                    if matches!(
+                        value.get("event").and_then(Value::as_str),
+                        Some("download_prompt" | "download" | "download_runtime" | "ready")
+                    ) {
+                        hub.broadcast(&value);
                     }
                 }
+                Ok(None) => {
+                    reader_shared.fail("Chromium engine disconnected".into());
+                    break;
+                }
+                Err(error) => {
+                    reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                    break;
+                }
             }
-            queue_download_event(
-                &download_events,
-                WebViewEvent::DownloadRuntime {
-                    admitted: 0,
-                    detached: 0,
-                    accepting: false,
-                    error: "Chromium engine disconnected".into(),
-                },
-            );
-            fail_routes(&reader_routes, "Chromium engine disconnected");
-            hub.close_all();
-        })
+        }
+        queue_download_event(
+            &download_events,
+            WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: false,
+                error: "Chromium engine disconnected".into(),
+            },
+        );
+        fail_routes(&reader_routes, "Chromium engine disconnected");
+        hub.close_all();
+    })
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
@@ -564,8 +571,6 @@ fn launch_host(
     extensions: &[String],
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
-    std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
-    let profile = profile.canonicalize().map_err(|error| error.to_string())?;
     let mut command = Command::new(host);
     if private_root.is_some() {
         command.arg("--private");
@@ -694,9 +699,10 @@ impl ChromiumEngine {
         let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
         // A host needs its profile to itself: join the host already running
         // it, or become the process that runs it.
-        #[cfg(unix)]
+        let profile = &prepare_profile(profile)?;
         let claim = match shared::claim(profile)? {
-            shared::Role::Owner(claim) => claim,
+            shared::Role::Owner(claim) => Some(claim),
+            shared::Role::Alone => None,
             shared::Role::Client(stream) => {
                 cleanup_on_error.disarm();
                 return shared::connect(stream);
@@ -729,9 +735,7 @@ impl ChromiumEngine {
             routes: routes.clone(),
             next_tab: AtomicU32::new(2),
             download_events: download_events.clone(),
-            #[cfg(unix)]
             server: std::sync::OnceLock::new(),
-            #[cfg(unix)]
             link: None,
         });
         let hub = Arc::new(shared::Hub::default());
@@ -767,10 +771,15 @@ impl ChromiumEngine {
             let _ = child.wait();
             return Err(format!("Chromium did not initialize: {error}"));
         }
-        #[cfg(unix)]
-        let server = match claim.serve(Arc::downgrade(&runtime), &hub) {
+        let served = claim
+            .as_ref()
+            .map(|claim| claim.serve(Arc::downgrade(&runtime), &hub))
+            .transpose();
+        let server = match served {
             Ok(server) => {
-                let _ = runtime.server.set(server.clone());
+                if let Some(server) = &server {
+                    let _ = runtime.server.set(server.clone());
+                }
                 server
             }
             Err(error) => {
@@ -787,23 +796,22 @@ impl ChromiumEngine {
         let supervisor_queue = tx.clone();
         let wait_for_private_cleanup = private_root.is_some();
         let supervisor_private_root = private_root;
-        let supervisor = std::thread::Builder::new()
-            .name("chromium-supervisor".into())
-            .spawn(move || {
-                let Some(child) = take_supervisor_child(&supervisor_child) else {
-                    supervisor_shared.fail("Chromium supervisor lost process ownership".into());
-                    supervisor_queue.close();
-                    return;
-                };
-                supervise_child(
-                    child,
-                    &supervisor_shared,
-                    &supervisor_queue,
-                    supervisor_private_root.as_deref(),
-                );
-                #[cfg(unix)]
-                claim.release_after_exit(&server);
-            });
+        let supervisor = spawn_named("chromium-supervisor", move || {
+            let Some(child) = take_supervisor_child(&supervisor_child) else {
+                supervisor_shared.fail("Chromium supervisor lost process ownership".into());
+                supervisor_queue.close();
+                return;
+            };
+            supervise_child(
+                child,
+                &supervisor_shared,
+                &supervisor_queue,
+                supervisor_private_root.as_deref(),
+            );
+            if let Some(claim) = claim {
+                claim.release_after_exit(server.as_ref());
+            }
+        });
         let supervisor = match supervisor {
             Ok(supervisor) => supervisor,
             Err(error) => {
@@ -843,13 +851,10 @@ impl WebViewEngine for ChromiumEngine {
             waker: Mutex::new(waker),
             ..Shared::default()
         });
-        #[cfg(unix)]
         let tab = match &self.runtime.link {
             Some(link) => link.create_tab(&self.tx, shared.clone())?,
             None => self.runtime.admit_tab(&shared, |_| {})?,
         };
-        #[cfg(not(unix))]
-        let tab = self.runtime.admit_tab(&shared, |_| {})?;
         Ok(Arc::new(Self {
             tx: self.tx.clone(),
             shared,
