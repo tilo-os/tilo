@@ -46,8 +46,17 @@ use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
 /// One row of the open list: a menu row.
 const ITEM_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
+/// Tallest the rows of the open list get before it scrolls.
 const MAX_LIST_HEIGHT: f64 = 240.0;
 const LIST_GAP: f64 = 4.0;
+/// The open list's inset round its rows: the menu inset every menu shares
+/// (`floating_surface::menu_inset`), so the armed row runs concentric with
+/// the panel.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const LIST_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
 const LINE_PX: f32 = 60.0;
@@ -432,7 +441,22 @@ impl Dropdown {
     /// Height of the open list box for `n` filtered rows (>=1 so the
     /// "no matches" row has a box to live in).
     fn list_box_height(n: usize) -> f64 {
+        Self::rows_height(n) + 2.0 * LIST_PAD
+    }
+
+    /// Height of the visible rows of the open list, inside its inset.
+    fn rows_height(n: usize) -> f64 {
         (count_f64(n.max(1)) * ITEM_HEIGHT).min(MAX_LIST_HEIGHT)
+    }
+
+    /// The rows' box inside the open `list`.
+    fn rows_rect(list: Rect) -> Rect {
+        Rect::new(
+            list.x0 + LIST_PAD,
+            list.y0 + LIST_PAD,
+            list.x1 - LIST_PAD,
+            list.y1 - LIST_PAD,
+        )
     }
 
     /// Absolute rect of the open list: below the control, or above it when
@@ -454,15 +478,16 @@ impl Dropdown {
 
     fn max_scroll(n: usize) -> f32 {
         let content = count_f64(n) * ITEM_HEIGHT;
-        px((content - Self::list_box_height(n)).max(0.0))
+        px((content - Self::rows_height(n)).max(0.0))
     }
 
     /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
     fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
-        if !list.contains(pos) {
+        let rows = Self::rows_rect(list);
+        if !rows.contains(pos) {
             return None;
         }
-        let rel = pos.y - list.y0 + f64::from(self.scroll);
+        let rel = pos.y - rows.y0 + f64::from(self.scroll);
         if rel < 0.0 {
             return None;
         }
@@ -478,7 +503,7 @@ impl Dropdown {
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = px(Self::list_box_height(n));
+        let box_h = px(Self::rows_height(n));
         let top = px(count_f64(vi) * ITEM_HEIGHT);
         let bottom = top + px(ITEM_HEIGHT);
         if top < self.scroll {
@@ -901,7 +926,6 @@ impl Widget for Dropdown {
         // radius, the floating shadow, and the floating material with its
         // derived edge, so it separates from the field it drops from.
         let radius = f64::from(theme.tokens.radii.panel);
-        let shape = RoundedRect::from_rect(list, radius);
         crate::surface::shadow(
             scene,
             transform,
@@ -911,69 +935,66 @@ impl Widget for Dropdown {
         );
         crate::surface::panel(scene, transform, list, radius, theme);
 
-        // Clip rows to the rounded list box.
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
+        // Rows sit inside the menu inset and scroll inside it.
+        let rows = Self::rows_rect(list);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
 
         if filtered.is_empty() {
             // Centre on the measured line, not the font size (the face's
             // ascent/descent otherwise sits the label low in the row).
             let (_, hint_h) =
                 text_renderer.measure_style("No matches", None, &theme.text(TextRole::Body));
-            let ty = list.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
+            let ty = rows.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
             text_renderer.draw_style(
                 scene,
                 "No matches",
                 theme.text_dim,
-                translated(transform, list.x0 + PAD_X, ty),
+                translated(transform, rows.x0 + LIST_PAD, ty),
                 None,
                 &theme.text(TextRole::Body),
             );
         } else {
             for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = list.y0 + (count_f64(vi) * ITEM_HEIGHT) - f64::from(self.scroll);
+                let row_top = rows.y0 + (count_f64(vi) * ITEM_HEIGHT) - f64::from(self.scroll);
                 let row_bottom = row_top + ITEM_HEIGHT;
                 // Cull rows scrolled out of the box (hundreds of zones).
-                if row_bottom < list.y0 || row_top > list.y1 {
+                if row_bottom < rows.y0 || row_top > rows.y1 {
                     continue;
                 }
                 let Some(opt) = self.options.get(opt_idx) else {
                     continue;
                 };
-                let row = Rect::new(list.x0, row_top, list.x1, row_bottom);
+                let row = Rect::new(rows.x0, row_top, rows.x1, row_bottom);
                 let is_selected = self
                     .values
                     .get(opt_idx)
                     .is_some_and(|value| *value == self.selected);
-                if vi == self.highlight {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme.tokens.colors.intent.inverted,
-                        None,
-                        &row,
-                    );
-                } else if is_selected {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        theme
-                            .tokens
-                            .colors
-                            .lift_on(crate::chrome::panel_ground(theme), 0.5),
-                        None,
-                        &row,
-                    );
-                }
+                // The armed row is inverted, as in every menu (HIG §9.3);
+                // the applied value carries a trailing check.
                 let color = if vi == self.highlight {
-                    theme.tokens.colors.intent.on_inverted
+                    crate::widget::floating_surface::paint_armed_row(scene, transform, row, theme)
                 } else {
                     theme.text_primary
                 };
+                let check = f64::from(theme.tokens.metrics.icon_sm);
+                if is_selected {
+                    crate::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::from_center_size(
+                            Point::new(row.x1 - LIST_PAD - check / 2.0, row.center().y),
+                            (check, check),
+                        ),
+                        crate::icons::Icon::Check,
+                        color,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
                 // Rows are one `ITEM_HEIGHT` tall, so a long option elides
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width_style(
                     opt,
-                    px((list.width() - PAD_X * 2.0).max(0.0)),
+                    px((row.width() - LIST_PAD * 3.0 - check).max(0.0)),
                     &theme.text(TextRole::Body),
                 );
                 let (_, opt_h) =
@@ -983,7 +1004,7 @@ impl Widget for Dropdown {
                     scene,
                     &shown,
                     color,
-                    translated(transform, list.x0 + PAD_X, ty),
+                    translated(transform, row.x0 + LIST_PAD, ty),
                     None,
                     &theme.text(TextRole::Body),
                 );
@@ -1245,6 +1266,33 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    /// The open list's rows sit inside the menu inset every menu shares,
+    /// so its armed row runs concentric with the panel: the inset is not a
+    /// row, and the first row starts after it.
+    #[test]
+    fn the_open_list_insets_its_rows_like_every_menu() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        dd.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
+        let n = dd.options.len();
+        let list = dd.list_rect(n);
+        let theme = Theme::dark();
+        assert!(
+            (LIST_PAD - crate::widget::floating_surface::menu_inset(&theme)).abs() < 1e-9,
+            "the dropdown's inset is the shared menu inset"
+        );
+        let x = list.center().x;
+        assert_eq!(dd.row_at(Point::new(x, list.y0 + 2.0), list, n), None);
+        assert_eq!(dd.row_at(Point::new(4.0, list.y0 + 20.0), list, n), None);
+        assert_eq!(
+            dd.row_at(Point::new(x, list.y0 + LIST_PAD + 1.0), list, n),
+            Some(0)
+        );
+        assert!(
+            (list.height() - (count_f64(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
+            "the list hugs its rows plus the inset: {list:?}"
+        );
     }
 
     /// CRDT doc with `tz` seeded as a Text object holding `value`.
@@ -1796,13 +1844,13 @@ mod tests {
             let short = Dropdown::new(opts(), "tz");
             assert_eq!(
                 short.open_overlay_height(),
-                CONTROL_HEIGHT + LIST_GAP + 4.0 * ITEM_HEIGHT
+                CONTROL_HEIGHT + LIST_GAP + 4.0 * ITEM_HEIGHT + 2.0 * LIST_PAD
             );
 
             let long = Dropdown::new((0..100).map(|index| index.to_string()).collect(), "value");
             assert_eq!(
                 long.open_overlay_height(),
-                CONTROL_HEIGHT + LIST_GAP + MAX_LIST_HEIGHT
+                CONTROL_HEIGHT + LIST_GAP + MAX_LIST_HEIGHT + 2.0 * LIST_PAD
             );
         }
 
