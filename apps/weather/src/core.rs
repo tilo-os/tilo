@@ -954,13 +954,17 @@ impl Core {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         let sp = &theme.tokens.spacing;
         let inset = f64::from(sp.s2);
+        // The field and the rows' text start on the column's content edge,
+        // where the column's title starts; a row's lift bleeds past it.
+        let gutter = ui::chrome::column_gutter(theme);
+        let edge = gutter - ui::chrome::row_bleed(theme);
         let mut top = rect.y0 + inset;
 
         // While a place is being added, its field heads the list; the
         // suggestions float over the rows below it (drawn in the overlay).
         if self.search.is_editing() {
             let field_h = ButtonFace::height(ControlSize::Regular, theme);
-            let field = Rect::new(rect.x0 + inset, top, rect.x1 - inset, top + field_h);
+            let field = Rect::new(rect.x0 + gutter, top, rect.x1 - gutter, top + field_h);
             self.search_field_rect = field;
             self.search.apply_layout_external(field);
             self.search
@@ -1004,7 +1008,7 @@ impl Core {
             return;
         }
         self.empty_action = None;
-        self.list_rect = Rect::new(rect.x0 + inset, top, rect.x1 - inset, rect.y1 - inset);
+        self.list_rect = Rect::new(rect.x0 + edge, top, rect.x1 - edge, rect.y1 - inset);
         self.row_h = crate::presentation::row_height(ctx.text, theme);
         self.draw_place_list(ctx);
     }
