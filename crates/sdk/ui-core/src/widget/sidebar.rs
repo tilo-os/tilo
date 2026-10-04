@@ -47,8 +47,6 @@ pub const DEFAULT_DRAWER_BREAKPOINT: f64 = Metrics::BASE.compact_breakpoint as f
 /// Upper bound (seconds) on the per-frame delta used to advance the slide, so
 /// a stale clock (first frame, or a parked event loop) can't teleport it.
 const MAX_FRAME_DT: f64 = 0.1;
-/// How far an open overlay drawer dims what is behind it.
-pub(crate) const DRAWER_SCRIM_STRENGTH: f32 = 0.3;
 
 /// Narrows an eased reveal to `f32` for vello.
 #[allow(
@@ -736,14 +734,14 @@ impl SidebarDrawer {
 
     // --- drawing ------------------------------------------------------------
 
-    /// Paint the scrim behind an open overlay drawer (`surfaces.scrim`,
-    /// strength following the reveal). Call after the content is drawn and
+    /// Paint the scrim behind an open overlay drawer (`surfaces.scrim` at
+    /// the one scrim strength, following the reveal). Call after the content is drawn and
     /// before [`Self::paint_panel`]. No-op when docked.
     pub fn draw_scrim(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if self.scrim_rect.width() <= 0.0 {
             return;
         }
-        let strength = DRAWER_SCRIM_STRENGTH * unit_f32(self.flap.reveal());
+        let strength = crate::overlay::scrim::MODAL_STRENGTH * unit_f32(self.flap.reveal());
         crate::chrome::fill_scrim(scene, transform, self.scrim_rect, strength, theme);
     }
 
