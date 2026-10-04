@@ -70,7 +70,8 @@ pub mod web;
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
 pub use config::{ConfigError, EnvironmentsConfig, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use home_peer::{
-    HomePeerRegistration, RelayEnvironments, home_peer_registry_path, valid_home_peer_label,
+    HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,
+    home_peer_registry_path, valid_home_peer_label,
 };
 pub use mesh::{
     ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
