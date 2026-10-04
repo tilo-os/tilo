@@ -129,7 +129,7 @@ impl Settle {
     /// Take in what a worker finished; with `wait` (or without threads),
     /// wait for it to finish.
     pub fn collect(&mut self, wait: bool) {
-        let wait = wait || !THREADS;
+        let wait = wait || !threads();
         let Some(slot) = &self.running else {
             return;
         };
@@ -165,7 +165,7 @@ impl Settle {
     /// painted here if need be; otherwise the last finished one, while a
     /// worker paints the one asked for.
     pub fn show(&mut self, ask: &Ask, wait: bool) -> Option<ImageData> {
-        let wait = wait || !THREADS;
+        let wait = wait || !threads();
         self.collect(wait);
         if self.wanted(ask)
             && let Some(mut painter) = self.painter.take()
@@ -201,8 +201,11 @@ impl Settle {
     }
 }
 
-/// Whether painting can be handed to another thread here.
-const THREADS: bool = !cfg!(target_arch = "wasm32");
+/// Whether painting can be handed to another thread here: a browser page
+/// has one thread, and waiting there for a job would wait forever.
+fn threads() -> bool {
+    ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+}
 
 /// Paint `ask` with `painter`: the layer's picture when it is not the one
 /// under `have`, and the stroke being painted over it.
