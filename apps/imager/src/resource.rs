@@ -639,6 +639,34 @@ mod tests {
             drive.harness().inspection_json().unwrap().contains("sdb"),
             "the sample drives are staged"
         );
+        // The confirm and customize stations review the official Tilo image:
+        // its media profile and on-write setup are offered.
+        for (scenario, shown) in [
+            (
+                "confirm",
+                ["Tilo 1.0", "Wi-Fi network", "Enroll this machine"],
+            ),
+            (
+                "customize",
+                ["Tilo 1.0", "Hostname", "Preview embedded setup"],
+            ),
+        ] {
+            let mut app =
+                ui::framework::testing::TestApp::<ImagerShell>::capture(Some(scenario)).unwrap();
+            assert_eq!(
+                app.state().source.map(|source| source.name),
+                Some("Tilo 1.0".to_owned()),
+                "{scenario}"
+            );
+            let inspection = app.harness().inspection_json().unwrap();
+            for text in shown {
+                assert!(inspection.contains(text), "{scenario} shows {text}");
+            }
+            assert!(
+                !inspection.contains("written unchanged"),
+                "{scenario} recognises the Tilo image"
+            );
+        }
         let mut empty =
             ui::framework::testing::TestApp::<ImagerShell>::capture(Some("source-empty")).unwrap();
         assert!(empty.state().source.is_none());

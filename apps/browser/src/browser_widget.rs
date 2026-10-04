@@ -4334,8 +4334,7 @@ impl Widget for BrowserWidget {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource
+        dyn ui::widget::controls::ActionControls
     );
 
     #[allow(
@@ -5153,13 +5152,18 @@ impl Widget for BrowserWidget {
     }
 }
 
-impl ui::search::capability::SearchSource for BrowserWidget {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-}
-
 impl BrowserWidget {
+    /// Every history page and download as a search entry.
+    pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_index.entries()
+    }
+
+    /// The row a history or download hit opens, beyond the published page
+    /// of rows too.
+    pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        self.search_index.resource(id).map(live_row)
+    }
+
     /// What only this window knows, as rows beneath the browser resource:
     /// the page it shows, its history session, history, downloads,
     /// extensions and the library and settings presentations, each with the
