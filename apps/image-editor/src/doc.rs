@@ -164,7 +164,20 @@ impl ProjectDoc {
             return Self::operation_matches(doc, &operations, id, operation);
         }
         let order = Self::list(doc, &root, ORDER);
-        let x = 40.0 + f64::from(u32::try_from(doc.length(&order)).unwrap_or(u32::MAX)) * 200.0;
+        // One column per step after the source; the result moves along so
+        // it always stands after the newest step.
+        let x = 40.0
+            + f64::from(
+                u32::try_from(doc.length(&order))
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(1),
+            ) * 200.0;
+        if let Some(output) = Self::read_node(doc, &nodes, "output")
+            && output.position.x < x + 200.0
+            && let Some(row) = get_map(doc, &nodes, "output")
+        {
+            put_if_changed(doc, &row, "x", x + 200.0);
+        }
         let node = GraphNode {
             id: id.into(),
             title: title.into(),

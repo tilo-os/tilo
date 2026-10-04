@@ -187,8 +187,7 @@ impl DbClientApp {
     fn build(session: Session, demo: bool) -> Self {
         let link = Link::new();
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
-        let actions: Vec<ui::widget::Element> =
-            vec![Box::new(search), Box::new(ui::widget::history_button())];
+        let actions: Vec<ui::widget::Element> = vec![Box::new(search)];
         let shell = NavShell::new()
             .with_id("db-client")
             .sidebar(Box::new(Navigator::new(&link)))
