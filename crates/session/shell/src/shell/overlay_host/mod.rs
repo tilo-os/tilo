@@ -1778,8 +1778,9 @@ impl ShellOverlayHost {
         ));
         let app_actions =
             std::rc::Rc::new(crate::shell::search::providers::LiveAppActionsProvider::new(broker));
-        self.app_actions = Some(std::rc::Rc::clone(&app_actions));
-        self.search_registry.register(app_actions);
+        self.search_registry
+            .register(std::rc::Rc::clone(&app_actions));
+        self.app_actions = Some(app_actions);
         self.last_search_query = "\u{0}app-action-provider-attached\u{0}".into();
     }
 

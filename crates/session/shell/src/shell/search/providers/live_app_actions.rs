@@ -1346,12 +1346,12 @@ impl LiveAppActionsProvider {
         resource: &str,
         label: &str,
     ) -> Option<crate::shell::chrome_state::SearchResourceScope> {
-        let room = chrome.tree().desktop.active_workspace()?.room.to_string();
+        let cluster = chrome.tree().desktop.active_workspace()?.room.to_string();
         let root = self
             .directory_roots_in(chrome)
             .0
             .into_iter()
-            .find(|root| root.app_id == app_id && root.cluster_id == room)?;
+            .find(|root| root.app_id == app_id && root.cluster_id == cluster)?;
         Some(crate::shell::chrome_state::SearchResourceScope {
             peer_id: root.peer_id,
             cluster_id: root.cluster_id,
