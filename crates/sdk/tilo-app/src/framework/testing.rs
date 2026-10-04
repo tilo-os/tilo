@@ -499,6 +499,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
         }
     }
 
+    /// Run `visit` on the app's widget of type `T` — a custom surface, a
+    /// widget its view built — for assertions about view state the
+    /// accessibility tree does not show, then run the frame after it.
+    /// `None` when the view has no such widget.
+    pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
+        self.harness()
+            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+                root.find_mut::<T>().map(visit)
+            })
+            .flatten()
+    }
+
     /// Run the frame the app runs after an event: edits the views and
     /// effects submitted are applied, and what they change is drawn.
     pub fn settle(&mut self) {

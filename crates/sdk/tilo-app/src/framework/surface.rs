@@ -462,6 +462,16 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
+    // A surface is found by its own type (`FrameHarness::with_widget_mut`),
+    // so a test reaches the widget the host wraps.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(&self.surface)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(&mut self.surface)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut ui_core::taffy::TaffyTree<()>,
