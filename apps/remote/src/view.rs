@@ -14,9 +14,9 @@ use ui::icons::Icon;
 use ui::search::{SearchRequest, search_button};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Element, EmptyState, Field, Form, FormControl, FormPage,
-    FormSection, ListRow, NavItem, NavList, NavSection, Section, SectionHeader, TextInput,
-    TextInputKind, ToggleGroup, Widget,
+    Actions, Banner, Button, ButtonRole, Element, EmptyState, Field, Form, FormPage, FormSection,
+    ListRow, NavItem, NavList, NavSection, Section, SectionHeader, TextInput, TextInputKind,
+    ToggleGroup, Widget,
 };
 
 use crate::app::Action;
@@ -285,46 +285,6 @@ fn with_problem(field: Field, problem: Option<&String>) -> Field {
     }
 }
 
-/// A segmented choice named by the form field that labels it, so assistive
-/// technology announces "Protocol" with the chosen segment.
-struct Choice {
-    inner: ToggleGroup,
-    name: Option<String>,
-}
-
-impl Choice {
-    fn new(inner: ToggleGroup) -> Self {
-        Self { inner, name: None }
-    }
-}
-
-impl ui::widget::Decorator for Choice {
-    type Inner = ToggleGroup;
-
-    fn inner(&self) -> &ToggleGroup {
-        &self.inner
-    }
-
-    fn inner_mut(&mut self) -> &mut ToggleGroup {
-        &mut self.inner
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let node = self.inner.accessibility()?;
-        Some(match &self.name {
-            Some(name) => node.with_name(name.clone()),
-            None => node,
-        })
-    }
-}
-
-impl FormControl for Choice {
-    fn with_form_accessible_name(mut self, name: &str) -> Self {
-        self.name = Some(name.to_owned());
-        self
-    }
-}
-
 /// The protocols the form offers. A saved legacy RDP profile keeps its own
 /// segment so the choice never hides the protocol the profile uses.
 fn offered_kinds(current: ConnectionKind) -> Vec<ConnectionKind> {
@@ -348,7 +308,7 @@ fn protocol_field(requests: &Requests, model: &FormModel) -> Field {
                 queue_to.borrow_mut().push(Action::SetKind(*kind));
             }
         });
-    Field::new("Protocol", Choice::new(protocol)).with_trailing_control()
+    Field::new("Protocol", protocol).with_trailing_control()
 }
 
 /// The Tilo devices nearby, to fill the form from.
@@ -455,8 +415,7 @@ fn sign_in_fields(
                     queue_to.borrow_mut().push(Action::SetAuth(*method));
                 }
             });
-        section =
-            section.field(Field::new("Sign in with", Choice::new(auth)).with_trailing_control());
+        section = section.field(Field::new("Sign in with", auth).with_trailing_control());
     }
     section
 }
