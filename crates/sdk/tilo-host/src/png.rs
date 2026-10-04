@@ -7,7 +7,9 @@
 use std::path::Path;
 
 use image::codecs::png::{PngDecoder, PngEncoder};
-use image::{DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageResult};
+use image::{
+    DynamicImage, ExtendedColorType, ImageDecoder, ImageEncoder, ImageFormat, ImageResult,
+};
 
 /// Encode `rgba` (`width * height * 4` bytes, row-major) as a PNG.
 ///
@@ -23,10 +25,6 @@ pub fn encode_rgba8(width: u32, height: u32, rgba: &[u8]) -> ImageResult<Vec<u8>
 
 /// Encode `rgba` as a PNG file at `path`, replacing any existing file.
 ///
-/// The bytes go to a sibling file that is renamed over `path` once complete,
-/// so a reader that opens `path` sees the previous file or the whole new
-/// one, never a PNG cut off mid-write.
-///
 /// # Errors
 ///
 /// Fails when the file cannot be written or the buffer does not match the
@@ -37,23 +35,15 @@ pub fn write_rgba8(
     height: u32,
     rgba: &[u8],
 ) -> ImageResult<()> {
-    let path = path.as_ref();
-    let bytes = encode_rgba8(width, height, rgba)?;
-    let name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} names no file", path.display()),
-        )
-    })?;
-    let mut staging_name = std::ffi::OsString::from(".");
-    staging_name.push(name);
-    staging_name.push(format!(".{}.partial", std::process::id()));
-    let staging = path.with_file_name(staging_name);
-    let written = std::fs::write(&staging, &bytes).and_then(|()| std::fs::rename(&staging, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&staging);
-    }
-    Ok(written?)
+    check_rgba8_len(width, height, rgba)?;
+    image::save_buffer_with_format(
+        path,
+        rgba,
+        width,
+        height,
+        ExtendedColorType::Rgba8,
+        ImageFormat::Png,
+    )
 }
 
 /// The encoder treats a mismatched buffer as a programming error and
@@ -165,28 +155,5 @@ mod tests {
                 [12, 34, 56, 255]
             );
         }
-    }
-
-    /// A full-size high-density screenshot lands whole, and the staging file that
-    /// made it atomic is gone.
-    #[test]
-    fn written_png_is_complete_and_leaves_no_staging_file() {
-        let dir = std::env::temp_dir().join(format!("tilo-png-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch directory");
-        let path = dir.join("shot.png");
-        std::fs::write(&path, b"stale").expect("an older file to replace");
-        let (width, height) = (2944_u32, 1840_u32);
-        let rgba = vec![0x7f; usize::try_from(width * height * 4).expect("fits")];
-        write_rgba8(&path, width, height, &rgba).expect("write");
-        let decoded =
-            decode_rgba8(&std::fs::read(&path).expect("read back")).expect("complete PNG");
-        assert_eq!((decoded.width, decoded.height), (width, height));
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .expect("list")
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name())
-            .collect();
-        assert_eq!(leftovers, vec![std::ffi::OsString::from("shot.png")]);
-        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 }
