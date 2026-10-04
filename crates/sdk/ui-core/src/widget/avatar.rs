@@ -185,8 +185,8 @@ impl<'a> AvatarFace<'a> {
     pub fn colour(&self, theme: &Theme) -> Color {
         let presence = &theme.tokens.colors.presence;
         match self.tint {
-            Tint::Identity(id) => presence.hue(PresenceHue::of_identity(id)),
-            Tint::Presence(colour) => presence.of(colour),
+            Tint::Identity(id) => initials_fill(presence.hue(PresenceHue::of_identity(id)), theme),
+            Tint::Presence(colour) => initials_fill(presence.of(colour), theme),
             Tint::Neutral => theme.tokens.colors.surfaces.raised,
         }
     }
@@ -432,17 +432,11 @@ pub fn initials_for_name(name: &str) -> String {
     picked.into_iter().flat_map(char::to_uppercase).collect()
 }
 
-/// The initials ink on `fill`.
-///
-/// One direction per presence palette: dark initials or light ones,
-/// whichever reads better on the palette's weakest hue, so initials never
-/// flip between black and white from one person to the next. The ink then
-/// takes the fill's own hue, as deep (or as pale) as it must be to reach
-/// 4.5:1 on that fill.
-#[must_use]
-pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
-    use crate::color::{Oklch, contrast_ratio, oklch};
-    const MIN: f64 = 4.5;
+/// Whether initials are dark in this theme: one direction per presence
+/// palette, whichever reads better on the palette's weakest hue, so initials
+/// never flip between black and white from one person to the next.
+fn dark_initials(theme: &Theme) -> bool {
+    use crate::color::{contrast_ratio, oklch};
     let palette = &theme.tokens.colors.presence;
     let weakest = |ink: Color| {
         palette
@@ -451,7 +445,46 @@ pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
             .map(|&c| contrast_ratio(ink, c))
             .fold(f64::INFINITY, f64::min)
     };
-    let dark = weakest(oklch(0.0, 0.0, 0.0)) >= weakest(oklch(1.0, 0.0, 0.0));
+    weakest(oklch(0.0, 0.0, 0.0)) >= weakest(oklch(1.0, 0.0, 0.0))
+}
+
+/// The fill a tinted avatar wears: the person's presence colour, moved in
+/// lightness (never in hue) away from the initials' ink until initials can
+/// reach small-text contrast on it. Presence hues sit at one mid lightness,
+/// where neither ink clears much more than 4.5:1; small bold letters on a
+/// saturated mid tone need the headroom.
+#[must_use]
+pub fn initials_fill(fill: Color, theme: &Theme) -> Color {
+    use crate::color::{Oklch, contrast_ratio, oklch};
+    use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+    let dark = dark_initials(theme);
+    let extreme = if dark {
+        oklch(0.0, 0.0, 0.0)
+    } else {
+        oklch(1.0, 0.0, 0.0)
+    };
+    let base = Oklch::from_color(fill);
+    let target = if dark { 1.0 } else { 0.0 };
+    for step in 0..=20_u8 {
+        let t = f32::from(step) / 40.0;
+        let candidate = oklch(base.l + (target - base.l) * t, base.c * (1.0 - t), base.h);
+        if contrast_ratio(extreme, candidate) >= SMALL_TEXT_MIN_CONTRAST {
+            return candidate;
+        }
+    }
+    oklch(base.l + (target - base.l) * 0.5, base.c * 0.5, base.h)
+}
+
+/// The initials ink on `fill`.
+///
+/// One direction per presence palette ([`dark_initials`]). The ink takes
+/// the fill's own hue, as deep (or as pale) as it must be to reach
+/// small-text contrast (7:1) on that fill, or the extreme where it cannot.
+#[must_use]
+pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
+    use crate::color::{Oklch, contrast_ratio, oklch};
+    use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+    let dark = dark_initials(theme);
     let hue = Oklch::from_color(fill).h;
     let chroma = 0.04_f32;
     // Walk from a tinted ink toward black (or white) until it reads.
@@ -464,7 +497,7 @@ pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
             (0.96 + 0.04 * t, chroma * 0.5 * (1.0 - t))
         };
         let ink = oklch(l, c, hue);
-        if contrast_ratio(ink, fill) >= MIN || step >= 20 {
+        if contrast_ratio(ink, fill) >= SMALL_TEXT_MIN_CONTRAST || step >= 20 {
             return ink;
         }
         step += 1;
@@ -876,6 +909,32 @@ mod tests {
             Some(theme.tokens.colors.surfaces.content),
         );
         assert_eq!(tags(&empty, DrawTag::COLOR), 0);
+    }
+
+    #[test]
+    fn initials_reach_small_text_contrast_on_every_avatar_fill() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for (index, &hue) in theme.tokens.colors.presence.colors.iter().enumerate() {
+                let fill = initials_fill(hue, &theme);
+                let ink = initial_ink(fill, &theme);
+                let ratio = crate::color::contrast_ratio(ink, fill);
+                assert!(
+                    ratio >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05,
+                    "{}: initials on presence hue {index} reach only {ratio:.2}:1",
+                    theme.name
+                );
+                let (before, after) = (
+                    crate::color::Oklch::from_color(hue).h,
+                    crate::color::Oklch::from_color(fill).h,
+                );
+                let turn = (before - after).abs().min(360.0 - (before - after).abs());
+                assert!(
+                    turn < 8.0,
+                    "{}: the fill keeps the person's hue",
+                    theme.name
+                );
+            }
+        }
     }
 
     #[test]
