@@ -115,7 +115,11 @@ impl ResourceApp for RemoteShell {
             return Vec::new();
         }
         let now = ui::clock::local_now().timestamp();
-        crate::app::sample_connections(now)
+        let mut connections = crate::app::sample_connections(now);
+        if name == Some("session-rdp") {
+            connections.push(crate::app::sample_legacy_rdp(now));
+        }
+        connections
             .iter()
             .flat_map(|connection| {
                 let mut actions = vec![crate::actions::upsert_action(connection)];

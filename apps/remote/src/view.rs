@@ -15,9 +15,9 @@ use ui::search::{SearchRequest, search_button};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Column, Element, EmptyState, Field, Form, FormPage,
-    FormSection, ListRow, NavItem, NavList, NavSection, Scrollable, Section, SectionHeader,
-    TextInput, TextInputKind, ToggleGroup, Widget, history_button,
+    Actions, Banner, Button, ButtonRole, Column, Element, EmptyState, Field, Form, FormControl,
+    FormPage, FormSection, ListRow, NavItem, NavList, NavSection, Scrollable, Section,
+    SectionHeader, TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::app::Action;
@@ -107,7 +107,6 @@ pub(crate) fn list_actions(requests: &Requests, has_connections: bool) -> Vec<El
                 .on_click(queue(requests, Action::NewConnection)),
         ));
     }
-    actions.push(Box::new(history_button()));
     actions
 }
 
@@ -116,7 +115,9 @@ pub(crate) fn list_actions(requests: &Requests, has_connections: bool) -> Vec<El
 pub(crate) struct RowModel {
     pub id: ConnectionId,
     pub name: String,
-    pub tag: &'static str,
+    pub kind: ConnectionKind,
+    /// Where the machine is: the address a network protocol dials, or that
+    /// it is a Tilo device (whose endpoint id means nothing to read).
     pub address: String,
     /// The last session, or why Remote can't open one here.
     pub meta: String,
@@ -125,9 +126,18 @@ pub(crate) struct RowModel {
     pub selected: bool,
 }
 
+/// What a connection opens: a terminal or a screen.
+fn kind_icon(kind: ConnectionKind) -> Icon {
+    if kind.is_terminal() {
+        Icon::Terminal
+    } else {
+        Icon::Monitor
+    }
+}
+
 fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
     let list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
-        .badge(row.tag)
+        .icon(kind_icon(row.kind))
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
@@ -146,10 +156,11 @@ fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
             },
             queue(requests, Action::ToggleFavorite(row.id)),
         );
+    // Every row carries a dot, so the meta column keeps one trailing edge:
+    // answered last time, or not (yet) seen answering.
     match row.presence {
         crate::model::Presence::Online => list_row.active(),
-        crate::model::Presence::Offline => list_row.idle(),
-        crate::model::Presence::Unknown => list_row,
+        crate::model::Presence::Offline | crate::model::Presence::Unknown => list_row.idle(),
     }
 }
 
@@ -240,7 +251,6 @@ impl Default for FormFields {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DeviceModel {
     pub name: String,
-    pub endpoint: String,
     pub online: bool,
     pub picked: bool,
 }
@@ -279,8 +289,48 @@ fn with_problem(field: Field, problem: Option<&String>) -> Field {
     }
 }
 
+/// A segmented choice named by the form field that labels it, so assistive
+/// technology announces "Protocol" with the chosen segment.
+struct Choice {
+    inner: ToggleGroup,
+    name: Option<String>,
+}
+
+impl Choice {
+    fn new(inner: ToggleGroup) -> Self {
+        Self { inner, name: None }
+    }
+}
+
+impl ui::widget::Decorator for Choice {
+    type Inner = ToggleGroup;
+
+    fn inner(&self) -> &ToggleGroup {
+        &self.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut ToggleGroup {
+        &mut self.inner
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let node = self.inner.accessibility()?;
+        Some(match &self.name {
+            Some(name) => node.with_name(name.clone()),
+            None => node,
+        })
+    }
+}
+
+impl FormControl for Choice {
+    fn with_form_accessible_name(mut self, name: &str) -> Self {
+        self.name = Some(name.to_owned());
+        self
+    }
+}
+
 /// The protocols the form offers. A saved legacy RDP profile keeps its own
-/// segment so the strip never shows a protocol the profile does not use.
+/// segment so the choice never hides the protocol the profile uses.
 fn offered_kinds(current: ConnectionKind) -> Vec<ConnectionKind> {
     let mut kinds = ConnectionKind::available_to_create().to_vec();
     if !kinds.contains(&current) {
@@ -289,8 +339,8 @@ fn offered_kinds(current: ConnectionKind) -> Vec<ConnectionKind> {
     kinds
 }
 
-/// The protocol strip, and what stops the draft from being saved as it is.
-fn protocol_section(requests: &Requests, model: &FormModel) -> FormSection {
+/// The protocol choice.
+fn protocol_field(requests: &Requests, model: &FormModel) -> Field {
     let kinds = offered_kinds(model.kind);
     let selected = kinds.iter().position(|k| *k == model.kind).unwrap_or(0);
     let segments = kinds.iter().map(|k| Segment::new(k.label())).collect();
@@ -302,28 +352,17 @@ fn protocol_section(requests: &Requests, model: &FormModel) -> FormSection {
                 queue_to.borrow_mut().push(Action::SetKind(*kind));
             }
         });
-    let mut section = FormSection::new("Protocol").content(Box::new(protocol));
-    if model.kind == ConnectionKind::Rdp {
-        section = section.content(Box::new(
-            Banner::warning("This build has no RDP client")
-                .with_message("Choose SSH, VNC or Tilo device to keep using this connection."),
-        ));
-    }
-    for problem in &model.problems.other {
-        section = section.content(Box::new(Banner::error(problem.clone())));
-    }
-    section
+    Field::new("Protocol", Choice::new(protocol)).with_trailing_control()
 }
 
 /// The Tilo devices nearby, to fill the form from.
-fn devices_section(requests: &Requests, devices: &[DeviceModel]) -> FormSection {
+fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
     let rows: Vec<Element> = devices
         .iter()
         .enumerate()
         .map(|(index, device)| {
             let row = ListRow::new(format!("remote.device:{index}"), &device.name)
                 .icon(Icon::Monitor)
-                .secondary(crate::model::compact_tilo_endpoint(&device.endpoint))
                 .selected(device.picked)
                 .on_activate(queue(requests, Action::PickTiloDevice(index)));
             Box::new(if device.online {
@@ -333,49 +372,75 @@ fn devices_section(requests: &Requests, devices: &[DeviceModel]) -> FormSection 
             }) as Element
         })
         .collect();
-    FormSection::new("Nearby devices").content(Box::new(Section::new(rows)))
+    Box::new(Section::new(rows).with_header(SectionHeader::group("Nearby devices")))
 }
 
-/// Where the machine is and who signs in.
-fn connection_section(fields: &FormFields, model: &FormModel) -> FormSection {
+/// Which machine, where it is, who signs in and how, and how it is filed.
+/// One section, so every label shares one column.
+fn machine_section(requests: &Requests, fields: &FormFields, model: &FormModel) -> FormSection {
     let tilo = model.kind == ConnectionKind::Tilo;
-    let mut section = FormSection::new("Connection").field(with_problem(
+    let mut section = FormSection::new("Machine").field(protocol_field(requests, model));
+    if model.kind == ConnectionKind::Rdp {
+        section = section.content(Box::new(
+            Banner::warning("Remote can't open RDP connections")
+                .with_message("Choose SSH or VNC to keep using this machine."),
+        ));
+    }
+    for problem in &model.problems.other {
+        section = section.content(Box::new(Banner::error(problem.clone())));
+    }
+    if tilo && !model.devices.is_empty() {
+        section = section.content(device_list(requests, &model.devices));
+    }
+    section = section.field(with_problem(
         Field::new(
             "Name",
             text_field(&fields.name, "remote.field:name", "Home server"),
         ),
         model.problems.name.as_ref(),
     ));
-    section = if tilo {
-        section.field(with_problem(
+    if tilo {
+        return section.field(with_problem(
             Field::new(
                 "Device",
                 text_field(&fields.host, "remote.field:host", "Device endpoint id")
                     .with_kind(TextInputKind::Code),
-            )
-            .with_help("Tilo devices sign in with their device identity, so there is no password."),
+            ),
+            model.problems.host.as_ref(),
+        ));
+    }
+    section = section
+        .field(with_problem(
+            Field::new(
+                "Host",
+                text_field(&fields.host, "remote.field:host", "Host name or IP address")
+                    .with_kind(TextInputKind::Url),
+            ),
             model.problems.host.as_ref(),
         ))
-    } else {
-        section
-            .field(with_problem(
-                Field::new(
-                    "Host",
-                    text_field(&fields.host, "remote.field:host", "Host name or IP address")
-                        .with_kind(TextInputKind::Url),
-                ),
-                model.problems.host.as_ref(),
-            ))
-            .field(with_problem(
-                Field::new(
-                    "Port",
-                    text_field(&fields.port, "remote.field:port", "Port")
-                        .with_kind(TextInputKind::Number)
-                        .with_char_filter(|c| c.is_ascii_digit()),
-                ),
-                model.problems.port.as_ref(),
-            ))
-    };
+        .field(with_problem(
+            Field::new(
+                "Port",
+                text_field(&fields.port, "remote.field:port", "Port")
+                    .with_kind(TextInputKind::Number)
+                    .with_char_filter(|c| c.is_ascii_digit()),
+            ),
+            model.problems.port.as_ref(),
+        ));
+    sign_in_fields(requests, fields, model, section).field(Field::new(
+        "Group",
+        text_field(&fields.group, "remote.field:group", "Optional"),
+    ))
+}
+
+/// Who signs in and how, where the protocol asks for either.
+fn sign_in_fields(
+    requests: &Requests,
+    fields: &FormFields,
+    model: &FormModel,
+    mut section: FormSection,
+) -> FormSection {
+    let methods = AuthMethod::available_for(model.kind);
     if matches!(model.kind, ConnectionKind::Ssh | ConnectionKind::Rdp) {
         section = section.field(Field::new(
             "User",
@@ -383,57 +448,39 @@ fn connection_section(fields: &FormFields, model: &FormModel) -> FormSection {
                 .with_kind(TextInputKind::Username),
         ));
     }
-    if !tilo {
-        section = section.field(
-            Field::new(
-                "Group",
-                text_field(&fields.group, "remote.field:group", "Lab"),
-            )
-            .with_help("Optional"),
-        );
+    if methods.len() > 1 {
+        let selected = methods.iter().position(|a| *a == model.auth).unwrap_or(0);
+        let segments = methods.iter().map(|a| Segment::new(a.label())).collect();
+        let queue_to = Rc::clone(requests);
+        let auth = ToggleGroup::new(segments, selected)
+            .with_id("remote.form.auth")
+            .on_change(move |index| {
+                if let Some(method) = methods.get(index) {
+                    queue_to.borrow_mut().push(Action::SetAuth(*method));
+                }
+            });
+        section =
+            section.field(Field::new("Sign in with", Choice::new(auth)).with_trailing_control());
     }
     section
 }
 
-/// How the person signs in, where the protocol offers a choice.
-fn authentication_section(requests: &Requests, model: &FormModel) -> Option<FormSection> {
-    let methods = AuthMethod::available_for(model.kind);
-    if methods.len() < 2 {
-        return None;
-    }
-    let selected = methods.iter().position(|a| *a == model.auth).unwrap_or(0);
-    let segments = methods.iter().map(|a| Segment::new(a.label())).collect();
-    let queue_to = Rc::clone(requests);
-    let auth = ToggleGroup::new(segments, selected)
-        .with_id("remote.form.auth")
-        .on_change(move |index| {
-            if let Some(method) = methods.get(index) {
-                queue_to.borrow_mut().push(Action::SetAuth(*method));
-            }
-        });
-    Some(FormSection::new("Authentication").content(Box::new(auth)))
-}
-
-/// The add / edit form.
+/// The add / edit form. Save and Cancel stand in the header row, so they
+/// stay in view however long the form grows; deleting a saved connection is
+/// the form's last, separate action.
 pub(crate) fn connection_form(
     requests: &Requests,
     fields: &FormFields,
     model: &FormModel,
 ) -> Element {
-    let mut form = Form::new().section(protocol_section(requests, model));
-    if model.kind == ConnectionKind::Tilo && !model.devices.is_empty() {
-        form = form.section(devices_section(requests, &model.devices));
+    let mut form = Form::new().section(machine_section(requests, fields, model));
+    if let Some(id) = model.editing {
+        form = form.with_actions(Actions::new(
+            Button::new("remote.form.delete", "Delete connection", None)
+                .role(ButtonRole::Destructive)
+                .on_click(queue(requests, Action::RequestDelete(id))),
+        ));
     }
-    form = form.section(connection_section(fields, model));
-    if let Some(section) = authentication_section(requests, model) {
-        form = form.section(section);
-    }
-    let save = Button::new("remote.form.save", "Save", None)
-        .role(ButtonRole::Primary)
-        .on_click(queue(requests, Action::SaveForm));
-    let cancel =
-        Button::new("remote.form.cancel", "Cancel", None).on_click(queue(requests, Action::Back));
-    form = form.with_actions(Actions::new(save).secondary(cancel));
     let title = if model.editing.is_some() {
         "Edit connection"
     } else {
@@ -442,18 +489,19 @@ pub(crate) fn connection_form(
     Box::new(FormPage::new(title, form))
 }
 
-/// The form's header actions: deleting the connection being edited.
-pub(crate) fn form_actions(requests: &Requests, editing: Option<ConnectionId>) -> Vec<Element> {
-    let mut actions: Vec<Element> = Vec::new();
-    if let Some(id) = editing {
-        actions.push(Box::new(
-            Button::new("remote.form.delete", "Delete connection", None)
-                .role(ButtonRole::Destructive)
-                .on_click(queue(requests, Action::RequestDelete(id))),
-        ));
-    }
-    actions.push(Box::new(history_button()));
-    actions
+/// The form's header actions: leaving it, and saving the connection.
+pub(crate) fn form_actions(requests: &Requests) -> Vec<Element> {
+    vec![
+        Box::new(
+            Button::new("remote.form.cancel", "Cancel", None)
+                .on_click(queue(requests, Action::Back)),
+        ),
+        Box::new(
+            Button::new("remote.form.save", "Save", None)
+                .role(ButtonRole::Primary)
+                .on_click(queue(requests, Action::SaveForm)),
+        ),
+    ]
 }
 
 /// A session that shows no remote surface: connecting, failed, unavailable
@@ -485,10 +533,11 @@ pub(crate) fn session_status(requests: &Requests, model: StatusModel) -> Element
     }
 }
 
-/// The session's header actions.
+/// The session's header actions while it is live: fitting and filling the
+/// window with a remote desktop, and ending the session. A session that is
+/// not live offers its one way forward in the content instead.
 pub(crate) fn session_actions(
     requests: &Requests,
-    live: bool,
     framebuffer: bool,
     scale_to_fit: bool,
 ) -> Vec<Element> {
@@ -511,15 +560,11 @@ pub(crate) fn session_actions(
                 .on_click(queue(requests, Action::ToggleFullscreen)),
         ));
     }
-    actions.push(Box::new(if live {
+    actions.push(Box::new(
         Button::new("remote.session.disconnect", "Disconnect", None)
             .role(ButtonRole::Destructive)
-            .on_click(queue(requests, Action::Disconnect))
-    } else {
-        Button::new("remote.session.close", "Close session", None)
-            .on_click(queue(requests, Action::Disconnect))
-    }));
-    actions.push(Box::new(history_button()));
+            .on_click(queue(requests, Action::Disconnect)),
+    ));
     actions
 }
 

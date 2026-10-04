@@ -944,13 +944,13 @@ mod tests {
                 &connect.contract.availability,
                 tilo_actions::Availability::Unavailable { code, reason }
                     if code == "transport_backend_unavailable"
-                        && reason.contains("no RDP client backend")
+                        && reason.contains("doesn't support RDP")
             ));
             assert!(
                 connect
                     .description
                     .as_deref()
-                    .is_some_and(|description| description.contains("no RDP client backend")),
+                    .is_some_and(|description| description.contains("doesn't support RDP")),
                 "search and agents receive the actionable reason"
             );
         }

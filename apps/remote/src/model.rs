@@ -233,7 +233,8 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Compact address line, omitting parts that don't apply.
+    /// Compact address line, omitting parts that don't apply (a port the
+    /// protocol uses anyway, a user the protocol doesn't sign in with).
     pub fn address(&self) -> String {
         if self.kind == ConnectionKind::Tilo {
             // A certified endpoint id is intentionally long. The row already
@@ -242,7 +243,7 @@ impl Connection {
             // exact target id.
             return compact_tilo_endpoint(&self.host);
         }
-        let host_part = if self.port == 0 {
+        let host_part = if self.port == 0 || self.port == self.kind.default_port() {
             self.host.clone()
         } else {
             format!("{}:{}", self.host, self.port)
@@ -523,6 +524,8 @@ mod tests {
             c.user = "root".into();
             c.port = 2222;
             assert_eq!(c.address(), "root@10.0.0.1:2222");
+            c.port = 22;
+            assert_eq!(c.address(), "root@10.0.0.1", "the default port goes unsaid");
         }
 
         eprintln!("phase tilo_address_drops_port");

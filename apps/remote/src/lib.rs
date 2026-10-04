@@ -72,6 +72,7 @@ pub mod doc;
 pub mod model;
 pub mod resource;
 pub mod rfb;
+mod sample;
 pub mod session;
 pub mod ssh;
 pub mod tilo_route;
