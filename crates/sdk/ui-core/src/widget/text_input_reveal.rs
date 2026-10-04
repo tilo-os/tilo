@@ -1,10 +1,11 @@
 //! The show/hide control every single-line secret [`super::TextInput`] carries
 //! at its trailing edge.
 //!
-//! It is a retained child of the field, so Tab reaches it after the text,
-//! assistive technology sees a named button, and Enter/Space or an AT
-//! activation toggle it like any other button. A pointer press toggles
-//! without taking focus, so typing continues in the field. Only the field's
+//! It is a retained child of the field, so assistive technology sees a named
+//! button that an AT or agent activation toggles. Like every inline accessory
+//! of a field it is not a Tab stop: Tab moves from field to field, as on macOS
+//! with full keyboard access off. A pointer press toggles without taking
+//! focus, so typing continues in the field. Only the field's
 //! paint changes: the value never reaches the accessibility tree, a log, the
 //! clipboard or persisted state because of a reveal.
 
@@ -299,8 +300,10 @@ impl Widget for RevealToggle {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
+    /// An inline accessory is not a Tab stop; the pointer, assistive
+    /// technology and agents reach it.
     fn is_focusable(&self) -> bool {
-        self.enabled
+        false
     }
 
     fn is_enabled(&self) -> bool {
@@ -334,7 +337,6 @@ impl Widget for RevealToggle {
                 .with_name(crate::i18n!(self.label()))
                 .with_state(AccessState {
                     focused: self.focused,
-                    focusable: self.enabled,
                     disabled: !self.enabled,
                     ..Default::default()
                 }),

@@ -2311,7 +2311,6 @@ mod tests {
                 vec![
                     "greeter.username",
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.reboot",
@@ -2675,7 +2674,6 @@ mod tests {
                 vec![
                     "greeter.username",
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.session",
@@ -2695,14 +2693,13 @@ mod tests {
             assert_eq!(
                 base,
                 vec![
-                    "TextInput",      // username
-                    "TextInput",      // password
-                    "PasswordReveal", // show/hide password
-                    "Button",         // log in
-                    "Button",         // fingerprint
-                    "Dropdown",       // session picker
-                    "Button",         // restart
-                    "Button",         // shut down
+                    "TextInput", // username
+                    "TextInput", // password
+                    "Button",    // log in
+                    "Button",    // fingerprint
+                    "Dropdown",  // session picker
+                    "Button",    // restart
+                    "Button",    // shut down
                 ]
             );
 
@@ -2767,7 +2764,6 @@ mod tests {
                 focusables(&app),
                 vec![
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.session",
@@ -3616,7 +3612,6 @@ mod tests {
                     [
                         "Scrollable",
                         "greeter.password",
-                        "greeter.password_reveal",
                         "greeter.login",
                         "greeter.fingerprint",
                         "greeter.session",
@@ -3626,7 +3621,6 @@ mod tests {
                 );
                 let mut expected_narrow = vec![
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.session",
