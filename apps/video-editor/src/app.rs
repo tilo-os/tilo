@@ -38,8 +38,9 @@ use ui::widget::{
 
 use crate::actions::{
     MarkerTextField, VideoEditorAction, VideoResourceCtx, clip_field_patch_action,
-    delete_clip_action, remove_media_action, ripple_delete_action, set_project_meta_action,
-    split_clip_action, upsert_clip_action, upsert_media_action, upsert_track_action,
+    delete_clip_action, remove_media_action, ripple_delete_action, set_marks_action,
+    set_project_meta_action, split_clip_action, upsert_clip_action, upsert_media_action,
+    upsert_track_action,
 };
 
 use crate::export::{Container, ExportSettings, ExportStatus, FrameRate, Resolution};
@@ -3905,15 +3906,13 @@ impl VideoEditorApp {
     /// unconditionally — so checking a ten-second fix meant re-rendering
     /// everything.
     fn mark_in_here(&mut self) {
-        let mut next = self.project.clone();
-        next.set_mark_in(self.playhead);
-        self.dispatch_project_meta(next);
+        self.project.set_mark_in(self.playhead);
+        self.submit(&set_marks_action(&self.project));
     }
 
     fn mark_out_here(&mut self) {
-        let mut next = self.project.clone();
-        next.set_mark_out(self.playhead);
-        self.dispatch_project_meta(next);
+        self.project.set_mark_out(self.playhead);
+        self.submit(&set_marks_action(&self.project));
     }
 
     /// Drop both marks, putting the render back to the whole timeline.
@@ -3921,9 +3920,8 @@ impl VideoEditorApp {
         if !self.project.has_marks() {
             return;
         }
-        let mut next = self.project.clone();
-        next.clear_marks();
-        self.dispatch_project_meta(next);
+        self.project.clear_marks();
+        self.submit(&set_marks_action(&self.project));
     }
 
     /// Add a timeline marker at the playhead and open it for naming, so the
@@ -5696,7 +5694,7 @@ impl VideoEditorApp {
         self.project = project;
     }
 
-    /// Test-only: move the playhead so hosted extras bind to a known time.
+    /// Test-only: move the playhead so the edits bound to it bind to a known time.
     #[cfg(test)]
     pub(crate) fn set_playhead_for_test(&mut self, playhead: f64) {
         self.playhead = playhead;
@@ -6019,7 +6017,6 @@ impl VideoEditorApp {
 impl Widget for VideoEditorApp {
     ui::provides!(
         dyn ui::undo::UndoControl,
-        dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence
     );
@@ -7331,33 +7328,6 @@ impl ui::search::capability::SearchSource for VideoEditorApp {
             crate::search_provider::ProjectSearchProvider::new(&self.project),
         )]
     }
-}
-
-impl ui::resources::PublishesResources for VideoEditorApp {
-    /// What the editor adds beside its resource's publication: the
-    /// conveniences bound to where this participant's playhead is.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::live_playhead_resources(&self.video_resource_ctx())
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        find_resource(
-            &crate::actions::live_playhead_resources(&self.video_resource_ctx()),
-            id,
-        )
-    }
-}
-
-fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 impl ui::undo::UndoControl for VideoEditorApp {
@@ -9249,9 +9219,11 @@ impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEdit
         self.stage_capture(scenario);
     }
 
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
+    /// Edits bound to this participant's playhead and measured mix,
+    /// published on the project beside its own actions.
+    fn bound_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::VideoProject>> {
+        crate::actions::playhead_declarations(&self.video_resource_ctx())
     }
 }
