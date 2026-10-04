@@ -353,6 +353,7 @@ impl BlockEditor {
             self.visual_formula_focus = None;
             self.structure_dirty = true;
         }
+        self.reconcile_block_selection();
         self.dirty = true;
         true
     }
@@ -447,6 +448,7 @@ impl BlockEditor {
             self.visual_formula_focus = None;
             self.structure_dirty = true;
         }
+        self.reconcile_block_selection();
         self.dirty = true;
         true
     }
