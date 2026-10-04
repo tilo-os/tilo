@@ -439,10 +439,6 @@ fn managed_driver_with_root(doc: AutoCommit, root: Box<dyn Widget>) -> ui::headl
     .unwrap()
 }
 
-fn node_named(driver: &ui::headless::Driver, name: &str) -> ui::accesskit::Node {
-    a11y_node_labelled(driver, name, None)
-}
-
 /// The text field labelled `name` (its visible label is a separate node).
 fn input_id(driver: &ui::headless::Driver, name: &str) -> ui::accesskit::NodeId {
     driver

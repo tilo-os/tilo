@@ -2496,7 +2496,8 @@ impl NavShell {
         }
     }
 
-    /// Activate the action the person chose in a More menu.
+    /// Activate the action the person chose in a More menu: from the event
+    /// that chose it, so its invocation leaves with that event.
     fn take_more_choices(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut acted = false;
         for column in Column::ALL {
@@ -2979,9 +2980,19 @@ fn place_parts(
                 if band.width() <= 0.0 {
                     Some(Rect::ZERO)
                 } else {
+                    // Its own width (the band's when it has none of its
+                    // own), a control's height: the band is one control tall.
                     let measured = measure(ctx, index, Some(band.width()))?;
-                    let w = measured.0.min(band.width());
-                    let h = measured.1.min(band.height()).max(0.0);
+                    let w = if measured.0 > 0.0 {
+                        measured.0.min(band.width())
+                    } else {
+                        band.width()
+                    };
+                    let h = if measured.1 > 0.0 {
+                        measured.1.min(band.height())
+                    } else {
+                        band.height()
+                    };
                     let y0 = band.center().y - h / 2.0;
                     Some(Rect::new(band.x0, y0, band.x0 + w, y0 + h))
                 }
@@ -3217,7 +3228,6 @@ impl Widget for NavShell {
             self.apply_open_states();
         }
         self.take_requests();
-        self.take_more_choices(state, path);
         self.open_more_menus();
         self.follow_navigation();
         self.for_each_owned_mut(|child| child.sync(state, path));
@@ -3226,7 +3236,6 @@ impl Widget for NavShell {
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = self.take_requests();
-        changed |= self.take_more_choices(state, path);
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
         changed || self.animating
     }
