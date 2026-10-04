@@ -2384,10 +2384,6 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
                 calendars: 1,
                 events: 1,
             },
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
         ))
         .unwrap();
         app.sync_rx = Some(rx);

@@ -613,6 +613,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
             None
         };
         self.follow_display(cx.settings::<crate::display::CalendarDisplay>());
+        if cx.mode().is_live() {
+            crate::outbox::drain(&cx, self.device_accounts());
+        }
         self.attach_framework(
             cx.dispatcher(),
             accounts,
@@ -747,7 +750,7 @@ mod host_undo_tests {
             "remote create records the push outbox"
         );
 
-        // Sync's Effect drained the push queue after a successful PUT.
+        // The upload drain acknowledged the push after a successful PUT.
         app.merge_peer_edit(|doc| {
             CalDoc::dequeue_push(doc, id);
         });
