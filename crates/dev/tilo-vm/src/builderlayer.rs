@@ -1,15 +1,16 @@
-//! `--builder rcargo`: build a component's layer on an rcargo builder of the
-//! device's architecture and stream it through this host to the device,
-//! without its binaries ever landing on this host's disk.
+//! `--builder remote`: build a component's layer on a remote builder of
+//! the device's architecture and stream it through this host to the
+//! device, without its binaries ever landing on this host's disk.
 //!
-//! `rcargo --on-builder run -p tilo-vm -- layer-pack ...` runs
-//! [`pack`] in the builder's build container, in the synced worktree: it
-//! builds the component with the same cargo arguments as every other
-//! builder, lays it out with the manifest installer, and writes the layer
-//! tar to stdout as framed base64 lines (rcargo passes a program's stdout
-//! through line by line, as text). [`Stream`] reads those lines here and
-//! hands the decoded bytes straight to tilo-vmd's upload. A plain `rcargo
-//! build` would mirror the binaries into this host's target dir instead.
+//! The builder is a cargo drop-in whose `run` runs the program on a machine
+//! of that architecture, in this worktree, with its stdout passed through as
+//! text lines (`[remote_builders]` in vms.toml names its command line). It
+//! runs `tilo-vm layer-pack` there ([`pack`]): the component builds with the
+//! same cargo arguments as on every other builder, the manifest installer
+//! lays it out, and the layer tar goes to stdout as framed base64 lines.
+//! [`Stream`] reads those lines here and hands the decoded bytes straight to
+//! tilo-vmd's upload. A plain remote `build` would bring the binaries back
+//! into this host's target dir instead.
 
 use std::io::{BufRead, Read, Write};
 use std::path::Path;
@@ -45,18 +46,18 @@ pub struct Packed {
     pub toolchain: Option<String>,
 }
 
-/// The `rcargo` run that builds and streams `component`'s layer, with
-/// `config` as its `RCARGO_CONFIG` when set (a builder of another
-/// architecture than rcargo's default).
-pub fn rcargo_command(
-    config: Option<&str>,
-    component: &Component,
-    extra: &[String],
-) -> CommandLine {
-    let mut command = CommandLine::new(
-        "rcargo",
-        &[
-            "--on-builder",
+/// The remote builder's `run` that builds and streams `component`'s layer:
+/// `builder` is its command line up to the cargo subcommand.
+pub fn remote_command(builder: &[String], component: &Component, extra: &[String]) -> CommandLine {
+    let (program, prefix) = builder
+        .split_first()
+        .map_or(("cargo", &[][..]), |(program, rest)| {
+            (program.as_str(), rest)
+        });
+    let mut command = CommandLine::new(program, &[]);
+    command.args = prefix.to_vec();
+    command.args.extend(
+        [
             "run",
             "--locked",
             "-p",
@@ -69,13 +70,12 @@ pub fn rcargo_command(
             &component.name,
             "--profile",
             &component.profile,
-        ],
+        ]
+        .map(str::to_owned),
     );
     if !extra.is_empty() {
-        command = command.arg("--features").arg(extra.join(","));
-    }
-    if let Some(config) = config.filter(|c| !c.is_empty()) {
-        command = command.env("RCARGO_CONFIG", config);
+        command.args.push("--features".into());
+        command.args.push(extra.join(","));
     }
     command
 }
@@ -373,9 +373,9 @@ mod tests {
         );
     }
 
-    /// The builder run is rcargo's, on the builder, with the device's config.
+    /// The builder's `run` packs the layer there, after its own arguments.
     #[test]
-    fn the_rcargo_run_packs_on_the_builder_with_its_config() {
+    fn the_remote_run_packs_on_the_builder() {
         let component = tilo_vm_protocol::Manifest::parse(
             "[[component]]\nname = \"shell\"\npackages = [\"shell\"]\n",
         )
@@ -384,15 +384,11 @@ mod tests {
         .remove("shell")
         .unwrap()
         .with_profile(Some("release"));
-        let line = rcargo_command(
-            Some("/home/me/.config/rcargo/arm.toml"),
-            &component,
-            &["shell/dev-overrides".into()],
-        );
+        let builder = ["env", "BUILDER=arm", "remote-cargo", "--on-builder"].map(str::to_owned);
+        let line = remote_command(&builder, &component, &["shell/dev-overrides".into()]);
         assert_eq!(
             line.display(),
-            "RCARGO_CONFIG=/home/me/.config/rcargo/arm.toml rcargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
+            "env BUILDER=arm remote-cargo --on-builder run --locked -p tilo-vm --bin tilo-vm -- layer-pack --component shell --profile release --features shell/dev-overrides"
         );
-        assert!(rcargo_command(Some(""), &component, &[]).env.is_empty());
     }
 }

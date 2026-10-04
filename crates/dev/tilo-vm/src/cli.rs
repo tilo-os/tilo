@@ -133,9 +133,9 @@ pub enum Command {
         #[arg(long, default_value = "worktree")]
         from: String,
         /// Where `--from worktree` builds: `vm` (syncs the worktree into the
-        /// VM), `host` (Linux hosts only) or `rcargo` (a builder of the
+        /// VM), `host` (Linux hosts only) or `remote` (a builder of the
         /// machine's architecture; the default for a device whose
-        /// architecture has one in vms.toml's `[rcargo]`).
+        /// architecture has one in vms.toml's `[remote_builders]`).
         #[arg(long, value_enum)]
         builder: Option<Builder>,
         /// Cargo profile for `--from worktree` builds (default: the manifest's,
@@ -231,10 +231,10 @@ pub enum Command {
     #[command(subcommand)]
     Scenario(ScenarioCommand),
     /// Build one component in this worktree and write its layer to stdout
-    /// as framed lines (what `swap --builder rcargo` runs on the builder).
+    /// as framed lines (what `swap --builder remote` runs on the builder).
     #[command(
         hide = true,
-        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through rcargo --on-builder run"
+        after_help = "Examples:\n  tilo-vm layer-pack --component shell --profile release   # on the builder, through its cargo drop-in's run"
     )]
     LayerPack {
         /// A component from os/components.toml.
@@ -453,9 +453,10 @@ pub enum Builder {
     Vm,
     /// Build on this host with its cargo (Linux only).
     Host,
-    /// Build on an rcargo builder of the machine's architecture (`[rcargo]`
-    /// in vms.toml); the layer streams through this host, never onto its disk.
-    Rcargo,
+    /// Build on a remote builder of the machine's architecture
+    /// (`[remote_builders]` in vms.toml); the layer streams through this
+    /// host, never onto its disk.
+    Remote,
 }
 
 #[derive(Debug, Subcommand)]
