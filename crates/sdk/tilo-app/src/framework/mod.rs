@@ -200,6 +200,11 @@
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
+//! * **Files of the mounted filesystem** an app shows (a file manager's
+//!   selected file) have a history of their own, kept by the filesystem's
+//!   projection rather than the app's document. The app declares it
+//!   ([`ResourceApp::FILE_HISTORY`]) and its surface names the file
+//!   ([`SurfaceCx::file_history`]); History offers it beside the resource's.
 //! * **Run mode.** A view is built for a window someone uses, a past version
 //!   in History, or a screenshot ([`RunMode`], from [`ViewCx::mode`] and
 //!   [`SurfaceCx::mode`]). Only a live view starts work that reaches outside
@@ -283,7 +288,7 @@ pub use app::definition_launch_spec;
 pub use app::launch_spec;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::run;
-pub use app::{ResourceApp, SeedCx, definition};
+pub use app::{FileHistory, ResourceApp, SeedCx, definition};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;

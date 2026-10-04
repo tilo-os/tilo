@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_resource::{Doc, Invoke, Resource};
+use ui_core::history_mode::HistoryDefinition;
+use ui_core::history_mode::checked_files::FileHistorySource;
 
 use super::surface::ResourceSelection;
 
@@ -66,6 +68,10 @@ pub(crate) struct Run {
     pub(crate) launched: Rc<Launched>,
     /// A private window: a profile thrown away with the process.
     pub(crate) private: bool,
+    /// The file whose history History shows beside the resource's, for an
+    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY),
+    /// and the History scope the root witnesses it under.
+    pub(crate) file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -89,6 +95,7 @@ impl Run {
             }),
             launched: Rc::default(),
             private: false,
+            file_history: None,
         }
     }
 
@@ -98,12 +105,22 @@ impl Run {
         self
     }
 
+    /// This run, showing the history of the file `file_history` names.
+    pub(crate) fn showing_file_history(
+        mut self,
+        file_history: Option<(FileHistorySource, &'static HistoryDefinition)>,
+    ) -> Self {
+        self.file_history = file_history;
+        self
+    }
+
     pub(crate) fn past() -> Self {
         Self {
             mode: RunMode::Past,
             fixtures: Rc::default(),
             launched: Rc::default(),
             private: false,
+            file_history: None,
         }
     }
 
@@ -253,6 +270,7 @@ impl<R: Resource> Fixture<R> {
             }),
             launched: Rc::default(),
             private: false,
+            file_history: None,
         }
     }
 

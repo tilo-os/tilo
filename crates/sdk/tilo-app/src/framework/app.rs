@@ -10,6 +10,7 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
     RestoreInput,
 };
+use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
@@ -88,6 +89,12 @@ pub trait ResourceApp: 'static {
     /// no runtime, so nothing it shows syncs or is shared. Its view tells
     /// with [`ViewCx::is_private`].
     const PRIVATE_WINDOWS: bool = false;
+    /// The history of a file of the mounted filesystem the app shows (the
+    /// file selected in a file manager), a History scope beside the
+    /// resource's own: its versions are read, previewed and restored through
+    /// the filesystem's projection, not the app's document. The app's
+    /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
+    const FILE_HISTORY: Option<FileHistory> = None;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -213,6 +220,17 @@ pub trait ResourceApp: 'static {
         let _ = cx;
         Vec::new()
     }
+}
+
+/// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
+/// mounted filesystem an app shows.
+#[derive(Clone, Copy)]
+pub struct FileHistory {
+    /// What the scope is called in History: "Selected file".
+    pub title: &'static str,
+    /// Draws one version of a file, from its bytes as the projection read
+    /// them.
+    pub preview: ui_core::history_mode::checked_files::FilePreviewFactory,
 }
 
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
@@ -433,6 +451,7 @@ fn create<A: ResourceApp>(
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
     let capture = context.capture().is_some();
+    let file_history = A::FILE_HISTORY.map(|_| FileHistorySource::default());
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
         None => Run::live(context.content().cloned()).in_private(context.is_private()),
@@ -441,12 +460,18 @@ fn create<A: ResourceApp>(
         file.report_opened(<A::Resource as Resource>::KIND);
     }
     let handoff = context.take_handoff();
-    let run = run.launched(Launched {
-        arguments,
-        options,
-        file,
-        handoff,
-    });
+    let run = run
+        .launched(Launched {
+            arguments,
+            options,
+            file,
+            handoff,
+        })
+        .showing_file_history(
+            file_history
+                .clone()
+                .map(|source| (source, super::preview::file_history_witness::<A>())),
+        );
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -475,9 +500,12 @@ fn create<A: ResourceApp>(
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
-    component
-        .register_document_history(super::preview::history_definition::<A>())
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let history = super::preview::history_definition::<A>();
+    match file_history {
+        Some(files) => component.register_document_and_file_history(history, files),
+        None => component.register_document_history(history),
+    }
+    .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(component)
 }
 
