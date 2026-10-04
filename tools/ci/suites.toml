@@ -1041,6 +1041,11 @@ suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
 
 [[unrequired]]
+suite = "os/tests/input-hotplug-check.sh"
+reason = "runs inside a booted guest's graphical session, partly as root"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
 reason = "root: loop devices and vfat/Btrfs mounts"
 workflow = "release-imager.yml"
