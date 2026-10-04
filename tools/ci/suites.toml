@@ -478,15 +478,18 @@ package = "tilo-ui"
 # The design and spacing audits ratchet every app and shell source file; the
 # launcher audit reads each app's main.rs and the framework launcher.
 # Typography visual regression #[path]-includes the shared gallery showcase
-# builder that lives with the ui-examples scenarios.
+# builder that lives with the ui-examples scenarios. The paint stream's tests
+# draw the layout snapshots and screenshot recorded for tilo-paint-stream.
 inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
   "crates/sdk/tilo-app/src/framework/app.rs",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/dev/ui-examples/examples/common/gallery_scene.rs",
+  "crates/browser/paint-stream/tests/fixtures/",
 ]
 readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
+  "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/tests/design_token_audit.rs",
   "crates/sdk/ui-core/tests/spacing_token_audit.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
