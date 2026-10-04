@@ -20,7 +20,6 @@
 
 [ratchets.app_action_host]
 "apps/api-tester/src/resource.rs" = 2
-"apps/backups/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
 "apps/calendar/src/resource.rs" = 1
 "apps/camera/src/resource.rs" = 2
@@ -56,13 +55,11 @@
 "apps/typst-editor/src/app.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
-"apps/vpn/src/resource.rs" = 2
 "apps/weather/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/api-tester/src/lib.rs" = 2
 "apps/api-tester/src/main.rs" = 2
-"apps/backups/src/main.rs" = 2
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -100,7 +97,6 @@
 "apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2
 "apps/typst-editor/src/main.rs" = 1
-"apps/vpn/src/main.rs" = 2
 "apps/weather/src/main.rs" = 2
 "apps/word-processor/src/main.rs" = 3
 
