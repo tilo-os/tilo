@@ -1298,6 +1298,12 @@ impl ChatApp {
                 self.right_flap.open();
                 self.call.join("c_huddle");
                 self.stage_connected_call();
+                // Two audio streams in the room, so the sidebar shows the
+                // people under the voice channel.
+                self.native_voice.snapshot.publishers = (1..=2)
+                    .map(|index| format!("{}/{index:064x}", "11".repeat(32)))
+                    .collect();
+                self.refresh_native_streams();
             }
             "starter" => {
                 // The real first-run empty workspace (no demo content).
