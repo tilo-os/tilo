@@ -78,7 +78,12 @@ enum Cmd {
 
 #[derive(Debug, Subcommand)]
 enum RepoCmd {
-    List,
+    List {
+        /// Print the repositories as JSON: the list the App Store reads
+        /// through the app host.
+        #[arg(long)]
+        json: bool,
+    },
     Add {
         name: String,
         url: String,
@@ -267,10 +272,11 @@ fn search(query: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Say what is about to take a while. On stderr, so `--json` output stays
+/// clean, and whether or not a terminal is watching: the Terminal's shell
+/// forwards host commands through pipes, and silence there reads as a hang.
 fn announce(message: &str) {
-    if std::io::stderr().is_terminal() {
-        eprintln!("{message}");
-    }
+    eprintln!("{message}");
 }
 
 fn progress_reporter() -> impl FnMut(DownloadProgress) {
@@ -804,7 +810,19 @@ fn repo(cmd: RepoCmd) -> ExitCode {
     use app_cli::config;
     let mut registries = config::load_registries();
     let confirmation = match cmd {
-        RepoCmd::List => {
+        RepoCmd::List { json: true } => {
+            return match serde_json::to_string(&registries) {
+                Ok(value) => {
+                    println!("{value}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("app: could not encode the repositories: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        RepoCmd::List { json: false } => {
             for registry in registries.registries {
                 println!(
                     "{}  {}  ({}, {}, key pinned)",

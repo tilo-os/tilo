@@ -442,11 +442,11 @@ fn stroke_styling_blend_and_shadow_are_validated_by_name() {
             ids: vec!["frame".into()],
             blend: Some("normal".into()),
             dash: Some(Vec::new()),
-            shadow: Some(canvas::model::Shadow {
+            shadow: Some(canvas::actions::Taught(canvas::model::Shadow {
                 offset: [0.0, 0.0],
                 blur: 0.0,
                 colour: None,
-            }),
+            })),
             ..EditMarks::default()
         }),
     )

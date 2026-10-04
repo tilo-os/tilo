@@ -179,6 +179,9 @@ signed entry names, attestations). An update installs the newer version
 into the user store, where it **shadows** the image's copy;
 `package_store::list_installed` reads both stores, system first, and lists
 the copy that runs. Updating an app never needs an image switch or a reboot.
+All of them read one list of repositories, `$XDG_CONFIG_HOME/tilo-store/registries.toml`,
+which `app repo` edits; the sandboxed App Store reads it through the app host
+(`repositories`), so it keeps no copy of its own.
 
 Which copy runs (`package_store::runs_over_image`):
 

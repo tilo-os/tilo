@@ -37,6 +37,25 @@ pub struct HomePeerRegistration {
     pub environments: RelayEnvironments,
 }
 
+/// What a device last heard from its relays about environments, newer than
+/// their registrations: `relay service node id (hex) → offer`. Kept per
+/// user in their cache ([`RELAY_OFFERS_FILE`]), since the registrations
+/// beside the identity keys are not the user's to rewrite.
+pub type RelayOffers = std::collections::BTreeMap<String, RelayOffer>;
+
+/// The file below the user's cache directory holding [`RelayOffers`].
+pub const RELAY_OFFERS_FILE: &str = "tilo/relay-offers.json";
+
+/// One relay's answer, and when it was asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayOffer {
+    /// What it said its workers run; kept from before when it did not
+    /// answer.
+    pub environments: RelayEnvironments,
+    /// When it was last asked, Unix milliseconds.
+    pub checked_at_ms: u64,
+}
+
 /// What a relay currently runs for environments, from its workers' live
 /// advertisements.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

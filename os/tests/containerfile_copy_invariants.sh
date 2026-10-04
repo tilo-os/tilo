@@ -93,10 +93,12 @@ containerfile="$repo/os/Containerfile"
 # The image ships one login session and no peer-sync marker unit.
 # The release gate's input hotplug check ships beside them.
 # The boot units gate ships with the rollback units whose confirmation it gates.
-# The WPE engine overlay and /usr/bin/browser are deliberate removals: the
-# Browser is a tapp in the app store and its Chromium engine a signed runtime
-# bundle under /usr/lib/tilo-runtime, both already copied.
-expected_contract=c5151b0043f4717e970ea0e3b2ba0eeff44fdfecd5b962d21a0713ad6ae7a9c1
+# The ush supervisor ships with what it runs: the two relay helpers for
+# Terminal, and the legacy VM service behind app shims. The WPE engine overlay
+# and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
+# app store and its Chromium engine a signed runtime bundle under
+# /usr/lib/tilo-runtime, both already copied.
+expected_contract=dd2a152fd96cf852784056224d43bce11955737e176310c7f6ec450bf0530adc
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

@@ -437,6 +437,7 @@ fn a_mask_shows_and_hides_its_layer() {
                 colour: "#000000".into(),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap();
@@ -508,6 +509,7 @@ fn paint_kept_inside_the_selection_carries_its_area() {
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap();
@@ -592,6 +594,7 @@ fn keeping_inside_no_selection_is_refused() {
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap_err();

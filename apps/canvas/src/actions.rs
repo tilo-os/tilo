@@ -135,7 +135,8 @@ pub struct EditLayer {
     /// Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.
     pub adjust: Option<Taught<Box<Adjust>>>,
     /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
-    /// greys on, white shows, black hides.
+    /// greys on, white shows, black hides; `unlink` keeps it put as the
+    /// layer's marks move (`link` again).
     pub mask: Option<String>,
     /// Invert the mask.
     pub invert: Option<bool>,
@@ -193,8 +194,8 @@ pub struct NewMark {
     /// `exclusion`, `hue`, `saturation`, `color` or `luminosity`.
     pub blend: Option<String>,
     pub shadow: Option<Shadow>,
-    /// Inside the mark from its edge; light colour = highlight.
-    pub inner_shadow: Option<Shadow>,
+    /// As shadow, inside the mark from its edge; light colour = highlight.
+    pub inner_shadow: Option<Taught<Shadow>>,
     /// `0..=1` film grain.
     pub grain: Option<f64>,
     /// Soften the edge outward over this many units.
@@ -313,6 +314,8 @@ pub struct Paint {
     /// The layer to paint on; the top layer when absent.
     pub layer: Option<String>,
     pub strokes: Vec<NewStroke>,
+    /// Put them in this group, to edit or remove them as one.
+    pub group: Option<String>,
 }
 
 /// Change marks: their colours and style, position, size, rotation or layer.
@@ -330,10 +333,10 @@ pub struct EditMarks {
     pub cap: Option<String>,
     pub join: Option<String>,
     pub blend: Option<String>,
-    /// Zero offset and blur removes it.
-    pub shadow: Option<Shadow>,
-    /// Zero offset and blur removes it.
-    pub inner_shadow: Option<Shadow>,
+    /// As draw's; zero offset and blur removes it.
+    pub shadow: Option<Taught<Shadow>>,
+    /// As draw's; zero offset and blur removes it.
+    pub inner_shadow: Option<Taught<Shadow>>,
     /// 0 removes it.
     pub grain: Option<f64>,
     /// 0 removes it.
@@ -345,7 +348,8 @@ pub struct EditMarks {
     pub clip: Option<String>,
     /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
-    pub gradient: Option<Gradient>,
+    /// As draw's.
+    pub gradient: Option<Taught<Gradient>>,
     /// A colour, or `none`.
     pub stroke: Option<String>,
     pub stroke_width: Option<f64>,
@@ -930,7 +934,7 @@ impl Draw {
                     join: mark.join.clone(),
                     blend: mark.blend.clone().filter(|blend| blend != "normal"),
                     shadow: mark.shadow.clone(),
-                    inner_shadow: mark.inner_shadow.clone(),
+                    inner_shadow: mark.inner_shadow.clone().map(|shadow| shadow.0),
                     grain: mark.grain.filter(|grain| *grain > 0.0),
                     feather: mark.feather.filter(|feather| *feather > 0.0),
                     adjust: None,
@@ -1008,6 +1012,7 @@ impl Paint {
                     hatch: stroke.hatch,
                 };
                 let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
+                mark.group = self.group.clone().unwrap_or_default();
                 let (clip, area) = clips.get(index).cloned().unwrap_or_default();
                 mark.clip = clip;
                 mark.keep_inside(&area);
@@ -1031,6 +1036,55 @@ impl Paint {
         }
         add_marks(doc, art, &layer, marks)
     }
+}
+
+/// Move each linked mask with its layer's marks when they all moved as
+/// one (`moves`: each mark edited, and where it went): the mask belongs to
+/// the layer's content, as a picture's cut-out goes with the picture. A
+/// mask whose own marks were edited too, or whose layer's marks moved
+/// apart or only in part, stays where it is.
+fn carry_masks(
+    doc: &mut Doc,
+    art: &Artwork,
+    travels: &[(&Mark, ui::vello::kurbo::Affine)],
+) -> Result<(), ActionError> {
+    let same = |a: ui::vello::kurbo::Affine, b: ui::vello::kurbo::Affine| {
+        a.as_coeffs()
+            .iter()
+            .zip(b.as_coeffs())
+            .all(|(a, b)| (a - b).abs() < 1e-9)
+    };
+    for layer in &art.layers {
+        let Some(mask) = art.mask_of(&layer.id).filter(|mask| !mask.unlinked) else {
+            continue;
+        };
+        let mut layer_travels = travels.iter().filter(|(mark, _)| mark.layer == layer.id);
+        let Some(&(_, went)) = layer_travels.next() else {
+            continue;
+        };
+        let count = 1 + layer_travels.clone().count();
+        let together = layer_travels.all(|&(_, other)| same(went, other));
+        let whole = count == art.marks_of(&layer.id).count();
+        let mask_edited = travels.iter().any(|(mark, _)| mark.layer == mask.id);
+        if !together || !whole || mask_edited || same(went, ui::vello::kurbo::Affine::IDENTITY) {
+            continue;
+        }
+        let [a, b, c, d, dx, dy] = went.as_coeffs();
+        let shift = same(
+            ui::vello::kurbo::Affine::new([a, b, c, d, 0.0, 0.0]),
+            ui::vello::kurbo::Affine::IDENTITY,
+        );
+        for mark in art.marks_of(&mask.id) {
+            let mut carried = mark.clone();
+            if shift {
+                carried = carried.moved(dx, dy);
+            } else {
+                carried.transform = Some((went * mark.affine()).as_coeffs());
+            }
+            doc::write_mark(doc, &carried)?;
+        }
+    }
+    Ok(())
 }
 
 /// Why a stroke's preset or dynamics cannot draw it on its layer.
@@ -1106,16 +1160,11 @@ impl EditMarks {
         if !scale.is_finite() || scale <= 0.0 || !rotate.is_finite() {
             return Err(refuse("scale must be positive and rotate finite"));
         }
-        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
-            return Err(refuse(problem));
-        }
-        if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
-            check_group(art, group, &[])?;
-        }
-        if let Some(transform) = self.transform {
-            check_transform(transform)?;
-        }
+        self.check_whole(art)?;
         let (mirror, crop) = self.picture_edits()?;
+        let turns = self.scale.is_some() || self.rotate.is_some() || self.flip.is_some();
+        // Where each mark went, for the masks that go with their layer.
+        let mut travels: Vec<(&Mark, ui::vello::kurbo::Affine)> = Vec::new();
         for unit in units {
             let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
@@ -1123,7 +1172,14 @@ impl EditMarks {
                 * ui::vello::kurbo::Affine::scale(scale)
                 * mirror
                 * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
+            let went = self.travel(turns.then_some(about), (dx, dy));
             for original in unit {
+                if destination
+                    .as_ref()
+                    .is_none_or(|layer| *layer == original.layer)
+                {
+                    travels.push((original, went));
+                }
                 let mut mark = original.clone();
                 if let Some(layer) = &destination
                     && *layer != mark.layer
@@ -1145,7 +1201,7 @@ impl EditMarks {
                 if dx != 0.0 || dy != 0.0 {
                     mark = mark.moved(dx, dy);
                 }
-                if self.scale.is_some() || self.rotate.is_some() || self.flip.is_some() {
+                if turns {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
                 }
                 if let Some(transform) = self.transform {
@@ -1162,7 +1218,35 @@ impl EditMarks {
                 doc::write_mark(doc, &mark)?;
             }
         }
+        carry_masks(doc, art, &travels)
+    }
+
+    /// Refuse a new shape, group or transform no mark can take.
+    fn check_whole(&self, art: &Artwork) -> Result<(), ActionError> {
+        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
+            return Err(refuse(problem));
+        }
+        if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
+            check_group(art, group, &[])?;
+        }
+        if let Some(transform) = self.transform {
+            check_transform(transform)?;
+        }
         Ok(())
+    }
+
+    /// Where a unit goes: moved by `by`, turned `about` its centre when it
+    /// turns, then the edit's own transform.
+    fn travel(
+        &self,
+        about: Option<ui::vello::kurbo::Affine>,
+        by: (f64, f64),
+    ) -> ui::vello::kurbo::Affine {
+        self.transform.map_or(
+            ui::vello::kurbo::Affine::IDENTITY,
+            ui::vello::kurbo::Affine::new,
+        ) * about.unwrap_or(ui::vello::kurbo::Affine::IDENTITY)
+            * ui::vello::kurbo::Affine::translate(by)
     }
 
     /// The flip as an affine about the origin, and the crop asked for,
@@ -1306,7 +1390,7 @@ impl EditMarks {
             (&self.shadow, &mut mark.style.shadow),
             (&self.inner_shadow, &mut mark.style.inner_shadow),
         ] {
-            if let Some(shadow) = edit {
+            if let Some(Taught(shadow)) = edit {
                 *field = (shadow.blur > 0.0 || shadow.offset != [0.0, 0.0]).then(|| shadow.clone());
             }
         }
@@ -1332,8 +1416,8 @@ impl EditMarks {
             if let ColourEdit::Set(stroke) = colour_patch(self.stroke.as_ref()) {
                 mark.style.stroke = stroke;
             }
-            if self.gradient.is_some() {
-                mark.style.gradient.clone_from(&self.gradient);
+            if let Some(Taught(gradient)) = &self.gradient {
+                mark.style.gradient = Some(gradient.clone());
             }
             if let Some(width) = self.stroke_width {
                 mark.style.stroke_width = width;
@@ -1748,6 +1832,7 @@ impl NewArtwork {
                 base: 1.0,
                 invert: false,
                 clip: false,
+                unlinked: false,
                 adjust: None,
             }],
             ..ArtworkFile::of(&Artwork::default())
@@ -1843,6 +1928,7 @@ fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), Act
                 base: layer.base.clamp(0.0, 1.0),
                 invert: layer.invert,
                 clip: layer.clip,
+                unlinked: layer.unlinked,
                 adjust: layer.adjust.clone(),
             },
         )?;
