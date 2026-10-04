@@ -377,6 +377,38 @@ impl DeviceFleetStore {
         self.insert_certificate(identity_id, cert)
     }
 
+    /// Remember a revocation another device of the person signed with the
+    /// root, so this machine keeps refusing the device after a restart and
+    /// passes the revocation on to the devices it meets. Returns whether the
+    /// fleet changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the revocation does not verify, belongs to another
+    /// identity, or the fleet cannot be saved.
+    pub fn remember_revocation(
+        &self,
+        identity_id: &str,
+        entry: RevocationEntry,
+    ) -> io::Result<bool> {
+        verify_revocation_entry(&entry)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+        if entry.user_public_key != decode_hex_32(identity_id)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "revocation belongs to another identity",
+            ));
+        }
+        let _fleet_lock = self.lock_fleets()?;
+        let mut fleet = self.load(identity_id)?;
+        if fleet.is_revoked(&entry.revoked_device_public_key) {
+            return Ok(false);
+        }
+        fleet.revocations.push(entry);
+        self.save(&fleet)?;
+        Ok(true)
+    }
+
     fn insert_certificate(&self, identity_id: &str, cert: DeviceCert) -> io::Result<DeviceFleet> {
         verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
         let _fleet_lock = self.lock_fleets()?;
