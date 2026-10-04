@@ -253,6 +253,10 @@ impl Writer {
             Some(name) => format!(r#"<g clip-path="url(#c-{name})">{cover}</g>"#),
             None => cover,
         };
+        let cover = match self.area_def(mark) {
+            Some(area) => format!(r#"<g clip-path="url(#{area})">{cover}</g>"#),
+            None => cover,
+        };
         let (w, h) = (num(art.width), num(art.height));
         let _ = write!(
             self.defs,
@@ -290,8 +294,25 @@ impl Writer {
         Some(name)
     }
 
+    /// The clip path of the area `mark` is kept inside, written into the
+    /// defs: its id, if the mark has an area.
+    fn area_def(&mut self, mark: &Mark) -> Option<String> {
+        let area = mark.area()?;
+        let id = format!("a-{}", mark.id);
+        let _ = write!(
+            self.defs,
+            r#"<clipPath id="{id}"><path d="{}"/></clipPath>"#,
+            path_data(&area),
+        );
+        Some(id)
+    }
+
     fn mark(&mut self, art: &Artwork, mark: &Mark, palette: &[tilo_wet_media::Pigment]) {
         let style = &mark.style;
+        let area = self.area_def(mark);
+        if let Some(area) = &area {
+            let _ = write!(self.body, r#"<g clip-path="url(#{area})">"#);
+        }
         let mut wrap = String::new();
         if let Some(name) = self.clip_def(art, mark) {
             let _ = write!(wrap, r#" clip-path="url(#c-{name})""#);
@@ -333,6 +354,9 @@ impl Writer {
             self.body.push_str("</g>");
         }
         if !wrap.is_empty() {
+            self.body.push_str("</g>");
+        }
+        if area.is_some() {
             self.body.push_str("</g>");
         }
     }
