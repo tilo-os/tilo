@@ -626,8 +626,15 @@ impl Decorator for Door {
         self.content.update(state, path)
     }
 
+    /// The door is the session's collaborative endpoint; every other request
+    /// (the shell's header row, which hosts the window's History control)
+    /// passes to the hosted view.
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        request.provide::<dyn Collaborative>(&mut self.remote);
+        if request.wants::<dyn Collaborative>() {
+            request.provide::<dyn Collaborative>(&mut self.remote);
+        } else {
+            self.content.provide_mut(request);
+        }
     }
 
     fn name(&self) -> &'static str {
