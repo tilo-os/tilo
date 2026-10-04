@@ -1845,28 +1845,17 @@ impl WindowGroup {
             self.close_rect.height() / 2.0,
             &theme.tokens.elevation.floating,
         );
-        // At rest the quiet chip; under the pointer the live (danger) pill,
-        // since the press closes the window.
-        let style = if self.close_hover {
-            crate::widget::ChipStyle::Live
-        } else {
-            crate::widget::ChipStyle::Neutral
-        };
+        // The quiet chip, lifted under the pointer. Closing a window is not
+        // an error, so it is never danger red.
         crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.close_rect,
-            style,
-            false,
+            crate::widget::ChipStyle::Neutral,
+            self.close_hover,
             theme,
         );
-        // On hover the glyph takes the ink that reads on the danger face —
-        // derived, so it stays legible on a light theme's danger red too.
-        let glyph_color = if self.close_hover {
-            theme.on_surface(theme.tokens.colors.semantic.danger).ink
-        } else {
-            theme.tokens.colors.text_primary
-        };
+        let glyph_color = theme.tokens.colors.text_primary;
         icons::draw_icon(
             scene,
             transform,
@@ -4760,22 +4749,17 @@ mod tests {
                     write_png(&hover, w, h, &png);
                 }
                 let hot = pixel(&hover, w, cx, top + 3.0);
+                // Hover lifts the chip, as every quiet control: closing a
+                // window is not an error, so it is never danger red.
+                assert!(
+                    crate::chrome::lightness_step(hot, face) >= 0.04,
+                    "{}: hover must visibly lift the × chip ({face:?} -> {hot:?})",
+                    theme.name
+                );
                 let danger = theme.tokens.colors.semantic.danger;
                 assert!(
-                    contrast_ratio(hot, face) >= 1.5,
-                    "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
-                    theme.name
-                );
-                // The face is the live (danger) pill: red-led on every preset,
-                // and nearer the token than the rest face was.
-                assert!(
-                    hot.r() > hot.g() && hot.r() > hot.b(),
-                    "{}: hovered × chip {hot:?} is not the danger red",
-                    theme.name
-                );
-                assert!(
-                    contrast_ratio(hot, danger) < contrast_ratio(face, danger),
-                    "{}: hovered × chip {hot:?} did not move toward danger {danger:?}",
+                    contrast_ratio(hot, danger) > 1.2,
+                    "{}: the hovered × chip {hot:?} is not danger red",
                     theme.name
                 );
                 // The × glyph stays readable on the hot face: the darkest or

@@ -240,7 +240,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let avg_ms = seek_start.elapsed().as_secs_f64() * 1000.0 / f64::from(SEEKS);
 
     Ok(format!(
-        "{path}: {mbs:.0} MB/s sequential read · {avg_ms:.2} ms avg seek"
+        "{path}: {mbs:.0} MB/s sequential read, {avg_ms:.2} ms average seek"
     ))
 }
 

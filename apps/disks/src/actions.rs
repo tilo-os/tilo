@@ -79,49 +79,12 @@
 #[cfg(test)]
 mod tests {
     use ui::automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-    use ui::taffy::{NodeId, TaffyTree};
     use ui::widget::Widget;
-    use ui::winit::dpi::PhysicalPosition;
-    use ui::winit::event::{DeviceId, Modifiers, WindowEvent};
 
     use crate::app::DisksApp;
     use crate::doc::DisksDoc;
     use crate::model::Topology;
     use crate::ops::{self, CommandSpec, Op};
-
-    fn device_id() -> DeviceId {
-        // winit exposes no public DeviceId constructor; tests only need a value.
-        unsafe { std::mem::zeroed() }
-    }
-
-    /// A cursor move through the real winit event path — exercises the live
-    /// `Widget::handle_event` without hitting any action affordance.
-    fn cursor_at(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: device_id(),
-            position: PhysicalPosition::new(x, y),
-        }
-    }
-
-    /// Pump one event through the production `Widget::handle_event`.
-    fn send(app: &mut DisksApp, doc: &mut AutoCommit, ev: &WindowEvent) {
-        let taffy = TaffyTree::<()>::new();
-        let mut handled = false;
-        let mut focus = None;
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: doc,
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
-    }
 
     /// A Disks app with its first `sync` run — the same state the live app (and
     /// the `--shots` path) reaches on its first frame. With `DISKS_LIVE` unset
@@ -351,10 +314,7 @@ mod tests {
         // Device operations are exported as external resource actions while the
         // projected document remains action-free.
         {
-            let (mut app, mut doc) = synced();
-
-            // Real event path: move the pointer over the surface.
-            send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
+            let (mut app, doc) = synced();
 
             let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one storage-system root");

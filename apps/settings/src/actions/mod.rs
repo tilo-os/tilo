@@ -54,6 +54,7 @@ use tilo_actions::{
 };
 
 use crate::categories::Category;
+use crate::facts::DeviceFacts;
 use crate::prefs::SystemPrefs;
 
 mod portable;
@@ -1443,13 +1444,14 @@ fn document_section_resource(
 pub(crate) fn live_device_resources(
     doc: &AutoCommit,
     account_inventory: &[accounts::Account],
+    facts: DeviceFacts,
 ) -> Vec<Resource> {
     let prefs = SystemPrefs::load();
     let mut extras: Vec<Resource> = Category::ALL
         .iter()
         .copied()
         .filter(|category| !is_document_door_category(*category))
-        .map(|category| section_resource(category, doc, &prefs, account_inventory))
+        .map(|category| section_resource(category, doc, &prefs, account_inventory, facts))
         .collect();
     extras.extend(notification_app_resources(doc, &prefs));
     extras
@@ -1465,12 +1467,13 @@ pub(crate) fn live_device_resources(
 /// `SettingsAction` door; device-local sections and live inventories are merged
 /// into the same root so the palette shape stays one tree.
 pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    provide_resources_with_accounts(doc, &[])
+    provide_resources_with_accounts(doc, &[], DeviceFacts::LIVE)
 }
 
-pub fn provide_resources_with_accounts(
+pub(crate) fn provide_resources_with_accounts(
     doc: &AutoCommit,
     account_inventory: &[accounts::Account],
+    facts: DeviceFacts,
 ) -> Vec<Resource> {
     let state = crate::resource::SettingsState::from_doc(doc);
     let mut root = ui::tilo_resource::publish::<crate::resource::Settings>(
@@ -1500,7 +1503,13 @@ pub fn provide_resources_with_accounts(
         if let Some(section) = published.remove(&id) {
             root = root.with_child(section);
         } else {
-            root = root.with_child(section_resource(category, doc, &prefs, account_inventory));
+            root = root.with_child(section_resource(
+                category,
+                doc,
+                &prefs,
+                account_inventory,
+                facts,
+            ));
         }
     }
     vec![root]
@@ -1511,14 +1520,15 @@ fn section_resource(
     doc: &AutoCommit,
     prefs: &SystemPrefs,
     account_inventory: &[accounts::Account],
+    facts: DeviceFacts,
 ) -> Resource {
     let mut pane = match category {
         Category::Network => network_section(doc),
         Category::Bluetooth => bluetooth_section(doc),
-        Category::Sound => sound_section(doc),
-        Category::Displays => displays_section(doc, prefs),
+        Category::Sound => sound_section(doc, facts),
+        Category::Displays => displays_section(doc, prefs, facts),
         Category::MouseKeyboard => input_section(doc, prefs),
-        Category::Power => power_section(doc, prefs),
+        Category::Power => power_section(doc, prefs, facts),
         Category::Appearance => appearance_section(doc, prefs),
         Category::Accessibility => accessibility_section(doc, prefs),
         Category::Notifications => notifications_section(doc, prefs),
@@ -1695,6 +1705,11 @@ fn account_operation_spec(
             "accounts",
             "network-probe",
         ]));
+    } else if matches!(
+        operation,
+        AccountOperation::SubmitForm | AccountOperation::SubmitReauthentication
+    ) {
+        spec = spec.with_contract(local_operation_contract(&["device-local", "accounts"]));
     }
     Some(spec)
 }
@@ -1724,7 +1739,7 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::ExternalAccounts),
         "settings.accounts",
-        "External Accounts",
+        "External accounts",
     );
     for (kind, label) in [
         ("mail", "Add email account"),
@@ -1742,6 +1757,37 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
             OperationKind::View,
             &AccountOperation::Add { kind: kind.into() },
         ) {
+            section = section.with_action(action);
+        }
+    }
+    // The open form's own buttons: the same doors, on the same surface.
+    for (id, label, kind, operation) in [
+        (
+            "save-form",
+            "Save the account form",
+            OperationKind::Effect,
+            AccountOperation::SubmitForm,
+        ),
+        (
+            "cancel-form",
+            "Close the account form",
+            OperationKind::View,
+            AccountOperation::CancelForm,
+        ),
+        (
+            "save-reauthentication",
+            "Save the new credential",
+            OperationKind::Effect,
+            AccountOperation::SubmitReauthentication,
+        ),
+        (
+            "cancel-reauthentication",
+            "Close the sign-in form",
+            OperationKind::View,
+            AccountOperation::CancelReauthentication,
+        ),
+    ] {
+        if let Some(action) = account_operation_spec(id, label, kind, &operation) {
             section = section.with_action(action);
         }
     }
@@ -1896,7 +1942,7 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     clippy::too_many_lines,
     reason = "resource tree mirrors Sound hierarchy"
 )]
-fn sound_section(doc: &AutoCommit) -> Resource {
+fn sound_section(doc: &AutoCommit, facts: DeviceFacts) -> Resource {
     let _ = doc;
     let mut sec = Resource::new("settings.section:sound", "settings.section", "Sound");
     sec = sec.with_action(local_bool_spec(
@@ -1999,7 +2045,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             sec = sec.with_action(action);
         }
     }
-    let graph = media::audio::enumerate();
+    let graph = facts.audio_graph();
     if !graph.sinks.is_empty() {
         let choices = graph
             .sinks
@@ -2378,7 +2424,11 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
 }
 
 pub fn audio_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
-    tilo_actions::ActionBinding::unit_for(&sound_section(&AutoCommit::new()), action_id).ok()
+    tilo_actions::ActionBinding::unit_for(
+        &sound_section(&AutoCommit::new(), DeviceFacts::LIVE),
+        action_id,
+    )
+    .ok()
 }
 
 pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<f64>> {
@@ -2624,7 +2674,11 @@ pub fn audio_stream_bool_binding(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+pub(crate) fn displays_section(
+    _doc: &AutoCommit,
+    _d: &SystemPrefs,
+    facts: DeviceFacts,
+) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
@@ -2670,7 +2724,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
         "night_light_temperature",
         "Set Night Light warmth",
         DISPLAY_OPERATION_TYPE,
-        vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+        vec!["Subtle (4500 K)", "Warm (3700 K)", "Very warm (2800 K)"]
             .into_iter()
             .map(str::to_string)
             .collect(),
@@ -2716,7 +2770,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
     ));
     // Output topology is supplied by the compositor's live, PID-validated
     // snapshot.  Do not turn an absent/stale snapshot into invented monitors.
-    if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
+    if let Some(snapshot) = facts.display_snapshot() {
         let output_labels: Vec<_> = snapshot
             .outputs
             .iter()
@@ -2863,7 +2917,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
                 .modes
                 .iter()
                 .take(MAX_DYNAMIC_CHOICES)
-                .map(|mode| mode.label())
+                .map(|mode| crate::panes::display::mode_label(*mode))
                 .collect();
             let operation_connector = connector.clone();
             resource = resource.with_action(local_choice_spec(
@@ -2954,7 +3008,7 @@ pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource 
                         output
                             .color_profile_labels
                             .get(id)
-                            .map(|name| format!("{name} · {id}"))
+                            .map(|name| format!("{name} ({id})"))
                     }),
             );
             let operation_connector = connector.clone();
@@ -3100,7 +3154,7 @@ pub fn display_choice_binding(action_id: &str) -> Option<tilo_actions::ActionBin
             action_id,
             "Set Night Light warmth",
             DISPLAY_OPERATION_TYPE,
-            vec!["Subtle · 4500 K", "Warm · 3700 K", "Very warm · 2800 K"]
+            vec!["Subtle (4500 K)", "Warm (3700 K)", "Very warm (2800 K)"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
@@ -3172,7 +3226,11 @@ pub fn display_scale_binding() -> Option<tilo_actions::ActionBinding<String>> {
 }
 
 pub fn display_unit_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<()>> {
-    let resource = displays_section(&AutoCommit::new(), &SystemPrefs::default());
+    let resource = displays_section(
+        &AutoCommit::new(),
+        &SystemPrefs::default(),
+        DeviceFacts::LIVE,
+    );
     tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
@@ -3424,7 +3482,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::MouseKeyboard),
         "settings.section",
-        "Mouse & Keyboard",
+        "Mouse & keyboard",
     );
     for (id, label, operation) in [
         (
@@ -3954,7 +4012,7 @@ pub fn tablet_text_binding(
     clippy::too_many_lines,
     reason = "the ordered resource declaration mirrors the Power hierarchy"
 )]
-fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+fn power_section(_doc: &AutoCommit, _d: &SystemPrefs, facts: DeviceFacts) -> Resource {
     let mut sec = Resource::new("settings.section:power", "settings.section", "Power");
     sec = sec.with_action(local_bool_spec(
         "auto_suspend",
@@ -4079,7 +4137,7 @@ fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             },
         ));
     }
-    if let Some(capability) = os_actions::charge_capability() {
+    if let Some(capability) = facts.charge_capability() {
         sec = sec.with_action(charge_cap_spec(&capability.choices, capability.current));
     }
     sec
@@ -4117,13 +4175,21 @@ fn charge_cap_spec(choices: &[u32], fallback: u32) -> ActionSpec {
 
 pub fn power_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     bool_binding_for(
-        &power_section(&AutoCommit::new(), &SystemPrefs::default()),
+        &power_section(
+            &AutoCommit::new(),
+            &SystemPrefs::default(),
+            DeviceFacts::LIVE,
+        ),
         action_id,
     )
 }
 
 pub fn power_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
-    let resource = power_section(&AutoCommit::new(), &SystemPrefs::default());
+    let resource = power_section(
+        &AutoCommit::new(),
+        &SystemPrefs::default(),
+        DeviceFacts::LIVE,
+    );
     let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
     tilo_actions::ActionBinding::new(&resource, spec, |choice| {
         serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
@@ -5068,7 +5134,7 @@ fn region_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     let section = Resource::new(
         pane_resource_id(Category::RegionFormats),
         "settings.section",
-        "Region & Formats",
+        "Region & formats",
     );
     portable::attach_portable_preferences(section, Category::RegionFormats, doc, d)
 }
@@ -5077,7 +5143,7 @@ fn time_date_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::TimeDate),
         "settings.section",
-        "Time & Date",
+        "Time & date",
     );
     for (id, label, operation) in [
         (
@@ -5221,7 +5287,7 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::KeyboardShortcuts),
         "settings.section",
-        "Keyboard Shortcuts",
+        "Keyboard shortcuts",
     );
     section =
         portable::attach_portable_preferences(section, Category::KeyboardShortcuts, doc, &prefs);
@@ -5239,7 +5305,7 @@ fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::DeviceMesh),
         "settings.section",
-        "Devices & Sync",
+        "Devices & sync",
     );
     section = section.with_action(device_mesh_choice_spec(
         "role",
@@ -5626,7 +5692,7 @@ pub fn device_mesh_workspace_binding(
 // Inherent resource publication (was ResourceProvider)
 impl crate::SettingsApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources_with_accounts(doc, self.account_resource_inventory())
+        provide_resources_with_accounts(doc, self.account_resource_inventory(), self.device_facts())
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -5658,7 +5724,13 @@ impl crate::SettingsApp {
         let category = category_for_resource_id(id)?;
         let prefs = SystemPrefs::load();
         find_resource(
-            section_resource(category, doc, &prefs, self.account_resource_inventory()),
+            section_resource(
+                category,
+                doc,
+                &prefs,
+                self.account_resource_inventory(),
+                self.device_facts(),
+            ),
             id,
         )
     }
@@ -5733,7 +5805,7 @@ mod tests {
             .expect("appearance section");
         let appearance_ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(appearance_ids.contains(&"open"), "{appearance_ids:?}");
-        assert!(appearance_ids.contains(&"theme"), "{appearance_ids:?}");
+        assert!(appearance_ids.contains(&"dark_theme"), "{appearance_ids:?}");
         assert!(appearance_ids.contains(&"ui_scale"), "{appearance_ids:?}");
 
         let notifications = published
@@ -5848,7 +5920,7 @@ mod tests {
 
             let appearance = find(&resources, "settings.section:appearance");
             let ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(ids.contains(&"theme"), "{ids:?}");
+            assert!(ids.contains(&"dark_theme"), "{ids:?}");
             assert!(ids.contains(&"ui_scale"), "{ids:?}");
         }
 
@@ -5905,7 +5977,12 @@ mod tests {
                 .publish_resource(&doc, &pane_resource_id(Category::Appearance))
                 .expect("one section resolves without rebuilding every other section");
             assert_eq!(appearance.label, Category::Appearance.label());
-            assert!(appearance.actions.iter().any(|action| action.id == "theme"));
+            assert!(
+                appearance
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "dark_theme")
+            );
         }
 
         // Case `adversarial_account_inventory_is_hard_bounded`.
@@ -5943,6 +6020,25 @@ mod tests {
         }
     }
 
+    /// The account forms' own buttons are bound to the External accounts section, so
+    /// that section has to publish them or they would sit disabled.
+    #[test]
+    fn account_form_buttons_are_published_on_the_accounts_section() {
+        let resources = provide_resources(&AutoCommit::new());
+        let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
+        for id in [
+            "save-form",
+            "cancel-form",
+            "save-reauthentication",
+            "cancel-reauthentication",
+        ] {
+            assert!(
+                accounts.actions.iter().any(|action| action.id == id),
+                "{id} is published"
+            );
+        }
+    }
+
     /// Account removal, storage reclamation and update operations need host confirmation.
     #[test]
     fn destructive_resources_require_host_confirmation() {
@@ -5953,7 +6049,8 @@ mod tests {
         {
             let mut account = accounts::Account::new("stable-account", "nextcloud");
             account.display_name = "Work cloud".into();
-            let resources = provide_resources_with_accounts(&AutoCommit::new(), &[account]);
+            let resources =
+                provide_resources_with_accounts(&AutoCommit::new(), &[account], DeviceFacts::LIVE);
             let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
             let account = accounts
                 .children
@@ -6824,7 +6921,11 @@ mod tests {
         {
             let res = provide_resources(&AutoCommit::new());
             let appearance = find(&res, "settings.section:appearance");
-            let theme = appearance.actions.iter().find(|a| a.id == "theme").unwrap();
+            let theme = appearance
+                .actions
+                .iter()
+                .find(|a| a.id == "dark_theme")
+                .unwrap();
             let typo = serde_json::Map::from_iter([(
                 "choice".to_owned(),
                 serde_json::Value::String("not-a-theme".to_owned()),
@@ -6882,7 +6983,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         for action in [
             set_bool_action(panes::notifications::DND_KEY, false),
-            set_text_action(panes::appearance::THEME_KEY, "Dark"),
+            set_text_action(panes::appearance::DARK_THEME_KEY, "Dark"),
         ] {
             tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
         }
@@ -6893,9 +6994,9 @@ mod tests {
         seed: seeded_doc(),
         registry: registry(),
         resources: |doc| provide_resources(doc),
-        palette: ["Network — Open Network", "Turn on Do Not Disturb", "Set theme"],
+        palette: ["Network — Open Network", "Turn on Do not disturb", "Set dark theme"],
         replay: [
-            set_theme => |_| encode(&set_text_action(panes::appearance::THEME_KEY, "Nord")),
+            set_dark_theme => |_| encode(&set_text_action(panes::appearance::DARK_THEME_KEY, "Dark cool")),
         ],
         undo: [
             turn_on_dnd => |_| encode(&set_bool_action(panes::notifications::DND_KEY, true)),
@@ -6904,8 +7005,8 @@ mod tests {
             dnd_flips_the_current_value => ("settings.section:notifications", "dnd", |_, _| {
                 encode(&set_bool_action(panes::notifications::DND_KEY, true))
             }),
-            theme => ("settings.section:appearance", "theme", arg: "Gruvbox", |_, _| {
-                encode(&set_text_action(panes::appearance::THEME_KEY, "Gruvbox"))
+            theme => ("settings.section:appearance", "dark_theme", arg: "Dark soft", |_, _| {
+                encode(&set_text_action(panes::appearance::DARK_THEME_KEY, "Dark soft"))
             }),
         ],
     }

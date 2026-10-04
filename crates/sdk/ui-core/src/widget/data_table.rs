@@ -1239,6 +1239,38 @@ impl<Row> DataTable<Row> {
         self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
 
+    /// The band the columns share: the table less the row inset on both
+    /// sides, so the first and last cells keep their padding inside the
+    /// selection lift and the stripe, and less the scroll bar's width at the
+    /// trailing edge while it shows, so the bar never covers a column.
+    fn columns_band(&self) -> Rect {
+        let inset = self.row_inset();
+        let bar = if self.internal_scroll() {
+            BAR_THICKNESS + 2.0 * BAR_MARGIN
+        } else {
+            0.0
+        };
+        let x0 = (self.rect.x0 + inset).min(self.rect.x1);
+        Rect::new(
+            x0,
+            self.rect.y0,
+            (self.rect.x1 - inset - bar).max(x0),
+            self.rect.y1,
+        )
+    }
+
+    /// How far a row's lift and stripe stand in from the table's edges: the
+    /// list inset `s2` (HIG §9.3).
+    fn row_inset(&self) -> f64 {
+        f64::from(
+            self.measure_theme
+                .as_ref()
+                .map_or(crate::tokens::Spacing::BASE.s2, |theme| {
+                    theme.tokens.spacing.s2
+                }),
+        )
+    }
+
     fn v_track(&self) -> Option<Rect> {
         if !self.internal_scroll() {
             return None;
@@ -1448,6 +1480,8 @@ impl<Row> DataTable<Row> {
         let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
         let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
+        let band = self.columns_band();
+        let ground = tokens.colors.surfaces.content;
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
@@ -1472,27 +1506,29 @@ impl<Row> DataTable<Row> {
             let selected = self.selectable && self.is_row_selected(ri);
             // Whole-row geometry: the caller's body clip layer trims the part
             // that scrolls past the viewport, so cells see their real row.
-            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
+            // The lift and the stripe share one shape: the columns' band
+            // (inset `s2`, clear of the scroll bar) at the item radius.
+            let row_band = Rect::new(band.x0, y0, band.x1, y1);
             // Selection is a lift (HIG §9.3), never an accent wash, and
-            // takes precedence over the zebra stripe; the stripe is the
-            // faintest derived tier on the ground, not a ramp slot.
+            // takes precedence over the zebra stripe; the stripe is a
+            // fraction of the same lift, so selection always reads past it.
             if selected {
-                let inset = f64::from(tokens.spacing.s2);
                 crate::chrome::paint_row_selection(
                     scene,
                     transform,
-                    row_rect.inset((-inset, 0.0)),
+                    row_band,
                     crate::chrome::SelectionState::active(true),
-                    tokens.colors.surfaces.content,
+                    ground,
                     theme,
                 );
             } else if ri % 2 == 1 {
+                let radius = f64::from(tokens.radii.item).min(row_band.height() / 2.0);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tier_on(tokens.colors.surfaces.content, ZEBRA_ALPHA),
+                    zebra_on(theme, ground),
                     None,
-                    &row_rect,
+                    &RoundedRect::from_rect(row_band, radius),
                 );
             }
             match row_state {
@@ -1532,7 +1568,7 @@ impl<Row> DataTable<Row> {
                         color,
                         translated(
                             transform,
-                            self.rect.x0 + f64::from(tokens.spacing.s2),
+                            band.x0 + f64::from(tokens.spacing.s2),
                             centered_text_top(y0, row_h, text_h),
                         ),
                         None,
@@ -2111,7 +2147,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         // User-resized widths in `col_widths_px` override the declared `ColumnWidth`.
         let mut widths = self.auto_widths.clone();
         widths.extend(self.col_widths_px.iter().map(|(k, v)| (k.clone(), *v)));
-        let next_columns = compute_column_rects(&self.columns, self.rect, &widths);
+        let next_columns = compute_column_rects(&self.columns, self.columns_band(), &widths);
         let columns_changed = self.col_rects != next_columns;
         self.col_rects = next_columns;
         let mut row_heights = HashMap::<usize, f64>::new();
@@ -2609,9 +2645,25 @@ fn compute_column_rects<Row>(
     rects
 }
 
-/// Alpha of a zebra stripe: the faintest derived tier on the table's
-/// ground (HIG §9.5), shared by [`DataTable`] and [`crate::widget::Table`].
-pub(crate) const ZEBRA_ALPHA: u8 = 13;
+/// How much of the selection lift a zebra stripe takes: a quarter of the
+/// way from the ground to the selected row's fill. Taken from the selection
+/// itself, a selected row always stands three stripes and more off the
+/// ground on every material, the near-black ones included, so selection
+/// never reads as one more stripe.
+pub(crate) const ZEBRA_SHARE: f32 = 0.25;
+
+/// A zebra stripe on `ground`: [`ZEBRA_SHARE`] of the way to the selection
+/// lift. Shared by [`DataTable`] and the block editor's tables.
+#[must_use]
+pub(crate) fn zebra_on(theme: &Theme, ground: Color) -> Color {
+    let selected = crate::chrome::selection_tier_on(
+        theme,
+        crate::chrome::SelectionState::active(true),
+        ground,
+    )
+    .fill;
+    crate::tokens::colors::mix8(ground, selected, ZEBRA_SHARE)
+}
 
 /// A ground is *near black* below this relative luminance. sRGB is compressed
 /// there, so a white veneer moves the luminance far less than the same alpha
@@ -2651,6 +2703,60 @@ mod tier_tests {
     use super::*;
     use crate::surface::edge_delta;
     use crate::tokens::colors::HAIRLINE_MIN_DELTA;
+
+    /// The faintest derived tier these tests exercise.
+    const ZEBRA_ALPHA: u8 = 13;
+
+    /// CIE L* of a colour.
+    fn lightness(c: Color) -> f64 {
+        let y = crate::a11y::relative_luminance(c);
+        let f = if y > 216.0 / 24389.0 {
+            y.cbrt()
+        } else {
+            (841.0 / 108.0) * y + 4.0 / 29.0
+        };
+        116.0 * f - 16.0
+    }
+
+    /// A selected row reads past a striped one on every ground of every
+    /// shipped material: the selection step is more than three stripe steps,
+    /// and the selected row stands clearly off a striped neighbour.
+    #[test]
+    fn selection_stands_well_past_the_zebra_stripe_on_every_ground() {
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("shipped preset resolves");
+            let s = &theme.tokens.colors.surfaces;
+            for (ground_name, ground) in [
+                ("content", s.content),
+                ("sidebar", s.sidebar),
+                ("inspector", s.inspector),
+                ("raised", s.raised),
+            ] {
+                let zebra = zebra_on(&theme, ground);
+                let selected = crate::chrome::selection_tier_on(
+                    &theme,
+                    crate::chrome::SelectionState::active(true),
+                    ground,
+                )
+                .fill;
+                let stripe = (lightness(zebra) - lightness(ground)).abs();
+                let lift = (lightness(selected) - lightness(ground)).abs();
+                assert!(
+                    lift >= 3.0 * stripe,
+                    "{name}/{ground_name}: selection ΔL* {lift:.1} vs stripe ΔL* {stripe:.1}"
+                );
+                assert!(
+                    stripe >= 1.5,
+                    "{name}/{ground_name}: the stripe still registers (ΔL* {stripe:.1})"
+                );
+                let apart = (lightness(selected) - lightness(zebra)).abs();
+                assert!(
+                    apart >= 6.0,
+                    "{name}/{ground_name}: a selected row stands only ΔL* {apart:.1} off a striped one"
+                );
+            }
+        }
+    }
 
     fn presets() -> [Theme; 3] {
         [Theme::dark(), Theme::light(), Theme::high_contrast()]
@@ -4114,6 +4220,39 @@ mod tests {
         let (tree, node) = lay_out(&mut t);
         t.set_viewport(5.0 * px(ROW_HEIGHT), px(ROW_HEIGHT));
         (t, tree, node)
+    }
+
+    /// The selection lift, the stripe and the cells share one edge: the
+    /// columns stand `s2` in from the table on both sides (so a cell's own
+    /// `s2` padding keeps its text off the lift's rounded edge), and the
+    /// live scroll bar has its own column at the trailing edge.
+    #[test]
+    fn rows_share_one_edge_and_the_scroll_bar_keeps_its_own_column() {
+        let (mut t, _tree, _node) = scrolling_table();
+        let _relaid = lay_out(&mut t);
+        let inset = f64::from(Theme::dark().tokens.spacing.s2);
+        let rect = t.get_rect();
+        let first = t.col_rects.first().copied().expect("a column");
+        let last = t.col_rects.last().copied().expect("a column");
+        assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-6, "{first:?}");
+        let track = t.v_track().expect("the bar is live");
+        assert!(
+            last.x1 + inset <= track.x0 + 1e-6,
+            "the last column ends before the bar: {last:?} vs {track:?}"
+        );
+        let band = t.columns_band();
+        assert!((band.x0 - first.x0).abs() < 1e-6 && band.x1 <= track.x0);
+
+        // Without a bar the band runs to the inset on the trailing edge too.
+        let mut plain = DataTable::<R>::new(sample_cols()).selectable(true);
+        plain.set_rows(rows4());
+        let _laid = lay_out(&mut plain);
+        let band = plain.columns_band();
+        let rect = plain.get_rect();
+        assert!(
+            (band.x1 - (rect.x1 - inset)).abs() < 1e-6,
+            "{band:?} in {rect:?}"
+        );
     }
 
     fn bar_x(t: &DataTable<R>) -> f64 {

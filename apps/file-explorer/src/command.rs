@@ -146,6 +146,12 @@ pub enum FileCommand {
     RevealInFolder(PathBuf),
     /// Remove `path` from the Recent list; the file itself is untouched.
     ForgetRecent(PathBuf),
+    /// Open what is wrong with the cloud account with this id (chosen from
+    /// the places list, where its folder is not mounted).
+    ShowRemoteAccount(String),
+    /// Read the cloud account with this id again (after the person signed in
+    /// elsewhere) and open its folder if it is now available.
+    RecheckRemoteAccount(String),
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,
@@ -160,10 +166,6 @@ pub enum FileCommand {
     /// Create a new file in the current directory by copying the given
     /// template file, then drop into inline-rename.
     NewFromTemplate(PathBuf),
-    /// Request the favourite context menu for the favourite at `path` (a
-    /// right-press on a sidebar favourite). The app opens a labelled menu with
-    /// the normal folder actions plus "Remove from Favourites".
-    OpenFavoriteMenu(PathBuf),
     /// Begin dragging a row out of the file list (a press that moved past the
     /// drag threshold). The app carries the row(s) as a floating ghost until
     /// they are dropped: onto a folder (or the parent) they move there; a single

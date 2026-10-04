@@ -11,6 +11,8 @@ pub struct OsRelease {
     pub id: String,
     /// Missing is distinct from a version; only exact ID=arch means rolling.
     pub version_id: Option<String>,
+    /// The distribution's own name for people ("Fedora Linux"), when given.
+    pub name: Option<String>,
 }
 
 /// Parse os-release as data, without expansion, execution, or `ID_LIKE` inheritance.
@@ -55,7 +57,15 @@ pub fn parse_os_release(input: &str) -> Result<OsRelease, String> {
     {
         return Err("Invalid os-release VERSION_ID.".into());
     }
-    Ok(OsRelease { id, version_id })
+    // Only a display name: never used to choose a release.
+    let name = fields
+        .remove("NAME")
+        .filter(|name| !name.trim().is_empty() && !name.chars().any(char::is_control));
+    Ok(OsRelease {
+        id,
+        version_id,
+        name,
+    })
 }
 
 fn parse_value(raw: &str) -> Result<String, String> {

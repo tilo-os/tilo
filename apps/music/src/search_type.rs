@@ -28,7 +28,8 @@
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
-    CatalogSearchProvider, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchProvider, SearchResult,
+    CatalogSearchProvider, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchProvider,
+    SearchResult, SearchRow,
 };
 
 use crate::backend::{MusicBackend, SearchTop};
@@ -393,42 +394,33 @@ fn library_search_result_hit(lib: &Library, result: &SearchResult) -> Option<Sea
     None
 }
 
-fn song_subtitle(artist: &str, duration_s: u32) -> String {
-    if duration_s == 0 {
-        format!("Song · {artist}")
-    } else {
-        format!(
-            "Song · {artist} · {}",
-            ui::format::timecode(u64::from(duration_s))
-        )
-    }
+/// A song's one secondary fact: its artist. The kind is the group header and
+/// the duration has its own column in a media row.
+fn song_subtitle(artist: &str, _duration_s: u32) -> String {
+    artist.to_string()
 }
 
-fn album_subtitle(artist: &str, kind: &str, year: u32) -> String {
-    if year == 0 {
-        format!("{kind} · {artist}")
-    } else {
-        format!("{kind} · {artist} · {year}")
-    }
+/// An album's one secondary fact: its artist.
+fn album_subtitle(artist: &str, _kind: &str, _year: u32) -> String {
+    artist.to_string()
 }
 
+/// An artist's one secondary fact: how many people follow them, when known.
 fn artist_subtitle(subscribers: u64) -> String {
     if subscribers == 0 {
-        "Artist".into()
+        String::new()
     } else {
-        format!(
-            "Artist · {} subscribers",
-            ui::format::compact_count(subscribers)
-        )
+        format!("{} subscribers", ui::format::compact_count(subscribers))
     }
 }
 
+/// A playlist's one secondary fact: who made it, else how long it is.
 fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     match (owner.is_empty(), tracks) {
-        (true, 0) => "Playlist".into(),
-        (true, n) => format!("Playlist · {n} songs"),
-        (false, 0) => format!("Playlist · {owner}"),
-        (false, n) => format!("Playlist · {owner} · {n} songs"),
+        (false, _) => owner.to_string(),
+        (true, 0) => String::new(),
+        (true, 1) => "1 song".into(),
+        (true, n) => format!("{n} songs"),
     }
 }
 
@@ -476,11 +468,9 @@ fn kind_icon(type_id: &str) -> Icon {
 ///
 /// It is deliberately library-scoped and synchronous: a [`SearchProvider`] is
 /// queried on the UI thread, so it must never block on the network. The live
-/// YouTube-Music search (which does real HTTP) stays in Music's own search
-/// view, driven off-thread by the [`crate::stream`] worker. The deep links this
-/// provider emits and the live view emits are the same shape, so a future
-/// shell-level Ctrl+K can register this provider directly and every activation
-/// still lands on the one router.
+/// YouTube-Music catalogue (which does real HTTP) answers through
+/// [`crate::live_search::LiveCatalogProvider`], driven off-thread by the
+/// [`crate::stream`] worker.
 ///
 /// Holds a cheap clone of a prebuilt shared catalog. [`MusicApp`](crate::app::MusicApp)
 /// retains the catalog and refreshes it only when its library revision changes,
@@ -504,6 +494,10 @@ impl LibrarySearchProvider {
             let genre = lib
                 .artist(&track.artist_id)
                 .map_or("", |artist| artist.genre.as_str());
+            let mut row = SearchRow::media(&track.title).byline(artist);
+            if track.duration_s > 0 {
+                row = row.duration(ui::format::timecode(u64::from(track.duration_s)));
+            }
             let result = SearchResult::for_action(
                 kind_label(SONG_TYPE_ID),
                 &track.title,
@@ -511,6 +505,7 @@ impl LibrarySearchProvider {
             )
             .with_icon(kind_icon(SONG_TYPE_ID))
             .with_subtitle(song_subtitle(artist, track.duration_s))
+            .with_row(row)
             .with_score(track.plays.min(i32::MAX as u64) as i32);
             // The resource id and canonical action address are deliberately
             // identical at the namespace boundary. SearchCatalog rejects any
@@ -546,11 +541,7 @@ impl LibrarySearchProvider {
                 crate::actions::open_artist_address(&artist.id),
             )
             .with_icon(kind_icon(ARTIST_TYPE_ID))
-            .with_subtitle(if artist.genre.is_empty() {
-                "Artist".to_string()
-            } else {
-                artist.genre.clone()
-            });
+            .with_subtitle(artist.genre.clone());
             let _ = catalog.upsert(
                 crate::actions::artist_resource_id(&artist.id),
                 format!("{} {}", artist.name, artist.genre),
@@ -564,10 +555,7 @@ impl LibrarySearchProvider {
                 crate::actions::open_playlist_address(&playlist.id),
             )
             .with_icon(kind_icon(PLAYLIST_TYPE_ID))
-            .with_subtitle(playlist_subtitle(
-                "Your library",
-                playlist.track_ids.len() as u64,
-            ));
+            .with_subtitle(playlist_subtitle("", playlist.track_ids.len() as u64));
             let _ = catalog.upsert(
                 crate::actions::playlist_resource_id(&playlist.id),
                 &playlist.name,
@@ -581,15 +569,11 @@ impl LibrarySearchProvider {
                     crate::actions::playlist_track_resource_id(&playlist.id, track_id);
                 let result = SearchResult::for_action(
                     "Playlist tracks",
-                    format!("{} — {}", track.title, playlist.name),
+                    &track.title,
                     crate::actions::open_playlist_membership_address(&playlist.id, track_id),
                 )
                 .with_icon(kind_icon(SONG_TYPE_ID))
-                .with_subtitle(format!(
-                    "Open in {} · {}",
-                    playlist.name,
-                    lib.artist_name(&track.artist_id)
-                ));
+                .with_subtitle(format!("In {}", playlist.name));
                 let _ = catalog.upsert(
                     resource_id,
                     format!(
@@ -691,9 +675,9 @@ mod tests {
         {
             // The subscriber count in an artist subtitle is abbreviated via the
             // shared compact-count formatter (12_300 → "12.3K").
-            assert_eq!(artist_subtitle(0), "Artist");
-            assert_eq!(artist_subtitle(12_300), "Artist · 12.3K subscribers");
-            assert_eq!(artist_subtitle(4_100_000), "Artist · 4.1M subscribers");
+            assert_eq!(artist_subtitle(0), "");
+            assert_eq!(artist_subtitle(12_300), "12.3K subscribers");
+            assert_eq!(artist_subtitle(4_100_000), "4.1M subscribers");
         }
     }
 
@@ -1040,11 +1024,12 @@ mod tests {
                 );
             }
             let provider = LibrarySearchProvider::new(&lib);
-            let first = provider.search_page("CAFÉ", None, 7, 7);
+            let first = provider.search_page(&ui::search::SearchQuery::new("CAFÉ"), None, 7, 7);
             assert_eq!(first.inspected, 7);
             assert_eq!(first.results.len(), 7);
             let next = first.next.as_ref().expect("more matching rows remain");
-            let second = provider.search_page("CAFÉ", Some(next), 7, 7);
+            let second =
+                provider.search_page(&ui::search::SearchQuery::new("CAFÉ"), Some(next), 7, 7);
             assert_eq!(second.inspected, 7);
             assert!(
                 second

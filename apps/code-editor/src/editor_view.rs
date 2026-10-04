@@ -23,16 +23,19 @@ use ui::gesture::{DragSelect, Granularity};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::text_selection::{
     clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
     word_boundaries_chars,
 };
 use ui::theme::Theme;
-use ui::widget::{AppModel, ModelPath};
-use ui::widget::{EmptyState, EmptyStateContent, Widget};
+use ui::tokens::TextRole;
+use ui::widget::{
+    AppModel, Autocomplete, Button, ButtonFace, ControlSize, EmptyState, ModelPath, Suggestion,
+    Widget,
+};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -61,18 +64,27 @@ pub enum LspAsk {
     Definition,
 }
 
-/// A compact glyph hinting at a completion item's `CompletionItemKind`
-/// (LSP-numbered). Falls back to a neutral dot for kinds we don't specialise.
-fn completion_kind_glyph(kind: Option<u8>) -> &'static str {
-    match kind {
-        Some(2 | 3) => "\u{0192}",  // Method / Function — ƒ
-        Some(5 | 10) => "\u{25C8}", // Field / Property — ◈
-        Some(6) => "\u{25CB}",      // Variable — ○
-        Some(7 | 8) => "\u{25A0}",  // Class / Interface — ■
-        Some(9) => "\u{25A3}",      // Module — ▣
-        Some(14) => "\u{2726}",     // Keyword — ✦
-        Some(21) => "\u{25C6}",     // Constant — ◆
-        _ => "\u{2022}",            // • default
+/// The icon of a completion item's kind: what the candidate is, at a glance.
+/// A macro is a function by LSP kind, so it is told apart by its detail (or
+/// the `!` its name ends in) and given its own icon.
+fn completion_kind_icon(item: &CompletionItem) -> Icon {
+    let is_macro = item.label.ends_with('!')
+        || item
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.starts_with("macro"));
+    if is_macro {
+        return Icon::Sparkles;
+    }
+    match item.kind {
+        Some(2..=4) => Icon::Code,
+        Some(5 | 10) => Icon::List,
+        Some(6) => Icon::Square,
+        Some(7 | 8 | 13 | 22) => Icon::Layers,
+        Some(9) => Icon::Folder,
+        Some(14) => Icon::Star,
+        Some(21) => Icon::Pin,
+        _ => Icon::FileText,
     }
 }
 
@@ -102,24 +114,8 @@ struct VisibleRows {
     n_visible: usize,
 }
 
-/// Monospace cell metrics. The editor advances a fixed cell width per column;
-/// for the bundled monospace font at this size that tracks the glyph advance
-/// closely enough for crisp caret placement.
-const FONT_SIZE: f32 = 14.0;
-/// 1× row pitch; the painted pitch is `EditorView::line_h` (see `line_pitch`).
-const LINE_HEIGHT: f64 = 20.0;
-/// Leading kept above and below a code line once the measured line outgrows
-/// `LINE_HEIGHT`; also the glyph top offset inside a 1× row before the first
-/// measurement lands.
-const LINE_LEADING: f64 = 1.25;
-const FALLBACK_TEXT_DY: f64 = LINE_LEADING;
-/// Approximate monospace advance for `FONT_SIZE`. Measured lazily against the
-/// real font on first layout and cached, so it stays correct if the system
-/// monospace face changes.
-const FALLBACK_CELL_W: f64 = 8.4;
-/// Left padding inside the gutter and right padding before code starts.
-const BASE_GUTTER_PAD: f64 = 12.0;
-const BASE_CODE_PAD_LEFT: f64 = 12.0;
+/// How many completion candidates the popup lists before it scrolls.
+const COMPLETION_ROWS: usize = 8;
 
 /// A single caret + optional selection anchor, in (line, col) char coords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,22 +163,22 @@ pub struct EditorView {
     scroll_y: f64,
     /// Horizontal scroll offset in pixels.
     scroll_x: f64,
-    /// Measured monospace cell width, resolved on first draw.
+    /// Measured monospace cell width of the `Code` role, resolved on every
+    /// draw so it follows the theme and the text scale.
     cell_w: f64,
-    /// Line pitch: `LINE_HEIGHT` at 1×, the measured `FONT_SIZE` line plus
-    /// leading once the text scale outgrows it. Every row, hit test, caret,
+    /// Line pitch: the measured `Code` line. Every row, hit test, caret,
     /// selection, diagnostic underline and scroll step reads this one value,
-    /// so 28 px glyphs never overprint 20 px rows at 200 % text.
+    /// so large text never overprints its neighbouring row.
     line_h: f64,
-    /// Top offset that centres a measured `FONT_SIZE` line inside `line_h`
-    /// (1.25 px at 1×) — rows, gutter numbers and completion rows share it
-    /// instead of per-site `+ 2` / `+ 3` nudges.
+    /// Top offset that centres a measured `Code` line inside `line_h`: rows
+    /// and gutter numbers share it instead of per-site nudges.
     text_dy: f64,
-    /// The visual type scale most recently supplied by the host theme. This
-    /// custom document surface owns its row/gutter geometry, so it cannot rely
-    /// on the shared renderer alone: every hit target and painted baseline
-    /// must grow together.
-    text_scale: f64,
+    /// Inset of the line numbers from the gutter's edges and of the code from
+    /// the gutter (`spacing.s3` of the theme last drawn with).
+    pad: f64,
+    /// The `Code` role's resolved size last drawn with, so a change of theme
+    /// or text scale re-measures the cell and keeps the caret in view.
+    code_size: f32,
     is_focused: bool,
     dirty: bool,
     /// Snapshot of the buffer text the line cache was built from — lets `sync`
@@ -215,6 +211,9 @@ pub struct EditorView {
     /// The word start (line, col) the completion should replace when accepted —
     /// the identifier prefix under the caret at request time.
     completion_anchor: (usize, usize),
+    /// The toolkit's suggestion list, used for its dropdown only: the editor
+    /// owns the text and the keys, this paints the rows beside the caret.
+    completion_popup: Autocomplete,
     /// A hover tooltip's text, drawn near the caret until dismissed.
     hover_text: Option<String>,
     /// A pending language-server request the app should perform (set by a
@@ -229,12 +228,9 @@ pub struct EditorView {
     find_current: Option<usize>,
 
     // ---- empty state ----
-    /// The "Open File" action pill's rect in the no-buffer zero-state, recorded
-    /// each draw for hit-testing. Empty when a buffer is open.
-    empty_action_rect: Rect,
-    /// Rising-edge flag set when the zero-state's action pill is clicked; the
-    /// app drains it and opens the file picker.
-    empty_action: bool,
+    /// The no-buffer zero-state and its one "Open file" action; the app
+    /// drains the action and opens the file picker.
+    empty: EmptyState,
     /// Compact recovery affordance shown only after horizontal scrolling. It
     /// makes the current offset explicit and returns to column zero on click;
     /// Home provides the matching keyboard path.
@@ -245,6 +241,19 @@ pub struct EditorView {
 
 impl EditorView {
     pub fn new() -> Self {
+        // Before the first draw measures the real face, geometry comes from
+        // the default theme's `Code` role: a monospace advance of about 0.6 em
+        // and the role's leading.
+        let nominal = {
+            let theme = Theme::dark();
+            let style = theme.text(TextRole::Code);
+            let size = f64::from(style.size);
+            (
+                (size * 0.6).ceil(),
+                (size * f64::from(style.line_height)).ceil(),
+                f64::from(theme.tokens.spacing.s3),
+            )
+        };
         EditorView {
             rect: Rect::ZERO,
             lines: vec![String::new()],
@@ -255,10 +264,11 @@ impl EditorView {
             carets: vec![Caret::at(0, 0)],
             scroll_y: 0.0,
             scroll_x: 0.0,
-            cell_w: FALLBACK_CELL_W,
-            line_h: LINE_HEIGHT,
-            text_dy: FALLBACK_TEXT_DY,
-            text_scale: 1.0,
+            cell_w: nominal.0,
+            line_h: nominal.1,
+            text_dy: 0.0,
+            pad: nominal.2,
+            code_size: 0.0,
             is_focused: true,
             dirty: true,
             cached_text: String::new(),
@@ -271,12 +281,14 @@ impl EditorView {
             completion_index: 0,
             completion_active: false,
             completion_anchor: (0, 0),
+            completion_popup: Autocomplete::new().with_text_role(TextRole::Code),
             hover_text: None,
             lsp_ask: None,
             find_matches: Vec::new(),
             find_current: None,
-            empty_action_rect: Rect::ZERO,
-            empty_action: false,
+            empty: EmptyState::new("No file open")
+                .with_icon(Icon::FileCode)
+                .with_action("Open file"),
             horizontal_scroll_reset_rect: Rect::ZERO,
             pending_text_edit: None,
         }
@@ -297,7 +309,7 @@ impl EditorView {
 
     /// Drain the rising-edge "Open File" click from the zero-state, if any.
     pub fn take_empty_action(&mut self) -> bool {
-        std::mem::take(&mut self.empty_action)
+        self.empty.take_action()
     }
 
     /// The primary caret. `carets` is always non-empty by construction (`new`
@@ -370,10 +382,6 @@ impl EditorView {
 
     pub fn language(&self) -> Language {
         self.language
-    }
-
-    pub fn indent_width(&self) -> usize {
-        self.indent_width
     }
 
     /// Primary caret position (line, col), 0-based.
@@ -727,26 +735,36 @@ impl EditorView {
         self.lines.len()
     }
 
-    const fn font_size() -> f32 {
-        FONT_SIZE
-    }
-
     fn line_height(&self) -> f64 {
         self.line_h
     }
 
     fn gutter_pad(&self) -> f64 {
-        BASE_GUTTER_PAD * self.text_scale
+        self.pad
     }
 
     fn code_pad_left(&self) -> f64 {
-        BASE_CODE_PAD_LEFT * self.text_scale
+        self.pad
     }
 
     /// The width of the gutter (line-number column) for the current line count.
     fn gutter_width(&self) -> f64 {
         let digits = self.lines.len().max(1).to_string().len().max(2);
         self.gutter_pad() * 2.0 + digits as f64 * self.cell_w
+    }
+
+    /// The viewport trimmed to a whole number of lines.
+    fn whole_line_rect(&self) -> Rect {
+        let lines = (self.rect.height() / self.line_h).floor();
+        if lines < 1.0 {
+            return self.rect;
+        }
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + lines * self.line_h,
+        )
     }
 
     /// Visible-line capacity of the viewport.
@@ -1377,9 +1395,9 @@ impl EditorView {
     /// Measure the real monospace cell width once a renderer is available,
     /// caching it on `self` (the fallback stays in place until the first
     /// successful measurement).
-    fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer) {
-        let (mw, mh) =
-            text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+    fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
+        let style = Self::code_style(theme);
+        let (mw, mh) = text_renderer.measure_style("M", None, &style);
         if mw > 0.0 {
             self.cell_w = f64::from(mw);
         }
@@ -1387,13 +1405,18 @@ impl EditorView {
             self.line_h = Self::line_pitch(f64::from(mh));
             self.text_dy = (self.line_h - f64::from(mh)) / 2.0;
         }
+        self.pad = f64::from(theme.tokens.spacing.s3);
     }
 
-    /// Row pitch for a measured `FONT_SIZE` line: the 1× constant while the
-    /// line fits (a 14 px mono line measures 17.5 px, leaving 1.25 px either
-    /// side of 20), otherwise the line plus that same leading.
+    /// The face the buffer and its line numbers are set in: the `Code` role.
+    fn code_style(theme: &Theme) -> TextStyle {
+        theme.text(TextRole::Code)
+    }
+
+    /// Row pitch for a measured `Code` line: the line itself, on a whole
+    /// pixel so rows tile without seams.
     fn line_pitch(line_h: f64) -> f64 {
-        (line_h + 2.0 * LINE_LEADING).max(LINE_HEIGHT)
+        line_h.ceil()
     }
 
     /// The geometry a draw pass threads through.
@@ -1409,27 +1432,10 @@ impl EditorView {
         }
     }
 
-    /// Fill the editor background and the (subtly raised) gutter background.
-    fn draw_backgrounds(&self, scene: &mut Scene, transform: Affine, theme: &Theme, gutter_w: f64) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-        let gutter_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x0 + gutter_w,
-            self.rect.y1,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &gutter_rect,
-        );
-    }
-
     /// Draw the per-line background bands for every visible row: the
-    /// active-line highlight, find-bar match bands, and selection bands.
+    /// active-line highlight, find matches, and selection bands. The buffer
+    /// and its gutter stand on the content ground the framework painted, so
+    /// nothing is filled under them.
     /// Runs as its own pass over the visible rows (before [`Self::draw_line_text`]
     /// paints line numbers and code on top) — safe because rows never overlap,
     /// so the pass order only has to hold within a single row, not across rows.
@@ -1461,53 +1467,13 @@ impl EditorView {
             // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
                 let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + self.line_h);
-                scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &hl);
-            }
-
-            // Find-bar matches on this line, under the selection so a selected
-            // current match still reads as selected.
-            for (mi, m) in self.find_matches.iter().enumerate() {
-                if m.line != line_idx {
-                    continue;
-                }
-                let mx0 = code_x0 + m.col as f64 * self.cell_w - self.scroll_x;
-                let mx1 = code_x0 + (m.col + m.len) as f64 * self.cell_w - self.scroll_x;
-                let band = Rect::new(
-                    mx0.max(self.rect.x0 + gutter_w),
-                    y + 1.0,
-                    mx1,
-                    y + self.line_h - 1.0,
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.lift_on(c.surfaces.content, 0.5),
+                    None,
+                    &hl,
                 );
-                if band.width() <= 0.0 {
-                    continue;
-                }
-                let is_current = self.find_current == Some(mi);
-                // The current match is filled; the rest are outlined, so the
-                // one you are on is unmistakable among thirty others.
-                if is_current {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        c.semantic.warning.multiply_alpha(0.45),
-                        None,
-                        &band,
-                    );
-                } else {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        c.semantic.warning.multiply_alpha(0.16),
-                        None,
-                        &band,
-                    );
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        c.semantic.warning.multiply_alpha(0.5),
-                        None,
-                        &band,
-                    );
-                }
             }
 
             // Selection rectangles for any caret touching this line.
@@ -1525,11 +1491,33 @@ impl EditorView {
                     let sx0 = code_x0 + start_col as f64 * self.cell_w - self.scroll_x;
                     let sx1 = code_x0 + end_col as f64 * self.cell_w - self.scroll_x;
                     let sel = Rect::new(sx0.max(self.rect.x0 + gutter_w), y, sx1, y + self.line_h);
-                    // Translucent accent for the selection band; alpha is read
-                    // from the theme accent so a theme swap recolours it.
-                    let sel_color = c.accent[5].multiply_alpha(0.35);
-                    scene.fill(Fill::NonZero, transform, sel_color, None, &sel);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        c.intent.selection_tint,
+                        None,
+                        &sel,
+                    );
                 }
+            }
+
+            // Find matches on this line, over the selection so a match stays
+            // visible while it is selected. Each is a wash over its glyphs
+            // only; the current one is outlined.
+            for (mi, m) in self.find_matches.iter().enumerate() {
+                if m.line != line_idx {
+                    continue;
+                }
+                let mx0 = code_x0 + m.col as f64 * self.cell_w - self.scroll_x;
+                let mx1 = code_x0 + (m.col + m.len) as f64 * self.cell_w - self.scroll_x;
+                let band = Rect::new(mx0.max(self.rect.x0 + gutter_w), y, mx1, y + self.line_h);
+                ui::widget::paint_find_match(
+                    scene,
+                    transform,
+                    band,
+                    self.find_current == Some(mi),
+                    theme,
+                );
             }
         }
     }
@@ -1544,6 +1532,9 @@ impl EditorView {
             theme,
         } = ctx.reborrow();
         let c = &theme.tokens.colors;
+        let code_style = Self::code_style(theme);
+        let keyword_style = code_style.clone().strong();
+        let number_style = code_style.clone().numeric();
         // Horizontal editor scrolling moves source text, never the gutter.
         // Vello text does not implicitly inherit a clipping rect, so without
         // this explicit layer negative-x text painted back through line
@@ -1580,7 +1571,7 @@ impl EditorView {
                 num_color,
                 transform * Affine::translate((num_x, y + self.text_dy)),
                 None,
-                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
+                &number_style,
             );
 
             // The highlighted code text, span by span.
@@ -1603,7 +1594,7 @@ impl EditorView {
                     c.text_primary,
                     transform * Affine::translate((base_x, y + self.text_dy)),
                     None,
-                    &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
+                    &code_style,
                 );
             } else {
                 for span in spans {
@@ -1625,10 +1616,10 @@ impl EditorView {
                         continue;
                     }
                     let color = theme.tokens.syntax.color(span.kind);
-                    let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
-                        TextWeight::Semibold
+                    let style = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
+                        &keyword_style
                     } else {
-                        TextWeight::Regular
+                        &code_style
                     };
                     text_renderer.draw_style(
                         scene,
@@ -1636,9 +1627,7 @@ impl EditorView {
                         color,
                         transform * Affine::translate((x, y + self.text_dy)),
                         None,
-                        &TextStyle::new(Self::font_size())
-                            .with_weight(weight)
-                            .with_family(FontChoice::Monospace),
+                        style,
                     );
                 }
             }
@@ -1733,154 +1722,113 @@ impl EditorView {
             if x < self.rect.x0 + gutter_w {
                 continue;
             }
-            let caret_line =
-                Line::new(Point::new(x, y + 2.0), Point::new(x, y + self.line_h - 2.0));
+            let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
+            let caret_line = vello::kurbo::Line::new(
+                Point::new(x, y + inset),
+                Point::new(x, y + self.line_h - inset),
+            );
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                c.border_focus,
+                c.intent.you,
                 None,
                 &caret_line,
             );
         }
     }
 
-    /// Draw the completion popup: a floating, scrollable list anchored under
-    /// the caret, with the highlighted row filled and each item's kind glyph,
-    /// label and (space permitting) detail text. No-op when the popup isn't
-    /// showing.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a draw pass threads the same caret, viewport, and completion geometry through one visual unit; splitting it would separate sizing from its corresponding paint and clipping rules"
-    )]
+    /// Draw the completion popup: the toolkit's suggestion list, anchored
+    /// under the caret (above it when there is no room below). Each row
+    /// carries its kind icon, its label and the candidate's detail in a
+    /// trailing column. No-op when the popup isn't showing.
     fn draw_completion_popup(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        gutter_w: f64,
+        presence: &PresenceCtx,
         caret_x: f64,
         caret_top: f64,
     ) {
-        let row_h = self.line_h;
         if !self.completion_active() {
             return;
         }
-        let c = &theme.tokens.colors;
-        let max_rows = 8usize;
         let total = self.completions.len();
-        let shown = total.min(max_rows);
+        let shown = total.min(COMPLETION_ROWS);
         // Scroll the window so the selected row stays visible.
-        let offset = if self.completion_index >= max_rows {
-            self.completion_index - max_rows + 1
+        let offset = if self.completion_index >= COMPLETION_ROWS {
+            self.completion_index - COMPLETION_ROWS + 1
         } else {
             0
         };
-        let width = (340.0 * self.text_scale).min(self.rect.width() - (gutter_w + 20.0));
-        let height = shown as f64 * row_h + 8.0 * self.text_scale;
-        let px = caret_x
-            .min(self.rect.x1 - width - 8.0)
-            .max(self.rect.x0 + gutter_w + 2.0);
-        let py = (caret_top + self.line_height() + 2.0)
-            .min(self.rect.y1 - height - 4.0)
-            .max(self.rect.y0);
-        let popup = Rect::new(px, py, px + width, py + height);
-        let shape = RoundedRect::from_rect(popup, 6.0);
-        // A floating popup is a Panel: the shell's derived panel border.
-        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(popup, 6.0),
-        );
-
-        for row in 0..shown {
-            let idx = offset + row;
-            let Some(item) = self.completions.get(idx) else {
-                break;
-            };
-            let ry = py + 4.0 * self.text_scale + row as f64 * row_h;
-            if idx == self.completion_index {
-                let hl = Rect::new(
-                    px + 2.0 * self.text_scale,
-                    ry,
-                    px + width - 2.0 * self.text_scale,
-                    ry + row_h,
+        let suggestions: Vec<Suggestion> = self
+            .completions
+            .iter()
+            .skip(offset)
+            .take(shown)
+            .map(|item| {
+                let suggestion = Suggestion::labelled(&item.insert_text, &item.label)
+                    .with_icon(completion_kind_icon(item));
+                match &item.detail {
+                    Some(detail) => suggestion.with_detail(detail),
+                    None => suggestion,
+                }
+            })
+            .collect();
+        // The list is as wide as its widest label and detail need, within
+        // the editor.
+        let spacing = &theme.tokens.spacing;
+        let label_style = theme.text(TextRole::Code);
+        let detail_style = theme.text(TextRole::Caption);
+        let icon = f64::from(theme.tokens.metrics.icon_md);
+        let wanted = self
+            .completions
+            .iter()
+            .skip(offset)
+            .take(shown)
+            .map(|item| {
+                let label = f64::from(
+                    text_renderer
+                        .measure_style(&item.label, None, &label_style)
+                        .0,
                 );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    c.accent[5].multiply_alpha(0.30),
-                    None,
-                    &hl,
-                );
-            }
-            // Kind glyph (compact hint at the identifier's type).
-            let glyph = completion_kind_glyph(item.kind);
-            text_renderer.draw_style(
-                scene,
-                glyph,
-                c.accent[6],
-                transform * Affine::translate((px + 8.0, ry + self.text_dy)),
-                None,
-                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
-            );
-            text_renderer.draw_style(
-                scene,
-                &item.label,
-                c.text_primary,
-                transform * Affine::translate((px + 26.0, ry + self.text_dy)),
-                None,
-                &TextStyle::new(Self::font_size()).with_family(FontChoice::Monospace),
-            );
-            // Details are useful on a desktop but compete directly with the
-            // completion label on a narrow editor. Never let a wrapped detail
-            // spill into its neighbouring row: hide it below the readable
-            // threshold, otherwise draw one fitted line.
-            if self.rect.width() >= 640.0
-                && let Some(detail) = &item.detail
-            {
-                let (lw, _) = text_renderer.measure_styled(
-                    &item.label,
-                    Self::font_size(),
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-                let available = width - 40.0 - f64::from(lw);
-                let detail = fit_completion_detail(
-                    text_renderer,
-                    detail,
-                    available,
-                    Self::font_size() - 1.0,
-                );
-                // The smaller detail shares the label's centre line.
-                let (_, dh) = text_renderer.measure_styled(
-                    &detail,
-                    FONT_SIZE - 1.0,
-                    None,
-                    TextWeight::Regular,
-                    false,
-                    true,
-                );
-                let detail_dy = (row_h - f64::from(dh)) / 2.0;
-                text_renderer.draw_style(
-                    scene,
-                    &detail,
-                    c.text_dim,
-                    transform * Affine::translate((px + 34.0 + f64::from(lw), ry + detail_dy)),
-                    None,
-                    &TextStyle::new(Self::font_size() - 1.0).with_family(FontChoice::Monospace),
-                );
-            }
-        }
+                let detail = item.detail.as_deref().map_or(0.0, |detail| {
+                    f64::from(text_renderer.measure_style(detail, None, &detail_style).0)
+                });
+                label + detail
+            })
+            .fold(0.0, f64::max);
+        let chrome = icon + 6.0 * f64::from(spacing.s4);
+        let width = (wanted + chrome)
+            .max(f64::from(theme.tokens.metrics.panel_width_utility))
+            .min((self.rect.width() - 2.0 * f64::from(spacing.s4)).max(0.0));
+        // The list opens a little under its (zero-height) field, so the field
+        // sits at the caret's bottom edge, or above the list when the editor
+        // ends first.
+        let row_h = f64::from(theme.tokens.metrics.menu_row_height);
+        let list_h = shown as f64 * row_h + f64::from(spacing.s2);
+        let drop_gap = f64::from(spacing.s1) * 1.5;
+        let below = caret_top + self.line_h;
+        let anchor_y = if below + drop_gap + list_h <= self.rect.y1 {
+            below
+        } else {
+            caret_top - list_h - 2.0 * drop_gap
+        };
+        let x = caret_x
+            .min(self.rect.x1 - width - f64::from(spacing.s2))
+            .max(self.rect.x0 + self.gutter_width());
+        self.completion_popup
+            .apply_layout_external(Rect::new(x, anchor_y, x + width, anchor_y));
+        self.completion_popup.set_suggestions(suggestions);
+        self.completion_popup.open();
+        self.completion_popup
+            .set_highlight(Some(self.completion_index - offset));
+        self.completion_popup
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    /// Draw the hover tooltip: a small box near the caret with the server's
+    /// Draw the hover tooltip: a small panel near the caret with the server's
     /// text, preferring above the caret and dropping below when there's no
     /// room. No-op when there is no hover text to show.
     fn draw_hover_tooltip(
@@ -1889,88 +1837,41 @@ impl EditorView {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        gutter_w: f64,
         caret_x: f64,
         caret_top: f64,
     ) {
-        let Some(hover) = self.hover_text.clone() else {
+        let Some(hover) = self.hover_text.as_deref() else {
             return;
         };
-        let c = &theme.tokens.colors;
+        let spacing = &theme.tokens.spacing;
+        let style = theme.text(TextRole::Body);
         let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
-        let (tw, _) = text_renderer.measure(&first, Self::font_size(), None);
-        let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
-        let lines = first.lines().count().max(1);
-        // Line pitch from the measured line: 18 px at 1× (a 14 px line
-        // measures 17.5), the line plus the same leading at larger scales.
-        let (_, lh) = text_renderer.measure("Ag", FONT_SIZE, None);
-        let pitch = (f64::from(lh) + 0.5).max(f64::from(FONT_SIZE) + 4.0);
-        let height = lines as f64 * pitch + 12.0;
+        let pad = f64::from(spacing.s3);
+        let max_text = (self.rect.width() - 2.0 * (pad + f64::from(spacing.s4))).max(0.0);
+        let (tw, th) = text_renderer.measure_style(&first, Some(max_text as f32), &style);
+        let width = f64::from(tw) + 2.0 * pad;
+        let height = f64::from(th) + 2.0 * pad;
+        let gap = f64::from(spacing.s1);
         let px = caret_x
-            .min(self.rect.x1 - width - 8.0)
-            .max(self.rect.x0 + gutter_w + 2.0);
+            .min(self.rect.x1 - width - f64::from(spacing.s2))
+            .max(self.rect.x0 + self.gutter_width());
         // Prefer above the caret; drop below if there's no room.
-        let py = if caret_top - height - 4.0 >= self.rect.y0 {
-            caret_top - height - 4.0
+        let py = if caret_top - height - gap >= self.rect.y0 {
+            caret_top - height - gap
         } else {
-            caret_top + self.line_h + 2.0
+            caret_top + self.line_h + gap
         };
-        let box_rect = Rect::new(px, py, px + width, py + height);
-        let shape = RoundedRect::from_rect(box_rect, 6.0);
-        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(box_rect, 6.0),
+        let panel = Rect::new(px, py, px + width, py + height);
+        ui::widget::floating_surface::paint(scene, transform, panel, theme);
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        text_renderer.draw_style(
+            scene,
+            &first,
+            ink.text_primary,
+            transform * Affine::translate((px + pad, py + pad)),
+            Some(max_text as f32),
+            &style,
         );
-        for (i, line) in first.lines().enumerate() {
-            text_renderer.draw_text(
-                scene,
-                line,
-                Self::font_size(),
-                c.text_primary,
-                transform * Affine::translate((px + 10.0, py + 6.0 + i as f64 * pitch)),
-                Some((width - 20.0) as f32),
-            );
-        }
-    }
-}
-
-/// Fit completion metadata into exactly one row. Text renderer bounds may
-/// wrap a long type signature; completion rows intentionally never do.
-fn fit_completion_detail(
-    text_renderer: &mut TextRenderer,
-    detail: &str,
-    max_width: f64,
-    font_size: f32,
-) -> String {
-    let fits = |text: &str, renderer: &mut TextRenderer| {
-        renderer
-            .measure_styled(text, font_size, None, TextWeight::Regular, false, true)
-            .0
-            <= max_width as f32
-    };
-    if max_width <= 0.0 || !fits(detail, text_renderer) {
-        let mut fitted = String::new();
-        for ch in detail.chars() {
-            let mut candidate = fitted.clone();
-            candidate.push(ch);
-            candidate.push('\u{2026}');
-            if !fits(&candidate, text_renderer) {
-                break;
-            }
-            fitted.push(ch);
-        }
-        if fitted.is_empty() {
-            String::new()
-        } else {
-            fitted.push('\u{2026}');
-            fitted
-        }
-    } else {
-        detail.to_string()
     }
 }
 
@@ -2328,6 +2229,9 @@ impl EditorView {
         }
     }
 
+    /// The "Line start" button shown only after horizontal scrolling. It
+    /// makes the offset explicit and returns to column zero on click; Home
+    /// provides the matching keyboard path.
     fn draw_horizontal_scroll_recovery(
         &mut self,
         scene: &mut Scene,
@@ -2340,30 +2244,24 @@ impl EditorView {
         if self.scroll_x <= 1.0 {
             return;
         }
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let size = ControlSize::Small;
+        let face = ButtonFace::new(Rect::ZERO, "Line start")
+            .icon(Icon::ArrowLeft)
+            .control_size(size);
+        let width = face.intrinsic_width(text_renderer, theme);
+        let height = ButtonFace::height(size, theme);
         let rect = Rect::new(
-            code_x0 + 6.0,
-            self.rect.y1 - 25.0,
-            (code_x0 + 122.0).min(self.rect.x1 - 4.0),
-            self.rect.y1 - 5.0,
+            code_x0 + inset,
+            self.rect.y1 - inset - height,
+            (code_x0 + inset + width).min(self.rect.x1 - inset),
+            self.rect.y1 - inset,
         );
-        // The status chip is a raised card with its derived rest edge.
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            5.0,
-            theme.tokens.colors.surfaces.raised,
-        );
-        text_renderer.draw_style(
-            scene,
-            "← Line start (Home)",
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + 6.0, rect.y0 + 4.0)),
-            None,
-            &TextStyle::new(10.0)
-                .with_weight(TextWeight::Medium)
-                .with_family(FontChoice::Monospace),
-        );
+        let face = ButtonFace::new(rect, "Line start")
+            .icon(Icon::ArrowLeft)
+            .control_size(size)
+            .hovered(rect.contains(self.last_cursor));
+        Button::paint(scene, transform, text_renderer, theme, &face);
         self.horizontal_scroll_reset_rect = rect;
     }
 }
@@ -2426,40 +2324,38 @@ impl Widget for EditorView {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        if (self.text_scale - f64::from(theme.text_scale)).abs() > f64::EPSILON {
-            self.text_scale = f64::from(theme.text_scale);
-            self.cell_w = FALLBACK_CELL_W * self.text_scale;
+        let code_size = theme.text(TextRole::Code).size;
+        if (self.code_size - code_size).abs() > f32::EPSILON {
+            self.code_size = code_size;
+            self.measure_cell_width(text_renderer, theme);
             self.scroll_to_caret();
         }
-        let c = &theme.tokens.colors;
-        self.measure_cell_width(text_renderer);
+        self.measure_cell_width(text_renderer, theme);
         let rows = self.visible_rows();
-        let VisibleRows {
-            gutter_w, code_x0, ..
-        } = rows;
-        self.draw_backgrounds(scene, transform, theme, gutter_w);
+        let VisibleRows { code_x0, .. } = rows;
 
         if self.text_obj.is_none() {
             // A composed zero-state through the shared primitive: a hero icon,
-            // a title, a one-line invitation, and an actionable "Open File"
-            // pill that summons the portal picker.
-            self.empty_action_rect = EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                self.rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::FileCode),
-                    title: "No file open",
-                    message: Some("Open a file from the tree, or pick one to start editing."),
-                    action_label: Some("Open File"),
-                },
-                self.last_cursor,
-            )
-            .unwrap_or(Rect::ZERO);
+            // one sentence, and an actionable "Open file" button that summons
+            // the portal picker.
+            self.empty.apply_layout_external(self.rect);
+            self.empty
+                .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
 
+        // The viewport shows whole lines: a line the bottom edge would cut in
+        // half is not drawn at all, so no half-glyphs sit against the panel
+        // or the status bar.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &self.whole_line_rect(),
+        );
         let primary_line = self.primary().line;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         self.draw_line_backgrounds(&mut ctx, &rows, primary_line);
@@ -2467,20 +2363,7 @@ impl Widget for EditorView {
         self.draw_diagnostics(scene, transform, theme, &rows);
         self.draw_carets(scene, transform, theme, &rows);
         self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
-
-        // Border separating the editor from the raised side panel: derived
-        // against that panel, which is the surface the rule sits on.
-        let border = Line::new(
-            Point::new(self.rect.x0, self.rect.y0),
-            Point::new(self.rect.x0, self.rect.y1),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &border,
-        );
+        scene.pop_layer();
 
         // Caret pixel, reused by the completion popup + hover tooltip.
         let (caret_line, caret_col) = self.primary_caret();
@@ -2492,47 +2375,24 @@ impl Widget for EditorView {
             transform,
             text_renderer,
             theme,
-            gutter_w,
+            presence,
             caret_x,
             caret_top,
         );
-        self.draw_hover_tooltip(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            gutter_w,
-            caret_x,
-            caret_top,
-        );
+        self.draw_hover_tooltip(scene, transform, text_renderer, theme, caret_x, caret_top);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.text_obj.is_none() {
-            // Unbound: the only interactive thing is the zero-state's "Open
-            // File" pill. Track the cursor for its hover (redrawing only when
-            // the pointer crosses the pill so an idle screen stays still), and
-            // fire the action on a click inside it.
-            match event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    let next =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                    let was = self.empty_action_rect.contains(self.last_cursor);
-                    let now = self.empty_action_rect.contains(next);
-                    self.last_cursor = next;
-                    if was != now {
-                        self.dirty = true;
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } if self.empty_action_rect.contains(self.last_cursor) => {
-                    self.empty_action = true;
-                    *ctx.handled = true;
-                }
-                _ => {}
+            // Unbound: the only interactive thing is the zero-state's
+            // "Open file" action.
+            self.empty
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+            ) {
+                self.dirty = true;
             }
             return;
         }
@@ -2598,6 +2458,22 @@ impl Widget for EditorView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.text_obj.is_none() {
+            vec![&self.empty]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.text_obj.is_none() {
+            vec![&mut self.empty]
+        } else {
+            Vec::new()
+        }
     }
 
     fn is_focusable(&self) -> bool {
@@ -2722,47 +2598,59 @@ mod tests {
     }
 
     #[test]
+    fn the_viewport_is_clipped_to_whole_lines() {
+        let (mut ev, _doc) = bound_editor("a\nb\nc\n");
+        ev.line_h = 20.0;
+        ev.rect = Rect::new(0.0, 10.0, 400.0, 10.0 + 5.0 * 20.0 + 13.0);
+        let view = ev.whole_line_rect();
+        assert!((view.height() - 100.0).abs() < 1e-9, "{view:?}");
+        assert!((view.y0 - ev.rect.y0).abs() < 1e-9);
+        // A viewport shorter than one line is left as it is.
+        ev.rect = Rect::new(0.0, 0.0, 400.0, 12.0);
+        assert_eq!(ev.whole_line_rect(), ev.rect);
+    }
+
+    #[test]
     fn pointer_hit_testing_follows_the_line_pitch_and_selects_words_lines_and_ranges() {
         // Each phase builds a fresh bound editor so click counts and selections cannot leak.
-        line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale();
+        line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale();
         double_click_selects_word();
         triple_click_selects_line();
         drag_selects_char_range();
         drag_across_lines_selects_multiline();
     }
 
-    /// The row pitch is the historical 20 px at 1× and grows with the glyphs
-    /// at 2×; pointer hit-testing maps a click on the third row back to line
-    /// 2 at both scales, so paint and hits share one pitch.
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
-    )]
-    fn line_pitch_matches_the_constant_at_1x_and_follows_the_text_scale() {
+    /// The row pitch is the `Code` role's measured line at 1× and grows with
+    /// the glyphs at 2×; pointer hit-testing maps a click on the third row
+    /// back to line 2 at both scales, so paint and hits share one pitch.
+    fn line_pitch_matches_the_code_line_at_1x_and_follows_the_text_scale() {
         let (mut ev, _doc) = bound_editor("a\nb\nc\nd");
         ev.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
         let mut tr = TextRenderer::new();
-        ev.measure_cell_width(&mut tr);
-        assert_eq!(ev.line_h, LINE_HEIGHT);
-        let (_, mh) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+        let theme = Theme::dark();
+        ev.measure_cell_width(&mut tr, &theme);
+        let (mw, mh) = tr.measure_style("M", None, &theme.text(TextRole::Code));
         assert!(
-            (ev.text_dy - (LINE_HEIGHT - f64::from(mh)) / 2.0).abs() < 1e-9,
+            (ev.line_h - f64::from(mh).ceil()).abs() < 1e-9,
+            "a row is the measured line, on a whole pixel"
+        );
+        assert!(
+            (ev.text_dy - (ev.line_h - f64::from(mh)) / 2.0).abs() < 1e-9,
             "glyphs centre on the measured line inside the row"
         );
+        assert!((ev.cell_w - f64::from(mw)).abs() < 1e-9);
         let third_row_1x = Point::new(
             ev.rect.x0 + ev.gutter_width() + ev.code_pad_left(),
             2.5 * ev.line_h,
         );
         assert_eq!(ev.point_to_caret(third_row_1x).0, 2);
+        let (cell_1x, pitch_1x) = (ev.cell_w, ev.line_h);
 
+        let large = Theme::dark().with_text_scale(2.0);
         tr.set_text_scale(2.0);
-        ev.measure_cell_width(&mut tr);
-        let (_, mh2) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
-        assert!(ev.line_h >= f64::from(mh2) + 2.0 * LINE_LEADING && ev.line_h > LINE_HEIGHT);
-        assert!(
-            ev.cell_w > FALLBACK_CELL_W,
-            "the cell width scaled with the glyphs"
-        );
+        ev.measure_cell_width(&mut tr, &large);
+        assert!(ev.line_h > pitch_1x, "rows grew with the glyphs");
+        assert!(ev.cell_w > cell_1x, "the cell width scaled with the glyphs");
         let third_row_2x = Point::new(
             ev.rect.x0 + ev.gutter_width() + ev.code_pad_left(),
             2.5 * ev.line_h,
@@ -2770,6 +2658,35 @@ mod tests {
         assert_eq!(ev.point_to_caret(third_row_2x).0, 2);
         // The 1× third-row point now lands on the taller second row.
         assert_eq!(ev.point_to_caret(third_row_1x).0, 1);
+    }
+
+    #[test]
+    fn completion_candidates_show_their_kind_and_macros_have_their_own_icon() {
+        let item = |label: &str, kind: Option<u8>, detail: Option<&str>| CompletionItem {
+            label: label.to_string(),
+            kind,
+            detail: detail.map(str::to_string),
+            insert_text: label.to_string(),
+        };
+        assert_eq!(
+            completion_kind_icon(&item("primes_below", Some(3), Some("fn(u64) -> Vec<u64>"))),
+            Icon::Code
+        );
+        // A macro is a function by LSP kind; its detail (or the `!` of its
+        // name) says what it is.
+        assert_eq!(
+            completion_kind_icon(&item("println", Some(3), Some("macro"))),
+            Icon::Sparkles
+        );
+        assert_eq!(
+            completion_kind_icon(&item("vec!", Some(3), None)),
+            Icon::Sparkles
+        );
+        assert_eq!(
+            completion_kind_icon(&item("primary", Some(6), Some("let binding"))),
+            Icon::Square
+        );
+        assert_eq!(completion_kind_icon(&item("x", None, None)), Icon::FileText);
     }
 
     #[test]

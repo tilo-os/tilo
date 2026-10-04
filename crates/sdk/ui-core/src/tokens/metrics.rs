@@ -78,8 +78,10 @@ pub struct Metrics {
     pub sidebar_min_width: f32,
     /// Widest a person can drag a docked sidebar.
     pub sidebar_max_width: f32,
-    /// Narrowest the content column of a window may become before the
-    /// sidebar collapses into a drawer: `compact_breakpoint − sidebar_width`.
+    /// The room the content beside a sidebar needs: a readable column, the
+    /// width of a sheet ([`Metrics::panel_width_sheet`]). Narrower than this
+    /// the content would be squeezed, so the sidebar collapses into a
+    /// drawer instead (`compact_breakpoint − sidebar_width`).
     pub content_min_width: f32,
     /// Narrowest the detail column beside an overview may become before the
     /// two become push screens.
@@ -107,14 +109,14 @@ impl Metrics {
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
-        compact_breakpoint: 720.0,
+        compact_breakpoint: 840.0,
         nav_row_height: 32.0,
         header_height: 56.0,
         rail_width: 76.0,
         inspector_width: 300.0,
         sidebar_min_width: 200.0,
         sidebar_max_width: 420.0,
-        content_min_width: 440.0,
+        content_min_width: 560.0,
         detail_min_width: 360.0,
     };
 

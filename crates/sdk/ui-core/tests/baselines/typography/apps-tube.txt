@@ -1,8 +1,0 @@
-# The typography ratchet for apps-tube: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/tube/src/main.rs legacy_size_api 1
-apps/tube/src/screens.rs font_size_const 1
-apps/tube/src/screens.rs literal_font_size 2
-apps/tube/src/widgets/large_video_meta.rs font_size_const 3
-apps/tube/src/widgets/thumbnail.rs legacy_size_api 2

@@ -9,6 +9,7 @@ use crate::{
     actions::{
         EXPORT_RESOURCE_ID, PROJECT_RESOURCE_ID, SOURCE_RESOURCE_ID, adjustment_resource_id,
     },
+    i18n::t,
     model::{Operation, Project},
 };
 use tilo_actions::ActionAddress;
@@ -49,7 +50,7 @@ impl ProjectSearch {
                     &project.name,
                     ActionAddress::new(PROJECT_RESOURCE_ID, "open"),
                 )
-                .with_subtitle("Image project · open or add an adjustment")
+                .with_subtitle(t("image-editor-search-project"))
                 .with_icon(Icon::Image),
             ),
             (
@@ -60,7 +61,7 @@ impl ProjectSearch {
                     source_label(project),
                     ActionAddress::new(SOURCE_RESOURCE_ID, "select"),
                 )
-                .with_subtitle("Original source")
+                .with_subtitle(t("image-editor-search-source"))
                 .with_icon(Icon::FolderOpen),
             ),
             (
@@ -68,10 +69,10 @@ impl ProjectSearch {
                 "export png\0final result\0image".into(),
                 SearchResult::for_action(
                     SEARCH_KIND,
-                    "Export PNG",
+                    t("image-editor-search-export"),
                     ActionAddress::new(EXPORT_RESOURCE_ID, "reveal"),
                 )
-                .with_subtitle("Final image stage")
+                .with_subtitle(t("image-editor-search-result"))
                 .with_icon(Icon::Download),
             ),
         ];
@@ -83,7 +84,8 @@ impl ProjectSearch {
                 .filter(|(id, _)| *id != "source" && *id != "output")
                 .map(|(id, node)| {
                     let resource_id = adjustment_resource_id(id);
-                    let operation = operation_name(project.operations.get(id));
+                    let operation = crate::app::operation_label(project.operations.get(id))
+                        .unwrap_or_else(|| node.title.clone());
                     (
                         resource_id.clone(),
                         format!(
@@ -92,10 +94,10 @@ impl ProjectSearch {
                         ),
                         SearchResult::for_action(
                             SEARCH_KIND,
-                            &node.title,
+                            &operation,
                             ActionAddress::new(resource_id, "select"),
                         )
-                        .with_subtitle(format!("{operation} · editable adjustment"))
+                        .with_subtitle(t("image-editor-adjustments"))
                         .with_icon(Icon::Settings2),
                     )
                 }),
@@ -116,26 +118,12 @@ impl CatalogSearchProvider for ProjectSearch {
     }
 }
 
-fn source_label(project: &Project) -> &str {
+fn source_label(project: &Project) -> String {
     match project.operations.get("source") {
-        Some(Operation::Source { path }) if !path.is_empty() => std::path::Path::new(path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("Source image"),
-        _ => "No source image",
-    }
-}
-
-fn operation_name(operation: Option<&Operation>) -> &'static str {
-    match operation {
-        Some(Operation::Exposure { .. }) => "Exposure",
-        Some(Operation::Contrast { .. }) => "Contrast",
-        Some(Operation::Saturation { .. }) => "Colour",
-        Some(Operation::Grayscale) => "Black and white",
-        Some(Operation::Rotate { .. }) => "Rotate",
-        Some(Operation::Crop { .. }) => "Crop",
-        Some(Operation::Source { .. }) => "Source",
-        Some(Operation::Output) | None => "Image step",
+        Some(Operation::Source { path }) if !path.is_empty() => {
+            crate::engine::source_file_name(path).to_owned()
+        }
+        _ => t("image-editor-search-no-source"),
     }
 }
 
@@ -178,7 +166,7 @@ mod tests {
             ));
         }
         let provider = ProjectSearch::new(&project);
-        let first = provider.search_page("contrast", None, 1, 1);
+        let first = provider.search_page(&ui::search::SearchQuery::new("contrast"), None, 1, 1);
         assert_eq!(first.results.len(), 1);
         assert!(first.next.is_some());
         assert!(provider.action_directory_cursor_is_current(first.next.as_ref().unwrap()));

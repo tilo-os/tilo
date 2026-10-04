@@ -134,7 +134,8 @@ mod tests {
         let mut cursor = None;
         let mut titles = Vec::new();
         loop {
-            let page = provider.search_page("", cursor.as_ref(), 1, 1);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new(""), cursor.as_ref(), 1, 1);
             assert!(page.inspected <= 1, "a page must respect its work budget");
             assert!(
                 page.results.len() <= 1,

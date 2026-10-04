@@ -5,7 +5,7 @@
 //! and the row-to-template mapping stay together here.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -39,21 +39,16 @@ impl TemplatePicker {
         self.menu.is_open()
     }
 
-    pub(crate) fn open_at(&mut self, point: Point) {
+    /// Open the menu under `anchor` (the New button), kept inside
+    /// `viewport`.
+    pub(crate) fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
         // Start each invocation without a stale hover or queued selection.
         *self = Self::default();
-        self.menu.open_at([
-            crate::num::f32_of_f64(point.x),
-            crate::num::f32_of_f64(point.y),
-        ]);
+        self.menu.open_anchored(anchor, viewport);
     }
 
     pub(crate) fn set_text_scale(&mut self, text_scale: f32) {
         self.menu.set_text_scale(text_scale);
-    }
-
-    pub(crate) fn set_viewport(&mut self, viewport: vello::kurbo::Rect) {
-        self.menu.set_viewport(Some(viewport));
     }
 
     pub(crate) fn close(&mut self) {
@@ -137,7 +132,10 @@ mod tests {
         // Phase: click_returns_a_typed_template_and_closes.
         {
             let mut picker = TemplatePicker::default();
-            picker.open_at(Point::new(10.0, 20.0));
+            picker.open_anchored(
+                Rect::new(10.0, 0.0, 60.0, 20.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
             let report_row = picker.item_center(Template::Report).unwrap();
             assert_eq!(picker.click(report_row), Some(Template::Report));
             assert!(!picker.is_open());
@@ -147,7 +145,10 @@ mod tests {
         {
             let mut picker = TemplatePicker::default();
             picker.set_text_scale(2.0);
-            picker.open_at(Point::new(10.0, 20.0));
+            picker.open_anchored(
+                Rect::new(10.0, 0.0, 60.0, 20.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
 
             let report = picker
                 .item_center(Template::Report)
@@ -158,7 +159,10 @@ mod tests {
         // Phase: outside_click_dismisses_without_a_selection.
         {
             let mut picker = TemplatePicker::default();
-            picker.open_at(Point::new(10.0, 20.0));
+            picker.open_anchored(
+                Rect::new(10.0, 0.0, 60.0, 20.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
             assert_eq!(picker.click(Point::new(0.0, 0.0)), None);
             assert!(!picker.is_open());
         }

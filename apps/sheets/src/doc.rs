@@ -769,7 +769,9 @@ impl SheetsDoc {
                 });
             }
         }
-        out.sort_by(|a, b| a.id.cmp(&b.id));
+        // Ids are random, so order by what a person sees: the title, then the
+        // id only to break a tie. A capture shows the same cards every run.
+        out.sort_by(|a, b| a.title.cmp(&b.title).then_with(|| a.id.cmp(&b.id)));
         out
     }
 
@@ -927,7 +929,8 @@ impl SheetsDoc {
         for thread in &mut out {
             thread.replies.sort_by(|a, b| a.id.cmp(&b.id));
         }
-        out.sort_by(|a, b| a.id.cmp(&b.id));
+        // Ids are random: order threads by their anchor, then the id.
+        out.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.id.cmp(&b.id)));
         out
     }
 

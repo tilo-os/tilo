@@ -456,20 +456,16 @@ impl LinkPopover {
             let y0 = self.rows_top() + count_f64(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             let armed = visible_index == self.cursor;
-            if armed {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.detail));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.intent.inverted,
-                    None,
-                    &hl,
-                );
-            }
-            // Ink resolved against the accent fill (as `Popover` / `Dropdown`
-            // do), and centred on the measured line rather than the font size.
+            // The armed row is the panel's strong lift, as in every menu;
+            // its ink is measured on it. Centred on the measured line.
             let ink = if armed {
-                tokens.colors.intent.on_inverted
+                crate::widget::floating_surface::paint_armed_row(
+                    scene,
+                    transform,
+                    row_rect,
+                    row_rect.x0 - rect.x0,
+                    theme,
+                )
             } else {
                 tokens.colors.text_primary
             };

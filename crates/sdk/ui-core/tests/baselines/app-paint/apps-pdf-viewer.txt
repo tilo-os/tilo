@@ -2,11 +2,4 @@
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/pdf-viewer/src/app.rs glyph_icon 1
-apps/pdf-viewer/src/app_draw.rs desktop_ground 6
-apps/pdf-viewer/src/app_draw.rs glyph_icon 1
-apps/pdf-viewer/src/app_draw.rs legacy_alias 1
-apps/pdf-viewer/src/app_draw.rs literal_radius 5
-apps/pdf-viewer/src/app_draw.rs raw_paint 67
-apps/pdf-viewer/src/chrome.rs raw_paint 9
-apps/pdf-viewer/src/render.rs literal_radius 13
-apps/pdf-viewer/src/render.rs raw_paint 31
+apps/pdf-viewer/src/render.rs raw_paint 29

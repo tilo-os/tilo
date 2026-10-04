@@ -2,10 +2,12 @@
 //! applying it through `firewall-cmd` is an Effect (no outbox queue today).
 
 use automerge::AutoCommit;
+use std::sync::atomic::{AtomicBool, Ordering};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_actions::{ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{FIREWALL_ACTION_TYPE, FirewallAction, register};
@@ -65,6 +67,17 @@ impl Resource for Firewall {
     }
 }
 
+/// Whether the window reads the host's firewall. Off for captures and
+/// headless drives, which show the bundled example ruleset instead.
+static READ_HOST_FIREWALL: AtomicBool = AtomicBool::new(false);
+
+/// Say once, before the window opens, whether it may read the host
+/// firewall (the live window) or must stay on the example ruleset (a
+/// capture or a headless drive).
+pub fn read_host_firewall(on: bool) {
+    READ_HOST_FIREWALL.store(on, Ordering::Relaxed);
+}
+
 /// Framework app: the firewall widget over [`Firewall`].
 pub struct FirewallShell;
 
@@ -73,10 +86,57 @@ impl ResourceApp for FirewallShell {
     const ID: &'static str = "so.tilo.firewall";
     const TITLE: &'static str = "Firewall";
     const ICON: Option<&'static str> = Some("firewall");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Firewall>) -> Element {
-        cx.surface(FirewallApp::new())
+        if READ_HOST_FIREWALL.load(Ordering::Relaxed) {
+            cx.surface(FirewallApp::new())
+        } else {
+            cx.surface(FirewallApp::offline())
+        }
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "empty",
+            "add-rule",
+            "error",
+            "confirmation",
+            "active-change",
+            "panic",
+            "stopped",
+            "service-error",
+            "services",
+            "selected",
+            "narrow",
+            "drawer",
+        ]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        match name {
+            "narrow" => Some((800, 600)),
+            "drawer" => Some((640, 600)),
+            _ => None,
+        }
+    }
+
+    /// Every capture but the unreachable service shows the example ruleset,
+    /// published through the same action a host import takes.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Firewall>> {
+        if name == Some("service-error") {
+            return Vec::new();
+        }
+        let mut config = crate::sample::sample_config();
+        match name {
+            Some("active-change") => config.default_zone = crate::model::ZoneKind::Home,
+            Some("panic") => config.panic_mode = true,
+            Some("stopped") => config.enabled = false,
+            _ => {}
+        }
+        Invoke::apply(&FirewallAction::PublishImported { config })
+            .into_iter()
+            .collect()
     }
 }
 
@@ -87,6 +147,12 @@ impl ResourceSurface<Firewall> for FirewallApp {
 
     fn attach(&mut self, cx: SurfaceCx<Firewall>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(name) = scenario {
+            self.pose_fixture(name);
+        }
     }
 }
 
