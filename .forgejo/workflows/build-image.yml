@@ -2722,6 +2722,9 @@ jobs:
           # AT-SPI client. Per-app evidence comes from their installed manifest;
           # this is distinct from the compositor and Files-depth smokes below.
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh
+          # The empty workspace's cards perform what they name: the Notes card
+          # opens Notes itself rather than a launcher pre-filled with "Notes".
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
 
           # Lock is compositor-owned too. It has previously fallen outside the
