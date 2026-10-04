@@ -1858,7 +1858,7 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         assert_eq!(ti.display_text(), "•••••••", "toggles back to masked");
     }
 
-    // Case `secret_masks_render_but_clipboard_and_caret_use_the_real_value`.
+    // Case `secret_caret_moves_over_the_real_value`.
     {
         let mut ti = TextInput::local()
             .with_secret(true)
@@ -1874,16 +1874,79 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             mods(false, false),
         );
         assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
+    }
+}
 
-        drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
-        assert_eq!(
-            ti.selected_str(),
-            Some("s3cr3t"),
-            "copy sends the real value, never the mask"
-        );
+#[test]
+fn a_secret_never_reaches_the_clipboard() {
+    let services = crate::host::HostServices::null();
+    let _host = crate::host::enter(&services);
+    let clipboard = || crate::text_selection::clipboard_paste();
 
-        drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
-        assert_eq!(ti.value(), "", "Ctrl+X cut the real selection");
+    for revealed in [false, true] {
+        // Case `copy_and_cut_leave_the_clipboard_alone`.
+        {
+            crate::text_selection::clipboard_copy("before");
+            let mut ti = TextInput::local()
+                .with_secret(true)
+                .with_initial_value("s3cr3t");
+            if revealed {
+                ti.toggle_reveal();
+            }
+            ti.set_focus(true);
+            let mut doc = AutoCommit::new();
+
+            drive(&mut ti, &mut doc, &char_key_event("a"), mods(true, false));
+            assert_eq!(ti.selected_str(), Some("s3cr3t"), "Select All still works");
+            drive(&mut ti, &mut doc, &char_key_event("c"), mods(true, false));
+            assert_eq!(
+                clipboard().as_deref(),
+                Some("before"),
+                "revealed: {revealed}"
+            );
+            drive(&mut ti, &mut doc, &char_key_event("x"), mods(true, false));
+            assert_eq!(
+                clipboard().as_deref(),
+                Some("before"),
+                "revealed: {revealed}"
+            );
+            assert_eq!(ti.value(), "s3cr3t", "a refused cut keeps the value");
+            assert_eq!(ti.selected_str(), Some("s3cr3t"), "and the selection");
+        }
+
+        // Case `the_menu_offers_neither_copy_nor_cut_nor_text_actions`.
+        {
+            crate::text_selection::clipboard_copy("pasted");
+            let mut ti = TextInput::local()
+                .with_secret(true)
+                .with_initial_value("s3cr3t")
+                .with_text_action("translate", "Translate");
+            if revealed {
+                ti.toggle_reveal();
+            }
+            ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+            ti.select_all();
+            ti.open_context_menu([20.0, 18.0]);
+            let labels = ti.context_menu_labels();
+            assert!(!labels.contains(&"Cut".to_string()), "got {labels:?}");
+            assert!(!labels.contains(&"Copy".to_string()), "got {labels:?}");
+            assert!(!labels.contains(&"Translate".to_string()), "got {labels:?}");
+            assert!(labels.contains(&"Paste".to_string()), "got {labels:?}");
+            assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
+        }
+
+        // Case `paste_still_fills_a_secret`.
+        {
+            crate::text_selection::clipboard_copy("hunter2");
+            let mut ti = TextInput::local().with_secret(true);
+            if revealed {
+                ti.toggle_reveal();
+            }
+            ti.set_focus(true);
+            let mut doc = AutoCommit::new();
+            drive(&mut ti, &mut doc, &char_key_event("v"), mods(true, false));
+            assert_eq!(ti.value(), "hunter2");
+        }
     }
 }
 
@@ -3136,7 +3199,7 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         );
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
 
-        assert_eq!(ti.primary_selection_text(), Some("hello"));
+        assert_eq!(ti.shareable_selection(), Some("hello"));
     }
 
     // Case `double_and_triple_click_selections_are_eligible_for_primary_publication`.
@@ -3150,10 +3213,10 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
         drive(&mut ti, &mut doc, &left_press(), mods(false, false));
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(ti.primary_selection_text(), Some("world"));
+        assert_eq!(ti.shareable_selection(), Some("world"));
         drive(&mut ti, &mut doc, &left_release(), mods(false, false));
         drive(&mut ti, &mut doc, &left_press(), mods(false, false));
-        assert_eq!(ti.primary_selection_text(), Some("hello world"));
+        assert_eq!(ti.shareable_selection(), Some("hello world"));
     }
 
     // Case `middle_click_pastes_primary_at_clicked_caret_and_applies_filter`.
@@ -3207,7 +3270,7 @@ fn primary_selection_publishes_pointer_selections_and_middle_click_pastes() {
             mods(false, false),
         );
         drive(&mut secret, &mut doc, &left_release(), mods(false, false));
-        assert_eq!(secret.primary_selection_text(), None);
+        assert_eq!(secret.shareable_selection(), None);
 
         drive(
             &mut secret,

@@ -185,16 +185,32 @@ export TILO_PAINT_STATS=1
 export TILO_LOOP_TIMING=1
 flight_pipe="$logout_request_dir/flight-record.pipe"
 "$MKFIFO" -m 0600 -- "$flight_pipe"
-"$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$SHELL_BIN" <"$flight_pipe" &
+# Opening a FIFO blocks until the other end is open, so the recorder would not
+# even start before the compositor runs. A read-write descriptor opens at once
+# and serves as the other end for both opens; it is closed before the
+# compositor starts, so this wrapper never reads the pipe itself and a dead
+# recorder still gives writers EPIPE instead of a full pipe.
+exec 3<>"$flight_pipe"
+"$FLIGHT_RECORDER" "$flight_log" "$("$DATE" --iso-8601=seconds)" "$$" "$SHELL_BIN" \
+  <"$flight_pipe" 3<&- &
 flight_relay_pid=$!
+exec 4>"$flight_pipe" 3<&-
+# The recorder replaces the empty log with its persisted start record before
+# it reads anything. Wait for that, or for the recorder to die, so the
+# compositor never runs unrecorded and a crash right after login keeps its
+# record however slowly the recorder started.
+while [ ! -s "$flight_log" ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
+  "$SLEEP" 0.05
+done
 
 set +e
-run_managed "$SHELL_BIN" "$@" >"$flight_pipe" 2>&1
+run_managed "$SHELL_BIN" "$@" >&4 2>&1 4>&-
 status=$?
+exec 4>&-
 # Apps the compositor started inherit the pipe and can keep its write end open
 # after the compositor exits; the recorder would then never see end-of-file
 # and this wrapper, and the session unit, would outlive the session. Give the
-# recorder two seconds to drain what was written, then stop it.
+# running recorder two seconds to drain what was written, then stop it.
 i=0
 while [ "$i" -lt 20 ] && kill -0 "$flight_relay_pid" 2>/dev/null; do
   i=$((i + 1))

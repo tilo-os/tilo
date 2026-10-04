@@ -52,7 +52,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     outputs:
       kinds: ${{ steps.plan.outputs.kinds }}
       builds: ${{ steps.plan.outputs.builds }}
@@ -197,7 +197,7 @@ jobs:
           cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_BUILDROOT_REF"
       - name: Verify the signature and record the immutable reference
         run: os/dev/buildroot-snapshot.sh record ${{ matrix.kind }} ${{ matrix.arch }}
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: ${{ matrix.kind }}-buildroot-${{ matrix.arch }}
           path: refs/${{ matrix.arch }}.env
@@ -227,11 +227,11 @@ jobs:
         uses: ./.forgejo/actions/install-cosign
         with:
           cache-architecture: x86_64
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: ${{ matrix.kind }}-buildroot-x86_64
           path: refs/x86_64
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: ${{ matrix.kind }}-buildroot-aarch64
           path: refs/aarch64

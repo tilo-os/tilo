@@ -48,8 +48,6 @@ jobs:
       publish: ${{ steps.plan.outputs.publish }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install registry tools
         run: |
           if ! command -v skopeo >/dev/null; then
@@ -234,7 +232,7 @@ jobs:
           mv "$out/report.json" "$out/report-${{ matrix.arch }}.json"
           ls -l "$out"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: env-tools-${{ matrix.arch }}
           path: env-tools/${{ matrix.arch }}/
@@ -250,10 +248,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: built
 
