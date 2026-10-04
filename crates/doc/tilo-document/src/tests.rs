@@ -659,3 +659,105 @@ fn a_reply_is_written_as_its_paragraphs_marks_and_attributes() {
         Some(&tilo_doc::AttrVal::Bool(true))
     );
 }
+
+#[test]
+fn replace_matches_refuses_invalid_batches_before_any_mutation() {
+    let mut replica = document(1);
+    let id = replica.state().unwrap().body().id_at(1).unwrap().to_owned();
+    let span = |start, end| Span {
+        block: id.clone(),
+        start,
+        end,
+    };
+    let heads = replica.heads();
+    for (spans, ins) in [
+        (vec![], "x".into()),
+        (vec![span(0, 1), span(2, usize::MAX)], "x".into()),
+        (
+            vec![
+                span(0, 1),
+                Span {
+                    block: "gone".into(),
+                    start: 0,
+                    end: 1,
+                },
+            ],
+            "x".into(),
+        ),
+        (vec![span(0, 2), span(1, 3)], "x".into()),
+        (vec![span(0, 1), span(0, 1)], "x".into()),
+        (vec![span(0, 1), span(2, 2)], "x".into()),
+        (vec![span(0, 1), span(4, 2)], "x".into()),
+        (vec![span(0, 1); 10_001], String::new()),
+        (
+            vec![span(0, 1), span(2, 3)],
+            "x".repeat(action::MAX_ACTION_TEXT_CHARS / 2 + 1),
+        ),
+    ] {
+        assert!(
+            replica
+                .apply_action(
+                    &RichTextAction::ReplaceMatches {
+                        region: RegionKind::Body,
+                        spans,
+                        ins
+                    },
+                    "Replace all"
+                )
+                .is_err()
+        );
+        assert_eq!(replica.heads(), heads, "invalid batch wrote a partial edit");
+    }
+}
+
+#[test]
+fn replace_matches_uses_pre_action_unicode_offsets_and_one_replay_envelope() {
+    let mut replica = document(0);
+    let id = replica.state().unwrap().body().id_at(0).unwrap().to_owned();
+    replica
+        .apply_action(
+            &RichTextAction::SpliceText {
+                region: RegionKind::Body,
+                block: id.clone(),
+                at: 0,
+                del: 0,
+                ins: "😀alpha alpha 日".into(),
+            },
+            "Type",
+        )
+        .unwrap();
+    let mut peer = replica.fork();
+    let logs = replica.log().len();
+    replica
+        .apply_action(
+            &RichTextAction::ReplaceMatches {
+                region: RegionKind::Body,
+                spans: vec![
+                    Span {
+                        block: id.clone(),
+                        start: 7,
+                        end: 12,
+                    },
+                    Span {
+                        block: id.clone(),
+                        start: 1,
+                        end: 6,
+                    },
+                ],
+                ins: "β😀".into(),
+            },
+            "Replace all",
+        )
+        .unwrap();
+    assert_eq!(replica.log().len(), logs + 1);
+    assert_eq!(
+        model::block_text(replica.doc(), replica.state().unwrap().containers(), &id).unwrap(),
+        "😀β😀 β😀 日"
+    );
+    peer.replay(replica.log().last().unwrap()).unwrap();
+    assert_eq!(
+        model::block_text(peer.doc(), peer.state().unwrap().containers(), &id).unwrap(),
+        model::block_text(replica.doc(), replica.state().unwrap().containers(), &id).unwrap()
+    );
+    assert_eq!(body_ids(&peer.state().unwrap()), vec![id]);
+}
