@@ -1037,6 +1037,24 @@ fn governors_before_and_after(
         .collect()
 }
 
+/// Tell the workspace menus which of the person's devices each of their
+/// workspaces shows on.
+fn refresh_device_choices(
+    tree: &mut crate::shell::state::WorkspaceTree,
+    workspaces: &crate::shell::personal_workspaces::PersonalWorkspaces,
+) {
+    let choices: std::collections::HashMap<_, _> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .map(|workspace| (workspace.room, workspaces.device_choices(workspace.room)))
+        .collect();
+    if tree.personal_device_choices != choices {
+        tree.personal_device_choices = choices;
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+    }
+}
+
 fn personal_workspaces_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("personal-workspaces.postcard")
 }
@@ -1632,11 +1650,14 @@ impl ShellNetwork {
         });
         tree.write().local_person = personal_continuity_user;
         let personal_workspaces = host_identity.as_ref().map(|identity| {
-            Mutex::new(crate::shell::personal_workspaces::PersonalWorkspaces::open(
-                identity.device_cert.user_public_key,
-                identity.device_cert.device_public_key,
-                personal_workspaces_path(keypair_path),
-            ))
+            Mutex::new(
+                crate::shell::personal_workspaces::PersonalWorkspaces::open(
+                    identity.device_cert.user_public_key,
+                    identity.device_cert.device_public_key,
+                    personal_workspaces_path(keypair_path),
+                )
+                .with_label(identity.device_cert.device_label.clone()),
+            )
         });
         let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
             endpoint,
@@ -4934,12 +4955,28 @@ impl ShellNetwork {
         let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
             return;
         };
-        let changed = {
+        let (mut changed, settle) = {
             let tree = tree.read();
-            workspaces
+            let changed = workspaces
                 .lock()
-                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &person))
+                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &person));
+            let settle = !tree.personal_device_requests.is_empty()
+                || (tree.personal_device_choices.is_empty() && !tree.desktop.workspaces.is_empty());
+            drop(tree);
+            (changed, settle)
         };
+        if changed || settle {
+            let mut tree = tree.write();
+            if let Ok(mut workspaces) = workspaces.lock() {
+                for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests) {
+                    changed |= workspaces.set_shown(room, device, shown);
+                }
+                // Keeping a workspace off this device takes it off at once.
+                workspaces.adopt_into(&mut tree, &person);
+                refresh_device_choices(&mut tree, &workspaces);
+            }
+            drop(tree);
+        }
         let due = self
             .last_personal_workspaces_snapshot
             .lock()
@@ -5045,6 +5082,7 @@ impl ShellNetwork {
                 return true;
             }
             let adopted = workspaces.adopt_into(&mut tree, &person);
+            refresh_device_choices(&mut tree, &workspaces);
             drop(tree);
             let answer = local || !workspaces.covered_by(update);
             drop(workspaces);

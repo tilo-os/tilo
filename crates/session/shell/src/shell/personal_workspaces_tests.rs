@@ -656,3 +656,272 @@ fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
     ));
     assert!(!member_of(&board, room, "person-mallory"));
 }
+
+/// A workspace named `name` added to `tree` as `salt`'s device creates it.
+fn add_workspace(tree: &mut WorkspaceTree, salt: u16, counter: u64, name: &str) -> RoomId {
+    let mut workspace = Workspace::new(WorkspaceId(salted(salt, counter)), name);
+    let room = RoomId::new();
+    workspace.room = room;
+    workspace.set_owner(PERSON.to_string());
+    tree.desktop.workspaces.push(workspace);
+    room
+}
+
+fn id_named(tree: &WorkspaceTree, name: &str) -> WorkspaceId {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.name == name)
+        .map_or_else(
+            || panic!("no workspace named {name}"),
+            |workspace| workspace.id,
+        )
+}
+
+fn names(tree: &WorkspaceTree) -> Vec<String> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.name.clone())
+        .collect()
+}
+
+/// Two devices that have exchanged lists once: the laptop with "Research"
+/// and "Thesis", the board with "Board home".
+fn two_devices_in_step() -> (
+    (Device, WorkspaceTree, PersonalWorkspaces),
+    (Device, WorkspaceTree, PersonalWorkspaces),
+) {
+    let (laptop_device, board_device) = person_with_two_devices();
+    let mut laptop = device_tree(LAPTOP, "Research");
+    add_workspace(&mut laptop, LAPTOP, 2, "Thesis");
+    let mut board = device_tree(BOARD, "Board home");
+    let mut laptop_list = list_for(&laptop_device);
+    let mut board_list = list_for(&board_device);
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    deliver(
+        &mut board_list,
+        &board_device,
+        &board,
+        &mut laptop_list,
+        &mut laptop,
+    );
+    (
+        (laptop_device, laptop, laptop_list),
+        (board_device, board, board_list),
+    )
+}
+
+#[test]
+fn a_workspace_deleted_on_one_device_goes_from_the_other_and_an_undo_brings_it_back() {
+    let ((laptop_device, mut laptop, mut laptop_list), (_, mut board, mut board_list)) =
+        two_devices_in_step();
+    let research = room_named(&laptop, "Research");
+    let research_id = id_named(&laptop, "Research");
+    // The board is looking at the workspace when it goes.
+    let on_board = board
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == research)
+        .map(|workspace| workspace.id)
+        .expect("joined");
+    board.desktop.active = on_board;
+
+    let (index, removed) = laptop
+        .delete_workspace(research_id)
+        .expect("one of several workspaces");
+    assert!(deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board
+    ));
+    assert!(
+        !board.desktop.workspaces.iter().any(|w| w.room == research),
+        "the board drops the deleted workspace"
+    );
+    assert!(
+        board
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.id == board.desktop.active),
+        "the board shows a workspace that still exists"
+    );
+
+    assert!(laptop.restore_workspace(index, removed));
+    assert!(deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board
+    ));
+    assert!(
+        board.desktop.workspaces.iter().any(|w| w.room == research),
+        "undoing the deletion brings it back to the board"
+    );
+}
+
+#[test]
+fn the_order_of_the_list_follows_the_person_and_concurrent_moves_converge() {
+    let ((laptop_device, mut laptop, mut laptop_list), (board_device, mut board, mut board_list)) =
+        two_devices_in_step();
+    // Once both have each other's list, both hold the person's one order.
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    assert_eq!(names(&laptop), names(&board));
+
+    // Put Thesis right before Research on the laptop.
+    while names(&laptop).iter().position(|n| n == "Thesis")
+        > names(&laptop).iter().position(|n| n == "Research")
+    {
+        assert!(laptop.move_workspace(id_named(&laptop, "Thesis"), -1));
+    }
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    let shared_order = |tree: &WorkspaceTree| -> Vec<String> {
+        names(tree)
+            .into_iter()
+            .filter(|name| name == "Research" || name == "Thesis")
+            .collect()
+    };
+    assert_eq!(shared_order(&board), ["Thesis", "Research"]);
+
+    // Both move a different workspace while apart; after exchanging lists
+    // both hold one order.
+    let board_home = id_named(&board, "Board home");
+    let laptop_research = id_named(&laptop, "Research");
+    let _ = laptop.move_workspace(laptop_research, -1);
+    let _ = laptop.move_workspace(laptop_research, 1);
+    let _ = board.move_workspace(board_home, 1);
+    let _ = board.move_workspace(board_home, -1);
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    deliver(
+        &mut board_list,
+        &board_device,
+        &board,
+        &mut laptop_list,
+        &mut laptop,
+    );
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    assert_eq!(names(&laptop), names(&board));
+}
+
+#[test]
+fn a_workspace_kept_off_a_device_leaves_it_and_returns_when_shown_again() {
+    let ((laptop_device, mut laptop, mut laptop_list), (board_device, mut board, mut board_list)) =
+        two_devices_in_step();
+    let research = room_named(&laptop, "Research");
+    let board_key = board_device.cert.device_public_key;
+    let choices = laptop_list.device_choices(research);
+    assert!(
+        choices.iter().all(|choice| choice.shown),
+        "every device shows a workspace by default"
+    );
+
+    // The board wrote itself into the list when it listed its own
+    // workspace? It did not register a label; the laptop knows it only
+    // once it does.
+    board_list = board_list.with_label("Orange Pi");
+    deliver(
+        &mut board_list,
+        &board_device,
+        &board,
+        &mut laptop_list,
+        &mut laptop,
+    );
+    let choices = laptop_list.device_choices(research);
+    assert!(
+        choices
+            .iter()
+            .any(|choice| choice.device == board_key && !choice.here)
+    );
+
+    assert!(laptop_list.set_shown(research, board_key, false));
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    assert!(
+        !board.desktop.workspaces.iter().any(|w| w.room == research),
+        "kept off the board"
+    );
+    assert!(
+        laptop.desktop.workspaces.iter().any(|w| w.room == research),
+        "still on the laptop"
+    );
+    // The board still carries the list: it does not delete what it hides.
+    deliver(
+        &mut board_list,
+        &board_device,
+        &board,
+        &mut laptop_list,
+        &mut laptop,
+    );
+    assert!(laptop.desktop.workspaces.iter().any(|w| w.room == research));
+
+    assert!(laptop_list.set_shown(research, board_key, true));
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut board_list,
+        &mut board,
+    );
+    assert!(
+        board.desktop.workspaces.iter().any(|w| w.room == research),
+        "shown on the board again"
+    );
+}
+
+#[test]
+fn deleting_from_the_menu_offers_an_undo() {
+    let mut tree = device_tree(LAPTOP, "Research");
+    add_workspace(&mut tree, LAPTOP, 2, "Thesis");
+    let chrome = crate::shell::chrome_state::ChromeState::new(tree);
+    let mut state = chrome.borrow_mut();
+    assert!(state.delete_active_workspace());
+    assert_eq!(names(&state.tree()), ["Thesis"]);
+    assert!(!state.delete_active_workspace(), "the last workspace stays");
+    let toast = state
+        .notifications()
+        .last()
+        .map(|toast| toast.id)
+        .expect("an undo toast");
+    assert!(state.activate_notification(toast));
+    assert_eq!(names(&state.tree()), ["Research", "Thesis"]);
+}

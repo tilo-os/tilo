@@ -697,6 +697,16 @@ pub struct WorkspaceTree {
     /// hosted here instead of as windows to reopen. Set at session start.
     #[serde(skip)]
     pub window_hosting: Option<WindowHosting>,
+    /// Which of the person's devices each of their workspaces shows on, as
+    /// the person's workspace list says; set by the network for the
+    /// workspace's menu.
+    #[serde(skip)]
+    pub personal_device_choices:
+        HashMap<RoomId, Vec<crate::shell::personal_workspaces::DeviceChoice>>,
+    /// Choices made in a workspace's menu, `(room, device, shown)`, waiting
+    /// for the network to write them into the person's workspace list.
+    #[serde(skip)]
+    pub personal_device_requests: Vec<(RoomId, [u8; 32], bool)>,
 }
 
 impl Default for WorkspaceTree {
@@ -725,6 +735,8 @@ impl Default for WorkspaceTree {
             persist_path: None,
             fs_acl_path: None,
             window_hosting: None,
+            personal_device_choices: HashMap::new(),
+            personal_device_requests: Vec::new(),
         }
     }
 }
@@ -3952,6 +3964,145 @@ impl WorkspaceTree {
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         self.queue_save();
         true
+    }
+
+    /// Take `room`'s workspace off this device: the person deleted it on
+    /// another of their devices, or keeps it off this one. Only this
+    /// device's copy goes; the room and its content stay with its other
+    /// members. If it was showing, the neighbouring workspace shows
+    /// instead. Returns its place and value, for an undo.
+    pub fn forget_personal_room(&mut self, room: RoomId) -> Option<(usize, Workspace)> {
+        let index = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room)?;
+        let removed = self.desktop.workspaces.remove(index);
+        if self.desktop.active == removed.id {
+            let next = self
+                .desktop
+                .workspaces
+                .get(index)
+                .or_else(|| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|i| self.desktop.workspaces.get(i))
+                })
+                .map_or_else(WorkspaceId::default, |workspace| workspace.id);
+            self.desktop.active = next;
+        }
+        self.desktop.active_strip.remove(&removed.id);
+        for strip in &removed.strips {
+            self.desktop.active_group.remove(&strip.id);
+        }
+        // Who governs the room and where this device's share of it starts
+        // stay recorded, so putting the workspace back (an undo, or the
+        // person showing it here again) does not make this device claim a
+        // room another device governs.
+        self.room_docs.remove(&room);
+        self.continuation_rooms.remove(&room);
+        self.seed_doc_from_cache();
+        self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+        self.queue_save();
+        Some((index, removed))
+    }
+
+    /// Delete workspace `id` from this person's desktop, on this device and,
+    /// through the person's workspace list, on their other devices. The last
+    /// workspace stays. Returns its place and value, for an undo.
+    pub fn delete_workspace(&mut self, id: WorkspaceId) -> Option<(usize, Workspace)> {
+        if self.desktop.workspaces.len() < 2 {
+            return None;
+        }
+        let room = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == id)?
+            .room;
+        let removed = self.forget_personal_room(room);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        removed
+    }
+
+    /// Put a deleted workspace back where it was. Its room document is
+    /// rebuilt from this copy and from the room's other members.
+    pub fn restore_workspace(&mut self, index: usize, workspace: Workspace) -> bool {
+        if self
+            .desktop
+            .workspaces
+            .iter()
+            .any(|existing| existing.room == workspace.room || existing.id == workspace.id)
+        {
+            return false;
+        }
+        let index = index.min(self.desktop.workspaces.len());
+        let id = workspace.id;
+        self.desktop.workspaces.insert(index, workspace);
+        self.desktop.active = id;
+        self.seed_doc_from_cache();
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.queue_save();
+        true
+    }
+
+    /// Move workspace `id` one place earlier (`-1`) or later (`1`) in the
+    /// list. Returns whether it moved.
+    pub fn move_workspace(&mut self, id: WorkspaceId, step: i32) -> bool {
+        let Some(index) = self.desktop.workspaces.iter().position(|w| w.id == id) else {
+            return false;
+        };
+        let target = match step.signum() {
+            -1 => index.checked_sub(1),
+            1 => Some(index.saturating_add(1)).filter(|t| *t < self.desktop.workspaces.len()),
+            _ => None,
+        };
+        let Some(target) = target else {
+            return false;
+        };
+        self.desktop.workspaces.swap(index, target);
+        self.seed_doc_from_cache();
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        self.queue_save();
+        true
+    }
+
+    /// Order the workspaces of `rooms` as listed, in the places they already
+    /// take among this tree's workspaces; every other workspace stays where
+    /// it is. Returns whether anything moved.
+    pub fn arrange_rooms(&mut self, rooms: &[RoomId]) -> bool {
+        let slots: Vec<usize> = self
+            .desktop
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, workspace)| rooms.contains(&workspace.room))
+            .map(|(index, _)| index)
+            .collect();
+        let mut wanted: Vec<Workspace> = Vec::with_capacity(slots.len());
+        for room in rooms {
+            if let Some(workspace) = self.desktop.workspaces.iter().find(|w| w.room == *room) {
+                wanted.push(workspace.clone());
+            }
+        }
+        if wanted.len() != slots.len() {
+            return false;
+        }
+        let mut moved = false;
+        for (slot, workspace) in slots.into_iter().zip(wanted) {
+            if let Some(existing) = self.desktop.workspaces.get_mut(slot)
+                && existing.room != workspace.room
+            {
+                *existing = workspace;
+                moved = true;
+            }
+        }
+        if moved {
+            self.seed_doc_from_cache();
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+            self.queue_save();
+        }
+        moved
     }
 
     /// Turn a synchronized offer into a locally-owned live app. The Wayland
