@@ -8769,7 +8769,16 @@ impl VideoEditorApp {
         let shown = cached.shown.clone();
         if level == NoticeLevel::Failed {
             // A failed render is a status, in danger: the toolkit's badge.
-            ui::widget::BadgeFace::new(chip, &shown)
+            // At a badge's own height, centred in the chip's slot: a pill
+            // pads its label by its height, so a taller rect would elide it.
+            let h = ui::widget::BadgeFace::height(theme);
+            let badge = Rect::new(
+                chip.x0,
+                chip.center().y - h / 2.0,
+                chip.x1,
+                chip.center().y + h / 2.0,
+            );
+            ui::widget::BadgeFace::new(badge, &shown)
                 .style(ui::widget::ChipStyle::Tinted(ui::widget::Tone::Danger))
                 .paint(scene, tf, tr, theme);
             return;
