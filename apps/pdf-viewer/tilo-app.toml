@@ -26,7 +26,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "open-uri"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -55,6 +55,8 @@ mode = "off"
 
 [sandbox.portals]
 file-chooser = "via-host"
+# Another document opens in a window of its own, through the desktop.
+open-uri     = "via-host"
 
 [sandbox.services]
 collab = "optional@1"

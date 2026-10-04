@@ -543,6 +543,16 @@ pub enum PdfViewerAction {
         id: String,
         resolved: bool,
     },
+    /// Add a comment on `page`, pinned to annotation `anno_id` or free on the
+    /// page. Ids and the ordinal are minted at authoring time.
+    AddComment {
+        id: String,
+        anno_id: Option<String>,
+        page: usize,
+        author: String,
+        created: i64,
+        body: String,
+    },
     /// Append a reply to a comment thread.
     AddReply {
         comment_id: String,
@@ -601,6 +611,9 @@ pub enum PdfViewerAction {
         hash: String,
         len: u64,
         mime: String,
+        /// The file's name, shown when the record reopens its source.
+        #[serde(default)]
+        name: String,
     },
     /// Take over the markup and form values already in the source bytes
     /// `source_hash` as records (see [`crate::adopt`]). A record imports a
@@ -762,6 +775,30 @@ impl Action for PdfViewerAction {
                 };
                 PdfDoc::add_comment(doc, &c);
             }
+            PdfViewerAction::AddComment {
+                id,
+                anno_id,
+                page,
+                author,
+                created,
+                body,
+            } => {
+                comment_text(body, &[])?;
+                PdfDoc::add_comment(
+                    doc,
+                    &Comment {
+                        id: id.clone(),
+                        anno_id: anno_id.clone(),
+                        page: *page,
+                        author: author.clone(),
+                        body: body.clone(),
+                        created: *created,
+                        resolved: false,
+                        replies: Vec::new(),
+                        blocks: Vec::new(),
+                    },
+                );
+            }
             PdfViewerAction::SetCommentBody { id, body, rich } => {
                 PdfDoc::set_comment_text(doc, id, &comment_text(body, rich)?);
             }
@@ -839,8 +876,13 @@ impl Action for PdfViewerAction {
                 PdfDoc::set_form_value(doc, name, &value.to_entry());
             }
             PdfViewerAction::ClearFormValue { name } => PdfDoc::clear_form_value(doc, name),
-            PdfViewerAction::PinSource { hash, len, mime } => {
-                PdfDoc::pin_source(doc, hash, *len, mime);
+            PdfViewerAction::PinSource {
+                hash,
+                len,
+                mime,
+                name,
+            } => {
+                PdfDoc::pin_source(doc, hash, *len, mime, name);
             }
             PdfViewerAction::ImportExisting {
                 source_hash,
@@ -1069,11 +1111,12 @@ pub fn set_free_text_box_user_action(id: &str, rect: &PtRect, size: f64) -> PdfV
     }
 }
 
-pub fn pin_source_action(hash: &str, len: u64) -> PdfViewerAction {
+pub fn pin_source_action(hash: &str, len: u64, name: &str) -> PdfViewerAction {
     PdfViewerAction::PinSource {
         hash: hash.to_string(),
         len,
         mime: "application/pdf".to_string(),
+        name: name.to_string(),
     }
 }
 
@@ -2365,8 +2408,8 @@ mod tests {
     /// highlights, a sticky note with a two-reply thread, a highlight comment,
     /// and a free resolved comment) is in the shared document.
     fn open_with_markup() -> (PdfApp, ui::State) {
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         (app, state)
     }
