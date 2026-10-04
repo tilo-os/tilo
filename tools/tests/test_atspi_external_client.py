@@ -57,6 +57,18 @@ class SettingsNetworkTests(unittest.TestCase):
         self.assertTrue(CLIENT.network_mismatches(failed, expected))
 
 
+class OnScreenKeyboardTests(unittest.TestCase):
+    def test_extents_replies_parse_into_rectangles(self):
+        self.assertEqual(CLIENT.extents_reply("((12, -3, 640, 48),)\n"), (12, -3, 640, 48))
+        self.assertIsNone(CLIENT.extents_reply("()"))
+
+    def test_the_keyboard_docks_where_the_compositor_places_it(self):
+        # crates/session/shell/src/shell/frame.rs `layout_osk_overlay`.
+        self.assertEqual(CLIENT.keyboard_rect(1280, 800), (160.0, 460.0, 960.0, 320.0))
+        self.assertEqual(CLIENT.keyboard_rect(1920, 1080), (480.0, 680.0, 960.0, 380.0))
+        self.assertEqual(CLIENT.keyboard_rect(400, 300), (20.0, 60.0, 360.0, 220.0))
+
+
 class ManifestScenarioTests(unittest.TestCase):
     def test_package_store_metadata_and_payload_are_separate(self):
         with tempfile.TemporaryDirectory() as work:
