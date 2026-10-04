@@ -2045,14 +2045,15 @@ COPY \
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
 # The session-context check proves a greetd login runs in the user's SELinux
 # domain and logind session scope, with each launched app in its own scope.
-COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh /usr/libexec/tilo/
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh os/tests/installed-admin-actions.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
           /usr/libexec/tilo/projection-boot-check.sh \
-          /usr/libexec/tilo/session-context-check.sh
+          /usr/libexec/tilo/session-context-check.sh \
+          /usr/libexec/tilo/installed-admin-actions.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -2794,7 +2795,6 @@ COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/tilo/files-atspi-smoke
 COPY crates/session/shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
 COPY tools/atspi_external_client.py /usr/libexec/tilo/atspi-external-client.py
 COPY os/tests/installed_atspi_apps.sh /usr/libexec/tilo/installed-atspi-apps.sh
-COPY os/tests/installed_admin_actions.sh /usr/libexec/tilo/installed-admin-actions.sh
 
 # Enrolment invariants, likewise at BUILD time. A build container has no
 # /dev/tpm*, which is exactly the path this needs to exercise: the machine with
@@ -2956,7 +2956,6 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
         /usr/libexec/tilo/native-atspi-smoke.sh \
         /usr/libexec/tilo/atspi-external-client.py \
         /usr/libexec/tilo/installed-atspi-apps.sh \
-        /usr/libexec/tilo/installed-admin-actions.sh \
     && OS_ROOT=/ /usr/libexec/tilo/collaborative-files-image-contract.sh image
 
 # Validate.

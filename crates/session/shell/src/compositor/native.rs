@@ -3728,7 +3728,7 @@ fn execute_locked_action(
         PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
             Some(InvokeFailure {
                 code: "session_locked".into(),
-                message: "the session is locked; unlock it at the device, then retry".into(),
+                message: test_control::SESSION_LOCKED.into(),
             })
         }
         // Pointer and modifier input is swallowed while locked.
