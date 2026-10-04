@@ -37,6 +37,7 @@ pub mod environment;
 pub mod image;
 pub mod index;
 pub mod key;
+pub mod network;
 pub mod resolve;
 pub mod sandbox;
 pub mod seal;

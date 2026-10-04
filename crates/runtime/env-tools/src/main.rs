@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
+use env_tools::network::NetworkChoice;
 use env_tools::{Builder, CacheKey, Catalog, Entry, NoCatalog, Origin, ToolStore, image, store};
 use package_store::{Admission, ImageTrust, PackageStore, Store};
 use tilo_app_package::{PackageId, SigningIdentity};
@@ -36,6 +37,28 @@ struct RuntimeArgs {
     /// on a filesystem overlayfs accepts as an upper (ordinary disk).
     #[arg(long)]
     state: PathBuf,
+    /// What builds may reach: the runtime's repositories (`gated`, the
+    /// default), nothing (`offline`), or this machine's whole network
+    /// (`host`, for a CI builder without `/dev/net/tun`).
+    #[arg(long, value_enum, default_value_t = NetworkArg::Gated)]
+    network: NetworkArg,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum NetworkArg {
+    Gated,
+    Offline,
+    Host,
+}
+
+impl From<NetworkArg> for NetworkChoice {
+    fn from(arg: NetworkArg) -> Self {
+        match arg {
+            NetworkArg::Gated => Self::Gated,
+            NetworkArg::Offline => Self::Offline,
+            NetworkArg::Host => Self::Host,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -119,7 +142,8 @@ fn main() -> anyhow::Result<()> {
                 DirStore::new(id, tree.clone(), None, None)?,
                 NoCatalog,
                 &runtime.state,
-            );
+            )
+            .with_network(runtime.network.into());
             let (key, resolution) = builder.resolve(&id, &tree, &packages)?;
             print(&Resolved {
                 digest: key.digest().to_hex(),
@@ -144,7 +168,8 @@ fn main() -> anyhow::Result<()> {
                 DirStore::new(id, tree, Some(identity), Some(out_dir))?,
                 NoCatalog,
                 &runtime.state,
-            );
+            )
+            .with_network(runtime.network.into());
             let built = builder.build_reporting(&id, &packages, &mut std::io::stderr())?;
             let tapp = builder
                 .store()
