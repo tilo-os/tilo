@@ -471,21 +471,11 @@ pub fn install_joined_device(
         relay_service,
         cert.device_public_key,
     )?;
-    // Beside the peer lists the shell reads it with.
-    let rooms_dest = tilo_relay_protocol::home_peer_registry_path(
-        target_system
-            .user_pubkey
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "target identity root is missing",
-                )
-            })?,
-    )
-    .with_file_name("personal-rooms.json");
-    copy_personal_rooms(layout.local_rooms, &rooms_dest)?;
+    // Beside the direct peers the shell reads it with.
+    copy_personal_rooms(
+        layout.local_rooms,
+        &target_person(&target_system, &user_public_key)?,
+    )?;
     Ok(cert)
 }
 
@@ -554,7 +544,33 @@ fn safe_account_name(name: &str) -> bool {
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
-fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
+/// The person's directory in the target's peers directory. It belongs to
+/// whoever writes the target until the target's first boot hands it to the
+/// account it creates.
+fn target_person(
+    target_system: &IdentityPaths,
+    user_public_key: &[u8; 32],
+) -> io::Result<tilo_relay_protocol::personal_devices::PersonPeers> {
+    let root = target_system
+        .user_pubkey
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "target identity root is missing",
+            )
+        })?;
+    tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(
+        &tilo_relay_protocol::personal_devices::peers_dir(root),
+        user_public_key,
+    )
+}
+
+fn copy_personal_rooms(
+    source: &Path,
+    dest: &tilo_relay_protocol::personal_devices::PersonPeers,
+) -> io::Result<()> {
     use tilo_relay_protocol::personal_devices;
     // The export is this session's own convenience file: an unreadable or
     // malformed one shares no rooms rather than failing the enrollment.
@@ -564,7 +580,7 @@ fn copy_personal_rooms(source: &Path, dest: &Path) -> io::Result<()> {
     if rooms.is_empty() {
         return Ok(());
     }
-    personal_devices::remember_rooms(dest, &rooms).map(|_| ())
+    dest.remember_rooms(&rooms).map(|_| ())
 }
 
 /// Where this session publishes the workspace rooms a newly enrolled device
@@ -673,16 +689,19 @@ fn copy_home_peers(
         identity: local_cert.user_public_key,
         device,
     };
-    tilo_relay_protocol::personal_devices::remember_direct_peers(
-        &tilo_relay_protocol::personal_devices::direct_peers_path(parent),
-        &[peer(local_cert.device_public_key)],
-    )?;
-    let local_peers =
-        source.with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE);
-    tilo_relay_protocol::personal_devices::remember_direct_peers(
-        &local_peers,
-        &[peer(joined_device)],
-    )?;
+    target_person(target_system, &local_cert.user_public_key)?
+        .remember_direct_peers(&[peer(local_cert.device_public_key)])?;
+    let local_peers = source.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "home-peer registry has no directory",
+        )
+    })?;
+    tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(
+        local_peers,
+        &local_cert.user_public_key,
+    )?
+    .remember_direct_peers(&[peer(joined_device)])?;
     Ok(())
 }
 
@@ -1570,12 +1589,18 @@ mod tests {
                 .all(|entry| entry.relay_service_node_id != service),
             "a machine that cannot host is not recorded as a relay"
         );
-        let direct = tilo_relay_protocol::personal_devices::read_direct_peers(
-            &tilo_relay_protocol::personal_devices::direct_peers_path(
-                &dir.path().join("var/lib/tilo"),
-            ),
-        )
-        .unwrap();
+        let person_in = |peers_dir: &Path| {
+            tilo_relay_protocol::personal_devices::PersonPeers::find_own(
+                peers_dir,
+                &local_cert.user_public_key,
+            )
+            .unwrap()
+            .expect("the person's directory exists")
+        };
+        let target_person = person_in(&tilo_relay_protocol::personal_devices::peers_dir(
+            &dir.path().join("var/lib/tilo"),
+        ));
+        let direct = target_person.read_direct_peers().unwrap();
         assert_eq!(
             direct,
             vec![tilo_relay_protocol::personal_devices::DirectPeer {
@@ -1583,10 +1608,9 @@ mod tests {
                 device: local_cert.device_public_key,
             }]
         );
-        let local_direct = tilo_relay_protocol::personal_devices::read_direct_peers(
-            &peers.with_file_name("personal-device-peers.json"),
-        )
-        .unwrap();
+        let local_direct = person_in(peers.parent().unwrap())
+            .read_direct_peers()
+            .unwrap();
         assert_eq!(
             local_direct,
             vec![tilo_relay_protocol::personal_devices::DirectPeer {
@@ -1594,15 +1618,10 @@ mod tests {
                 device: cert.device_public_key,
             }]
         );
-        let rooms: Vec<String> = serde_json::from_slice(
-            &std::fs::read(
-                tilo_relay_protocol::home_peer_registry_path(&dir.path().join("var/lib/tilo"))
-                    .with_file_name("personal-rooms.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(rooms, vec!["11111111-1111-4111-8111-111111111111"]);
+        assert_eq!(
+            target_person.read_rooms().unwrap(),
+            vec!["11111111-1111-4111-8111-111111111111"]
+        );
         let peers_bytes = std::fs::read(tilo_relay_protocol::home_peer_registry_path(
             &dir.path().join("var/lib/tilo"),
         ))

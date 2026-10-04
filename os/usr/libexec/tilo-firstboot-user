@@ -135,6 +135,16 @@ else
       cp -an /etc/skel/. "$seeded_home/" || true
     fi
     chown -R "$user:$user" "$seeded_home"
+    # The handoff seeded this person's directory of direct peers and shared
+    # rooms too, before the account existed. On a fresh install it is the
+    # only one there, and it is theirs.
+    for person in /var/lib/tilo/peers/*; do
+      if [ -d "$person" ] && [ ! -L "$person" ] \
+        && [[ "$(basename -- "$person")" =~ ^[0-9a-f]{64}(\.[0-9a-f]{16})?$ ]]; then
+        chown -R --no-dereference "$user:tilo-identity" -- "$person"
+        chmod 2750 -- "$person"
+      fi
+    done
   elif [ -n "$full_name" ]; then
     useradd -m -p "$hash" -c "$full_name" -G wheel,tilo-identity,video "$user"
   else

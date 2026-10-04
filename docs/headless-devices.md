@@ -133,8 +133,9 @@ What revocation reaches, and when:
 
 - The device you revoke from refuses the revoked device's signatures at once,
   stops dialing it, and removes it from its direct peers
-  (`/var/lib/tilo/peers/personal-device-peers.json`); the revocation is
-  recorded beside them in `/var/lib/tilo/peers/device-revocations`.
+  (`/var/lib/tilo/peers/<identity>/personal-device-peers.json`); the
+  revocation is recorded beside them in
+  `/var/lib/tilo/peers/<identity>/device-revocations`.
 - Your other devices learn the revocation when they next exchange identities
   with a device that holds it, which happens whenever they connect. From then on
   they refuse the revoked device, remember the revocation in their own fleet,
@@ -153,14 +154,22 @@ What revocation reaches, and when:
   approve-device`, the same path Settings uses. The helper runs `tilo-enroll
   approve-device` as you (it signs with your identity), which records the new
   device, with the identity that certified it, in
-  `/var/lib/tilo/peers/personal-device-peers.json`.
-- A revocation recorded in `/var/lib/tilo/peers/device-revocations` (writable
-  by the `tilo-identity` group, sticky) removes a direct peer only when the
+  `/var/lib/tilo/peers/<identity>/personal-device-peers.json`.
+- Each person on a device has their own directory,
+  `/var/lib/tilo/peers/<identity>` (`<identity>` is the identity's public key
+  in hex), owned by their account with mode `2750`: only they change their
+  direct peers, rooms and recorded revocations, and the `tilo-identity` group
+  (a relay on the device included) reads them. `/var/lib/tilo/peers` itself
+  is sticky (`3770`), so nobody renames or removes another person's
+  directory. Every reader refuses a directory or file owned by another
+  account or writable by anyone else; when someone else already holds the
+  name, the person's directory is `<identity>.<suffix>` instead.
+- A revocation in `device-revocations` removes a direct peer only when the
   identity recorded with that peer signed it; a revocation from any other
-  identity changes nothing.
+  identity is not recorded there.
 - The new device receives the approver's room list
   (`~/.local/state/tilo/personal-rooms.json`, kept by the session) and stores
-  it as `/var/lib/tilo/peers/personal-rooms.json`, plus every other ordinary
+  it as `/var/lib/tilo/peers/<identity>/personal-rooms.json`, plus every other ordinary
   device of the identity as a direct peer. The running session reads both
   files every two seconds; no restart is needed for an already enrolled
   session.

@@ -524,11 +524,13 @@ mod unix {
             .context("read this identity's device fleet")?;
         let local =
             device_cert(&context.paths, identity.public_key).map(|cert| cert.device_public_key);
-        let direct = personal_devices::live_direct_peers(
+        let direct = personal_devices::PersonPeers::find_own(
             &personal_devices::peers_dir(&context.identity_root()),
             &identity.public_key,
-            &fleet.revocation_list(),
         )
+        .ok()
+        .flatten()
+        .and_then(|person| person.live_direct_peers(&fleet.revocation_list()).ok())
         .unwrap_or_default();
         let (snapshot, running) = presence();
         let mut certificates = fleet.certificates.clone();
@@ -689,10 +691,14 @@ mod unix {
         let cert = device_cert(&context.paths, identity.public_key);
         let rows = device_rows(context, &identity)?;
         let (snapshot, running) = presence();
-        let rooms =
-            personal_devices::read_rooms(&personal_devices::rooms_path(&context.identity_root()))
-                .map(|rooms| rooms.len())
-                .unwrap_or_default();
+        let rooms = personal_devices::PersonPeers::find_own(
+            &personal_devices::peers_dir(&context.identity_root()),
+            &identity.public_key,
+        )
+        .ok()
+        .flatten()
+        .and_then(|person| person.read_rooms().ok())
+        .map_or(0, |rooms| rooms.len());
         let next = status_next_steps(
             &identity,
             cert.as_ref(),
@@ -1514,22 +1520,26 @@ mod unix {
         }
     }
 
-    /// Record the revocation in the identity's peers directory, where the
-    /// session and a relay on this machine find it, and drop the revoked
-    /// device from the direct peers beside it.
+    /// Record the revocation in this person's directory beside the identity
+    /// root, where the session and a relay on this machine find it, and drop
+    /// the revoked device from the direct peers beside it.
     fn forget_revoked_peer(identity_root: &Path, entry: &RevocationEntry) -> PeerPruning {
-        let peers = personal_devices::peers_dir(identity_root);
-        if let Err(error) = personal_devices::record_revocation(&peers, entry) {
+        let person = match personal_devices::PersonPeers::open_or_create_own(
+            &personal_devices::peers_dir(identity_root),
+            &entry.user_public_key,
+        ) {
+            Ok(person) => person,
+            Err(error) => return PeerPruning::Failed(error.to_string()),
+        };
+        if let Err(error) = person.record_revocation(entry) {
             return PeerPruning::Failed(error.to_string());
         }
         let revoked = personal_devices::DirectPeer {
             identity: entry.user_public_key,
             device: entry.revoked_device_public_key,
         };
-        match personal_devices::prune_revoked_direct_peers(&peers) {
-            Ok(_) => match personal_devices::read_direct_peers(
-                &personal_devices::direct_peers_path(identity_root),
-            ) {
+        match person.prune_revoked_direct_peers() {
+            Ok(_) => match person.read_direct_peers() {
                 Ok(peers) if !peers.contains(&revoked) => PeerPruning::Removed,
                 Ok(_) => PeerPruning::Failed("it is still listed".into()),
                 Err(error) => PeerPruning::Failed(error.to_string()),

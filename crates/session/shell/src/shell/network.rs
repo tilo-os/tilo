@@ -905,6 +905,22 @@ fn registered_home_peer_addrs(
     Ok(addrs)
 }
 
+/// This account's directory for `person` in the peers directory `peers`, if
+/// it has one. Another account's directory for the same identity is never
+/// taken for it.
+fn own_person_peers(
+    peers: &Path,
+    person: &[u8; 32],
+) -> Option<tilo_relay_protocol::personal_devices::PersonPeers> {
+    match tilo_relay_protocol::personal_devices::PersonPeers::find_own(peers, person) {
+        Ok(found) => found,
+        Err(error) => {
+            tracing::warn!(peers = %peers.display(), %error, "personal device directory is unusable");
+            None
+        }
+    }
+}
+
 /// Device endpoint ids this machine should dial directly.
 ///
 /// These are ordinary peers of the same person, not relays. A relay handshake
@@ -913,22 +929,18 @@ fn registered_home_peer_addrs(
 /// revoked — recorded beside the list, or in `known` — is never dialed, even
 /// before the prune removes it from the list itself.
 fn personal_device_peer_addrs(
-    path: &Path,
+    peers: &Path,
     local_device: Option<[u8; 32]>,
     person: Option<&[u8; 32]>,
     known: &tilo_user_identity::RevocationList,
 ) -> Vec<iroh::EndpointAddr> {
-    let devices = match (person, path.parent()) {
-        (Some(person), Some(root)) => {
-            tilo_relay_protocol::personal_devices::live_direct_peers(root, person, known)
-        }
-        _ => tilo_relay_protocol::personal_devices::read_direct_peers(path)
-            .map(|peers| peers.into_iter().map(|peer| peer.device).collect()),
+    let Some(person_peers) = person.and_then(|person| own_person_peers(peers, person)) else {
+        return Vec::new();
     };
-    let devices = match devices {
+    let devices = match person_peers.live_direct_peers(known) {
         Ok(devices) => devices,
         Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "personal device list is unusable");
+            tracing::warn!(path = %person_peers.dir().display(), %error, "personal device list is unusable");
             return Vec::new();
         }
     };
@@ -945,9 +957,9 @@ fn personal_device_peer_addrs(
 }
 
 /// Persist the revocations in `list` that `user`'s root signed: into the
-/// person's fleet through `fleet`, and into the identity's peers directory
-/// `peers`, whose direct-peer list then drops the revoked devices. Best
-/// effort; each failure is logged.
+/// person's fleet through `fleet`, and into this account's directory for
+/// `user` in the peers directory `peers`, whose direct-peer list then drops
+/// the revoked devices. Best effort; each failure is logged.
 fn remember_revocations(
     fleet: Option<&tilo_identity_host::device_fleet::DeviceFleetStore>,
     peers: Option<&Path>,
@@ -955,29 +967,50 @@ fn remember_revocations(
     list: &tilo_user_identity::RevocationList,
 ) {
     let identity_id = hex::encode(user);
-    for entry in list.iter().filter(|entry| &entry.user_public_key == user) {
-        if let Some(fleet) = fleet
-            && let Err(error) = fleet.remember_revocation(&identity_id, entry.clone())
-        {
-            tracing::debug!(%error, "could not keep a device revocation in the fleet");
-        }
-        if let Some(peers) = peers
-            && let Err(error) =
-                tilo_relay_protocol::personal_devices::record_revocation(peers, entry)
-        {
-            tracing::debug!(%error, "could not record a device revocation for pruning");
+    let entries: Vec<_> = list
+        .iter()
+        .filter(|entry| &entry.user_public_key == user)
+        .collect();
+    if let Some(fleet) = fleet {
+        for entry in &entries {
+            if let Err(error) = fleet.remember_revocation(&identity_id, (*entry).clone()) {
+                tracing::debug!(%error, "could not keep a device revocation in the fleet");
+            }
         }
     }
     if let Some(peers) = peers {
-        prune_direct_peers(peers);
+        record_revocations(peers, user, entries);
     }
 }
 
-/// Drop the devices recorded as revoked from the direct-peer list in
-/// `peers`. A session that cannot rewrite it still refuses and stops dialing
+/// Record `entries`, which `user`'s root signed, in this account's directory
+/// for `user` in `peers`, and drop the revoked devices from its direct-peer
+/// list. A session that cannot write there still refuses and stops dialing
 /// them.
-fn prune_direct_peers(peers: &Path) {
-    match tilo_relay_protocol::personal_devices::prune_revoked_direct_peers(peers) {
+fn record_revocations<'a>(
+    peers: &Path,
+    user: &[u8; 32],
+    entries: impl IntoIterator<Item = &'a tilo_user_identity::RevocationEntry>,
+) {
+    let person =
+        match tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(peers, user) {
+            Ok(person) => person,
+            Err(error) => {
+                tracing::debug!(%error, "could not open this person's peers directory");
+                return;
+            }
+        };
+    for entry in entries {
+        if let Err(error) = person.record_revocation(entry) {
+            tracing::debug!(%error, "could not record a device revocation for pruning");
+        }
+    }
+    prune_direct_peers(&person);
+}
+
+/// Drop the devices recorded as revoked from the person's direct-peer list.
+fn prune_direct_peers(person: &tilo_relay_protocol::personal_devices::PersonPeers) {
+    match person.prune_revoked_direct_peers() {
         Ok(removed) => {
             for peer in removed {
                 tracing::info!(device = %hex::encode(peer.device), "removed a revoked device from the direct peers");
@@ -987,18 +1020,38 @@ fn prune_direct_peers(peers: &Path) {
     }
 }
 
-fn personal_device_peer_path() -> PathBuf {
-    home_peer_registry_path()
-        .with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE)
+/// The peers directory: beside the home-peer registry, holding one
+/// directory per person.
+fn personal_peers_dir() -> PathBuf {
+    let registry = home_peer_registry_path();
+    registry
+        .parent()
+        .map_or_else(|| PathBuf::from("/var/lib/tilo/peers"), Path::to_path_buf)
 }
 
-/// The rooms listed at `path`. Unlike the enrollment writers, the session
-/// skips a malformed entry rather than dropping the whole list.
+/// The rooms enrolled for `person` in this account's directory of the peers
+/// directory.
+fn enrolled_room_ids(person: Option<&[u8; 32]>) -> Vec<RoomId> {
+    person
+        .and_then(|person| own_person_peers(&personal_peers_dir(), person))
+        .and_then(|person| person.rooms_bytes().ok().flatten())
+        .map(|bytes| room_ids_from(&bytes))
+        .unwrap_or_default()
+}
+
+/// The rooms listed at `path`, a list outside the peers directory such as
+/// a session's export.
 fn personal_room_ids(path: &Path) -> Vec<RoomId> {
     let Ok(Some(bytes)) = tilo_relay_protocol::personal_devices::read_list_file(path) else {
         return Vec::new();
     };
-    let Ok(ids) = serde_json::from_slice::<Vec<String>>(&bytes) else {
+    room_ids_from(&bytes)
+}
+
+/// The room ids in a room list. Unlike the enrollment writers, the session
+/// skips a malformed entry rather than dropping the whole list.
+fn room_ids_from(bytes: &[u8]) -> Vec<RoomId> {
+    let Ok(ids) = serde_json::from_slice::<Vec<String>>(bytes) else {
         return Vec::new();
     };
     if ids.len() > tilo_relay_protocol::personal_devices::MAX_ROOMS {
@@ -1772,8 +1825,7 @@ impl ShellNetwork {
         }
         let dialed_direct_peers = std::collections::HashSet::new();
         for addr in personal_device_peer_addrs(
-            &home_peer_registry_path()
-                .with_file_name(tilo_relay_protocol::personal_devices::DIRECT_PEERS_FILE),
+            &personal_peers_dir(),
             Some(*local_peer_id.as_bytes()),
             personal_continuity_user.as_ref(),
             &tilo_user_identity::RevocationList::new(),
@@ -3005,10 +3057,7 @@ impl ShellNetwork {
     }
 
     fn enrolled_room_candidates(&self) -> Result<Vec<RoomId>, String> {
-        let mut enrolled = personal_room_ids(
-            &personal_device_peer_path()
-                .with_file_name(tilo_relay_protocol::personal_devices::ROOMS_FILE),
-        );
+        let mut enrolled = enrolled_room_ids(self.personal_continuity_user.as_ref());
         // The setup session publishes its rooms under the user state
         // directory. The copy on the target lives beside the peer list.
         if let Some(exported) = tilo_identity_host::provisioning::personal_rooms_export_path() {
@@ -3222,11 +3271,9 @@ impl ShellNetwork {
     }
 
     fn adopt_enrolled_rooms(&self) {
-        let path = personal_device_peer_path()
-            .with_file_name(tilo_relay_protocol::personal_devices::ROOMS_FILE);
         // Read the file before taking the tree's write lock: the frame
         // painter reads the same tree.
-        let rooms = personal_room_ids(&path);
+        let rooms = enrolled_room_ids(self.personal_continuity_user.as_ref());
         if rooms.is_empty() {
             return;
         }
@@ -3286,13 +3333,13 @@ impl ShellNetwork {
         };
         let local = *self.local_peer_id.as_bytes();
         let person = self.personal_continuity_user;
-        let direct: Vec<[u8; 32]> =
-            personal_devices::read_direct_peers(&personal_device_peer_path())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|peer| person.is_none_or(|person| peer.identity == person))
-                .map(|peer| peer.device)
-                .collect();
+        let direct: Vec<[u8; 32]> = person
+            .and_then(|person| own_person_peers(&personal_peers_dir(), &person))
+            .and_then(|person| person.read_direct_peers().ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|peer| peer.device)
+            .collect();
         let mut last_seen = std::collections::BTreeMap::<[u8; 32], u64>::new();
         if let Ok(fabric) = self.device_fabric.lock() {
             for (device, snapshot) in fabric.snapshots() {
@@ -3516,7 +3563,7 @@ impl ShellNetwork {
             .map(|user| self.peer_identities.revocations_of(&user))
             .unwrap_or_default();
         personal_device_peer_addrs(
-            &personal_device_peer_path(),
+            &personal_peers_dir(),
             local_device,
             self.personal_continuity_user.as_ref(),
             &known,
@@ -3545,8 +3592,8 @@ impl ShellNetwork {
         if cert.user_public_key != user {
             return;
         }
-        if let Some(root) = personal_device_peer_path().parent()
-            && let Ok(recorded) = tilo_relay_protocol::personal_devices::read_revocations(root)
+        if let Some(person) = own_person_peers(&personal_peers_dir(), &user)
+            && let Ok(recorded) = person.read_revocations()
         {
             entries.extend(recorded.iter().cloned());
         }
@@ -3580,19 +3627,8 @@ impl ShellNetwork {
             })
             .cloned()
             .collect();
-        if !new_entries.is_empty()
-            && let Some(peers) = personal_device_peer_path().parent()
-        {
-            for entry in &new_entries {
-                // A session that cannot write the directory still refuses
-                // and stops dialing the device.
-                if let Err(error) =
-                    tilo_relay_protocol::personal_devices::record_revocation(peers, entry)
-                {
-                    tracing::debug!(%error, "could not record a device revocation for pruning");
-                }
-            }
-            prune_direct_peers(peers);
+        if !new_entries.is_empty() {
+            record_revocations(&personal_peers_dir(), &user, &new_entries);
         }
         self.drop_untrusted_peers(now_ns);
     }
@@ -6835,7 +6871,7 @@ impl ShellNetwork {
         let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env();
         remember_revocations(
             fleet.as_ref().ok(),
-            personal_device_peer_path().parent(),
+            Some(&personal_peers_dir()),
             &user,
             list,
         );
@@ -7386,13 +7422,21 @@ mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;
 
+    /// This account's directory for `person` in the peers directory `peers`.
+    fn person_dir(peers: &Path, person: [u8; 32]) -> PathBuf {
+        tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(peers, &person)
+            .unwrap()
+            .dir()
+            .to_path_buf()
+    }
+
     #[test]
     fn personal_device_peers_are_dialable_endpoints_except_this_device() {
         let dir = tempfile::tempdir().expect("temp");
-        let path = dir.path().join("personal-device-peers.json");
         let own = [0x11; 32];
         let peer = [0x22; 32];
         let identity = [0x33; 32];
+        let path = person_dir(dir.path(), identity).join("personal-device-peers.json");
         std::fs::write(
             &path,
             tilo_relay_protocol::personal_devices::encode_direct_peers(&[own, peer].map(
@@ -7402,13 +7446,25 @@ mod tests {
         )
         .unwrap();
         let addrs = personal_device_peer_addrs(
-            &path,
+            dir.path(),
             Some(own),
-            None,
+            Some(&identity),
             &tilo_user_identity::RevocationList::new(),
         );
         assert_eq!(addrs.len(), 1);
         assert_eq!(*addrs[0].id.as_bytes(), peer);
+        // Without a person, or for another one, nothing is dialed.
+        for person in [None, Some(&[0x44; 32])] {
+            assert!(
+                personal_device_peer_addrs(
+                    dir.path(),
+                    Some(own),
+                    person,
+                    &tilo_user_identity::RevocationList::new(),
+                )
+                .is_empty()
+            );
+        }
     }
 
     /// A direct-peer list recording `devices` under `identity`.
@@ -7445,9 +7501,14 @@ mod tests {
     #[test]
     fn revoked_personal_devices_are_never_dialed() {
         let dir = tempfile::tempdir().expect("temp");
-        let path = dir.path().join("personal-device-peers.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
         let user = root.verifying_key().to_bytes();
+        let person = tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(
+            dir.path(),
+            &user,
+        )
+        .unwrap();
+        let path = person.direct_peers_path();
         let [own, recorded, held, live] = [0x11_u8, 0x22, 0x33, 0x44]
             .map(|seed| *iroh::SecretKey::from_bytes(&[seed; 32]).public().as_bytes());
         let other = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32])
@@ -7472,14 +7533,12 @@ mod tests {
         )
         .unwrap();
         // One revocation recorded beside the list, one only held in memory.
-        tilo_relay_protocol::personal_devices::record_revocation(
-            dir.path(),
-            &revocation_of(&root, recorded),
-        )
-        .unwrap();
+        person
+            .record_revocation(&revocation_of(&root, recorded))
+            .unwrap();
         let mut known = tilo_user_identity::RevocationList::new();
         known.insert(revocation_of(&root, held)).unwrap();
-        let addrs = personal_device_peer_addrs(&path, Some(own), Some(&user), &known);
+        let addrs = personal_device_peer_addrs(dir.path(), Some(own), Some(&user), &known);
         assert_eq!(
             addrs
                 .iter()
@@ -7489,12 +7548,14 @@ mod tests {
         );
         // Another identity's revocation of a peer changes nothing.
         let stranger = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
-        tilo_relay_protocol::personal_devices::record_revocation(
+        tilo_relay_protocol::personal_devices::PersonPeers::open_or_create_own(
             dir.path(),
-            &revocation_of(&stranger, live),
+            &stranger.verifying_key().to_bytes(),
         )
+        .unwrap()
+        .record_revocation(&revocation_of(&stranger, live))
         .unwrap();
-        let addrs = personal_device_peer_addrs(&path, Some(own), Some(&user), &known);
+        let addrs = personal_device_peer_addrs(dir.path(), Some(own), Some(&user), &known);
         assert_eq!(addrs.len(), 1);
     }
 
@@ -7516,7 +7577,12 @@ mod tests {
         let kept = fleet.load(&hex::encode(user)).unwrap();
         assert!(kept.is_revoked(&[0x22; 32]));
         assert!(!kept.is_revoked(&[0x33; 32]));
-        let recorded = tilo_relay_protocol::personal_devices::read_revocations(dir.path()).unwrap();
+        let recorded =
+            tilo_relay_protocol::personal_devices::PersonPeers::find_own(dir.path(), &user)
+                .unwrap()
+                .unwrap()
+                .read_revocations()
+                .unwrap();
         assert!(recorded.revocation_of(&user, &[0x22; 32]).is_some());
         assert_eq!(recorded.len(), 1);
     }
@@ -7530,7 +7596,7 @@ mod tests {
         let device = [0x22_u8; 32];
         let user = [0x44_u8; 32];
         std::fs::write(
-            dir.path().join("personal-device-peers.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-device-peers.json"),
             tilo_relay_protocol::personal_devices::encode_direct_peers(&[
                 tilo_relay_protocol::personal_devices::DirectPeer {
                     identity: user,
@@ -7579,7 +7645,7 @@ mod tests {
         std::fs::write(&peers, b"not-json").unwrap();
         let device = [0x22_u8; 32];
         std::fs::write(
-            dir.path().join("personal-device-peers.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-device-peers.json"),
             direct_peers_of([0x44; 32], &[device]),
         )
         .unwrap();
@@ -7610,7 +7676,7 @@ mod tests {
         while commands.try_recv().is_ok() {}
         let room = "22222222-2222-4222-8222-222222222222";
         std::fs::write(
-            dir.path().join("personal-rooms.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-rooms.json"),
             format!("[\"{room}\"]"),
         )
         .unwrap();
@@ -7684,14 +7750,14 @@ mod tests {
         std::fs::write(&peers, b"[]").unwrap();
         let device = [0x22_u8; 32];
         std::fs::write(
-            dir.path().join("personal-device-peers.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-device-peers.json"),
             direct_peers_of([0x44; 32], &[device]),
         )
         .unwrap();
         let absent = "11111111-1111-4111-8111-111111111111";
         let present = "22222222-2222-4222-8222-222222222222";
         std::fs::write(
-            dir.path().join("personal-rooms.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-rooms.json"),
             format!("[\"{absent}\", \"{present}\"]"),
         )
         .unwrap();
@@ -7741,13 +7807,13 @@ mod tests {
         std::fs::write(&peers, b"[]").unwrap();
         let device = [0x22_u8; 32];
         std::fs::write(
-            dir.path().join("personal-device-peers.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-device-peers.json"),
             direct_peers_of([0x44; 32], &[device]),
         )
         .unwrap();
         let room = "11111111-1111-4111-8111-111111111111";
         std::fs::write(
-            dir.path().join("personal-rooms.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-rooms.json"),
             format!("[\"{room}\"]"),
         )
         .unwrap();
@@ -7802,7 +7868,8 @@ mod tests {
             panic!("expected an invocation");
         };
         assert_eq!(request.target.address, address);
-        std::fs::remove_file(dir.path().join("personal-rooms.json")).unwrap();
+        std::fs::remove_file(person_dir(dir.path(), [0x44; 32]).join("personal-rooms.json"))
+            .unwrap();
         let state = dir.path().join("state");
         std::fs::create_dir_all(state.join("tilo")).unwrap();
         std::fs::write(
@@ -7848,7 +7915,7 @@ mod tests {
         std::fs::write(&peers, b"[]").unwrap();
         let room = "11111111-1111-4111-8111-111111111111";
         std::fs::write(
-            dir.path().join("personal-rooms.json"),
+            person_dir(dir.path(), [0x44; 32]).join("personal-rooms.json"),
             format!("[\"{room}\"]"),
         )
         .unwrap();
@@ -8651,8 +8718,13 @@ mod tests {
             crate::shell::state::Verb::Read,
             true,
         ));
-        // Recorded in the peers directory for the prune.
-        let recorded = tilo_relay_protocol::personal_devices::read_revocations(dir.path()).unwrap();
+        // Recorded in the person's peers directory for the prune.
+        let recorded =
+            tilo_relay_protocol::personal_devices::PersonPeers::find_own(dir.path(), &user)
+                .unwrap()
+                .unwrap()
+                .read_revocations()
+                .unwrap();
         assert!(
             recorded
                 .revocation_of(&user, device.public().as_bytes())

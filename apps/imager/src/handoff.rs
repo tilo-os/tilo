@@ -97,8 +97,9 @@ pub fn apply_setup_handoff(
         if label.is_empty() {
             return Err("A device name is required to enroll this machine's identity.".into());
         }
-        let rooms = tilo_identity_host::provisioning::personal_rooms_export_path()
-            .unwrap_or_else(|| PathBuf::from("/var/lib/tilo/peers/personal-rooms.json"));
+        // Without a session export there are no rooms to share.
+        let rooms =
+            tilo_identity_host::provisioning::personal_rooms_export_path().unwrap_or_default();
         tilo_identity_host::provisioning::enroll_from_local_identity(
             &tilo_identity_host::provisioning::JoinedDeviceLayout {
                 target_root: root,
@@ -499,11 +500,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(copied, vec![peer]);
-        let direct = tilo_relay_protocol::personal_devices::read_direct_peers(
-            &tilo_relay_protocol::personal_devices::direct_peers_path(
-                &dir.path().join("var/lib/tilo"),
-            ),
+        let direct = tilo_relay_protocol::personal_devices::PersonPeers::find_own(
+            &tilo_relay_protocol::personal_devices::peers_dir(&dir.path().join("var/lib/tilo")),
+            &local_cert.user_public_key,
         )
+        .unwrap()
+        .expect("the person's directory exists on the target")
+        .read_direct_peers()
         .unwrap();
         assert_eq!(
             direct,

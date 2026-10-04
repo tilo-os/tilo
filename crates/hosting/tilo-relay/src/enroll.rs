@@ -945,27 +945,44 @@ fn authorize_personal_commit(
     Ok(marker)
 }
 
-/// Merge a staged enrollment's direct peers and rooms into the lists beside
-/// the identity root. Merging is idempotent, so recovery may repeat it.
+/// The account a person directory written for `identity_dir` belongs to:
+/// the owner of that identity directory (the person's own, even when this
+/// runs as root through `sudo`), else this process's.
+fn person_owner(identity_dir: Option<&std::path::Path>) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if let Some(metadata) = identity_dir.and_then(|dir| std::fs::metadata(dir).ok()) {
+            return metadata.uid();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = identity_dir;
+    tilo_relay_protocol::personal_devices::current_uid()
+}
+
+/// Merge a staged enrollment's direct peers and rooms into the person's
+/// directory beside the identity root, owned by the account whose identity
+/// directory the enrollment joined. Merging is idempotent, so recovery may
+/// repeat it.
 fn install_staged_links(
     identity_root: &std::path::Path,
     stage_dir: &std::path::Path,
+    marker: &PersonalEnrollmentMarker,
 ) -> anyhow::Result<()> {
     use tilo_relay_protocol::personal_devices;
     let direct_peers = personal_devices::parse_direct_peers(&std::fs::read(staged(
         stage_dir,
         "direct-peers.json",
     ))?)?;
-    personal_devices::remember_direct_peers(
-        &personal_devices::direct_peers_path(identity_root),
-        &direct_peers,
+    let person = personal_devices::PersonPeers::open_or_create(
+        &personal_devices::peers_dir(identity_root),
+        &marker.user_public_key,
+        person_owner(Some(&marker.identity_dir)),
     )?;
+    person.remember_direct_peers(&direct_peers)?;
     let rooms = personal_devices::parse_rooms(&std::fs::read(staged(stage_dir, "rooms.json"))?)?;
-    personal_devices::remember_rooms(&personal_devices::rooms_path(identity_root), &rooms)?;
-    // A root-run enrollment wrote both as root; they keep their directory's
-    // owner and group, like the home-peer registry beside them.
-    restore_owner_from_parent(&personal_devices::direct_peers_path(identity_root))?;
-    restore_owner_from_parent(&personal_devices::rooms_path(identity_root))?;
+    person.remember_rooms(&rooms)?;
     Ok(())
 }
 
@@ -1018,7 +1035,7 @@ fn commit_staged_personal_enrollment(
         0o644,
     )?;
     checkpoint(PersonalCommitCheckpoint::PersonalLinks)?;
-    install_staged_links(identity_root, &stage_dir)?;
+    install_staged_links(identity_root, &stage_dir, marker)?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
     tilo_files::native::atomic::write_with_mode(
         &marker.identity_dir.join("registry.json"),
@@ -2577,21 +2594,30 @@ fn approver_rooms(path: Option<&std::path::Path>) -> Vec<String> {
 }
 
 /// Record a newly approved personal device as one this machine dials
-/// directly, in the identity's peers directory the identity group writes.
-fn remember_approved_device(identity_root: &std::path::Path, cert: &DeviceCert) {
-    let path = tilo_relay_protocol::personal_devices::direct_peers_path(identity_root);
-    match tilo_relay_protocol::personal_devices::remember_direct_peers(
-        &path,
-        &[tilo_relay_protocol::personal_devices::DirectPeer {
+/// directly, in the approving person's directory beside the identity root.
+fn remember_approved_device(
+    identity_root: &std::path::Path,
+    identity_dir: Option<&std::path::Path>,
+    cert: &DeviceCert,
+) {
+    use tilo_relay_protocol::personal_devices;
+    let peers = personal_devices::peers_dir(identity_root);
+    let recorded = personal_devices::PersonPeers::open_or_create(
+        &peers,
+        &cert.user_public_key,
+        person_owner(identity_dir),
+    )
+    .and_then(|person| {
+        person.remember_direct_peers(&[personal_devices::DirectPeer {
             identity: cert.user_public_key,
             device: cert.device_public_key,
-        }],
-    ) {
-        Ok(_) => {}
-        Err(error) => eprintln!(
+        }])
+    });
+    if let Err(error) = recorded {
+        eprintln!(
             "warning: could not record the new device in {}: {error}",
-            path.display()
-        ),
+            peers.display()
+        );
     }
 }
 
@@ -2718,7 +2744,7 @@ fn commit_approval(
     }
     let cert = &prepared.signed.payload.cert;
     if options.kind == EnrollmentKind::PersonalDevice {
-        remember_approved_device(options.identity_root, cert);
+        remember_approved_device(options.identity_root, options.identity_dir, cert);
     }
     println!(
         "{}",
@@ -3901,25 +3927,27 @@ mod tests {
         // Both devices dial each other directly afterwards, and the new
         // device joins the approver's rooms. The home server stays a
         // home-peer route, never a direct peer.
+        let person_of = |identity_root: &std::path::Path| {
+            personal_devices::PersonPeers::find_own(
+                &personal_devices::peers_dir(identity_root),
+                &root.verifying_key().to_bytes(),
+            )
+            .unwrap()
+            .expect("the person's directory exists")
+        };
         assert_eq!(
-            personal_devices::read_direct_peers(&personal_devices::direct_peers_path(
-                new_root.path()
-            ))
-            .unwrap(),
+            person_of(new_root.path()).read_direct_peers().unwrap(),
             vec![personal_devices::DirectPeer {
                 identity: root.verifying_key().to_bytes(),
                 device: issuer.verifying_key().to_bytes(),
             }]
         );
         assert_eq!(
-            personal_devices::read_rooms(&personal_devices::rooms_path(new_root.path())).unwrap(),
+            person_of(new_root.path()).read_rooms().unwrap(),
             vec![shared_room.to_string()]
         );
         assert_eq!(
-            personal_devices::read_direct_peers(&personal_devices::direct_peers_path(
-                approver_root.path()
-            ))
-            .unwrap(),
+            person_of(approver_root.path()).read_direct_peers().unwrap(),
             vec![personal_devices::DirectPeer {
                 identity: root.verifying_key().to_bytes(),
                 device: new_device.verifying_key().to_bytes(),
