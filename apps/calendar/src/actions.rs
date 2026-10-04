@@ -2947,7 +2947,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, doc: &AutoCommit) -> Vec<Res
             let mut occurrence = Resource::new(
                 occurrence_resource_id(event_id, original_date),
                 "calendar.occurrence",
-                format!("{} · {original_date}", event_label(&ev.data)),
+                format!("{} on {original_date}", event_label(&ev.data)),
             )
             .with_action(calendar_operation(
                 "open",

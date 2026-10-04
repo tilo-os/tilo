@@ -1,9 +1,0 @@
-# The spacing ratchet for apps-calendar: counts may only fall (HIG §9.13).
-# Format: <path relative to the repository root> <pattern> <count>
-# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/calendar/src/agenda.rs pixel_const 12
-apps/calendar/src/app.rs pixel_const 17
-apps/calendar/src/mini_month.rs pixel_const 9
-apps/calendar/src/sidebar.rs pixel_const 3
-apps/calendar/src/timeline_viewport.rs pixel_const 12
-apps/calendar/src/topbar.rs pixel_const 5
