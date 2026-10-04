@@ -91,8 +91,9 @@ pub trait ResourceApp: 'static {
     /// Whether the app opens private windows (`--private`): a window on a
     /// profile of its own that is thrown away with the process — its record,
     /// settings and files never reach the person's — and that attaches to
-    /// no runtime, so nothing it shows syncs or is shared. Its view tells
-    /// with [`ViewCx::is_private`].
+    /// no runtime, so nothing it shows syncs or is shared. It holds none of
+    /// the person's own records ([`ViewCx::person`] answers `None`), and its
+    /// view tells with [`ViewCx::is_private`].
     const PRIVATE_WINDOWS: bool = false;
     /// The history of a file of the mounted filesystem the app shows (the
     /// file selected in a file manager), a History scope beside the
@@ -510,7 +511,11 @@ fn create<A: ResourceApp>(
         },
         context.storage(),
         super::settings::Hosted {
-            person: context.person_records().cloned(),
+            // A private window keeps nothing of the person's: their own
+            // records are not even opened.
+            person: (!context.is_private())
+                .then(|| context.person_records().cloned())
+                .flatten(),
             device: Some(context.device_id().to_owned()),
         },
     );
