@@ -169,7 +169,17 @@ def _open(ctx, res, app: DailyApp):
     surfaces0 = {f["surface_id"] for f in ctx.vm.foreign_frames()}
     before = _procs(ctx)
     ctx.facts[f"groups_before:{app.label}"] = {g["id"] for g in core.all_groups(st0)}
-    group, t_group = ctx.open_app(app.desktop_id, "host-applications")
+    try:
+        group, t_group = ctx.open_app(app.desktop_id, "host-applications")
+    except CheckFailed:
+        # Whether it started at all, and what it and the compositor said.
+        ctx.shot(f"{app.label}-no-window")
+        res.metrics["running"] = [c.cmd[:200] for c in _procs(ctx).values() if app.program in c.cmd][:4]
+        ctx.write(f"{app.label}-no-window.log", ctx.vm.exec(
+            "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+            f"| grep -aiE '{app.desktop_id}|{app.program}|xwayland|x11' | tail -n 80 | cut -c1-400; true",
+            check=False))
+        raise
     gid = group["id"]
     res.metrics["seconds_to_window"] = t_group
     started = time.monotonic()

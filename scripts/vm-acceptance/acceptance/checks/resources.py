@@ -133,11 +133,15 @@ def _open_several(ctx):
     if closed:
         ctx.shot("R-apps-closed-after-open")
         pattern = "|".join(a.replace(".", "\\.") for a in closed)
+        # The compositor's own lines and the apps' ends, not their start-up chatter.
         ctx.write("R-apps-closed-after-open.log", ctx.vm.exec(
-            f"grep -aE '{pattern}|app_launch|panick' \"$HOME/.local/state/tilo/session-logs/latest.log\" "
-            "2>/dev/null | tail -n 80 | cut -c1-400; echo ---; "
-            f"journalctl --user -b --no-pager -o short-monotonic 2>/dev/null | grep -aE '{pattern}' "
-            "| tail -n 80 | cut -c1-400; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
+            "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+            f"| grep -avE 'tilo-sandbox-exec|MESA|service socket connected|action contract validation' "
+            f"| grep -aE '^[^\\[]|{pattern}' | grep -aiE '{pattern}|exit|signal|panic|close|kill|fail|launch|surface' "
+            "| tail -n 150 | cut -c1-400; echo ---; "
+            f"journalctl --user -b --no-pager -o short-monotonic 2>/dev/null "
+            f"| grep -aE 'scope|{pattern}' | grep -aiE 'stop|deactivat|fail|exit|kill|signal|consumed|dump' "
+            "| tail -n 60 | cut -c1-400; echo ---; coredumpctl --no-pager list 2>/dev/null | tail -n 10; true",
             check=False))
     ctx.facts["apps_closed_after_open"] = closed
     return [app for app in groups if app not in closed]
