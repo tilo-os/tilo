@@ -53,7 +53,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       reason: ${{ steps.plan.outputs.reason }}
@@ -62,7 +62,6 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Choose native build or promoted-builder qualification
         id: plan
         env:
@@ -72,7 +71,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.mode == 'build'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -115,8 +114,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -311,8 +308,6 @@ jobs:
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
         id: cargo-cache
         uses: ./.forgejo/actions/restore-cargo-downloads
@@ -363,8 +358,6 @@ jobs:
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
