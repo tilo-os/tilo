@@ -56,7 +56,9 @@ pub trait ResourceApp: 'static {
     /// How every window hosting the app treats it: focus after a rebuild,
     /// live appearance, and whether captures withhold it. An app that shows
     /// secrets declares `capture_protected` here, so the live launch, the
-    /// shell and every other host of its component protect it alike.
+    /// shell and every other host of its component protect it alike; an
+    /// on-screen keyboard declares its window an
+    /// [input surface](ui_core::application::WindowRole::InputSurface).
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour::DEFAULT;
     /// Media types (`type/subtype`, lowercase) of the files the app opens
     /// when a host hands it one (a file association, a file dropped on its
@@ -69,6 +71,17 @@ pub trait ResourceApp: 'static {
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
     const ARGUMENTS: usize = 0;
+    /// The app's own command-line options that take a value
+    /// (`--purpose number` or `--purpose=number`): how this window runs
+    /// rather than what it opens. [`Self::launch`] reads them from its
+    /// [`LaunchInput::option`], views and surfaces from
+    /// [`ViewCx::launch_option`] and
+    /// [`SurfaceCx::launch_option`](super::SurfaceCx::launch_option).
+    const OPTIONS: &'static [&'static str] = &[];
+    /// The app's own switches, which take no value (`--debug-hit-areas`):
+    /// [`LaunchInput::flag`], [`ViewCx::launch_flag`],
+    /// [`SurfaceCx::launch_flag`](super::SurfaceCx::launch_flag).
+    const FLAGS: &'static [&'static str] = &[];
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -410,6 +423,7 @@ fn create<A: ResourceApp>(
     }
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
+    let options = context.take_launch_options();
     let capture = context.capture().is_some();
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
@@ -421,6 +435,7 @@ fn create<A: ResourceApp>(
     let handoff = context.take_handoff();
     let run = run.launched(Launched {
         arguments,
+        options,
         file,
         handoff,
     });
@@ -564,9 +579,11 @@ fn prepare_app<A: ResourceApp>(
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let arguments = args.positionals();
-    let named = A::launch_record(&LaunchInput::new(arguments, None));
+    let options = launch_options::<A>(args);
+    let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
     let mut prepared = prepare_named(definition, args, named)?;
     hand_launch(definition, arguments, &mut prepared)?;
+    prepared.context.provide_launch_options(options);
     // The session launches the target of a playback handoff with where it
     // stood in its environment; a capture continues nothing.
     if args.shots.is_none()
@@ -592,6 +609,26 @@ fn process_handoff() -> Option<ui_core::application::PlaybackHandoff> {
             .ok()
             .filter(|title| !title.trim().is_empty()),
     })
+}
+
+/// The options of `A`'s own that `args` named, in declaration order.
+#[cfg(tilo_native_runner)]
+fn launch_options<A: ResourceApp>(args: &LaunchArgs) -> Vec<ui_core::application::LaunchOption> {
+    let options = A::OPTIONS.iter().filter_map(|&name| {
+        args.value(name)
+            .map(|value| ui_core::application::LaunchOption {
+                name: name.to_owned(),
+                value: Some(value.to_owned()),
+            })
+    });
+    let flags = A::FLAGS
+        .iter()
+        .filter(|&&name| args.has(name))
+        .map(|&name| ui_core::application::LaunchOption {
+            name: name.to_owned(),
+            value: None,
+        });
+    options.chain(flags).collect()
 }
 
 /// Hand a prepared component what its launch named: the arguments, and the
@@ -763,12 +800,14 @@ fn shot_viewport<A: ResourceApp>(args: &LaunchArgs) -> (u32, u32) {
 #[cfg(tilo_native_runner)]
 struct LiveOptionsKey<A>(std::marker::PhantomData<A>);
 
-/// The options a live launch of `A` takes: its profile and its commands.
+/// The options a live launch of `A` takes: its profile, its commands and its
+/// own options.
 #[cfg(tilo_native_runner)]
 fn live_options<A: ResourceApp>() -> &'static [&'static str] {
     leaked(TypeId::of::<LiveOptionsKey<A>>(), || {
         let mut options = vec!["--data-dir"];
         options.extend(A::commands().iter().map(|command| command.option));
+        options.extend(A::OPTIONS);
         options
     })
     .as_slice()
@@ -790,7 +829,7 @@ fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
 #[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
-    LaunchSpec::from_definition(definition::<A>())
+    let spec = LaunchSpec::from_definition(definition::<A>())
         .component_host(prepare_app::<A>)
         .native_services()
         .capture_scenario(capture::<A>)
@@ -800,6 +839,14 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])
         .allowed_live_options(live_options::<A>())
+        .allowed_live_flags(A::FLAGS);
+    // An input surface types into other apps' fields: nothing drives it
+    // without a person.
+    if A::BEHAVIOUR.window == ui_core::application::WindowRole::InputSurface {
+        spec.disable_headless()
+    } else {
+        spec
+    }
 }
 
 #[cfg(not(tilo_native_runner))]

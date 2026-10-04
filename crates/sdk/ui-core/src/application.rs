@@ -102,6 +102,7 @@ pub struct HostContext {
     person: Option<crate::record::person::PersonRecords>,
     launch_arguments: Vec<String>,
     handoff: Option<PlaybackHandoff>,
+    launch_options: Vec<LaunchOption>,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -117,6 +118,16 @@ pub struct PlaybackHandoff {
     /// What the media was called where it played, when the launch's
     /// argument alone does not say (a stream's URL).
     pub title: Option<String>,
+}
+
+/// One of an app's own command-line options a launch named: `--purpose
+/// number` carries a value, a switch such as `--debug-hit-areas` none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchOption {
+    /// The option as written, with its dashes: `--purpose`.
+    pub name: String,
+    /// Its value; `None` for a switch.
+    pub value: Option<String>,
 }
 
 /// What a host prepares an instance for when it renders a screenshot
@@ -314,6 +325,7 @@ impl HostContext {
             person: None,
             launch_arguments: Vec::new(),
             handoff: None,
+            launch_options: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -372,6 +384,16 @@ impl HostContext {
     /// The playback handoff the host handed over, once.
     pub fn take_handoff(&mut self) -> Option<PlaybackHandoff> {
         self.handoff.take()
+    }
+    /// Hand the component the options of its own that its launch named
+    /// (`--purpose number`). The host has already checked that the
+    /// component takes each of them.
+    pub fn provide_launch_options(&mut self, options: Vec<LaunchOption>) {
+        self.launch_options = options;
+    }
+    /// The launch options the host handed over, once.
+    pub fn take_launch_options(&mut self) -> Vec<LaunchOption> {
+        std::mem::take(&mut self.launch_options)
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
@@ -719,6 +741,24 @@ pub struct ComponentBehaviour {
     /// remote viewers, as [`crate::App::set_capture_protected`] does: for
     /// apps that show secrets, such as a password manager.
     pub capture_protected: bool,
+    /// What the window is to the session: an ordinary app window, or the
+    /// session's on-screen input surface.
+    pub window: WindowRole,
+}
+
+/// What a component's window is to the session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowRole {
+    /// An app window a person opens, arranges and closes.
+    #[default]
+    Ordinary,
+    /// The session's on-screen input surface, such as an on-screen keyboard.
+    /// Its window announces the component's own app id, by which the
+    /// compositor (on the private display it launched the surface on) floats
+    /// it outside the workspace and shows it only while a text field is
+    /// focused. Its controls type into other apps' fields, so no headless
+    /// drive may operate it.
+    InputSurface,
 }
 
 impl ComponentBehaviour {
@@ -728,6 +768,7 @@ impl ComponentBehaviour {
         autofocus_on_structure_change: false,
         appearance_reconcile: false,
         capture_protected: false,
+        window: WindowRole::Ordinary,
     };
 }
 
@@ -758,6 +799,10 @@ impl AppComponent {
     /// Set how the hosting window treats this component's tree.
     pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
         self.behaviour = behaviour;
+    }
+    /// The id of the application this component is an instance of.
+    pub fn app_id(&self) -> &str {
+        self.context.app_id()
     }
     pub(crate) fn take_root_retirement(
         &mut self,

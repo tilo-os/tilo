@@ -104,6 +104,17 @@
 //!   launch that continues playback another device or app handed over says
 //!   where it stood ([`LaunchInput::handoff`]): the media is what the launch
 //!   names, the position and play state are the view's to restore.
+//!   The app's own options — how the window runs rather than what it opens,
+//!   such as the layout an on-screen keyboard starts in — are
+//!   [`ResourceApp::OPTIONS`] and [`ResourceApp::FLAGS`], read with
+//!   [`ViewCx::launch_option`] / [`SurfaceCx::launch_option`].
+//! * **A system surface** — the session's on-screen keyboard — declares its
+//!   window's role in [`ResourceApp::BEHAVIOUR`]
+//!   ([`WindowRole::InputSurface`](ui_core::application::WindowRole)): the
+//!   window announces the app's id to the compositor and no headless drive
+//!   operates it. The connections it serves the session through (an input
+//!   method, a virtual keyboard) are the surface's own, opened in a live run
+//!   ([`SurfaceCx::mode`]) and woken through [`SurfaceCx::waker`].
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica

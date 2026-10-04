@@ -899,6 +899,8 @@ impl App {
         }
         let history = component.history.take();
         let behaviour = component.behaviour;
+        let input_surface_id = (behaviour.window == crate::application::WindowRole::InputSurface)
+            .then(|| component.app_id().to_owned());
         let Some(component) = assembly.component.take() else {
             return Err(crate::launch::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
@@ -932,6 +934,9 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        if let Some(app_id) = input_surface_id {
+            app.window.app_id = Some(app_id);
+        }
         if let Some(registration) = history
             && let Err(error) = app.install_history(registration)
         {
@@ -2453,6 +2458,13 @@ impl App {
     pub fn with_window_app_id(mut self, app_id: impl Into<String>) -> Self {
         self.window.app_id = Some(app_id.into());
         self
+    }
+
+    /// The Wayland application id the window announces when it is not the
+    /// process's own package id: an input surface's, or one set with
+    /// [`Self::with_window_app_id`].
+    pub fn window_app_id(&self) -> Option<&str> {
+        self.window.app_id.as_deref()
     }
 
     /// `None` clears the override and restores automatic resolution.

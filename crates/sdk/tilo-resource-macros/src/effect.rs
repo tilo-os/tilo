@@ -37,10 +37,12 @@ impl syn::parse::Parse for Param {
 
 struct EnumOptions {
     operation: String,
+    device_only: bool,
 }
 
 fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
     let mut operation = None;
+    let mut device_only = false;
     for attr in input
         .attrs
         .iter()
@@ -50,8 +52,11 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             if meta.path.is_ident("operation") {
                 operation = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
+            } else if meta.path.is_ident("device_only") {
+                device_only = true;
+                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"`"))
+                Err(meta.error("expected `operation = \"...\"` or `device_only`"))
             }
         })?;
     }
@@ -61,7 +66,10 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
     })?;
-    Ok(EnumOptions { operation })
+    Ok(EnumOptions {
+        operation,
+        device_only,
+    })
 }
 
 #[derive(Default)]
@@ -79,6 +87,7 @@ struct VariantOptions {
     returns: bool,
     destructive: bool,
     privileged: bool,
+    device_only: bool,
     permission: Option<String>,
 }
 
@@ -106,10 +115,12 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.destructive = true;
             } else if meta.path.is_ident("privileged") {
                 options.privileged = true;
+            } else if meta.path.is_ident("device_only") {
+                options.device_only = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
-                     `destructive`, `privileged`, `idempotent` or `permission`",
+                     `destructive`, `privileged`, `idempotent`, `device_only` or `permission`",
                 ));
             }
             Ok(())
@@ -143,7 +154,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let operation = enum_options(input)?.operation;
+    let EnumOptions {
+        operation,
+        device_only: all_device_only,
+    } = enum_options(input)?;
     let any_arguments = data
         .variants
         .iter()
@@ -262,6 +276,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             (false, false) => quote!(Low),
         };
         let idempotent = options.idempotent;
+        let device_only = all_device_only || options.device_only;
         let row = options.row;
         let kind = if options.view {
             quote!(View)
@@ -280,6 +295,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 risk: #krate::__private::RiskLevel::#risk,
                 idempotent: #idempotent,
                 permission: #krate::__private::PermissionRequirement::#permission,
+                device_only: #device_only,
             }
         });
 

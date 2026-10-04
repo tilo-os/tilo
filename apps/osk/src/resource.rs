@@ -1,37 +1,47 @@
-//! On-screen keyboard as a [`tilo_resource::Resource`]: preference keys in the
-//! shared document, with [`crate::actions::SetPreference`] as the replayable
-//! action.
+//! The on-screen keyboard as a resource: this person's keyboard preferences
+//! (letter layout, suggestions, personalization, recent emoji), changed only
+//! by [`SetPreference`], and the app that shows them as the keyboard.
 //!
-//! Layout / suggestions / personalization / emoji-recents ride
-//! [`Resource::children`] (historical palette addresses). Clear-learned is an
-//! Effect on the suggestions child. Hosted [`PublishesResources`] keeps only
-//! live extras (compose / key highlight) — never a second keyboard root beside
-//! [`tilo_resource::publish`].
+//! What is typed is never part of it: the word being composed, the key under
+//! a finger and the field's purpose live in the keyboard surface and are
+//! published nowhere, so the palette, agents and scripts see the keyboard's
+//! configuration and never its keystrokes.
 
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-use ui::automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    ActionParam, ActionRegistry, EncodedAction, ParamType, Resource as PublishedResource,
-};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::application::{ComponentBehaviour, WindowRole};
+use ui::framework::{ResourceApp, ViewCx};
+use ui::tilo_actions::{ActionParam, ActionRegistry, ParamType, Resource as PublishedResource};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    KEYBOARD_RESOURCE_ID, Preference, SetPreference, TYPE_ID, preference_children, register,
+    LAYOUT, LETTER_LAYOUTS, PERSONALIZATION, SUGGESTIONS, SetPreference, TYPE_ID,
+    layout_declaration, preference_children, read_recents, recents_declaration,
 };
-use crate::framework_history::{LAYOUT, PERSONALIZATION, SUGGESTIONS};
-use crate::widget::OskWidget;
+use crate::surface::OskSurface;
 
-/// Preference projection from the keyboard's Automerge document.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The keyboard preferences a document holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OskPreferences {
-    pub layout: Option<String>,
-    pub suggestions: Option<bool>,
-    pub personalization: Option<bool>,
-    /// Local layout catalogue for `set` choices; not collaborative document
-    /// state. Empty → built-in qwerty / azerty.
-    pub(crate) layout_choices: Vec<String>,
+    /// The letter layout text fields open in.
+    pub layout: String,
+    /// Whether the suggestion bar offers words.
+    pub suggestions: bool,
+    /// Whether the keyboard adapts to what this person types.
+    pub personalization: bool,
+    /// Recently picked emoji, most recent first.
+    pub emoji_recents: Vec<String>,
+}
+
+impl Default for OskPreferences {
+    fn default() -> Self {
+        Self {
+            layout: LETTER_LAYOUTS[0].0.to_owned(),
+            suggestions: true,
+            personalization: true,
+            emoji_recents: Vec::new(),
+        }
+    }
 }
 
 /// The on-screen keyboard resource.
@@ -46,85 +56,54 @@ impl Resource for Osk {
     type Action = SetPreference;
 
     fn register(registry: &mut ActionRegistry) {
-        register(registry);
+        registry.register::<SetPreference>(TYPE_ID);
     }
 
     fn read(doc: &Doc) -> Result<OskPreferences, ModelError> {
+        let defaults = OskPreferences::default();
         Ok(OskPreferences {
-            layout: read_str(doc, LAYOUT),
-            suggestions: read_bool(doc, SUGGESTIONS),
-            personalization: read_bool(doc, PERSONALIZATION),
-            layout_choices: Vec::new(),
+            layout: read_str(doc, LAYOUT)
+                .filter(|layout| LETTER_LAYOUTS.iter().any(|(name, _)| name == layout))
+                .unwrap_or(defaults.layout),
+            suggestions: read_bool(doc, SUGGESTIONS).unwrap_or(defaults.suggestions),
+            personalization: read_bool(doc, PERSONALIZATION).unwrap_or(defaults.personalization),
+            emoji_recents: read_recents(doc),
         })
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // Named document mutations also advertised on the root. Nested
-        // children keep the historical addresses drafts and the palette use.
-        vec![
+        let enabled = |id, label, description, value: fn(bool) -> SetPreference| {
             ActionDecl::new(
-                "set-layout",
-                "Set keyboard layout",
-                vec![
-                    ActionParam::required("value", ParamType::Text, "Registered layout")
-                        .with_choices(["qwerty", "azerty"]),
-                    ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-                ],
-                |args, _| {
-                    Ok(SetPreference {
-                        value: Preference::Layout(args.text("value").unwrap_or_default().into()),
-                        draft: args.text("draft").map(str::to_owned),
-                    })
+                id,
+                label,
+                vec![ActionParam::required(
+                    "value",
+                    ParamType::Boolean,
+                    "Enabled",
+                )],
+                move |args, _| {
+                    args.boolean("value")
+                        .map(value)
+                        .ok_or_else(|| "missing value".to_owned())
                 },
             )
-            .describe("Set the shared letter layout preference."),
-            ActionDecl::new(
+            .describe(description)
+        };
+        vec![
+            layout_declaration("set-layout"),
+            enabled(
                 "set-suggestions",
                 "Set suggestions",
-                vec![
-                    ActionParam::required("value", ParamType::Boolean, "Enabled"),
-                    ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-                ],
-                |args, _| {
-                    Ok(SetPreference {
-                        value: Preference::Suggestions(args.boolean("value").unwrap_or(true)),
-                        draft: args.text("draft").map(str::to_owned),
-                    })
-                },
-            )
-            .describe("Enable or disable the suggestion bar."),
-            ActionDecl::new(
+                "Enable or disable the suggestion bar.",
+                SetPreference::Suggestions,
+            ),
+            enabled(
                 "set-personalization",
                 "Set personalization",
-                vec![
-                    ActionParam::required("value", ParamType::Boolean, "Enabled"),
-                    ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-                ],
-                |args, _| {
-                    Ok(SetPreference {
-                        value: Preference::Personalization(args.boolean("value").unwrap_or(true)),
-                        draft: args.text("draft").map(str::to_owned),
-                    })
-                },
-            )
-            .describe("Enable or disable local adaptive ranking."),
-            ActionDecl::new(
-                "set-emoji-recents",
-                "Set recent emoji",
-                vec![
-                    ActionParam::required("value", ParamType::Text, "Recent emoji, as JSON"),
-                    ActionParam::optional("draft", ParamType::Text, "Local draft correlation"),
-                ],
-                |args, _| {
-                    Ok(SetPreference {
-                        value: Preference::EmojiRecents(
-                            args.text("value").unwrap_or_default().into(),
-                        ),
-                        draft: args.text("draft").map(str::to_owned),
-                    })
-                },
-            )
-            .describe("Replace this user's recent emoji list."),
+                "Enable or disable adapting to what this person types.",
+                SetPreference::Personalization,
+            ),
+            recents_declaration("set-emoji-recents"),
         ]
     }
 
@@ -153,264 +132,265 @@ fn read_bool(doc: &Doc, key: &str) -> Option<bool> {
     }
 }
 
-/// Hosted-only extras that are not document state: in-flight compose and the
-/// current key highlight. The keyboard door stays on [`tilo_resource::publish`].
-pub(crate) fn live_extras(widget: &OskWidget) -> Vec<PublishedResource> {
-    let mut extras = Vec::new();
-    let word = widget.current_word();
-    if !word.is_empty() {
-        extras.push(PublishedResource::new(
-            "osk.compose",
-            "osk.compose",
-            format!("Composing “{word}”"),
-        ));
-    }
-    if let Some(label) = widget.highlighted_key_label() {
-        extras.push(PublishedResource::new(
-            "osk.key-highlight",
-            "osk.key-highlight",
-            format!("Key {label}"),
-        ));
-    }
-    extras
-}
+/// The value of `--purpose`: the field kind the keyboard starts for.
+pub const PURPOSE_OPTION: &str = "--purpose";
+/// Require the compositor's input method: fail rather than fall back to an
+/// always-visible keyboard.
+pub const INPUT_METHOD_FLAG: &str = "--input-method";
+/// Never use the input method: an always-visible keyboard that types through
+/// the virtual keyboard.
+pub const NO_INPUT_METHOD_FLAG: &str = "--no-input-method";
+/// Paint the effective tap targets over the keys, to see how the typing
+/// context grows and shrinks them.
+pub const HIT_OVERLAY_FLAG: &str = "--debug-hit-areas";
 
-/// Framework app: the keyboard widget is the surface over [`Osk`].
+/// The on-screen keyboard app: the keyboard surface over [`Osk`].
 pub struct OskShell;
 
 impl ResourceApp for OskShell {
     type Resource = Osk;
-    const ID: &'static str = "so.tilo.osk";
+    const ID: &'static str = crate::KEYBOARD_APP_ID;
     const TITLE: &'static str = "On-screen keyboard";
     const ICON: Option<&'static str> = Some("osk");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (720, 360)
-    }
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
+        window: WindowRole::InputSurface,
+        ..ComponentBehaviour::DEFAULT
+    };
+    const OPTIONS: &'static [&'static str] = &[PURPOSE_OPTION];
+    const FLAGS: &'static [&'static str] =
+        &[INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, HIT_OVERLAY_FLAG];
 
     fn view(cx: &mut ViewCx<Osk>) -> Element {
-        cx.surface(OskWidget::new())
-    }
-}
-
-impl ResourceSurface<Osk> for OskWidget {
-    fn present(&mut self, state: &std::rc::Rc<OskPreferences>) {
-        // Adopt collaborative prefs only when set — never clear a local layout
-        // that has not been published yet.
-        self.adopt_resource_state(state);
+        cx.surface(OskSurface::new())
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Osk>) {
-        self.attach_framework(cx.dispatcher());
+    fn scenarios() -> &'static [&'static str] {
+        crate::surface::SCENARIOS
     }
-}
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Osk>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
+    /// Phone-portrait width with room for the toolbar, the suggestion bar
+    /// and four key rows (48 + 40 + 4 × 56 = 312, rounded up).
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            Some("emoji") => (720, 420),
+            _ => (720, 360),
         }
     }
-}
 
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Osk>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &SetPreference) {
-        let context = ui::tilo_actions::ActionContext::for_action(
-            "so.tilo.osk",
-            "On-screen keyboard",
-            action,
-        );
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(Osk::ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Osk>> {
+        let staged = match name {
+            Some("french") => SetPreference::Layout("azerty".into()),
+            Some("emoji") => {
+                SetPreference::EmojiRecents(["👍", "😂", "❤️", "🎉"].map(str::to_owned).to_vec())
             }
-            None => self
-                .local
-                .dispatch_with_context(doc, Osk::ACTION_TYPE, action, context),
-        }
+            _ => return Vec::new(),
+        };
+        Invoke::apply(&staged).into_iter().collect()
     }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
-pub fn provide_resources(state: &OskPreferences) -> Vec<PublishedResource> {
-    vec![ui::tilo_resource::publish::<Osk>(
-        KEYBOARD_RESOURCE_ID,
-        "On-screen keyboard",
-        state,
-    )]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_actions::Action;
-    use ui::widget::Widget;
+    use crate::actions::OskEffect;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_resource::Effect;
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one publish/hosted extras check covers preference door and live overlay"
-    )]
+    fn keyboard() -> TestApp<OskShell> {
+        let mut app = TestApp::<OskShell>::new().unwrap();
+        app.harness().relayout();
+        app
+    }
+
+    fn tap(app: &mut TestApp<OskShell>, name: &str) {
+        let harness = app.harness();
+        let node = harness
+            .a11y_node_named(name)
+            .unwrap_or_else(|| panic!("no key named {name:?}"));
+        harness
+            .perform_a11y_action(node, &ui::a11y::Action::Activate)
+            .unwrap();
+        harness.relayout();
+    }
+
     #[test]
-    fn resource_publish_owns_keyboard_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
-        SetPreference {
-            value: Preference::Layout("azerty".into()),
-            draft: None,
+    fn the_published_keyboard_offers_its_configuration_and_never_what_is_typed() {
+        let mut app = keyboard();
+        for letter in ["s", "e", "c", "r", "e", "t", "space", "m", "a"] {
+            tap(&mut app, letter);
         }
-        .apply(&mut doc)
-        .unwrap();
-        SetPreference {
-            value: Preference::Suggestions(false),
-            draft: None,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        SetPreference {
-            value: Preference::Personalization(false),
-            draft: None,
-        }
-        .apply(&mut doc)
-        .unwrap();
-        doc.commit();
-
-        let state = Osk::read(&doc).expect("seeded keyboard prefs");
-        let published =
-            ui::tilo_resource::publish::<Osk>(KEYBOARD_RESOURCE_ID, "On-screen keyboard", &state);
-        assert_eq!(published.kind, "osk.keyboard");
-        for id in [
+        app.settle();
+        assert!(
+            !learned(&mut app).is_empty(),
+            "the committed word was learned, privately"
+        );
+        let published = app.agent_surface().to_string();
+        for address in [
+            "osk.keyboard.layout",
+            "osk.keyboard.suggestions",
+            "osk.keyboard.emoji",
+            "clear-personal",
             "set-layout",
-            "set-suggestions",
-            "set-personalization",
-            "set-emoji-recents",
         ] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
-            );
+            assert!(published.contains(address), "{address} is published");
         }
-        assert_eq!(published.children.len(), 3);
         assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.id.as_str() == "osk.keyboard.layout"
-                    && child.actions.iter().any(|action| action.id == "qwerty")),
-            "layout child keeps palette shortcuts"
+            !published.contains("secret")
+                && !published.contains("Composing")
+                && !published.contains("osk.learned"),
+            "neither the word being typed nor what was learned reaches a palette, agent or script: {published}"
         );
-        assert!(
-            published.children.iter().any(|child| {
-                child.id.as_str() == "osk.keyboard.suggestions"
-                    && child
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "clear-personal")
-            }),
-            "clear-personal Effect stays on the suggestions child"
-        );
-        assert_eq!(state.layout.as_deref(), Some("azerty"));
-        assert_eq!(state.suggestions, Some(false));
-        assert_eq!(state.personalization, Some(false));
+    }
 
-        let mut app = OskWidget::new();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "osk.keyboard");
-        assert_eq!(standalone[0].children.len(), 3);
-
-        // Hosted extras while composing / highlighting a key.
-        app.activate_label("h");
-        app.activate_label("i");
-        assert_eq!(app.current_word(), "hi");
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, KEYBOARD_RESOURCE_ID).is_none());
+    #[test]
+    fn preferences_change_through_the_door_and_follow_the_person_to_the_next_launch() {
+        let mut app = keyboard();
+        app.call_on("osk.keyboard.layout", "azerty", serde_json::json!({}))
+            .unwrap();
+        app.call("set-suggestions", serde_json::json!({ "value": false }))
+            .unwrap();
+        assert_eq!(app.state().layout, "azerty");
+        assert!(!app.state().suggestions);
         assert!(
-            ui::resources::resource(&app, &seeded, "osk.keyboard.layout")
-                .is_some_and(|layout| layout.actions.iter().any(|action| action.id == "qwerty")),
-            "a hosted layout stays the published row"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "osk.keyboard"),
-            "hosted must not republish osk.keyboard beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-        assert!(
-            extras.iter().any(|resource| resource.kind == "osk.compose"),
-            "hosted still publishes in-flight compose: {:?}",
-            extras.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+            app.call_on(
+                "osk.keyboard.layout",
+                "set",
+                serde_json::json!({ "value": "dvorak" })
+            )
+            .is_err(),
+            "only a layout the keyboard carries"
         );
 
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "osk.keyboard");
-        assert_eq!(door[0].children.len(), 3);
+        let app = app.reopen().unwrap();
+        assert_eq!(app.state().layout, "azerty");
+        assert!(!app.state().suggestions);
+        assert!(app.state().personalization);
+    }
 
-        let mut local = AutoCommit::new();
-        let mut standalone = OskWidget::new();
-        standalone.commit_preference(
-            &mut local,
-            &SetPreference {
-                value: Preference::Layout("azerty".into()),
-                draft: None,
-            },
-        );
+    #[test]
+    fn a_picked_emoji_is_saved_and_turning_personalization_off_forgets_it() {
+        let mut app = keyboard();
+        tap(&mut app, &crate::i18n::t("osk-emoji-key"));
+        let first = crate::OskWidget::new()
+            .emoji_panel()
+            .sections(&emoji::Recents::default())[0]
+            .emoji[0]
+            .clone();
+        app.harness()
+            .perform_semantic_named(
+                "on_screen_keyboard",
+                Some(&format!("osk:emoji:{first}")),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        app.settle();
+        assert_eq!(app.state().emoji_recents, [first]);
+
+        app.call("set-personalization", serde_json::json!({ "value": false }))
+            .unwrap();
+        assert!(app.state().emoji_recents.is_empty());
+        assert!(!app.state().personalization);
+    }
+
+    #[test]
+    fn clearing_learned_suggestions_forgets_the_recent_emoji_and_keeps_the_preference() {
+        let mut app = keyboard();
+        app.call(
+            "set-emoji-recents",
+            serde_json::json!({ "value": ["👍", "🎉"] }),
+        )
+        .unwrap();
+        assert_eq!(app.state().emoji_recents, ["👍", "🎉"]);
+        app.effect_on_confirmed("osk.keyboard.suggestions", &OskEffect::ClearPersonal)
+            .unwrap();
+        app.settle();
+        assert!(app.state().emoji_recents.is_empty());
+        assert!(app.state().personalization);
+        assert_eq!(OskEffect::ClearPersonal.id(), "clear-personal");
+    }
+
+    fn learned(app: &mut TestApp<OskShell>) -> crate::learned::LearnedTyping {
+        let record = app
+            .person::<crate::learned::Learned>()
+            .expect("the person's record of what the keyboard learned");
+        (*record.get()).clone()
+    }
+
+    #[test]
+    fn what_typing_teaches_is_the_persons_own_and_survives_a_relaunch() {
+        let mut app = keyboard();
+        for key in ["h", "i", "space", "y", "o", "u", "space"] {
+            tap(&mut app, key);
+        }
+        app.settle();
+        let taught = learned(&mut app);
+        assert_eq!(taught.transitions["en"][""]["hi"], 1);
+        assert_eq!(taught.transitions["en"]["hi"]["you"], 1);
+
+        let mut app = app.reopen().unwrap();
+        app.harness().relayout();
+        assert_eq!(learned(&mut app).transitions["en"]["hi"]["you"], 1);
+
+        app.call("set-personalization", serde_json::json!({ "value": false }))
+            .unwrap();
+        app.settle();
         assert!(
-            standalone.last_document_action().is_some(),
-            "ActionSink must record document actions on the local host"
+            learned(&mut app).is_empty(),
+            "turning personalization off forgets what was learned"
         );
-        assert_eq!(read_str(&local, LAYOUT).as_deref(), Some("azerty"));
+    }
 
-        // Empty present must not wipe a local layout that has not been published.
-        let before = standalone.preferred_text_layout().to_owned();
-        assert_eq!(before, "azerty");
-        standalone.adopt_resource_state(&OskPreferences::default());
-        assert_eq!(
-            standalone.preferred_text_layout(),
-            before,
-            "adopting empty view prefs must not clear the local layout"
+    #[test]
+    fn clearing_learned_suggestions_forgets_the_saved_lessons() {
+        let mut app = keyboard();
+        for key in ["h", "i", "space"] {
+            tap(&mut app, key);
+        }
+        app.settle();
+        assert!(!learned(&mut app).is_empty());
+        app.effect_on_confirmed("osk.keyboard.suggestions", &OskEffect::ClearPersonal)
+            .unwrap();
+        app.settle();
+        assert!(learned(&mut app).is_empty());
+        assert!(app.state().personalization);
+    }
+
+    #[test]
+    fn launch_options_pick_the_first_layout() {
+        let mut app = TestApp::<OskShell>::launched(&["--purpose", "phone"]).unwrap();
+        app.harness().relayout();
+        assert!(
+            app.harness().a11y_node_named("q").is_none(),
+            "a phone field opens the dialpad"
         );
+        assert!(app.harness().a11y_node_named("5").is_some());
+    }
+
+    #[test]
+    fn every_scenario_captures() {
+        for &scenario in OskShell::scenarios() {
+            let mut app = TestApp::<OskShell>::capture(Some(scenario)).unwrap();
+            app.harness().relayout();
+        }
+        let french = TestApp::<OskShell>::capture(Some("french")).unwrap();
+        assert_eq!(french.state().layout, "azerty");
+    }
+
+    // The keyboard publishes its preferences as client-local
+    // `osk.preference` document actions plus the clear-learned effect;
+    // keystrokes never become actions.
+    ui::action_contract_tests! {
+        seed: ui::automerge::AutoCommit::new(),
+        registry: {
+            let mut registry = ui::tilo_actions::ActionRegistry::new();
+            Osk::register(&mut registry);
+            registry
+        },
+        resources: |doc| vec![ui::tilo_resource::publish::<Osk>(
+            crate::actions::KEYBOARD_RESOURCE_ID,
+            Osk::LABEL,
+            &Osk::read(doc).unwrap(),
+        )],
+        palette: ["English (QWERTY)", "French (AZERTY)", "Clear learned suggestions"],
     }
 }

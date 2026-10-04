@@ -27,7 +27,7 @@ use super::app::{
     DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
     role_permissions, settle_launch,
 };
-use super::launch::LaunchInput;
+use super::launch::{LaunchInput, split_command_line};
 use super::root::ResourceRoot;
 
 const INSTANCE: u64 = 7;
@@ -220,7 +220,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The app launched by its owner with `arguments`, as `app ARGUMENTS`
     /// on the command line: on the record [`ResourceApp::launch_record`]
-    /// names, after its [`ResourceApp::launch`] actions.
+    /// names, after its [`ResourceApp::launch`] actions. The app's own
+    /// [options](ResourceApp::OPTIONS) and [switches](ResourceApp::FLAGS)
+    /// among them reach it as options.
     ///
     /// # Errors
     /// Returns any launch, storage or construction failure.
@@ -303,6 +305,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
         handoff: Option<PlaybackHandoff>,
         capture: Option<(Capture, (u32, u32))>,
     ) -> Result<Self, LaunchError> {
+        let (arguments, options) = split_command_line(arguments, A::OPTIONS, A::FLAGS);
+        let arguments = arguments.as_slice();
         let person = author.to_owned();
         let author = UserId(person.clone());
         let permissions = role_permissions(&person, role);
@@ -326,7 +330,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let definition = definition::<A>();
         let records = host.records_for(definition)?;
-        let named = A::launch_record(&LaunchInput::new(arguments, None));
+        let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
         let mut prepared = prepare_on(
             &mut host,
             definition,
@@ -336,6 +340,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )?;
         let checkout = prepared.context.record().clone();
         hand_launch(definition, arguments, &mut prepared)?;
+        prepared.context.provide_launch_options(options);
         if let Some(file) = file {
             prepared.context.provide_open_file(file);
         }
@@ -972,6 +977,57 @@ pub fn inspect_live_window<A: ResourceApp, T>(
 /// resolved by a host only; test those through [`TestApp`].
 pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
     super::Dispatcher::new(app_id, R::KIND, false, Some(AUTHOR))
+}
+
+/// Resolve what `dispatcher` ([`dispatcher`]) queued since the last call —
+/// its actions, typed values and groups — onto `doc` as a host does after an
+/// event, as confirmed: each invocation one step, attributed to the test
+/// author. An action its resource refuses (its clip is gone) changes
+/// nothing and is reported through [`Dispatcher::refused`], as the host
+/// reports it. Returns what each applied invocation applied, in order: one
+/// entry per undo step (a group's entry holds all of its actions).
+///
+/// # Errors
+/// Returns the first invocation that does not build, and an invocation of
+/// something other than the resource's own actions (an effect), which only
+/// a host runs.
+pub fn resolve<R: Resource>(
+    dispatcher: &super::Dispatcher<R>,
+    doc: &mut tilo_resource::Doc,
+) -> Result<Vec<Vec<R::Action>>, String> {
+    let mut applied = Vec::new();
+    while let Some(invocation) = dispatcher.take() {
+        if invocation.address.resource != dispatcher.resource_id() {
+            return Err(format!(
+                "`{}` on `{}` is not an action of {}",
+                invocation.address.action,
+                invocation.address.resource,
+                R::LABEL
+            ));
+        }
+        let now_ms = tilo_resource::origin_now_ms();
+        let actions = if invocation.address.action == tilo_resource::GROUP {
+            tilo_resource::group::build_group::<R>(&invocation.arguments, now_ms)?.actions
+        } else {
+            vec![tilo_resource::build_action::<R>(
+                &invocation.address.action,
+                &invocation.arguments,
+                now_ms,
+            )?]
+        };
+        let mut refused = None;
+        for action in &actions {
+            if let Err(error) = dispatcher.apply_now(doc, action) {
+                refused = Some(error.to_string());
+                break;
+            }
+        }
+        match refused {
+            Some(reason) => dispatcher.refuse(&invocation.address.action, reason),
+            None => applied.push(actions),
+        }
+    }
+    Ok(applied)
 }
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {

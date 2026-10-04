@@ -41,7 +41,7 @@ impl Action for DiskUsageAction {
 /// What the analyzer does that changes no document: scanning a folder and
 /// moving between the views.
 #[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
-#[effect(operation = "disk-usage.effects")]
+#[effect(operation = "disk-usage.effects", device_only)]
 pub enum DiskUsageEffect {
     /// Analyze a folder.
     ///

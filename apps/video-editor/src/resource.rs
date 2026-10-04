@@ -12,9 +12,8 @@
 //! is what gives it permission checks, per-author undo, attributed history
 //! and a History mode that draws past versions with the real timeline.
 
-use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-use ui::framework::{Dispatcher, ResourceApp, ViewCx};
+use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{ActionDecl, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -227,119 +226,19 @@ impl ResourceApp for VideoEditor {
     }
 }
 
-/// Where the editor's edits go: the framework's dispatcher when the editor is
-/// a hosted surface, or the toolkit's local action host when it runs as a
-/// standalone widget (its unit tests and benchmarks).
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<VideoProject>>,
-    last: Option<EncodedAction>,
-    /// An edit was refused before reaching the host; the optimistic local
-    /// project must be re-read from the stored one.
-    stale: bool,
-    /// Test override for [`Self::is_hosted`] without a real dispatcher.
-    #[cfg(test)]
-    hosted_override: Option<bool>,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<VideoProject>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        #[cfg(test)]
-        if let Some(hosted) = self.hosted_override {
-            return hosted;
-        }
-        self.framework.is_some()
-    }
-
-    /// Mark this surface as framework-hosted so
-    /// [`PublishesResources`](ui::resources::PublishesResources) keeps only
-    /// playhead live extras beside the published project door.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_hosted_for_test(&mut self, hosted: bool) {
-        self.hosted_override = Some(hosted);
-    }
-
-    /// Submit one edit. Hosted, the host applies it after this event with
-    /// the participant's permissions, one undo step and attribution;
-    /// standalone, it applies now through the local executor.
-    pub(crate) fn dispatch(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &VideoEditorAction,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                self.stale |= dispatcher.read_only();
-                dispatcher.apply(action);
-            }
-            None => self.local.dispatch(doc, type_id, action),
-        }
-    }
-
-    /// Make every edit until the returned guard drops one host action — one
-    /// undo step, one version — as one event already is on the standalone
-    /// path. Hosted surfaces hold it for each input event, so a gesture that
-    /// dispatches several edits (a linked split, a multi-clip delete, a
-    /// paste) undoes in one step.
-    pub(crate) fn gesture(&self) -> Option<ui::framework::DispatchGroup<VideoProject>> {
-        self.framework.as_ref().map(Dispatcher::begin_group)
-    }
-
-    pub(crate) fn take_stale(&mut self) -> bool {
-        std::mem::take(&mut self.stale)
-    }
-
-    /// The standalone undo boundary. A hosted edit is bracketed by the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::VideoEditorApp;
-    use std::rc::Rc;
-    use ui::framework::ResourceSurface;
     use ui::resources::PublishesResources;
     use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
 
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one assertion covers publish ownership and hosted playhead extras"
     )]
-    fn hosted_resources_keep_playhead_extras_without_project_root() {
-        fn find_clip(resources: &[tilo_actions::Resource]) -> Option<String> {
-            for resource in resources {
-                if resource.kind == "video.clip" {
-                    return Some(resource.id.as_str().to_owned());
-                }
-                if let Some(found) = find_clip(&resource.children) {
-                    return Some(found);
-                }
-            }
-            None
-        }
+    fn the_surface_publishes_only_playhead_extras_beside_the_resource() {
         let published = ui::tilo_resource::publish::<VideoProject>(
             "video.project",
             "Project",
@@ -383,105 +282,49 @@ mod tests {
         );
 
         let mut app = VideoEditorApp::new();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        assert!(
-            !app.is_framework_hosted(),
-            "standalone stays on the full action tree"
-        );
-
+        let state = ui::State::new();
         let sample = crate::doc::sample_project();
         let clip = sample
             .clips
             .first()
             .expect("sample project carries a clip for playhead extras");
         let at = clip.start + (clip.end() - clip.start) * 0.5;
-        // Seed after sync so a blank-document reload cannot wipe the fixture.
-        app.seed_unpublished_project_for_test(sample);
+        app.seed_unpublished_project_for_test(sample.clone());
         app.set_playhead_for_test(at);
-
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "video_editor.project");
-        let standalone_playhead = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "video.playhead")
-            .expect("standalone nests playhead conveniences under the project");
-        assert!(
-            standalone_playhead
-                .actions
-                .iter()
-                .any(|action| action.id == "mark-in"),
-            "standalone playhead slice offers mark-in"
-        );
-        assert!(
-            standalone_playhead.children.iter().any(|clip| {
-                clip.kind == "video.playhead-clip"
-                    && clip
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "split" || action.id == "trim-in")
-            }),
-            "standalone playhead nests split/trim on playhead-clip rows"
-        );
-
-        app.set_framework_hosted(true);
-        assert!(app.is_framework_hosted());
-        assert!(ui::resources::resource(&app, &state.doc, "video.project").is_none());
-        let clip_id = find_clip(&app.publish_resources(&state.doc)).expect("sample clip");
-        assert!(
-            ui::resources::resource(&app, &state.doc, &clip_id).is_some(),
-            "a hosted clip stays the published row"
-        );
         let extras = app.resources(&state.doc);
         assert!(
             extras
                 .iter()
                 .all(|resource| resource.kind != "video.project"
                     && resource.kind != "video_editor.project"),
-            "hosted must not republish the project root beside ResourceRoot: {:?}",
+            "the surface must not publish the project root beside the resource: {:?}",
             extras
                 .iter()
                 .map(|resource| resource.id.as_str())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(extras.len(), 1, "hosted returns the playhead slice alone");
-        assert_eq!(extras[0].kind, "video.playhead");
         assert_eq!(
-            extras[0].id, standalone_playhead.id,
-            "hosted playhead tree matches the standalone nested slice"
+            extras.len(),
+            1,
+            "the surface publishes the playhead slice alone"
         );
+        assert_eq!(extras[0].kind, "video.playhead");
         assert!(
             extras[0]
                 .actions
                 .iter()
                 .any(|action| action.id == "mark-in" || action.id == "mark-out"),
-            "hosted keeps playhead mark conveniences"
+            "the playhead slice offers its mark conveniences"
         );
-        assert_eq!(
-            extras[0].children.len(),
-            standalone_playhead.children.len(),
-            "hosted keeps the same clip split/trim rows"
-        );
-    }
-
-    #[test]
-    fn present_empty_does_not_wipe_unpublished_local_project() {
-        let mut app = VideoEditorApp::new();
-        let mut local = Project::new("local-only");
-        local.media.push(crate::model::MediaItem {
-            id: uuid::Uuid::new_v4(),
-            name: "Not published yet".into(),
-            ..Default::default()
-        });
-        app.seed_unpublished_project_for_test(local);
-        let empty = Rc::new(Project::new(""));
-        ResourceSurface::<VideoProject>::present(&mut app, &empty);
-        assert_eq!(
-            app.local_media_names_for_test(),
-            vec!["Not published yet".to_owned()],
-            "empty present must not wipe an unpublished local project"
+        assert!(
+            extras[0].children.iter().any(|clip| {
+                clip.kind == "video.playhead-clip"
+                    && clip
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "split" || action.id == "trim-in")
+            }),
+            "the playhead slice nests split/trim on playhead-clip rows"
         );
     }
 }

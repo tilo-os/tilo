@@ -12,16 +12,27 @@
 //! ([`ResourceApp::launch`](super::ResourceApp::launch)), submitted through
 //! the same door as every control, so they are checked, attributed to the
 //! participant, undoable and in history.
+//!
+//! An app's own command-line options
+//! ([`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS),
+//! [`ResourceApp::FLAGS`](super::ResourceApp::FLAGS)) say how this window
+//! runs rather than what it opens: the layout an on-screen keyboard starts
+//! in, a debug overlay. The launch hands them over beside the arguments, and
+//! views and surfaces read them where they set themselves up
+//! ([`ViewCx::launch_option`](super::ViewCx::launch_option),
+//! [`SurfaceCx::launch_option`](super::SurfaceCx::launch_option)).
 
-use ui_core::application::{OpenFile, PlaybackHandoff};
+use ui_core::application::{LaunchOption, OpenFile, PlaybackHandoff};
 
 /// What a launch handed the app: the arguments of its command line or of an
-/// "open with" (paths, URLs), the file a host lent it, the content store
-/// where the app keeps what a launch hands it, and where playback of the
-/// media it names stood on the device or app that handed it over.
+/// "open with" (paths, URLs), the app's own options it named, the file a
+/// host lent it, the content store where the app keeps what a launch hands
+/// it, and where playback of the media it names stood on the device or app
+/// that handed it over.
 #[derive(Clone, Copy)]
 pub struct LaunchInput<'a> {
     arguments: &'a [String],
+    options: &'a [LaunchOption],
     file: Option<&'a OpenFile>,
     content: Option<&'a tilo_content::ContentStore>,
     handoff: Option<&'a PlaybackHandoff>,
@@ -34,6 +45,7 @@ impl<'a> LaunchInput<'a> {
     pub fn new(arguments: &'a [String], file: Option<&'a OpenFile>) -> Self {
         Self {
             arguments,
+            options: &[],
             file,
             content: None,
             handoff: None,
@@ -51,6 +63,13 @@ impl<'a> LaunchInput<'a> {
     #[must_use]
     pub fn with_handoff(mut self, handoff: Option<&'a PlaybackHandoff>) -> Self {
         self.handoff = handoff;
+        self
+    }
+
+    /// This launch, also naming the app's own `options`.
+    #[must_use]
+    pub fn with_options(mut self, options: &'a [LaunchOption]) -> Self {
+        self.options = options;
         self
     }
 
@@ -88,10 +107,71 @@ impl<'a> LaunchInput<'a> {
         self.handoff
     }
 
+    /// The value of the app's option `name` (`--purpose`), when the launch
+    /// named it; see [`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS).
+    pub fn option(&self, name: &str) -> Option<&'a str> {
+        option(self.options, name)
+    }
+
+    /// Whether the launch named the app's switch `name`; see
+    /// [`ResourceApp::FLAGS`](super::ResourceApp::FLAGS).
+    pub fn flag(&self, name: &str) -> bool {
+        flag(self.options, name)
+    }
+
     /// Whether the launch named nothing: a plain start of the app.
     pub fn is_empty(&self) -> bool {
-        self.arguments.is_empty() && self.file.is_none()
+        self.arguments.is_empty() && self.options.is_empty() && self.file.is_none()
     }
+}
+
+pub(crate) fn option<'a>(options: &'a [LaunchOption], name: &str) -> Option<&'a str> {
+    options
+        .iter()
+        .find(|option| option.name == name)
+        .and_then(|option| option.value.as_deref())
+}
+
+pub(crate) fn flag(options: &[LaunchOption], name: &str) -> bool {
+    options
+        .iter()
+        .any(|option| option.name == name && option.value.is_none())
+}
+
+/// Split a command line into its arguments and the app's own `options`
+/// (each taking the next word, or written `--name=value`) and `flags`, as
+/// the launcher reads it: a word naming neither is an argument.
+pub(crate) fn split_command_line(
+    words: &[String],
+    options: &[&str],
+    flags: &[&str],
+) -> (Vec<String>, Vec<LaunchOption>) {
+    let mut arguments = Vec::new();
+    let mut named = Vec::new();
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        if flags.contains(&word.as_str()) {
+            named.push(LaunchOption {
+                name: word.clone(),
+                value: None,
+            });
+        } else if let Some((name, value)) = word.split_once('=')
+            && options.contains(&name)
+        {
+            named.push(LaunchOption {
+                name: name.to_owned(),
+                value: Some(value.to_owned()),
+            });
+        } else if options.contains(&word.as_str()) {
+            named.push(LaunchOption {
+                name: word.clone(),
+                value: Some(words.next().cloned().unwrap_or_default()),
+            });
+        } else {
+            arguments.push(word.clone());
+        }
+    }
+    (arguments, named)
 }
 
 /// A command the app's binary runs instead of opening a window: a developer
