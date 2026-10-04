@@ -414,6 +414,9 @@ pub fn open_ush_session(
         rows: request.size.rows,
         term: Some(request.term.clone()),
         command: Vec::new(),
+        // The member is a person at a terminal; an environment target is
+        // never the host's shell, which no relay session reaches.
+        requested_by: ush::host::RequestedBy::Person,
     };
     let mut line = serde_json::to_vec(&serve)
         .map_err(|error| LaunchError::Failed(format!("encode the request: {error}")))?;
@@ -427,8 +430,17 @@ pub fn open_ush_session(
         .unwrap_or_default();
     let response: ush::supervisor::ServeResponse = serde_json::from_slice(reply)
         .map_err(|error| LaunchError::Failed(format!("supervisor reply: {error}")))?;
-    if let ush::supervisor::ServeResponse::Denied { reason } = response {
-        return Err(LaunchError::Failed(format!("supervisor denied: {reason}")));
+    match response {
+        ush::supervisor::ServeResponse::Session { .. } => {}
+        ush::supervisor::ServeResponse::Denied { reason }
+        | ush::supervisor::ServeResponse::HostNotAllowed { reason } => {
+            return Err(LaunchError::Failed(format!("supervisor denied: {reason}")));
+        }
+        other @ ush::supervisor::ServeResponse::Environments { .. } => {
+            return Err(LaunchError::Failed(format!(
+                "supervisor answered {other:?} to a session request"
+            )));
+        }
     }
     let master = master.ok_or_else(|| LaunchError::Failed("supervisor sent no pty".into()))?;
     pty_guest(master, Some(stream)).map_err(failed)
@@ -966,7 +978,10 @@ mod tests {
             let request: ush::supervisor::ServeRequest = serde_json::from_str(&line).unwrap();
             let ush::supervisor::ServeRequest::OpenSession {
                 cols, rows, target, ..
-            } = request;
+            } = request
+            else {
+                panic!("expected a session request");
+            };
             assert_eq!((cols, rows), (100, 30));
             assert_eq!(
                 target,

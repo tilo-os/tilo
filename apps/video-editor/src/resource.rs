@@ -142,11 +142,13 @@ impl Resource for VideoProject {
                 .media(clip.media)
                 .map_or_else(|| "Clip".to_owned(), |media| media.name.clone()),
             text: format!("{} s", clip.start),
+            action: None,
         });
         let markers = project.markers.iter().map(|marker| SearchEntry {
             anchor: Some(crate::actions::marker_resource_id(marker.id)),
             title: marker.name.clone(),
             text: marker.note.clone(),
+            action: None,
         });
         clips.chain(markers).collect()
     }
@@ -160,7 +162,9 @@ impl ResourceApp for VideoEditor {
     const ID: &'static str = "so.tilo.video-editor";
     const TITLE: &'static str = "Video Editor";
     const ICON: Option<&'static str> = Some("video-editor");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<VideoProject>) -> Element {
         cx.surface(crate::VideoEditorApp::new())

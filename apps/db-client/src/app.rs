@@ -44,6 +44,9 @@ use ui::widget::{
     SplitLayout, TaffyTreeExt, Widget,
 };
 
+use ui::framework::{Dispatcher, TextControl};
+use ui::tilo_resource::{PlainText, TextEdit};
+
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
 use crate::grid::GridView;
@@ -172,15 +175,19 @@ struct QueryChildSig {
 /// see the real `CodeEditor` as a sibling of the query divider. Its absolute
 /// measuring leaf shapes at the embedded allocation without joining the app's
 /// visual flow.
+///
+/// The editor shows the shared SQL buffer and submits every edit as a splice
+/// of it ([`TextControl`]); until the framework dispatcher is attached it only
+/// shows the text.
 struct QueryEditorChild {
-    editor: CodeEditor,
+    text: TextControl<CodeEditor>,
     measure_width: f32,
 }
 
 impl QueryEditorChild {
     fn new(editor: CodeEditor) -> Self {
         Self {
-            editor,
+            text: TextControl::view_only(editor, EditorDoc::sql_object),
             measure_width: 1.0,
         }
     }
@@ -203,13 +210,13 @@ impl Deref for QueryEditorChild {
     type Target = CodeEditor;
 
     fn deref(&self) -> &Self::Target {
-        &self.editor
+        self.text.control()
     }
 }
 
 impl DerefMut for QueryEditorChild {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.editor
+        self.text.control_mut()
     }
 }
 
@@ -225,7 +232,7 @@ impl Widget for QueryEditorChild {
         // Let the shared editor capture theme scale, then keep its measuring
         // leaf out of the app's visual flow. Its width is the real embedded
         // editor allocation learned by the preceding composition pass.
-        let node = self.editor.build_layout(taffy, theme, node_map);
+        let node = self.text.control_mut().build_layout(taffy, theme, node_map);
         let _ = taffy.set_style(
             node,
             Style {
@@ -247,7 +254,9 @@ impl Widget for QueryEditorChild {
         available: taffy::Size<AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        self.editor.measure(known, available, text_renderer)
+        self.text
+            .control_mut()
+            .measure(known, available, text_renderer)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
@@ -263,7 +272,8 @@ impl Widget for QueryEditorChild {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        self.editor.handle_event(event, ctx);
+        // Through the text control, which submits the edit as a splice.
+        self.text.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -271,31 +281,31 @@ impl Widget for QueryEditorChild {
     }
 
     fn test_id(&self) -> Option<&str> {
-        self.editor.test_id()
+        self.text.control().test_id()
     }
 
     fn get_rect(&self) -> Rect {
-        self.editor.get_rect()
+        self.text.control().get_rect()
     }
 
     fn is_focusable(&self) -> bool {
-        self.editor.is_focusable()
+        self.text.control().is_focusable()
     }
 
     fn set_focus(&mut self, focused: bool) {
-        self.editor.set_focus(focused);
+        self.text.control_mut().set_focus(focused);
     }
 
     fn is_focused(&self) -> bool {
-        self.editor.is_focused()
+        self.text.control().is_focused()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.editor.cursor_shape(point)
+        self.text.control().cursor_shape(point)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.editor.accessibility()
+        self.text.control().accessibility()
     }
 
     fn perform_action(
@@ -304,42 +314,36 @@ impl Widget for QueryEditorChild {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
-        self.editor.perform_action(action, state, path)
+        self.text.perform_action(action, state, path)
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.editor.wants_pointer_capture()
+        self.text.control().wants_pointer_capture()
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.editor.ime_cursor_rect()
+        self.text.control().ime_cursor_rect()
     }
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.editor.ime_purpose()
+        self.text.control().ime_purpose()
     }
 
     fn text_review(&self) -> Option<(usize, String)> {
-        self.editor.text_review()
+        self.text.control().text_review()
     }
 
     fn layout_needs_measure(&self) -> bool {
-        self.editor.layout_needs_measure()
+        self.text.control().layout_needs_measure()
     }
 }
 
 impl ui::undo::UndoPoints for QueryEditorChild {
-    fn needs_commit(&self) -> bool {
-        self.editor.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.editor.on_commit();
-    }
     fn get_state(&self) -> Option<String> {
-        self.editor.get_state()
+        self.text.control().get_state()
     }
     fn set_state(&mut self, state: &str) {
-        self.editor.set_state(state);
+        self.text.control_mut().set_state(state);
     }
 }
 
@@ -764,6 +768,9 @@ pub struct DbClientApp {
     /// Dispatches saved-connection CRUD through the shared action model, so the
     /// connection list is collaborative, undoable document state.
     actions: crate::resource::ActionSink,
+    /// Edits of the shared SQL buffer, once the framework dispatcher is
+    /// attached: the editor's splices and whole-text replacements.
+    sql_edits: Option<Dispatcher<PlainText>>,
     /// Id of a connection the local user just added and wants opened as soon as
     /// it lands back through the document reconcile (peer-added connections do
     /// not set this, so they are listed but not auto-connected).
@@ -982,6 +989,7 @@ impl DbClientApp {
             schema_signature,
             modal: ConnectModal::new(),
             actions: crate::resource::ActionSink::default(),
+            sql_edits: None,
             pending_connect_id: None,
             resource_operation: None,
             export_rx: None,
@@ -1275,23 +1283,27 @@ impl DbClientApp {
 
     fn load_snippet(&mut self, sql: &str, doc: &mut AutoCommit) {
         self.replace_editor_sql(doc, sql);
-        self.editor.pull(doc);
+        self.editor.text.pull(doc);
         self.snippets_open = false;
         self.dirty = true;
     }
 
-    /// Replace the shared SQL buffer through
-    /// [`DbAction::ReplaceEditorSql`](crate::actions::DbAction::ReplaceEditorSql).
-    /// Hosted sessions use the framework dispatcher; standalone uses the local host.
-    fn replace_editor_sql(&mut self, doc: &mut AutoCommit, sql: &str) {
-        let action = crate::actions::DbAction::ReplaceEditorSql {
-            sql: sql.to_string(),
+    /// Replace the shared SQL buffer with `sql`: one
+    /// [`TextEdit::ReplaceText`] of the SQL child, written as the smallest
+    /// splice so a collaborator's concurrent typing survives. Without the
+    /// framework dispatcher, or for a participant who may only view, the
+    /// buffer stays as it is.
+    fn replace_editor_sql(&self, doc: &mut AutoCommit, sql: &str) {
+        let Some(sql_edits) = &self.sql_edits else {
+            return;
         };
-        self.actions.dispatch_with_context(
+        // A refusal writes nothing; the editor shows the stored text again
+        // on its next pull.
+        let _ = sql_edits.apply_now(
             doc,
-            crate::actions::DB_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.db-client", "Database", &action),
+            &TextEdit::ReplaceText {
+                text: sql.to_owned(),
+            },
         );
     }
 
@@ -1324,6 +1336,9 @@ impl DbClientApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::DbClient>,
     ) {
+        let sql_edits = crate::resource::sql_dispatcher(&dispatcher);
+        self.editor.text.attach(sql_edits.clone());
+        self.sql_edits = Some(sql_edits);
         self.actions.attach(dispatcher);
     }
 
@@ -2064,12 +2079,14 @@ impl Widget for DbClientApp {
             self.modal.open_new();
             self.dirty = true;
         }
-        crate::doc::adopt_shared_schema(state);
         if !self.seeded {
             // Only the demo build seeds a starter query; the live editor
             // opens empty so nothing references a database that isn't there.
-            if self.demo && EditorDoc::read_sql(state).is_empty() {
-                EditorDoc::set_sql(state, crate::sample::DEFAULT_QUERY);
+            if self.demo {
+                crate::doc::adopt_shared_schema(state);
+                if EditorDoc::read_sql(state).is_empty() {
+                    EditorDoc::set_sql(state, crate::sample::DEFAULT_QUERY);
+                }
             }
             self.seeded = true;
         }
@@ -2098,9 +2115,7 @@ impl Widget for DbClientApp {
         }
 
         self.sync_schema_tree();
-        let sql_text = EditorDoc::sql_text(state);
-        self.editor.bind_text(sql_text);
-        self.editor.pull(state);
+        self.editor.text.pull(state);
         if let Err(error) = self
             .search_index
             .sync_for_app(&self.session, state, !self.demo)
@@ -2447,6 +2462,7 @@ impl Widget for DbClientApp {
             && self.session.tab == MainTab::Query
             && !*ctx.handled
         {
+            let before = self.editor.value().to_owned();
             self.editor.handle_event(
                 event,
                 &mut ui::widget::EventCtx {
@@ -2460,7 +2476,7 @@ impl Widget for DbClientApp {
                     taffy: ctx.taffy,
                 },
             );
-            if self.editor.take_dirty().is_some() {
+            if self.editor.value() != before {
                 self.dirty = true;
             }
         }
@@ -2621,7 +2637,7 @@ impl Widget for DbClientApp {
             }
             "db.editor.sql" if let Action::SetValue(value) = action => {
                 self.replace_editor_sql(state, value);
-                self.editor.pull(state);
+                self.editor.text.pull(state);
             }
             "db.editor.sql" if matches!(action, Action::Focus | Action::Activate) => {
                 self.editor.set_focused(true);
@@ -2709,12 +2725,6 @@ impl Widget for DbClientApp {
 }
 
 impl ui::undo::UndoPoints for DbClientApp {
-    fn needs_commit(&self) -> bool {
-        self.editor.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.editor.on_commit();
-    }
     fn get_state(&self) -> Option<String> {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.get_state())
@@ -4233,21 +4243,167 @@ fn engine_color(engine: Engine, theme: &Theme) -> Color {
 
 #[cfg(test)]
 mod editor_sql_tests {
-    use super::*;
+    use ui::a11y::Action as A11yAction;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_resource::{Invoke, PlainText, TextEdit};
+
+    use crate::actions::add_connection_action;
+    use crate::doc::EditorDoc;
+    use crate::model::{ConnectionProfile, Engine};
+    use crate::resource::{DbClient, DbClientShell, sql_resource_id};
+
+    fn sql(app: &TestApp<DbClientShell>) -> String {
+        app.read_document(EditorDoc::read_sql)
+    }
+
+    /// The SQL buffer's edits in history: those naming the SQL as the
+    /// resource edited.
+    fn sql_edits(app: &TestApp<DbClientShell>) -> usize {
+        app.versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .filter(|context| {
+                context
+                    .resource
+                    .as_ref()
+                    .is_some_and(|resource| resource.id == sql_resource_id())
+            })
+            .count()
+    }
+
+    /// A workspace with one saved connection, which shows the query editor,
+    /// with the editor focused.
+    fn workspace() -> TestApp<DbClientShell> {
+        let mut app = TestApp::<DbClientShell>::new().unwrap();
+        app.invoke(
+            Invoke::<DbClient>::apply(&add_connection_action(&ConnectionProfile::new(
+                "Local",
+                Engine::Sqlite,
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        app.harness().click_named("sql-editor").unwrap();
+        app
+    }
 
     #[test]
-    fn a_standalone_sql_edit_is_submitted_through_the_action() {
-        let mut app = DbClientApp::new();
-        assert!(!app.actions.is_hosted());
-        let mut doc = automerge::AutoCommit::new();
-        app.replace_editor_sql(&mut doc, "select 1");
-        assert_eq!(crate::doc::EditorDoc::read_sql(&doc), "select 1");
-        let recorded = app
-            .actions
-            .local
-            .last_dispatched()
-            .expect("the SQL edit is submitted through the action sink");
-        assert_eq!(recorded.type_id.as_str(), crate::actions::DB_ACTION_TYPE);
+    fn typing_sql_is_a_splice_of_the_sql_child_undone_a_word_at_a_time() {
+        let mut app = workspace();
+        app.harness().type_text("select name");
+        assert_eq!(sql(&app), "select name");
+        assert!(
+            sql_edits(&app) > 0,
+            "history names the SQL as the resource edited"
+        );
+        assert!(app.undo());
+        assert_eq!(sql(&app), "select ");
+        assert!(app.undo());
+        assert_eq!(sql(&app), "");
+        assert_eq!(
+            app.state().connections.len(),
+            1,
+            "undoing the typing leaves the connection"
+        );
+    }
+
+    #[test]
+    fn a_viewers_keystrokes_change_nothing_and_the_editor_shows_the_stored_sql() {
+        let mut app = workspace();
+        app.harness().type_text("select 1");
+        app.set_role(ui::Role::Viewer);
+        let before = app.versions().len();
+        app.harness().key("End");
+        app.harness().type_text(" drop table");
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue("drop table".into()))
+            .unwrap();
+        assert_eq!(sql(&app), "select 1");
+        assert_eq!(app.versions().len(), before);
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(!inspection.contains("drop table"), "{inspection}");
+    }
+
+    #[test]
+    fn replacing_the_sql_is_one_undoable_edit_an_agent_can_address() {
+        let mut app = workspace();
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue("SELECT 1".into()))
+            .unwrap();
+        assert_eq!(sql(&app), "SELECT 1");
+        app.invoke_child::<PlainText>(
+            &sql_resource_id(),
+            Invoke::<PlainText>::apply(&TextEdit::ReplaceText {
+                text: "SELECT 2".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(sql(&app), "SELECT 2");
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(
+            inspection.contains("SELECT 2"),
+            "the editor shows it: {inspection}"
+        );
+        assert!(app.undo());
+        assert_eq!(sql(&app), "SELECT 1");
+        assert!(app.undo());
+        assert_eq!(sql(&app), "");
+    }
+
+    #[test]
+    fn typing_replaces_the_selection_and_merges_with_a_collaborator() {
+        let mut app = workspace();
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue("SELECT 1".into()))
+            .unwrap();
+        app.harness()
+            .perform_named(
+                "sql-editor",
+                &A11yAction::SetSelection {
+                    anchor: 0,
+                    focus: "SELECT".len(),
+                },
+            )
+            .unwrap();
+        app.harness().type_text("WITH");
+        assert_eq!(sql(&app), "WITH 1");
+        app.merge_peer_edit(|doc| {
+            let text = EditorDoc::sql_object(doc).unwrap();
+            ui::automerge::transaction::Transactable::splice_text(doc, &text, 6, 0, " AS t")
+                .unwrap();
+        });
+        app.harness().key("End");
+        app.harness().type_text(";");
+        assert_eq!(sql(&app), "WITH 1 AS t;");
+    }
+
+    /// A long query clamps the editor, which stays editable at its end.
+    #[test]
+    fn a_clamped_long_query_stays_editable_at_its_end() {
+        let mut app = workspace();
+        app.harness().resize((800, 480)).unwrap();
+        let long_query = (0..60)
+            .map(|line| format!("SELECT {line} AS value;"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.harness()
+            .perform_named("sql-editor", &A11yAction::SetValue(long_query.clone()))
+            .unwrap();
+        let editor = app.harness().targets()["sql-editor"];
+        assert!(editor.height() < 480.0, "the editor is clamped: {editor:?}");
+        app.harness().click_at(editor.x0 + 64.0, editor.y0 + 12.0);
+        app.harness()
+            .perform_named(
+                "sql-editor",
+                &A11yAction::SetSelection {
+                    anchor: long_query.len(),
+                    focus: long_query.len(),
+                },
+            )
+            .unwrap();
+        app.harness().type_text(" -- edited at the end");
+        assert_eq!(sql(&app), format!("{long_query} -- edited at the end"));
     }
 }
 
@@ -4535,7 +4691,6 @@ mod behavior_tests {
 
     use automerge::ROOT;
     use tilo_actions::Action;
-    use tilo_automerge::ApplyIncoming;
     use ui::a11y::Role;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
@@ -5101,8 +5256,10 @@ mod behavior_tests {
         std::ptr::from_ref(app)
     }
 
+    /// A long query clamps the editor, which scrolls and keeps its caret
+    /// across a divider change and a resize.
     #[test]
-    fn mounted_clamped_long_query_remains_editable_and_scrollable() {
+    fn mounted_clamped_long_query_remains_scrollable() {
         let app = Box::new(DbClientApp::new_demo());
         let app_ptr = mounted_app(&app);
         let mut driver = ui::headless::Driver::new(ui::State::new(), app, (800, 480));
@@ -5110,12 +5267,9 @@ mod behavior_tests {
             .map(|line| format!("SELECT {line} AS value;"))
             .collect::<Vec<_>>()
             .join("\n");
-        driver
-            .perform_named(
-                "sql-editor",
-                &ui::a11y::Action::SetValue(long_query.clone()),
-            )
-            .unwrap();
+        // A collaborator wrote it; the standalone editor shows it.
+        EditorDoc::set_sql(&mut driver.state_mut().doc, &long_query);
+        driver.relayout();
         let editor = driver.targets()["sql-editor"];
         driver.click_at(editor.x0 + 64.0, editor.y0 + 12.0);
         driver
@@ -5127,7 +5281,6 @@ mod behavior_tests {
                 },
             )
             .unwrap();
-        driver.type_text("\n-- edited at the end");
         let editor = driver.targets()["sql-editor"];
         driver.send(&cursor_event(editor.center().x, editor.center().y));
         driver.scroll(0.0, -12.0);
@@ -5144,7 +5297,7 @@ mod behavior_tests {
                 app.editor.rect().height(),
                 app.editor.is_focused()
             );
-            assert!(app.editor.value().ends_with("-- edited at the end"));
+            assert_eq!(app.editor.value(), long_query);
             assert_eq!(app.editor.cursor_pos(), app.editor.value().len());
             assert!(app.query_layout.grid.height() >= QUERY_GRID_MIN_H);
         }
@@ -5159,7 +5312,7 @@ mod behavior_tests {
         driver.resize((800, 480)).unwrap();
         let app = unsafe { &*app_ptr };
         assert_eq!(app.query_height_request, requested);
-        assert!(app.editor.value().ends_with("-- edited at the end"));
+        assert_eq!(app.editor.value(), long_query);
         assert_eq!(app.editor.cursor_pos(), app.editor.value().len());
         assert!(app.query_layout.grid.height() >= QUERY_GRID_MIN_H);
     }
@@ -5248,69 +5401,20 @@ mod behavior_tests {
         );
     }
 
-    /// SQL typing replicates byte-identically, replaces selections in the CRDT, pulls collaborator edits and is exported to accessibility.
+    /// The standalone editor shows a collaborator's SQL edits and only shows
+    /// the text without the framework dispatcher; the workspace is exported to
+    /// accessibility.
     #[test]
-    fn sql_editor_is_collaborative_crdt_text() {
-        // --- phase: typing_replicates_byte_identically_on_a_peer ---
-        // A keystroke driven through the production `handle_event` splices into the
-        // shared SQL `Text` and converges byte-identically on a peer — the native
-        // text path, unchanged by the async engine.
+    fn sql_editor_shows_the_shared_crdt_text() {
+        // --- phase: without_a_dispatcher_typing_changes_nothing ---
         {
             let (mut app, mut doc) = synced();
             doc.commit();
-            let base = doc.save();
-            let before = crate::doc::EditorDoc::read_sql(&doc);
-
-            let mut peer = AutoCommit::load(&base).unwrap();
-            assert_eq!(
-                doc.get_heads(),
-                peer.get_heads(),
-                "precondition: replicas share a base"
-            );
-
-            assert!(send(
-                &mut app,
-                &mut doc,
-                &char_event("Z"),
-                Modifiers::default()
-            ));
-            doc.commit();
-            let after = crate::doc::EditorDoc::read_sql(&doc);
-            assert_eq!(
-                after.chars().count(),
-                before.chars().count() + 1,
-                "one char inserted"
-            );
-
-            peer.merge_incoming(&mut doc).unwrap();
-            assert_eq!(
-                doc.get_heads(),
-                peer.get_heads(),
-                "byte-identical convergence"
-            );
-        }
-
-        // --- phase: typing_replaces_the_selected_sql_in_the_crdt ---
-        // The adopted editor's selection is not local-only decoration: replacing
-        // it performs one splice on the same shared SQL `Text` object.
-        {
-            let (mut app, mut doc) = synced();
-            assert!(app.editor.value().starts_with("SELECT"));
-            app.editor.set_selection(0, "SELECT".len());
-
-            assert!(send(
-                &mut app,
-                &mut doc,
-                &char_event("WITH"),
-                Modifiers::default()
-            ));
-
-            assert!(app.editor.value().starts_with("WITH"));
-            assert_eq!(
-                crate::doc::EditorDoc::read_sql(&doc),
-                app.editor.value(),
-                "selection replacement and CRDT text stay byte-identical"
-            );
+            let before = doc.get_heads();
+            send(&mut app, &mut doc, &char_event("Z"), Modifiers::default());
+            app.sync(&mut doc, &ROOT);
+            assert_eq!(doc.get_heads(), before, "the document is unchanged");
+            assert_eq!(app.editor.value(), crate::doc::EditorDoc::read_sql(&doc));
         }
 
         // --- phase: sync_pulls_a_collaborators_sql_edit_into_the_shared_editor ---
@@ -5344,13 +5448,6 @@ mod behavior_tests {
                     .iter()
                     .any(|node| node.name.as_deref() == Some("Database workspace"))
             );
-            assert!(app.perform_semantic_action(
-                "db.editor.sql",
-                &A11yAction::SetValue("SELECT 42".into()),
-                &mut doc,
-                &ROOT,
-            ));
-            assert_eq!(crate::doc::EditorDoc::read_sql(&doc), "SELECT 42");
             assert!(app.is_focused(), "startup typing focus reaches the editor");
             assert!(app.perform_semantic_action(
                 "db.tab:data",
@@ -5486,12 +5583,12 @@ mod behavior_tests {
             assert!(app.session.connected);
             assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
             let connection_id = app.session.active_connection_id().unwrap().to_string();
-            assert!(app.perform_semantic_action(
-                "db.editor.sql",
-                &A11yAction::SetValue("SELECT value FROM proof".into()),
-                &mut doc,
-                &ROOT,
-            ));
+            // What was typed in the editor, as the SQL child's edit.
+            crate::actions::DbAction::EditSql(ui::tilo_resource::TextEdit::ReplaceText {
+                text: "SELECT value FROM proof".into(),
+            })
+            .apply(&mut doc)
+            .unwrap();
             let saved = doc.save();
             drop(app);
 
@@ -5554,6 +5651,10 @@ mod behavior_tests {
     }
 
     /// Resource queries stay pending until the worker finishes; the live tree covers schema, results and transactions without secrets and stays schema-qualified.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
     fn resource_tree_and_queries_are_schema_qualified_and_secret_free() {
         // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
@@ -5592,7 +5693,13 @@ mod behavior_tests {
             app.session.connections[0].password = "never-publish-this".into();
             let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "root discovery is bounded");
-            assert!(resources[0].children.is_empty());
+            assert!(
+                resources[0]
+                    .children
+                    .iter()
+                    .all(|child| child.id.as_str() == crate::resource::sql_resource_id()),
+                "the root lists only its SQL buffer, never the live catalog"
+            );
             let connection = app.session.active_connection().unwrap().id.to_string();
             let schema = &app.session.schema.schemas[0];
             let relation = &schema.tables[0];

@@ -168,7 +168,7 @@ D2 = 8
 [apps.terminal]
 D1 = 5
 D2 = 5
-R1 = 53
+R1 = 52
 R2 = 58
 R3 = 3
 
@@ -210,7 +210,7 @@ D2 = 10
 W3 = 11
 
 [sdk.tilo-app]
-R1 = 27
+R1 = 25
 
 [sdk.tilo-app-state]
 R1 = 9

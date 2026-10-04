@@ -434,6 +434,7 @@ mod tests {
                                     app_id: "peer".into(),
                                     label: "Peer".into(),
                                     note: String::new(),
+                                    missing: None,
                                 },
                                 _ => TileContent::AppPlaceholder {
                                     kind: AppKind::Other("live".into()),
