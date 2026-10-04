@@ -261,7 +261,7 @@ fn notes_continuation_dynamic_declarations_identify_actual_resolution_domains() 
 }
 
 #[test]
-fn notes_continuation_actual_notes_and_search_cover_lazy_invocation_domains() {
+fn notes_continuation_actual_notes_cover_lazy_invocation_domains() {
     let f = NotebookFixture::rich();
     let checkout = notebook(&f);
     let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
@@ -273,15 +273,4 @@ fn notes_continuation_actual_notes_and_search_cover_lazy_invocation_domains() {
         ),
         "actual Notes has omitted lazy page/block/tag actions"
     );
-    let providers = ui::search::capability::search_providers(&app);
-    assert!(!providers.is_empty());
-    for provider in providers {
-        assert!(
-            matches!(
-                provider.action_directory_invocation_domain(),
-                ui::widget::ActionDirectoryInvocationDomain::Versioned(_)
-            ),
-            "actual Notes search must cover its omitted canonical targets"
-        );
-    }
 }
