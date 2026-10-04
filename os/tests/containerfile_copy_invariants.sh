@@ -100,6 +100,9 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
+# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# components.toml) and its dracut module ship in the rollback-files overlay
+# beside tilo-rollback, which the initramfs carries the same way.
 expected_contract=1ba8a0e023b9811a09a261bba40bfa8fbe322cf2c8009ab0217318525ae1b8de
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
