@@ -9,8 +9,8 @@ use ui::TextRole;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, ControlSize, Dropdown, EmptyState, EmptyStateContent, Image,
-    ImageFit, Widget,
+    Button, ButtonFace, ButtonRole, ControlSize, Dropdown, DropdownFace, EmptyState,
+    EmptyStateContent, Image, ImageFit, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -178,8 +178,10 @@ impl CameraApp {
         let metrics = &theme.tokens.metrics;
         let gutter = f64::from(spacing.s6);
         let gap = f64::from(spacing.s4);
-        let caption = f64::from(theme.text(TextRole::Caption).line_height_px());
-        let field_h = caption + f64::from(spacing.s1) + ControlSize::Regular.height(theme);
+        // A captioned dropdown, its caption stacked above its field.
+        let field_h = DropdownFace::new(Rect::ZERO, "")
+            .caption(caption(CHOICES[0]))
+            .outer_height(theme);
         let control = ControlSize::Regular.height(theme);
         // Under the top band that holds the corner cluster, above the mode
         // switcher.

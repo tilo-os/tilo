@@ -881,11 +881,11 @@ impl CalcScreen {
 const CLEAR_HISTORY: &str = "Clear history";
 
 /// The control role of a keycap: the entry pad (digits and operators) is a
-/// raised key, the scientific functions are quiet, `=` is the one primary
-/// action and `AC` discards the expression.
+/// key, the scientific functions are quiet, `=` is the one primary action
+/// and `AC` discards the expression.
 fn key_button_role(role: KeyRole) -> ButtonRole {
     match role {
-        KeyRole::Digit | KeyRole::Operator => ButtonRole::Secondary,
+        KeyRole::Digit | KeyRole::Operator => ButtonRole::Key,
         KeyRole::Function => ButtonRole::Plain,
         KeyRole::Equals => ButtonRole::Primary,
         KeyRole::Clear => ButtonRole::Destructive,
@@ -1162,19 +1162,13 @@ mod tests {
     }
 
     /// Each keycap takes its control role from what the key is: the entry pad
-    /// is raised, functions are quiet, `=` is the one primary and `AC` is
+    /// is a key, functions are quiet, `=` is the one primary and `AC` is
     /// destructive.
     #[test]
     fn keycap_roles_follow_what_the_key_is() {
-        assert_eq!(
-            key_button_role(Key::Digit('7').role()),
-            ButtonRole::Secondary
-        );
-        assert_eq!(key_button_role(Key::Ins("+").role()), ButtonRole::Secondary);
-        assert_eq!(
-            key_button_role(Key::Backspace.role()),
-            ButtonRole::Secondary
-        );
+        assert_eq!(key_button_role(Key::Digit('7').role()), ButtonRole::Key);
+        assert_eq!(key_button_role(Key::Ins("+").role()), ButtonRole::Key);
+        assert_eq!(key_button_role(Key::Backspace.role()), ButtonRole::Key);
         assert_eq!(key_button_role(Key::Ins("sin(").role()), ButtonRole::Plain);
         assert_eq!(key_button_role(Key::Equals.role()), ButtonRole::Primary);
         assert_eq!(key_button_role(Key::Clear.role()), ButtonRole::Destructive);
