@@ -130,7 +130,15 @@ pub fn stage<A: ResourceApp>(
                 A::TITLE
             )),
             None => LaunchError::Operation(format!("{} did not settle: {error}", A::TITLE)),
-        })
+        })?;
+    // The scenario's edits are saved before the frame is taken, as they would
+    // be by the time anyone looked: a capture shows the record saved, not a
+    // write still in flight.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
+    harness.relayout();
+    Ok(())
 }
 
 /// How long a capture waits for its surfaces' asynchronous work (a page
