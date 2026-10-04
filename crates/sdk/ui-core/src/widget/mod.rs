@@ -2243,13 +2243,15 @@ pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
-pub use text_input::{TextActionRequest, TextInput, TextInputKind};
+pub use text_input::{
+    AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextInput, TextInputKind,
+};
 pub mod code_editor;
 pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind};
 mod editable_label;
 pub use editable_label::{EditOutcome, EditableLabel};
 pub mod autocomplete;
-pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
+pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion, SuggestionList};
 mod number_input;
 pub use number_input::NumberInput;
 pub mod marks;

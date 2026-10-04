@@ -940,6 +940,28 @@ impl Widget for Dropdown {
         self.layout_dirty = false;
     }
 
+    /// The width every option needs, so a parent that measures its children
+    /// (a form row placing a trailing control) reserves exactly that.
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let width = if self.fill {
+            PAD_X + CHEVRON_W
+        } else {
+            self.measured = self.measured_width(text);
+            self.measured.max(PAD_X + CHEVRON_W)
+        };
+        Size {
+            width: known.width.unwrap_or(px(width)),
+            height: known
+                .height
+                .unwrap_or(px(self.field_height + self.caption_height)),
+        }
+    }
+
     fn adjust_layout_with_measure(
         &mut self,
         tree: &mut TaffyTree<()>,

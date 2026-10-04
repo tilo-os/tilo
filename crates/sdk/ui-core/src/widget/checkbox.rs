@@ -107,6 +107,8 @@ pub struct Checkbox {
     on_change: Option<BoolChangeCallback>,
     action: Option<ActionEmitter<bool>>,
     interaction: crate::interaction::InteractionEnvironment,
+    /// A labelled box as wide as its content instead of its row.
+    intrinsic: bool,
 }
 
 impl Checkbox {
@@ -131,6 +133,7 @@ impl Checkbox {
             on_change: None,
             action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            intrinsic: false,
         }
     }
 
@@ -248,6 +251,14 @@ impl Checkbox {
         self
     }
 
+    /// A labelled checkbox as wide as its box and label, instead of the row:
+    /// it sits beside other controls in a row.
+    #[must_use]
+    pub fn intrinsic_width(mut self) -> Self {
+        self.intrinsic = true;
+        self
+    }
+
     /// Add an inline visible label and make its full row activate this
     /// checkbox. Use this instead of a sibling `Text` when a form sentence is
     /// meant to be one large click target.
@@ -342,12 +353,14 @@ impl Checkbox {
         // (like a Primary button) and takes no rest edge. The edge is drawn
         // outside the disabled layer: a disabled box keeps its bounds at full
         // strength (HIG §9.5), or an unchecked one vanishes on a light ground.
+        // The unchecked edge is the only thing that shows the box on its
+        // ground, so it is held to the 3:1 a control's bounds need there.
         let edge = if face.interact.focused {
             Some((2.0, theme.tokens.colors.intent.you))
         } else if face.checked {
             None
         } else {
-            Some((1.0, crate::surface::edge_on(box_color)))
+            Some((1.0, unchecked_edge(theme, box_color)))
         };
         if let Some((width, color)) = edge {
             // Rest edge and focus ring share one half-pixel-inset outline.
@@ -360,6 +373,18 @@ impl Checkbox {
             );
         }
     }
+}
+
+/// The edge of an unchecked box: derived from its face and resolved until
+/// it reaches the non-text contrast floor (3:1) against the ground the box
+/// stands on.
+fn unchecked_edge(theme: &Theme, face: vello::peniko::Color) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    colors.ink_on_any(
+        &[colors.surfaces.content],
+        crate::surface::edge_on(face),
+        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
 }
 
 impl Widget for Checkbox {
@@ -397,8 +422,10 @@ impl Widget for Checkbox {
         let labelled = self.label.is_some();
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: if labelled {
+                width: if labelled && !self.intrinsic {
                     Dimension::percent(1.0)
+                } else if labelled {
+                    Dimension::auto()
                 } else {
                     Dimension::length(self.interaction.minimum_target())
                 },
@@ -441,9 +468,17 @@ impl Widget for Checkbox {
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
         let (label_width, label_height) =
             text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+        // An intrinsic box is as wide as its label needs, within the room.
+        let hugged = self.intrinsic.then(|| {
+            let (natural, _) =
+                text_renderer.measure_style(&crate::i18n!(label), None, &self.label_style);
+            let natural = target + gap + natural.ceil();
+            available_width.map_or(natural, |room| natural.min(room))
+        });
         Size {
             width: known_dimensions
                 .width
+                .or(hugged)
                 .or(available_width)
                 .unwrap_or(target + gap + label_width),
             height: known_dimensions
@@ -1195,5 +1230,26 @@ mod tests {
 
         document_binding_resets_after_the_boolean_path_disappears();
         local_state_binding_is_two_way_across_checkboxes();
+    }
+    #[test]
+    fn unchecked_edge_reaches_three_to_one_and_a_labelled_box_can_hug() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let face = theme.tokens.colors.surfaces.raised;
+            let edge = unchecked_edge(&theme, face);
+            let ratio = crate::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
+            assert!(ratio >= 3.0 - 1e-6, "edge contrast {ratio}");
+        }
+        let row = crate::widget::Row::new().push(Box::new(
+            Checkbox::new("c", "c")
+                .with_id("hug")
+                .with_label("Remember me")
+                .intrinsic_width(),
+        ));
+        let app = crate::headless::Driver::new(crate::State::new(), Box::new(row), (900, 200));
+        let rect = *app.targets().get("hug").expect("checkbox");
+        assert!(
+            rect.width() < 300.0,
+            "a hugging box is as wide as its label: {rect:?}"
+        );
     }
 }

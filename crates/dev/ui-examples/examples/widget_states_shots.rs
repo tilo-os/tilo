@@ -24,7 +24,8 @@
 //! Run:  `cargo run -p ui-examples --example ui-shots -- widget_states [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
 //!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
-//!       `content`, `editor` (and `editor-large` at 200 % text), `overlays`,
+//!       `content`, `editor` (and `controls-large`, `inputs-large` and
+//!       `editor-large` at 200 % text), `overlays`,
 //!       `overlays-opaque` and `modal`.
 
 use std::collections::HashMap;
@@ -51,7 +52,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::toast::ToastKind;
-use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
@@ -233,6 +234,25 @@ fn control_specs() -> Vec<Spec> {
         widget("Button, plain", 56.0, |c, _| {
             button(ButtonRole::Plain, "Details", c)
         }),
+        widget("Key", 56.0, |c, _| match c.st {
+            St::Error => None,
+            st => boxed(
+                Button::new("key", "7", None)
+                    .role(ButtonRole::Key)
+                    .control_size(ControlSize::Large)
+                    .toggled(st == St::Selected)
+                    .with_enabled(st != St::Disabled),
+            ),
+        }),
+        widget("Star toggle", 56.0, |c, _| match c.st {
+            St::Error => None,
+            st => boxed(
+                Button::icon_only("star", Icon::Star, "Star")
+                    .control_size(c.size)
+                    .toggled(st == St::Selected)
+                    .with_enabled(st != St::Disabled),
+            ),
+        }),
         widget("Icon button", 56.0, |c, _| match c.st {
             St::Selected | St::Error => None,
             st => boxed(
@@ -274,6 +294,45 @@ fn control_specs() -> Vec<Spec> {
                     ],
                     usize::from(c.st == St::Selected),
                 )
+                .control_size(c.size),
+            ),
+        }),
+        widget("Segmented, none", 56.0, |c, _| match c.st {
+            St::Error | St::Selected => None,
+            st => boxed(
+                ToggleGroup::unchosen(vec![
+                    Segment::icon(Icon::List, "List"),
+                    Segment::icon(Icon::LayoutGrid, "Grid"),
+                ])
+                .control_size(c.size)
+                .with_enabled(st != St::Disabled),
+            ),
+        }),
+        filling("Weekdays", 72.0, |c, _| match c.st {
+            St::Error => None,
+            st => boxed(
+                ToggleGroup::multiple(
+                    ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                        .iter()
+                        .map(|day| Segment::new(*day))
+                        .collect(),
+                    vec![true, true, st == St::Selected, true, true, false, false],
+                )
+                .control_size(ControlSize::Small)
+                .with_enabled(st != St::Disabled),
+            ),
+        }),
+        filling("Tabs", 56.0, |c, _| match c.st {
+            St::Error | St::Disabled => None,
+            _ => boxed(
+                ToggleGroup::new(
+                    ["Overview", "Activity", "Members", "Settings"]
+                        .iter()
+                        .map(|tab| Segment::new(*tab))
+                        .collect(),
+                    usize::from(c.st == St::Selected),
+                )
+                .with_style(SegmentedStyle::Tabs)
                 .control_size(c.size),
             ),
         }),
@@ -1369,6 +1428,15 @@ pub fn run(args: &[String]) {
         grid_page(&theme, CONTROL_COLS, &control_specs(), &file("controls"));
         grid_page(&theme, SIZE_COLS, &size_specs(), &file("sizes"));
         grid_page(&theme, INPUT_COLS, &input_specs(), &file("inputs"));
+        // The controls again at 200 % text: labels, icons and bands grow.
+        let large = theme.clone().with_text_scale(2.0);
+        grid_page(
+            &large,
+            CONTROL_COLS,
+            &control_specs(),
+            &file("controls-large"),
+        );
+        grid_page(&large, INPUT_COLS, &input_specs(), &file("inputs-large"));
         grid_page(&theme, ROW_COLS, &row_specs(), &file("rows"));
         block_page(&theme, &pane_blocks(), &file("panes"));
         block_page(&theme, &content_blocks(), &file("content"));

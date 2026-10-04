@@ -169,6 +169,8 @@ impl CodeEditor {
     /// Multiline body, monospace face, plain chrome, a line-number gutter,
     /// current-line highlight, and 4-space soft tabs by default.
     fn configure(input: TextInput) -> TextInput {
+        let mut input = input;
+        input.keep_document_inset();
         input
             .multiline(true)
             .with_kind(TextInputKind::Code)

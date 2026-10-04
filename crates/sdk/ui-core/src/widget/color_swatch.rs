@@ -148,30 +148,69 @@ impl ColorSwatchFace {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.item);
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(Fill::NonZero, transform, self.color, None, &shape);
-        let outline = crate::surface::edge_outline(self.rect, radius);
-        // The chosen swatch and keyboard focus are rings in your colour; a
-        // hovered one a ring that reads on its own fill; at rest an edge
-        // derived from the fill (HIG §9.5), so a white swatch on paper or a
-        // black one on a dark panel keeps its outline.
-        let (width, ring) = if self.selected || self.focused {
-            (2.0, colors.intent.you)
-        } else if self.hovered {
-            (
-                1.5,
-                colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
+        let ground = colors.surfaces.content;
+        // The chosen swatch is marked by a concentric ring in primary ink,
+        // a gap of the ground between it and the fill; keyboard focus is
+        // that ring in your colour.
+        let marked = self.selected || self.focused;
+        // The ring is a focus-ring stroke; the ground shows half a spacing
+        // step between it and the fill.
+        let ring = 2.0_f32;
+        let ring_width = f64::from(ring);
+        let mark_inset = ring + theme.tokens.spacing.s1 / 2.0;
+        let fill_rect = if marked {
+            self.rect.inset(-f64::from(mark_inset))
+        } else {
+            self.rect
+        };
+        let fill_radius = if marked {
+            f64::from(
+                theme
+                    .tokens
+                    .radii
+                    .concentric(theme.tokens.radii.item, mark_inset),
             )
         } else {
-            (1.0, crate::surface::edge_on(self.color))
+            radius
         };
+        let shape = RoundedRect::from_rect(fill_rect, fill_radius);
+        scene.fill(Fill::NonZero, transform, self.color, None, &shape);
+        // The fill's edge is derived from the fill and the ground it stands
+        // on, so a white swatch on paper or a black one on a dark panel keeps
+        // its outline and a saturated one does not take a heavy one.
         scene.stroke(
-            &vello::kurbo::Stroke::new(width),
+            &vello::kurbo::Stroke::new(1.0),
             transform,
-            ring,
+            swatch_edge(theme, self.color, ground),
             None,
-            &outline,
+            &crate::surface::edge_outline(fill_rect, fill_radius),
         );
+        if marked {
+            let ink = if self.focused {
+                colors.intent.you
+            } else {
+                colors.ink_on_any(&[ground], colors.text_primary, 3.0)
+            };
+            scene.stroke(
+                &vello::kurbo::Stroke::new(ring_width),
+                transform,
+                ink,
+                None,
+                &RoundedRect::from_rect(
+                    self.rect.inset(-ring_width / 2.0),
+                    radius - ring_width / 2.0,
+                ),
+            );
+        } else if self.hovered {
+            // Hover: a ring that reads on the swatch's own fill.
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
+        }
         if let Some(marker) = &self.marker {
             let style = theme.text(TextRole::Caption).strong();
             let ink = colors.ink_on_any(&[self.color], colors.text_primary, 4.5);
@@ -190,6 +229,19 @@ impl ColorSwatchFace {
         }
     }
 }
+
+/// A swatch fill's edge on `ground`: the edge derived from the fill, made to
+/// part the fill from the ground where the two are close.
+fn swatch_edge(theme: &Theme, fill: Color, ground: Color) -> Color {
+    theme.tokens.colors.ink_on_any(
+        &[fill, ground],
+        crate::surface::edge_on(fill),
+        SWATCH_EDGE_CONTRAST,
+    )
+}
+
+/// The least contrast a swatch's edge keeps against its fill and its ground.
+const SWATCH_EDGE_CONTRAST: f64 = 1.4;
 
 /// A grid of [`ColorSwatch`]es as a widget.
 pub struct ColorSwatchPicker {
@@ -254,20 +306,16 @@ impl ColorSwatchPicker {
     )]
     fn recompute_swatches(&mut self) {
         self.swatch_rects.clear();
-        // Each swatch fills its pointer-target cell less a gap, so cells
-        // touch and the whole grid is clickable.
+        // Each swatch fills its pointer-target cell less the gap after it;
+        // the first sits on the grid's (the content's) leading edge.
         let gap = self.pad;
         for i in 0..self.swatches.len() {
             let r = i.checked_div(self.columns).unwrap_or(0) as f64;
             let c = i.checked_rem(self.columns).unwrap_or(0) as f64;
-            let x = self.rect.x0 + self.pad + c * self.cell;
-            let y = self.rect.y0 + self.pad + r * self.cell;
-            self.swatch_rects.push(Rect::new(
-                x + gap / 2.0,
-                y + gap / 2.0,
-                x + self.cell - gap / 2.0,
-                y + self.cell - gap / 2.0,
-            ));
+            let x = self.rect.x0 + c * self.cell;
+            let y = self.rect.y0 + r * self.cell;
+            self.swatch_rects
+                .push(Rect::new(x, y, x + self.cell - gap, y + self.cell - gap));
         }
     }
 
@@ -280,8 +328,8 @@ impl ColorSwatchPicker {
                   far below f32's exact-integer range"
     )]
     fn grid_size(&self) -> (f32, f32) {
-        let w = self.columns as f64 * self.cell + self.pad * 2.0;
-        let h = self.rows() as f64 * self.cell + self.pad * 2.0;
+        let w = (self.columns as f64 * self.cell - self.pad).max(0.0);
+        let h = (self.rows() as f64 * self.cell - self.pad).max(0.0);
         (w as f32, h as f32)
     }
 
@@ -684,5 +732,37 @@ mod tests {
         let pitch = picker.swatch_rects[1].x0 - picker.swatch_rects[0].x0;
         assert_eq!(pitch, target, "each swatch owns a full pointer-target cell");
         assert!(picker.swatch_rects[2].y0 > picker.swatch_rects[0].y0);
+    }
+    #[test]
+    fn the_first_swatch_sits_on_the_content_edge() {
+        let mut picker = ColorSwatchPicker::new(
+            [
+                ColorSwatch::named(Color::from_rgb8(200, 40, 40), "Red"),
+                ColorSwatch::named(Color::from_rgb8(40, 200, 40), "Green"),
+            ],
+            2,
+        );
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::new();
+        let node = picker.build_layout(&mut tree, &theme, &mut HashMap::new());
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        picker.apply_layout(&tree, node, Point::new(24.0, 10.0));
+        assert_eq!(picker.swatch_rects[0].x0, 24.0);
+        assert_eq!(picker.swatch_rects[0].y0, 10.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        ColorSwatchFace::new(Rect::new(0.0, 0.0, 24.0, 24.0), Color::WHITE, "White")
+            .selected(true)
+            .paint(&mut scene, Affine::IDENTITY, &mut text, &Theme::light());
+        let edge = swatch_edge(
+            &Theme::light(),
+            Color::WHITE,
+            Theme::light().tokens.colors.surfaces.content,
+        );
+        assert!(
+            crate::a11y::contrast_ratio(edge, Color::WHITE) >= SWATCH_EDGE_CONTRAST - 1e-6,
+            "a white swatch keeps an edge on paper"
+        );
     }
 }
