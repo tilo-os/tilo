@@ -200,6 +200,38 @@ impl FrameHarness {
         })
     }
 
+    /// The doors the window answers for the app, whatever its tree
+    /// publishes: opening search, and History. History serves its door where
+    /// the app registers one, else the document History chrome does; a
+    /// window with neither still publishes the door, unavailable, as a
+    /// native window does.
+    pub(super) fn host_door_resources(&self) -> Vec<tilo_actions::Resource> {
+        let mut doors = vec![crate::search::search_resource()];
+        if let Some(history) = &self.history {
+            doors.push(history.door_resource());
+        } else if !self.history_chrome_enabled {
+            doors.push(crate::standalone_history_host::history_resource(
+                false, false,
+            ));
+        } else {
+            let door = self
+                .history_resources_snapshot()
+                .unwrap_or_default()
+                .into_iter()
+                .find(|resource| {
+                    resource.id.as_str() == crate::standalone_history_host::HISTORY_RESOURCE
+                })
+                .unwrap_or_else(|| {
+                    crate::standalone_history_host::history_resource(
+                        true,
+                        self.document_history.is_open(),
+                    )
+                });
+            doors.push(door);
+        }
+        doors
+    }
+
     pub(super) fn history_resources_snapshot(&self) -> Result<Vec<tilo_actions::Resource>, String> {
         let Some(layout) = self.history_layout else {
             return Ok(Vec::new());

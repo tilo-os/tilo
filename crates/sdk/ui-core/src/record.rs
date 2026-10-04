@@ -2756,15 +2756,15 @@ impl RecordStore {
             if let Some(error) = snapshot.error {
                 return Ok(RecordSaveStatus::Failed(error));
             }
-            return Ok(
-                if doc.pending_ops() == 0
-                    && snapshot.durable_heads.as_ref() == Some(&doc.base_heads())
-                {
-                    RecordSaveStatus::Saved
-                } else {
-                    RecordSaveStatus::Saving
-                },
-            );
+            // A record that was never written holds nothing durable; while
+            // it has no changes either (a pristine record) there is nothing
+            // to save, so it reads as saved rather than saving.
+            let durable = snapshot.durable_heads.unwrap_or_default();
+            return Ok(if doc.pending_ops() == 0 && durable == doc.base_heads() {
+                RecordSaveStatus::Saved
+            } else {
+                RecordSaveStatus::Saving
+            });
         }
         Ok(if set.persistent {
             RecordSaveStatus::Failed("record persistence unavailable".to_owned())

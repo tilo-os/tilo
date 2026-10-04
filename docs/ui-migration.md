@@ -291,7 +291,10 @@ section).
 | `theme.text(role) -> TextStyle` | The complete, already-scaled style for custom measuring, painting and eliding. |
 | `TextStyle::strong()` / `Text::strong()` | Emphasis inside the role: one weight step up (Regular/Medium → Semibold, Semibold → Bold). |
 | `TextStyle::numeric()` / `Text::numeric()` | Shorthand for `with_kind(TextKind::Numeric)`: tabular figures for counters, clocks, sizes and columns. |
-| `ui::TextKind::{Prose, Numeric, Secret, Identifier, Code}`; `Text::with_kind`, `TextStyle::with_kind`, `ColumnDef::with_kind` | What text is, for the OpenType features the toolkit picks against the face ([Text kinds](#text-kinds)). |
+| `ui::TextKind::{Prose, Numeric, Secret, Identifier, Url, Code}`; `Text::with_kind`, `TextStyle::with_kind`, `ColumnDef::with_kind` | What text is, for the OpenType features the toolkit picks against the face ([Text kinds](#text-kinds)). Links, email addresses, mentions and room addresses inside prose are found and set apart with no kind declared. |
+| `ui::text_detect::identifier_spans(text)` | The links, email addresses, mentions and room addresses in a string, as the byte ranges the text is drawn with, for an app that acts on them. |
+| `TextRenderer::security_surface(..)`, `TextStyle::on_security_surface()` | A custom-drawn security surface (link preview, verification screen): every look-alike letter set apart in all its text. Toolkit prompts and identity sheets do this themselves. |
+| `RichSpan::kind(TextKind)` | A rich-text run that knows what it is; mention marks are `Identifier` and external link marks `Url` already. |
 | `TextInputKind::Secret`, `TextInputKind::text_kind()` | A code or key typed in the clear; every field kind sets its text kind while typing. |
 | `ui::UiFace::{Default, Hyperlegible}`, `Typography::set_face(name)`, `Typography::face_name()`, `UI_HYPERLEGIBLE_FAMILY` | Theme authors: the UI face by the name a theme document stores. |
 | `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
@@ -357,7 +360,9 @@ set it themselves.
 |---|---|
 | `.with_numeric_style(NumericStyle::TabularLining)`, `.with_font_feature(OpenTypeTag::TABULAR_NUMERALS, 1)` on times, counts, prices, sizes, progress | `.numeric()` (`TextKind::Numeric`) |
 | Monospace or a hand-picked face for verification codes, TOTP, recovery codes, API keys, hashes, revealed passwords, Wi-Fi and licence keys | `.with_kind(TextKind::Secret)`; an input: `TextInputKind::Secret` (in the clear) or `Password` (revealed) |
-| Usernames, handles, email addresses, invite codes, room names shown for verification, other people's file names, URLs in permission prompts and link previews | `.with_kind(TextKind::Identifier)`; an input: `TextInputKind::Username` / `Email` / `Url` / `Path` |
+| Usernames, handles, email addresses, invite codes, room names, other people's file names shown on their own | `.with_kind(TextKind::Identifier)`; an input: `TextInputKind::Username` / `Email` / `Path` |
+| A URL or origin shown on its own | `.with_kind(TextKind::Url)`; an input: `TextInputKind::Url` |
+| Hand-rolled link or email highlighting only to make an address legible | delete it: identifiers in prose are found and set apart by the toolkit |
 | `.with_font_family(FontChoice::Monospace)` on source or terminal text | `.with_kind(TextKind::Code)`, or the `Code` role |
 | A numeric `DataTable` column drawn by hand to line digits up | `ColumnDef::with_text(…).with_kind(TextKind::Numeric)` |
 | `.with_font_feature(*b"ss01", 1)` or any stylistic set for a look | Delete; the face is the theme's |
@@ -1097,6 +1102,42 @@ Apply the first row that matches each call.
 | A legend painted next to a `PieChart` | `PieChart::new(slices).with_legend()` |
 | `PageSidebar` markup dots drawn by the app | `sidebar.set_marked(page_indices)` |
 | `PageSidebar::with_header("PAGES")` | Delete the call (the default is "Pages"), or pass sentence case. |
+| A `Button` placed beside a `Banner` (Retry, Restore, Open settings) | `Banner::warning(..).with_action(button)` (and `.with_secondary_action(button)`); immediate: `BannerContent::new(..).action("Try again")`, hit-test `BannerHit::action`. Size a painted banner with `Banner::height(&content, width, text, theme)`. |
+| `Banner::paint(..)` returning the dismiss `Rect` | `Banner::paint(..)` returns a `BannerHit { rect, action, secondary_action, dismiss }`; `dismiss` is `None` when not dismissible. |
+| A banner kept in the tree with `is_dismissed()` checks and an app flag for "show it" | `Banner::from_state(&LocalState<Option<BannerNotice>>)`: `None` collapses it with its gap. `.on_dismiss(f)` runs when the person closes it. |
+| `BannerKind::Info` for a notice where nothing is wrong (a private window, a read-only copy) | `BannerKind::Neutral` (`Banner::neutral(..)`, `BannerNotice::neutral(..)`): primary ink, no hue. |
+| `toast::paint_transient` with a hand-placed action button or a second card for the body | `ToastCard::new(title, kind).body(body).action(label, hovered)`; the card sizes itself to its wrapped text. `ToastAnchor::TopCenter` / `TopRight` under a HUD. |
+| `when.elapsed() > TOAST_TTL` around an immediate toast | `toast::transient_expired(shown_at, ttl)`: holds under the capture clock. |
+| `toasts.tick(dt)` and a `toasts_ticked` instant in the app | Delete both: `ToastStack` advances itself from `ui::time`, pauses on hover and under the capture clock, and wakes the host at the next expiry. The app only pushes. |
+| `EmptyState::with_action(..)` + `take_action()` polled after events | `.with_action(label).on_view(f)` (or `.on_effect(f)`, `.on_action(binding)`); give it `.with_action_id(id)` to address it. The drain channel stays for painted hosts. |
+| A small "nothing here yet" stack hand-built under a heading inside a page | `EmptyState::new(title).inline()`: a `Heading`, hugging its content. |
+| A spinner placed over or beside an empty state while something loads | `EmptyState::new(title).busy()` (`set_busy(bool)`): a spinner in the hero slot. |
+| `EmptyState::minimum_essential_height` plus app math to find the action | `EmptyState::layout(text, theme, rect, &content)` returns `natural_height`, `hero` and `action` without painting. |
+| `ProgressBar` painted in a status colour by the app | `ProgressBar::new(f).tone(Tone::Danger)` or `.level(GaugeThresholds::default())`; painted: `ProgressBarFace::new(f).tone(..).paint(ctx, rect)`, sized by `ProgressBarFace::height(theme)`. |
+| `BarGauge::with_color(theme.tokens.colors.intent.inverted)` | `BarGauge::new(f).neutral()` |
+| A small ring with the seconds painted beside it (one-time codes) | `ProgressRingFace::new(f).size(ProgressRingSize::Small).value("23")`: a small ring holds a numeric `Caption`. |
+| A `ProgressRing` rebuilt on every tick | `ProgressRing::from_state(&state, \|s\| RingReading::new(frac, value).caption(..))`; `set_caption(..)` changes the caption in place. |
+| A wizard's own "not started" state or clickable step labels | `Stepper::new(steps).current(None)`; `.on_station(\|index\| ..)` lets the person go back to a done step; `station_rects()` / `StepperFace::station_rects(..)` for painted hosts. |
+| A qualifier appended to a stat's value ("1.2 TB of 2 TB") | `StatTile::new("Used", "1.2").unit("TB").note("of 2 TB")` |
+| A `StatGroup` rebuilt to change one reading | `group.tile_mut(i).set_value(..)` (`set_note`, `set_change`, `set_tone`), or `set_tiles(..)` for a different set. |
+| A dot painted for "unsaved changes" | `Badge::modified()` / `BadgeFace::modified(rect)`; a new-item dot is `BadgeFace::dot(rect)`. |
+| A presence dot painted on an avatar's corner | `AvatarFace::new(name, id).status(PresenceStatus::Online)` (`Away`, `Busy`, `Offline`). |
+| A rounded-rect letter tile for an app without an icon | `AvatarFace::new(name, id).neutral()` (`Avatar::person(..).neutral()`). |
+| A circular artist picture clipped by the app | `MediaCard::new(..).aspect(MediaAspect::Circle)` |
+| A 2×2 cover collage, a kind icon, or app-painted art on a media tile | `MediaSource::Mosaic(images)`, `MediaSource::Kind(icon)`, `MediaSource::Paint(Box::new(\|ctx, rect\| ..))`; painted: `MediaArt::Mosaic`, `MediaArt::Kind`, `MediaArt::Paint`. |
+| A tag painted over art ("New", "Explicit") | `.badge(OwnedBadge::Tag(text, ChipStyle::…))` / `MediaBadge::Tag(..)` |
+| A verified glyph after a channel name | `.meta(channel).meta_mark(Icon::…)` |
+| A loading grid of hand-sized grey boxes | `MediaGrid::loading(count, aspect)` |
+| `Card` with a hand-painted selected outline | `Card::new(..).selected(true)` / `CardFace::new().selected(true)` |
+| `VideoPlayer` with an app-painted still before playback | `VideoPlayer::new().with_poster(MediaSource::Url { store, url })` |
+| A page outline with a stripe and a shadow (print and scan queues) | `PagePreview::new(label, page, count)`: flat, sized by the theme. |
+| A PDF reader's rail that ignores drags and menus by hand | `PageSidebar::new(aspect).read_only()`; `set_drop_target_armed(true)` while a file is dragged over it. |
+| Edge handles or a rotation-less frame hand-drawn around a crop | `SelectionHandles::new(bounds, metrics).with_edges().without_rotation()`; `resize_for(handle, from, to)` for one-axis resizes. |
+| A camera shutter painted from circles | `CaptureButtonFace::new(CaptureKind::Photo / Video / Recording).live(..).paint(ctx, center)`; `accessibility(rect)` names it. |
+| `PieChart::with_height(px)` to make room for a legend | Delete it: the chart takes the room it is given and centres the donut and legend as one unit. `PieSlice::with_legend_detail("12 GB")` adds a size column. |
+| Axis labels drawn inside a `Chart`'s plot | Nothing to do: `Chart` sets them in a gutter outside the plot. |
+| `format!("-{}", ..)` for a negative tick on a function plane | `function_plane::format_tick(value, step)` (uses U+2212). |
+| `math::layout` at `size * text_scale` with glyphs that outgrow their bars | Unchanged call: math glyphs are content-sized now. `math::layout_wrapped(row, text, size, max_width)` breaks before top-level operators. |
 
 ### Which widget replaces which hand-drawn pattern
 
@@ -1161,6 +1202,14 @@ Apply the first row that matches each call.
   `.meta(..)` lines.
 - **Progress ring.** Plain progress or a countdown: no fill call. A measured
   level: `.level(thresholds)`. A status: `.tone(..)`.
+- **Banner actions.** A banner holds what resolves it: one action
+  (`.with_action(Button)`) and at most one secondary. They sit inside the
+  box at the trailing edge and wrap under the message when the banner is
+  narrow. Never place a button beside a banner.
+- **Empty states.** A pane with nothing in it: `EmptyState::new(..)`. A
+  section of a page with nothing in it: `.inline()`. Something on its way:
+  `.busy()`. The one action is a published button: give it
+  `.with_action_id(..)` and `.on_view(..)` / `.on_effect(..)`.
 
 ### What to delete in an app
 
@@ -1264,6 +1313,11 @@ mapping covers both.
 | `ui::search::{Facet, FacetValue, FacetFilter}`, `SearchProvider::facets()`, `CatalogSearchProvider::{facets, admits}` | Filter dimensions: chips in the palette, typed `key:value` tokens parsed by the platform. |
 | `SearchPage::pending(results, PendingToken)`, `SearchProvider::poll_page(&token) -> PagePoll` | A slow source (IMAP, YouTube, a store catalogue, a geocoder): return what you have now, answer the rest when it arrives. |
 | `ui::search::SearchRow::{message, media, file_hit}` + `SearchResult::with_row` | Say what a hit is; the platform draws the row. |
+| `SearchResult::within(anchor)` | Scope a hit addressed by a flat id (`contact:42`, `sheets.cell:B4`) by the part of the app it lies in (`group:family`, `sheet:2`), without renaming the resource. |
+| `SearchEntry { within, row, ..SearchEntry::default() }`, `tilo_resource::{SearchRow, SearchRowShape}` | The same for a framework app: the scope a flat-id entry lies in, and its row (subtitle, a named icon from `Icon::name`, a message, media or file-hit shape). |
+| `CatalogSearchProvider::search_scopes()` | A catalogue provider's scopes; the blanket `SearchProvider` impl forwards them. |
+| `ui::icons::AppImage::from_image_store(&store, url)` | A media row's thumbnail or a cover from the app's `ImageStore`. |
+| `ui::icons::Icon::{name(), from_name(name)}` | An icon by its lucide kebab name, for data that cannot name the enum. |
 | `SearchField::filter()`, `.escalates_within(scope)`, `.with_placeholder(..)`, `set_count(Some(FilterCount::new(shown, total)))` | The in-content filter field. |
 | `ui::widget::{Filterable, FilterCount, apply_filter, sync_filter, Filtered}` | Bind a filter field to a list. |
 | `ui::widget::{Findable, FindOptions, FindMode, FindMatch, FindBar, FindScope, paint_find_match, with_findable}` | Find in a document. |
@@ -1305,7 +1359,9 @@ input and everything drawn around it.
    answers both a picked hit and the resource's `open` action (agents) with
    it. Other apps keep `SearchSource::activate_search_result(action_id, ..)`.
    Anchors are paths: give items inside a part of the app the part's anchor
-   as prefix (`folder:inbox/msg:12`).
+   as prefix (`folder:inbox/msg:12`). An item whose id is flat (`kind:uuid`)
+   keeps it and says where it lies instead: `SearchResult::within(anchor)`,
+   or `SearchEntry { within: Some(anchor), .. }` in a framework app.
 4. **Scopes** ("Search this folder", "Search in playlist",
    per-mailbox search): declare each part as a `ScopeDecl { anchor, label }`
    — framework apps with `#[resource(scopes = my_scopes)]` (or
@@ -1493,7 +1549,8 @@ any per-pane scrim rect.
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
 | A change worth noticing once: "Saved", "Synced", a page turn, a zoom step | `StatusBubble` |
-| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns) |
+| An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
+| A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
 | A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
 | A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Saving and saved show in the transient bubble; a failure is an error card with Try again that stays until the save succeeds. Delete any save pill, pinned bubble or hand-drawn failure text |
 
@@ -1556,6 +1613,21 @@ header row and which reads as on while History shows. Apps place nothing.
 
 - An app without a header row (a single canvas or form) keeps the window's
   History bar: the same glyph at its trailing edge, nothing else.
+- The header control is bound to the window's History door. The App, the
+  headless harness and `native_app_audit` all resolve that door (and the
+  search door) as the window's, so delete any audit filter for
+  `nav-shell-history` / `history-button` `stale-action-binding` issues.
+- A framework app whose resource keeps no document state (its state lives on
+  the device or in a service: a speed test) sets
+  `const DOCUMENT_HISTORY: bool = false` on its `ResourceApp`: no History
+  control, no History actions.
+- A view is built again for every past version History shows. Such a build
+  must start no work: check `cx.is_past()` (`SurfaceCx::is_past()` in a
+  surface) and build the surface without its worker, network or file
+  watches, presenting what the document holds.
+- A scope without History (`HistoryPresentation::External { reason }`) shows
+  its reason as an empty state where the timeline would stand; write the
+  reason as a sentence a person reads ("Forecasts are not recorded.").
 - `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
   places"). Delete descriptions and developer notes from it: "(not
   recorded)", "(forecasts are not recorded)", "Process output (not
@@ -1745,7 +1817,7 @@ writers of the appearance state.
 | Old | New |
 |---|---|
 | `CustomThemeSpec`, `CUSTOM_THEME_SCHEMA_VERSION`, `CUSTOM_THEME_SCHEMA_MIN`, `Theme::from_custom_spec` | `ThemeDocument`, `THEME_SCHEMA_VERSION`, `Theme::from_document` (`None` for a document this build does not admit) |
-| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
+| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
 | `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
 | `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
 | `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |

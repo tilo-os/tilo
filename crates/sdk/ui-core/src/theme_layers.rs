@@ -82,6 +82,9 @@ pub const DENSITY_KEY: &str = "density";
 /// `appearance` key: per-workspace temperature overrides, OKLCH degrees by
 /// workspace id.
 pub const WORKSPACE_TEMPERATURES_KEY: &str = "workspace_temperatures";
+/// `appearance` key: "Always distinguish similar letters", `true` or
+/// `false`; absent follows the face (on with Hyperlegible).
+pub const DISTINCT_LETTERS_KEY: &str = "distinct_letters";
 
 fn distribution_schema() -> u32 {
     DISTRIBUTION_DEFAULTS_SCHEMA_VERSION
@@ -237,6 +240,12 @@ pub struct AccessibilityLayer {
     /// whatever face the theme chose.
     #[serde(default)]
     pub hyperlegible: bool,
+    /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in
+    /// all text. `None` keeps the theme's choice
+    /// ([`crate::theme::ThemeType::distinguishes_letters`]: on with
+    /// Hyperlegible, including the Hyperlegible this layer chooses).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distinct_letters: Option<bool>,
 }
 
 impl AccessibilityLayer {
@@ -309,6 +318,7 @@ impl Default for AccessibilityLayer {
             reduce_transparency: false,
             thick_caret: false,
             hyperlegible: false,
+            distinct_letters: None,
         }
     }
 }
@@ -461,6 +471,7 @@ fn accessibility_layer(
         reduce_motion: bool_field(appearance, "reduce_motion"),
         reduce_transparency: bool_field(appearance, "reduce_transparency"),
         hyperlegible: bool_field(appearance, "hyperlegible"),
+        distinct_letters: appearance.and_then(|value| value.get(DISTINCT_LETTERS_KEY)?.as_bool()),
         thick_caret: document
             .and_then(|value| {
                 value
@@ -537,8 +548,8 @@ fn merge_pins(
 /// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it:
 ///    the high-contrast palette of the theme's polarity (high contrast or
 ///    forced colours), clamped text and UI scale, reduced motion, reduced
-///    transparency, thick caret, the Hyperlegible face. A rejected payload
-///    leaves the theme unchanged by this layer
+///    transparency, thick caret, the Hyperlegible face, distinct similar
+///    letters. A rejected payload leaves the theme unchanged by this layer
 ///
 #[must_use]
 pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
@@ -569,6 +580,10 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         theme.tokens.typography.set_face(face);
         face.clone_into(&mut theme.document.type_.face);
     }
+    if let Some(on) = access.distinct_letters {
+        theme.document.type_.distinct_letters = Some(on);
+    }
+    theme.tokens.typography.distinct_letters = theme.document.type_.distinguishes_letters();
     theme
         .with_ui_scale(access.ui_scale)
         .with_text_scale(access.text_scale)
@@ -839,6 +854,55 @@ mod tests {
     }
 
     #[test]
+    fn distinct_letters_follow_the_face_unless_chosen() {
+        let distinct = |stack: &ThemeLayerStack| {
+            let theme = resolve_theme_layers(stack);
+            assert_eq!(
+                theme.tokens.typography.distinct_letters,
+                theme.document.type_.distinguishes_letters()
+            );
+            theme.tokens.typography.distinct_letters
+        };
+        // The default face: off.
+        let mut stack = light_stack();
+        assert!(!distinct(&stack));
+        // A theme set in Hyperlegible: on by default, off when it says so.
+        if let Some(user) = stack.user_theme.as_mut() {
+            user.type_.face = "Hyperlegible".into();
+        }
+        assert!(distinct(&stack));
+        if let Some(user) = stack.user_theme.as_mut() {
+            user.type_.distinct_letters = Some(false);
+        }
+        assert!(!distinct(&stack));
+        // A theme in the default face that asks for them.
+        let mut stack = light_stack();
+        if let Some(user) = stack.user_theme.as_mut() {
+            user.type_.distinct_letters = Some(true);
+        }
+        assert!(distinct(&stack));
+        // Accessibility's Hyperlegible turns them on with it; the person's
+        // own choice in the layer wins either way.
+        let mut stack = light_stack();
+        stack.accessibility.hyperlegible = true;
+        assert!(distinct(&stack));
+        stack.accessibility.distinct_letters = Some(false);
+        assert!(!distinct(&stack));
+        stack.accessibility.hyperlegible = false;
+        stack.accessibility.distinct_letters = Some(true);
+        assert!(distinct(&stack));
+        // The flat settings key.
+        let on = accessibility_layer(None, Some(&serde_json::json!({ "distinct_letters": true })));
+        assert_eq!(on.distinct_letters, Some(true));
+        let off = accessibility_layer(
+            None,
+            Some(&serde_json::json!({ "distinct_letters": false })),
+        );
+        assert_eq!(off.distinct_letters, Some(false));
+        assert_eq!(accessibility_layer(None, None).distinct_letters, None);
+    }
+
+    #[test]
     fn a_rejected_accessibility_payload_does_not_apply() {
         let rejected = AccessibilityLayer {
             schema_version: 99,
@@ -850,6 +914,7 @@ mod tests {
             reduce_transparency: true,
             thick_caret: true,
             hyperlegible: true,
+            distinct_letters: Some(true),
         };
         assert!(rejected.validate().is_err());
         assert!(rejected.materialize().is_err());

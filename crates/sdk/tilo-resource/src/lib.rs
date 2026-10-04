@@ -128,8 +128,8 @@ pub use model::{
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, ScopeDecl, SearchEntry, build_action,
-    encode, origin_now_ms, publish, scope_contains,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, ScopeDecl, SearchEntry, SearchRow,
+    SearchRowShape, build_action, encode, origin_now_ms, publish, scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
@@ -156,6 +156,7 @@ pub mod __private {
             anchor: None,
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
+            ..Default::default()
         }]
     }
 

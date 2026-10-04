@@ -131,6 +131,9 @@ enum Fillcolor {
     Threshold(GaugeThresholds),
     /// A fixed caller-supplied colour, ignoring thresholds.
     Fixed(Color),
+    /// A share with no status (storage by kind, a quota with room): the
+    /// inverted fill.
+    Neutral,
 }
 
 /// How large a [`ProgressRing`] is. Each size reads from the theme's
@@ -152,6 +155,16 @@ impl ProgressRingSize {
     /// the text scale so its value never elides.
     #[must_use]
     pub fn diameter(self, theme: &Theme) -> f64 {
+        self.diameter_with_readout(theme, false)
+    }
+
+    /// The diameter of a ring that shows a readout: a small ring grows to
+    /// hold a numeric caption (a code's seconds left).
+    fn diameter_with_readout(self, theme: &Theme, readout: bool) -> f64 {
+        if readout && self == Self::Small {
+            return f64::from(theme.tokens.metrics.min_pointer_target)
+                * f64::from(theme.text_growth());
+        }
         let metrics = &theme.tokens.metrics;
         let growth = f64::from(theme.text_growth());
         match self {
@@ -172,7 +185,7 @@ impl ProgressRingSize {
 
     fn roles(self) -> Option<(TextRole, TextRole)> {
         match self {
-            Self::Small => None,
+            Self::Small => Some((TextRole::Caption, TextRole::Caption)),
             Self::Regular => Some((TextRole::Title, TextRole::Caption)),
             Self::Large => Some((TextRole::Display, TextRole::Label)),
         }
@@ -190,28 +203,26 @@ enum RingFill {
     Tone(Tone),
 }
 
-/// The ring's unfilled track on `ground`: a derived step that registers
-/// against the ground and leaves the fill at least 3:1 against it.
-fn ring_track(ground: Color, fill: Color) -> Color {
+/// The ring's unfilled track on `ground`: a derived step strong enough to
+/// show the ring's whole extent at 3:1 against the ground (a graphical
+/// object, WCAG 1.4.11), and no stronger, so the fill stays the brightest
+/// thing in the ring.
+fn ring_track(ground: Color) -> Color {
     use crate::color::contrast_ratio;
-    let mut track =
-        crate::tokens::colors::composite(Colors::hairline_on(ground, RING_TRACK_ALPHA), ground);
-    // Back the track off toward the ground while the fill would not clear
-    // it, so a light fill on a light track still reads as progress.
     let mut alpha = RING_TRACK_ALPHA;
-    while contrast_ratio(fill, track) < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
-        && alpha > RING_TRACK_MIN_ALPHA
+    let mut track = crate::tokens::colors::composite(Colors::hairline_on(ground, alpha), ground);
+    while contrast_ratio(track, ground) < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+        && alpha < u8::MAX
     {
-        alpha = alpha.saturating_sub(RING_TRACK_STEP);
+        alpha = alpha.saturating_add(RING_TRACK_STEP);
         track = crate::tokens::colors::composite(Colors::hairline_on(ground, alpha), ground);
     }
     track
 }
 
-/// The track's strength on its ground.
+/// Where the track's strength search starts on its ground.
 const RING_TRACK_ALPHA: u8 = 56;
-const RING_TRACK_MIN_ALPHA: u8 = 24;
-const RING_TRACK_STEP: u8 = 8;
+const RING_TRACK_STEP: u8 = 4;
 
 /// Immediate-mode progress ring: a countdown or progress with an optional
 /// centred readout.
@@ -288,9 +299,9 @@ impl<'a> ProgressRingFace<'a> {
         }
     }
 
-    /// The ring's diameter.
+    /// The ring's diameter: a small ring with a value grows to hold it.
     pub fn diameter(&self, theme: &Theme) -> f64 {
-        self.size.diameter(theme)
+        self.size.diameter_with_readout(theme, self.value.is_some())
     }
 
     /// Paint the ring centred in `rect`.
@@ -304,7 +315,7 @@ impl<'a> ProgressRingFace<'a> {
         let radius = (side - thickness) / 2.0;
         let center = rect.center();
         let fill = self.fill_colour(theme);
-        let track = ring_track(theme.tokens.colors.surfaces.content, fill);
+        let track = ring_track(theme.tokens.colors.surfaces.content);
         ctx.scene.stroke(
             &Stroke::new(thickness),
             ctx.transform,
@@ -322,12 +333,21 @@ impl<'a> ProgressRingFace<'a> {
         let Some((value_role, caption_role)) = self.size.roles() else {
             return;
         };
+        let small = self.size == ProgressRingSize::Small;
+        // A small ring holds its numeric value only; its caption is the
+        // accessible name.
+        let caption_text = if small { None } else { self.caption };
         let caption_style = theme.text(caption_role);
-        // The text stays inside the ring with `s2` of air: the width it may
-        // take is the chord of the ring's inner edge at the top and bottom
-        // of the text block, not the diameter.
-        let clear = (radius - thickness / 2.0 - f64::from(theme.tokens.spacing.s2)).max(1.0);
-        let caption_h = self.caption.map_or(0.0, |c| {
+        // The text stays inside the ring with `s2` of air (`s1` in a small
+        // ring): the width it may take is the chord of the ring's inner edge
+        // at the top and bottom of the text block, not the diameter.
+        let air = if small {
+            theme.tokens.spacing.s1 / 2.0
+        } else {
+            theme.tokens.spacing.s2
+        };
+        let clear = (radius - thickness / 2.0 - f64::from(air)).max(1.0);
+        let caption_h = caption_text.map_or(0.0, |c| {
             f64::from(ctx.text.measure_style(c, None, &caption_style).1)
         });
         let chord = |block_h: f64| {
@@ -356,9 +376,7 @@ impl<'a> ProgressRingFace<'a> {
         let value = self
             .value
             .map(|v| ctx.text.elide_to_width_style(v, inner, &value_style));
-        let caption = self
-            .caption
-            .map(|c| ctx.text.elide_to_width_style(c, inner, &caption_style));
+        let caption = caption_text.map(|c| ctx.text.elide_to_width_style(c, inner, &caption_style));
         let mut y = center.y - (value_h + caption_h) / 2.0;
         if let Some(value) = value {
             let w = f64::from(ctx.text.measure_style(&value, None, &value_style).0);
@@ -386,6 +404,33 @@ impl<'a> ProgressRingFace<'a> {
     }
 }
 
+/// What a state-bound ring shows ([`ProgressRing::from_state`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RingReading {
+    /// How full the ring is, `0..=1`.
+    pub frac: f64,
+    /// The readout ("23", "42%"); empty for none.
+    pub value: String,
+    /// What the value is ("seconds"); `None` keeps the ring's caption.
+    pub caption: Option<String>,
+}
+
+impl RingReading {
+    pub fn new(frac: f64, value: impl Into<String>) -> Self {
+        Self {
+            frac,
+            value: value.into(),
+            caption: None,
+        }
+    }
+
+    #[must_use]
+    pub fn caption(mut self, caption: impl Into<String>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+}
+
 /// A retained progress ring. See [`ProgressRingFace`].
 pub struct ProgressRing {
     frac: f64,
@@ -395,6 +440,9 @@ pub struct ProgressRing {
     fill: RingFill,
     rect: Rect,
     dirty: bool,
+    /// The readout grew or shrank the ring (a small ring gaining a value).
+    layout_dirty: bool,
+    source: Option<Box<dyn FnMut() -> Option<RingReading>>>,
 }
 
 impl ProgressRing {
@@ -411,6 +459,41 @@ impl ProgressRing {
             fill: RingFill::Progress,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
+            source: None,
+        }
+    }
+
+    /// A ring bound to `state`: `read` turns the state into what the ring
+    /// shows, and the ring follows every change on its own.
+    pub fn from_state<T: 'static>(
+        state: &crate::LocalState<T>,
+        mut read: impl FnMut(&T) -> RingReading + 'static,
+    ) -> Self {
+        let first = state.with(&mut read);
+        let mut ring = Self::new(first.frac).value(first.value);
+        if let Some(caption) = first.caption {
+            ring.caption = caption;
+        }
+        let state = state.clone();
+        let mut observed = state.revision();
+        ring.source = Some(Box::new(move || {
+            let revision = state.revision();
+            if revision == observed {
+                return None;
+            }
+            observed = revision;
+            Some(state.with(&mut read))
+        }));
+        ring
+    }
+
+    /// Change what the value is ("seconds" to "minutes").
+    pub fn set_caption(&mut self, caption: impl Into<String>) {
+        let caption = caption.into();
+        if caption != self.caption {
+            self.caption = caption;
+            self.dirty = true;
         }
     }
 
@@ -455,8 +538,19 @@ impl ProgressRing {
         } else {
             0.0
         };
-        self.value = value.into();
+        let value = value.into();
+        if value.is_empty() != self.value.is_empty() {
+            self.layout_dirty = true;
+        }
+        self.value = value;
         self.dirty = true;
+    }
+
+    fn apply_reading(&mut self, reading: RingReading) {
+        self.set(reading.frac, reading.value);
+        if let Some(caption) = reading.caption {
+            self.set_caption(caption);
+        }
     }
 
     fn face(&self) -> ProgressRingFace<'_> {
@@ -473,13 +567,19 @@ impl ProgressRing {
 }
 
 impl Widget for ProgressRing {
+    fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        if let Some(reading) = self.source.as_mut().and_then(|read| read()) {
+            self.apply_reading(reading);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let side = crate::num::f32_of_f64(self.size.diameter(theme));
+        let side = crate::num::f32_of_f64(self.face().diameter(theme));
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(side),
@@ -505,6 +605,7 @@ impl Widget for ProgressRing {
             self.dirty = true;
         }
         self.rect = rect;
+        self.layout_dirty = false;
     }
 
     fn draw(
@@ -564,7 +665,7 @@ impl Widget for ProgressRing {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.layout_dirty || self.rect == Rect::ZERO
     }
 }
 
@@ -607,6 +708,14 @@ impl BarGauge {
         self
     }
 
+    /// A share with no status (storage by kind, a quota with room): the
+    /// inverted fill, never a status colour.
+    #[must_use]
+    pub fn neutral(mut self) -> Self {
+        self.fill = Fillcolor::Neutral;
+        self
+    }
+
     /// Bypasses the threshold bands.
     #[must_use]
     pub fn with_color(mut self, color: Color) -> Self {
@@ -643,6 +752,7 @@ impl BarGauge {
         match self.fill {
             Fillcolor::Threshold(t) => t.color(theme, self.frac),
             Fillcolor::Fixed(c) => c,
+            Fillcolor::Neutral => theme.tokens.colors.intent.inverted,
         }
     }
 
@@ -946,29 +1056,72 @@ mod tests {
     }
 
     #[test]
-    fn progress_ring_fill_reads_against_its_track_on_every_preset() {
+    fn progress_ring_track_and_fill_read_against_the_ground_on_every_preset() {
+        let min = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let ground = theme.tokens.colors.surfaces.content;
+            let track = ring_track(ground);
+            let ratio = crate::color::contrast_ratio(track, ground);
+            assert!(
+                ratio >= min,
+                "{}: the track shows the ring's extent at only {ratio:.2}:1",
+                theme.name
+            );
+            // Progress (the inverted fill) also reads against the track; a
+            // status fill reads against the ground by its hue and tone.
+            let progress = ProgressRingFace::new(0.5).fill_colour(&theme);
+            let ratio = crate::color::contrast_ratio(progress, track);
+            assert!(
+                ratio >= min,
+                "{}: progress on track {ratio:.2}:1",
+                theme.name
+            );
             for face in [
-                ProgressRingFace::new(0.5),
                 ProgressRingFace::new(0.5).tone(Tone::Success),
                 ProgressRingFace::new(0.9).level(GaugeThresholds::default()),
             ] {
                 let fill = face.fill_colour(&theme);
-                let track = ring_track(ground, fill);
-                let ratio = crate::color::contrast_ratio(fill, track);
                 assert!(
-                    ratio >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                    "{}: fill on track only {ratio:.2}:1",
+                    crate::color::contrast_ratio(fill, ground) >= min,
+                    "{}: a status fill reads on the ground",
                     theme.name
                 );
-                assert!(
-                    crate::surface::edge_delta(track, ground) > 0.0,
-                    "{}: the track registers on the ground",
-                    theme.name
-                );
+                assert_ne!(fill, track);
             }
         }
+    }
+
+    #[test]
+    fn a_small_ring_holds_a_numeric_readout_and_follows_its_state() {
+        let theme = Theme::dark();
+        let plain = ProgressRingFace::new(0.5).size(ProgressRingSize::Small);
+        let counting = plain.value("23");
+        assert!(counting.diameter(&theme) > plain.diameter(&theme));
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let side = counting.diameter(&theme);
+        counting.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+            Rect::new(0.0, 0.0, side, side),
+        );
+        assert!(
+            !scene.encoding().resources.glyph_runs.is_empty(),
+            "the seconds paint inside a small ring"
+        );
+
+        let state = crate::LocalState::new(30_u32);
+        let mut ring = ProgressRing::from_state(&state, |left| {
+            RingReading::new(f64::from(*left) / 30.0, left.to_string()).caption("seconds")
+        })
+        .size(ProgressRingSize::Small);
+        assert_eq!(ring.value, "30");
+        state.set(12);
+        let mut doc = automerge::AutoCommit::new();
+        ring.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(ring.value, "12");
+        assert_eq!(ring.caption, "seconds");
+        ring.set_caption("minutes");
+        assert_eq!(ring.caption, "minutes");
     }
 
     #[test]

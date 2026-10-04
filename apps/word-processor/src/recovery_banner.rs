@@ -12,7 +12,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Banner, BannerContent, BannerKind, Button, ButtonFace, ButtonRole, ControlSize};
+use ui::widget::{Banner, BannerContent, BannerKind};
 
 use crate::i18n::t;
 
@@ -43,6 +43,8 @@ pub(crate) enum RecoveryDecision {
 pub(crate) struct RecoveryBanner {
     offer: Option<RecoveryOffer>,
     buttons: Vec<(RecoveryAction, Rect)>,
+    /// The buttons as last painted, for the hover point of the next frame.
+    last_buttons: Vec<(RecoveryAction, Rect)>,
     hovered: Option<RecoveryAction>,
     base_dir: Option<PathBuf>,
     edits_since_autosave: u32,
@@ -53,16 +55,18 @@ impl RecoveryBanner {
         self.offer.is_some()
     }
 
-    /// The band the banner reserves: an information banner one regular
-    /// control row tall, its own padding inside it and the same step around
-    /// it, or nothing while no offer is staged.
-    pub(crate) fn height(&self, theme: &Theme) -> f64 {
-        if self.is_active() {
-            ButtonFace::height(ControlSize::Regular, theme)
-                + 4.0 * f64::from(theme.tokens.spacing.s2)
-        } else {
-            0.0
+    /// The band the banner reserves at `width`: the information banner with
+    /// Restore and Discard inside it, and a step around it, or nothing while
+    /// no offer is staged.
+    pub(crate) fn height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        if !self.is_active() {
+            return 0.0;
         }
+        let sp = &theme.tokens.spacing;
+        let (title, restore, discard) = labels();
+        let card_w = (width - 2.0 * f64::from(sp.s3)).max(1.0);
+        Banner::height(&content(&title, &restore, &discard), card_w, tr, theme)
+            + 2.0 * f64::from(sp.s2)
     }
 
     /// Track the pointer for the buttons' hover state; returns whether it
@@ -207,51 +211,56 @@ impl RecoveryBanner {
         if !self.is_active() {
             return;
         }
-        // The offer is the toolkit's information banner, with Discard and
-        // Restore beside it at the band's trailing end.
+        // The offer is the toolkit's information banner, holding Restore
+        // and Discard at its trailing edge.
         let sp = &theme.tokens.spacing;
         let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
-        let cy = bar.center().y;
-        let button_h = ButtonFace::height(ControlSize::Regular, theme);
-        let mut x = bar.x1 - s3;
-        for (action, label, role) in [
-            (
-                RecoveryAction::Restore,
-                t("recovery-restore"),
-                ButtonRole::Primary,
-            ),
-            (
-                RecoveryAction::Discard,
-                t("recovery-discard"),
-                ButtonRole::Destructive,
-            ),
-        ] {
-            let width = ButtonFace::new(Rect::ZERO, &label)
-                .role(role)
-                .intrinsic_width(tr, theme);
-            x -= width;
-            let rect = Rect::new(x, cy - button_h / 2.0, x + width, cy + button_h / 2.0);
-            let face = ButtonFace::new(rect, &label)
-                .role(role)
-                .hovered(self.hovered == Some(action));
-            Button::paint(scene, transform, tr, theme, &face);
-            self.buttons.push((action, rect));
-            x -= s2;
-        }
-        let title = t("recovery-banner");
         let card = Rect::new(
             bar.x0 + s3,
             bar.y0 + s2,
-            x.max(bar.x0 + s3 + 1.0),
+            (bar.x1 - s3).max(bar.x0 + s3 + 1.0),
             bar.y1 - s2,
         );
-        Banner::paint(
+        let hover = self
+            .hovered
+            .and_then(|hovered| {
+                self.last_buttons
+                    .iter()
+                    .find(|(action, _)| *action == hovered)
+                    .map(|(_, rect)| rect.center())
+            })
+            .unwrap_or(Point::new(f64::NAN, f64::NAN));
+        let (title, restore, discard) = labels();
+        let hit = Banner::paint(
             &mut PaintCtx::new(scene, transform, tr, theme),
             card,
-            &BannerContent::new(BannerKind::Info, &title),
-            Point::new(f64::NAN, f64::NAN),
+            &content(&title, &restore, &discard),
+            hover,
         );
+        if let Some(rect) = hit.action {
+            self.buttons.push((RecoveryAction::Restore, rect));
+        }
+        if let Some(rect) = hit.secondary_action {
+            self.buttons.push((RecoveryAction::Discard, rect));
+        }
+        self.last_buttons.clone_from(&self.buttons);
     }
+}
+
+/// The banner's title and its two actions, localized.
+fn labels() -> (String, String, String) {
+    (
+        t("recovery-banner"),
+        t("recovery-restore"),
+        t("recovery-discard"),
+    )
+}
+
+/// The offer: Restore is the banner's action, Discard the second one.
+fn content<'a>(title: &'a str, restore: &'a str, discard: &'a str) -> BannerContent<'a> {
+    BannerContent::new(BannerKind::Info, title)
+        .action(restore)
+        .secondary_action(discard)
 }
 
 #[cfg(test)]
