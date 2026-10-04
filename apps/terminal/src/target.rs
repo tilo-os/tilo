@@ -10,16 +10,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Where an environment session runs.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum Location {
-    /// On the device the terminal runs on.
-    #[default]
-    ThisDevice,
-    /// On a relay the person is a member of.
-    Relay { id: String },
-}
+/// Where an environment session runs: this device, or one of the person's
+/// relays by endpoint id — the vocabulary the supervisor speaks.
+pub use tilo_environment::Location;
 
 /// Where a session runs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -32,7 +25,7 @@ pub enum SessionTarget {
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Location::is_this_device")]
         location: Location,
     },
     /// A legacy VM, by name.
@@ -95,32 +88,43 @@ impl SessionTarget {
                 record
                     .as_deref()
                     .is_none_or(tilo_environment::is_record_key)
-                    && match location {
-                        Location::ThisDevice => true,
-                        Location::Relay { id } => tilo_environment::is_record_key(id),
-                    }
+                    && location.is_valid()
             }
             Self::Legacy { vm } => tilo_environment::is_record_key(vm),
         }
     }
 
-    /// The target as the `ush` supervisor on this device understands it.
-    /// `None` for a target this device's supervisor does not serve (a relay
-    /// or a legacy VM).
+    /// The target as the `ush` supervisor on this device understands it:
+    /// it serves this device's environments and carries a relay's.
+    /// `None` for a legacy VM.
     pub fn to_supervisor(&self) -> Option<tilo_environment::Target> {
         match self {
             Self::Host => Some(tilo_environment::Target::Host),
-            Self::Environment {
-                record,
-                location: Location::ThisDevice,
-            } => Some(tilo_environment::Target::Environment {
+            Self::Environment { record, location } => Some(tilo_environment::Target::Environment {
                 record: record.clone(),
+                location: location.clone(),
             }),
-            Self::Environment {
-                location: Location::Relay { .. },
-                ..
-            }
-            | Self::Legacy { .. } => None,
+            Self::Legacy { .. } => None,
+        }
+    }
+
+    /// The same environment, run at `location`; any other target as it is.
+    #[must_use]
+    pub fn at(&self, location: Location) -> Self {
+        match self {
+            Self::Environment { record, .. } => Self::Environment {
+                record: record.clone(),
+                location,
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// Where an environment runs; `None` for any other target.
+    pub fn location(&self) -> Option<&Location> {
+        match self {
+            Self::Environment { location, .. } => Some(location),
+            _ => None,
         }
     }
 
@@ -151,6 +155,18 @@ pub struct EnvironmentSummary {
     /// Granted directories, `(path, writable)`.
     pub grants: Vec<(String, bool)>,
 }
+
+/// One of the person's relays, as the picker offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelaySummary {
+    /// The relay's endpoint id (hex).
+    pub relay: String,
+    pub label: String,
+}
+
+/// The key under which `terminal.session` keeps a relay session's id, which
+/// re-attaches to it.
+pub const RELAY_SESSION_KEY: &str = "terminal_relay_session";
 
 /// Every target the picker offers, in order: each environment, then the
 /// device's own shell, then legacy VMs (only when the legacy VM service
@@ -256,7 +272,9 @@ mod tests {
             SessionTarget::environment("work"),
             SessionTarget::Environment {
                 record: Some("work".into()),
-                location: Location::Relay { id: "home".into() },
+                location: Location::Relay {
+                    relay: "ab".repeat(32),
+                },
             },
             SessionTarget::Legacy { vm: "linux".into() },
         ] {
@@ -284,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn only_this_devices_targets_reach_the_local_supervisor() {
+    fn the_supervisor_serves_and_carries_every_target_but_legacy_vms() {
         assert_eq!(
             SessionTarget::Host.to_supervisor(),
             Some(tilo_environment::Target::Host)
@@ -292,16 +310,32 @@ mod tests {
         assert_eq!(
             SessionTarget::environment("work").to_supervisor(),
             Some(tilo_environment::Target::Environment {
-                record: Some("work".into())
+                record: Some("work".into()),
+                location: Location::ThisDevice,
             })
         );
         assert_eq!(
             SessionTarget::Environment {
                 record: None,
-                location: Location::Relay { id: "r".into() }
+                location: Location::Relay {
+                    relay: "ab".repeat(32)
+                }
             }
             .to_supervisor(),
-            None
+            Some(tilo_environment::Target::Environment {
+                record: None,
+                location: Location::Relay {
+                    relay: "ab".repeat(32)
+                }
+            }),
+            "the supervisor carries a relay's environments"
+        );
+        assert!(
+            SessionTarget::decode(
+                r#"{"kind":"environment","location":{"kind":"relay","relay":"home"}}"#
+            )
+            .is_none(),
+            "a relay is named by its endpoint id"
         );
         assert_eq!(
             SessionTarget::Legacy { vm: "linux".into() }.to_supervisor(),

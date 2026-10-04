@@ -41,6 +41,7 @@
     )
 )]
 
+mod block_commands;
 mod blocks;
 mod convert;
 mod draft;

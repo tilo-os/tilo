@@ -710,10 +710,11 @@ impl State {
         self.client_input.touch_down_reached_client = false;
     }
 
-    /// Whether a confirmed tap may be emulated as a pointer click. A tap whose
-    /// touch sequence already reached a client is that client's alone.
-    pub fn touch_tap_needs_pointer_click(&self) -> bool {
-        !self.client_input.touch_down_reached_client
+    /// Whether the latest touch-down reached a client that takes touch over
+    /// `wl_touch`. Such a contact is that client's alone; any other is turned
+    /// into pointer input (see [`crate::compositor::touch_pointer`]).
+    pub fn touch_down_reached_client(&self) -> bool {
+        self.client_input.touch_down_reached_client
     }
 
     /// Forward one touch point to the focused client over `wl_touch`.
@@ -733,7 +734,18 @@ impl State {
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
         if matches!(touch, BackendTouchEvent::Down { .. }) {
-            self.client_input.touch_down_reached_client = handle.is_some() && focus.is_some();
+            // A client that never asked for a `wl_touch` would receive
+            // nothing; it gets the contact as pointer input instead.
+            self.client_input.touch_down_reached_client = handle.is_some()
+                && focus.as_ref().is_some_and(|(surface, _)| {
+                    surface.client().is_some_and(|client| {
+                        client
+                            .get_data::<crate::compositor::state::ClientState>()
+                            .is_some_and(|data| {
+                                data.touch_bound.load(std::sync::atomic::Ordering::Acquire)
+                            })
+                    })
+                });
         }
         let Some(handle) = handle else {
             return;
@@ -1062,10 +1074,11 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let _ = state.deliver_client_key(code, pressed, true);
 }
 
-/// Decide what the pointer shows this tick: the focused client's request
-/// while the pointer is over its surface, otherwise the cursor the chrome
-/// under the pointer names (the default arrow when it names none). The lock
-/// screen is not chrome and never shows a client's cursor.
+/// Decide what the pointer shows this tick: nothing while touch is the input
+/// in use (a finger needs no cursor, and touch never moves it), the focused
+/// client's request while the pointer is over its surface, otherwise the
+/// cursor the chrome under the pointer names (the default arrow when it names
+/// none). The lock screen is not chrome and never shows a client's cursor.
 ///
 /// Records the result on the frame builder, where captures and the state
 /// dump read it, and returns it only when it changed so the caller hands it
@@ -1074,9 +1087,12 @@ pub fn sync_pointer_image(
     state: &State,
     fb: &mut FrameBuilder,
     session_locked: bool,
+    touch_in_use: bool,
 ) -> Option<crate::compositor::cursor::PointerImage> {
     use crate::compositor::cursor::{CursorShape, PointerImage};
-    let image = if session_locked {
+    let image = if touch_in_use {
+        PointerImage::Hidden
+    } else if session_locked {
         PointerImage::default()
     } else if state.client_input.pointer_focus().is_some() {
         state.client_cursor.image()

@@ -493,6 +493,67 @@ pub struct RetainedGpuTarget {
 /// split.
 const PRECOMPILE_HELPERS: usize = 8;
 
+/// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
+static PIPELINE_SEED_PUBLISHED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// An empty pipeline cache for the first renderer this session builds, which then becomes the
+/// seed every app starts from. Later renderers compile exactly the same pipelines, so one seed
+/// per session is all there is to publish. Never in unit tests: they must not write into the
+/// real session's runtime directory.
+fn pipeline_seed_to_publish(gpu: &ui::gpu::DeviceHandle) -> Option<wgpu::PipelineCache> {
+    if cfg!(test) || PIPELINE_SEED_PUBLISHED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return None;
+    }
+    ui::pipeline_seed::empty(gpu)
+}
+
+/// Replace the seed for `gpu` under `dir` atomically, readable by every app and writable by the
+/// session only. `Ok(false)` when the backend has no cache data to share.
+fn write_pipeline_seed(
+    gpu: &ui::gpu::DeviceHandle,
+    cache: &wgpu::PipelineCache,
+    dir: &std::path::Path,
+) -> std::io::Result<bool> {
+    let Some(file) = ui::pipeline_seed::seed_file(dir, &gpu.adapter.get_info()) else {
+        return Ok(false);
+    };
+    let Some(data) = cache.get_data() else {
+        return Ok(false);
+    };
+    std::fs::create_dir_all(dir)?;
+    let staging = file.with_extension("tmp");
+    std::fs::write(&staging, &data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
+    }
+    std::fs::rename(&staging, &file)?;
+    Ok(true)
+}
+
+/// Write the session's pipelines where the launcher binds them, read-only, into every app.
+fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCache) {
+    let dir = crate::shell::launcher::runtime_dir()
+        .join("tilo")
+        .join(launcher::gpu::PIPELINE_SEED_DIR_NAME);
+    match write_pipeline_seed(gpu, cache, &dir) {
+        Ok(true) => tracing::info!(
+            target: "shell::render",
+            dir = %dir.display(),
+            "published the session's vello pipelines for apps to start from"
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            target: "shell::render",
+            dir = %dir.display(),
+            %error,
+            "could not publish the session's vello pipelines; apps compile their own"
+        ),
+    }
+}
+
 impl RetainedGpuTarget {
     /// Construct an offscreen target on the supplied context-owned device and queue.
     ///
@@ -504,6 +565,7 @@ impl RetainedGpuTarget {
             return Err(BridgeError::DeviceLost(reason));
         }
         let (texture, view) = Self::allocate_texture(&gpu.device, width, height);
+        let seed = pipeline_seed_to_publish(gpu);
         let renderer = Renderer::new(
             &gpu.device,
             RendererOptions {
@@ -511,10 +573,13 @@ impl RetainedGpuTarget {
                 // Every frame renders with area anti-aliasing; MSAA pipelines would go unused.
                 antialiasing_support: AaSupport::area_only(),
                 num_init_threads: None,
-                pipeline_cache: None,
+                pipeline_cache: seed.clone(),
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
+        if let Some(seed) = seed {
+            publish_pipeline_seed(gpu, &seed);
+        }
         let mut target = Self {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),

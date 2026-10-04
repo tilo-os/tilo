@@ -44,6 +44,9 @@ use crate::shell::color_pipeline::SdrToPqEncoder;
 use settings_store::hardware::HdrUnavailable;
 
 /// 64×64 is the universally-supported legacy cursor size (virtio-gpu, i915 and amdgpu all advertise it).
+/// Smallest cursor plane every driver offers; the plane actually used is the
+/// driver's preferred size (`DRM_CAP_CURSOR_WIDTH`), up to
+/// [`cursor::MAX_PIXEL_SIZE`].
 const CURSOR_DIM: u32 = cursor::PLANE_SIZE;
 
 /// The pixel formats an output's scanout buffers can use.
@@ -1230,9 +1233,9 @@ impl HwCursor {
 
     /// Park the cursor off this output's panel; the KMS plane is per-CRTC, so a plane on an output the pointer left must be hidden or it leaves a frozen arrow.
     pub fn hide(&self) {
-        // `CURSOR_DIM` is a small compile-time constant (64), so this can never actually
-        // saturate; `try_from`/`saturating_neg` keep it defensive instead of relying on that.
-        let offset = i32::try_from(CURSOR_DIM)
+        // Past the largest plane any driver gets; `try_from`/`saturating_neg`
+        // keep it defensive instead of relying on that.
+        let offset = i32::try_from(cursor::MAX_PIXEL_SIZE)
             .unwrap_or(i32::MAX)
             .saturating_neg();
         self.move_to(offset, offset);
@@ -1246,6 +1249,9 @@ pub struct OutputCursor {
     /// `(x, y, w, h)` of the output in global coords.
     rect: (i32, i32, u32, u32),
     transform: settings_store::hardware::OutputTransform,
+    /// The output's scale: the plane's image, and so its hotspot, is drawn
+    /// at this density.
+    scale: f64,
     mover: HwCursor,
 }
 
@@ -1295,6 +1301,7 @@ impl CursorPlanes {
             id,
             rect,
             transform: settings_store::hardware::OutputTransform::Normal,
+            scale: 1.0,
             mover,
         }
     }
@@ -1338,6 +1345,16 @@ impl CursorPlanes {
         }
     }
 
+    /// Follow an output's scale, which sizes the image its plane shows.
+    pub fn set_scale(&mut self, id: OutputId, scale: f64) {
+        if let Some(output) = self.outputs.iter_mut().find(|output| output.id == id) {
+            output.scale = scale;
+        }
+        if let Some((x, y)) = self.last {
+            self.move_to(x, y);
+        }
+    }
+
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         self.last = Some((gx, gy));
@@ -1369,11 +1386,27 @@ impl CursorPlanes {
             height,
             target.transform,
         );
-        target.mover.move_to(
-            x.saturating_sub(self.hotspot.0),
-            y.saturating_sub(self.hotspot.1),
-        );
+        let (hx, hy) = scaled_hotspot(self.hotspot, target.scale);
+        target
+            .mover
+            .move_to(x.saturating_sub(hx), y.saturating_sub(hy));
     }
+}
+
+/// The hotspot of the 1x image at an output's `scale`, matching where the
+/// scaled rasterisation puts it.
+fn scaled_hotspot(hotspot: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a cursor hotspot is a few pixels; the rounded product is far inside i32"
+    )]
+    let scaled = |value: i32| (f64::from(value) * scale).round() as i32;
+    (scaled(hotspot.0), scaled(hotspot.1))
 }
 
 pub(crate) fn logical_to_physical_point(
@@ -1462,7 +1495,12 @@ pub struct DrmScanout {
     cursor_buffer: Option<DumbBuffer>,
     /// True when the KMS cursor plane is driving the pointer; when false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
+    /// Logical cursor size (the accessibility setting).
     cursor_size: u32,
+    /// The output's scale: the cursor is drawn `cursor_size × scale` pixels.
+    cursor_scale: f64,
+    /// Side of the cursor plane buffer, in pixels.
+    cursor_dim: u32,
     /// What the pointer shows; resolved at `cursor_size` for drawn shapes.
     pointer_image: PointerImage,
     /// Opt-in bounded CPU destination-age tracker. It owns metadata only, never pixel storage.
@@ -1677,8 +1715,9 @@ impl DrmScanout {
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.
         let cursor_size =
             super::input_config::AccessibilityInputSettings::load().effective_cursor_size();
+        let cursor_dim = Self::cursor_plane_dim(&card);
         let (cursor_buffer, hw_cursor_active) =
-            match Self::setup_hw_cursor(&card, crtc, cursor_size) {
+            match Self::setup_hw_cursor(&card, crtc, cursor_size, cursor_dim) {
                 Ok(buf) => {
                     // Centre it so a fresh boot shows the pointer before input arrives.
                     let center_x = i32::try_from(width / 2).unwrap_or(i32::MAX);
@@ -1719,6 +1758,8 @@ impl DrmScanout {
             cursor_buffer,
             hw_cursor_active,
             cursor_size,
+            cursor_scale: 1.0,
+            cursor_dim,
             pointer_image: PointerImage::default(),
             xrgb_history: XrgbTargetHistory::new(2),
             xrgb_scanout_epoch: Some(1),
@@ -1734,21 +1775,38 @@ impl DrmScanout {
         })
     }
 
-    /// Allocate the 64×64 ARGB cursor buffer, paint the default arrow, bind via `set_cursor2` (its hotspot is the top-left tip); caller must keep the buffer alive.
+    /// The cursor plane size the driver prefers, which is also the largest
+    /// it takes: 64 where it says nothing, never more than the compositor
+    /// rasterises.
+    fn cursor_plane_dim(card: &Card) -> u32 {
+        use smithay::reexports::drm::{Device as _, DriverCapability};
+        let dim = |cap| {
+            card.get_driver_capability(cap)
+                .ok()
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(CURSOR_DIM)
+        };
+        dim(DriverCapability::CursorWidth)
+            .min(dim(DriverCapability::CursorHeight))
+            .clamp(CURSOR_DIM, cursor::MAX_PIXEL_SIZE)
+    }
+
+    /// Allocate the ARGB cursor buffer, paint the default arrow, bind via `set_cursor2` (its hotspot is the top-left tip); caller must keep the buffer alive.
     fn setup_hw_cursor(
         card: &Card,
         crtc: crtc::Handle,
         cursor_size: u32,
+        cursor_dim: u32,
     ) -> Result<DumbBuffer, String> {
         let mut cbuf = card
-            .create_dumb_buffer((CURSOR_DIM, CURSOR_DIM), DrmFourcc::Argb8888, 32)
+            .create_dumb_buffer((cursor_dim, cursor_dim), DrmFourcc::Argb8888, 32)
             .map_err(|e| format!("create cursor dumb buffer: {e}"))?;
         let pitch = cbuf.pitch() as usize;
         {
             let mut map = card
                 .map_dumb_buffer(&mut cbuf)
                 .map_err(|e| format!("map cursor buffer: {e}"))?;
-            let arrow = cursor::bitmap(CursorShape::Default, cursor_size);
+            let arrow = cursor::bitmap(CursorShape::Default, cursor_size.min(cursor_dim));
             paint_cursor_argb(map.as_mut(), pitch, Some(&arrow));
         }
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
@@ -1762,12 +1820,27 @@ impl DrmScanout {
     }
 
     pub fn set_cursor_size(&mut self, cursor_size: u32) {
-        let cursor_size = cursor_size.clamp(24, CURSOR_DIM);
+        let cursor_size = cursor_size.clamp(24, cursor::PLANE_SIZE);
         if self.cursor_size != cursor_size {
             self.invalidate_xrgb_history();
         }
         self.cursor_size = cursor_size;
         self.repaint_hw_cursor();
+    }
+
+    /// Draw the cursor for this output's scale.
+    pub fn set_cursor_scale(&mut self, scale: f64) {
+        if (self.cursor_scale - scale).abs() < f64::EPSILON {
+            return;
+        }
+        self.cursor_scale = scale;
+        self.invalidate_xrgb_history();
+        self.repaint_hw_cursor();
+    }
+
+    /// The cursor's side in this output's pixels; the plane bounds it.
+    fn cursor_pixel_size(&self) -> u32 {
+        cursor::pixel_size(self.cursor_size, self.cursor_scale).min(self.cursor_dim)
     }
 
     /// Show `image` as the pointer: repaint the cursor plane (and re-bind it
@@ -1782,7 +1855,7 @@ impl DrmScanout {
     }
 
     fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
-        self.pointer_image.bitmap(self.cursor_size)
+        self.pointer_image.bitmap(self.cursor_pixel_size())
     }
 
     fn cursor_hotspot(&self) -> (i32, i32) {
@@ -3638,6 +3711,14 @@ mod tests {
             assert_eq!(replugged[&first], first_key);
             assert_eq!(replugged[&second], second_key);
         }
+    }
+
+    #[test]
+    fn cursor_plane_hotspot_follows_the_output_scale() {
+        assert_eq!(scaled_hotspot((3, 5), 1.0), (3, 5));
+        assert_eq!(scaled_hotspot((3, 5), 2.0), (6, 10));
+        assert_eq!(scaled_hotspot((3, 5), 1.5), (5, 8));
+        assert_eq!(scaled_hotspot((3, 5), f64::NAN), (3, 5));
     }
 
     #[test]
