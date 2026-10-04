@@ -21,7 +21,8 @@ pub(crate) const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
 
 #[derive(Clone, Debug)]
 struct RecoveryOffer {
-    slot: (tilo_files::Dir, tilo_files::VPath),
+    /// The recovery copy on disk; a staged offer has none.
+    slot: Option<(tilo_files::Dir, tilo_files::VPath)>,
     markdown: Vec<u8>,
 }
 
@@ -156,11 +157,24 @@ impl RecoveryBanner {
         };
         match tilo_files::blocking::read(&slot.0, &slot.1) {
             Ok(markdown) if !markdown.is_empty() => {
-                self.offer = Some(RecoveryOffer { slot, markdown });
+                self.offer = Some(RecoveryOffer {
+                    slot: Some(slot),
+                    markdown,
+                });
                 true
             }
             _ => false,
         }
+    }
+
+    /// Offer `markdown` as a crash would leave it, without a copy on disk.
+    pub(crate) fn stage(&mut self, markdown: Vec<u8>) {
+        self.buttons.clear();
+        self.edits_since_autosave = 0;
+        self.offer = Some(RecoveryOffer {
+            slot: None,
+            markdown,
+        });
     }
 
     /// Resolve a pointer press against the banner's controls. The recovery file
@@ -173,7 +187,9 @@ impl RecoveryBanner {
             .find(|(_, rect)| rect.contains(point))
             .map(|(action, _)| *action)?;
         let offer = self.offer.take()?;
-        let _ = tilo_files::blocking::remove(&offer.slot.0, &offer.slot.1);
+        if let Some((dir, name)) = &offer.slot {
+            let _ = tilo_files::blocking::remove(dir, name);
+        }
         self.buttons.clear();
         Some(match action {
             RecoveryAction::Restore => RecoveryDecision::Restore(offer.markdown),

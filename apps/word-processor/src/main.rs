@@ -227,7 +227,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         wp.set_margins_mode();
     }
     if args.has("--recovery") {
-        stage_recovery(&mut wp)?;
+        wp.stage_recovery_for_shot(include_str!("../tests/fixtures/shot-document.md"));
     }
     if args.has("--unsaved") {
         wp.stage_unsaved_changes_for_shot();
@@ -248,26 +248,6 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         &ui::launch::shot_theme(args),
         out,
     )?;
-    Ok(())
-}
-
-/// Offer the recovery banner the way a crash leaves it: a recovery copy of
-/// unsaved changes waiting beside the document, in a scratch directory the
-/// shot owns.
-fn stage_recovery(wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!(
-        "word-processor-shot-recovery-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        dir.join(word_processor::recovery::slot_name(None)),
-        include_str!("../tests/fixtures/shot-document.md"),
-    )?;
-    wp.set_recovery_dir(dir.clone());
-    wp.check_for_recovery();
-    // The offer holds the copy in memory; the scratch directory can go.
-    let _ = std::fs::remove_dir_all(dir);
     Ok(())
 }
 
