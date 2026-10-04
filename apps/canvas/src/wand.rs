@@ -25,7 +25,7 @@ const REACH: f32 = 0.8;
 const EDGE_FLOOR: f32 = 0.006;
 /// How much sharper than the texture around the start a step must be to be
 /// an edge.
-const EDGE_OVER_TEXTURE: f32 = 3.0;
+const EDGE_OVER_TEXTURE: f32 = 3.0; // a ratio of colour steps, not on-screen spacing
 
 /// A picture, row by row, four bytes a pixel.
 pub struct Picture<'a> {

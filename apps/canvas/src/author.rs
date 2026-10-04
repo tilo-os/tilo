@@ -222,7 +222,7 @@ fn closer(art: &Artwork, query: &ColourQuery, found: &Region, scale: f64) -> Opt
 }
 
 /// The closest the wand looks, in pixels per unit.
-const MOST_PIXELS_PER_UNIT: f64 = 8.0;
+const MOST_PIXELS_PER_UNIT: f64 = 8.0; // a sampling density of the artwork, not on-screen spacing
 
 /// What the wand looks with.
 struct Eye<'a> {
