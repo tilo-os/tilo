@@ -29,7 +29,7 @@ fn new_message_id() -> String {
 }
 
 /// Mint a fresh channel id at authoring time (carried in the create action).
-fn new_channel_id() -> String {
+pub(crate) fn new_channel_id() -> String {
     format!("c_{}", uuid::Uuid::new_v4().simple())
 }
 
@@ -1048,33 +1048,17 @@ impl ChatApp {
     /// Join this workspace's voice channel; if it has none, make one to
     /// start the call in so the header "Call" button is never a dead end (a
     /// text-only workspace can still huddle).
+    /// The header Call button. A click while the call is expanded collapses
+    /// it — a button-only toggle; everything else is the published
+    /// `start-call` effect's own path.
     fn on_hit_start_call(&mut self, doc: &mut AutoCommit) {
-        if self.call.active {
-            self.call.expanded = !self.call.expanded;
+        if self.call.active && self.call.expanded {
+            self.call.expanded = false;
             self.request_relayout();
-        } else {
-            let existing = self
-                .ws_channels()
-                .into_iter()
-                .find(|c| c.kind == ChannelKind::Voice)
-                .map(|channel| channel.id.clone());
-            let channel = if let Some(existing) = existing {
-                existing
-            } else {
-                if !self.can_participate() {
-                    self.media_error = Some("A room writer must create a voice channel".into());
-                    return;
-                }
-                let ws = self.active_ws.clone();
-                let id = new_channel_id();
-                self.apply_action(
-                    doc,
-                    &actions::create_channel_action(&ws, "", &id, "Voice", ChannelKind::Voice),
-                );
-                self.reload(doc);
-                id
-            };
-            self.join_voice(&channel, doc);
+            return;
+        }
+        if let Err(error) = self.start_call(Some(doc)) {
+            self.media_error = Some(error);
         }
     }
 
@@ -4315,6 +4299,99 @@ mod tests {
             assert!(buttons.iter().any(|(l, ..)| *l == "Unmute"));
             assert!(buttons.iter().any(|(l, ..)| *l == "Leave"));
         }
+    }
+
+    fn voice_channels(app: &ChatApp, ws: &str) -> usize {
+        app.channels
+            .iter()
+            .filter(|c| c.workspace == ws && c.kind == ChannelKind::Voice)
+            .count()
+    }
+
+    /// The joins sent to the native voice service (status polls aside).
+    fn voice_joins(app: &mut ChatApp) -> Vec<ui::native_media::Command> {
+        use ui::widget::Collaborative as _;
+        app.take_collab_requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                ui::collaboration::CollabRequest::NativeMediaCommand { command, .. }
+                    if matches!(command.command, ui::native_media::Command::Join { .. }) =>
+                {
+                    Some(command.command)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn start_call_joins_the_workspace_voice_channel_creating_one_when_text_only() {
+        use crate::effects::ChatEffect;
+        // A text-only workspace gains a voice channel, and the call starts in
+        // it once the channel is in the document.
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit_workspace("ws_jam".into());
+        app.reload(&doc);
+        assert_eq!(voice_channels(&app, "ws_jam"), 0);
+        app.on_hit(Hit::StartCall, &mut doc);
+        assert_eq!(voice_channels(&app, "ws_jam"), 1);
+        assert!(app.call.active);
+        let channel = app.channel(&app.call.channel).expect("call channel");
+        assert_eq!(
+            (channel.kind, channel.name.as_str()),
+            (ChannelKind::Voice, "Voice")
+        );
+        assert_eq!(
+            app.native_voice.snapshot.state,
+            ui::native_media::State::Preparing
+        );
+
+        // A workspace with a voice channel joins it without making another,
+        // through the published effect.
+        let (mut app, _doc) = app_with_doc();
+        let before = voice_channels(&app, "ws_acme");
+        assert!(before > 0);
+        app.answer_effect(ChatEffect::StartCall)
+            .expect("start-call runs");
+        assert!(app.call.active);
+        assert_eq!(voice_channels(&app, "ws_acme"), before);
+        assert_eq!(
+            voice_joins(&mut app),
+            vec![ui::native_media::Command::Join {
+                channel_id: app.call.channel.clone()
+            }]
+        );
+
+        // Invoking it again reveals the running call; it never closes it.
+        app.call.expanded = false;
+        for _ in 0..2 {
+            app.answer_effect(ChatEffect::StartCall)
+                .expect("start-call runs");
+            assert!(app.call.active && app.call.expanded);
+        }
+        assert!(voice_joins(&mut app).is_empty(), "no second join");
+
+        // The header button keeps its own collapse toggle.
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::StartCall, &mut doc);
+        app.call.expanded = true;
+        app.on_hit(Hit::StartCall, &mut doc);
+        assert!(app.call.active && !app.call.expanded);
+        app.on_hit(Hit::StartCall, &mut doc);
+        assert!(app.call.active && app.call.expanded);
+    }
+
+    #[test]
+    fn start_video_call_is_refused_because_calls_are_voice_only() {
+        let (mut app, mut doc) = app_with_doc();
+        let before = doc.save();
+        let error = app
+            .answer_effect(crate::effects::ChatEffect::StartVideoCall)
+            .expect_err("video calls are refused");
+        assert_eq!(error, crate::effects::video_call_unavailable_reason());
+        assert!(!app.call.active);
+        assert!(voice_joins(&mut app).is_empty());
+        assert_eq!(doc.save(), before);
     }
 
     /// Answer every voice request with the broker's reply when this app has
