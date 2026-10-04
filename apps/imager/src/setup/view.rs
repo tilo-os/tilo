@@ -1235,14 +1235,13 @@ impl SetupApp {
                     ("setup.desktop.live", sentence)
                 }
                 Experience::FullOs => {
+                    let sentence = "Not available on this computer yet.".to_string();
                     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
                     let sentence = if self.internal_install.gate() {
                         self.internal_readiness_text()
                     } else {
-                        "Not available on this computer yet.".to_string()
+                        sentence
                     };
-                    #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
-                    let sentence = "Not available on this computer yet.".to_string();
                     ("setup.internal.readiness", sentence)
                 }
             };

@@ -14,7 +14,6 @@ D2 = 2
 [apps.backups]
 D1 = 1
 D2 = 2
-R3 = 1
 
 [apps.browser]
 D1 = 3
