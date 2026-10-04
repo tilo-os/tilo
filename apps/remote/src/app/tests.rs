@@ -420,6 +420,17 @@ fn hosted_sample() -> TestApp<RemoteShell> {
     app
 }
 
+fn command_key(app: &mut TestApp<RemoteShell>, key: &str) {
+    let modifier = if ui::Platform::current() == ui::Platform::MacOs {
+        "super"
+    } else {
+        "ctrl"
+    };
+    app.harness().set_modifiers(&[modifier.into()]);
+    app.harness().key(key);
+    app.harness().set_modifiers(&[]);
+}
+
 fn activate(app: &mut TestApp<RemoteShell>, label: &str) {
     let node = app
         .harness()
@@ -601,9 +612,7 @@ fn retained_inputs_validate_on_blur_accept_typing_and_filter_port() {
     app.harness().click_named("remote.field:name").unwrap();
     app.harness().type_text("ab");
     app.harness().click_named("remote.field:port").unwrap();
-    app.harness().set_modifiers(&["ctrl".into()]);
-    app.harness().key("a");
-    app.harness().set_modifiers(&[]);
+    command_key(&mut app, "a");
     app.harness().type_text("2x2");
     app.settle();
     app.harness()
@@ -761,9 +770,7 @@ fn retained_host_field_pastes_and_replaces_selection() {
     activate(&mut app, "New connection");
     app.harness().click_named("remote.field:host").unwrap();
     ui::text_selection::clipboard_copy("build-07.fleet.internal");
-    app.harness().set_modifiers(&["ctrl".into()]);
-    app.harness().key("v");
-    app.harness().set_modifiers(&[]);
+    command_key(&mut app, "v");
     app.harness()
         .with_widget_mut::<RemoteApp, _>(|surface| {
             assert_eq!(
@@ -772,9 +779,7 @@ fn retained_host_field_pastes_and_replaces_selection() {
             )
         })
         .unwrap();
-    app.harness().set_modifiers(&["ctrl".into()]);
-    app.harness().key("a");
-    app.harness().set_modifiers(&[]);
+    command_key(&mut app, "a");
     app.harness().type_text("x");
     app.harness()
         .with_widget_mut::<RemoteApp, _>(|surface| {
@@ -787,9 +792,7 @@ fn retained_host_field_pastes_and_replaces_selection() {
 fn retained_filter_narrows_by_group_without_writing_shared_state() {
     let mut app = hosted_sample();
     let before = app.read_document(|doc| doc.clone().get_heads());
-    app.harness().set_modifiers(&["ctrl".into()]);
-    app.harness().key("f");
-    app.harness().set_modifiers(&[]);
+    command_key(&mut app, "f");
     app.harness().type_text("prod");
     app.settle();
     assert!(app.harness().a11y_node_named("Edge Gateway").is_some());

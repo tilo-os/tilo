@@ -57,12 +57,12 @@
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
 //!   callers that paint directly). Input has a single entry point,
 //!   [`handle_event`](Widget::handle_event).
-//! * **The inner widget owns its layout node.** The inner widget registers
-//!   itself in the node map during `build_layout`, so hooks the host reaches
-//!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
-//!   `set_undo_status`, `take_undo_request`, `take_committed_action`) are
-//!   answered by the inner widget. A decorator that overrides one of those
-//!   registers itself for its node instead, with [`register_node`].
+//! * **The decorator owns its inner root's layout node.** After `build_layout`,
+//!   the blanket implementation replaces an exact inner-root registration with
+//!   the decorator, matching the transparent traversal above. Node-dispatched
+//!   hooks and accessibility therefore reach the same owner. A custom builder
+//!   that returns a descendant's node keeps that descendant's registration;
+//!   it can explicitly claim a node with [`register_node`] when appropriate.
 //! * **Method calls.** A decorator is both a [`Decorator`] and, through the
 //!   blanket impl, a [`Widget`]. With both traits imported, `self.get_rect()`
 //!   is ambiguous, so implement the trait by path (`impl
@@ -287,6 +287,28 @@ pub trait Decorator {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
+    }
+
+    fn visit_any_mut(
+        &mut self,
+        target: std::any::TypeId,
+        visit: &mut dyn FnMut(&mut dyn std::any::Any),
+    ) -> bool {
+        if let Some(value) = self.as_any_mut()
+            && (*value).type_id() == target
+        {
+            visit(value);
+            return true;
+        }
+        if self.inner_mut().visit_any_mut(target, visit) {
+            return true;
+        }
+        // A decorator may expose additional owned children. Preserve their
+        // reachability too; the callback only runs on the first match, so
+        // forwarded inner children cannot receive a duplicate callback.
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.visit_any_mut(target, visit))
     }
 
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
@@ -681,7 +703,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator> Widget for T {
+impl<T: Decorator + 'static> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
@@ -767,7 +789,24 @@ impl<T: Decorator> Widget for T {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        Decorator::build_layout(self, taffy, theme, node_map)
+        let node = Decorator::build_layout(self, taffy, theme, node_map);
+        let inner = Decorator::inner(self);
+        let inner_address = std::ptr::from_ref(inner).cast::<()>();
+        let inner_type = inner.concrete_type_name();
+        if let Some(&registered) = node_map.get(&node) {
+            // SAFETY: build_layout just registered this live retained widget.
+            // Reading its type neither mutates it nor retains a reference.
+            let registered_type = unsafe { (*registered).concrete_type_name() };
+            if std::ptr::eq(registered.cast::<()>().cast_const(), inner_address)
+                && registered_type == inner_type
+            {
+                // Traversal meets this decorator in its inner root's place.
+                // Keep semantic identity and node-dispatched callbacks on the
+                // same owner, but never adopt a deliberate descendant's node.
+                register_node(node_map, node, self);
+            }
+        }
+        node
     }
 
     fn measure(
@@ -854,6 +893,14 @@ impl<T: Decorator> Widget for T {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Decorator::as_any_mut(self)
+    }
+
+    fn visit_any_mut(
+        &mut self,
+        target: std::any::TypeId,
+        visit: &mut dyn FnMut(&mut dyn std::any::Any),
+    ) -> bool {
+        Decorator::visit_any_mut(self, target, visit)
     }
 
     fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {

@@ -921,8 +921,38 @@ impl Widget for CardGrid {
             (f64::from(l.size.width), f64::from(l.size.height)),
         );
         let origin = Point::new(self.rect.x0, self.rect.y0);
+        // Taffy rounds sizes between absolute edges, but rounds locations
+        // independently. At a fractional grid origin those disagree by a
+        // pixel. Place cards using the same absolute edges as their sizes,
+        // while keeping the grid's applied origin (including scrolling).
+        let absolute = taffy.layout(node).ok().and_then(|layout| {
+            if std::ptr::eq(layout, taffy.unrounded_layout(node)) {
+                return None; // Rounding is disabled.
+            }
+            let mut path = vec![node];
+            while let Some(parent) = path.last().and_then(|&child| taffy.parent(child)) {
+                path.push(parent);
+            }
+            Some(path.iter().rev().fold((0.0_f32, 0.0_f32), |(x, y), &id| {
+                let location = taffy.unrounded_layout(id).location;
+                (x + location.x, y + location.y)
+            }))
+        });
         for (card, &child) in self.cards.iter_mut().zip(&self.child_nodes) {
-            card.apply_layout(taffy, child, origin);
+            let mut child_origin = origin;
+            if let Some((x, y)) = absolute
+                && let Ok(layout) = taffy.layout(child)
+            {
+                let raw = taffy.unrounded_layout(child).location;
+                // Match Taffy's ties toward positive infinity, including
+                // negative half-pixel ancestor positions.
+                let round_edge = |value: f32| (value + 0.5).floor();
+                child_origin.x +=
+                    f64::from(round_edge(x + raw.x) - round_edge(x) - layout.location.x);
+                child_origin.y +=
+                    f64::from(round_edge(y + raw.y) - round_edge(y) - layout.location.y);
+            }
+            card.apply_layout(taffy, child, child_origin);
         }
     }
 

@@ -718,6 +718,32 @@ impl ui::widget::Decorator for Actionable {
         self.report();
         done
     }
+
+    fn perform_action_at(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::AppModel,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        let done = self.inner.perform_action_at(action, key_path, state, path);
+        self.report();
+        done
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::AppModel,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        let done = self
+            .inner
+            .perform_semantic_action(target, action, state, path);
+        self.report();
+        done
+    }
 }
 
 /// The shared filter control narrows the retained list; its query is private
@@ -740,6 +766,7 @@ pub(crate) fn filtered_connections(
         query: query.clone(),
         theme: theme.clone(),
         shown: 0,
+        structure_dirty: false,
     };
     list.rebuild(&text);
     let mut filtered =
@@ -757,6 +784,7 @@ struct FilterList {
     query: LocalState<String>,
     theme: Theme,
     shown: usize,
+    structure_dirty: bool,
 }
 
 impl FilterList {
@@ -783,6 +811,7 @@ impl FilterList {
                 self.has_connections,
             )
         };
+        self.structure_dirty = true;
     }
 }
 
@@ -794,6 +823,11 @@ impl ui::widget::Decorator for FilterList {
     }
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.body.as_mut()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let replaced = std::mem::take(&mut self.structure_dirty);
+        self.body.take_structure_dirty() || replaced
     }
 }
 

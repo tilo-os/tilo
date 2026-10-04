@@ -1169,17 +1169,14 @@ impl Widget for AuthenticatorApp {
         reason = "the root publishes one coherent semantic tree"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
-        // While the sheet is open it owns the window: what is behind it is
-        // not reachable.
+        // While the sheet is open, omit the synthetic background controls.
+        // Keep their parent visible: the retained dialog is its child, and
+        // hiding this group would also hide that dialog from the host.
         if self.add_panel.is_open() {
             return Some(
                 AccessNode::new(Role::Group)
                     .with_name("Authenticator")
-                    .with_bounds(self.rect)
-                    .with_state(AccessState {
-                        hidden: true,
-                        ..AccessState::default()
-                    }),
+                    .with_bounds(self.rect),
             );
         }
         let visible = self.vault.ordered();

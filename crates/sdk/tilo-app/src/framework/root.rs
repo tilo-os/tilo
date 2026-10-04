@@ -1180,6 +1180,68 @@ mod search_tests {
     }
 
     #[test]
+    fn typed_inspection_reaches_the_hosted_surface_and_resource_root() {
+        struct Surface {
+            text: Text,
+            visits: usize,
+        }
+        impl ui_core::widget::Decorator for Surface {
+            type Inner = Text;
+            fn inner(&self) -> &Text {
+                &self.text
+            }
+            fn inner_mut(&mut self) -> &mut Text {
+                &mut self.text
+            }
+            fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+                Some(self)
+            }
+        }
+        impl ResourceSurface<Mailbox> for Surface {
+            fn present(&mut self, _state: &Rc<Mailbox>) {}
+        }
+        struct InspectionApp;
+        impl ResourceApp for InspectionApp {
+            type Resource = Mailbox;
+            const ID: &'static str = "so.tilo.test-inspection";
+            const TITLE: &'static str = "Inspection";
+            fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+                cx.surface(Surface {
+                    text: Text::new("Hosted surface"),
+                    visits: 0,
+                })
+            }
+        }
+        let mut app = TestApp::<InspectionApp>::new().unwrap();
+        assert_eq!(
+            app.harness().with_widget_mut(|surface: &mut Surface| {
+                surface.visits += 1;
+                surface.visits
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            app.harness()
+                .with_widget_mut(|surface: &mut Surface| surface.visits),
+            Some(1)
+        );
+        assert!(
+            app.harness()
+                .with_widget_mut(|_: &mut ResourceRoot<Mailbox>| ())
+                .is_some(),
+            "framework scenario staging must still reach its own root"
+        );
+        assert!(
+            app.harness().with_widget_mut(|_: &mut Text| ()).is_none(),
+            "non-opted-in content stays opaque"
+        );
+        assert!(
+            app.harness().a11y_node_named("Hosted surface").is_some(),
+            "typed inspection leaves the real presentation intact"
+        );
+    }
+
+    #[test]
     fn a_hit_opens_the_app_at_its_anchor_and_scopes_narrow_the_search() {
         let mut app = TestApp::<MailApp>::new().unwrap();
         let (titles, scoped, declared) = app

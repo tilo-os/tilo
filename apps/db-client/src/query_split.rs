@@ -463,6 +463,10 @@ impl ui::widget::Decorator for QuerySplit {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let split = self.split.build_layout(taffy, theme, nodes);
+        // Intrinsic SQL/result height must not become this flex item's minimum.
+        let mut split_style = taffy.style(split).cloned().unwrap_or_default();
+        split_style.min_size.height = length(0.0);
+        let _ = taffy.set_style(split, split_style);
         let divider = self.divider.build_layout(taffy, theme, nodes);
         let menu = self.menu.build_layout(taffy, theme, nodes);
         for node in [divider, menu] {
@@ -481,6 +485,7 @@ impl ui::widget::Decorator for QuerySplit {
             },
             &[split, divider, menu],
         );
+        crate::results::fill_remaining_height(taffy, node);
         ui::widget::decorator::register_node(nodes, node, self);
         node
     }
@@ -551,34 +556,14 @@ impl ui::widget::Decorator for QuerySplit {
             .requested
             .unwrap_or(self.measured)
             .clamp(self.minimum.min(maximum), maximum);
-        self.split.set_split_position((wanted / height) as f32);
-        // This runs before apply_layout, including the first frame. Update the
-        // existing pane allocations so the shared layout solver can settle now.
-        let mut changed = false;
-        for (index, child) in taffy
-            .children(split_node)
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-        {
-            let ratio = if index == 0 {
-                self.split.split_position()
-            } else {
-                1.0 - self.split.split_position()
-            };
-            if let Ok(mut style) = taffy.style(child).cloned() {
-                if (style.flex_grow - ratio).abs() > 0.0001 {
-                    style.flex_grow = ratio;
-                    let _ = taffy.set_style(child, style);
-                    changed = true;
-                }
-            }
-        }
-        changed
+        self.split
+            .set_split_position_in_layout(taffy, split_node, (wanted / height) as f32)
     }
+
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty) | self.split.take_structure_dirty()
     }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);

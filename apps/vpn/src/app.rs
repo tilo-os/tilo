@@ -2018,7 +2018,7 @@ mod tests {
 
     fn click_target(harness: &mut ui::headless::FrameHarness, target: &str) {
         let name = match target {
-            "vpn:import-dialog" => "vpn-import",
+            "vpn:import-dialog" => "Import configuration",
             "vpn:add-kind:openvpn" => "OpenVPN",
             "vpn:import-openvpn" => "Choose file",
             other => other,
@@ -2154,7 +2154,10 @@ mod tests {
     fn vpn_layout_scales_scrolls_and_keeps_controls_in_band() {
         use ui::headless::Framed;
         for scale in [1.0, 2.0, 4.0] {
-            let app = framed(sample(), 1200, 900, scale);
+            // The shared shell grows its pane minima with text. Allocate
+            // enough room to exercise the wide layout at every text scale.
+            let width = (1200.0 * scale) as u32;
+            let app = framed(sample(), width, 900, scale);
             let geometry = app.shell.geometry();
             assert!(geometry.stack.is_empty());
             assert!(geometry.content_column.x0 >= geometry.overview_column.x1);
@@ -2178,9 +2181,36 @@ mod tests {
             );
             let action = target(&app, "vpn-main-action");
             assert!(
-                action.width() > 0.0 && action.x1 <= 1200.0,
+                action.width() > 0.0 && action.x1 <= f64::from(width),
                 "the toolbar action stays inside the window"
             );
+        }
+        // The same physical window must remain operable when larger text
+        // makes the shared shell stack the overview and detail.
+        for scale in [2.0, 4.0] {
+            let mut app = framed(sample(), 1200, 900, scale);
+            assert!(!app.shell.geometry().stack.is_empty());
+            let work = named(&app, "Work");
+            activate(&mut app, &format!("vpn-connection-{work}"));
+            assert!(
+                Framed::harness_mut(&mut app).settle_for_capture(ui::time::Duration::from_secs(2)),
+                "the scaled detail finishes entering"
+            );
+            assert_eq!(app.vault.selected, Some(work));
+            assert_eq!(app.shell.front_pane(), NavPane::Content);
+            let action = target(&app, "vpn-main-action");
+            assert!(
+                action.width() > 0.0 && action.x0 >= 0.0 && action.x1 <= 1200.0,
+                "scaled stacked action stays inside the 1200px window: scale={scale}, action={action:?}, content={:?}",
+                app.shell.geometry().content_column
+            );
+            activate(&mut app, "Back");
+            assert!(
+                Framed::harness_mut(&mut app).settle_for_capture(ui::time::Duration::from_secs(2)),
+                "the scaled overview finishes entering"
+            );
+            assert_eq!(app.shell.front_pane(), NavPane::Overview);
+            assert!(target(&app, "vpn-import").width() > 0.0);
         }
         // The production detail scroll reveals its routing toggle.
         let mut app = framed(sample(), 1024, 640, 1.0);
@@ -2213,7 +2243,7 @@ mod tests {
     #[test]
     fn hosted_import_modal_maps_protocol_actions_and_keyboard_focus() {
         let mut app = TestApp::<VpnShell>::capture(None).unwrap();
-        app.harness().click_named("vpn-import").unwrap();
+        click_target(app.harness(), "vpn:import-dialog");
         app.settle();
         for name in ["OpenVPN", "WireGuard"] {
             let node = app
@@ -2267,7 +2297,7 @@ mod tests {
         app.harness()
             .with_widget_mut::<VpnApp, _>(|surface| assert!(surface.dialog.is_none()))
             .unwrap();
-        app.harness().click_named("vpn-import").unwrap();
+        click_target(app.harness(), "vpn:import-dialog");
         app.settle();
         app.harness().key("Escape");
         app.settle();

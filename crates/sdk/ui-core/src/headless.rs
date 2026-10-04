@@ -26,6 +26,7 @@
 //! second loads the store and dumps the document as JSON. Diffing the two
 //! dumps is the persistence proof for the app's document.
 
+mod app_search;
 mod controls;
 mod document_history;
 pub mod host_media;
@@ -512,6 +513,7 @@ pub struct FrameHarness {
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    app_search_pending: bool,
     root_lifetime: uuid::Uuid,
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     taffy: TaffyTree<()>,
@@ -1334,6 +1336,7 @@ impl FrameHarness {
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
+            app_search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
             component_close_reports: vec![],
@@ -1975,7 +1978,8 @@ impl FrameHarness {
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
-        let queued_work = self.presence_redraw
+        let queued_work = (self.app_search_pending && self.action_palette.is_some())
+            || self.presence_redraw
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
             || self
@@ -2386,6 +2390,9 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // Both input-driven relayout and scheduled poll_frame enter here.
+        // Advance once before composition, never inside its settling loop.
+        self.advance_app_search();
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         self.presence_redraw = false;
         // A failed attempt mutates the tree as well as the requested viewport.
@@ -3819,6 +3826,14 @@ impl FrameHarness {
         }
         if let Some(result) = self.history_a11y_resource(target, action) {
             return result;
+        }
+        // Resolution below walks each presentation root separately. Membership
+        // must be checked against the whole presentation first: a dialog in the
+        // app root also excludes controls in a separate History chrome root.
+        if !self.a11y_nodes().iter().any(|(id, _)| *id == target) {
+            return Err(format!(
+                "no accessibility node {target:?} in the current frame"
+            ));
         }
         let resolved = if self.history_layout.is_some() {
             self.try_presentation(|root, _| {
@@ -5308,17 +5323,14 @@ impl FrameHarness {
         self.action_palette = Some(palette);
     }
     fn finish_action_palette_input(&mut self) {
+        self.capture_app_search_request();
         let pending = self
             .action_palette
             .as_deref_mut()
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             let result = (|| {
-                let request = pending.ordinary.as_ref().ok_or_else(|| {
-                    tilo_actions::DoorError::InvalidArguments(
-                        "Missing original confirmation request".into(),
-                    )
-                })?;
+                let request = self.prepare_palette_request(&pending)?;
                 request.validate(self.root.as_ref(), &self.state.doc, &self.control_domain)?;
                 if let Some(target) = &pending.history_target {
                     let captured = pending
@@ -5362,6 +5374,7 @@ impl FrameHarness {
                 }
             }
         }
+        self.finish_app_search_navigation();
         if self.action_palette.as_deref().is_some_and(|p| !p.is_open()) {
             self.action_palette = None;
         }
@@ -5935,7 +5948,9 @@ impl FrameHarness {
             );
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            if !self.take_history_invocation(&intent) {
+            if !self.take_search_invocation(&intent, Some(&target.binding))
+                && !self.take_history_invocation(&intent)
+            {
                 self.dispatch_bound_control(target, &intent);
             }
         }
@@ -5953,7 +5968,7 @@ impl FrameHarness {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
-            if self.take_history_invocation(&intent) {
+            if self.take_search_invocation(&intent, None) || self.take_history_invocation(&intent) {
                 continue;
             }
             // The remaining controls originated in the outer document. Never
@@ -6908,22 +6923,26 @@ impl FrameHarness {
     }
 
     /// Reach the first retained widget of type `T` — found through
-    /// [`Widget::as_any_mut`], depth first along `children_mut`, into hosted
-    /// components — run `visit` on it, then run one input-free frame (the
+    /// [`Widget::as_any_mut`], depth first through transparent decorators and
+    /// `children_mut`, into hosted components — run `visit` on it, then run one input-free frame (the
     /// host tick and a relayout) so whatever it queued is handled as after an
     /// event. `None` when no widget of that type opts in to `as_any_mut`.
     ///
     /// This is how a screenshot scenario stages view state (a selection, an
     /// open dialog) in the widget that owns it, instead of reaching around it.
     pub fn with_widget_mut<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
-        fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
-            if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
-                return widget.as_any_mut()?.downcast_mut::<T>();
-            }
-            widget.children_mut().into_iter().find_map(find::<T>)
-        }
         self.pump_component_wakes();
-        let output = visit(find::<T>(self.root.as_mut())?);
+        let mut visit = Some(visit);
+        let mut output = None;
+        self.root
+            .visit_any_mut(std::any::TypeId::of::<T>(), &mut |value| {
+                if let Some(value) = value.downcast_mut::<T>()
+                    && let Some(visit) = visit.take()
+                {
+                    output = Some(visit(value));
+                }
+            });
+        let output = output?;
         self.relayout();
         self.host_tick();
         self.relayout();
@@ -8362,6 +8381,49 @@ mod tests {
             .perform_named("history-open", &crate::a11y::Action::Activate)
             .expect("public History target activates");
         assert!(driver.targets().contains_key("activity_timeline"));
+    }
+
+    #[test]
+    fn app_modal_excludes_actions_from_the_separate_history_root() {
+        let mut driver = Driver::from_managed_root_with_controlled_inputs(
+            State::new(),
+            crate::history_mode::ManagedRoot::new(
+                Box::new(
+                    crate::widget::ModalDialog::new(
+                        "App confirmation",
+                        crate::widget::Column::new(),
+                    )
+                    .open(true)
+                    .primary_action("Confirm", || {}),
+                ),
+                controlled_history_registration(911),
+            ),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("modal-history-author".into()),
+        )
+        .expect("managed fixture installs History chrome");
+        let history_node = driver.named_target_nodes()["history-open"];
+        let target = accesskit::NodeId(u64::from(history_node).saturating_add(1));
+        assert!(
+            resolve_node_id_bound(
+                driver.history.as_deref().expect("separate History root"),
+                &driver.node_map,
+                target,
+            )
+            .is_some(),
+            "the History control remains locally resolvable"
+        );
+        assert!(driver.a11y_node_named("App confirmation").is_some());
+        assert!(!driver.a11y_nodes().iter().any(|(id, _)| *id == target));
+        assert!(
+            driver
+                .perform_a11y_action(target, &crate::a11y::Action::Activate)
+                .is_err(),
+            "per-root resolution cannot bypass the whole-window modal boundary"
+        );
+        assert!(!driver.targets().contains_key("activity_timeline"));
     }
 
     #[test]

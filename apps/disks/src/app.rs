@@ -251,6 +251,7 @@ pub struct DisksApp {
     dispatcher: Option<Dispatcher<Disks>>,
     running: Option<ActionKind>,
     selected: usize,
+    sidebar_selection: ui::LocalState<Option<String>>,
     selected_part: Option<usize>,
     tab: Tab,
     status: String,
@@ -289,6 +290,7 @@ impl DisksApp {
             dispatcher: None,
             running: None,
             selected: 0,
+            sidebar_selection: ui::LocalState::new(None),
             selected_part: None,
             tab: Tab::Overview,
             status: String::new(),
@@ -629,16 +631,23 @@ impl DisksApp {
         if self.built == Some(key) {
             return;
         }
-        let listed_before = self
-            .built
-            .is_some_and(|b| b.topology == key.topology && b.selected == key.selected);
+        let listed_before = self.built.is_some_and(|b| b.topology == key.topology);
+        // Selection is local state of the retained list. Replacing the list
+        // here would discard its scroll, focus and last pointer position,
+        // leaving the next wheel event without an owner after a row click.
+        self.sidebar_selection.set(
+            self.topo
+                .drives
+                .get(self.selected)
+                .map(|_| view::drive_id(self.selected)),
+        );
         self.built = Some(key);
         if !listed_before {
             self.shell.set_sidebar(Some(Box::new(view::drive_list(
                 &Topology {
                     drives: self.topo.drives.iter().map(|d| self.shown(d)).collect(),
                 },
-                self.selected,
+                &self.sidebar_selection,
                 &self.intents,
             ))));
         }
@@ -912,7 +921,7 @@ mod retained_tests {
         let topology = Topology::sample();
         for drive in &topology.drives {
             activate(&mut driver, &drive.model);
-            let app = driver.root_mut::<DisksApp>();
+            let app = driver.root::<DisksApp>();
             assert_eq!(app.drive().unwrap().name, drive.name);
             assert_eq!(app.selected_part, None);
             assert_eq!(
@@ -932,12 +941,12 @@ mod retained_tests {
             }
         }
         activate(&mut driver, &topology.drives[0].model);
-        let selected = driver.root_mut::<DisksApp>().selected;
+        let selected = driver.root::<DisksApp>().selected;
         activate(&mut driver, "Health");
-        assert_eq!(driver.root_mut::<DisksApp>().tab, Tab::Smart);
-        assert_eq!(driver.root_mut::<DisksApp>().selected, selected);
+        assert_eq!(driver.root::<DisksApp>().tab, Tab::Smart);
+        assert_eq!(driver.root::<DisksApp>().selected, selected);
         activate(&mut driver, "Partitions");
-        assert_eq!(driver.root_mut::<DisksApp>().tab, Tab::Partitions);
+        assert_eq!(driver.root::<DisksApp>().tab, Tab::Partitions);
         assert!(!driver.render_rgba().is_empty());
     }
     fn click_label(driver: &mut Driver, label: &str) {
@@ -953,21 +962,21 @@ mod retained_tests {
     fn partition_map_rows_and_whole_disk_change_the_real_action_target() {
         let mut driver = mounted(DisksApp::sample(), 1280, 800);
         click_label(&mut driver, "Select partition nvme0n1p2");
-        assert_eq!(driver.root_mut::<DisksApp>().part_index(), Some(1));
+        assert_eq!(driver.root::<DisksApp>().part_index(), Some(1));
         assert!(
             driver
-                .root_mut::<DisksApp>()
+                .root::<DisksApp>()
                 .action_enabled(&Topology::sample().drives[0], ActionKind::Unmount)
         );
         activate(&mut driver, "Partitions");
         driver.click_named("disks-partition-2").unwrap();
-        assert_eq!(driver.root_mut::<DisksApp>().part_index(), Some(2));
+        assert_eq!(driver.root::<DisksApp>().part_index(), Some(2));
         activate(&mut driver, "Overview");
         click_label(&mut driver, "Select whole disk");
-        assert_eq!(driver.root_mut::<DisksApp>().part_index(), None);
+        assert_eq!(driver.root::<DisksApp>().part_index(), None);
         assert!(
             !driver
-                .root_mut::<DisksApp>()
+                .root::<DisksApp>()
                 .action_enabled(&Topology::sample().drives[0], ActionKind::Unmount)
         );
     }
@@ -989,11 +998,7 @@ mod retained_tests {
             (1280, 600),
             Theme::dark().with_text_scale(2.0),
         );
-        let sidebar = driver
-            .root_mut::<DisksApp>()
-            .shell
-            .geometry()
-            .sidebar_column;
+        let sidebar = driver.root::<DisksApp>().shell.geometry().sidebar_column;
         driver.click_at(sidebar.center().x, sidebar.center().y);
         driver.scroll(0.0, -100.0);
         let last = driver
@@ -1007,25 +1012,38 @@ mod retained_tests {
             "last drive scrolls into the sidebar viewport"
         );
         driver.click_at((last.x0 + last.x1) / 2.0, (last.y0 + last.y1) / 2.0);
-        assert_eq!(driver.root_mut::<DisksApp>().selected, 29);
+        assert_eq!(driver.root::<DisksApp>().selected, 29);
+        let selected = driver
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some("Drive 29"))
+            .map(|(_, node)| node)
+            .expect("the selected drive remains in the scrolled viewport");
+        assert_eq!(selected.is_selected(), Some(true));
+        let bounds = selected.bounds().unwrap();
+        assert!(
+            bounds.y0 >= sidebar.y0 && bounds.y1 <= sidebar.y1,
+            "selecting the last drive retains the sidebar scroll position"
+        );
+        assert_eq!(driver.root::<DisksApp>().drive().unwrap().name, "test29");
     }
     #[test]
     fn retained_sidebar_resolves_wide_and_narrow_windows() {
-        let mut wide = mounted(DisksApp::sample(), 1280, 800);
+        let wide = mounted(DisksApp::sample(), 1280, 800);
         assert_eq!(
-            wide.root_mut::<DisksApp>().shell.geometry().sidebar,
+            wide.root::<DisksApp>().shell.geometry().sidebar,
             SidebarPlacement::Docked
         );
-        assert!(wide.root_mut::<DisksApp>().shell.is_sidebar_open());
+        assert!(wide.root::<DisksApp>().shell.is_sidebar_open());
         let mut narrow = mounted(DisksApp::sample(), 520, 420);
         assert_eq!(
-            narrow.root_mut::<DisksApp>().shell.geometry().sidebar,
+            narrow.root::<DisksApp>().shell.geometry().sidebar,
             SidebarPlacement::Drawer
         );
-        assert!(!narrow.root_mut::<DisksApp>().shell.is_sidebar_open());
+        assert!(!narrow.root::<DisksApp>().shell.is_sidebar_open());
         narrow.root_mut::<DisksApp>().snap_sidebar(true);
         narrow.relayout();
-        assert!(narrow.root_mut::<DisksApp>().shell.is_sidebar_open());
+        assert!(narrow.root::<DisksApp>().shell.is_sidebar_open());
     }
     #[test]
     fn status_and_latest_target_validation_are_preserved() {
@@ -1059,12 +1077,12 @@ mod retained_tests {
         assert!(!app.action_enabled(app.drive().unwrap(), ActionKind::Mount));
         app.select(1);
         assert_eq!(app.selected_part, None);
-        let mut empty = mounted(
+        let empty = mounted(
             DisksApp::with_backend(Backend::Sample, Topology::default()),
             1280,
             800,
         );
-        assert!(empty.root_mut::<DisksApp>().topo.drives.is_empty());
+        assert!(empty.root::<DisksApp>().topo.drives.is_empty());
         assert!(
             empty
                 .a11y_nodes()

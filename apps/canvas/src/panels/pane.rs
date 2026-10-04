@@ -10,6 +10,33 @@ use ui::vello::peniko::Fill;
 use ui::widget::{Element, Widget};
 use ui::{PresenceCtx, TextRenderer, Theme};
 
+/// Canvas already publishes the artwork and its named view controls. Keep
+/// their native accessible widgets, without publishing each descendant a
+/// second time as a generic agent control. Unlike Pane this adds no paint:
+/// NavShell owns the inspector's ground and shared edge.
+pub struct ArtworkControls(pub Element);
+
+impl ui::widget::Decorator for ArtworkControls {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.0.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.0.as_mut()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let mut group = self
+            .0
+            .accessibility()
+            .unwrap_or_else(|| ui::a11y::AccessNode::new(ui::a11y::Role::Group));
+        group.semantic_key = None;
+        Some(group)
+    }
+}
+
 /// The side of a pane that faces the canvas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {

@@ -203,25 +203,21 @@ impl CalculatorApp {
         self.dispatch = Some(dispatcher);
     }
 
-    /// Resolve the collaborator fixture against the same first-field layout
-    /// the default-sized graph capture paints, rather than an old pixel offset.
+    /// Resolve the collaborator fixture in shared-window coordinates, including
+    /// the host's History toolbar above the Calculator surface.
     pub(crate) fn fixture_remote_pointer() -> (f32, f32) {
-        // Only the capture fixture calls this: use its seeded graph model
-        // without exposing the test-only bare-widget constructor to live code.
-        let mut app = Self::with_model(CalcModel::seeded());
-        app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        app.measure_header(&mut text, &theme);
-        app.relayout();
-        app.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
+        // Only the capture fixture calls this. The bare surface starts at y=0,
+        // while the native/capture host lays it below its shared chrome. Use
+        // that production layout rather than duplicating the toolbar height.
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::State::new(),
+            Self::with_model(CalcModel::seeded()),
+            (1280, 800),
+            Theme::dark(),
         );
-        let point = app
+        frame.enable_document_history_chrome();
+        let point = frame
+            .root::<Self>()
             .g2
             .field_rect(0)
             .map_or(Point::ZERO, |rect| rect.center());
@@ -2145,7 +2141,7 @@ mod tests {
         let (x, y) = (f64::from(x), f64::from(y));
         assert!(
             field.x0 <= x && x <= field.x1 && field.y0 <= y && y <= field.y1,
-            "the collaborator's pointer is over the first formula: {field:?}"
+            "the collaborator's pointer ({x}, {y}) is over the first formula: {field:?}"
         );
     }
 

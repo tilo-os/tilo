@@ -823,11 +823,14 @@ fn platform_search_opens_finds_and_activates_places() {
             .with_widget_mut::<MapsApp, _>(|app| tap(app, &Hit::OpenSearch))
             .unwrap();
         assert_eq!(
-            hosted.harness().global_search_query(),
+            hosted.harness().app_search_query(),
             Some(""),
             "the button opens the platform search through the framework dispatcher"
         );
-        assert!(hosted.harness().global_search_scope().is_some());
+        assert!(
+            hosted.harness().app_search_scope().is_none(),
+            "ThisApp opens the whole standalone Maps application"
+        );
 
         // Narrow: the search button sits in the top row beside the drawer
         // toggle, above the drawer's scrim.
@@ -934,7 +937,7 @@ fn platform_search_opens_finds_and_activates_places() {
             .with_widget_mut::<MapsApp, _>(|app| tap(app, &Hit::Recent("Marienplatz".to_owned())))
             .unwrap();
         assert_eq!(
-            hosted.harness().global_search_query(),
+            hosted.harness().app_search_query(),
             Some("Marienplatz"),
             "a recent opens the search with its query"
         );
@@ -3092,10 +3095,11 @@ fn authored_geometry_keeps_gaps_and_scales_with_text() {
             "the map keeps at least 40 % of a docked window"
         );
 
-        let mut mid = app_at(800.0, 900.0);
+        let breakpoint = f64::from(Theme::dark().tokens.metrics.compact_breakpoint);
+        let mut mid = app_at(breakpoint + 80.0, 900.0);
         mid.text_scale = 2.0;
         assert!(!mid.overlay_mode());
-        assert_eq!(f64::from(mid.metrics.compact_breakpoint), 720.0);
+        assert_eq!(f64::from(mid.metrics.compact_breakpoint), breakpoint);
 
         let mut narrow = app_at(400.0, 800.0);
         narrow.text_scale = 1.0;
@@ -3228,14 +3232,24 @@ fn map_controls_stay_on_screen_clear_of_panel_and_navigation_card() {
             MapControlAction::ToggleTraffic,
         ];
 
-        // Docked, 720×360: beside would overlap the panel, below would run
-        // past the overflow button.
-        let mut docked = app_at(720.0, 360.0);
+        // Docked at the theme's breakpoint with larger text: beside would
+        // overlap the wider panel, below would run past the overflow button.
+        let mut docked = app_at(f64::from(theme.tokens.metrics.compact_breakpoint), 360.0);
         let mut scene = Scene::new();
-        docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        docked.draw_app(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme.clone().with_text_scale(1.25),
+        );
         assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
         let panel = docked.panel_rect();
         let overflow = docked.overflow_rect();
+        assert!(
+            docked.navigation_rect().x0 - docked.gap() - docked.controls().size
+                < panel.x1 + docked.gap(),
+            "the fixture still exercises a column that cannot fit beside the card"
+        );
         for action in controls {
             let rect = docked.map_controls.rect(action);
             assert!(

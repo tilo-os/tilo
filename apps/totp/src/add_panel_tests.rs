@@ -146,16 +146,14 @@ fn a_saved_account_carries_the_typed_details_and_advanced_choices() {
 /// A setup link fills the form and shows what it carried.
 #[test]
 fn a_setup_link_fills_the_form() {
-    // Case `a_complete_link_fills_every_field_and_collapses_the_link_row`.
+    // Case `an_explicit_complete_link_fills_every_field_and_collapses_the_link_row`.
     {
         let mut panel = opened();
         ask(&mut panel, Msg::ExpandLink);
         assert!(panel.sheet.borrow().uri_expanded, "the link field opens");
-        type_into(
-            &panel.values.uri,
+        panel.apply_uri(
             "otpauth://totp/GitHub:ada@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub",
         );
-        ask(&mut panel, Msg::UriChanged);
         assert_eq!(
             panel.field_snapshot(),
             (
@@ -166,6 +164,34 @@ fn a_setup_link_fills_the_form() {
         );
         assert!(!panel.sheet.borrow().uri_expanded, "the link row collapses");
         assert_eq!(Values::text(&panel.values.uri), "", "the link is not kept");
+    }
+
+    // A typed link may become parsable before its secret and parameters end.
+    // Keep every character in the field, then consume the whole link on Save.
+    {
+        let mut panel = opened();
+        ask(&mut panel, Msg::ExpandLink);
+        let uri =
+            "otpauth://totp/AWS:ada?secret=JBSWY3DPEHPK3PXP&algorithm=SHA256&digits=8&period=60";
+        for ch in uri.chars() {
+            panel.values.uri.update(|value| value.push(ch));
+            ask(&mut panel, Msg::UriChanged);
+            assert!(panel.sheet.borrow().uri_expanded);
+            assert!(
+                panel.problem().is_none(),
+                "an unfinished link stays editable"
+            );
+            assert!(panel.take_event().is_none());
+        }
+        ask(&mut panel, Msg::Save);
+        let Some(AddPanelEvent::Save(account)) = panel.take_event() else {
+            panic!("Save accepts the complete typed link");
+        };
+        assert_eq!(account.secret, "JBSWY3DPEHPK3PXP");
+        assert_eq!(account.algorithm, Algorithm::Sha256);
+        assert_eq!(account.digits, 8);
+        assert_eq!(account.period, 60);
+        assert_eq!(Values::text(&panel.values.uri), "");
     }
 
     // Case `a_link_with_non_default_parameters_opens_advanced`.
@@ -193,9 +219,15 @@ fn a_setup_link_fills_the_form() {
         type_into(&panel.values.uri, "otpauth://totp/x?issuer=y");
         ask(&mut panel, Msg::UriChanged);
         assert!(
-            panel.problem().is_some_and(|p| p.contains("secret")),
-            "a link without a key is refused"
+            panel.problem().is_none(),
+            "an unfinished draft stays editable"
         );
+        ask(&mut panel, Msg::Save);
+        assert!(
+            panel.problem().is_some_and(|p| p.contains("secret")),
+            "a link without a key is refused on Save"
+        );
+        assert!(panel.take_event().is_none());
         let mut panel = opened();
         type_into(&panel.values.uri, "otpa");
         ask(&mut panel, Msg::UriChanged);

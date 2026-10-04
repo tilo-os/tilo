@@ -2443,9 +2443,9 @@ mod runtime_tests {
         });
         let mut driver = Driver::for_root(ui::State::new(), app, (1000, 800), Theme::dark());
         activate(&mut driver, "Remove image");
-        assert!(driver.root_mut::<ContainersApp>().confirm.is_none());
+        assert!(driver.root::<ContainersApp>().confirm.is_none());
         assert_eq!(
-            driver.root_mut::<ContainersApp>().engine.images.len(),
+            driver.root::<ContainersApp>().engine.images.len(),
             images - 1
         );
         let app = driver.root_mut::<ContainersApp>();
@@ -2456,12 +2456,12 @@ mod runtime_tests {
         });
         driver.relayout();
         driver.key("Escape");
-        assert!(driver.root_mut::<ContainersApp>().confirm.is_none());
+        assert!(driver.root::<ContainersApp>().confirm.is_none());
         assert_eq!(
-            driver.root_mut::<ContainersApp>().engine.images.len(),
+            driver.root::<ContainersApp>().engine.images.len(),
             images - 1
         );
-        let volumes = driver.root_mut::<ContainersApp>().engine.volumes.len();
+        let volumes = driver.root::<ContainersApp>().engine.volumes.len();
         driver.root_mut::<ContainersApp>().ask_prompt(Prompt {
             kind: PromptKind::NewVolume,
             value: String::new(),
@@ -2471,7 +2471,7 @@ mod runtime_tests {
         driver.type_text("data");
         assert_eq!(
             driver
-                .root_mut::<ContainersApp>()
+                .root::<ContainersApp>()
                 .prompt_dialog
                 .as_ref()
                 .unwrap()
@@ -2480,14 +2480,14 @@ mod runtime_tests {
             "data"
         );
         activate(&mut driver, "Create volume");
-        assert!(driver.root_mut::<ContainersApp>().prompt.is_none());
+        assert!(driver.root::<ContainersApp>().prompt.is_none());
         assert_eq!(
-            driver.root_mut::<ContainersApp>().engine.volumes.len(),
+            driver.root::<ContainersApp>().engine.volumes.len(),
             volumes + 1
         );
         assert!(
             driver
-                .root_mut::<ContainersApp>()
+                .root::<ContainersApp>()
                 .engine
                 .volumes
                 .iter()

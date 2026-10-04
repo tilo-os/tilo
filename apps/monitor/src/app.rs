@@ -2124,6 +2124,32 @@ mod tests {
         harness.relayout();
     }
 
+    fn tab_node(
+        harness: &FrameHarness,
+        label: &str,
+    ) -> (ui::accesskit::NodeId, ui::accesskit::Node) {
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::Button && node.label() == Some(label)
+            })
+            .expect("the tab is an exported toggle button")
+    }
+
+    fn click_tab(harness: &mut FrameHarness, label: &str) {
+        let (_, node) = tab_node(harness, label);
+        let rect = node.bounds().expect("the tab has its drawn bounds");
+        harness.click_at((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+    }
+
+    fn activate(harness: &mut FrameHarness, label: &str) {
+        let id = harness.a11y_node_named(label).expect("visible control");
+        harness
+            .perform_a11y_action(id, &ui::a11y::Action::Activate)
+            .unwrap();
+    }
+
     /// The tree folds, sums and filters; the flat list sorts; kernel threads
     /// are hidden until asked for.
     #[test]
@@ -2456,10 +2482,14 @@ mod tests {
     /// docks where it fits and becomes a drawer where it does not.
     #[test]
     fn window_lays_out_at_every_size() {
+        let metrics = Theme::dark().tokens.metrics;
+        let docking_width = (metrics.content_min_width + metrics.inspector_width).ceil() as u32;
         for (viewport, placement) in [
             ((1280, 800), InspectorPlacement::Docked),
-            ((800, 600), InspectorPlacement::Docked),
+            ((800, 600), InspectorPlacement::Drawer),
             ((480, 820), InspectorPlacement::Drawer),
+            ((docking_width - 1, 800), InspectorPlacement::Drawer),
+            ((docking_width, 800), InspectorPlacement::Docked),
         ] {
             let harness = window(app(), viewport);
             let monitor = harness.root::<MonitorApp>();
@@ -2479,69 +2509,100 @@ mod tests {
     /// tile, the cadence menu, the row menu, the filter and the tree keys.
     #[test]
     fn window_controls_change_the_view() {
-        let mut harness = window(app(), (1280, 800));
+        let mut hosted = hosted_sample("default");
 
-        click(&mut harness, "Resources");
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
-        assert!(harness.inspection_json().unwrap().contains("Host name"));
-        click(&mut harness, "Processes");
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
+        click_tab(hosted.harness(), "Resources");
+        hosted.settle();
+        assert_eq!(
+            monitor_read(&mut hosted, |surface| surface.tab),
+            Tab::Resources
+        );
+        assert!(
+            hosted
+                .harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Host name")
+        );
+        click_tab(hosted.harness(), "Processes");
+        hosted.settle();
+        assert_eq!(
+            monitor_read(&mut hosted, |surface| surface.tab),
+            Tab::Processes
+        );
 
-        click(&mut harness, "Every 1.5 s");
-        assert!(harness.root::<MonitorApp>().cadence_menu.is_open());
-        let paused = harness
-            .root::<MonitorApp>()
-            .cadence_menu
-            .item_rect(Cadence::all().len() - 1)
-            .expect("the menu lists Paused");
-        harness.click_at(paused.center().x, paused.center().y);
-        harness.relayout();
-        assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
+        click(hosted.harness(), "Every 1.5 s");
+        let paused = monitor_read(&mut hosted, |surface| {
+            assert!(surface.cadence_menu.is_open());
+            surface
+                .cadence_menu
+                .item_rect(Cadence::all().len() - 1)
+                .expect("the menu lists Paused")
+        });
+        hosted
+            .harness()
+            .click_at(paused.center().x, paused.center().y);
+        hosted.settle();
+        assert!(!monitor_read(&mut hosted, |surface| surface
+            .prefs
+            .auto_refresh));
 
-        let (x, y) = center_of(&harness, "tilo-fs").expect("tilo-fs row");
-        harness.send(&WindowEvent::CursorMoved {
+        let (x, y) = center_of(hosted.harness(), "tilo-fs").expect("tilo-fs row");
+        hosted.harness().send(&WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         });
-        harness.send(&WindowEvent::MouseInput {
+        hosted.harness().send(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: winit::event::MouseButton::Right,
         });
-        harness.relayout();
-        let tilo_fs = pid_named(harness.root::<MonitorApp>(), "tilo-fs");
-        assert_eq!(harness.root::<MonitorApp>().selected_pid, Some(tilo_fs));
-        assert!(harness.root::<MonitorApp>().context.is_open());
-        let copy = {
-            let monitor = harness.root::<MonitorApp>();
-            let index = monitor
+        hosted.settle();
+        let (tilo_fs, copy) = monitor_read(&mut hosted, |surface| {
+            let pid = pid_named(surface, "tilo-fs");
+            assert_eq!(surface.selected_pid, Some(pid));
+            assert!(surface.context.is_open());
+            assert_eq!(
+                surface.context_resource,
+                Some(resource_id_for(surface, pid))
+            );
+            let index = surface
                 .context_choices
                 .iter()
                 .position(|choice| *choice == Some(MenuChoice::Copy))
                 .expect("the menu offers Copy PID");
-            monitor.context.item_rect(index).expect("laid out")
-        };
-        harness.click_at(copy.center().x, copy.center().y);
-        harness.relayout();
-        let expected = resource_id_for(harness.root::<MonitorApp>(), tilo_fs);
-        let request =
-            ui::widget::controls::take_control_invocation(harness.root_mut::<MonitorApp>())
-                .expect("copy queues its typed invocation");
-        assert_eq!(request.address, ActionAddress::new(expected, "copy-pid"));
+            (pid, surface.context.item_rect(index).expect("laid out"))
+        });
+        hosted.harness().click_at(copy.center().x, copy.center().y);
+        hosted.settle();
+        monitor_read(&mut hosted, |surface| {
+            // The host drains a control invocation in the same input tick.
+            // Assert its typed completion instead of inspecting an already
+            // consumed queue in an unhosted presentation.
+            assert_eq!(surface.copied_pid, Some(tilo_fs));
+            assert!(!surface.context.is_open());
+            assert!(surface.copy_toast_active());
+        });
 
-        // ← and → fold the selected parent while the table has focus (the
-        // row is where it was; the inspector now carries its name too).
-        harness.click_at(x, y);
-        harness.relayout();
-        harness.key("ArrowRight");
-        harness.relayout();
-        assert!(harness.root::<MonitorApp>().expanded.contains(&tilo_fs));
-        harness.key("ArrowLeft");
-        harness.relayout();
-        assert!(!harness.root::<MonitorApp>().expanded.contains(&tilo_fs));
+        // Fold the same retained process with the real focused table keys.
+        hosted.harness().click_at(x, y);
+        hosted.harness().key("ArrowRight");
+        hosted.settle();
+        assert!(monitor_read(&mut hosted, |surface| surface
+            .expanded
+            .contains(&tilo_fs)));
+        hosted.harness().key("ArrowLeft");
+        hosted.settle();
+        assert!(!monitor_read(&mut hosted, |surface| surface
+            .expanded
+            .contains(&tilo_fs)));
 
-        click(&mut harness, "Memory");
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        click(hosted.harness(), "Memory");
+        hosted.settle();
+        assert_eq!(
+            monitor_read(&mut hosted, |surface| surface.tab),
+            Tab::Resources
+        );
     }
 
     #[test]
@@ -2601,6 +2662,7 @@ mod tests {
     fn narrow_detail_push_and_return_respect_motion_preferences() {
         let mut theme = Theme::dark();
         theme.reduce_motion = true;
+        let fade_budget = theme.tokens.motion.durations.fast().saturating_mul(4);
         let mut harness = FrameHarness::for_root(ui::State::new(), app(), (480, 820), theme);
         for _ in 0..4 {
             harness.relayout();
@@ -2611,8 +2673,11 @@ mod tests {
         }
         assert!(harness.root::<MonitorApp>().shell.is_inspector_open());
         assert!(
-            !harness.root::<MonitorApp>().shell.needs_animation_frame(),
-            "reduced motion settles the drawer"
+            harness.wait_until(fade_budget, |frame| !frame
+                .root::<MonitorApp>()
+                .shell
+                .needs_animation_frame()),
+            "the theme's reduced-motion crossfade settles the drawer"
         );
         harness.key("Escape");
         for _ in 0..4 {
@@ -2686,13 +2751,15 @@ mod tests {
     #[test]
     fn semantic_controls_follow_pointer_paths_at_drawn_rects() {
         let mut harness = window(app(), (1280, 800));
+        let (resources, _) = tab_node(&harness, "Resources");
         harness
-            .perform_semantic_named("Resources", None, &ui::a11y::Action::Activate)
+            .perform_a11y_action(resources, &ui::a11y::Action::Activate)
             .unwrap();
         harness.relayout();
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        let (processes, _) = tab_node(&harness, "Processes");
         harness
-            .perform_semantic_named("Processes", None, &ui::a11y::Action::Activate)
+            .perform_a11y_action(processes, &ui::a11y::Action::Activate)
             .unwrap();
         harness.relayout();
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
@@ -2713,9 +2780,7 @@ mod tests {
             harness.root::<MonitorApp>().selected_identity(),
             Some((row.pid, row.started_at))
         );
-        harness
-            .perform_semantic_named("Confirm kills", None, &ui::a11y::Action::Activate)
-            .unwrap();
+        activate(&mut harness, "Confirm kills");
         harness.relayout();
         assert!(!harness.root::<MonitorApp>().prefs.confirm_kill);
         let process = harness
@@ -2731,7 +2796,41 @@ mod tests {
                 .all(|action| action.contract.confirmation == ConfirmationPolicy::Confirm)
         );
     }
-    type HostedMonitor = ui::framework::testing::TestApp<crate::resource::MonitorShell>;
+    struct SampleMonitor;
+    impl ui::framework::ResourceApp for SampleMonitor {
+        type Resource = crate::resource::Monitor;
+        const ID: &'static str = "so.tilo.monitor";
+        const TITLE: &'static str = "System Monitor";
+        fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> Element {
+            // Real typed runner, inert sampler and synthetic process identities.
+            // Stop/Kill can only remove a fixture row; never signal the host.
+            cx.surface(MonitorApp::new())
+        }
+        fn shot_viewport(_: Option<&str>) -> (u32, u32) {
+            (1280, 800)
+        }
+    }
+    type HostedMonitor = ui::framework::testing::TestApp<SampleMonitor>;
+
+    fn hosted_sample(scenario: &str) -> HostedMonitor {
+        let mut hosted = HostedMonitor::new().unwrap();
+        hosted
+            .harness()
+            .with_widget_mut::<MonitorApp, _>(|surface| {
+                assert!(surface.sample_only);
+                surface.stage_scenario(scenario);
+            })
+            .unwrap();
+        hosted.settle();
+        hosted
+    }
+
+    fn monitor_read<R>(hosted: &mut HostedMonitor, read: impl FnOnce(&MonitorApp) -> R) -> R {
+        hosted
+            .harness()
+            .with_widget_mut::<MonitorApp, _>(|surface| read(surface))
+            .unwrap()
+    }
 
     fn hosted_activate(app: &mut HostedMonitor, label: &str) {
         let id = app
@@ -2812,9 +2911,33 @@ mod tests {
     }
 
     #[test]
+    fn captures_keep_process_effects_inert() {
+        let mut capture =
+            ui::framework::testing::TestApp::<crate::resource::MonitorShell>::capture(Some(
+                "detail",
+            ))
+            .unwrap();
+        let process = capture
+            .harness()
+            .with_widget_mut::<MonitorApp, _>(|surface| {
+                assert!(surface.sample_only);
+                let pid = surface.selected_pid.unwrap();
+                resource_id_for(surface, pid)
+            })
+            .unwrap();
+        assert!(capture.effect(&MonitorEffect::CopyPid { process }).is_err());
+        capture
+            .harness()
+            .with_widget_mut::<MonitorApp, _>(|surface| {
+                assert!(surface.copied_pid.is_none());
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn hosted_context_menu_copy_and_stop_use_typed_operations() {
         for label in ["Copy PID", "Stop process"] {
-            let mut hosted = HostedMonitor::capture(Some("context-menu")).unwrap();
+            let mut hosted = hosted_sample("context-menu");
             let pid = hosted
                 .harness()
                 .with_widget_mut::<MonitorApp, _>(|surface| {
@@ -2872,7 +2995,7 @@ mod tests {
 
     #[test]
     fn hosted_inspector_copy_uses_captured_process_generation() {
-        let mut hosted = HostedMonitor::capture(Some("detail")).unwrap();
+        let mut hosted = hosted_sample("detail");
         let pid = hosted
             .harness()
             .with_widget_mut::<MonitorApp, _>(|surface| surface.selected_pid.unwrap())

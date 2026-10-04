@@ -1061,6 +1061,26 @@ pub trait Widget {
         None
     }
 
+    /// Visit the first opted-in retained value of `target` for typed harness
+    /// inspection. Transparent decorators also search their wrapped widget;
+    /// semantic and layout children remain unchanged. The callback runs once,
+    /// only on a matching value explicitly exposed through `as_any_mut`.
+    fn visit_any_mut(
+        &mut self,
+        target: std::any::TypeId,
+        visit: &mut dyn FnMut(&mut dyn std::any::Any),
+    ) -> bool {
+        if let Some(value) = self.as_any_mut()
+            && (*value).type_id() == target
+        {
+            visit(value);
+            return true;
+        }
+        self.children_mut()
+            .into_iter()
+            .any(|child| child.visit_any_mut(target, visit))
+    }
+
     /// Reveal a newly keyboard-focused descendant inside any enclosing
     /// viewport. Containers override this to scroll; ordinary widgets simply
     /// recurse toward the target and report whether it was found.

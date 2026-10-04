@@ -24,22 +24,20 @@ fn row<'a>(surface: &'a serde_json::Value, resource: &str, action: &str) -> &'a 
         .unwrap_or_else(|| panic!("{resource}#{action} is published: {surface:#}"))
 }
 
-/// Click the control a screen reader announces as `name`, where it is drawn.
+/// Click the increment target of the spinbutton announced as `name`.
 fn click(app: &mut TestApp<BackupsShell>, name: &str) {
     let bounds = app
         .harness()
         .a11y_nodes()
         .into_iter()
-        .find(|(_, node)| node.label() == Some(name))
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::SpinButton && node.label() == Some(name)
+        })
         .and_then(|(_, node)| node.bounds())
         .unwrap_or_else(|| panic!("{name} is on screen"));
     // The shared NumberInput publishes one SpinButton; its trailing square
     // is the visible increment target, with the control's measured height.
-    let x = if name == "Daily snapshots to keep" {
-        bounds.x1 - (bounds.y1 - bounds.y0) / 2.0
-    } else {
-        f64::midpoint(bounds.x0, bounds.x1)
-    };
+    let x = bounds.x1 - (bounds.y1 - bounds.y0) / 2.0;
     app.harness()
         .click_at(x, f64::midpoint(bounds.y0, bounds.y1));
     app.settle();
@@ -49,7 +47,7 @@ fn click(app: &mut TestApp<BackupsShell>, name: &str) {
 fn the_retention_steppers_edit_the_document_as_one_undo_step() {
     let mut app = TestApp::<BackupsShell>::capture(Some("schedules")).unwrap();
     assert_eq!(app.state().policy.daily, 7);
-    click(&mut app, "Daily snapshots to keep");
+    click(&mut app, "Daily");
     assert_eq!(app.state().policy.daily, 8);
     // The palette's increment on the same class is the same action.
     let surface = app.agent_surface();
@@ -168,12 +166,17 @@ fn every_scenario_stages_its_screen() {
         (Some("empty"), "Choose folder…"),
         (Some("restore"), "Choose folder…"),
         (Some("unavailable"), "Choose another location…"),
-        (Some("schedules"), "Daily snapshots to keep"),
+        (Some("schedules"), "Daily"),
         (None, "Back up now"),
     ] {
         let mut app = TestApp::<BackupsShell>::capture(scenario).unwrap();
         let tree = app.harness().inspection_json().unwrap();
         assert!(tree.contains(shown), "{scenario:?} shows {shown}: {tree}");
+        if scenario == Some("schedules") {
+            assert!(app.harness().a11y_nodes().iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::SpinButton && node.label() == Some("Daily")
+            }));
+        }
     }
 }
 
@@ -182,8 +185,13 @@ fn retention_keyboard_and_assistive_changes_use_the_same_undoable_action() {
     let mut app = TestApp::<BackupsShell>::capture(Some("schedules")).unwrap();
     let target = app
         .harness()
-        .a11y_node_named("Daily snapshots to keep")
-        .unwrap();
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::SpinButton && node.label() == Some("Daily")
+        })
+        .expect("the Daily retention control is a published spinbutton")
+        .0;
     app.harness()
         .perform_a11y_action(target, &ui::a11y::Action::Increment)
         .unwrap();
@@ -213,7 +221,9 @@ fn retention_keyboard_and_assistive_changes_use_the_same_undoable_action() {
         .harness()
         .a11y_nodes()
         .into_iter()
-        .find(|(_, node)| node.label() == Some("Daily snapshots to keep"))
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::SpinButton && node.label() == Some("Daily")
+        })
         .unwrap()
         .1;
     assert_eq!(shown.value(), Some("3"));

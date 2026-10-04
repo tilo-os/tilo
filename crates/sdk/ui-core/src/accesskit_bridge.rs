@@ -68,6 +68,48 @@ use crate::widget::Widget;
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
+type WidgetIdentity = (*const (), &'static str);
+
+fn widget_identity(widget: &dyn Widget) -> WidgetIdentity {
+    (
+        std::ptr::from_ref(widget).cast::<()>(),
+        widget.concrete_type_name(),
+    )
+}
+
+/// Find the deepest active modal, preferring the last presented sibling.
+/// Keep its ancestor path: projection must enter those callback guards even
+/// though their background semantics are not part of the modal presentation.
+fn active_modal_path<const BOUND: bool>(roots: &[&dyn Widget]) -> Vec<WidgetIdentity> {
+    fn find<const BOUND: bool>(widget: &dyn Widget, path: &mut Vec<WidgetIdentity>) -> bool {
+        let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(widget) else {
+            return false;
+        };
+        let access = widget.accessibility();
+        if access.as_ref().is_some_and(|node| node.state.hidden) {
+            return false;
+        }
+        path.push(widget_identity(widget));
+        for child in widget.children().into_iter().rev() {
+            if find::<BOUND>(child, path) {
+                return true;
+            }
+        }
+        if access.is_some_and(|node| node.state.modal) && widget.modal_capture().is_some() {
+            return true;
+        }
+        path.pop();
+        false
+    }
+    for root in roots.iter().rev() {
+        let mut path = Vec::new();
+        if find::<BOUND>(*root, &mut path) {
+            return path;
+        }
+    }
+    Vec::new()
+}
+
 /// Reserved so no widget can collide with it: widget ids are offset by +1
 /// from their taffy node id, and structural fallback ids are large offsets
 /// — see `widget_node_id`.
@@ -407,6 +449,16 @@ fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
 ) -> Option<A11yTarget> {
     if id == ROOT_ID {
         return Some(A11yTarget::Root);
+    }
+    if !active_modal_path::<BOUND>(&[root]).is_empty()
+        && !build_tree_update_with_resources_impl::<S, BOUND>(&[root], node_map, None, 1.0, &[])
+            .nodes
+            .iter()
+            .any(|(visible, _)| *visible == id)
+    {
+        // A client can retain a background id from before the dialog opened.
+        // It is unavailable while modal input owns the window.
+        return None;
     }
     if is_synthetic_id(id) {
         return search_synthetic::<BOUND>(
@@ -782,6 +834,8 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         walk_counter: 0,
         nodes: Vec::new(),
         active_descendant: None,
+        modal_path: active_modal_path::<BOUND>(roots),
+        inside_modal: false,
     };
 
     // The synthetic window root gathers the top-level accessible nodes.
@@ -905,6 +959,8 @@ struct TreeWalk<'m> {
     /// Set when the *focused* widget marks one of its synthetic descendants
     /// focused — the active-descendant target (see the module docs).
     active_descendant: Option<AkNodeId>,
+    modal_path: Vec<WidgetIdentity>,
+    inside_modal: bool,
 }
 
 /// Where a synthetic node sits under its parent: the parent's id, the widget
@@ -926,6 +982,19 @@ impl TreeWalk<'_> {
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
+        let enters_modal = !self.inside_modal && !self.modal_path.is_empty();
+        if enters_modal {
+            let identity = widget_identity(w);
+            if self.modal_path.last() != Some(&identity) {
+                if self.modal_path.contains(&identity) {
+                    for child in w.children() {
+                        self.visit::<BOUND>(child, parent_children);
+                    }
+                }
+                return;
+            }
+            self.inside_modal = true;
+        }
         let access = w.accessibility();
         let taffy_id = self.ptr_to_taffy.get(w);
 
@@ -999,6 +1068,9 @@ impl TreeWalk<'_> {
                 self.visit::<BOUND>(child, parent_children);
             }
         }
+        if enters_modal {
+            self.inside_modal = false;
+        }
     }
 
     /// A node with no backing [`Widget`] — a table row/cell, a clip on a timeline
@@ -1029,7 +1101,6 @@ impl TreeWalk<'_> {
         } = slot;
         let ordinal = ordinal_path.last().copied().unwrap_or_default();
         let id = synthetic_node_id(parent_id, access.key.unwrap_or(ordinal as u64));
-
         let mut ak = AkNode::new(map_role(access.role));
         apply_semantics_common(&mut ak, access);
         apply_synthetic_bounds(&mut ak, access, owner, ordinal_path, self.scale);
@@ -2771,3 +2842,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "accesskit_bridge/modal_tests.rs"]
+mod modal_tests;

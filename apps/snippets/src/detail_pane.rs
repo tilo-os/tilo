@@ -261,11 +261,13 @@ impl Anchored {
         self.button.set_enabled(enabled);
         if self.part == Part::Favorite {
             self.button.set_toggled(on);
-            self.button.set_tooltip(Some(tr(if on {
+            let label = tr(if on {
                 "snippets-remove-favorite"
             } else {
                 "snippets-add-favorite"
-            })));
+            });
+            self.button.set_accessible_name(&label);
+            self.button.set_tooltip(Some(label));
         }
     }
 }

@@ -1100,6 +1100,10 @@ mod editor_sql_tests {
             .unwrap();
         let editor = app.harness().targets()["sql-editor"];
         assert!(editor.height() < 480.0, "the editor is clamped: {editor:?}");
+        assert!(
+            editor.y0 >= 0.0 && editor.y1 <= 480.0,
+            "the whole editor stays inside the viewport: {editor:?}"
+        );
         app.harness().click_at(editor.x0 + 64.0, editor.y0 + 12.0);
         app.harness()
             .perform_named(
@@ -1490,7 +1494,7 @@ mod retained_behavior_tests {
             })
             .unwrap();
         app.settle();
-        assert_eq!(app.harness().global_search_query(), Some(target.as_str()));
+        assert_eq!(app.harness().app_search_query(), Some(target.as_str()));
         assert!(
             app.harness()
                 .a11y_nodes()

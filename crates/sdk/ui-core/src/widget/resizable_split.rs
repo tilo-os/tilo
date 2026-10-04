@@ -102,15 +102,56 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// Resize existing panes, updating hit testing immediately and requesting
     /// a layout rebuild so their grow factors follow the new position.
     pub fn set_split_position(&mut self, position: f32) {
-        if position.is_nan() {
-            return;
-        }
-        let position = position.clamp(SPLIT_MIN, SPLIT_MAX);
-        if self.split_position != position {
-            self.split_position = position;
-            self.recompute_divider_rect();
+        if self.update_split_position(position) {
             self.structure_dirty = true;
         }
+    }
+
+    /// Adjust a split while the layout solver owns its existing node. Update
+    /// both pane grow factors in that tree and return whether it needs another
+    /// solve. Unlike an external resize, this does not request a new tree:
+    /// intermediate allocations can differ from the final allocation.
+    ///
+    /// `node` must be this split's node in `taffy`. Pending external or child
+    /// structural invalidations are preserved. NaN is an unchanged no-op.
+    pub fn set_split_position_in_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        position: f32,
+    ) -> bool {
+        if position.is_nan() {
+            return false;
+        }
+        self.update_split_position(position);
+        let mut changed = false;
+        for (child, grow) in taffy
+            .children(node)
+            .unwrap_or_default()
+            .into_iter()
+            .zip([self.split_position, 1.0 - self.split_position])
+        {
+            if let Ok(mut style) = taffy.style(child).cloned()
+                && style.flex_grow != grow
+            {
+                style.flex_grow = grow;
+                changed |= taffy.set_style(child, style).is_ok();
+            }
+        }
+        changed
+    }
+
+    fn update_split_position(&mut self, position: f32) -> bool {
+        if position.is_nan() {
+            return false;
+        }
+        let position = position.clamp(SPLIT_MIN, SPLIT_MAX);
+        if self.split_position == position {
+            return false;
+        }
+        self.split_position = position;
+        self.recompute_divider_rect();
+        true
     }
 
     pub fn split_position(&self) -> f32 {
@@ -594,6 +635,7 @@ mod tests {
         rect: Rect,
         updates: usize,
         changes: bool,
+        structure_dirty: bool,
     }
 
     impl TestLeaf {
@@ -602,11 +644,16 @@ mod tests {
                 rect: Rect::ZERO,
                 updates: 0,
                 changes: false,
+                structure_dirty: false,
             }
         }
     }
 
     impl Widget for TestLeaf {
+        fn take_structure_dirty(&mut self) -> bool {
+            std::mem::take(&mut self.structure_dirty)
+        }
+
         fn update(
             &mut self,
             _state: &mut crate::widget::AppModel,
@@ -754,6 +801,135 @@ mod tests {
             assert!(
                 !split.take_structure_dirty(),
                 "one layout request per change"
+            );
+        }
+    }
+
+    #[test]
+    fn measured_position_preserves_pending_invalidations_and_clamps_geometry() {
+        for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
+            let mut split = split_at(0.0, 0.0, 400.0, 400.0, orientation);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let node = split.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            let children = tree.children(node).unwrap();
+            split.set_split_position(0.75);
+            split.left.structure_dirty = true;
+            assert!(split.set_split_position_in_layout(&mut tree, node, 0.25));
+            assert_eq!(tree.style(children[0]).unwrap().flex_grow, 0.25);
+            assert_eq!(tree.style(children[1]).unwrap().flex_grow, 0.75);
+            assert!(split.structure_dirty, "external resize remains pending");
+            assert!(
+                split.left.structure_dirty,
+                "child invalidation remains pending"
+            );
+            assert!(split.take_structure_dirty());
+            assert!(!split.take_structure_dirty());
+            assert!(!split.set_split_position_in_layout(&mut tree, node, 0.25));
+            assert!(!split.set_split_position_in_layout(&mut tree, node, f32::NAN));
+            assert_eq!(split.split_position(), 0.25);
+            assert_eq!(tree.style(children[0]).unwrap().flex_grow, 0.25);
+            assert!(!split.take_structure_dirty());
+            for (request, expected) in [(f32::INFINITY, SPLIT_MAX), (f32::NEG_INFINITY, SPLIT_MIN)]
+            {
+                assert!(split.set_split_position_in_layout(&mut tree, node, request));
+                assert_eq!(split.split_position(), expected);
+                assert_eq!(tree.style(children[0]).unwrap().flex_grow, expected);
+                assert_eq!(tree.style(children[1]).unwrap().flex_grow, 1.0 - expected);
+                let point = match orientation {
+                    SplitOrientation::Horizontal => Point::new(400.0 * f64::from(expected), 200.0),
+                    SplitOrientation::Vertical => Point::new(200.0, 400.0 * f64::from(expected)),
+                };
+                assert!(
+                    split.cursor_shape(point).is_some(),
+                    "hit geometry follows the measured split"
+                );
+                assert!(
+                    !split.take_structure_dirty(),
+                    "measurement does not request a new tree"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn measured_split_settles_inside_a_resizing_navigation_shell() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct MeasuredSplit {
+            split: ResizableSplit<TestLeaf, TestLeaf>,
+            extents: Rc<Cell<(f64, f64, f64)>>,
+        }
+        impl crate::widget::Decorator for MeasuredSplit {
+            type Inner = ResizableSplit<TestLeaf, TestLeaf>;
+            fn inner(&self) -> &Self::Inner {
+                &self.split
+            }
+            fn inner_mut(&mut self) -> &mut Self::Inner {
+                &mut self.split
+            }
+            fn build_layout(
+                &mut self,
+                tree: &mut TaffyTree<()>,
+                theme: &Theme,
+                nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                let node = self.split.build_layout(tree, theme, nodes);
+                crate::widget::decorator::register_node(nodes, node, self);
+                node
+            }
+            fn adjust_layout_with_measure(
+                &mut self,
+                tree: &mut TaffyTree<()>,
+                node: NodeId,
+                _text: &mut TextRenderer,
+            ) -> bool {
+                let height = tree.layout(node).unwrap().size.height;
+                height > 0.0
+                    && self
+                        .split
+                        .set_split_position_in_layout(tree, node, 65.5 / height)
+            }
+            fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+                self.split.apply_layout(tree, node, origin);
+                self.extents.set((
+                    self.split.left.rect.height(),
+                    self.split.right.rect.height(),
+                    self.split.rect.height(),
+                ));
+            }
+        }
+        let extents = Rc::new(Cell::new((0.0, 0.0, 0.0)));
+        let shell = crate::widget::NavShell::new()
+            .sidebar(Box::new(crate::widget::Text::new("Connections")))
+            .content_header("Query", vec![])
+            .content(Box::new(MeasuredSplit {
+                split: ResizableSplit::new(
+                    TestLeaf::new(),
+                    TestLeaf::new(),
+                    SplitOrientation::Vertical,
+                ),
+                extents: Rc::clone(&extents),
+            }));
+        let mut frame = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            shell,
+            (1280, 800),
+            Theme::dark(),
+        );
+        for viewport in [(800, 480), (1280, 800)] {
+            frame
+                .resize(viewport)
+                .expect("measured split composition settles after resize");
+            let (first, second, total) = extents.get();
+            assert!(total > 0.0 && total < f64::from(viewport.1));
+            let ratio = (65.5 / total).clamp(f64::from(SPLIT_MIN), f64::from(SPLIT_MAX));
+            assert!((first - total * ratio).abs() < 0.1);
+            assert!((second - total * (1.0 - ratio)).abs() < 0.1);
+            frame.relayout();
+            assert!(
+                !frame.last_relayout().rebuilt,
+                "settled measurement keeps the next frame retained"
             );
         }
     }

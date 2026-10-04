@@ -307,8 +307,20 @@ fn accessibility_names_accounts_and_the_sheet_owns_the_window() {
         assert!(named("Button", "Show"), "Advanced options");
         let tree = app.accessibility().expect("the root stays described");
         assert!(
-            tree.state.hidden,
-            "the list behind the sheet is not reachable while it is open"
+            tree.children.is_empty(),
+            "the root omits every synthetic background control while the sheet is open"
+        );
+        assert!(
+            !nodes.iter().any(|(_, node)| {
+                matches!(format!("{:?}", node.role()).as_str(), "List" | "ListItem")
+                    || node.label().is_some_and(|name| {
+                        name.starts_with("Copy code for ")
+                            || name.starts_with("Edit ")
+                            || name.starts_with("Delete ")
+                            || name.starts_with("Move ")
+                    })
+            }),
+            "the mounted modal exposes no background account rows or actions"
         );
     }
 

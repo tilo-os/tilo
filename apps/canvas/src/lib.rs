@@ -80,7 +80,7 @@ impl ResourceApp for App {
                     .push(canvas)
                     .push(panels::header::context_bar(cx, &tools)),
             ));
-        Box::new(
+        Box::new(panels::pane::ArtworkControls(Box::new(
             NavShell::new()
                 .with_id("canvas-shell")
                 .with_inspector_state(&tools.sidebar)
@@ -93,7 +93,7 @@ impl ResourceApp for App {
                         .push(Box::new(work)),
                 ))
                 .inspector(sidebar(cx, &tools, &dock)),
-        )
+        )))
     }
 
     fn scenarios() -> &'static [&'static str] {

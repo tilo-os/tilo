@@ -1,7 +1,8 @@
 use super::*;
+use ui::framework::{ResourceApp, SeedCx, ViewCx};
 use ui::headless::Framed;
 use ui::prelude::TestApp;
-use ui::widget::SidebarPlacement;
+use ui::widget::{Element, SidebarPlacement};
 
 type Hosted = TestApp<crate::FirewallShell>;
 fn seeded() -> (FirewallApp, AutoCommit) {
@@ -11,8 +12,12 @@ fn rules(app: &Hosted) -> Vec<Rule> {
     app.state().zone(ZoneKind::Public).unwrap().rules.clone()
 }
 fn semantic(app: &mut Hosted, name: &str) {
+    let id = app
+        .harness()
+        .a11y_node_named(name)
+        .expect("visible control");
     app.harness()
-        .perform_semantic_named(name, None, &ui::a11y::Action::Activate)
+        .perform_a11y_action(id, &ui::a11y::Action::Activate)
         .unwrap();
     app.settle();
 }
@@ -48,7 +53,41 @@ fn hosted() -> ui::prelude::TestApp<crate::FirewallShell> {
     ui::prelude::TestApp::<crate::FirewallShell>::capture(None).unwrap()
 }
 
-fn operate_hosted(app: &mut ui::prelude::TestApp<crate::FirewallShell>, suffix: &str) {
+// Effects are deliberately inert in captures. Exercise the production typed
+// runner in a live test host with only the bundled configuration, and refuse
+// to construct it if the device backend has been armed.
+struct PlannedFirewall;
+impl ResourceApp for PlannedFirewall {
+    type Resource = crate::resource::Firewall;
+    const ID: &'static str = "so.tilo.firewall";
+    const TITLE: &'static str = "Firewall";
+
+    fn view(cx: &mut ViewCx<Self::Resource>) -> Element {
+        cx.surface(FirewallApp::new_demo())
+    }
+
+    fn seed(cx: &SeedCx<'_>) -> Vec<ui::tilo_resource::Invoke<Self::Resource>> {
+        let config = crate::sample::sample_config().canonical();
+        // As with the live app's imported seed, the initial state is already
+        // accounted for. Only the tested Apply request should plan commands.
+        cx.host()
+            .settings::<AppliedConfig>()
+            .set(&AppliedConfig {
+                config: Some(config.to_json()),
+            })
+            .unwrap();
+        vec![ui::tilo_resource::Invoke::apply(&FirewallAction::Import { config }).unwrap()]
+    }
+}
+fn planned_host() -> TestApp<PlannedFirewall> {
+    assert!(
+        std::env::var_os("TILO_FIREWALL_APPLY").is_none(),
+        "firewall tests require an unarmed backend"
+    );
+    TestApp::new().unwrap()
+}
+
+fn operate_hosted<A: ResourceApp>(app: &mut TestApp<A>, suffix: &str) {
     let targets = app.harness().targets();
     let (_, rect) = targets
         .iter()
@@ -194,7 +233,7 @@ fn layout_grows_with_the_text_scale() {
 #[test]
 fn a_demo_firewall_is_published_through_the_action() {
     let mut app = hosted();
-    let expected = crate::sample::sample_config();
+    let expected = crate::sample::sample_config().canonical();
     assert_eq!(app.state().default_zone, expected.default_zone);
     assert_eq!(app.state().zones.len(), expected.zones.len());
     for zone in app.state().zones {
@@ -279,6 +318,32 @@ fn the_add_rule_form_validates_each_field() {
     operate_hosted(&mut app, "firewall-rule-new");
     semantic(&mut app, "Port");
     fill(&mut app, "firewall-rule-port", "70000");
+    let port = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::TextInput && node.label() == Some("Port")
+        })
+        .expect("the real port field is exported")
+        .1;
+    assert_eq!(
+        port.value(),
+        Some("70000"),
+        "typing reaches the bound port draft"
+    );
+    let submit_buttons = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| {
+            node.role() == ui::accesskit::Role::Button && node.label() == Some("Add rule")
+        })
+        .count();
+    assert_eq!(
+        submit_buttons, 1,
+        "the modal exposes its submit, not the background Add rule button"
+    );
     semantic(&mut app, "Add rule");
     assert_eq!(rules(&app).len(), before);
     assert!(
@@ -376,10 +441,37 @@ fn making_a_zone_active_changes_the_default() {
 }
 
 #[test]
+fn captures_keep_device_effects_inert() {
+    let mut app = hosted();
+    let before = app.state();
+    let versions = app.versions().len();
+    let applied = app.settings::<AppliedConfig>();
+    assert!(app.effect(&FirewallEffect::ApplyConfig).is_err());
+    assert_eq!(app.state(), before);
+    assert_eq!(app.versions().len(), versions);
+    assert!(
+        applied.get().config.is_none(),
+        "captures never drain device projections"
+    );
+    assert!(
+        !app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("commands planned")
+    );
+}
+
+#[test]
 fn exported_effects_complete_only_after_sync() {
     // Async execution/cancellation belongs to the framework's typed effect runner.
     // The application assertion is that Apply completes there without a document edit.
-    let mut app = hosted();
+    let mut app = planned_host();
+    assert!(
+        !app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("commands planned")
+    );
     let versions = app.versions().len();
     let config = app.state();
     app.effect(&FirewallEffect::ApplyConfig).unwrap();
@@ -412,7 +504,13 @@ fn rule_and_zone_edits_round_trip_through_the_document() {
 
 #[test]
 fn apply_now_reports_the_planned_commands() {
-    let mut app = hosted();
+    let mut app = planned_host();
+    assert!(
+        !app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("commands planned")
+    );
     operate_hosted(&mut app, "firewall-apply");
     app.harness()
         .wait_until(ui::time::Duration::from_secs(5), |h| {
@@ -433,8 +531,8 @@ fn zone_list_and_rules_table_are_reader_operable() {
     semantic(&mut app, "Public");
     let rule = rules(&app)[0].clone();
     let name = match rule.action {
-        Action::Allow => "Allow rules",
-        Action::Deny => "Deny rules",
+        Action::Allow => "firewall-allow-rules",
+        Action::Deny => "firewall-deny-rules",
     };
     let row = format!("row:{}:0", crate::view::rule_row_key(rule.id));
     app.harness()
@@ -450,7 +548,14 @@ fn zone_list_and_rules_table_are_reader_operable() {
         .unwrap();
     app.settle();
     assert_ne!(rules(&app)[0].enabled, rule.enabled);
-    semantic(&mut app, &format!("firewall-rule-delete-{}", rule.id));
+    app.harness()
+        .perform_semantic_named(
+            &format!("firewall-rule-delete-{}", rule.id),
+            None,
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    app.settle();
     assert!(rules(&app).iter().any(|r| r.id == rule.id));
     semantic(&mut app, "Delete rule");
     assert!(!rules(&app).iter().any(|r| r.id == rule.id));

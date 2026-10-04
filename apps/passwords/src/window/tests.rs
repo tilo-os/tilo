@@ -737,6 +737,42 @@ fn every_capture_scenario_stages_on_the_fixture_vault() {
 }
 
 #[test]
+fn reapplying_the_filter_keeps_the_editor_and_changed_queries_refresh_the_list() {
+    let mut app = PasswordsSurface::demo();
+    let mut doc = AutoCommit::new();
+    request(&mut app, &mut doc, Request::NewItem);
+    app.core_mut().set_draft(DraftField::Name, "Mail");
+    app.core_mut().list.scroll = 37.0;
+    let revisions = {
+        let core = app.core();
+        (core.page_revision, core.list_revision)
+    };
+    let mut overview = VaultOverview::new(&app.core, &app.requests);
+    assert!(ui::widget::apply_filter(&mut overview, "").is_some());
+    app.settle(&mut doc);
+    {
+        let core = app.core();
+        assert_eq!((core.page_revision, core.list_revision), revisions);
+        assert_eq!(core.list.scroll, 37.0);
+        assert_eq!(core.screen, Screen::Editor);
+        assert_eq!(core.draft(DraftField::Name), "Mail");
+    }
+    assert!(ui::widget::apply_filter(&mut overview, "Northstar").is_some());
+    app.settle(&mut doc);
+    {
+        let core = app.core();
+        assert!(core.page_revision > revisions.0);
+        assert!(core.list_revision > revisions.1);
+        assert_eq!(core.list.scroll, 0.0);
+        assert_eq!(core.visible().len(), 1);
+        assert_eq!(core.visible()[0].title, "Northstar Bank");
+        assert_eq!(core.screen, Screen::Editor);
+        assert_eq!(core.draft(DraftField::Name), "Mail");
+    }
+    assert!(doc.get_heads().is_empty(), "the query remains device-local");
+}
+
+#[test]
 fn the_shared_filter_keeps_queries_local_and_matches_only_non_secret_metadata() {
     let mut app = PasswordsSurface::demo();
     let mut overview = VaultOverview::new(&app.core, &app.requests);

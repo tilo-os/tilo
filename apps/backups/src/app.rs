@@ -1534,6 +1534,18 @@ mod retained_tests {
         settle(f);
     }
 
+    fn navigation_row(f: &Frame, name: &str) -> (ui::accesskit::NodeId, Rect) {
+        let (id, node) = Framed::harness(f)
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::TreeItem && node.label() == Some(name)
+            })
+            .unwrap_or_else(|| panic!("navigation row {name} is accessible"));
+        let bounds = node.bounds().expect("navigation row has painted bounds");
+        (id, Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+    }
+
     fn inside(rect: Rect, width: f64, height: f64) {
         assert!(rect.width() > 0.0 && rect.height() > 0.0, "{rect:?}");
         assert!(rect.x0 >= 0.0 && rect.x1 <= width, "{rect:?} fits {width}");
@@ -1632,7 +1644,7 @@ mod retained_tests {
             !Framed::harness(&narrow)
                 .a11y_nodes()
                 .iter()
-                .any(|(_, node)| node.label() == Some("Home")),
+                .any(|(_, node)| node.role() == ui::accesskit::Role::TreeItem),
             "the closed offscreen drawer exposes no painted or actionable rows"
         );
         let mut short = frame(None, 1280, 300, 1.0);
@@ -1641,7 +1653,7 @@ mod retained_tests {
             ui::widget::SidebarPlacement::Docked
         );
         let header = short.shell.geometry().toggle;
-        let all = labelled(&short, "All backups");
+        let all = navigation_row(&short, "All backups").1;
         let at = short.shell.geometry().sidebar_column.center();
         wheel(&mut short, at, -2.0);
         assert_eq!(
@@ -1652,27 +1664,29 @@ mod retained_tests {
         let after = Framed::harness(&short)
             .a11y_nodes()
             .into_iter()
-            .find(|(_, node)| node.label() == Some("All backups"))
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::TreeItem && node.label() == Some("All backups")
+            })
             .and_then(|(_, node)| node.bounds());
         assert!(
             after.is_none_or(|rect| rect.y0 < all.y0),
             "the short sidebar scrolls its rows"
         );
         wheel(&mut short, at, 100.0);
-        assert_eq!(labelled(&short, "All backups"), all);
+        assert_eq!(navigation_row(&short, "All backups").1, all);
         let at = short.shell.geometry().content_column.center();
         wheel(&mut short, at, -2.0);
         assert_eq!(
-            labelled(&short, "All backups"),
+            navigation_row(&short, "All backups").1,
             all,
             "timeline scroll leaves navigation alone"
         );
         let mut tall = frame(None, 1280, 1000, 1.0);
-        let all = labelled(&tall, "All backups");
+        let all = navigation_row(&tall, "All backups").1;
         let at = tall.shell.geometry().sidebar_column.center();
         wheel(&mut tall, at, -2.0);
         assert_eq!(
-            labelled(&tall, "All backups"),
+            navigation_row(&tall, "All backups").1,
             all,
             "a fitting sidebar does not scroll"
         );
@@ -1692,7 +1706,7 @@ mod retained_tests {
                 click(&mut f, "Show sidebar");
                 assert!(f.shell.is_sidebar_open());
                 for name in ["All backups", "Home", "Internal pool", "Retention"] {
-                    let item = labelled(&f, name);
+                    let item = navigation_row(&f, name).1;
                     inside(item, f64::from(width), 844.0);
                 }
             }
@@ -1703,9 +1717,11 @@ mod retained_tests {
     fn view_navigation_is_device_local_through_pointer_keyboard_and_accessibility() {
         let mut f = frame(None, 1280, 800, 1.0);
         let before = Framed::harness(&f).state().doc.clone().get_heads();
-        click(&mut f, "Internal pool");
+        let destination = navigation_row(&f, "Internal pool").1.center();
+        Framed::harness_mut(&mut f).click_at(destination.x, destination.y);
+        settle(&mut f);
         assert_eq!(f.page, Page::Destination("pool".into()));
-        let retention = Framed::harness(&f).a11y_node_named("Retention").unwrap();
+        let retention = navigation_row(&f, "Retention").0;
         Framed::harness_mut(&mut f)
             .perform_a11y_action(retention, &Action::Activate)
             .unwrap();
@@ -1734,7 +1750,18 @@ mod retained_tests {
             let f = frame(Some("schedules"), width, 1000, scale);
             let mut controls = Vec::new();
             for field in PolicyField::ALL {
-                let rect = labelled(&f, &format!("{} snapshots to keep", field.label()));
+                // Field gives the control its visible label. Inspect the
+                // spinbutton itself, not the separate static label node.
+                let bounds = Framed::harness(&f)
+                    .a11y_nodes()
+                    .into_iter()
+                    .find(|(_, node)| {
+                        node.role() == ui::accesskit::Role::SpinButton
+                            && node.label() == Some(field.label())
+                    })
+                    .and_then(|(_, node)| node.bounds())
+                    .expect("the retention spinbutton has accessible bounds");
+                let rect = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
                 inside(rect, f64::from(width), 1000.0);
                 assert!(
                     rect.width() >= 2.0 * rect.height(),

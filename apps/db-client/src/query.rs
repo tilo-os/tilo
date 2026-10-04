@@ -322,12 +322,37 @@ impl ui::widget::Decorator for ResultsPane {
 }
 
 /// The whole tab: the toolbar over the editor and its result.
+struct QueryPane(Column);
+
+impl ui::widget::Decorator for QueryPane {
+    type Inner = Column;
+    fn inner(&self) -> &Column {
+        &self.0
+    }
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.0
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.0.build_layout(taffy, theme, nodes);
+        // Flex's automatic minimum otherwise grows with every SQL line,
+        // pushing the editor and its result beyond the workspace viewport.
+        fill_remaining_height(taffy, node);
+        ui::widget::decorator::register_node(nodes, node, self);
+        node
+    }
+}
+
 pub fn query_pane(link: &Link) -> Element {
-    Box::new(
+    Box::new(QueryPane(
         Column::new()
             .with_no_padding()
             .with_fill_remaining_height()
             .push(Box::new(toolbar(link)))
             .push(Box::new(crate::query_split::QuerySplit::new(link))),
-    )
+    ))
 }

@@ -1021,20 +1021,13 @@ impl AddAccountPanel {
         }
     }
 
-    /// Fill the form from a setup link as soon as the field holds a complete
-    /// one; a link that does not parse says why.
+    /// Preview a valid setup link without replacing the field being edited.
+    /// A valid prefix may still be followed by secret bytes or parameters;
+    /// only an explicit Save (or apply_uri from QR import) consumes it.
     fn read_uri_field(&mut self) {
         let uri = Values::text(&self.values.uri);
-        let trimmed = uri.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        match model::parse_otpauth_uri(trimmed, Uuid::new_v4()) {
-            Ok(_) => self.apply_uri(trimmed),
-            Err(message) if trimmed.starts_with("otpauth://") => {
-                self.show_problem(FieldId::Uri, message);
-            }
-            Err(_) => {}
+        if let Ok(account) = model::parse_otpauth_uri(uri.trim(), Uuid::new_v4()) {
+            self.load(&account, true);
         }
     }
 
@@ -1140,6 +1133,16 @@ impl AddAccountPanel {
     }
 
     fn try_save(&mut self) {
+        let uri = Values::text(&self.values.uri);
+        let has_uri = self.sheet.borrow().uri_expanded && !uri.trim().is_empty();
+        if has_uri {
+            // Changes already previewed the link into the editable fields.
+            // Validate the pending link without overwriting later manual edits.
+            if let Err(message) = model::parse_otpauth_uri(uri.trim(), Uuid::new_v4()) {
+                self.show_problem(FieldId::Uri, message);
+                return;
+            }
+        }
         match self.build_account() {
             Ok(mut acc) => {
                 if let Some(existing) = &self.provisioning {

@@ -194,6 +194,114 @@ fn card_grid_resolves_columns_from_semantic_width_and_content_rows() {
 }
 
 #[test]
+fn centered_card_grid_keeps_fractional_tracks_inside_rounded_edges() {
+    for count in [2, 3] {
+        // 1428 - 1069 leaves a 179.5px origin; the adjacent viewport is
+        // integral. Both must use the same edge rounding for card positions
+        // and widths, including the two-card grid's 528.5px tracks.
+        for viewport_width in [1428, 1429] {
+            let grid = CardGrid::new((0..count).map(|_| text_card("A card")).collect());
+            let root = Container::new().with_no_padding().with_child(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_centered_max_width(1069.0)
+                    .with_child(Box::new(grid)),
+            ));
+            let theme = Theme::dark();
+            let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(root),
+                (viewport_width, 800),
+                theme,
+            );
+            let inspection = harness.inspection();
+            let grid = &inspection.root.children[0].children[0];
+            assert_eq!(grid.widget, "CardGrid");
+            let bounds = rect(grid);
+            assert_eq!(bounds.x0, 180.0);
+            assert_eq!(bounds.width(), 1069.0);
+            assert_eq!(grid.children.len(), count);
+            let mut right = bounds.x0;
+            for (index, card) in grid.children.iter().enumerate() {
+                let card = rect(card);
+                assert!(card.x0 >= bounds.x0 && card.x1 <= bounds.x1 + 0.5);
+                assert_eq!(card.y0, bounds.y0, "all cards fit on the same row");
+                assert_eq!(card.x0 - right, if index == 0 { 0.0 } else { gap });
+                right = card.x1;
+            }
+            assert_eq!(right, bounds.x1, "the final card fills the grid exactly");
+        }
+    }
+}
+
+#[test]
+fn negative_parent_edges_preserve_unrounded_and_translated_card_layouts() {
+    for rounding in [true, false] {
+        let mut root = Container::new().with_no_padding().with_child(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_child(Box::new(CardGrid::new(vec![
+                    text_card("First card"),
+                    text_card("Second card"),
+                ]))),
+        ));
+        let mut tree = TaffyTree::<()>::new();
+        if !rounding {
+            tree.disable_rounding();
+        }
+        let mut nodes = HashMap::new();
+        let node = root.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        let parent = tree.children(node).unwrap()[0];
+        let mut style = tree.style(parent).unwrap().clone();
+        style.inset.left = length(-0.5_f32);
+        style.inset.top = length(-0.5_f32);
+        tree.set_style(parent, style).unwrap();
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(&root, &tree, node, &nodes);
+            crate::widget::compute_widget_layout(
+                &mut tree,
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1069.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+                &nodes,
+                &bindings,
+                &mut TextRenderer::new(),
+            )
+        }
+        .unwrap();
+        let raw_parent = tree.unrounded_layout(parent);
+        assert_eq!(raw_parent.location.x, -0.5);
+        assert_eq!(raw_parent.location.y, -0.5);
+        // The same computed tree can be placed by a scrolling/translated
+        // parent. That applied offset must not enter Taffy's rounding basis.
+        for origin in [Point::ZERO, Point::new(-23.25, 41.75)] {
+            root.apply_layout(&tree, node, origin);
+            let parent = root.children()[0];
+            let grid = parent.children()[0];
+            let bounds = grid.get_rect();
+            let cards = grid.children();
+            let first = cards[0].get_rect();
+            let second = cards[1].get_rect();
+            let offset = if rounding { 0.0 } else { -0.5 };
+            assert_eq!(bounds.x0, origin.x + offset);
+            assert_eq!(bounds.y0, origin.y + offset);
+            assert_eq!(bounds.width(), 1069.0);
+            assert_eq!(first.x0, bounds.x0);
+            assert_eq!(first.y0, bounds.y0);
+            assert_eq!(second.y0, bounds.y0);
+            assert_eq!(first.width(), if rounding { 528.0 } else { 528.5 });
+            assert_eq!(second.width(), if rounding { 529.0 } else { 528.5 });
+            assert_eq!(second.x0 - first.x1, 12.0);
+            assert_eq!(second.x1, bounds.x1);
+        }
+    }
+}
+
+#[test]
 fn content_rows_use_each_rows_largest_card_and_align_footers() {
     let mut harness =
         FrameHarness::new_with_theme(crate::State::new(), fixture(), (700, 800), Theme::dark());

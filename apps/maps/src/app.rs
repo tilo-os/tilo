@@ -4518,6 +4518,14 @@ impl FloatingSurfaceProvider for MapsApp {
 }
 
 impl Widget for MapsApp {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::search::capability::SearchSource

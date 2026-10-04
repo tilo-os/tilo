@@ -65,7 +65,11 @@ pub(crate) struct DetailModel<'a> {
 }
 
 /// The drive list: one destination per drive.
-pub(crate) fn drive_list(topology: &Topology, selected: usize, intents: &Intents) -> NavList {
+pub(crate) fn drive_list(
+    topology: &Topology,
+    selected: &ui::LocalState<Option<String>>,
+    intents: &Intents,
+) -> NavList {
     let items = topology
         .drives
         .iter()
@@ -78,7 +82,7 @@ pub(crate) fn drive_list(topology: &Topology, selected: usize, intents: &Intents
         .collect();
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("drives", items)])
-        .selected(&drive_id(selected))
+        .bind_selection(selected)
         .with_accessible_name("Drives")
         .on_select(move |id| {
             if let Some(index) = id.strip_prefix("drive:").and_then(|n| n.parse().ok()) {
@@ -87,7 +91,7 @@ pub(crate) fn drive_list(topology: &Topology, selected: usize, intents: &Intents
         })
 }
 
-fn drive_id(index: usize) -> String {
+pub(crate) fn drive_id(index: usize) -> String {
     format!("drive:{index}")
 }
 

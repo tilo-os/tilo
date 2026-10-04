@@ -714,6 +714,11 @@ impl Core {
     }
 
     pub(crate) fn set_query(&mut self, query: &str) {
+        // The retained filter applies its initial query on first dispatch.
+        // Reapplying the same query must not replace an active editor.
+        if self.query == query {
+            return;
+        }
         self.query = query.into();
         self.list.scroll = 0.0;
         self.touch();

@@ -345,7 +345,26 @@ mod tests {
         let mut app = TestApp::<PasswordsShell>::new().unwrap();
         app.effect(&PasswordsEffect::Add).unwrap();
         app.harness().click_named("passwords.field.name").unwrap();
-        app.harness().type_text("Mail");
+        let mut expected_name = String::new();
+        for ch in "Mail".chars() {
+            expected_name.push(ch);
+            app.harness().key(&ch.to_string());
+            fn name_field(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+                if node.test_id.as_deref() == Some("passwords.field.name") {
+                    return node.semantics.as_ref();
+                }
+                node.children.iter().find_map(name_field)
+            }
+            let inspection = app.harness().inspection();
+            let value = name_field(&inspection.root).and_then(|node| node.value.as_deref());
+            assert_eq!(value, Some(expected_name.as_str()));
+            let focus = app.harness().focused_access_node();
+            assert_eq!(
+                focus.as_ref().and_then(|node| node.value.as_deref()),
+                Some(expected_name.as_str()),
+                "each real character keeps the caret in the name field"
+            );
+        }
         app.effect(&PasswordsEffect::Generate).unwrap();
         app.effect(&PasswordsEffect::Save).unwrap();
         let items = crate::PasswordsModel::open().items();

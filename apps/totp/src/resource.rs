@@ -393,7 +393,20 @@ mod tests {
     /// Type `text` into the field `target`.
     fn type_into(app: &mut TestApp<TotpShell>, target: &str, text: &str) {
         click(app, target);
-        app.harness().type_text(text);
+        for ch in text.chars() {
+            app.harness().key(&ch.to_string());
+            if target == "totp.dialog.uri" {
+                let focus = app
+                    .harness()
+                    .focused_access_node()
+                    .and_then(|node| node.name);
+                assert_eq!(
+                    focus.as_deref(),
+                    Some("Setup link"),
+                    "each real character keeps the caret in the setup-link field"
+                );
+            }
+        }
         app.settle();
     }
 
@@ -428,7 +441,13 @@ mod tests {
     #[test]
     fn the_shared_header_and_empty_state_open_the_protected_sheet() {
         for scenario in ["list", "empty"] {
-            let mut app = TestApp::<TotpShell>::capture(Some(scenario)).unwrap();
+            // Opening the sheet is a live effect. Keep its real door enabled
+            // while isolating all device services and secrets in memory.
+            let (mut app, _host) = open(ui::secrets::memory_backend());
+            for action in TotpShell::scenario(Some(scenario)) {
+                app.invoke(action).unwrap();
+            }
+            app.settle();
             let add = app
                 .harness()
                 .a11y_nodes()
@@ -462,6 +481,77 @@ mod tests {
     #[test]
     fn every_launch_withholds_the_codes_window_from_captures() {
         const { assert!(<TotpShell as ResourceApp>::BEHAVIOUR.capture_protected) };
+    }
+
+    #[test]
+    fn setup_link_selection_replacement_and_paste_keep_the_field_editable() {
+        const FIRST: &str = "otpauth://totp/Acme:ada?secret=JBSWY3DPEHPK3PXP";
+        const SECOND: &str = "otpauth://totp/Beta:ada?secret=MFRGGZDFMZTWQ2LK";
+        assert_eq!(
+            FIRST.len(),
+            SECOND.len(),
+            "replacement paste has equal length"
+        );
+        let backend = ui::secrets::memory_backend();
+        let (mut app, _host) = open(Arc::clone(&backend));
+        app.effect(&TotpEffect::AddAccount).unwrap();
+        app.settle();
+        click(&mut app, "totp.dialog.link");
+        type_into(&mut app, "totp.dialog.uri", FIRST);
+        let focused = app.harness().a11y_focus().expect("setup link owns focus").0;
+        app.harness()
+            .perform_a11y_action(
+                focused,
+                &ui::a11y::Action::SetSelection {
+                    anchor: FIRST.len() - 16,
+                    focus: FIRST.len(),
+                },
+            )
+            .unwrap();
+        app.harness().key("A");
+        let focus = app
+            .harness()
+            .focused_access_node()
+            .expect("selection replacement keeps focus");
+        assert_eq!(focus.name.as_deref(), Some("Setup link"));
+        assert!(
+            focus
+                .value
+                .as_deref()
+                .is_some_and(|value| value.ends_with("secret=A"))
+        );
+
+        // Both paste operations use the fixture's in-process clipboard. The
+        // second replaces a complete link with another of exactly its length.
+        for uri in [FIRST, SECOND] {
+            app.harness().key("Ctrl+a");
+            ui::text_selection::clipboard_copy(uri);
+            app.harness().key("Ctrl+v");
+            let focus = app
+                .harness()
+                .focused_access_node()
+                .expect("paste keeps focus");
+            assert_eq!(focus.name.as_deref(), Some("Setup link"));
+            assert_eq!(focus.value.as_deref(), Some(uri));
+        }
+        // A person can refine the previewed metadata before committing it.
+        click(&mut app, "totp-issuer");
+        app.harness().key("Ctrl+a");
+        for ch in "Reviewed issuer".chars() {
+            app.harness().key(&ch.to_string());
+        }
+        click(&mut app, "totp.dialog.save");
+        let accounts = app.state();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].issuer, "Reviewed issuer");
+        assert!(accounts[0].secret.is_empty());
+        let stored = SecretStore::with_backend(TotpShell::ID, backend)
+            .item("seed", &accounts[0].id.to_string())
+            .get_blocking()
+            .unwrap()
+            .expect("only the final link's secret is saved on this device");
+        assert_eq!(stored.expose(), b"MFRGGZDFMZTWQ2LK");
+        assert!(!app.read_document(|doc| holds(&doc.clone().save(), "MFRGGZDFMZTWQ2LK")));
     }
 
     #[test]

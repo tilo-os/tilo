@@ -39,7 +39,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         for accessor in ["inner", "inner_mut"] {
             assert!(decorator.remove(accessor), "Decorator::{accessor} missing");
         }
-        let blanket = block_methods(source, "impl<T: Decorator> Widget for T {");
+        let blanket = block_methods(source, "impl<T: Decorator + 'static> Widget for T {");
         assert!(
             widget.len() > 20,
             "parsed only {} Widget methods",
@@ -131,7 +131,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
                 "start_operation",
             ]
         );
-        // The inner widget registered its own node.
+        // One node remains registered for the transparent decorator.
         assert_eq!(nodes.len(), 1);
     }
 
@@ -392,4 +392,193 @@ fn start(widget: &mut dyn Widget, doc: &mut AutoCommit) -> Option<ResourceOperat
     )
     .start(widget, doc, &automerge::ROOT)
     .expect("admission succeeds")
+}
+
+#[test]
+fn typed_inspection_reaches_nested_and_additional_decorator_children_once() {
+    struct Layer {
+        inner: Box<dyn Widget>,
+        additional: Vec<Box<dyn Widget>>,
+        visits: usize,
+    }
+    impl Decorator for Layer {
+        type Inner = dyn Widget;
+        fn inner(&self) -> &(dyn Widget + 'static) {
+            self.inner.as_ref()
+        }
+        fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+            self.inner.as_mut()
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            let mut children = self.inner.children_mut();
+            for child in &mut self.additional {
+                children.push(child.as_mut());
+            }
+            children
+        }
+    }
+    struct Leaf {
+        text: crate::widget::Text,
+        visits: usize,
+    }
+    impl Decorator for Leaf {
+        type Inner = crate::widget::Text;
+        fn inner(&self) -> &Self::Inner {
+            &self.text
+        }
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.text
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+    }
+    fn increment<T: 'static>(
+        widget: &mut dyn Widget,
+        visit: &mut dyn FnMut(&mut dyn std::any::Any),
+    ) -> bool {
+        widget.visit_any_mut(std::any::TypeId::of::<T>(), visit)
+    }
+    let mut root = Layer {
+        inner: Box::new(Layer {
+            inner: Box::new(Leaf {
+                text: crate::widget::Text::new("Retained leaf"),
+                visits: 0,
+            }),
+            additional: Vec::new(),
+            visits: 0,
+        }),
+        additional: Vec::new(),
+        visits: 0,
+    };
+    assert!(
+        Widget::children(&root).is_empty(),
+        "semantic children stay transparent"
+    );
+    let mut callbacks = 0;
+    assert!(increment::<Layer>(&mut root, &mut |value| {
+        callbacks += 1;
+        value.downcast_mut::<Layer>().unwrap().visits += 1;
+    }));
+    assert_eq!(callbacks, 1);
+    assert_eq!(root.visits, 1, "first matching decorator wins");
+    assert!(increment::<Leaf>(&mut root, &mut |value| {
+        value.downcast_mut::<Leaf>().unwrap().visits += 1;
+    }));
+    let inner = Widget::as_any_mut(root.inner.as_mut())
+        .unwrap()
+        .downcast_mut::<Layer>()
+        .unwrap();
+    assert_eq!(inner.visits, 0);
+    let leaf = Widget::as_any_mut(inner.inner.as_mut())
+        .unwrap()
+        .downcast_mut::<Leaf>()
+        .unwrap();
+    assert_eq!(leaf.visits, 1);
+    let mut opaque_callbacks = 0;
+    assert!(!increment::<crate::widget::Text>(&mut root, &mut |_| {
+        opaque_callbacks += 1
+    }));
+    assert_eq!(opaque_callbacks, 0, "a non-opted-in widget stays opaque");
+
+    let mut extra = Layer {
+        inner: Box::new(crate::widget::Text::new("Opaque inner")),
+        additional: vec![Box::new(Leaf {
+            text: crate::widget::Text::new("Additional leaf"),
+            visits: 0,
+        })],
+        visits: 0,
+    };
+    let mut extra_callbacks = 0;
+    assert!(increment::<Leaf>(&mut extra, &mut |_| extra_callbacks += 1));
+    assert_eq!(
+        extra_callbacks, 1,
+        "additional owned children stay reachable"
+    );
+}
+
+#[test]
+fn boxed_decorators_keep_navlist_rows_addressable_after_relayout() {
+    struct Boxed {
+        inner: Box<dyn Widget>,
+    }
+    impl Decorator for Boxed {
+        type Inner = dyn Widget;
+        fn inner(&self) -> &(dyn Widget + 'static) {
+            self.inner.as_ref()
+        }
+        fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+            self.inner.as_mut()
+        }
+    }
+    let selected = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&selected);
+    let nav = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        "destinations",
+        vec![
+            crate::widget::NavItem::new("inbox", "Inbox"),
+            crate::widget::NavItem::new("sent", "Sent"),
+        ],
+    )])
+    .on_select(move |id| seen.borrow_mut().push(id));
+    let root = Boxed {
+        inner: Box::new(Boxed {
+            inner: Box::new(nav),
+        }),
+    };
+    let mut frame = crate::headless::FrameHarness::for_root(
+        crate::State::new(),
+        root,
+        (320, 400),
+        Theme::dark(),
+    );
+    for label in ["Sent", "Inbox"] {
+        let id = frame.a11y_node_named(label).expect("row is exported");
+        frame
+            .perform_a11y_action(id, &crate::a11y::Action::Activate)
+            .expect("the exported row resolves to its actual layout owner");
+        frame.relayout_at((360, 420)).unwrap();
+    }
+    assert_eq!(*selected.borrow(), ["sent", "inbox"]);
+}
+
+#[test]
+fn decorator_keeps_a_deliberate_descendant_layout_owner() {
+    struct Delegated {
+        inner: Recorder,
+        child: crate::widget::Text,
+    }
+    impl Decorator for Delegated {
+        type Inner = Recorder;
+        fn inner(&self) -> &Recorder {
+            &self.inner
+        }
+        fn inner_mut(&mut self) -> &mut Recorder {
+            &mut self.inner
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            theme: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.child.build_layout(tree, theme, nodes)
+        }
+    }
+    let mut wrapper = Delegated {
+        inner: Recorder::new(&Log::default()),
+        child: crate::widget::Text::new("Owned child"),
+    };
+    let child = std::ptr::from_mut(&mut wrapper.child).cast::<()>();
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = Widget::build_layout(&mut wrapper, &mut tree, &Theme::dark(), &mut nodes);
+    assert_eq!(
+        nodes[&node].cast::<()>(),
+        child,
+        "a custom builder's child retains its own callbacks and identity"
+    );
 }

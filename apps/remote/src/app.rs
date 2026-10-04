@@ -2380,6 +2380,18 @@ impl Widget for RemoteApp {
         self.rect
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        // This flag requests replacing a screen or confirmation's widgets,
+        // not merely measuring the existing tree again.
+        let replaced = std::mem::take(&mut self.layout_dirty);
+        let body = self.body_mut().take_structure_dirty();
+        let dialog = self
+            .dialog
+            .as_mut()
+            .is_some_and(Widget::take_structure_dirty);
+        replaced || body || dialog
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.body().is_layout_dirty()
     }

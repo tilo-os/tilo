@@ -709,9 +709,9 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Row {
         keep = keep.field(Field::new(
             field.label(),
             NumberInput::from_state(state)
+                .control_size(ui::widget::ControlSize::Large)
                 .with_range(0.0, 999.0)
-                .with_id(&format!("backups-keep-{}", field.key()))
-                .with_accessible_name(format!("{} snapshots to keep", field.label())),
+                .with_id(&format!("backups-keep-{}", field.key())),
         ));
     }
     let counts = states.clone();
