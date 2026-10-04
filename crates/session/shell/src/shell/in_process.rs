@@ -5,7 +5,7 @@
 //! room, with the dispatcher, history and published actions the app has
 //! anywhere else. So the palette and agents reach the tab through the same
 //! door as the app's own window, and what the tab keeps (the terminal's
-//! last target) is in its record. What only the shell can give the app (a
+//! last target, a Notes tab's notebook) is in its record. What only the shell can give the app (a
 //! connection to the session's process supervisor) it lends
 //! ([`HostContext::lend`]).
 
@@ -315,6 +315,177 @@ mod tests {
             after.len(),
             before.len() + 1,
             "the pinned folder is in the room's places: {after:?}"
+        );
+    }
+
+    /// The shell's tab `tab` of `kind`, mounted as the shell's tile resolver
+    /// mounts it.
+    fn mount_tab(
+        inputs: &crate::shell::hosted_inputs::HostedTileInputs,
+        tab: u64,
+        kind: crate::shell::state::AppKind,
+    ) -> ui::headless::FrameHarness {
+        let tab = crate::shell::state::Tab {
+            id: tab,
+            title: "Tab".into(),
+            tile: crate::shell::state::TileContent::AppPlaceholder {
+                kind,
+                label: "Tab".into(),
+            },
+        };
+        let room = crate::shell::state::RoomId::new();
+        let request = tilo_desktop::resolver::TileRequest { room, tab: &tab };
+        let Some(tilo_desktop::resolver::TileResolution::Component(component)) =
+            crate::shell::mount_in_process(&request, inputs)
+        else {
+            panic!("the tab mounts its app's own component");
+        };
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
+    fn notes_kind() -> crate::shell::state::AppKind {
+        crate::shell::state::AppKind::Other("Notes".into())
+    }
+
+    /// Every Notes tab is a notebook of its own, on the tab's record: a note
+    /// written into one is not in the other, and each is there again when
+    /// its tab is mounted again.
+    #[test]
+    fn each_notes_tab_is_a_notebook_of_its_own_kept_in_its_record() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let write = |apps: &mut InProcessApps, tab: u64, title: &str| {
+            let component = apps
+                .mount(
+                    notes::definition(),
+                    ROOM,
+                    tab,
+                    RecordId::for_tab(tab),
+                    |_| {},
+                )
+                .unwrap();
+            let mut harness = ui::headless::FrameHarness::from_component(
+                component,
+                (1000, 700),
+                ui::application::ComponentRunnerInputs::from_native_process(),
+            )
+            .unwrap();
+            harness.relayout();
+            let import = notes::actions::import_markdown_action(
+                uuid::Uuid::new_v4(),
+                title,
+                &format!("{title} body"),
+                Vec::new(),
+            );
+            harness
+                .invoke_bound_action(
+                    &ui::bound_dispatch::BoundActionAddress {
+                        instance_id: tab,
+                        address: tilo_actions::ActionAddress::new(
+                            notes::Notebook::KIND,
+                            tilo_resource::APPLY,
+                        ),
+                    },
+                    serde_json::json!({
+                        tilo_resource::APPLY_PARAM: serde_json::to_value(import).unwrap()
+                    })
+                    .as_object()
+                    .unwrap(),
+                )
+                .unwrap();
+            harness.relayout();
+            harness.flush_component_records().unwrap();
+            harness.close_components();
+        };
+        write(&mut apps, 61, "Alpha");
+        write(&mut apps, 62, "Beta");
+
+        let titles = |apps: &mut InProcessApps, tab: u64| -> Vec<String> {
+            let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+            records
+                .try_open_record(&RecordCheckout::new(
+                    RecordId::for_tab(tab),
+                    notes::definition().record_kind.clone(),
+                ))
+                .expect("the tab's record was kept");
+            records
+                .with(&RecordId::for_tab(tab), |doc| {
+                    notes::Notebook::read(doc).map(|state| {
+                        state
+                            .pages()
+                            .iter()
+                            .map(|page| page.title.clone())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .expect("the tab's notebook is in its record")
+                .unwrap()
+        };
+        assert_eq!(titles(&mut apps, 61), vec!["Alpha".to_owned()]);
+        assert_eq!(
+            titles(&mut apps, 62),
+            vec!["Beta".to_owned()],
+            "the second tab's notebook is its own"
+        );
+    }
+
+    /// The shell's tile resolver mounts Notes and Editor tabs as those apps'
+    /// own components; an Editor tab opened on a file is the editor's
+    /// project of that file.
+    #[test]
+    fn notes_and_editor_tabs_are_their_apps_own_components() {
+        let profile = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("harbour-plan.txt");
+        std::fs::write(&file, "moor at the east quay\n").unwrap();
+        let file = file.canonicalize().unwrap();
+        let mut inputs = crate::shell::hosted_inputs::HostedTileInputs::default();
+        inputs.mount_apps_in_process(InProcessApps::at(profile.path(), "test-person").unwrap());
+
+        let notes = mount_tab(&inputs, 71, notes_kind());
+        assert!(
+            notes
+                .resources()
+                .iter()
+                .any(|resource| resource.kind == notes::Notebook::KIND),
+            "a Notes tab publishes its notebook"
+        );
+
+        inputs.bind_document(
+            72,
+            crate::shell::hosted_inputs::HostedDocument {
+                provider_id: "org.nirios.Editor",
+                path: file,
+                text: "moor at the east quay\n".into(),
+            },
+        );
+        let editor = mount_tab(
+            &inputs,
+            72,
+            crate::shell::state::AppKind::Other("Editor".into()),
+        );
+        assert!(
+            editor
+                .resources()
+                .iter()
+                .any(|resource| resource.kind == code_editor::CodeEditor::KIND),
+            "an Editor tab publishes its project"
+        );
+        let mut editor = editor;
+        assert!(
+            editor.wait_until(ui::time::Duration::from_secs(10), |editor| {
+                editor
+                    .inspection_json()
+                    .is_ok_and(|inspection| inspection.contains("harbour-plan.txt"))
+            }),
+            "the Editor tab opened the file it was opened on"
         );
     }
 }
