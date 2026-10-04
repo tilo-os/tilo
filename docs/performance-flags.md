@@ -118,7 +118,6 @@ time. Readback payload counters exclude row-padding holes.
 | Variable | Default / values | Effect |
 | --- | --- | --- |
 | `TILO_UI_NO_SCROLL_OPT` | Nonempty, off | Disables the scroll-reposition fast path; forces full layout solving on layout-dirty frames. Cached at first use. |
-| `TILO_UI_NO_SPLIT_CACHE` | Nonempty, off | Disables `NavSplit` scene caching for troubleshooting. Cached at first use. |
 | `TILO_UI_PERF` | Nonempty, off | Enables application performance logging. Cached at first use. |
 | `TILO_UI_PRESENT` | Present, off | Render-thread encode/acquire/present timing logs; useful for costs absent from offscreen benchmarks. Latched when the render thread starts. |
 | `TILO_PROFILE` | Nonempty, off | Enables the in-app profiling HUD, including in release builds. The HUD itself adds UI work. |

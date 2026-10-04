@@ -18,7 +18,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_break::{grapheme_indices, graphemes};
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextKind, TextRenderer, TextScaling, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, line_boundaries,
@@ -26,6 +26,7 @@ use crate::text_selection::{
     word_boundaries,
 };
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
@@ -116,11 +117,27 @@ pub enum TextInputKind {
     Code,
     Number,
     Password,
+    /// A code or key typed or pasted in the clear: verification and
+    /// recovery codes, TOTP secrets, API and licence keys, Wi-Fi keys.
+    Secret,
 }
 
 impl TextInputKind {
     fn checks_spelling(self) -> bool {
         matches!(self, Self::Prose)
+    }
+
+    /// What the field's text is, for the features it is set with while
+    /// typing.
+    #[must_use]
+    pub const fn text_kind(self) -> TextKind {
+        match self {
+            Self::Prose | Self::Name | Self::Search => TextKind::Prose,
+            Self::Username | Self::Email | Self::Url | Self::Path => TextKind::Identifier,
+            Self::Code => TextKind::Code,
+            Self::Number => TextKind::Numeric,
+            Self::Password | Self::Secret => TextKind::Secret,
+        }
     }
 }
 
@@ -128,8 +145,7 @@ fn is_autocorrect_boundary(character: char) -> bool {
     character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
-pub(super) const FONT_SIZE: f32 = 16.0;
-/// Caret centres against this band, not `FONT_SIZE`, to line up with where
+/// Caret centres against this band, not the font size, to line up with where
 /// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// Spellcheck runs immediately, but the word containing the caret stays
@@ -175,6 +191,8 @@ pub struct TextInput {
     path: Vec<PathSegment>,
     rect: Rect,
     is_hovered: bool,
+    /// The form marked the value invalid ([`Widget::set_invalid`]).
+    invalid: bool,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -251,6 +269,10 @@ pub struct TextInput {
     /// A wrapped row inside a compound code fence shares its parent's spacing.
     compact_multiline: bool,
     last_edit_time: Option<Instant>,
+    /// What the field's text is; its 1× size is the role's.
+    text_role: TextRole,
+    /// A document editor built on this field (a heading block, a code view)
+    /// sets its own 1× base size instead of a role's.
     font_size_override: Option<f32>,
     /// Theme scale captured during `build_layout`; direct measurement falls
     /// back to the renderer when no themed layout pass has occurred.
@@ -305,6 +327,9 @@ pub struct TextInput {
     context_actions: Vec<Option<CtxAction>>,
     accessible_name: String,
     placeholder: String,
+    /// The placeholder stays while the field is focused and empty (a search
+    /// or filter field names what it searches until the first keystroke).
+    persistent_placeholder: bool,
     /// Measurement switches with this so the caret/selection stay aligned with the draw.
     mono: bool,
     /// Wins over `mono`; measurement uses the same family as the draw.
@@ -420,6 +445,7 @@ impl TextInput {
             path,
             rect: Rect::ZERO,
             is_hovered: false,
+            invalid: false,
             is_focused: false,
             caret_paint_suppressed: false,
             text: String::new(),
@@ -457,6 +483,7 @@ impl TextInput {
             direct_crdt_writes: true,
             path_was_present: false,
             external_buffer: None,
+            text_role: TextRole::Body,
             font_size_override: None,
             layout_text_scale: None,
             gutter_text_scale: 1.0,
@@ -484,6 +511,7 @@ impl TextInput {
             context_actions: Vec::new(),
             accessible_name: String::new(),
             placeholder: String::new(),
+            persistent_placeholder: false,
             mono: false,
             family: None,
             multiline: false,
@@ -642,9 +670,10 @@ impl TextInput {
         }
     }
 
+    /// Set the field's text in `role` (default [`TextRole::Body`]).
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.font_size_override = Some(size);
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.set_text_role(role);
         self
     }
 
@@ -654,7 +683,24 @@ impl TextInput {
         self
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
+    /// Change the field's text role; see [`Self::with_text_role`].
+    pub fn set_text_role(&mut self, role: TextRole) {
+        if self.text_role != role || self.font_size_override.is_some() {
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.text_role = role;
+            self.font_size_override = None;
+        }
+    }
+
+    /// The field's text role.
+    #[must_use]
+    pub fn text_role(&self) -> TextRole {
+        self.text_role
+    }
+
+    /// A document editor built on this field (a heading block, a code view)
+    /// sets its own 1× base size; chrome fields take a role.
+    pub(crate) fn set_base_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
             self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
@@ -832,6 +878,7 @@ impl TextInput {
         display.hash(&mut hash);
         family.hash(&mut hash);
         size.to_bits().hash(&mut hash);
+        self.kind.text_kind().hash(&mut hash);
         (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
         if !self.preedit.is_empty() {
@@ -1309,6 +1356,17 @@ impl TextInput {
         }
     }
 
+    /// Where the field's text starts inside its rect: the multiline inset
+    /// (and code gutter) of a wrapping field, the horizontal padding of a
+    /// single-line one.
+    pub fn text_inset_x(&self, theme: &Theme) -> f64 {
+        if self.multiline {
+            self.ml_left()
+        } else {
+            self.text_padding_x(theme)
+        }
+    }
+
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
         if !self.multiline
@@ -1320,7 +1378,7 @@ impl TextInput {
                 f64::from(layout.buffer.metrics().line_height),
             );
         }
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let text_size = self.effective_font_size();
         let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (text_y, line_height)
@@ -1472,7 +1530,8 @@ impl TextInput {
     }
 
     fn effective_font_size(&self) -> f32 {
-        self.font_size_override.unwrap_or(FONT_SIZE)
+        self.font_size_override
+            .unwrap_or_else(|| crate::tokens::typography::stock().size(self.text_role))
     }
 
     fn line_height(&self) -> f64 {
@@ -1932,17 +1991,17 @@ impl TextInput {
         } else {
             FontChoice::SansSerif
         });
-        TextStyle::new(self.effective_font_size() * scale)
+        // Already grown by the text scale here, so the renderer paints it as
+        // given.
+        let mut style = TextStyle::new(self.effective_font_size() * scale)
             .with_line_height(LINE_HEIGHT_RATIO)
-            .with_family(family)
+            .with_family(family);
+        style.scaling = TextScaling::Resolved;
+        style.kind = self.kind.text_kind();
+        style
     }
 
-    fn update_gutter_metrics(
-        &mut self,
-        tr: &mut TextRenderer,
-        renderer_style: &TextStyle,
-        scale: f32,
-    ) {
+    fn update_gutter_metrics(&mut self, tr: &mut TextRenderer, style: &TextStyle, scale: f32) {
         if !self.gutter || !self.multiline {
             self.measured_gutter_width = 0.0;
             return;
@@ -1954,7 +2013,7 @@ impl TextInput {
             .count()
             .saturating_add(1);
         let label = lines.max(10).to_string();
-        let (number_width, _) = tr.measure_style(&label, None, renderer_style);
+        let (number_width, _) = tr.measure_style(&label, None, style);
         self.measured_gutter_width =
             f64::from(number_width) + (GUTTER_PAD_L + GUTTER_PAD_R) * f64::from(scale);
     }
@@ -2035,7 +2094,11 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_hover.with_alpha_factor(0.35),
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+                .with_alpha_factor(0.35),
             None,
             &gutter,
         );
@@ -2064,7 +2127,11 @@ impl TextInput {
         let Some(layout) = &self.single_layout else {
             return;
         };
-        let band_color = theme.bg_hover.with_alpha_factor(0.6);
+        let band_color = theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+            .with_alpha_factor(0.6);
         for (top, height) in layout.logical_line_bands(caret_byte) {
             let y0 = self.single_origin.y + f64::from(top);
             let band = Rect::new(
@@ -2166,7 +2233,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &caret,
         );
@@ -2185,8 +2252,7 @@ impl TextInput {
     ) {
         let size = self.effective_font_size();
         let style = self.multiline_style(theme.text_scale);
-        let renderer_style = tr.renderer_input_style(&style);
-        self.update_gutter_metrics(tr, &renderer_style, theme.text_scale);
+        self.update_gutter_metrics(tr, &style, theme.text_scale);
         let left = self.ml_left();
         #[allow(
             clippy::cast_possible_truncation,
@@ -2231,7 +2297,7 @@ impl TextInput {
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
         if let Some((start, end)) = self.selection_range() {
-            let color = theme.accent_primary.with_alpha_factor(0.35);
+            let color = theme.tokens.colors.intent.selection_tint;
             for rect in self.selection_rects(theme, start, end) {
                 scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
             }
@@ -2269,7 +2335,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &renderer_style,
+            &style,
             caret_byte,
             gutter_width,
         );
@@ -2347,7 +2413,11 @@ impl TextInput {
             return;
         }
         let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let band_color = theme.bg_hover.with_alpha_factor(0.6);
+        let band_color = theme
+            .tokens
+            .colors
+            .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
+            .with_alpha_factor(0.6);
         for (row, &lor) in self.lines.iter().zip(line_of_row.iter()) {
             if lor != caret_line {
                 continue;
@@ -2500,7 +2570,7 @@ impl TextInput {
         self.draw_body_current_line_band(scene, transform, theme, &rows, lh, gutter_w);
 
         if let Some((s, e)) = self.selection_range() {
-            let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+            let sel_color = theme.tokens.colors.intent.selection_tint;
             for r in self.selection_rects(theme, s, e) {
                 scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &r);
             }
@@ -2535,7 +2605,7 @@ impl TextInput {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.intent.you,
                 None,
                 &caret,
             );
@@ -2985,7 +3055,17 @@ impl TextInput {
     }
 
     pub fn shows_placeholder(&self) -> bool {
-        !self.placeholder.is_empty() && self.text.is_empty() && !self.is_focused
+        !self.placeholder.is_empty()
+            && self.text.is_empty()
+            && self.preedit.is_empty()
+            && (!self.is_focused || self.persistent_placeholder)
+    }
+
+    /// Keep the placeholder visible while the field is focused and empty.
+    #[must_use]
+    pub fn with_persistent_placeholder(mut self) -> Self {
+        self.persistent_placeholder = true;
+        self
     }
 
     fn masked(&self) -> bool {
@@ -3349,7 +3429,7 @@ impl TextInput {
 
     fn field_allows_spelling(&self) -> bool {
         !self.secret
-            && self.kind != TextInputKind::Password
+            && !matches!(self.kind, TextInputKind::Password | TextInputKind::Secret)
             && self.spellcheck.unwrap_or_else(|| {
                 self.kind.checks_spelling()
                     && !self.mono
@@ -3641,7 +3721,7 @@ impl TextInput {
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.semantic.info,
                 None,
                 &line,
             );
@@ -3663,8 +3743,8 @@ impl TextInput {
             return;
         };
         let label = format!("Space → {}", preview.replacement);
-        let size = theme.tokens.typography.scale.sm;
-        let (text_width, text_height) = text_renderer.measure(&label, size, None);
+        let style = theme.text(TextRole::Caption);
+        let (text_width, text_height) = text_renderer.measure_style(&label, None, &style);
         let pad_x = 8.0_f64;
         let pad_y = 4.0_f64;
         let width = f64::from(text_width) + pad_x * 2.0;
@@ -3679,7 +3759,7 @@ impl TextInput {
             self.rect.y0 - height - 4.0
         };
         let rect = Rect::new(x, y, x + width, y + height);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -3690,17 +3770,17 @@ impl TextInput {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.accent_primary,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.overlay),
             None,
             &shape,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(rect.x0 + pad_x, rect.y0 + pad_y)),
             None,
+            &style,
         );
     }
 
@@ -4116,8 +4196,7 @@ impl Widget for TextInput {
                 .layout_text_scale
                 .unwrap_or_else(|| text_renderer.text_scale());
             let style = self.multiline_style(scale);
-            let renderer_style = text_renderer.renderer_input_style(&style);
-            self.update_gutter_metrics(text_renderer, &renderer_style, scale);
+            self.update_gutter_metrics(text_renderer, &style, scale);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
@@ -4197,7 +4276,7 @@ impl Widget for TextInput {
         if self.secret && !self.text.is_empty() {
             crate::secret_paint::note_secret_painted();
         }
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
         }
@@ -4217,7 +4296,7 @@ impl Widget for TextInput {
         }
         self.multiline_shaped = false;
 
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let text_size = self.effective_font_size();
         let line_height = f64::from(text_size * theme.text_scale * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
             // The parent already adds whatever gutter the document layout wants.
@@ -4243,7 +4322,7 @@ impl Widget for TextInput {
         let text_clip = if self.has_reveal_control() {
             let mut clip = self.rect;
             clip.x1 = (clip.x1 - RevealToggle::width_for(clip.height())).max(clip.x0);
-            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.md))
+            RoundedRect::from_rect(clip, f64::from(theme.tokens.radii.control))
         } else {
             shape
         };
@@ -4468,6 +4547,9 @@ impl Widget for TextInput {
     fn is_focusable(&self) -> bool {
         !self.effectively_disabled()
     }
+    fn set_invalid(&mut self, invalid: bool) {
+        self.invalid = invalid;
+    }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
         if focused {
@@ -4547,6 +4629,7 @@ impl Widget for TextInput {
                 disabled: self.effectively_disabled(),
                 protected: self.secret,
                 multiline: self.multiline,
+                invalid: self.invalid,
                 ..Default::default()
             });
         if !self.id.is_empty() {
@@ -4744,7 +4827,7 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         if self.context_menu.is_open() {
-            Widget::draw(
+            Widget::draw_overlay(
                 &mut self.context_menu,
                 scene,
                 transform,
@@ -4899,8 +4982,12 @@ impl TextInput {
     ) {
         let disabled = self.effectively_disabled();
         let rest = theme.tokens.colors.surfaces.raised;
+        // Hover is a half lift of the field, focus the whole lift plus your
+        // colour: rest, hover, focus and disabled each look different.
         let bg_color = if self.is_focused && !disabled {
-            theme.bg_active
+            theme.tokens.colors.lift_on(rest, 1.0)
+        } else if self.is_hovered && !disabled {
+            theme.tokens.colors.lift_on(rest, 0.5)
         } else {
             rest
         };
@@ -4923,9 +5010,21 @@ impl TextInput {
             None,
             shape,
         );
-        // Rest edge derived from the field fill; focus keeps `border_focus`.
+        // Rest edge derived from the field fill; focus keeps `border_focus`;
+        // a value the form rejected edges the field in danger ink, the one
+        // status colour a field takes.
+        let colors = &theme.tokens.colors;
         let (border_w, border_color) = if self.is_focused && !disabled {
-            (2.0, theme.tokens.colors.border_focus)
+            (2.0, colors.border_focus)
+        } else if self.invalid && !disabled {
+            (
+                1.5,
+                colors.ink_on_any(
+                    &[bg_color, colors.surfaces.content],
+                    colors.semantic.danger,
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                ),
+            )
         } else {
             (1.0, crate::surface::edge_on(rest))
         };
@@ -4979,9 +5078,10 @@ impl TextInput {
                 FontChoice::SansSerif
             });
             let layout_size = text_size * text_scale;
-            let style = TextStyle::new(layout_size)
+            let mut style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
                 .with_family(family.clone());
+            style.kind = self.kind.text_kind();
             let base = self.shaped_signature(display, &family, layout_size, None);
             let attributes = self.valid_single_attributes();
             let signature = attributes.map_or(base, |a| {
@@ -5095,7 +5195,7 @@ impl TextInput {
         let Some((sel_start, sel_end)) = self.selection_range() else {
             return;
         };
-        let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+        let sel_color = theme.tokens.colors.intent.selection_tint;
         for sel_rect in self.selection_rects(theme, sel_start, sel_end) {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -5151,7 +5251,7 @@ impl TextInput {
                 let color = if backgrounds {
                     theme.tokens.colors.surfaces.raised
                 } else {
-                    theme.tokens.colors.accent[5]
+                    theme.tokens.colors.text_primary
                 };
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -5254,7 +5354,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &cursor_rect,
         );

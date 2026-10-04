@@ -317,11 +317,25 @@ impl ResourceApp for HexEditorShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["empty", "search", "error"]
+        &[
+            "empty",
+            "search",
+            "find",
+            "goto",
+            "edited",
+            "saved",
+            "error",
+            "narrow",
+            "narrow-inspector",
+        ]
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| name.starts_with("narrow")) {
+            (560, 720)
+        } else {
+            (1100, 720)
+        }
     }
 
     /// Every capture but the empty state shows the bundled sample.
@@ -329,12 +343,21 @@ impl ResourceApp for HexEditorShell {
         if name == Some("empty") {
             return Vec::new();
         }
-        Invoke::apply(&HexEditorAction::Open {
+        let mut actions: Vec<_> = Invoke::apply(&HexEditorAction::Open {
             name: SAMPLE_NAME.into(),
-            bytes: crate::sample::png_header(),
+            bytes: crate::sample::png_image(),
         })
         .into_iter()
-        .collect()
+        .collect();
+        if name == Some("edited") {
+            for (offset, byte) in [(0x1D, 0x01), (0x1E, 0x00), (0x25, 0xFF)] {
+                actions.extend(Invoke::apply(&HexEditorAction::OverwriteBytes {
+                    offset,
+                    bytes: vec![byte],
+                }));
+            }
+        }
+        actions
     }
 }
 

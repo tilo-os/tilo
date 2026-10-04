@@ -1023,7 +1023,7 @@ pub fn app_root() -> Box<dyn Widget> {
         ),
         ui::row![
             Button::new("cancel", "cancel-label", None),
-            Button::new("save", "save-label", None).primary(),
+            Button::new("save", "save-label", None).role(ButtonRole::Primary),
         ],
     ])
 }
@@ -1063,8 +1063,7 @@ accessibility, Ctrl+K and headless activation all reach the same action intent:
 let save = tilo_actions::ActionBinding::unit_for(&document, "save")?;
 Button::new("save", "app-save", None)
     .on_action(save)
-    .primary()
-    .fit_content(32.0)
+    .role(ButtonRole::Primary)
 ```
 
 The host detects the current `InteractionEnvironment` and propagates it through
@@ -1415,9 +1414,9 @@ let root: Box<dyn Widget> = Box::new(graph.widget(&theme)?);
 let selected = graph.node("save")?;
 
 graph.update_node("save", |node| {
-    if let UiNode::Button { label, style, .. } = node {
+    if let UiNode::Button { label, role, .. } = node {
         *label = "Publish".into();
-        *style = UiButtonStyle::Danger;
+        *role = UiButtonRole::Destructive;
     }
 })?;
 

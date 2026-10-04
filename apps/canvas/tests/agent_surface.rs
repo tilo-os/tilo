@@ -23,6 +23,14 @@ const BUDGET: usize = 64 * 1024;
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {
     let mut app = TestApp::<App>::new().expect("the app opens");
+    // The inspector slides in as the window opens; its controls are part of
+    // what an agent sees once it has.
+    let _ = app.harness().render_rgba();
+    assert!(
+        app.harness()
+            .settle_for_capture(std::time::Duration::from_secs(2)),
+        "the window settles"
+    );
     let surface = app.agent_surface();
     let text = serde_json::to_string_pretty(&surface).unwrap() + "\n";
     let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agent-surface.json");

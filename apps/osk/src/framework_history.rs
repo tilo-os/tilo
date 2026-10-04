@@ -1,6 +1,7 @@
 //! Saved keyboard preferences, illustrated with immutable built-in layouts.
 //! Layout definitions and typed/learned data are deliberately not recorded.
 use crate::presentation::{KeyboardGeometry, KeyboardPresentation, keyboard_geometry};
+use crate::widget::{key_row_height, keyboard_gutter, suggestion_row_height, toolbar_row_height};
 use crate::{KeyboardLayout, OskToolbarItem, ShiftState};
 use automerge::{AutoCommit, ROOT, ReadDoc};
 use ui::history_mode::restore::{
@@ -10,10 +11,11 @@ use ui::history_mode::{
     HistoryDefinition, HistoryPresentation, HistoryPreview, HistoryScopeDefinition,
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
-use ui::{TextRenderer, Theme};
+use ui::paint::PaintCtx;
+use ui::{TextRenderer, TextRole, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
 
@@ -137,15 +139,13 @@ fn preview<const MASK: u8>(input: PreviewInput) -> Result<Box<dyn HistoryPreview
     } else {
         KeyboardLayout::qwerty()
     };
-    let default = if doc.get(ROOT, LAYOUT).map_err(|e| e.to_string())?.is_none() {
-        " (default; not recorded)"
-    } else {
-        ""
-    };
     let enabled = |value| if value { "on" } else { "off" };
+    let mut layout_name = name;
+    if let Some(first) = layout_name.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
     let description = format!(
-        "Saved layout: {}{default}\nSuggestions: {} · Personalization: {}\nBuilt-in layout illustration; layout definitions, typed text and learned suggestions are not recorded.",
-        name.to_uppercase(),
+        "Layout: {layout_name}\nSuggestions: {}\nPersonalization: {}",
         enabled(suggestions),
         enabled(personalization)
     );
@@ -167,19 +167,29 @@ struct KeyboardPreview {
     geometry: Option<KeyboardGeometry>,
 }
 impl HistoryPreview for KeyboardPreview {
-    fn layout(&mut self, bounds: Rect, text: &mut TextRenderer, _: &Theme) -> Result<(), String> {
+    fn layout(
+        &mut self,
+        bounds: Rect,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Result<(), String> {
         self.bounds = bounds;
-        let (_, height) = text.measure(
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let (_, height) = text.measure_style(
             &self.description,
-            14.,
-            Some((bounds.width() - 24.).max(1.) as f32),
+            Some((bounds.width() - 2.0 * inset).max(1.) as f32),
+            &theme.text(TextRole::Body),
         );
-        let y = bounds.y0 + f64::from(height) + 24.;
+        let y = bounds.y0 + f64::from(height) + 2.0 * inset;
+        let toolbar = toolbar_row_height(&theme.tokens.spacing);
+        let suggestions = suggestion_row_height(&theme.tokens.metrics);
+        let rows =
+            self.layout.row_count() as f64 * f64::from(key_row_height(&theme.tokens.metrics));
         let rect = Rect::new(
             bounds.x0,
             y,
             bounds.x1,
-            y + 48. + 40. + self.layout.row_count() as f64 * 56.,
+            y + f64::from(toolbar) + f64::from(suggestions) + rows,
         );
         self.geometry = Some(keyboard_geometry(
             rect,
@@ -187,8 +197,9 @@ impl HistoryPreview for KeyboardPreview {
             &self.toolbar,
             &[],
             ShiftState::Off,
-            48.,
-            40.,
+            toolbar,
+            suggestions,
+            keyboard_gutter(&theme.tokens.spacing),
         ));
         Ok(())
     }
@@ -199,13 +210,6 @@ impl HistoryPreview for KeyboardPreview {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.bg_primary,
-            None,
-            &self.bounds,
-        );
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -214,13 +218,13 @@ impl HistoryPreview for KeyboardPreview {
             &self.bounds,
         );
         let transform = transform * Affine::translate(self.view.scroll);
-        text.draw_text(
-            scene,
+        let inset = f64::from(theme.tokens.spacing.s3);
+        PaintCtx::new(scene, transform, text, theme).text_role(
             &self.description,
-            14.,
-            theme.text_primary,
-            transform * Affine::translate((self.bounds.x0 + 12., self.bounds.y0 + 12.)),
-            Some((self.bounds.width() - 24.).max(1.) as f32),
+            TextRole::Body,
+            theme.tokens.colors.text_primary,
+            Point::new(self.bounds.x0 + inset, self.bounds.y0 + inset),
+            Some((self.bounds.width() - 2.0 * inset).max(1.) as f32),
         );
         if let Some(g) = &self.geometry {
             KeyboardPresentation {
@@ -240,7 +244,7 @@ impl HistoryPreview for KeyboardPreview {
                 pressed_tool: None,
                 hovered_sugg: None,
                 pressed_sugg: None,
-                empty_hint: "Historical preferences · no typed text",
+                empty_hint: "Typed text is never saved",
                 emoji_panel_open: false,
                 preview: None,
                 alternates: None,

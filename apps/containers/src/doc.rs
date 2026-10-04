@@ -18,6 +18,8 @@
 //!     └── "command" (Text)
 //! ```
 
+pub use crate::model::{DetailTab, Section};
+
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};

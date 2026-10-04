@@ -15,11 +15,11 @@ fn fixture() -> FontCatalog {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
-    // phase: controlled_catalog_has_only_the_twenty_manifest_faces
+    // phase: controlled_catalog_has_only_the_manifest_faces
     {
         let catalog = fixture();
         let fs = catalog.load().unwrap();
-        assert_eq!(fs.db().len(), 20); // 15 single faces plus five TTC faces.
+        assert_eq!(fs.db().len(), 25); // 20 single faces plus five TTC faces.
         let root = catalog.root().canonicalize().unwrap();
         for face in fs.db().faces() {
             match &face.source {
@@ -28,7 +28,7 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
             }
         }
         for (generic, expected) in [
-            (Family::SansSerif, "Noto Sans"),
+            (Family::SansSerif, crate::text_render::UI_SANS_FAMILY),
             (Family::Serif, "Noto Serif"),
             (Family::Monospace, "Noto Sans Mono"),
         ] {
@@ -51,7 +51,11 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
                 );
             }
         }
-        for expected in ["Noto Sans", "Noto Serif"] {
+        for expected in [
+            crate::text_render::UI_SANS_FAMILY,
+            "Noto Sans",
+            "Noto Serif",
+        ] {
             let id = fs
                 .db()
                 .query(&Query {
@@ -130,10 +134,10 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
             .load_with_system(|_| panic!("must not mask missing font"))
             .err()
             .unwrap();
-        assert!(error.to_string().contains("NotoSans[wght].ttf"));
-        let mut bytes = std::fs::read(fixture().root().join("NotoSans[wght].ttf")).unwrap();
+        assert!(error.to_string().contains("TiloSans[wdth,wght].ttf"));
+        let mut bytes = std::fs::read(fixture().root().join("TiloSans[wdth,wght].ttf")).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
-        std::fs::write(root.join("NotoSans[wght].ttf"), bytes).unwrap();
+        std::fs::write(root.join("TiloSans[wdth,wght].ttf"), bytes).unwrap();
         let error = catalog
             .load_with_system(|_| panic!("must not mask corruption"))
             .err()
@@ -241,7 +245,7 @@ fn byte_catalog_preserves_canonical_faces_and_locale() {
 }
 
 #[test]
-fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
+fn browser_startup_catalog_requires_only_the_core_family_assets() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let mut requested = Vec::new();
@@ -254,6 +258,9 @@ fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
     assert_eq!(
         requested,
         [
+            "TiloSans[wdth,wght].ttf",
+            "TiloSans-Italic[wdth,wght].ttf",
+            "Onest-Cyrillic[wght].ttf",
             "NotoSans[wght].ttf",
             "NotoSans-Italic[wght].ttf",
             "NotoSerif[wght].ttf",
@@ -266,9 +273,9 @@ fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        3_681_672
+        4_365_004
     );
-    assert_eq!(fonts.db().len(), 5);
+    assert_eq!(fonts.db().len(), 8);
 }
 
 #[test]
@@ -328,6 +335,82 @@ fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
         assert_eq!(db.len(), 1);
         assert!(
             matches!(&face.source, fontdb::Source::File(path) if path.starts_with(tmp.path().join("a")))
+        );
+    }
+}
+
+/// What a process run from a checkout or a screenshot gets on a machine
+/// without Tilo Sans installed: the product catalog, found past roots that do
+/// not hold one this build accepts, sets UI text in Tilo Sans. The host's own
+/// copy of a catalog family sorts before the catalog's path and must still
+/// not displace the catalog's face.
+#[cfg(unix)]
+#[test]
+fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    assert_eq!(catalog_roots().last(), Some(&source));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let host = tmp.path().join("a-host");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::copy(source.join("NotoSans[wght].ttf"), host.join("NotoSans.ttf")).unwrap();
+    let stale = tmp.path().join("b-stale");
+    std::fs::create_dir(&stale).unwrap();
+    std::fs::write(stale.join("manifest.toml"), "# another Tilo build\n").unwrap();
+    // The catalog under a path that sorts after the host copy, as /usr does
+    // before a checkout.
+    let catalog = tmp.path().join("c-catalog");
+    std::fs::create_dir(&catalog).unwrap();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap().path();
+        std::os::unix::fs::symlink(&entry, catalog.join(entry.file_name().unwrap())).unwrap();
+    }
+
+    let roots = [tmp.path().join("missing"), stale, catalog.clone()];
+    let mut fs = load_first_catalog(&roots, "en-US", |db| {
+        db.load_fonts_dir(&host);
+    })
+    .unwrap();
+    let catalog = catalog.canonicalize().unwrap();
+
+    for (family, expected) in [
+        (Family::SansSerif, crate::text_render::UI_SANS_FAMILY),
+        (Family::Name("Noto Sans"), "Noto Sans"),
+    ] {
+        let id = fs
+            .db()
+            .query(&Query {
+                families: &[family],
+                ..Query::default()
+            })
+            .unwrap();
+        let face = fs.db().face(id).unwrap();
+        assert!(face.families.iter().any(|f| f.0 == expected), "{expected}");
+        assert!(
+            matches!(&face.source, fontdb::Source::File(path) if path.starts_with(&catalog)),
+            "{expected} must come from the catalog: {:?}",
+            face.source
+        );
+    }
+
+    let mut buffer = Buffer::new(&mut fs, Metrics::new(14.0, 20.0));
+    buffer.set_text(
+        "Settings",
+        &Attrs::new().family(Family::SansSerif),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut fs, false);
+    let glyphs: Vec<_> = buffer.layout_runs().flat_map(|run| run.glyphs).collect();
+    assert_eq!(glyphs.len(), "Settings".len());
+    for glyph in glyphs {
+        assert!(
+            fs.db()
+                .face(glyph.font_id)
+                .unwrap()
+                .families
+                .iter()
+                .any(|f| f.0 == crate::text_render::UI_SANS_FAMILY)
         );
     }
 }

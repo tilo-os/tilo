@@ -531,6 +531,9 @@ pub struct FrameHarness {
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`Driver::relayout`] for why it is drawn at all.
     scene: Scene,
+    /// The backdrops the scene's floating surfaces were drawn over, which
+    /// the capture renderer blurs under the material as a live window does.
+    backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
     presence: PresenceCtx,
     /// Presence changed through [`Self::update_presence`]: the next frame
     /// redraws (the collaborator overlays read presence at draw time) without
@@ -1309,6 +1312,7 @@ impl FrameHarness {
         } else {
             text.set_text_scale(theme.text_scale);
         }
+        text.set_ui_face(&theme.tokens.typography.sans_family);
         let control_domain = crate::control_custody::ControlDomain::outer();
         let mut root = root;
         crate::widget::controls::install_control_custody(
@@ -1343,6 +1347,7 @@ impl FrameHarness {
             text,
             theme,
             scene: Scene::new(),
+            backdrop: std::sync::Arc::default(),
             records: None,
             record_persistence: None,
             room_index: None,
@@ -1527,6 +1532,8 @@ impl FrameHarness {
     ) -> Result<(), crate::widget::WidgetLayoutError> {
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
+        self.text
+            .set_ui_face(&self.theme.tokens.typography.sans_family);
         self.invalidate_layout_tree();
         self.relayout_at(viewport)
     }
@@ -1927,6 +1934,8 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
+        self.text
+            .set_ui_face(&self.theme.tokens.typography.sans_family);
         self.invalidate_layout_tree();
         self.relayout();
     }
@@ -2117,7 +2126,7 @@ impl FrameHarness {
         self.drain_component_wakes();
         FrameRenderInput {
             scene: &self.scene,
-            background: self.theme.bg_app,
+            background: self.theme.tokens.colors.surfaces.content,
         }
     }
 
@@ -2126,7 +2135,7 @@ impl FrameHarness {
         let schedule = self.frame_schedule();
         FrameOutput {
             scene: &self.scene,
-            background: self.theme.bg_app,
+            background: self.theme.tokens.colors.surfaces.content,
             logical_size: self.viewport,
             device_size: (
                 (f64::from(self.viewport.0) * self.input_scale).ceil() as u32,
@@ -2175,40 +2184,42 @@ impl FrameHarness {
         Ok(true)
     }
 
-    /// Rasterise the most recently laid-out frame to a PNG.
+    /// Rasterise the most recently laid-out frame to a PNG over the window
+    /// ground (`surfaces.content`), exactly as a live window clears before
+    /// drawing. `--shots` writes this.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
     /// this never runs a separate screenshot-only widget pipeline. A browser
     /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
+        self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
+    }
+
+    /// [`FrameHarness::render_png`] over a transparent background, for a
+    /// capture composited onto something else afterwards.
+    pub fn render_png_transparent(&self, out: &std::path::Path) {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
-    /// Capture the composited native-window appearance, including its theme
-    /// background. Use this for rendered contrast measurements. Nothing is
-    /// written in a browser page, as for [`FrameHarness::render_png`].
-    pub fn render_window_png(&self, out: &std::path::Path) {
-        self.render_png_on(out, self.theme.bg_app);
-    }
-
-    /// Rasterise the most recently laid-out frame over a transparent
-    /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
-    /// Empty in a browser page, which cannot read a frame back synchronously.
+    /// Rasterise the most recently laid-out frame over the window ground, as
+    /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
+    /// page, which cannot read a frame back synchronously.
     pub fn render_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
+        self.render_rgba_on(self.theme.tokens.colors.surfaces.content)
     }
 
-    /// [`FrameHarness::render_rgba`] over the theme background, as the
-    /// native window composites it.
-    pub fn render_window_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(self.theme.bg_app)
+    /// [`FrameHarness::render_rgba`] over a transparent background.
+    pub fn render_rgba_transparent(&self) -> Vec<u8> {
+        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
         self.drain_component_wakes();
         let (w, h) = self.viewport;
-        crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(self.backdrop.clone()));
+        renderer.render_resilient(&self.scene, background)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -2230,6 +2241,7 @@ impl FrameHarness {
         }
         let (w, h) = self.viewport;
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_png(&self.scene, background, out);
     }
 
@@ -2523,6 +2535,10 @@ impl FrameHarness {
                     f64::from(self.viewport.0),
                     None,
                 );
+                if self.history.is_none() && self.history_chrome_enabled {
+                    self.document_history
+                        .place_in_app_header(self.root.as_mut());
+                }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -2777,6 +2793,10 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
+        // Floating chrome records what lies below it, so a capture blurs it
+        // under the material exactly as the live window's renderer does.
+        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&self.scene, 0);
         // Cull against the window exactly as the live host does, so offscreen
         // frames paint (and cost) what a window would.
         let previous_viewport = self.presence.push_viewport(Rect::new(
@@ -2793,7 +2813,6 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
-            history.mark_drawn();
         }
         if self
             .history
@@ -2810,25 +2829,6 @@ impl FrameHarness {
                 &self.presence,
                 &self.permissions,
             );
-            self.root.draw_overlay(
-                &mut self.scene,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
-            // What the app presents above its window — a navigation card
-            // detached onto the desktop — is stacked over the frame as the
-            // live compositor stacks it, so a capture shows it.
-            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
-                self.root.as_mut(),
-                &mut self.scene,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
-            self.root.mark_drawn();
         }
         if self.history_chrome_enabled {
             let context = crate::standalone_history::HistoryReadContext {
@@ -2850,8 +2850,57 @@ impl FrameHarness {
                 .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle);
             if let Err(error) = drawn {
                 self.presence.pop_viewport(previous_viewport);
+                drop(backdrop_recording.finish());
                 return Err(error);
             }
+        }
+        // The window's top layer, after the app and the window's own chrome:
+        // open menus, popovers and modals, so a modal's scrim covers the
+        // History bar and every region of the window.
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_visible())
+            && self.history_layout.is_none_or(|layout| layout.app_visible)
+        {
+            self.root.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            // What the app presents above its window — a navigation card
+            // detached onto the desktop — is stacked over the frame as the
+            // live compositor stacks it, so a capture shows it.
+            crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
+                self.root.as_mut(),
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            self.root.mark_drawn();
+        }
+        if let Some(history) = &mut self.history {
+            history.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            history.mark_drawn();
+        }
+        if self.history_chrome_enabled {
+            self.document_history.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
         }
         if let Some(palette) = self
             .action_palette
@@ -2887,6 +2936,9 @@ impl FrameHarness {
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
+        self.backdrop = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
+            backdrop_recording.finish(),
+        ));
 
         if self
             .action_palette
@@ -2956,6 +3008,19 @@ impl FrameHarness {
                 return true;
             }
         }
+    }
+
+    /// Run production frames until the window has settled, as a person sees
+    /// it a moment after it opened: no animation running (a tab's entrance, a
+    /// panel sliding in) and no image load the frame asked for still in
+    /// flight. Waits at most `bound` and returns whether it settled. A
+    /// capture calls this before it writes, so shots match the live window.
+    pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
+        self.wait_until(bound, |driver| {
+            !driver.frame_schedule().needs_animation_frame
+                && !driver.root.has_pending_visual_work()
+                && crate::image_store::loads_in_flight() == 0
+        })
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
@@ -5870,7 +5935,9 @@ impl FrameHarness {
             );
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            self.dispatch_bound_control(target, &intent);
+            if !self.take_history_invocation(&intent) {
+                self.dispatch_bound_control(target, &intent);
+            }
         }
 
         let batch =
@@ -5886,6 +5953,9 @@ impl FrameHarness {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
+            if self.take_history_invocation(&intent) {
+                continue;
+            }
             // The remaining controls originated in the outer document. Never
             // reselect a matching component or legacy owner from their address.
             let mut resources = Vec::new();
@@ -8080,6 +8150,84 @@ mod tests {
         );
     }
 
+    /// Animates until `until`, like a tab's entrance or a sliding panel.
+    struct Entrance {
+        until: crate::time::Instant,
+    }
+
+    impl Widget for Entrance {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn needs_animation_frame(&self) -> bool {
+            crate::time::now() < self.until
+        }
+        fn name(&self) -> &str {
+            "Entrance"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn a_capture_settles_animations_and_lands_on_the_window_ground() {
+        // Case `capture_waits_until_the_animation_schedule_is_idle`.
+        {
+            let until = crate::time::now()
+                .checked_add(crate::time::Duration::from_millis(150))
+                .unwrap();
+            let mut harness =
+                FrameHarness::new(State::new(), Box::new(Entrance { until }), (200, 100));
+            assert!(harness.frame_schedule().needs_animation_frame);
+            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            assert!(!harness.frame_schedule().needs_animation_frame);
+            assert!(crate::time::now() >= until, "it ran the animation out");
+        }
+
+        // Case `the_corner_pixel_is_the_content_ground`.
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let harness = FrameHarness::new_with_theme(
+                    State::new(),
+                    Box::new(crate::widget::Spacer::new()),
+                    (64, 48),
+                    theme.clone(),
+                );
+                let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+                let rgba = harness.render_rgba();
+                assert_eq!(
+                    rgba[..4],
+                    [ground.r, ground.g, ground.b, 255],
+                    "{}: a shot lands on the window ground",
+                    theme.name
+                );
+                assert_eq!(
+                    harness.render_rgba_transparent()[3],
+                    0,
+                    "transparency only when asked for"
+                );
+            }
+        }
+    }
+
     #[test]
     fn an_idle_tree_has_no_frame_requesters() {
         let mut root = DemandProbe::leaf("Root");
@@ -9526,7 +9674,6 @@ mod tests {
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save", None)
-                .fit_content(32.0)
                 .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
 

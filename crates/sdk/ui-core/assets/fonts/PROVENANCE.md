@@ -1,10 +1,123 @@
 # Tilo canonical fonts
 
-The manifest records installed Fedora 44 binary paths, package NEVRs, complete
-SHA-256 values, metadata, and exact license mappings. These files were copied
-without modification. Product and fixture scope are independent of whether a
-font happens to be installed on a host. The 15 product fonts total 43,817,716
-bytes; Adwaita adds 879,796 fixture bytes.
+The manifest records each file's source (an installed Fedora 44 binary path
+and package NEVR, an immutable upstream URL, or a path in this repository and
+the commit it was built from), complete SHA-256 values, metadata, and exact
+license mappings. Every file was copied without modification except Tilo
+Sans, built from its own source repository at a recorded tag, and the Cyrillic fallback
+subset, which `tools/font-fallback-subsets.py` derives reproducibly from a
+pinned upstream file (below). Product and fixture scope are independent of
+whether a font happens to be installed on a host. The 20 product fonts total
+44,743,200 bytes; Adwaita adds 879,796 fixture bytes.
+
+## Tilo Sans (UI face)
+
+Tilo Sans is the system UI face: Instrument Sans (Rodrigo Fuenzalida and
+Jordan Egstad, OFL 1.1, no Reserved Font Name) extended with Vietnamese,
+Greek, Cyrillic and distinct I and l. Its sources, build and proof tools live
+in https://code.tilo.so/tilo/tilo-sans. The catalog ships its default build:
+Latin, Vietnamese and Greek. Cyrillic and the distinct I/l and slashed zero
+features are held back until review approves them; Cyrillic falls back to
+Onest (below), and the toolkit applies the I/l and zero features by
+capability, so they take effect when a build that has them is copied in.
+
+| file | bytes | SHA-256 |
+|---|---:|---|
+| `TiloSans[wdth,wght].ttf` | 296124 | `140edddcc0ee4953e5120ac208757e88f48c786788bfdd092d2dba1bb49abef4` |
+| `TiloSans-Italic[wdth,wght].ttf` | 306512 | `a4ca118abf92d41fa93f46a6833436bea98869eada3f07634a3594104dfad09c` |
+| `LICENSES/Tilo-Sans-OFL.txt` (tilo/tilo-sans `OFL.txt`) | 4448 | `63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98` |
+
+Both fonts are tilo/tilo-sans' `fonts/default/` at tag `v1.001` (commit
+`a30688acf80960aac72dd91f7e42f53b37b110c4`), built with
+
+```sh
+git clone https://code.tilo.so/tilo/tilo-sans && cd tilo-sans && git checkout v1.001
+SOURCE_DATE_EPOCH=1791039400 uv run build.py
+```
+
+`SOURCE_DATE_EPOCH` is that commit's time; it sets `head.modified`, the only
+part of the output that otherwise follows the clock. The repository pins its
+build dependencies (fonttools 4.66.1, ufo2ft 3.9.1, ufoLib2 0.18.1, glyphsLib
+6.15.0, skia-pathops 0.9.2, uharfbuzz 0.56.2; `build.py.lock` the rest), so
+the rebuild reproduces these bytes; the same files are attached to the
+`v1.001` release there. `scripts/shaping_tests.py` passed on the build.
+
+Both fonts embed `Copyright 2022 The Instrument Sans Project Authors
+(https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans
+Project Authors.` and an OFL 1.1 notice with no Reserved Font Name; their
+name-ID 0, 13 and 14 records are appended to
+`LICENSES/FONT-COPYRIGHT-NOTICES.txt`. The family is renamed from upstream's,
+so it can never be taken for upstream's files.
+
+Instrument Sans was chosen over Noto Sans, Mona Sans and Atkinson
+Hyperlegible Next by rendering the same screen in each at the type roles'
+sizes on the vello renderer: it is the most refined at 20-34 px, compact and
+clear at 12-14 px, has tabular figures and a 400-700 weight axis covering
+every role weight, and carries no Reserved Font Name. Tilo Sans keeps its
+Latin outline for outline.
+
+To ship a newer build (a script or feature review has approved): take the
+new tilo/tilo-sans release, rebuild it as above to confirm its bytes, copy
+`fonts/default/*.ttf` here, and update the manifest (both copies), this file
+and `LICENSES/FONT-COPYRIGHT-NOTICES.txt` with the tag, commit and hashes. The
+toolkit's held-back-feature test face
+(`crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf`)
+comes from the same repository's `scripts/toolkit_fixture.py`.
+
+## Matched script fallback (Onest)
+
+Tilo Sans, as shipped, has no Cyrillic. Set in Noto Sans, Cyrillic would sit
+on a taller x-height with different shapes than the Latin around it, so the
+toolkit sets it in a face chosen to match Tilo Sans' Latin instead, sized to
+its x-height and weight-mapped to its stems (`docs/typography.md`, Script
+fallbacks):
+
+| file | bytes | SHA-256 | built from |
+|---|---:|---|---|
+| `Onest-Cyrillic[wght].ttf` | 80696 | `efc3cf7b09f5bb11880ece503a7df2f5d6c2bf3177f2bd88dca5e709aeb10895` | `ofl/onest/Onest[wght].ttf` (193056 bytes, `966c5c29b4755da84b6854d5c21dd4eaa2420225d0e9874de602de176d4a9f31`) |
+| `LICENSES/Onest-OFL.txt` (upstream `OFL.txt`) | 4384 | `071195d8806e226faeee60259c28ca67b458227af5195a73f5cfcab06e3003bc` | |
+
+The upstream file comes from `google/fonts` commit
+`9710da1eacb3be272583c3224dcb70f9da6eadbb`. Its `METADATA.pb` names the
+source: `https://github.com/simpals/onest` commit
+`8739b1910618a15335e4cc48842052d0ee739ade` (release 2.001,
+`fonts/variable/Onest[wght].ttf`).
+
+`tools/font-fallback-subsets.py` fetches it, checks its SHA-256, and keeps
+only Cyrillic and its supplements and extensions plus the space,
+punctuation, digits, combining marks, general punctuation and currency signs
+its runs need. It keeps the `wght` axis, all layout features, the name table
+and the upstream `head` timestamp, so a rerun reproduces the bytes
+(`--check` verifies the checkout).
+
+License review of the modification: Onest is OFL 1.1 and its `OFL.txt` and
+embedded copyright notice (`Copyright 2021 The Onest Project Authors`)
+declare no Reserved Font Name, so a modified version may keep its name (OFL
+condition 3 does not apply). The subset is distributed under the OFL with the
+unmodified license text and copyright notice (conditions 2 and 5); its
+name-ID 0, 13 and 14 records are appended to
+`LICENSES/FONT-COPYRIGHT-NOTICES.txt`. It is not sold by itself (condition 1).
+
+## Atkinson Hyperlegible Next (Hyperlegible UI face)
+
+The built-in "Hyperlegible" UI face a theme or the accessibility layer can
+choose, copied unmodified from `google/fonts` commit
+`9710da1eacb3be272583c3224dcb70f9da6eadbb`
+(`ofl/atkinsonhyperlegiblenext/`), whose `METADATA.pb` names the source
+`https://github.com/googlefonts/atkinson-hyperlegible-next` commit
+`7925f50f649b3813257faf2f4c0b381011f434f1`:
+
+| file | bytes | SHA-256 |
+|---|---:|---|
+| `AtkinsonHyperlegibleNext[wght].ttf` | 114552 | `5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745` |
+| `AtkinsonHyperlegibleNext-Italic[wght].ttf` | 123916 | `ce9cffed32742ad2d9238c561a93220385e5934cdc02b8eb4097a50efa957dc6` |
+| `LICENSES/Atkinson-Hyperlegible-Next-OFL.txt` (upstream `OFL.txt`) | 4431 | `aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030` |
+
+Both embed `Copyright 2020-2024 The Atkinson Hyperlegible Next Project
+Authors` and an OFL 1.1 notice with no Reserved Font Name; their name-ID 0, 13
+and 14 records are appended to `LICENSES/FONT-COPYRIGHT-NOTICES.txt`. It
+covers Latin only; Cyrillic takes the same matched fallback, and Greek and
+Vietnamese take Noto Sans, each sized to its own x-height.
 
 The current Fedora rendering does not reproduce all historical Tilo typography
 PNGs. This catalog identifies a reviewed product input; it does not claim those

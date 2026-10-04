@@ -33,10 +33,15 @@ fn click(app: &mut TestApp<BackupsShell>, name: &str) {
         .find(|(_, node)| node.label() == Some(name))
         .and_then(|(_, node)| node.bounds())
         .unwrap_or_else(|| panic!("{name} is on screen"));
-    app.harness().click_at(
-        f64::midpoint(bounds.x0, bounds.x1),
-        f64::midpoint(bounds.y0, bounds.y1),
-    );
+    // The shared NumberInput publishes one SpinButton; its trailing square
+    // is the visible increment target, with the control's measured height.
+    let x = if name == "Daily snapshots to keep" {
+        bounds.x1 - (bounds.y1 - bounds.y0) / 2.0
+    } else {
+        f64::midpoint(bounds.x0, bounds.x1)
+    };
+    app.harness()
+        .click_at(x, f64::midpoint(bounds.y0, bounds.y1));
     app.settle();
 }
 
@@ -44,7 +49,7 @@ fn click(app: &mut TestApp<BackupsShell>, name: &str) {
 fn the_retention_steppers_edit_the_document_as_one_undo_step() {
     let mut app = TestApp::<BackupsShell>::capture(Some("schedules")).unwrap();
     assert_eq!(app.state().policy.daily, 7);
-    click(&mut app, "Daily retention increase");
+    click(&mut app, "Daily snapshots to keep");
     assert_eq!(app.state().policy.daily, 8);
     // The palette's increment on the same class is the same action.
     let surface = app.agent_surface();
@@ -160,14 +165,56 @@ fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
 #[test]
 fn every_scenario_stages_its_screen() {
     for (scenario, shown) in [
-        (Some("empty"), "Set up backups"),
-        (Some("restore"), "Choose an empty folder for recovery"),
-        (Some("unavailable"), "Choose another backup location"),
-        (Some("schedules"), "Daily retention increase"),
+        (Some("empty"), "Choose folder…"),
+        (Some("restore"), "Choose folder…"),
+        (Some("unavailable"), "Choose another location…"),
+        (Some("schedules"), "Daily snapshots to keep"),
         (None, "Back up now"),
     ] {
         let mut app = TestApp::<BackupsShell>::capture(scenario).unwrap();
         let tree = app.harness().inspection_json().unwrap();
         assert!(tree.contains(shown), "{scenario:?} shows {shown}: {tree}");
     }
+}
+
+#[test]
+fn retention_keyboard_and_assistive_changes_use_the_same_undoable_action() {
+    let mut app = TestApp::<BackupsShell>::capture(Some("schedules")).unwrap();
+    let target = app
+        .harness()
+        .a11y_node_named("Daily snapshots to keep")
+        .unwrap();
+    app.harness()
+        .perform_a11y_action(target, &ui::a11y::Action::Increment)
+        .unwrap();
+    app.settle();
+    assert_eq!(app.state().policy.daily, 8);
+    assert!(app.undo());
+    assert_eq!(app.state().policy.daily, 7);
+    app.harness()
+        .perform_named("backups-keep-ret_daily", &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness().key("ArrowUp");
+    app.settle();
+    assert_eq!(app.state().policy.daily, 8);
+    assert!(app.undo());
+    assert_eq!(app.state().policy.daily, 7);
+
+    let mut peer = app.peer_document();
+    backups::doc::BackupsDoc::set_retention(
+        &mut peer,
+        &automerge::ROOT,
+        backups::doc::PolicyField::Daily,
+        3,
+    );
+    app.merge_peer(&mut peer).unwrap();
+    app.settle();
+    let shown = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Daily snapshots to keep"))
+        .unwrap()
+        .1;
+    assert_eq!(shown.value(), Some("3"));
 }

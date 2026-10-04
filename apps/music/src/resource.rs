@@ -53,7 +53,7 @@ impl Resource for Music {
                         .trim()
                         .to_owned();
                     let name = if name.is_empty() {
-                        "New Playlist".to_owned()
+                        "New playlist".to_owned()
                     } else {
                         name
                     };

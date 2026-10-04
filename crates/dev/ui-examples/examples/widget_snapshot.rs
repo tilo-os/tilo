@@ -22,19 +22,19 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::popover_widget::PopoverSide;
 use tilo_ui::widget::resizable_split::SplitOrientation;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog, PopoverWidget,
-    ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar, TreeView, VideoPlayer,
-    Widget,
+    Avatar, AvatarSize, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog,
+    Popover, PopoverSide, ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar,
+    TreeView, VideoPlayer, Widget,
 };
 
 /// Narrows a small gallery layout dimension (well under f32's 2^24
@@ -48,13 +48,13 @@ fn px32(v: f64) -> f32 {
 }
 
 fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, x: f64, y: f64, text: &str) {
-    tr.draw_text(
+    tr.draw_style(
         scene,
         text,
-        theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
         Affine::translate((x, y)),
         None,
+        &theme.text(TextRole::Caption),
     );
 }
 
@@ -107,6 +107,14 @@ fn stamp(
     widget.sync(state, &automerge::ObjId::Root);
     let presence = PresenceCtx::default();
     widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    // The top layer (popovers, modals) is presented over the stamped region
+    // as a host presents it over its window.
+    let previous = presence.push_viewport(Rect::from_origin_size(
+        origin,
+        (f64::from(size.0), f64::from(size.1)),
+    ));
+    widget.draw_overlay(scene, Affine::IDENTITY, tr, theme, &presence);
+    presence.pop_viewport(previous);
 }
 
 struct TinyText {
@@ -191,13 +199,13 @@ impl Widget for TinyText {
         )]
         let text_transform =
             transform * Affine::translate((self.rect.x0 + 8.0, self.rect.y0 + 6.0));
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &self.text,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             text_transform,
             None,
+            &theme.text(TextRole::Caption),
         );
     }
     fn name(&self) -> &'static str {
@@ -312,9 +320,11 @@ fn draw_row2(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
 
 /// Row 3: `Avatar` variants.
 fn draw_row3(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
-    let mut av_qd = Avatar::from_initials("QD", 48.0);
-    let mut av_al = Avatar::from_initials("AL", 48.0);
-    let mut av_img = Avatar::new(placeholder_image(), 48.0);
+    let mut av_qd = Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Large);
+    let mut av_al = Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Large);
+    let mut av_img = Avatar::person("Sam Okafor", "sam.okafor")
+        .with_image(placeholder_image())
+        .size(AvatarSize::Large);
     place(
         ctx,
         0,
@@ -449,7 +459,7 @@ fn draw_row6(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
     y + ctx.row_label_h + 220.0 + ctx.row_gap
 }
 
-/// Row 7: `ImageViewer` / `VideoPlayer` / `PopoverWidget` (the popover sets
+/// Row 7: `ImageViewer` / `VideoPlayer` / `Popover` (the popover sets
 /// its own anchor rect and viewport in scene-space, so the flip resolver
 /// fires inside the intended cell rather than going through `place`).
 fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
@@ -484,7 +494,7 @@ fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
         ctx.theme,
         pop_x,
         pop_y,
-        "PopoverWidget (anchored, Below)",
+        "Popover (anchored, below)",
     );
     // Visualise the anchor we're going to attach to so it reads as a
     // real button rather than a phantom region.
@@ -501,13 +511,13 @@ fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
         None,
         &anchor,
     );
-    ctx.tr.draw_text(
+    ctx.tr.draw_style(
         ctx.scene,
         "anchor",
-        ctx.theme.tokens.typography.scale.sm,
         ctx.theme.tokens.colors.text_primary,
         Affine::translate((anchor.x0 + 12.0, anchor.y0 + 8.0)),
         None,
+        &ctx.theme.text(TextRole::Caption),
     );
     let viewport = Rect::new(
         pop_x,
@@ -515,10 +525,11 @@ fn draw_row7(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
         pop_x + pop_w,
         pop_y + row_label_h + pop_h,
     );
-    let mut popover =
-        PopoverWidget::new(anchor, TinyText::new("Popover content"), PopoverSide::Below)
-            .open(true)
-            .with_viewport(viewport);
+    let mut popover = Popover::with_content(TinyText::new("Popover content"))
+        .anchored(anchor)
+        .side(PopoverSide::Below)
+        .open(true)
+        .with_viewport(viewport);
     stamp(
         ctx.scene,
         ctx.tr,
@@ -558,8 +569,8 @@ fn draw_row8_modal(ctx: &mut GalleryCtx<'_>, pad: f64, canvas_w: u32, y: f64) {
     )
     .open(true)
     .primary_action("Save", || {})
-    .secondary_action("Discard", || {})
-    .with_viewport(viewport);
+    .secondary_action("Discard", || {});
+    let _ = viewport;
     stamp(
         ctx.scene,
         ctx.tr,

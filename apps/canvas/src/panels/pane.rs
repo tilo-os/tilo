@@ -49,7 +49,13 @@ impl Pane {
         if rect.width() < 1.0 || rect.height() < 1.0 {
             return;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &rect,
+        );
         // Half a pixel in, so the hairline is one crisp device pixel.
         let line = match self.edge {
             Edge::Left => Line::new((rect.x0 + 0.5, rect.y0), (rect.x0 + 0.5, rect.y1)),

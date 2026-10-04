@@ -21,7 +21,6 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -64,6 +63,8 @@ pub struct ResizableSplit<L: Widget, R: Widget> {
     /// Fraction (`0.1..=0.9`) of the split-axis extent taken by `left`;
     /// `right` takes `1.0 - split_position`.
     split_position: f32,
+    /// Pane grow factors are rebuilt after a position change.
+    structure_dirty: bool,
     /// True while the cursor sits inside [`Self::divider_rect`]; drives the
     /// wider, accent-tinted divider paint.
     divider_hover: bool,
@@ -82,6 +83,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             right,
             orientation,
             split_position: SPLIT_DEFAULT,
+            structure_dirty: false,
             divider_hover: false,
             divider_drag: None,
             rect: Rect::ZERO,
@@ -93,8 +95,22 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// split where one pane is invisible from the start.
     #[must_use]
     pub fn with_split_position(mut self, position: f32) -> Self {
-        self.split_position = position.clamp(SPLIT_MIN, SPLIT_MAX);
+        self.set_split_position(position);
         self
+    }
+
+    /// Resize existing panes, updating hit testing immediately and requesting
+    /// a layout rebuild so their grow factors follow the new position.
+    pub fn set_split_position(&mut self, position: f32) {
+        if position.is_nan() {
+            return;
+        }
+        let position = position.clamp(SPLIT_MIN, SPLIT_MAX);
+        if self.split_position != position {
+            self.split_position = position;
+            self.recompute_divider_rect();
+            self.structure_dirty = true;
+        }
     }
 
     pub fn split_position(&self) -> f32 {
@@ -162,8 +178,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                 px((pt.y - offset - r.y0) / extent)
             }
         };
-        self.split_position = new_pos.clamp(SPLIT_MIN, SPLIT_MAX);
-        self.recompute_divider_rect();
+        self.set_split_position(new_pos);
         true
     }
 
@@ -232,7 +247,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     ) -> bool {
         let left = self.left.update(state, path);
         let right = self.right.update(state, path);
-        left | right
+        left | right | self.structure_dirty
     }
 
     fn build_layout(
@@ -241,6 +256,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.structure_dirty = false;
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
 
@@ -368,7 +384,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // The idle divider is a derived rule on the base surface (HIG
         // §9.5); the accent marks a live drag.
         let color = if active {
-            theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]
+            theme.tokens.colors.intent.inverted
         } else {
             crate::surface::edge_on(theme.tokens.colors.surfaces.base)
         };
@@ -461,9 +477,10 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
         let l = self.left.take_structure_dirty();
         let r = self.right.take_structure_dirty();
-        l || r
+        own || l || r
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -524,7 +541,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // The idle divider is a derived rule on the base surface (HIG
         // §9.5); the accent marks a live drag.
         let color = if active {
-            theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]
+            theme.tokens.colors.intent.inverted
         } else {
             crate::surface::edge_on(theme.tokens.colors.surfaces.base)
         };
@@ -713,6 +730,116 @@ mod tests {
         s.right.changes = true;
         assert!(s.update(&mut doc, &root), "a pane's change is the split's");
         assert_eq!((s.left.updates, s.right.updates), (2, 2));
+    }
+
+    #[test]
+    fn changing_an_existing_split_moves_its_divider_and_requests_layout() {
+        for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
+            let mut split = split_at(0.0, 0.0, 400.0, 400.0, orientation);
+            assert!(!split.take_structure_dirty());
+            split = split.with_split_position(0.25);
+            let point = match orientation {
+                SplitOrientation::Horizontal => Point::new(100.0, 200.0),
+                SplitOrientation::Vertical => Point::new(200.0, 100.0),
+            };
+            assert!(
+                split.cursor_shape(point).is_some(),
+                "the new divider is interactive"
+            );
+            assert!(split.cursor_shape(Point::new(200.0, 200.0)).is_none());
+            assert!(
+                split.take_structure_dirty(),
+                "the host must lay out the resized panes"
+            );
+            assert!(
+                !split.take_structure_dirty(),
+                "one layout request per change"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_setter_and_drag_resize_both_panes_and_settle() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct ControlledSplit {
+            split: ResizableSplit<TestLeaf, TestLeaf>,
+            requested: Rc<Cell<Option<f32>>>,
+        }
+        impl crate::widget::Decorator for ControlledSplit {
+            type Inner = ResizableSplit<TestLeaf, TestLeaf>;
+            fn inner(&self) -> &Self::Inner {
+                &self.split
+            }
+            fn inner_mut(&mut self) -> &mut Self::Inner {
+                &mut self.split
+            }
+            fn as_any(&self) -> Option<&dyn std::any::Any> {
+                Some(self)
+            }
+            fn sync(
+                &mut self,
+                state: &mut crate::widget::AppModel,
+                path: &crate::widget::ModelPath,
+            ) {
+                if let Some(position) = self.requested.take() {
+                    self.split.set_split_position(position);
+                }
+                self.split.sync(state, path);
+            }
+        }
+
+        for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
+            let requested = Rc::new(Cell::new(None));
+            let root = ControlledSplit {
+                split: ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation),
+                requested: requested.clone(),
+            };
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                root,
+                (400, 400),
+                Theme::dark(),
+            );
+            // A model update invokes the setter without root_mut's forced
+            // recomposition, so the widget must invalidate its own layout.
+            requested.set(Some(0.25));
+            harness.relayout();
+            let assert_panes = |harness: &crate::headless::FrameHarness, fraction: f64| {
+                let split = &harness.root::<ControlledSplit>().split;
+                let extent = |rect: Rect| match orientation {
+                    SplitOrientation::Horizontal => rect.width(),
+                    SplitOrientation::Vertical => rect.height(),
+                };
+                let total = extent(split.rect);
+                assert!((extent(split.left.rect) - total * fraction).abs() < 0.1);
+                assert!((extent(split.right.rect) - total * (1.0 - fraction)).abs() < 0.1);
+                assert!(
+                    !split.structure_dirty,
+                    "the host consumed layout invalidation"
+                );
+            };
+            assert_panes(&harness, 0.25);
+
+            let divider = harness
+                .root::<ControlledSplit>()
+                .split
+                .divider_rect
+                .center();
+            harness.send(&cursor_moved(divider.x, divider.y));
+            harness.send(&mouse_press());
+            let destination = match orientation {
+                SplitOrientation::Horizontal => Point::new(280.0, 200.0),
+                SplitOrientation::Vertical => Point::new(200.0, 280.0),
+            };
+            harness.send(&cursor_moved(destination.x, destination.y));
+            harness.send(&mouse_release());
+            harness.relayout();
+            assert_panes(&harness, 0.7);
+            harness.relayout();
+            assert_panes(&harness, 0.7);
+        }
     }
 
     #[test]

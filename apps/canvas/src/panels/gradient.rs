@@ -258,11 +258,17 @@ impl Widget for GradientBar {
         if strip.width() < 2.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.item);
         let shape = RoundedRect::from_rect(strip, radius);
         // A checker under the strip, so a stop that fades out reads as
         // see-through.
-        scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.lift(0.5),
+            None,
+            &shape,
+        );
         let mut stops: Vec<(f64, ui::vello::peniko::Color)> = self
             .gradient
             .stops
@@ -297,7 +303,7 @@ impl Widget for GradientBar {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            ui::surface::edge_on(theme.bg_primary),
+            ui::surface::edge_on(theme.tokens.colors.surfaces.content),
             None,
             &shape,
         );
@@ -317,7 +323,7 @@ impl Widget for GradientBar {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.bg_primary,
+                theme.tokens.colors.surfaces.content,
                 None,
                 &Circle::new(at, GRIP),
             );
@@ -332,7 +338,7 @@ impl Widget for GradientBar {
                 &Stroke::new(if chosen { 2.0 } else { 1.0 }),
                 transform,
                 if chosen {
-                    theme.accent_primary
+                    theme.tokens.colors.intent.you
                 } else {
                     theme.text_dim
                 },
@@ -495,8 +501,8 @@ fn kind_picker(
             ],
             kinds.iter().position(|k| *k == kind).unwrap_or(0),
         )
-        .with_flexible_width()
-        .with_style(ui::widget::toggle_group::SegmentedStyle::Underline)
+        .fill()
+        .with_style(ui::widget::toggle_group::SegmentedStyle::Tabs)
         .with_id("canvas-fill-kind")
         .on_change(move |index| {
             let Some(chosen) = kinds.get(index).copied() else {

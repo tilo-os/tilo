@@ -10,7 +10,7 @@ use std::rc::Rc;
 use ui::framework::history::HistoryVersion;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::widget::ListRow;
+use ui::widget::SelectableRow;
 
 use super::{caption, icon_button};
 use crate::resource::ArtworkResource;
@@ -185,7 +185,7 @@ fn viewing(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                         "canvas-restore",
                         ArtworkResource::RESTORE.with(version.clone()),
                     )
-                    .primary(),
+                    .role(ui::widget::ButtonRole::Primary),
                 )),
         )
     })
@@ -202,7 +202,7 @@ fn now_row(tools: &Tools) -> Element {
             Text::new("canvas-history-now").with_weight(ui::text_render::TextWeight::Semibold),
         ));
     Box::new(
-        ListRow::new(content)
+        SelectableRow::new(content)
             .on_raised()
             .choosing(&tools.preview, None)
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-history-now")),
@@ -282,7 +282,7 @@ fn entry_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, entry: &Entry) -> Elem
         )));
     }
     Box::new(
-        ListRow::new(content)
+        SelectableRow::new(content)
             .on_raised()
             .choosing(&tools.preview, Some(entry.change.clone()))
             .with_id(format!("canvas-version-{}", entry.change))

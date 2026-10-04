@@ -96,6 +96,11 @@ const SCENARIOS: &[&str] = &[
     "connecting",
     "unprovisioned",
     "setup",
+    "activity",
+    "phone",
+    "phone-detail",
+    "phone-config",
+    "phone-add",
 ];
 
 /// Framework app: the VPN widget over [`Vpn`].
@@ -107,8 +112,12 @@ impl ResourceApp for VpnShell {
     const TITLE: &'static str = "VPN";
     const ICON: Option<&'static str> = Some("vpn");
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        if scenario.is_some_and(|name| name.starts_with("phone")) {
+            (520, 820)
+        } else {
+            (1100, 720)
+        }
     }
 
     fn view(cx: &mut ViewCx<Vpn>) -> Element {

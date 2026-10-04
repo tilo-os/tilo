@@ -56,11 +56,11 @@ pub mod model;
 pub mod net;
 pub mod offline_areas;
 mod offline_panel;
+pub mod place_search;
 pub mod rank;
 pub mod resource;
 pub mod sample;
 mod scenario;
-mod search_box;
 pub mod tiles;
 pub mod traffic;
 

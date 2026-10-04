@@ -38,15 +38,14 @@
 pub mod actions;
 pub mod app;
 pub mod combobox;
+mod create_form;
 pub mod doc;
-pub mod draw;
 pub mod model;
-pub mod panels;
 pub mod podman;
-pub mod presentation;
 pub mod resource;
 pub mod search_provider;
 pub mod terminal;
+mod view;
 
 pub use app::ContainersApp;
 pub use resource::{Containers, ContainersShell};

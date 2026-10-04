@@ -2630,13 +2630,13 @@ mod tests {
         fn newest_roaming_setting_wins_deterministically() {
             let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
             old.settings.push(RoamingSetting {
-                key: "tilo.appearance.theme".into(),
+                key: "tilo.appearance.mode".into(),
                 value: Value::Bool(false),
                 stamp: stamp("desktop", 1),
             });
             let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
             new.settings.push(RoamingSetting {
-                key: "tilo.appearance.theme".into(),
+                key: "tilo.appearance.mode".into(),
                 value: Value::Bool(true),
                 stamp: stamp("laptop", 2),
             });
@@ -2644,7 +2644,7 @@ mod tests {
             fabric.upsert(old).unwrap();
             fabric.upsert(new).unwrap();
             assert_eq!(
-                fabric.merged_settings()["tilo.appearance.theme"],
+                fabric.merged_settings()["tilo.appearance.mode"],
                 Value::Bool(true)
             );
         }
@@ -2752,7 +2752,7 @@ mod tests {
             let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
             source.wifi.push(credential);
             source.settings.push(RoamingSetting {
-                key: "tilo.appearance.theme".into(),
+                key: "tilo.appearance.mode".into(),
                 value: Value::String("Nord".into()),
                 stamp: FabricStamp {
                     counter: 1,
@@ -2763,7 +2763,7 @@ mod tests {
             fabric.upsert(source).unwrap();
 
             assert_eq!(
-                fabric.merged_settings()["tilo.appearance.theme"],
+                fabric.merged_settings()["tilo.appearance.mode"],
                 Value::String("Nord".into())
             );
         }

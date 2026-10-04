@@ -187,11 +187,35 @@ impl ResourceApp for FirewallShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        SCENARIOS
+        &[
+            "default",
+            "empty",
+            "add-rule",
+            "error",
+            "confirmation",
+            "active-change",
+            "panic",
+            "stopped",
+            "service-error",
+            "services",
+            "selected",
+            "narrow",
+            "drawer",
+        ]
     }
 
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(Self::scenario_viewport)
+            .unwrap_or((1100, 720))
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        match name {
+            "narrow" => Some((800, 600)),
+            "drawer" => Some((640, 600)),
+            _ => None,
+        }
     }
 
     /// The bundled sample ruleset, never the capturing machine's; the
@@ -200,17 +224,15 @@ impl ResourceApp for FirewallShell {
         if name == Some("service-error") {
             return Vec::new();
         }
-        let mut actions = vec![FirewallAction::Import {
-            config: crate::sample::sample_config(),
-        }];
-        if name == Some("active-change") {
-            actions.push(FirewallAction::SetDefaultZone {
-                zone: ZoneKind::Home,
-            });
+        let mut config = crate::sample::sample_config();
+        match name {
+            Some("active-change") => config.default_zone = crate::model::ZoneKind::Home,
+            Some("panic") => config.panic_mode = true,
+            Some("stopped") => config.enabled = false,
+            _ => {}
         }
-        actions
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
+        Invoke::apply(&FirewallAction::Import { config })
+            .into_iter()
             .collect()
     }
 
@@ -447,11 +469,14 @@ mod tests {
         assert_eq!(active.harness().inspection().viewport, [1100, 720]);
         assert_eq!(active.state().default_zone, ZoneKind::Home);
         let frame = active.harness().inspection_json().unwrap();
-        assert!(frame.contains("home is now the active zone"), "{frame}");
+        assert!(frame.contains("Home is now the active zone"), "{frame}");
 
         let mut error = TestApp::<FirewallShell>::capture(Some("service-error")).unwrap();
         assert!(error.state().zones.is_empty());
         let frame = error.harness().inspection_json().unwrap();
-        assert!(frame.contains("Permission denied"), "{frame}");
+        assert!(
+            frame.contains("Permission to read firewalld was denied"),
+            "{frame}"
+        );
     }
 }

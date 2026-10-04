@@ -263,7 +263,7 @@ pub fn action_label(action_label: &str, resource_label: &str) -> String {
     let label = if resource_label.is_empty() {
         action_label.to_owned()
     } else {
-        format!("{action_label} · {resource_label}")
+        format!("{action_label}: {resource_label}")
     };
     head(&label, MAX_LABEL_BYTES).to_owned()
 }
@@ -712,7 +712,7 @@ mod tests {
              \"preview\":{\"app\":\"so.tilo.word-processor\",\"record\":\"\",\"text\":\"The ocean covers\"}}"
         );
         assert_eq!(AgentLiveUpdate::decode(&message), Some(update));
-        assert_eq!(AgentLiveUpdate::decode("Running 1/2 · Append"), None);
+        assert_eq!(AgentLiveUpdate::decode("Running 1 of 2: Append"), None);
         let bare = AgentLiveUpdate {
             v: 1,
             seq: 1,
@@ -927,7 +927,7 @@ mod tests {
             ]
         );
         assert_eq!(sent[1].label, "Looking up operations");
-        assert_eq!(sent[3].label, "Append paragraph · Document");
+        assert_eq!(sent[3].label, "Append paragraph: Document");
         let preview = sent[3].preview.as_ref().unwrap();
         assert_eq!(
             (
@@ -989,7 +989,7 @@ mod tests {
         collect(&mut live, ui::time::now(), &mut sent);
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].state, LiveState::Writing);
-        assert_eq!(sent[0].label, "Type text · Brief");
+        assert_eq!(sent[0].label, "Type text: Brief");
         let preview = sent[0].preview.as_ref().unwrap();
         assert_eq!(
             (
@@ -999,6 +999,6 @@ mod tests {
             ),
             ("so.tilo.word-processor", "doc-1", "The ocean")
         );
-        assert_eq!(stream.call_target(1).unwrap().label, "Type text · Brief");
+        assert_eq!(stream.call_target(1).unwrap().label, "Type text: Brief");
     }
 }

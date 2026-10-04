@@ -80,25 +80,19 @@ impl ResourceApp for App {
                     .push(canvas)
                     .push(panels::header::context_bar(cx, &tools)),
             ));
-        let sidebar = {
-            let tools = tools.clone();
-            cx.switch(&tools.sidebar.clone(), move |cx, shown| {
-                if *shown {
-                    Box::new(Pane::new(sidebar(cx, &tools, &dock), Edge::Left).grouping())
-                        as Element
-                } else {
-                    Box::new(Spacer::fixed(0.0))
-                }
-            })
-        };
         Box::new(
-            Row::new()
-                .no_wrap()
-                .with_gap(0.0)
-                .with_fill_remaining_height()
-                .push(Box::new(Pane::new(rail(&tools), Edge::Right)))
-                .push(Box::new(work))
-                .push(sidebar),
+            NavShell::new()
+                .with_id("canvas-shell")
+                .with_inspector_state(&tools.sidebar)
+                .content(Box::new(
+                    Row::new()
+                        .no_wrap()
+                        .with_gap(0.0)
+                        .with_fill_remaining_height()
+                        .push(Box::new(Pane::new(rail(&tools), Edge::Right)))
+                        .push(Box::new(work)),
+                ))
+                .inspector(sidebar(cx, &tools, &dock)),
         )
     }
 
@@ -147,8 +141,6 @@ enum Dock {
 
 /// The tool rail's width.
 const RAIL: f32 = 56.0; // a pointer target and its inset, laid out before a theme is known
-/// The sidebar's width.
-pub(crate) const SIDEBAR: f32 = 288.0; // the swatches' width plus insets: a layout width, not spacing
 
 /// The tools, top to bottom, each with its key, and at the foot the paint
 /// the brush is loaded with.
@@ -211,7 +203,6 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
     Box::new(
         Container::new()
             .with_no_padding()
-            .with_width(SIDEBAR)
             .filling()
             .with_child(Box::new(
                 Column::new()
@@ -219,6 +210,8 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
                     .with_gap(0.0)
                     .push(Box::new(
                         Scrollable::new_vertical()
+                            .always_visible()
+                            .with_semantic_key("canvas-inspector")
                             .fill_parent_height()
                             .with_child(Box::new(inspector)),
                     ))
@@ -249,8 +242,8 @@ fn dock_tabs(
         ],
         dock,
     )
-    .underline()
-    .with_flexible_width()
+    .with_style(ui::widget::SegmentedStyle::Tabs)
+    .fill()
     .with_id("canvas-dock");
     let tools = tools.clone();
     let action = cx.switch(dock, move |cx, dock| match dock {
@@ -289,7 +282,7 @@ fn fold(cx: &ViewCx<ArtworkResource>, open: &LocalState<bool>) -> Element {
         Box::new(
             Button::new(id, "", None)
                 .with_icon(icon)
-                .ghost()
+                .role(ui::widget::ButtonRole::Plain)
                 .with_accessible_name(&name)
                 .tooltip(name.clone())
                 .with_size(panels::ICON_BUTTON, panels::ICON_BUTTON)

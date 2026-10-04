@@ -593,7 +593,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
         },
     );
     let settings_label = format!(
-        "Playback settings · {}× · autoplay {} · repeat {}",
+        "Playback settings: {}×, autoplay {}, repeat {}",
         ctx.settings.rate,
         if ctx.settings.autoplay { "on" } else { "off" },
         if ctx.settings.loop_enabled {
@@ -652,7 +652,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
         "video-player.tracks.current",
         "media.tracks",
         format!(
-            "Audio and subtitles · {} audio · {} subtitles",
+            "Audio and subtitles: {} audio, {} subtitles",
             ctx.audio_tracks.len(),
             ctx.subtitle_tracks.len()
         ),
@@ -665,7 +665,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
             "select-audio-{}",
             identity_token_for_action(&track.stream_id)
         );
-        let selected = if track.selected { " · selected" } else { "" };
+        let selected = if track.selected { " (selected)" } else { "" };
         let spec = ActionSpec::typed_operation(
             action_id,
             format!("Use {}{selected}", track.label),
@@ -708,7 +708,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
             "select-subtitle-{}",
             identity_token_for_action(&track.stream_id)
         );
-        let selected = if track.selected { " · selected" } else { "" };
+        let selected = if track.selected { " (selected)" } else { "" };
         let expected_stream_id = ctx
             .subtitle_tracks
             .iter()
@@ -788,7 +788,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
     let mut chapters = Resource::new(
         "video-player.chapters.current",
         "media.chapters",
-        format!("Chapters · {} available", ctx.chapters.len()),
+        format!("Chapters: {} available", ctx.chapters.len()),
     );
     for chapter in ctx.chapters.iter().take(CONTEXTUAL_CHILD_LIMIT) {
         let Some(source_id) = ctx.media.source_id.as_deref() else {
@@ -819,7 +819,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
             Resource::new(
                 chapter_resource_id(source_id, &chapter.id),
                 "media.chapter",
-                format!("{} · {:.1}s", chapter.label, chapter.seconds),
+                format!("{} ({:.1}s)", chapter.label, chapter.seconds),
             )
             .with_action(if !ctx.media.has_media {
                 spec.unavailable("no_media", "Open a video before navigating chapters")
@@ -851,7 +851,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
     }
     if let Ok(pip) = ActionSpec::operation(
         "picture-in-picture",
-        "Open Picture in Picture",
+        "Open picture in picture",
         OperationKind::View,
         OPERATION_TYPE,
         &PlayerOperation::OpenPictureInPicture,
@@ -859,7 +859,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
         presentation = presentation.with_action(if ctx.media.has_media {
             pip.retry_policy(RetryPolicy::AtMostOnce)
         } else {
-            pip.unavailable("no_media", "Open a video before using Picture in Picture")
+            pip.unavailable("no_media", "Open a video before using picture in picture")
         });
     }
 
@@ -898,7 +898,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
         "video-player.queue.local",
         "media.queue",
         format!(
-            "Queue · {} session item{}",
+            "Queue: {} session item{}",
             ctx.library.queue.len(),
             if ctx.library.queue.len() == 1 {
                 ""
@@ -942,7 +942,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
             },
         )
         .with_contract(local_library_contract.clone());
-        let suffix = if item.current { " · playing" } else { "" };
+        let suffix = if item.current { " (playing)" } else { "" };
         queue = queue.with_child(
             Resource::new(
                 queue_item_resource_id(&item.id),
@@ -956,10 +956,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
     let mut recent = Resource::new(
         "video-player.history.local",
         "media.history",
-        format!(
-            "Recent videos · {} on this device",
-            ctx.library.recent.len(),
-        ),
+        format!("Recent videos: {} on this device", ctx.library.recent.len()),
     );
     if !ctx.library.recent.is_empty()
         && let Ok(clear) = ActionSpec::operation(
@@ -1142,7 +1139,7 @@ fn shared_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, limit: usize)
     let mut playlists = Resource::new(
         "video-player.playlists.shared",
         "media.playlists",
-        format!("Shared playlists · {}", state.playlists.len()),
+        format!("Shared playlists: {}", state.playlists.len()),
     );
     if let Ok(show) = ActionSpec::operation(
         "show",
@@ -1322,7 +1319,7 @@ fn shared_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, limit: usize)
     let mut annotations = Resource::new(
         "video-player.annotations.shared",
         "media.annotations",
-        format!("Timestamp annotations · {}", state.annotations.len()),
+        format!("Timestamp annotations: {}", state.annotations.len()),
     );
     annotations.actions.push(
         ActionSpec::typed(
@@ -1365,9 +1362,9 @@ fn shared_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit, limit: usize)
     );
     for annotation in state.annotations.iter().take(limit) {
         let label = if annotation.text.is_empty() {
-            format!("Bookmark · {}ms", annotation.time_ms)
+            format!("Bookmark ({}ms)", annotation.time_ms)
         } else {
-            format!("{} · {}ms", annotation.text, annotation.time_ms)
+            format!("{} ({}ms)", annotation.text, annotation.time_ms)
         };
         let mut resource = Resource::new(
             annotation_resource_id(&annotation.id),
@@ -1904,7 +1901,7 @@ mod tests {
                 &chapter_resource_id("fixture://clip", "intro-夏"),
             )
             .expect("chapter");
-            assert_eq!(chapter.label, "Introduction 夏 · 12.5s");
+            assert_eq!(chapter.label, "Introduction 夏 (12.5s)");
         }
         // Case `shared_entities_are_bounded_and_lazily_materialized_with_typed_actions`.
         {

@@ -242,7 +242,7 @@ pub fn adjustments(
 ) -> Element {
     let reset = cx
         .button("canvas-adjust-reset", target.invoke(Adjust::default()))
-        .ghost();
+        .role(ui::widget::ButtonRole::Plain);
     let title = Row::new()
         .with_gap(8.0)
         .no_wrap()
@@ -297,7 +297,11 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &To
             let button = Button::new(id, &name, None)
                 .tooltip(ui::i18n::I18nManager::lookup_plain("canvas-crop-hint"))
                 .on_view(move || flip.set(!flip.with(|on| *on)));
-            Box::new(if *cropping { button.primary() } else { button }) as Element
+            Box::new(if *cropping {
+                button.role(ui::widget::ButtonRole::Primary)
+            } else {
+                button
+            }) as Element
         })
     };
     let fit = cx
@@ -314,7 +318,7 @@ fn framing(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, tools: &To
                 id,
                 ArtworkResource::FLIP.with((ids.to_vec(), way.to_owned())),
             )
-            .ghost(),
+            .role(ui::widget::ButtonRole::Plain),
         ) as Element
     };
     let row = |children: Vec<Element>| {

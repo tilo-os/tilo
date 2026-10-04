@@ -37,7 +37,7 @@ use crate::widget::identity_flow::sheet::{
 use crate::widget::identity_flow::{
     IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Accept channel invite";
@@ -360,7 +360,7 @@ impl InviteAcceptScreen {
         // An accessibility `SetValue` lands outside the event path; the
         // layout pass that follows it is where the link gets re-read.
         self.reparse_if_edited();
-        place_field(&mut self.url, resolved.plan.url, text_renderer, theme);
+        place_field(&mut self.url, resolved.plan.url);
         self.url_rect = BodyScroll::visible(body, resolved.plan.url);
         self.decline_rect = resolved.sheet.action(ACTION_DECLINE);
         self.accept_rect = resolved.sheet.action(ACTION_ACCEPT);

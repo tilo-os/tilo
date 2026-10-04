@@ -3602,5 +3602,14 @@
     "description": null,
     "operation": "View",
     "params": []
+  },
+  {
+    "resource": "tilo.control:nav-shell-inspector",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Hide inspector",
+    "description": null,
+    "operation": "View",
+    "params": []
   }
 ]

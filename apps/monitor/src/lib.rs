@@ -1,12 +1,11 @@
 //! Monitor — a CRDT-native graphical activity monitor for Tilo, built on
 //! the `ui` toolkit.
 //!
-//! Two tabs (Processes / Resources) present live system stats as content —
-//! a summary strip over a full-width process table, and a reflowing resource
-//! dashboard — with no sidebar. Real
-//! `sysinfo` data drives the live binary; a representative
-//! [`model::MonitorModel::sample`] snapshot drives `--shots` so the
-//! headless screenshot is fully populated offline.
+//! Two tabs (Processes / Resources) present live system stats as content:
+//! summary tiles over a process table with the selected process in the
+//! inspector, and a reflowing resource dashboard. Real `sysinfo` data drives
+//! the live binary; a representative [`model::MonitorModel::sample`]
+//! snapshot drives `--shots` so a capture is fully populated offline.
 //!
 //! Layers:
 //! - [`layout`]     — pure geometry: card heights, per-core grid, table columns.
@@ -51,14 +50,12 @@
 
 pub mod app;
 pub mod doc;
-pub mod layout;
 pub mod model;
-pub mod paint;
 pub mod prefs;
 pub mod resource;
-pub mod responsive;
 pub mod sampler;
 pub mod tree;
+pub mod view;
 
 pub use app::MonitorApp;
 pub use resource::{Monitor, MonitorEffect, MonitorShell};

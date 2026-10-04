@@ -129,18 +129,47 @@ fn insert_settled(cache: &mut CacheState, url: String, slot: Slot) {
     cache.slots.insert(url, SlotEntry { slot, last_used });
 }
 
+/// Loads in flight across every store in the process, so a capture can wait
+/// for the thumbnails a frame asked for before it is written
+/// ([`loads_in_flight`]).
+static LOADS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Loads in flight (queued or decoding) across every [`ImageStore`] in the
+/// process. A screenshot capture waits, within a bound, until this is zero.
+#[must_use]
+pub fn loads_in_flight() -> usize {
+    LOADS_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// One store's in-flight count, mirrored into [`LOADS_IN_FLIGHT`].
+struct Pending(AtomicUsize);
+
+impl Pending {
+    fn add(&self, n: usize) {
+        self.0.fetch_add(n, Ordering::SeqCst);
+        LOADS_IN_FLIGHT.fetch_add(n, Ordering::SeqCst);
+    }
+    fn sub(&self, n: usize) {
+        self.0.fetch_sub(n, Ordering::SeqCst);
+        LOADS_IN_FLIGHT.fetch_sub(n, Ordering::SeqCst);
+    }
+    fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 struct Shared {
     slots: Mutex<CacheState>,
     /// Count of in-flight (queued or decoding) loads, for `is_idle` /
     /// `block_until_idle` and to know when to keep animation frames flowing.
-    pending: AtomicUsize,
+    pending: Pending,
 }
 
 impl Shared {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             slots: Mutex::new(CacheState::default()),
-            pending: AtomicUsize::new(0),
+            pending: Pending(AtomicUsize::new(0)),
         })
     }
 }
@@ -199,7 +228,7 @@ impl HostImageLoader {
         // A closed component must not receive a late publication.
         if !self.wake.authorize_publication() {
             self.in_flight.remove(url);
-            self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+            self.shared.pending.sub(1);
             return false;
         }
         let slot = decoded_slot(bytes, self.max_dimension);
@@ -222,7 +251,7 @@ impl HostImageLoader {
         }
         entry.slot = Slot::Loading;
         self.in_flight.insert(url.into());
-        self.shared.pending.fetch_add(1, Ordering::SeqCst);
+        self.shared.pending.add(1);
         true
     }
 
@@ -245,7 +274,7 @@ impl HostImageLoader {
             // entries until both the count and decoded-pixel ceilings fit.
             insert_settled(&mut slots, url.to_owned(), slot);
         }
-        self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+        self.shared.pending.sub(1);
         self.wake.wake();
         true
     }
@@ -263,9 +292,7 @@ impl Drop for HostImageLoader {
                 insert_settled(&mut slots, url.clone(), Slot::Failed);
             }
         }
-        self.shared
-            .pending
-            .fetch_sub(unfinished.len(), Ordering::SeqCst);
+        self.shared.pending.sub(unfinished.len());
         self.wake.wake();
     }
 }
@@ -458,7 +485,7 @@ impl ImageStore {
             },
         );
         drop(slots);
-        self.shared.pending.fetch_add(1, Ordering::SeqCst);
+        self.shared.pending.add(1);
         // Never block the UI thread behind image I/O. A full queue removes the
         // provisional Loading slot so a later frame can retry; a loader that
         // is gone will never answer, so the request settles as failed.
@@ -479,7 +506,7 @@ impl ImageStore {
                         }
                     }
                 }
-                self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+                self.shared.pending.sub(1);
             }
         }
         None
@@ -496,7 +523,7 @@ impl ImageStore {
 
     /// Number of in-flight loads (queued or decoding).
     pub fn pending(&self) -> usize {
-        self.shared.pending.load(Ordering::SeqCst)
+        self.shared.pending.get()
     }
 
     /// Whether every requested load has settled.

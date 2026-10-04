@@ -64,7 +64,7 @@ fn toast_stack_expires_caps_and_registers_its_edge() {
             card.body = "12 tests passed in 3.4 s";
             card.closable = true;
             paint_card(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &card);
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("toast_card_{name}"), &rgba);
 
             // Right edge, mid-height: clear of the accent stripe, the dismiss

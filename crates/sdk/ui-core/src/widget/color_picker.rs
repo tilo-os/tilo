@@ -21,13 +21,14 @@
 //! comes from theme tokens.
 
 use crate::color_compat::ColorCompat;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, ButtonFace, ColorSwatchFace};
+use crate::widget::{Button, ButtonFace, ColorSwatch, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -75,35 +76,6 @@ const BUTTON_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s6);
 const BUTTON_GAP: f64 = token(SPACE.s2);
 /// Hue stops the strip's gradient passes through (every 60°).
 const HUE_STOPS: usize = 7;
-
-/// One quick pick in a picker's swatch palette.
-#[derive(Clone, Debug)]
-pub struct ColorSwatch {
-    pub color: Color,
-    /// Spoken name; `None` speaks the `#RRGGBB` hex.
-    pub name: Option<String>,
-}
-
-impl ColorSwatch {
-    #[must_use]
-    pub fn new(color: Color) -> Self {
-        Self { color, name: None }
-    }
-
-    #[must_use]
-    pub fn named(color: Color, name: impl Into<String>) -> Self {
-        Self {
-            color,
-            name: Some(name.into()),
-        }
-    }
-
-    fn spoken_name(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| crate::color::to_hex(self.color))
-    }
-}
 
 /// How a confirming picker closed (see [`ColorPicker::confirming`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -868,17 +840,16 @@ impl ColorPicker {
         let Some(title) = &self.confirm_title else {
             return;
         };
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
-        let (_, line) = text_renderer.measure(title, size, None);
+        let style = theme.text(TextRole::Body);
+        let (_, line) = text_renderer.measure_style(title, None, &style);
         let y = self.title_rect.y0 + (self.title_rect.height() - f64::from(line)) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             title,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.title_rect.x0, y)),
             Some(Self::px(self.title_rect.width())),
-            TextWeight::Semibold,
+            &style.clone().with_weight(TextWeight::Semibold),
         );
     }
 
@@ -907,14 +878,12 @@ impl ColorPicker {
         if self.confirm_title.is_none() {
             return;
         }
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         Button::paint(
             scene,
             transform,
             text_renderer,
             theme,
             &ButtonFace::new(self.cancel_rect, "Cancel")
-                .text_size(size)
                 .hovered(self.cancel_rect.contains(self.last_cursor)),
         );
         Button::paint(
@@ -923,9 +892,7 @@ impl ColorPicker {
             text_renderer,
             theme,
             &ButtonFace::new(self.done_rect, "Done")
-                .primary()
-                .text_size(size)
-                .weight(TextWeight::Semibold)
+                .role(ButtonRole::Primary)
                 .hovered(self.done_rect.contains(self.last_cursor)),
         );
     }
@@ -1090,7 +1057,7 @@ impl Widget for ColorPicker {
         presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius_sm = f64::from(theme.tokens.radii.sm);
+        let radius_sm = f64::from(theme.tokens.radii.detail);
 
         // No bounding-box focus border: the picker's rect spans empty
         // space between its controls, so a stroke around all of it would
@@ -1107,18 +1074,18 @@ impl Widget for ColorPicker {
         self.hex_input
             .draw(scene, transform, text_renderer, theme, presence);
 
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Caption);
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
         let row_gap = f64::from(theme.tokens.spacing.s2);
         let rgb_y = self.hex_input_rect.y1 + row_gap;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &rgb_label,
-            text_size,
             colors.text_dim,
             transform.pre_translate(Vec2::new(label_x, rgb_y)),
             None,
+            &text_style,
         );
     }
 

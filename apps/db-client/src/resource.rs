@@ -425,7 +425,17 @@ impl ResourceApp for DbClientShell {
     /// and `confirm` add the status bubble, the new-connection sheet and the
     /// destructive-statement confirmation.
     fn scenarios() -> &'static [&'static str] {
-        &["default", "empty", "status", "connect", "confirm"]
+        &[
+            "default",
+            "empty",
+            "status",
+            "connect",
+            "confirm",
+            "data",
+            "structure",
+            "wide",
+            "error",
+        ]
     }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {

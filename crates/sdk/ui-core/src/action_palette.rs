@@ -42,8 +42,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
 use crate::search::{
-    FieldWeight, ListIndex, SearchCursor, SearchGroup, SearchProvider, SearchResult,
-    result_relevance,
+    Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
+    SearchGroup, SearchProvider, SearchQuery, SearchResult, result_relevance,
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -60,9 +60,18 @@ pub const ACTIONS_KIND: &str = "Actions";
 /// row can never collide with a flattened action key.
 const NAV_PREFIX: &str = "\u{1}nav\u{1f}";
 
+/// Row-id prefix for "Search in" rows, which narrow the palette to a scope.
+const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
+
+/// The group "Search in" rows are listed under.
+const SCOPES_KIND: &str = "Search in";
+
 /// Card geometry, matched to the shared search surface (`search_showcase`).
-const FIELD_H: f64 = 38.0;
+/// The query field is a large control: the palette exists to be typed into.
+const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
+/// One row of facet chips, a small control's height.
+const FACET_H: f64 = 28.0;
 /// Cap per group so one busy provider can't flood the overlay.
 // Dense resource types routinely expose a handful of collection actions plus
 // contextual item actions. Eight hid basic operations such as Rename/Delete
@@ -295,9 +304,27 @@ pub struct ActionPalette {
     /// Searchable-content sources folded in as navigable result groups.
     providers: Vec<Box<dyn SearchProvider>>,
     provider_cursors: Vec<Option<SearchCursor>>,
+    /// A provider's outstanding slow page, polled until it arrives.
+    provider_pending: Vec<Option<PendingToken>>,
     provider_complete: Vec<bool>,
     next_provider: usize,
+    /// The free text of the query, which ranks rows.
     search_query: String,
+    /// The whole query providers receive: text, facet filters and scope.
+    query: SearchQuery,
+    /// The part of the app the palette is narrowed to ("Only Inbox").
+    scope: Option<ScopeDecl>,
+    /// Every provider's facets, merged by key.
+    facets: Vec<Facet>,
+    /// Every provider's search scopes, offered as "Search in" rows.
+    scopes: Vec<ScopeDecl>,
+    /// Facet values picked as chips (typed tokens live in the field text).
+    picked_filters: Vec<FacetFilter>,
+    /// The facet chips as last laid out: rect, filter, label.
+    facet_chips: Vec<(Rect, FacetFilter, String)>,
+    /// Each facet group's label as last laid out, before its chips.
+    facet_labels: Vec<(Point, String)>,
+    last_cursor: Point,
     /// A revoked selection stays unselected until restored or deliberately changed.
     missing_selection: Option<String>,
     search_generation: u64,
@@ -391,6 +418,7 @@ impl ActionPalette {
         Self {
             field: field_source
                 .build()
+                .control_size(FIELD_SIZE)
                 .with_placeholder("Search actions and results"),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
@@ -406,9 +434,18 @@ impl ActionPalette {
             bound_resources: Vec::new(),
             providers: Vec::new(),
             provider_cursors: Vec::new(),
+            provider_pending: Vec::new(),
             provider_complete: Vec::new(),
             next_provider: 0,
             search_query: String::new(),
+            query: SearchQuery::default(),
+            scope: None,
+            facets: Vec::new(),
+            scopes: Vec::new(),
+            picked_filters: Vec::new(),
+            facet_chips: Vec::new(),
+            facet_labels: Vec::new(),
+            last_cursor: Point::ZERO,
             missing_selection: None,
             search_generation: 0,
             action_index: ListIndex::default(),
@@ -509,6 +546,19 @@ impl ActionPalette {
     /// through the resource/action path; legacy opaque hits remain navigable.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
         self.providers = providers;
+        self.facets = merged_facets(&self.providers);
+        self.scopes = self
+            .providers
+            .iter()
+            .flat_map(|provider| provider.search_scopes())
+            .fold(Vec::new(), |mut scopes: Vec<ScopeDecl>, scope| {
+                if !scopes.iter().any(|known| known.anchor == scope.anchor) {
+                    scopes.push(scope);
+                }
+                scopes
+            });
+        self.picked_filters
+            .retain(|filter| self.facets.iter().any(|facet| facet.key == filter.key));
         // `.to_string()` is load-bearing here, not redundant: it ends the
         // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
         #[allow(
@@ -859,7 +909,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_owned(),
             ConfirmationPolicy::Phrase { phrase } => phrase.clone(),
         };
-        self.field = self.field_source.build();
+        self.field = self.field_source.build().control_size(FIELD_SIZE);
         self.field
             .set_placeholder(&confirmation_instruction(&expected));
         self.focus_part(0);
@@ -907,12 +957,68 @@ impl ActionPalette {
         self.pending_dispatch = None;
         self.history_review_required = false;
         self.pending_nav = None;
-        self.field = self
-            .field_source
-            .build()
-            .with_placeholder("Search actions and results");
+        self.field = self.query_field();
         self.focus_part(0);
         self.rebuild("");
+    }
+
+    /// The query field, showing the scope the palette is narrowed to.
+    fn query_field(&self) -> SearchField {
+        let mut field = self
+            .field_source
+            .build()
+            .control_size(FIELD_SIZE)
+            .with_placeholder("Search actions and results");
+        field.set_scope_token(self.scope.as_ref().map(scope_token_label));
+        field
+    }
+
+    /// Narrow the palette to one part of the app, or widen it to the whole
+    /// app with `None`. The field shows the scope as a removable token.
+    pub fn set_scope(&mut self, scope: Option<ScopeDecl>) {
+        self.scope = scope;
+        self.field
+            .set_scope_token(self.scope.as_ref().map(scope_token_label));
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
+    }
+
+    /// The part of the app the palette is narrowed to.
+    pub fn scope(&self) -> Option<&ScopeDecl> {
+        self.scope.as_ref()
+    }
+
+    /// Select the query, so typing replaces a pre-filled search.
+    pub fn select_query(&mut self) {
+        self.field.select_all();
+    }
+
+    /// The facets the providers declared, offered as chips.
+    pub fn facets(&self) -> &[Facet] {
+        &self.facets
+    }
+
+    /// The query providers receive, with its parsed filters and scope.
+    pub fn search_query(&self) -> &SearchQuery {
+        &self.query
+    }
+
+    /// Pick or unpick a facet value, as clicking its chip does. A value that
+    /// was typed as a `key:value` token is removed from the text.
+    pub fn toggle_facet(&mut self, filter: &FacetFilter) {
+        if let Some(at) = self.picked_filters.iter().position(|f| f == filter) {
+            self.picked_filters.remove(at);
+        } else if SearchQuery::parse(self.field.value(), &self.facets)
+            .filters()
+            .contains(filter)
+        {
+            let kept = without_token(self.field.value(), filter);
+            self.field.set_query(&kept);
+        } else {
+            self.picked_filters.push(filter.clone());
+        }
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
     }
 
     pub fn close(&mut self) {
@@ -1019,16 +1125,36 @@ impl ActionPalette {
             };
         };
         let binding = provider.callback_binding();
-        let page = provider.search_page(
-            &self.search_query,
-            cursor.as_ref(),
-            PROVIDER_HIT_BUDGET,
-            PROVIDER_HIT_BUDGET,
-        );
-        let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), page.results);
-        let complete = page.next.is_none();
+        let waiting = self.provider_pending.get(provider_index).cloned().flatten();
+        let page = match waiting {
+            // A slow source answers on a later frame; ask, never wait.
+            Some(token) => match provider.poll_page(&token) {
+                PagePoll::Pending => {
+                    return SearchAdvance {
+                        pending: true,
+                        generation,
+                        ..SearchAdvance::default()
+                    };
+                }
+                PagePoll::Ready(page) => page,
+            },
+            None => provider.search_page(
+                &self.query,
+                cursor.as_ref(),
+                PROVIDER_HIT_BUDGET,
+                PROVIDER_HIT_BUDGET,
+            ),
+        };
+        let mut hits = page.results;
+        // The scope narrows every provider, including one that ignores it.
+        hits.retain(|hit| self.query.in_scope(&hit.anchor()));
+        let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), hits);
+        let complete = page.next.is_none() && page.pending.is_none();
         if let Some(slot) = self.provider_cursors.get_mut(provider_index) {
             *slot = page.next;
+        }
+        if let Some(slot) = self.provider_pending.get_mut(provider_index) {
+            *slot = page.pending;
         }
         if let Some(slot) = self.provider_complete.get_mut(provider_index) {
             *slot = complete;
@@ -1045,6 +1171,8 @@ impl ActionPalette {
         } else {
             "No matches"
         });
+        self.results
+            .set_loading(self.provider_pending.iter().any(Option::is_some));
         let count = self.results.len();
         if added > 0 || !pending {
             self.search_announcement = Some(if pending {
@@ -1280,12 +1408,10 @@ impl ActionPalette {
                 );
             }
             let mut row = SearchResult::new(hit.kind, hit.title, row_id).with_score(hit.score);
-            if let Some(subtitle) = hit.subtitle {
-                row = row.with_subtitle(subtitle);
-            }
-            if let Some(icon) = hit.icon {
-                row = row.with_icon(icon);
-            }
+            row.subtitle = hit.subtitle;
+            row.preview = hit.preview;
+            row.icon = hit.icon;
+            row.row = hit.row;
             self.provider_rows.push(row);
         }
         // Retain display candidates per kind. The number of kinds is not
@@ -1614,6 +1740,20 @@ impl ActionPalette {
 
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
+        // A "Search in" row narrows the palette; the typed text clears so
+        // the search starts afresh inside the scope.
+        if let Some(anchor) = id.strip_prefix(SCOPE_PREFIX) {
+            let scope = self
+                .scopes
+                .iter()
+                .find(|scope| scope.anchor == anchor)
+                .cloned();
+            if scope.is_some() {
+                self.field.set_query("");
+                self.set_scope(scope);
+            }
+            return;
+        }
         match self.index.get(id).cloned() {
             Some(resolution @ (RowResolution::Address(_) | RowResolution::Bound(_))) => {
                 let (address, bound) = match resolution {
@@ -1656,7 +1796,7 @@ impl ActionPalette {
                     ActionKind::Prompted { prompt, .. } => {
                         // Repurpose the field to collect the argument; clear the result
                         // list so only the prompt shows.
-                        self.field = self.field_source.build();
+                        self.field = self.field_source.build().control_size(FIELD_SIZE);
                         self.field.set_placeholder(&prompt);
                         self.focus_part(0);
                         self.results.set_groups(Vec::new());
@@ -1669,7 +1809,7 @@ impl ActionPalette {
                         });
                     }
                     ActionKind::Typed { prompt, .. } => {
-                        self.field = self.field_source.build();
+                        self.field = self.field_source.build().control_size(FIELD_SIZE);
                         self.field.set_placeholder(&prompt);
                         self.focus_part(0);
                         self.results.set_groups(Vec::new());
@@ -1758,8 +1898,17 @@ impl ActionPalette {
 
     /// Rebuild the result set for `query`: exported actions matching it as
     /// the **Actions** group, then each provider's hits as its own group.
-    fn rebuild(&mut self, query: &str) {
+    fn rebuild(&mut self, typed: &str) {
         self.missing_selection = None;
+        let mut parsed = SearchQuery::parse(typed, &self.facets);
+        for filter in &self.picked_filters {
+            parsed = parsed.with_filter(filter.clone());
+        }
+        if let Some(scope) = &self.scope {
+            parsed = parsed.within(scope.anchor.clone());
+        }
+        let text = parsed.text().to_owned();
+        let query = text.as_str();
         // Every available action is a candidate row with the text it is
         // found by; the index then keeps the ones matching the query.
         let mut candidates: Vec<(SearchResult, Option<String>, RowResolution)> = Vec::new();
@@ -1770,6 +1919,10 @@ impl ActionPalette {
         for fa in flatten(&self.resources) {
             // Programmatic actions are for agents and scripts, never a row.
             if !fa.action.contract.availability.is_available() || fa.action.is_programmatic() {
+                continue;
+            }
+            // A scoped palette offers the actions of that part of the app.
+            if !parsed.in_scope(fa.resource_id.as_str()) {
                 continue;
             }
             let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
@@ -1834,6 +1987,22 @@ impl ActionPalette {
             }
         }
 
+        // An unscoped palette offers to narrow to each part of the app.
+        if self.scope.is_none() {
+            for scope in &self.scopes {
+                candidates.push((
+                    SearchResult::new(
+                        SCOPES_KIND,
+                        scope.label.clone(),
+                        format!("{SCOPE_PREFIX}{}", scope.anchor),
+                    )
+                    .with_icon(crate::icons::Icon::Search),
+                    None,
+                    RowResolution::Navigate(format!("{SCOPE_PREFIX}{}", scope.anchor), None),
+                ));
+            }
+        }
+
         let ranks = self.action_index.ranks(
             query,
             candidates.iter().map(|(row, description, _)| {
@@ -1858,6 +2027,7 @@ impl ActionPalette {
         self.search_generation = self.search_generation.wrapping_add(1);
         self.search_query.clear();
         self.search_query.push_str(query);
+        self.query = parsed;
         self.action_rows = rows;
         self.base_index = index;
         self.provider_rows.clear();
@@ -1865,7 +2035,9 @@ impl ActionPalette {
         self.provider_validation.clear();
         self.validation_queue.clear();
         self.provider_cursors = vec![None; self.providers.len()];
+        self.provider_pending = vec![None; self.providers.len()];
         self.provider_complete = vec![false; self.providers.len()];
+        self.results.set_loading(false);
         self.next_provider = 0;
         self.refresh_progressive_results();
         if self.providers.is_empty() {
@@ -1901,7 +2073,7 @@ impl ActionPalette {
     /// before `draw`.
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "width and FIELD_H are UI layout dimensions in logical \
+        reason = "width and the field height are UI layout dimensions in logical \
                   pixels, always tiny compared to f32's range; narrowing \
                   for taffy's f32-based layout loses no visually \
                   meaningful precision"
@@ -1936,7 +2108,7 @@ impl ActionPalette {
 
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "width and FIELD_H are logical-pixel layout dimensions, far inside f32's range"
+        reason = "width and the field height are logical-pixel layout dimensions, far inside f32's range"
     )]
     fn layout_field(&mut self, theme: &Theme, origin: Point, width: f64, tr: &mut TextRenderer) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
@@ -1949,7 +2121,7 @@ impl ActionPalette {
             node,
             Size {
                 width: AvailableSpace::Definite(width as f32),
-                height: AvailableSpace::Definite(FIELD_H as f32),
+                height: AvailableSpace::Definite(FIELD_SIZE.height(theme) as f32),
             },
             |known, available, id, _, _| {
                 node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
@@ -1966,12 +2138,113 @@ impl ActionPalette {
         self.field_taffy = taffy;
         self.field_node = Some(node);
 
-        // Results overlay directly under the field.
-        let top = origin.y + FIELD_H + GAP;
+        // Facet chips, then the results overlay, directly under the field.
+        let mut top = origin.y + FIELD_SIZE.height(theme) + GAP;
+        self.layout_facet_chips(theme, origin.x, top, width, tr);
+        if !self.facet_chips.is_empty() {
+            top += FACET_H + GAP;
+        }
         let h = self.results.desired_height();
         self.results
             .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
         self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
+    }
+
+    /// One row of facet value chips, in facet order, as many as fit.
+    fn layout_facet_chips(
+        &mut self,
+        theme: &Theme,
+        x0: f64,
+        top: f64,
+        width: f64,
+        text: &mut TextRenderer,
+    ) {
+        self.facet_chips.clear();
+        self.facet_labels.clear();
+        if self.arg.is_some() || self.confirm.is_some() {
+            return;
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let label_style = theme.text(crate::tokens::TextRole::Caption);
+        let mut x = x0;
+        for facet in &self.facets {
+            // The group's name, then its values.
+            let (label_w, label_h) = text.measure_style(&facet.label, None, &label_style);
+            let label_w = f64::from(label_w);
+            if x + label_w > x0 + width {
+                return;
+            }
+            self.facet_labels.push((
+                Point::new(
+                    x,
+                    crate::text_metrics::centered_text_top(top, FACET_H, f64::from(label_h)),
+                ),
+                facet.label.clone(),
+            ));
+            x += label_w + gap;
+            for value in &facet.values {
+                let label = value.label.clone();
+                let w = crate::widget::ChipFace::intrinsic_width(
+                    &label,
+                    crate::widget::ChipLead::None,
+                    false,
+                    text,
+                    theme,
+                );
+                if x + w > x0 + width {
+                    return;
+                }
+                self.facet_chips.push((
+                    Rect::new(x, top, x + w, top + FACET_H),
+                    FacetFilter::new(facet.key.clone(), value.value.clone()),
+                    label,
+                ));
+                x += w + gap;
+            }
+            x += gap;
+        }
+    }
+
+    fn draw_facet_chips(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let label_style = theme.text(crate::tokens::TextRole::Caption);
+        for (at, label) in &self.facet_labels {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is float matrix math and cannot overflow"
+            )]
+            let placed = transform * Affine::translate((at.x, at.y));
+            text.draw_style(scene, label, theme.text_dim, placed, None, &label_style);
+        }
+        let applied = self.query.filters();
+        for (rect, filter, label) in &self.facet_chips {
+            let on = applied.contains(filter);
+            // Selected is the lift: one step of ink, never a hue.
+            crate::widget::ChipFace::new(*rect, label)
+                .selected(on)
+                .paint(scene, transform, text, theme);
+        }
+    }
+
+    fn facet_chip_at(&self, point: Point) -> Option<FacetFilter> {
+        self.facet_chips
+            .iter()
+            .find(|(rect, ..)| rect.contains(point))
+            .map(|(_, filter, _)| filter.clone())
+    }
+
+    /// Follow a scope the user removed from the field.
+    fn follow_field_scope(&mut self) {
+        if self.field.take_scope_cleared() {
+            self.scope = None;
+            let query = self.field.value().to_owned();
+            self.rebuild(&query);
+        }
     }
 
     fn layout_controls(&mut self, theme: &Theme, text: &mut TextRenderer) {
@@ -2023,6 +2296,7 @@ impl ActionPalette {
     ) {
         self.field
             .draw(scene, transform, text_renderer, theme, presence);
+        self.draw_facet_chips(scene, transform, text_renderer, theme);
         self.results
             .draw(scene, transform, text_renderer, theme, presence);
         if self.controls_node.is_some() {
@@ -2099,10 +2373,24 @@ impl ActionPalette {
                 }
                 true
             }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. } => {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x, position.y);
                 self.route_to_field(event, modifiers, doc, root);
+                self.route_to_results(event, modifiers, doc, root);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } if self.facet_chip_at(self.last_cursor).is_some() => {
+                if let Some(filter) = self.facet_chip_at(self.last_cursor) {
+                    self.toggle_facet(&filter);
+                }
+                true
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                self.route_to_field(event, modifiers, doc, root);
+                self.follow_field_scope();
                 self.route_to_results(event, modifiers, doc, root);
                 self.poll_view_activation();
                 true
@@ -2334,6 +2622,7 @@ impl ActionPalette {
             if let Some(q) = self.field.take_dirty() {
                 self.rebuild(&q);
             }
+            self.follow_field_scope();
         }
         true
     }
@@ -2351,10 +2640,7 @@ impl ActionPalette {
         self.arg = None;
         self.confirm = None;
         // Restore the query field and result set.
-        self.field = self
-            .field_source
-            .build()
-            .with_placeholder("Search actions and results");
+        self.field = self.query_field();
         self.focus_part(0);
         self.rebuild("");
     }
@@ -2406,7 +2692,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
             ConfirmationPolicy::Phrase { phrase } => phrase,
         };
-        self.field = self.field_source.build();
+        self.field = self.field_source.build().control_size(FIELD_SIZE);
         self.field
             .set_placeholder(&confirmation_instruction(&expected));
         self.focus_part(0);
@@ -2471,6 +2757,45 @@ impl ActionPalette {
             },
         );
     }
+}
+
+/// Every provider's facets, merged by key in first-declared order.
+fn merged_facets(providers: &[Box<dyn SearchProvider>]) -> Vec<Facet> {
+    let mut merged: Vec<Facet> = Vec::new();
+    for facet in providers.iter().flat_map(|provider| provider.facets()) {
+        if let Some(existing) = merged.iter_mut().find(|known| known.key == facet.key) {
+            for value in facet.values {
+                if !existing
+                    .values
+                    .iter()
+                    .any(|known| known.value == value.value)
+                {
+                    existing.values.push(value);
+                }
+            }
+        } else {
+            merged.push(facet);
+        }
+    }
+    merged
+}
+
+/// What the field's scope token reads.
+fn scope_token_label(scope: &ScopeDecl) -> String {
+    format!("Only {}", scope.label)
+}
+
+/// `text` without the typed token(s) for `filter`.
+fn without_token(text: &str, filter: &FacetFilter) -> String {
+    text.split_whitespace()
+        .filter(|token| {
+            token.split_once(':').is_none_or(|(key, value)| {
+                !(key.eq_ignore_ascii_case(&filter.key)
+                    && value.trim_matches('"').eq_ignore_ascii_case(&filter.value))
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
@@ -2694,6 +3019,7 @@ pub(crate) fn observed_history_editor(
 #[cfg(test)]
 mod tests {
     include!("action_palette/deferred_tests.rs");
+    include!("action_palette/platform_search_tests.rs");
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};

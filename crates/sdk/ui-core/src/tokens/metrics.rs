@@ -22,6 +22,11 @@ pub struct Metrics {
     pub bar_control_height: f32,
     /// One row of a Panel — a settings toggle row, a roster entry.
     pub panel_row_height: f32,
+    /// One row of a menu (context menu, dropdown list).
+    pub menu_row_height: f32,
+    /// Room a scroll view keeps on its trailing edge for its scroll bar, so
+    /// the bar never covers content.
+    pub scrollbar_gutter: f32,
     /// A compact selector (chip, tab pill, dropdown trigger in a Panel).
     pub selector_height: f32,
     /// No pointer target is smaller than this, whatever glyph it shows.
@@ -54,8 +59,33 @@ pub struct Metrics {
     pub overview_width: f32,
     /// At or above this window width a sidebar docks beside its content;
     /// below it the shell switches to separate screens or an overlay.
-    /// `sidebar_width` plus a content column that still reads.
+    /// `sidebar_width` plus a content column that still reads
+    /// ([`Metrics::content_min_width`]).
     pub compact_breakpoint: f32,
+    /// One row of a navigation list (`NavList`, `paint_nav_row`) at the
+    /// default text scale; it grows with the body line like any shell
+    /// control that carries one line of text.
+    pub nav_row_height: f32,
+    /// The one header row a `NavShell` draws across the top of the window:
+    /// a `min_pointer_target` control in an `s3` inset (32 + 2 × 12).
+    pub header_height: f32,
+    /// A compact icon-over-label navigation rail (`NavList::rail`).
+    pub rail_width: f32,
+    /// The inspector column at the trailing edge of a window.
+    pub inspector_width: f32,
+    /// Narrowest a person can drag a docked sidebar; dragging it below this
+    /// hides it.
+    pub sidebar_min_width: f32,
+    /// Widest a person can drag a docked sidebar.
+    pub sidebar_max_width: f32,
+    /// The room the content beside a sidebar needs: a readable column, the
+    /// width of a sheet ([`Metrics::panel_width_sheet`]). Narrower than this
+    /// the content would be squeezed, so the sidebar collapses into a
+    /// drawer instead (`compact_breakpoint − sidebar_width`).
+    pub content_min_width: f32,
+    /// Narrowest the detail column beside an overview may become before the
+    /// two become push screens.
+    pub detail_min_width: f32,
 }
 
 impl Metrics {
@@ -64,6 +94,8 @@ impl Metrics {
         bar_height: 40.0,
         bar_control_height: 28.0,
         panel_row_height: 44.0,
+        menu_row_height: 32.0,
+        scrollbar_gutter: 12.0,
         selector_height: 28.0,
         min_pointer_target: 32.0,
         panel_width_utility: 320.0,
@@ -77,7 +109,15 @@ impl Metrics {
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
-        compact_breakpoint: 720.0,
+        compact_breakpoint: 840.0,
+        nav_row_height: 32.0,
+        header_height: 56.0,
+        rail_width: 76.0,
+        inspector_width: 300.0,
+        sidebar_min_width: 200.0,
+        sidebar_max_width: 420.0,
+        content_min_width: 560.0,
+        detail_min_width: 360.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -87,8 +127,8 @@ impl Metrics {
     /// two panes still fit side by side are all sized by the text they hold,
     /// so they grow with the text — but never shrink below their authored
     /// 1× geometry, where the rows, hit targets and paddings were designed.
-    /// This is the one rule the responsive shells (`NavSplit`, `NavShell`,
-    /// `AppShell`, `SidebarDrawer`) apply to their inputs
+    /// This is the one rule the responsive shells (`NavShell`,
+    /// `SidebarDrawer`) apply to their inputs
     /// (`crate::Theme::responsive_scale`), so an app never restates it.
     /// A non-finite scale counts as 1×.
     #[must_use]
@@ -108,6 +148,8 @@ impl Metrics {
             bar_height: self.bar_height * factor,
             bar_control_height: self.bar_control_height * factor,
             panel_row_height: self.panel_row_height * factor,
+            menu_row_height: self.menu_row_height * factor,
+            scrollbar_gutter: self.scrollbar_gutter * factor,
             selector_height: self.selector_height * factor,
             min_pointer_target: self.min_pointer_target * factor,
             panel_width_utility: self.panel_width_utility * factor,
@@ -122,6 +164,14 @@ impl Metrics {
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,
             compact_breakpoint: self.compact_breakpoint * factor,
+            nav_row_height: self.nav_row_height * factor,
+            header_height: self.header_height * factor,
+            rail_width: self.rail_width * factor,
+            inspector_width: self.inspector_width * factor,
+            sidebar_min_width: self.sidebar_min_width * factor,
+            sidebar_max_width: self.sidebar_max_width * factor,
+            content_min_width: self.content_min_width * factor,
+            detail_min_width: self.detail_min_width * factor,
         }
     }
 }

@@ -105,14 +105,14 @@ impl Widget for Well {
         scene.stroke(
             &Stroke::new(2.0),
             transform,
-            theme.bg_primary,
+            theme.tokens.colors.surfaces.content,
             None,
             &Circle::new(centre, radius - 1.0),
         );
         let rim = if self.hovered {
             theme.text_dim
         } else {
-            ui::surface::edge_on(theme.bg_primary)
+            ui::surface::edge_on(theme.tokens.colors.surfaces.content)
         };
         scene.stroke(
             &Stroke::new(1.0),

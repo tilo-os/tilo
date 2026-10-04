@@ -77,6 +77,10 @@ pub struct DemoRepository {
 
 const SCENARIOS: &[&str] = &[
     "empty",
+    "setup",
+    "drive",
+    "offsite",
+    "drawer",
     "status",
     "progress",
     "failure",
@@ -102,10 +106,10 @@ impl ResourceApp for BackupsShell {
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        if scenario == Some("rail") {
-            (390, 844)
-        } else {
-            (1280, 800)
+        match scenario {
+            Some("rail") => (390, 844),
+            Some("drawer") => (640, 800),
+            _ => (1280, 800),
         }
     }
 
@@ -117,7 +121,7 @@ impl ResourceApp for BackupsShell {
     /// catalog; `unavailable` shows a saved location whose drive is gone.
     fn fixture(fixture: &mut Fixture<Backups>) {
         let demo = match fixture.scenario() {
-            Some("empty") => return,
+            Some("empty" | "setup") => return,
             Some("unavailable") => DemoRepository {
                 catalog: Catalog::empty(),
                 location: BackupLocation {
@@ -129,7 +133,7 @@ impl ResourceApp for BackupsShell {
                 ),
             },
             _ => DemoRepository {
-                catalog: Catalog::sample(),
+                catalog: Catalog::sample(ui::clock::local_now().naive_local()),
                 location: BackupLocation::default(),
                 error: None,
             },
@@ -148,9 +152,7 @@ impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.stage_scenario(scenario);
-        }
+        self.stage_scenario(scenario);
     }
 
     fn effect(&mut self, effect: BackupsEffect, cx: &mut EffectCx<Backups, Self>) -> EffectAnswer {

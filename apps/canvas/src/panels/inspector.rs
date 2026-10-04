@@ -211,7 +211,7 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
                 .push(Box::new(
                     Button::new("canvas-layer-adjust-fold", "", None)
                         .with_icon(icon)
-                        .ghost()
+                        .role(ui::widget::ButtonRole::Plain)
                         .with_accessible_name(&name)
                         .tooltip(name.clone())
                         .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
@@ -424,7 +424,7 @@ fn eraser(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         ),
     ];
     let mode = ui::widget::ToggleGroup::from_state(choices, &tools.erasing)
-        .with_flexible_width()
+        .fill()
         .with_id("canvas-erasing");
     let size_label = {
         let tools = tools.clone();
@@ -871,7 +871,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
     let width = cx.actions().bind(
         NumberInput::from_state(&width)
             .with_range(0.5, 400.0)
-            .with_size(112.0, 32.0)
+            .control_size(ui::widget::ControlSize::Regular)
             .with_step(1.0)
             .with_precision(1)
             .with_id("canvas-stroke-size")
@@ -973,7 +973,7 @@ fn stroke_style(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark) -> El
     let width = cx.actions().bind(
         NumberInput::from_state(&width)
             .with_range(0.0, 400.0)
-            .with_size(112.0, 32.0)
+            .control_size(ui::widget::ControlSize::Regular)
             .with_step(1.0)
             .with_precision(1)
             .with_id("canvas-stroke-width")
@@ -1187,7 +1187,7 @@ fn text_style(cx: &ViewCx<ArtworkResource>, mark: &Mark) -> Element {
         cx.actions().bind(
             NumberInput::from_state(&size_state)
                 .with_range(4.0, 1000.0)
-                .with_size(96.0, 32.0)
+                .control_size(ui::widget::ControlSize::Regular)
                 .with_step(2.0)
                 .with_precision(0)
                 .with_id("canvas-text-size")

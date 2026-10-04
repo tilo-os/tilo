@@ -187,14 +187,14 @@ impl ResourceApp for CodeEditorShell {
 
     fn scenarios() -> &'static [&'static str] {
         &[
+            "empty",
             "terminal",
             "selection",
             "completion",
+            "problems",
             "find",
-            "search",
             "conflict",
             "indexing",
-            "goto",
             "close-prompt",
             "status",
         ]

@@ -12,12 +12,12 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, transaction::Transactable};
-use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -31,35 +31,42 @@ use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::SidebarDrawer;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::link_popover::PageEntry;
+use ui::widget::{Button, NavShell, SidebarPlacement, TaffyTreeExt};
 
 use crate::actions::{self, NotesAction};
+use crate::columns::{Columns, HeaderRequests};
 use crate::doc::NotesDoc;
 use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagAssignment, TagId, Workspace};
-use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
 use crate::status_bar::{StatusBarState, StatusModel, count_words};
 use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
-/// Sidebar width when the window is wide enough to show it inline.
-/// 240 px reads as "comfortable but not greedy" next to the editor.
-const SIDEBAR_WIDTH: f64 = 240.0;
-/// Width of the page tree when it slides in as an overlay drawer on a
-/// narrow window. Slightly wider than the inline sidebar so titles and
-/// the disclosure triangles have room on a small screen.
-const DRAWER_WIDTH: f64 = 264.0;
-/// Below this logical window width the sidebar stops taking a fixed
-/// column and becomes a closed overlay drawer, reached from the
-/// top-bar menu button. Chosen so 800 px keeps the sidebar inline but
-/// 560 px collapses it.
-const NARROW_BREAKPOINT: f64 = 720.0;
-/// Height of the top bar shown only in narrow mode. Hosts the drawer
-/// toggle and the current page title.
-const TOPBAR_HEIGHT: f64 = 44.0;
+thread_local! {
+    /// Whether the notebook's shell presents the window's History control.
+    /// Always so in the app.
+    static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Test seam: keep the shell out of the tree the window offers its History
+/// control to, so the window draws its own History bar instead. A headless
+/// component host opens History from that bar; it does not serve a click on
+/// the shell's glyph.
+#[doc(hidden)]
+pub fn present_history_in_shell_for_test(present: bool) {
+    SHELL_PRESENTS_HISTORY.set(present);
+}
+
+/// The resource the window's History control acts on.
+const HISTORY_RESOURCE: &str = "tilo.host:history";
+
+/// The test id of the sidebar header's "New note" button.
+pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
+/// The test id of the note header's "Note actions" button.
+pub(crate) const NOTE_MENU_BUTTON_ID: &str = "note-menu";
 
 fn workspace_image_fetcher(root: &std::path::Path) -> ui::Fetcher {
     const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
@@ -570,8 +577,6 @@ pub struct NotesApp {
     status_bubble: ui::StatusBubble,
     transfer_toasts: ui::widget::toast::ToastStack,
     last_toast_tick: ui::time::Instant,
-    /// `--shots` forces the bubble fully visible so a still frame captures it.
-    shots_status: bool,
     /// Shot-only override for the real save progress/failure presentation.
     /// Notes opens its workspace synchronously, so this does not alter live
     /// loading behavior or introduce a second production state source.
@@ -579,16 +584,25 @@ pub struct NotesApp {
     shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
+    /// The window shell: the header row, the sidebar toggle, the regions and
+    /// the drawer. The page tree and the note panel are laid out in the slots
+    /// it places (see [`crate::columns`]).
+    shell: NavShell,
+    /// Where the shell put the two columns, written by its slots.
+    columns: Columns,
+    /// What the shell's header buttons asked for.
+    header: Rc<HeaderRequests>,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
-    /// `apply_layout` and `handle_event`.
+    /// `apply_layout` and `handle_event`. The columns' nodes exist only while
+    /// the shell shows them (a closed drawer shows no page tree).
+    shell_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
+    /// The page tree had the keyboard when the shortcut sheet opened, and gets
+    /// it back when the sheet closes.
+    shortcuts_return_to_tree: bool,
     main_node: Option<NodeId>,
-    /// Rect covering [sidebar + main] — the upper "content row" of
-    /// the column layout, sibling of the status bar. We don't expose
-    /// this through taffy node ids; it's a flex sub-container whose
-    /// rect we never need outside of layout. Tracked locally for
-    /// completeness.
-    content_node: Option<NodeId>,
+    /// The theme of the last layout, for what the app measures between frames.
+    theme: Theme,
     /// Present only for the legacy standalone/fixture adapter until its host cutover.
     legacy_fixture_storage: Option<LegacyFixtureStorage>,
     /// Workspace-scoped image attachments; independent of notebook persistence.
@@ -648,35 +662,15 @@ pub struct NotesApp {
     /// The page the `MainPanel` editor is currently bound to in the doc.
     /// `sync` rebinds whenever this drifts from the selected page.
     bound_page: Option<PageId>,
-    /// Desired layout mode derived from the last observed window width.
-    /// Updated in `apply_layout`; consumed at the next `build_layout`.
-    want_narrow: bool,
-    /// The mode used to build the current taffy tree. `draw`
-    /// and `handle_event` read this so they always match the live tree,
-    /// even for the one frame before a breakpoint crossing rebuilds.
-    built_narrow: bool,
-    /// The responsive sidebar/drawer controller owns the docked-vs-overlay
-    /// decision (at [`NARROW_BREAKPOINT`]), open/closed state, and dimming scrim.
-    drawer: SidebarDrawer,
-    /// Set when the window crossed the narrow breakpoint so the tree
-    /// needs a structural rebuild. Drained by `take_structure_dirty`.
-    pending_relayout: bool,
-    /// Forces a redraw when our own chrome (top bar / drawer) changes
-    /// without any child widget flagging itself dirty.
+    /// The tree has been laid out once, so the shell's columns are known.
+    laid_out: bool,
+    /// Forces a redraw when our own chrome changes without any child widget
+    /// flagging itself dirty.
     self_dirty: bool,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
     canonical_synced: Option<CanonicalProjectionKey>,
-    /// Top-bar taffy node — present only while `built_narrow`.
-    topbar_node: Option<NodeId>,
-    /// Rect of the narrow-mode top bar, from `apply_layout`.
-    topbar_rect: Rect,
-    /// Hit rect of the drawer toggle (hamburger) button.
-    menu_btn_rect: Rect,
-    /// Rect of the content area (between top bar and status bar). Used
-    /// to place the drawer scrim in narrow mode.
-    content_rect: Rect,
     /// Framework-owned action dispatch. Hosted via
     /// [`crate::resource::ActionSink`]; standalone tests use the local host.
     actions: crate::resource::ActionSink,
@@ -723,14 +717,6 @@ pub struct NotesApp {
     /// Retained complete catalogue; Ctrl+K receives a cheap handle instead of
     /// rebuilding/cloning every page and block at open time.
     search_provider: crate::search_provider::NoteSearchProvider,
-    /// Last theme text scale, captured during layout. Responsive chrome uses
-    /// it for width/height reservations so 200% text switches to the drawer
-    /// before page labels or the title stack can collide.
-    text_scale: f64,
-    /// Effective reduced-motion setting provided by the host. Notes owns one
-    /// small app-local animation (the transient save-status bubble), so it
-    /// retains the value instead of relying on the default child forwarding.
-    motion_reduced: bool,
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
@@ -912,6 +898,43 @@ impl NotesApp {
         Ok(workspace)
     }
 
+    /// The window shell around the page tree and the note: "Notes" with its
+    /// new-note button over the page tree, and the note's actions and search
+    /// in the content header (the framework adds History). The columns
+    /// themselves are the slots the app lays its page tree and note panel into.
+    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
+        let new_note = {
+            let header = Rc::clone(header);
+            Button::icon_only(
+                NEW_NOTE_BUTTON_ID,
+                ui::icons::Icon::Plus,
+                &ui::i18n!("notes-affordance-new-note"),
+            )
+            .on_click(move || header.new_note.set(true))
+        };
+        let note_menu = {
+            let header = Rc::clone(header);
+            Button::icon_only(
+                NOTE_MENU_BUTTON_ID,
+                ui::icons::Icon::MoreHorizontal,
+                &ui::i18n!("notes-affordance-note-actions"),
+            )
+            .on_click(move || header.note_menu.set(true))
+        };
+        let actions: Vec<ui::widget::Element> = vec![
+            Box::new(note_menu),
+            Box::new(ui::search::search_button(
+                ui::search::SearchRequest::this_app(),
+            )),
+        ];
+        NavShell::new()
+            .with_id("notes-shell")
+            .sidebar(Box::new(columns.sidebar.slot()))
+            .content(Box::new(columns.content.slot()))
+            .sidebar_header(ui::i18n!("notes-title"), vec![Box::new(new_note)])
+            .content_header("", actions)
+    }
+
     fn build_widget(
         workspace: Workspace,
         sidebar: PageSidebar,
@@ -924,6 +947,9 @@ impl NotesApp {
             .map(|legacy| legacy.root.clone());
         let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
         let initial_route = workspace.selected();
+        let columns = Columns::default();
+        let header = Rc::new(HeaderRequests::default());
+        let shell = Self::build_shell(&columns, &header);
 
         let mut app = Self {
             workspace,
@@ -938,13 +964,17 @@ impl NotesApp {
             status_bubble: ui::StatusBubble::new(),
             transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             last_toast_tick: ui::time::now(),
-            shots_status: false,
             shots_save_status: None,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
+            shell,
+            columns,
+            header,
+            shell_node: None,
             sidebar_node: None,
+            shortcuts_return_to_tree: false,
             main_node: None,
-            content_node: None,
+            theme: Theme::dark(),
             legacy_fixture_storage,
             workspace_asset_root,
             legacy_read_blocked: None,
@@ -970,20 +1000,9 @@ impl NotesApp {
             seeded: canonical,
             pending_doc_removals: Vec::new(),
             bound_page: None,
-            want_narrow: false,
-            built_narrow: false,
-            drawer: SidebarDrawer::new()
-                .left()
-                .docked_width(SIDEBAR_WIDTH)
-                .overlay_width(DRAWER_WIDTH)
-                .breakpoint(NARROW_BREAKPOINT),
-            pending_relayout: false,
+            laid_out: false,
             self_dirty: false,
             canonical_synced: None,
-            topbar_node: None,
-            topbar_rect: Rect::ZERO,
-            menu_btn_rect: Rect::ZERO,
-            content_rect: Rect::ZERO,
             actions: crate::resource::ActionSink::default(),
             known_in_doc: std::collections::HashSet::new(),
             known_tags_in_doc: std::collections::HashSet::new(),
@@ -995,8 +1014,6 @@ impl NotesApp {
             backlink_index: HashMap::new(),
             search_heads: None,
             search_provider,
-            text_scale: 1.0,
-            motion_reduced: false,
             prepared_local_focus: None,
             pending_responsive_view: None,
         };
@@ -1052,7 +1069,11 @@ impl NotesApp {
                 }
             }
         });
-        let announce = self.status.state().save_status != save_status
+        // A failure is not a passing remark: it stays under the title until
+        // the note saves, and the bubble does not announce it a second time.
+        self.main.set_save_failed(save_status == SaveStatus::Failed);
+        let announce = save_status != SaveStatus::Failed
+            && self.status.state().save_status != save_status
             || self.status.state().page_path != path
             || self.status.state().page_count != self.workspace.pages().len();
         self.status.set_state(StatusBarState {
@@ -1068,11 +1089,24 @@ impl NotesApp {
         }
     }
 
-    /// `--shots`: force the status bubble fully visible so a single headless
-    /// frame captures the floating chip.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
+    /// What the status bubble says. A phone keeps the transient edge
+    /// affordance to the actionable save state; wider windows add the
+    /// note's length.
+    fn status_label(&self) -> String {
+        if self.shell.geometry().sidebar == SidebarPlacement::Docked {
+            self.status.bubble_text()
+        } else {
+            self.status.save_text().to_string()
+        }
+    }
+
+    /// `--shots`: stage the status bubble as a change just happened with the
+    /// pointer resting on it, so a still frame captures the floating chip.
+    pub fn stage_status_bubble(&mut self) {
+        let now = ui::time::now();
+        let label = self.status_label();
+        self.status_bubble.show(&label, now);
+        self.status_bubble.set_hover(true, now);
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -1082,7 +1116,7 @@ impl NotesApp {
         let mut state = self.status.state().clone();
         state.save_status = status;
         let _ = self.status.set_state(state);
-        self.arm_status_bubble_for_shots();
+        self.stage_status_bubble();
     }
 
     #[doc(hidden)]
@@ -1093,10 +1127,9 @@ impl NotesApp {
         );
     }
 
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// window — the reclaimed home of the old bottom status strip. It shows
-    /// on a status change or while the pointer hovers the bottom-right band,
-    /// then fades. All colours come from the theme (via `draw_pill`).
+    /// Paint the transient floating status bubble at the bottom-right of the
+    /// window. It shows on a status change or while the pointer rests on its
+    /// corner, then fades; a failed save stays until it is resolved.
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -1104,56 +1137,25 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = ui::time::now();
-        // On a phone the full page/word summary becomes a wide obstruction.
-        // Keep the transient edge affordance to the actionable save state;
-        // wider layouts retain the richer summary.
-        let label = if self.built_narrow {
-            self.status.save_text().to_string()
-        } else {
-            self.status.bubble_text()
-        };
-        let text_size = 12.0f32;
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
-        let rect = Rect::new(
-            self.rect.x1 - margin - w,
-            self.rect.y1 - margin - h,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
-        );
-        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
-        // the pointer there re-surfaces the status on demand.
-        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
-        let over = self.shots_status
-            || self.status.state().save_status == SaveStatus::Failed
-            || zone.contains(self.last_mouse);
-        self.status_bubble.set_hover(over, now);
-        // The bubble is useful status, but its fade is decorative.  Keep its
-        // visibility transition discrete under reduced motion so people never
-        // have to track changing opacity; the normal preference preserves the
-        // short, unobtrusive fade.
-        let alpha = if self.motion_reduced {
-            if self.status_bubble.is_visible(now) {
-                1.0
-            } else {
-                0.0
-            }
-        } else {
-            self.status_bubble.alpha(now)
-        };
-        if alpha <= 0.0 {
+        if self.status.state().save_status == SaveStatus::Failed {
             return;
         }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
-            transform,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
+        let now = ui::time::now();
+        let label = self.status_label();
+        self.status_bubble.show(&label, now);
+        self.status_bubble
+            .paint(scene, transform, tr, theme, self.status_area(theme), now);
+    }
+
+    /// The window less the note's scroll bar: where the status bubble sits, so
+    /// it never lands on the bar.
+    fn status_area(&self, theme: &Theme) -> Rect {
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            (self.rect.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter)).max(self.rect.x0),
+            self.rect.y1,
+        )
     }
 
     /// Resolve a page's breadcrumb path by walking parent pointers.
@@ -1446,118 +1448,16 @@ impl NotesApp {
         backlinks
     }
 
-    /// Paint the narrow-mode top bar: a drawer-toggle (hamburger)
-    /// button on the left and the current page title beside it.
-    fn draw_topbar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        // Bar background + bottom hairline so it reads as chrome.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &self.topbar_rect,
-        );
-        let hairline = Rect::new(
-            self.topbar_rect.x0,
-            self.topbar_rect.y1 - 1.0,
-            self.topbar_rect.x1,
-            self.topbar_rect.y1,
-        );
-        // Bar role: one chrome hairline under the app bar (HIG §9.5).
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            ui::chrome::chrome_hairline(theme),
-            None,
-            &hairline,
-        );
-
-        // Hamburger glyph: three evenly-spaced rounded bars centred in
-        // the button hit rect. Highlight the button while the drawer is
-        // open so the toggle state reads.
-        if self.drawer.is_open() {
-            // The open toggle is a chosen control: a selection lift (HIG §9.3)
-            // off the bar's raised ground, with its derived hairline — not an
-            // accent wash, and not `raised` painted on `raised`.
-            let radius = f64::from(tokens.radii.md);
-            let lifted = crate::sidebar::selection_fill_on_raised(theme);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                lifted,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(self.menu_btn_rect, radius),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                ui::surface::edge_on(lifted),
-                None,
-                &ui::surface::edge_outline(self.menu_btn_rect, radius),
-            );
-        }
-        let cx = self.menu_btn_rect.center().x;
-        let cy = self.menu_btn_rect.center().y;
-        let bar_w = 18.0 * self.text_scale;
-        let bar_h = 2.0 * self.text_scale;
-        for dy in [-6.0f64, 0.0, 6.0] {
-            let bar = vello::kurbo::RoundedRect::new(
-                cx - bar_w / 2.0,
-                cy + dy * self.text_scale - bar_h / 2.0,
-                cx + bar_w / 2.0,
-                cy + dy * self.text_scale + bar_h / 2.0,
-                1.0,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                tokens.colors.text_primary,
-                None,
-                &bar,
-            );
-        }
-
-        // Current page title, vertically centred, to the right of the
-        // button.
-        let title = self
-            .workspace
-            .selected()
-            .and_then(|id| self.workspace.get(id))
-            .map_or_else(|| "Notes".to_string(), |m| m.title.clone());
-        // Base size plus the renderer's global scale; using the already
-        // scaled token here would make the compact mobile bar grow twice.
-        let size = 14.0;
-        let text_x = self.menu_btn_rect.x1 + 4.0;
-        let text_y = self.topbar_rect.y0 + (self.topbar_rect.height() - f64::from(size)) / 2.0;
-        let avail = num::f32_of_f64((self.topbar_rect.x1 - text_x - 12.0).max(0.0));
-        text_renderer.draw_text(
-            scene,
-            &title,
-            size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((text_x, text_y)),
-            Some(avail),
-        );
-    }
-
-    /// Open or close the narrow-mode overlay drawer. Snaps (no slide) so the
-    /// behaviour matches the pre-adoption instant toggle; the drawer's own
-    /// scrim and breakpoint memory come from the shared [`SidebarDrawer`].
-    fn set_drawer_open(&mut self, open: bool) {
-        if self.drawer.is_open() != open {
+    /// Show or hide the page tree, without the slide: where the window is too
+    /// narrow to dock it, it is a drawer the shell opens over the note.
+    fn set_sidebar_open(&mut self, open: bool) {
+        if self.shell.is_sidebar_open() != open {
             if open {
-                self.drawer.open();
+                self.shell.open_sidebar();
             } else {
-                self.drawer.close();
+                self.shell.close_sidebar();
             }
-            self.drawer.snap(open);
+            self.shell.snap();
             self.self_dirty = true;
         }
     }
@@ -3322,7 +3222,7 @@ impl NotesApp {
             return ui::widget::ActionDirectoryInvocationDomain::Unsupported;
         }
         let mut parts = vec![
-            chrono::Local::now()
+            ui::clock::local_now()
                 .format("%Y-%m-%d")
                 .to_string()
                 .into_bytes(),
@@ -3832,22 +3732,24 @@ impl NotesApp {
         self.actions.last_dispatched()
     }
 
-    /// Test hook: whether the current tree is the narrow (drawer) layout.
+    /// Test hook: whether the page tree is a drawer over the note rather
+    /// than a docked column.
     #[doc(hidden)]
     pub fn built_narrow_for_test(&self) -> bool {
-        self.built_narrow
+        self.shell.geometry().sidebar == SidebarPlacement::Drawer
     }
 
-    /// Test hook: whether the narrow-mode overlay drawer is open.
+    /// Test hook: whether the page tree shows (a docked column, or an open
+    /// drawer).
     #[doc(hidden)]
     pub fn drawer_open_for_test(&self) -> bool {
-        self.drawer.is_open()
+        self.shell.is_sidebar_open()
     }
 
-    /// Test hook: centre of the drawer-toggle button (narrow mode).
+    /// Test hook: centre of the shell's sidebar toggle.
     #[doc(hidden)]
     pub fn menu_btn_center_for_test(&self) -> Point {
-        self.menu_btn_rect.center()
+        self.shell.geometry().toggle.center()
     }
 
     /// Test hook: centre of sidebar row `idx`, for click targeting.
@@ -3887,18 +3789,36 @@ impl NotesApp {
         self.sidebar.rename_is_plain_for_test()
     }
 
-    /// Test hook: centre of the sidebar's "+" new-page button, for
+    /// Test hook: centre of the sidebar header's "New note" button, for
     /// click targeting through the real event path.
     #[doc(hidden)]
     pub fn sidebar_new_page_btn_center_for_test(&self) -> Point {
-        self.sidebar.new_page_btn_center_for_test()
+        self.header_button_rect(NEW_NOTE_BUTTON_ID)
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
-    /// Test hook: the sidebar's laid-out rect (docked column or overlay
+    /// Test hook: the sidebar column's rect (docked column or overlay
     /// drawer), so a test can prove the drawer is clamped to the window.
     #[doc(hidden)]
     pub fn sidebar_rect_for_test(&self) -> Rect {
-        self.sidebar.rect_for_test()
+        self.shell.geometry().sidebar_column
+    }
+
+    /// The laid-out rect of the shell's control with test id `id`.
+    fn header_button_rect(&self, id: &str) -> Option<Rect> {
+        fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
+            if widget.test_id() == Some(id) {
+                return Some(widget.get_rect());
+            }
+            let mut found = None;
+            widget.for_each_child(&mut |child| {
+                if found.is_none() {
+                    found = find(child, id);
+                }
+            });
+            found
+        }
+        find(&self.shell, id)
     }
 
     /// Test hook: whether a live page-tree drag is in flight.
@@ -3919,6 +3839,28 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn note_menu_open_for_test(&self) -> bool {
         self.note_menu.is_open()
+    }
+
+    /// Test hook: the open note menu's laid-out rect, and the rect of the
+    /// button that opens it.
+    #[doc(hidden)]
+    pub fn note_menu_rects_for_test(&self) -> Option<(Rect, Rect)> {
+        let button = self.header_button_rect(NOTE_MENU_BUTTON_ID)?;
+        let first = self.note_menu.item_rect(0)?;
+        let last = self
+            .note_menu
+            .items()
+            .len()
+            .checked_sub(1)
+            .and_then(|index| self.note_menu.item_rect(index))?;
+        Some((first.union(last), button))
+    }
+
+    /// Test hook: centre of the note header's "Note actions" button.
+    #[doc(hidden)]
+    pub fn note_menu_button_center_for_test(&self) -> Point {
+        self.header_button_rect(NOTE_MENU_BUTTON_ID)
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
     /// Test hook: whether the sidebar's right-click context menu is open.
@@ -3961,11 +3903,11 @@ impl NotesApp {
         self.sidebar.sync_from_workspace(&self.workspace);
     }
 
-    /// Snapshot hook: force the narrow-mode drawer open so a headless
-    /// shot can show the overlay. No effect on a wide layout.
+    /// Snapshot hook: open the page tree so a headless shot can show the
+    /// drawer. Where the tree is docked it is already open.
     #[doc(hidden)]
     pub fn open_drawer_for_shots(&mut self) {
-        self.set_drawer_open(true);
+        self.set_sidebar_open(true);
     }
 }
 
@@ -4117,7 +4059,7 @@ impl ui::widget::AppWidget for NotesApp {
             active_tag: self.active_tag_filter,
             drawer_open: self
                 .pending_responsive_view
-                .map_or_else(|| self.drawer.is_open(), |(open, _)| open),
+                .map_or_else(|| self.shell.is_sidebar_open(), |(open, _)| open),
             expanded_pages: self.sidebar.expanded_pages(),
             editor_scroll: self.main.local_scroll(),
             focus,
@@ -4165,7 +4107,6 @@ impl ui::widget::AppWidget for NotesApp {
         self.bound_page = self.workspace.selected();
         self.pending_events.clear();
         self.pending_block_reveal = None;
-        self.drawer.snap(local.drawer_open);
         self.pending_responsive_view = Some((local.drawer_open, false));
         self.prepared_local_focus = Some(focus);
         self.refresh_link_pages();
@@ -4193,8 +4134,7 @@ impl ui::widget::AppWidget for NotesApp {
         self.main.finish_local_focus(plan.focus);
         if plan.focus == NotesFocus::Sidebar {
             if self.rect.width() > 0.0 {
-                self.sidebar
-                    .set_focus(!self.want_narrow || self.drawer.is_open());
+                self.sidebar.set_focus(self.shell.is_sidebar_open());
             } else if let Some((_, sidebar)) = self.pending_responsive_view.as_mut() {
                 *sidebar = true;
                 self.sidebar.set_focus(true);
@@ -4439,6 +4379,7 @@ impl Widget for NotesApp {
             for event in std::mem::take(&mut self.pending_events) {
                 self.apply_and_dispatch(state, event);
             }
+            self.drain_header_requests(state);
             self.drain_sidebar_events(state);
             self.drain_empty_note_request(state);
             // Project the workspace only when its inputs moved: committed
@@ -4488,6 +4429,7 @@ impl Widget for NotesApp {
         self.refresh_transclusion_previews(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
+        self.shell.sync(state, path);
         self.drain_transclusion_opens(state);
         self.refresh_search_blocks(state);
         self.main.set_backlinks(self.selected_backlink_chips());
@@ -4507,11 +4449,12 @@ impl Widget for NotesApp {
         // Forward the main panel's editor structure-dirty flag so the App
         // rebuilds the taffy tree when the block count changes (local
         // split/merge OR a remote peer adding a block via sync). Without
-        // this the new block gets no taffy node and isn't laid out. Also
-        // rebuild when the window crossed the narrow breakpoint, since the
-        // sidebar-vs-drawer split changes the tree shape.
-        let relayout = std::mem::take(&mut self.pending_relayout);
-        self.main.take_structure_dirty() || relayout
+        // this the new block gets no taffy node and isn't laid out. The
+        // shell's flag too: a drawer opening or the window crossing the
+        // breakpoint changes which columns exist.
+        let editor = self.main.take_structure_dirty();
+        let shell = self.shell.take_structure_dirty();
+        editor || shell
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -4520,7 +4463,7 @@ impl Widget for NotesApp {
         // and a first peer with no input/events would otherwise never run
         // `sync` again to perform it (leaving its doc empty, so a joiner
         // gets nothing and seeds a duplicate).
-        !self.adopted
+        !self.adopted || self.shell.needs_idle_sync()
     }
 
     fn build_layout(
@@ -4529,101 +4472,39 @@ impl Widget for NotesApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.text_scale = f64::from(theme.text_scale);
-        self.drawer
-            .set_breakpoint(NARROW_BREAKPOINT * self.text_scale);
-        // The scaled drawer must still leave a scrim band of the page visible
-        // (and its own trailing controls on screen): at 2× in a phone-width
-        // window the unclamped 528px drawer ran past the window's right edge.
-        let docked_w = SIDEBAR_WIDTH * self.text_scale;
-        let reveal = f64::from(theme.tokens.spacing.s12);
-        let drawer_w = if self.rect.width() > 0.0 {
-            (DRAWER_WIDTH * self.text_scale).min((self.rect.width() - reveal).max(reveal))
-        } else {
-            DRAWER_WIDTH * self.text_scale
-        };
-        self.drawer.set_docked_width(docked_w);
-        self.drawer.set_overlay_width(drawer_w);
-        // Commit the mode the tree is built with so draw/event routing
-        // stays in lock-step with the live taffy structure.
-        self.built_narrow = self.want_narrow;
-        let narrow = self.built_narrow;
+        self.theme = theme.clone();
+        self.columns.sidebar.reset();
+        self.columns.content.reset();
+        let shell_node = self.shell.build_layout(taffy, theme, node_map);
+        self.shell_node = Some(shell_node);
 
-        let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
-        let _ = taffy.set_style(
-            sidebar_node,
-            Self::sidebar_style(narrow, drawer_w, docked_w, self.text_scale),
-        );
-        self.sidebar_node = Some(sidebar_node);
+        // The page tree and the note panel hang under the slots the shell
+        // placed for their columns, so its own placement sizes them in the
+        // same pass. A column the shell does not show (a closed drawer) has
+        // no slot, and its widget is not part of the tree.
+        self.main_node = self.columns.content.node().map(|slot| {
+            let node = self.main.build_layout(taffy, theme, node_map);
+            Self::fill_slot(taffy, slot, node);
+            node
+        });
+        self.sidebar_node = self.columns.sidebar.node().map(|slot| {
+            let node = self.sidebar.build_layout(taffy, theme, node_map);
+            Self::fill_slot(taffy, slot, node);
+            node
+        });
 
-        // Keep the final content row above the transient save status in every
-        // layout, including when accessibility text sizing enlarges the pill.
-        self.main.set_bottom_inset(
-            14.0 + ui::status_bubble::pill_height(12.0, theme.text_scale)
-                + f64::from(theme.tokens.spacing.s2),
-        );
-        let main_node = self.main.build_layout(taffy, theme, node_map);
-        // Augment the panel's own style (preserve its flex-column
-        // layout) with the parent-driven sizing. `taffy.style(...)`
-        // returns the existing Style, which we clone then overwrite
-        // only the fields we care about — preserves the panel's
-        // internal `flex_direction: Column`, padding, etc.
-        if let Ok(existing) = taffy.style(main_node).cloned() {
-            let _ = taffy.set_style(
-                main_node,
-                Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: Dimension::percent(1.0),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    ..existing
+        let root = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
                 },
-            );
-        }
-        self.main_node = Some(main_node);
-
-        // Content row. Wide: [sidebar | main] side-by-side. Narrow: the
-        // editor takes the full width and the drawer floats over it as
-        // an absolutely-positioned child (out of flow).
-        let content_children: Vec<NodeId> = if narrow {
-            vec![main_node, sidebar_node]
-        } else {
-            vec![sidebar_node, main_node]
-        };
-        // `new_with_children`/`new_leaf` only error for a corrupted tree;
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so surfacing a theoretical error here would mean
-        // threading a `Result` through the whole toolkit for a branch that
-        // can't be taken (see `ui::widget::TaffyTreeExt`).
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on freshly-built children cannot fail"
-        )]
-        let content_node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Row,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
-                    },
-                    flex_grow: 1.0,
-                    flex_basis: Dimension::length(0.0),
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &content_children,
-            )
-            .unwrap();
-        self.content_node = Some(content_node);
-
-        self.assemble_root(taffy, node_map, narrow, content_node)
+                ..Default::default()
+            },
+            &[shell_node],
+        );
+        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+        root
     }
 
     // `taffy.layout(...)` only errors for a `NodeId` from a different tree,
@@ -4642,90 +4523,37 @@ impl Widget for NotesApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let new_origin = Point::new(self.rect.x0, self.rect.y0);
-
-        // Decide the responsive mode from the real width. `> 0.0` guards the
-        // very first frame, where the window size isn't known yet. The shared
-        // drawer owns the breakpoint; at/above it the sidebar docks, below it it
-        // overlays. Entering narrow starting closed is handled by the drawer's
-        // own breakpoint reconciliation (in `resolve`, below).
-        let width = self.rect.width();
-        let want = width > 0.0
-            && matches!(
-                self.drawer.layout_for(width),
-                ui::widget::SplitLayout::Overlay
-            );
-        if want != self.want_narrow {
-            self.want_narrow = want;
-            self.self_dirty = true;
+        // The shell lays its columns, header row and toggle out first; the
+        // page tree and the note panel are children of the columns' slots,
+        // whose own origin is the column's.
+        if let Some(shell_node) = self.shell_node {
+            self.shell
+                .apply_layout(taffy, shell_node, Point::new(self.rect.x0, self.rect.y0));
         }
-        // If the desired mode drifted from what's actually built, ask the
-        // host to rebuild the tree on the next frame.
-        if self.want_narrow != self.built_narrow {
-            self.pending_relayout = true;
-            self.self_dirty = true;
-        }
-
-        // The content row sits inside the root column; sidebar + main
-        // are children of it. Each child widget's `apply_layout` adds
-        // its own `layout.location` to the origin we pass, so we need
-        // to hand it the *parent's* absolute origin.
-        if let Some(content_node) = self.content_node {
-            let content_layout = taffy.layout(content_node).unwrap();
-            let content_origin = Point::new(
-                new_origin.x + f64::from(content_layout.location.x),
-                new_origin.y + f64::from(content_layout.location.y),
-            );
-            self.content_rect = Rect::new(
-                content_origin.x,
-                content_origin.y,
-                content_origin.x + f64::from(content_layout.size.width),
-                content_origin.y + f64::from(content_layout.size.height),
-            );
-            // Feed the fresh content rect to the shared drawer so its scrim
-            // geometry and breakpoint memory track this frame (this is where a
-            // stale open/closed preference is reconciled on a breakpoint cross).
-            self.drawer.resolve(self.content_rect);
-            if width > 0.0
-                && let Some((open, sidebar)) = self.pending_responsive_view.take()
-            {
-                self.drawer.snap(open);
-                if sidebar {
-                    self.sidebar.set_focus(!self.want_narrow || open);
-                }
+        self.laid_out = true;
+        // The first measured width resolves the saved sidebar intent once.
+        if self.rect.width() > 0.0
+            && let Some((open, sidebar)) = self.pending_responsive_view.take()
+        {
+            // Only a drawer remembers being open or closed; a docked page
+            // tree stays where the window put it.
+            if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+                self.set_sidebar_open(open);
             }
-            if let Some(n) = self.sidebar_node {
-                self.sidebar.apply_layout(taffy, n, content_origin);
-            }
-            if let Some(n) = self.main_node {
-                self.main.apply_layout(taffy, n, content_origin);
+            if sidebar {
+                self.sidebar.set_focus(self.shell.is_sidebar_open());
             }
         }
-
-        // Top bar (narrow only) and its drawer-toggle button rect.
-        if let Some(n) = self.topbar_node {
-            let l = taffy.layout(n).unwrap();
-            self.topbar_rect = Rect::new(
-                new_origin.x + f64::from(l.location.x),
-                new_origin.y + f64::from(l.location.y),
-                new_origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-                new_origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-            );
-            self.menu_btn_rect = Rect::new(
-                self.topbar_rect.x0,
-                self.topbar_rect.y0,
-                self.topbar_rect.x0 + TOPBAR_HEIGHT * self.text_scale,
-                self.topbar_rect.y1,
-            );
-        } else {
-            self.topbar_rect = Rect::ZERO;
-            self.menu_btn_rect = Rect::ZERO;
+        if let Some(n) = self.main_node {
+            self.main
+                .apply_layout(taffy, n, self.columns.content.rect().origin());
         }
-
+        if let Some(n) = self.sidebar_node {
+            self.sidebar
+                .apply_layout(taffy, n, self.columns.sidebar.rect().origin());
+        }
         self.note_menu.set_viewport(Some(self.rect));
-        // Keep the shortcuts overlay's viewport synced — host-driven
-        // since the overlay never participates in the taffy pass.
-        self.shortcuts.set_viewport(self.rect);
+        self.shortcuts.set_viewport(self.rect, &self.theme);
     }
 
     fn draw(
@@ -4736,81 +4564,64 @@ impl Widget for NotesApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Background of the whole window.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        // Editor always paints first; on a narrow window the drawer (if
-        // open) composites over it below.
+        // No ground of our own: the window paints `surfaces.content`, and the
+        // shell paints the sidebar's region.
+        let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
         let covered =
             self.shortcuts.is_visible() || self.note_menu.is_open() || self.sidebar.menu_is_open();
-        let main_covered = covered || (self.built_narrow && self.drawer.is_open());
+        let main_covered = covered || drawer_open;
         self.main.suppress_caret_paint(main_covered);
         self.main.suppress_tooltips(main_covered);
         self.sidebar.suppress_tooltips(covered);
+        // The note first; the shell over it (its drawer and scrim cover the
+        // note), then the page tree on the sidebar the shell painted.
         self.main
             .draw(scene, transform, text_renderer, theme, presence);
-        if self.built_narrow {
-            self.draw_topbar(scene, transform, text_renderer, theme);
-            if self.drawer.is_open() {
-                // The shared drawer paints the (subtle) dimming scrim plus a
-                // soft edge shadow behind the page tree, which draws on top.
-                self.drawer.draw_scrim(scene, transform);
-                self.sidebar
-                    .draw(scene, transform, text_renderer, theme, presence);
-            }
-        } else {
+        self.shell
+            .draw(scene, transform, text_renderer, theme, presence);
+        if self.sidebar_node.is_some() {
+            let geometry = self.shell.geometry();
+            let sidebar_theme = if geometry.sidebar == SidebarPlacement::Drawer {
+                theme.on_ground(ui::chrome::panel_ground(theme))
+            } else {
+                theme.in_region(ui::surface::Region::Sidebar)
+            };
+            // Unclipped: the page tree's context menu is a floating surface
+            // that reaches past its column.
             self.sidebar
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw(scene, transform, text_renderer, &sidebar_theme, presence);
         }
-        // Transient floating status bubble (bottom-right), in place of the
-        // old permanent bottom status strip.
+        // Transient floating status bubble (bottom-right).
         self.draw_status_bubble(scene, transform, text_renderer, theme);
         let now = ui::time::now();
         self.transfer_toasts
             .tick(now.saturating_duration_since(self.last_toast_tick));
         self.last_toast_tick = now;
+        // Toasts stand above the status bubble's corner.
+        let gutter = f64::from(theme.tokens.spacing.s4);
+        let lift = ui::status_bubble::pill_height(theme) + gutter;
         let toast_area = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y1 - 48.0 * self.text_scale,
+            (self.rect.y1 - lift).max(self.rect.y0),
         );
-        self.transfer_toasts
-            .place_bottom_right(toast_area, 16.0 * self.text_scale);
+        self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
         self.note_menu
             .draw(scene, transform, text_renderer, theme, presence);
-        // Shortcuts overlay sits above every app-owned layer when visible.
-        self.shortcuts
-            .draw_overlay(scene, transform, text_renderer, theme);
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        (!self.motion_reduced && self.status_bubble.needs_frame(ui::time::now()))
+        (!self.theme.reduce_motion && self.status_bubble.needs_frame(ui::time::now()))
+            || self.shell.needs_animation_frame()
             || !self.transfer_toasts.is_empty()
             || (self.pending_markdown_source.is_some() && !self.import_control_emitted)
-    }
-
-    fn set_motion_reduced(&mut self, reduced: bool) {
-        if self.motion_reduced != reduced {
-            self.motion_reduced = reduced;
-            self.self_dirty = true;
-        }
-        // Retained children may own their own animation state (editor,
-        // drawer primitives, and modal controls), so continue the framework
-        // propagation after settling the Notes-owned status presentation.
-        for child in self.children_mut() {
-            child.set_motion_reduced(reduced);
-        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -4820,10 +4631,10 @@ impl Widget for NotesApp {
             self.handle_note_context_menu(event, ctx);
             return;
         }
-        if self.handle_shortcuts_overlay(event, ctx.scale_factor, ctx.handled) {
+        if self.handle_shortcuts_overlay(event, ctx) {
             return;
         }
-        if self.handle_help_key(event, ctx.handled) {
+        if self.handle_help_key(event, ctx) {
             return;
         }
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
@@ -4839,7 +4650,7 @@ impl Widget for NotesApp {
         if *ctx.handled {
             return;
         }
-        if self.handle_narrow_drawer(event, ctx) {
+        if self.handle_shell(event, ctx) {
             return;
         }
         if self.handle_note_context_menu(event, ctx) {
@@ -4860,28 +4671,14 @@ impl Widget for NotesApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let mut children = Vec::new();
-        if self.built_narrow && self.menu_btn_rect.area() > 0.0 {
-            children.push(
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Notes drawer")
-                    .with_action_target("notes.drawer")
-                    .with_bounds(self.menu_btn_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.drawer.is_open()),
-                    ),
-            );
-        }
-        children.push(
+        use ui::a11y::{AccessNode, Role};
+        let children = vec![
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
                 .with_description(self.status.right_text())
                 .with_live(ui::a11y::Politeness::Polite)
                 .with_hashed_key("notes.save-status"),
-        );
+        ];
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
@@ -4890,29 +4687,12 @@ impl Widget for NotesApp {
         )
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        if target == "notes.drawer"
-            && self.built_narrow
-            && matches!(
-                action,
-                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
-            )
-        {
-            self.set_drawer_open(!self.drawer.is_open());
-            return true;
-        }
-        false
-    }
-
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::with_capacity(4);
-        if !self.built_narrow || self.drawer.is_open() {
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(6);
+        if SHELL_PRESENTS_HISTORY.get() {
+            children.push(&self.shell);
+        }
+        if self.sidebar_shown() {
             children.push(self.sidebar.tree());
         }
         if self.note_menu.is_open() {
@@ -4925,8 +4705,11 @@ impl Widget for NotesApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        let show_sidebar = !self.built_narrow || self.drawer.is_open();
-        let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(4);
+        let show_sidebar = self.sidebar_shown();
+        let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(6);
+        if SHELL_PRESENTS_HISTORY.get() {
+            children.push(&mut self.shell);
+        }
         if show_sidebar {
             children.push(self.sidebar.tree_mut());
         }
@@ -4953,6 +4736,7 @@ impl Widget for NotesApp {
 
     fn needs_redraw(&self) -> bool {
         self.self_dirty
+            || self.shell.needs_redraw()
             || self.sidebar.needs_redraw()
             || self.main.needs_redraw()
             || self.shortcuts.needs_redraw()
@@ -4960,6 +4744,7 @@ impl Widget for NotesApp {
 
     fn mark_drawn(&mut self) {
         self.self_dirty = false;
+        self.shell.mark_drawn();
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
         self.shortcuts.mark_drawn();
@@ -5095,6 +4880,33 @@ impl ui::widget::controls::ActionControls for NotesApp {
             ui::widget::controls::on_control_invocation_result(child, address, result);
         }
     }
+    /// The window hosts History, as it hosts search: its command is not one
+    /// of the notebook's own actions, so the availability the host hands the
+    /// notebook's controls does not list it, and the History control the
+    /// shell draws would stay disabled. Offer the shell its own History
+    /// command.
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        let mut allowed = allowed.clone();
+        allowed.extend(
+            ui::widget::controls::control_action_bindings(&self.shell)
+                .into_iter()
+                .filter_map(|binding| match binding.kind {
+                    ui::widget::ControlBindingKind::Action(address)
+                        if address.resource == HISTORY_RESOURCE =>
+                    {
+                        Some(address)
+                    }
+                    _ => None,
+                }),
+        );
+        for child in self.children_mut() {
+            ui::widget::controls::refresh_control_action_availability(child, &allowed);
+        }
+    }
+
     fn has_pending_control_invocation(&self) -> bool {
         !self.adopted
             || self.pending_markdown_source.is_some()
@@ -5120,110 +4932,32 @@ impl ui::undo::CommittedActions for NotesApp {
 }
 
 impl NotesApp {
-    /// Style for the sidebar node depending on the narrow/wide layout mode.
-    /// Narrow: an absolutely-positioned overlay drawer pinned to the left
-    /// edge of the content row, full height, taken out of flow so the
-    /// editor keeps the whole width underneath it. Wide: a fixed-width
-    /// column so the split is deterministic (no flexbox squeezing).
-    fn sidebar_style(narrow: bool, drawer_w: f64, docked_w: f64, text_scale: f64) -> Style {
-        if narrow {
-            Style {
-                position: taffy::Position::Absolute,
-                inset: taffy::Rect {
-                    left: length(0.0_f32),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
-                },
-                size: Size {
-                    // Fill a phone when the preferred large-text drawer is
-                    // wider than the viewport; the max keeps it a drawer on
-                    // roomier narrow windows. A fixed scaled width pushed the
-                    // New-note affordance offscreen at 390 px / 200%.
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                max_size: Size {
-                    width: Dimension::length(num::f32_of_f64(drawer_w)),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }
-        } else {
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_f64(docked_w)),
-                    height: Dimension::percent(1.0),
-                },
-                min_size: Size {
-                    width: Dimension::length(num::f32_of_f64(160.0 * text_scale)),
-                    height: Dimension::auto(),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            }
-        }
+    /// Whether the page tree is part of the window: the shell shows its
+    /// column (a docked sidebar, an open drawer), or nothing has been laid
+    /// out yet.
+    fn sidebar_shown(&self) -> bool {
+        self.sidebar_node.is_some() || !self.laid_out
     }
 
-    /// Assemble the outer flex column: an optional top bar (narrow only)
-    /// above the content row. No status-bar row — the note's status floats
-    /// as a transient bubble (see `draw_status_bubble`), so the content
-    /// column spans to the window bottom and reclaims the strip's height.
-    fn assemble_root(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        narrow: bool,
-        content_node: NodeId,
-    ) -> NodeId {
-        let mut column_children: Vec<NodeId> = Vec::with_capacity(3);
-        if narrow {
-            #[allow(
-                clippy::unwrap_used,
-                reason = "new_leaf on a fresh style cannot fail — see ui::widget::TaffyTreeExt"
-            )]
-            let topbar_node = taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::length(num::f32_of_f64(TOPBAR_HEIGHT * self.text_scale)),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                })
-                .unwrap();
-            self.topbar_node = Some(topbar_node);
-            column_children.push(topbar_node);
-        } else {
-            self.topbar_node = None;
-        }
-        column_children.push(content_node);
-
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_with_children on freshly-built children cannot fail — see ui::widget::TaffyTreeExt"
-        )]
-        let root = taffy
-            .new_with_children(
+    /// Hang a column's widget under the slot the shell placed for it: the
+    /// column fills the slot, whatever size the shell gave it.
+    fn fill_slot(taffy: &mut TaffyTree<()>, slot: NodeId, node: NodeId) {
+        if let Ok(existing) = taffy.style(node).cloned() {
+            let _ = taffy.set_style(
+                node,
                 Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
                     size: Size {
                         width: Dimension::percent(1.0),
                         height: Dimension::percent(1.0),
                     },
-                    gap: taffy::Size {
-                        width: length(0.0_f32),
-                        height: length(0.0_f32),
-                    },
-                    ..Default::default()
+                    flex_grow: 0.0,
+                    flex_shrink: 0.0,
+                    flex_basis: Dimension::auto(),
+                    ..existing
                 },
-                &column_children,
-            )
-            .unwrap();
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+            );
+        }
+        let _ = taffy.add_child(slot, node);
     }
 
     /// The shortcuts overlay is fully blocking when visible: it either
@@ -5232,18 +4966,18 @@ impl NotesApp {
     fn handle_shortcuts_overlay(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         if !self.shortcuts.is_visible() {
             return false;
         }
-        if self.shortcuts.handle_key(event, scale_factor) {
-            *handled = true;
-            self.refresh_status();
-            return true;
+        self.shortcuts.handle_event(event, ctx);
+        if !self.shortcuts.is_visible() && std::mem::take(&mut self.shortcuts_return_to_tree) {
+            self.sidebar.set_focus(true);
         }
-        *handled = true;
+        self.self_dirty = true;
+        self.refresh_status();
+        *ctx.handled = true;
         true
     }
 
@@ -5254,7 +4988,7 @@ impl NotesApp {
     /// key falls through to the block editor and types a literal `?`; when
     /// the page tree / nothing is focused, `?` opens help. This is the
     /// standard "help key only outside inputs" behaviour.
-    fn handle_help_key(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    fn handle_help_key(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if self.main.editor().is_focused() {
             return false;
         }
@@ -5273,8 +5007,19 @@ impl NotesApp {
         if c.as_str() != "?" {
             return false;
         }
+        // The sheet takes the pointer and the keyboard from the page tree
+        // behind it, so no row stays hovered or ringed under the scrim.
+        if let Some(node) = self.sidebar_node {
+            let left = WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            };
+            self.sidebar
+                .handle_event(&left, &mut ctx.reborrow(ctx.path, node));
+        }
+        self.shortcuts_return_to_tree = self.sidebar.is_focused();
+        self.sidebar.set_focus(false);
         self.shortcuts.set_visible(true);
-        *handled = true;
+        *ctx.handled = true;
         self.refresh_status();
         true
     }
@@ -5349,92 +5094,75 @@ impl NotesApp {
         true
     }
 
-    /// Narrow-mode overlay drawer. The top-bar button toggles it; while
-    /// open it captures pointer/keys so the page tree behaves like a
-    /// modal flyout over the editor.
-    fn handle_narrow_drawer(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.built_narrow {
+    /// What the shell's header buttons asked for: a new root note, or the
+    /// note's actions anchored to their button. A button can be pressed by
+    /// pointer, keyboard or assistive technology, so this runs from `sync`
+    /// as well as after input.
+    fn drain_header_requests(&mut self, doc: &mut AutoCommit) {
+        if self.header.new_note.take() {
+            self.apply_and_dispatch(doc, OutEvent::CreateChild { parent: None });
+            self.sidebar.sync_from_workspace(&self.workspace);
+            self.self_dirty = true;
+        }
+        if self.header.note_menu.take() {
+            self.open_note_menu_from_button();
+        }
+    }
+
+    /// The window shell: its header buttons, its sidebar toggle and shortcut,
+    /// and the drawer where the page tree is too wide to dock. A drawer is
+    /// modal while it is open: input belongs to the page tree, and choosing a
+    /// note closes it.
+    fn handle_shell(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        // A page-tree context menu may extend past the drawer. Give it the
+        // dismissing click or Escape before the shell reads either as input
+        // to the drawer.
+        if self.sidebar_node.is_some() && self.sidebar.menu_is_open() {
+            self.route_to_sidebar(event, ctx);
+            *ctx.handled = true;
+            return true;
+        }
+        if let Some(node) = self.shell_node {
+            self.shell
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+        self.drain_header_requests(ctx.state);
+        if *ctx.handled {
+            self.self_dirty = true;
+            return true;
+        }
+        let drawer_open = self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.shell.is_sidebar_open();
+        if !(drawer_open && self.sidebar_node.is_some()) {
             return false;
         }
-        // A sidebar context menu may extend beyond the drawer. Give it the
-        // dismissal click/Escape before interpreting either as drawer input.
-        if self.sidebar.menu_is_open() {
-            let selected = self.workspace.selected();
-            if let Some(n) = self.sidebar_node {
-                self.sidebar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                self.claim_sidebar_focus(*ctx.focus_target);
-            }
-            self.drain_sidebar_events(ctx.state);
-            if self.workspace.selected() != selected && !self.sidebar.menu_is_open() {
-                self.set_drawer_open(false);
-            }
-            *ctx.handled = true;
-            return true;
-        }
-        // Toggle button — hit-test the hamburger in the top bar.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && self.menu_btn_rect.contains(self.last_mouse)
-        {
-            self.set_drawer_open(!self.drawer.is_open());
-            *ctx.handled = true;
-            return true;
-        }
-        if !self.drawer.is_open() {
-            return false;
-        }
-        // Escape closes the drawer.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            self.set_drawer_open(false);
-            *ctx.handled = true;
-            return true;
-        }
-        // A press on the scrim (outside the drawer) closes it.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-            && !self.sidebar.get_rect().contains(self.last_mouse)
-        {
-            self.set_drawer_open(false);
-            *ctx.handled = true;
-            return true;
-        }
-        // Route to the page tree; auto-close once a page is picked.
-        let sel_before = self.workspace.selected();
-        if let Some(n) = self.sidebar_node {
-            self.sidebar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-            self.claim_sidebar_focus(*ctx.focus_target);
-        }
-        self.drain_sidebar_events(ctx.state);
-        if self.workspace.selected() != sel_before && !self.sidebar.menu_is_open() {
-            self.set_drawer_open(false);
-        }
+        self.route_to_sidebar(event, ctx);
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         self.refresh_status();
+        *ctx.handled = true;
         true
+    }
+
+    /// Route `event` to the page tree and apply what it asked for. Choosing a
+    /// note in a drawer closes the drawer.
+    fn route_to_sidebar(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let Some(node) = self.sidebar_node else {
+            return;
+        };
+        let selected = self.workspace.selected();
+        self.sidebar
+            .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        self.claim_sidebar_focus(*ctx.focus_target);
+        self.drain_sidebar_events(ctx.state);
+        if self.shell.geometry().sidebar == SidebarPlacement::Drawer
+            && self.workspace.selected() != selected
+            && !self.sidebar.menu_is_open()
+        {
+            self.set_sidebar_open(false);
+        }
     }
 
     /// Click on a link mark navigates.
@@ -5526,14 +5254,15 @@ impl NotesApp {
         let Some(page) = self.workspace.selected() else {
             return false;
         };
+        // A pointer opens it where it clicked; the keyboard opens it on the
+        // note's actions button, as the menu of that trigger.
         let anchor = if pointer_open {
-            self.last_mouse
+            Rect::from_origin_size(self.last_mouse, (0.0, 0.0))
         } else {
-            let rect = self.main.get_rect();
-            Point::new(
-                rect.x0 + 32.0 * self.text_scale,
-                rect.y0 + 64.0 * self.text_scale,
-            )
+            self.header_button_rect(NOTE_MENU_BUTTON_ID)
+                .unwrap_or_else(|| {
+                    Rect::from_origin_size(self.main.get_rect().origin(), (0.0, 0.0))
+                })
         };
         self.note_menu_editor = if pointer_open {
             self.main.editor().get_rect().contains(self.last_mouse)
@@ -5584,15 +5313,36 @@ impl NotesApp {
         for item in crate::sidebar::note_context_menu().items() {
             self.note_menu.push(item.clone());
         }
-        self.note_menu
-            .set_text_scale(num::f32_of_f64(self.text_scale));
+        self.note_menu.set_text_scale(self.theme.text_scale);
         self.note_menu.set_viewport(Some(self.rect));
-        self.note_menu
-            .open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
+        self.note_menu.open_anchored(anchor, self.rect);
         self.note_menu_target = Some(page);
         self.self_dirty = true;
         *ctx.handled = true;
         true
+    }
+
+    /// Open the note's actions from the header button: the page's own
+    /// commands, anchored to the button that opened them.
+    fn open_note_menu_from_button(&mut self) {
+        let Some(page) = self.workspace.selected() else {
+            return;
+        };
+        let Some(anchor) = self.header_button_rect(NOTE_MENU_BUTTON_ID) else {
+            return;
+        };
+        self.note_menu_editor = false;
+        self.note_menu_table = None;
+        self.note_menu_table_source = None;
+        self.note_menu = ContextMenu::new();
+        for item in crate::sidebar::note_context_menu().items() {
+            self.note_menu.push(item.clone());
+        }
+        self.note_menu.set_text_scale(self.theme.text_scale);
+        self.note_menu.set_viewport(Some(self.rect));
+        self.note_menu.open_anchored(anchor, self.rect);
+        self.note_menu_target = Some(page);
+        self.self_dirty = true;
     }
 
     fn apply_note_menu_selection(&mut self, index: usize, state: &mut AutoCommit) {
@@ -5704,9 +5454,11 @@ impl NotesApp {
             || self.main.editor().link_popover().is_visible();
         let sidebar_menu_open = self.sidebar.menu_is_open();
 
-        // Route to the inline sidebar only when it's actually on screen
-        // (wide mode). In narrow mode the drawer block above owns it.
-        if !self.built_narrow && (!editor_menu_open || !is_keyboard) {
+        // Route to the page tree only when it's on screen. A drawer is
+        // modal and gets its input from `handle_shell`.
+        if self.shell.geometry().sidebar != SidebarPlacement::Drawer
+            && (!editor_menu_open || !is_keyboard)
+        {
             if let Some(n) = self.sidebar_node {
                 self.sidebar
                     .handle_event(event, &mut ctx.reborrow(ctx.path, n));
@@ -5748,6 +5500,12 @@ impl NotesApp {
                 position.y / ctx.scale_factor,
             );
             self.last_mouse = logical;
+            // Resting on the bubble's corner pins it open.
+            let (area, theme) = (self.status_area(&self.theme), &self.theme);
+            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+                self.status_bubble
+                    .pointer_moved(area, logical, text, theme, ui::time::now())
+            });
         }
         // Status bar refresh runs at the tail of every event so word
         // count + save indicator stay current. Cheap — the StatusBar
@@ -6601,13 +6359,24 @@ mod tests {
                 &Theme::default(),
             );
             assert!(
-                app.status_bubble
+                app.main.save_failure_shown_for_test(),
+                "an unresolved save failure stays in view under the title"
+            );
+            assert!(
+                !app.status_bubble
                     .is_visible(ui::time::now() + std::time::Duration::from_secs(60)),
-                "an unresolved save failure must not fade out"
+                "the bubble does not announce a failure the banner already shows"
             );
             assert!(
                 !app.status_bubble.needs_frame(ui::time::now()),
                 "persistent status must not cause an idle redraw loop"
+            );
+
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            assert!(
+                !app.main.save_failure_shown_for_test(),
+                "the failure goes away once the note saves"
             );
         }
 
@@ -6618,8 +6387,7 @@ mod tests {
             app.status_bubble.poke(ui::clock::Instant::now());
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
-            Widget::set_motion_reduced(&mut app, true);
-            assert!(app.motion_reduced);
+            app.theme.reduce_motion = true;
             assert!(
                 !app.needs_animation_frame(),
                 "reduced motion must not keep the compositor awake for a decorative fade"

@@ -333,3 +333,95 @@ fn history_restores_a_past_version_through_the_host() {
     assert!(app.undo());
     assert_eq!(app.state().title, "Hardware");
 }
+
+#[test]
+fn the_framework_paints_the_window_ground_live_and_in_shots() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+        let ground = [ground.r, ground.g, ground.b, ground.a];
+        let harness = app.harness();
+        harness.set_theme(theme.clone());
+        let (width, height) = harness.frame_output().logical_size;
+        let corners = |rgba: &[u8], frame: &str| {
+            let w = usize::try_from(width).unwrap();
+            let h = usize::try_from(height).unwrap();
+            // The view fills from the top; the bottom corners are ground.
+            for (x, y) in [(0, h - 1), (w - 1, h - 1)] {
+                let at = (y * w + x) * 4;
+                assert_eq!(
+                    rgba[at..at + 4],
+                    ground,
+                    "{}: the {frame} corner ({x}, {y}) is not the window ground",
+                    theme.name
+                );
+            }
+        };
+        // What the app's own frame paints, before any clear colour: a live
+        // window, a hosted tile and a capture all show this.
+        corners(&harness.render_rgba_transparent(), "drawn");
+        let shot = out.path().join(format!("{}.png", theme.name));
+        harness.render_png(&shot);
+        let png = tilo_app::png::read_rgba8(&shot).unwrap();
+        assert_eq!((png.width, png.height), (width, height));
+        corners(&png.rgba, "shot");
+    }
+}
+
+/// A capture prepares the component in the host's appearance and only then
+/// switches to the theme the shot names. Every retained control face must
+/// follow: a framework `cx.button` in a light shot is the light neutral
+/// face, not the dark one it was first painted with.
+#[test]
+fn a_light_capture_repaints_framework_buttons_in_the_light_theme() {
+    fn find<'a>(
+        node: &'a tilo_app::headless::InspectionNode,
+        name: &str,
+    ) -> Option<&'a tilo_app::headless::InspectionNode> {
+        if node
+            .semantics
+            .as_ref()
+            .is_some_and(|s| s.name.as_deref() == Some(name))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let harness = app.harness();
+    harness.set_theme(Theme::dark());
+    let _ = harness.render_rgba();
+    let light = Theme::light();
+    harness.set_theme(light.clone());
+    let rgba = harness.render_rgba();
+    let (width, _) = harness.frame_output().logical_size;
+    let inspection = harness.inspection();
+    let button = find(&inspection.root, "Clear done").expect("the button is in the tree");
+    let [x, y, _, h] = button.rect;
+    let face = tilo_app::widget::ButtonFace::new(
+        tilo_app::vello::kurbo::Rect::new(0.0, 0.0, 80.0, 32.0),
+        "x",
+    );
+    let (fill, _, _) = face.colors(&light);
+    let expected = fill.to_rgba8();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are small non-negative pixel positions in the test window"
+    )]
+    let (row, col) = ((y + h / 2.0).round() as usize, (x + 4.0).round() as usize);
+    let at = (row * width as usize + col) * 4;
+    let probe = &rgba[at..at + 4];
+    for (channel, (got, want)) in probe
+        .iter()
+        .zip([expected.r, expected.g, expected.b])
+        .enumerate()
+    {
+        assert!(
+            got.abs_diff(want) <= 2,
+            "channel {channel}: the button paints {probe:?}, the light neutral face is {expected:?}"
+        );
+    }
+}

@@ -57,14 +57,14 @@ fn managed_history_is_truthful_and_returns_to_exact_local_media_state() {
     ));
     assert!(resources.iter().any(|(id, label, _)| {
         id == "video-player.settings.current"
-            && label == "Playback settings · 1× · autoplay off · repeat on"
+            && label == "Playback settings: 1×, autoplay off, repeat on"
     }));
     assert!(resources.iter().any(|(id, label, _)| {
         id == "video-player.media.current" && label == "Controlled history clip"
     }));
     assert!(resources.iter().any(|(id, label, _)| {
         id == "video-player.tracks.audio.736f757263652d37.617564696f2d31"
-            && label == "Controlled stereo · selected"
+            && label == "Controlled stereo (selected)"
     }));
 
     driver.click_named("history-open").unwrap();

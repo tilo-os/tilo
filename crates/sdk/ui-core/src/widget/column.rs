@@ -55,6 +55,9 @@ pub struct Column {
     descendant_caches_released: bool,
     /// Whether the cached subtree shows a secret, replayed with the cache.
     cache_shows_secret: bool,
+    /// The cache holds floating surfaces over the blurred material. A reused
+    /// cache would show them opaque, so it is redrawn while it does.
+    cache_carries_material: bool,
 }
 
 impl Default for Column {
@@ -87,6 +90,7 @@ impl Column {
             cache_present: false,
             descendant_caches_released: false,
             cache_shows_secret: false,
+            cache_carries_material: false,
         }
     }
 
@@ -550,7 +554,8 @@ impl Widget for Column {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = !self.cache_present || size_changed || any_child_dirty;
+        let needs_rebuild =
+            !self.cache_present || size_changed || any_child_dirty || self.cache_carries_material;
 
         if needs_rebuild {
             // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
@@ -569,6 +574,7 @@ impl Widget for Column {
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             let secrets = crate::secret_paint::SecretPaint::begin();
+            crate::backdrop::nest_scene(&local);
             for child in &mut self.children {
                 child.draw_with_presence(
                     &mut local,
@@ -580,7 +586,8 @@ impl Widget for Column {
                 );
             }
             self.cache_shows_secret = secrets.finish();
-            scene.append(&local, Some(transform));
+            self.cache_carries_material =
+                crate::backdrop::append_nested(scene, &local, transform) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             self.cache_present = true;
@@ -748,36 +755,14 @@ mod tests {
     fn intrinsic_column_gap_applies_between_children_and_to_content_height() {
         /// The default inset is the `s6` token — 24 on the stock scale and still
         /// exactly twice `padding_standard` once `ui_scale` or a custom theme's
-        /// `spacing_px` has rescaled the whole spacing scale.
+        /// a theme's density has rescaled the whole spacing scale.
         fn default_inset_is_the_s6_token_on_every_scale() {
             for theme in [
                 Theme::dark(),
                 Theme::dark().with_ui_scale(1.5),
-                Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
-                    schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-                    id: "dense".into(),
-                    name: "Dense".into(),
-                    dark_base: true,
-                    accent: [12, 120, 220],
-                    accent_hover: [8, 96, 190],
-                    surface_base: [9, 18, 30],
-                    surface_raised: [18, 32, 48],
-                    text_primary: [238, 244, 250],
-                    text_dim: [170, 184, 199],
-                    border: [48, 68, 88],
-                    success: [50, 190, 110],
-                    warning: [230, 170, 50],
-                    danger: [225, 75, 80],
-                    info: [70, 165, 230],
-                    radius_px: 6.0,
-                    spacing_px: 9.0,
-                    font: "Inter".into(),
-                    motion_scale: 1.0,
-                    material_scale: 1.0,
-                    icon_scale: 1.0,
-                    chrome_weight: 1.0,
-                    motion_character: 1.0,
-                    material_tint: 0.0,
+                Theme::from_document(&crate::theme::ThemeDocument {
+                    density: crate::theme::ThemeDensity { spacing: 0.75 },
+                    ..crate::theme::Preset::Dark.document()
                 })
                 .unwrap(),
             ] {

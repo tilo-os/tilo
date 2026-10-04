@@ -246,7 +246,7 @@ fn workspace_settings_renders_general_members_and_permission_tabs_from_real_stat
 
         // Assert on the theme's own accent, not a literal fill count: counting
         // indigo-500 pixels incentivized a decorative second fill over a fix.
-        let accent = theme.tokens.colors.accent[5];
+        let accent = theme.tokens.colors.intent.inverted;
         let acc = accent.to_rgba8();
         let count_accent = |fills: &[(u8, u8, u8, u8)]| {
             fills
@@ -728,7 +728,7 @@ fn global_search_renders_its_icon_kbd_chip_and_indigo_selection() {
 
         // Assert the theme's own accent — no theme's accent need equal the
         // mockup's literal indigo-500.
-        let accent = theme.tokens.colors.accent[5].to_rgba8();
+        let accent = theme.tokens.colors.intent.inverted.to_rgba8();
         let has_accent = contains_color_close(&fills, (accent.r, accent.g, accent.b), 4);
         let has_slate_600_fill = contains_color_close(&fills, (71, 85, 105), 4);
 
@@ -896,7 +896,7 @@ fn quick_settings_renders_power_utility_white_slider_fill_and_wifi_drill_in() {
              indigo fills, open={open_indigo_count}, delta={added_indigo}. \
              Audit row `concept-coverage.md:22,132-139`: 'no `bg-white` filled \
              ramp — just `accent[5]` (indigo) bars'. Fix: swap \
-             `colors.accent[5]` for `colors.text_primary` (white in dark theme) \
+             `colors.intent.inverted` for `colors.text_primary` (white in dark theme) \
              in the slider-fill paint call in `draw_quick_settings`."
         );
     }
@@ -1749,20 +1749,21 @@ fn topbar_avatar_cluster_paints_exactly_the_present_collaborators() {
         chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let fills = collect_solid_colors(&scene);
-        // Each chip uses its own cursor hue via `ui::presence::user_color`
-        // (alice=pink-500, bob=orange-500, charlie=emerald-500).
-        assert!(
-            contains_color_close(&fills, (236, 72, 153), 8),
-            "cluster must paint alice's pink chip through the shared avatar; fills: {fills:?}",
-        );
-        assert!(
-            contains_color_close(&fills, (249, 115, 22), 8),
-            "cluster must paint bob's orange chip through the shared avatar; fills: {fills:?}",
-        );
-        assert!(
-            contains_color_close(&fills, (16, 185, 129), 8),
-            "cluster must paint charlie's emerald chip through the shared avatar; fills: {fills:?}",
-        );
+        // Each chip wears its own identity hue (`ui::presence::user_color`),
+        // painted through the theme's presence palette: one lightness and
+        // chroma for everybody.
+        for who in ["alice", "bob", "charlie"] {
+            let c = theme
+                .tokens
+                .colors
+                .presence
+                .of_rgb(ui::presence::user_color(who))
+                .to_rgba8();
+            assert!(
+                contains_color_close(&fills, (c.r, c.g, c.b), 8),
+                "cluster must paint {who}'s chip through the shared avatar; fills: {fills:?}",
+            );
+        }
         assert!(
             !scene.encoding().resources.glyph_runs.is_empty(),
             "cluster must paint initials and the overflow label as glyph runs",

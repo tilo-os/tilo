@@ -453,50 +453,60 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shado
     shadow(scene, transform, rect, 0.0, token);
 }
 
-/// The one contract for "is this small selectable chrome element active"
-/// — scope pills, filter chips, tab pills, toggle cards.
-///
-/// Quiet (HIG §9.5 "Chip quiet"): `surfaces.raised` under a rest edge
-/// derived from that fill by [`edge_on`], so the chip keeps a visible
-/// outline on a raised or overlay ground where the declared
-/// `border_standard` vanished. Selected: solid accent, no edge.
-pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
-    let c = &theme.tokens.colors;
-    if selected {
-        (c.accent[5], None)
-    } else {
-        (c.surfaces.raised, Some(edge_on(c.surfaces.raised)))
-    }
+/// The regions a window is made of (HIG §9.2). Each has one ground, and
+/// the framework paints it: an app declares which region an area is (a
+/// `NavShell` slot, or [`region`] in a painted app) and never fills it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Region {
+    /// The window ground, `surfaces.content`: every app's background.
+    Content,
+    /// The navigation column at the leading edge, `surfaces.sidebar`.
+    Sidebar,
+    /// The detail column at the trailing edge, `surfaces.inspector`.
+    Inspector,
 }
 
-/// Draw a pill / chip: a fully-rounded (or `radius`-rounded) filled rect
-/// with an optional 1px border. Pass `radius = None` for a fully-rounded
-/// capsule (`height/2`). The border is a crisp inset stroke on
-/// [`edge_outline`], like [`card`]: it covers the pill's outermost pixel
-/// row instead of straddling the edge as a half-covered, half-alpha smear.
-pub fn pill(
+/// Paint `region`'s ground over `rect` and return it, for the region's
+/// contents to measure against ([`Theme::on_ground`],
+/// [`Colors::lift_on`], [`edge_on`]).
+///
+/// A region is told apart from the content beside it by its tone. Where a
+/// material gives the two the same ground (high contrast), the region draws
+/// the hairline instead, on the edge it shares with content: the trailing
+/// edge of a sidebar, the leading edge of an inspector.
+pub fn region(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
-    fill: Color,
-    border: Option<Color>,
-    radius: Option<f64>,
-) {
+    region: Region,
+    theme: &Theme,
+) -> Color {
+    let ground = theme.region(region);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
+        return ground;
     }
-    let r = radius.unwrap_or_else(|| rect.height() / 2.0);
-    let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
-    scene.fill(Fill::NonZero, transform, fill, None, &shape);
-    if let Some(bc) = border {
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            bc,
-            None,
-            &edge_outline(rect, r),
-        );
+    scene.fill(Fill::NonZero, transform, ground, None, &rect);
+    let content = theme.tokens.colors.surfaces.content;
+    let shared_edge = match region {
+        Region::Content => None,
+        Region::Sidebar => Some(rect.x1.round() - 1.0),
+        Region::Inspector => Some(rect.x0.round()),
+    };
+    if let Some(x) = shared_edge
+        && region_needs_edge(ground, content)
+    {
+        let rule = Rect::new(x, rect.y0, x + 1.0, rect.y1);
+        scene.fill(Fill::NonZero, transform, edge_on(ground), None, &rule);
     }
+    ground
+}
+
+/// Whether a region tier is too close to the content ground to separate
+/// from it by tone alone.
+#[must_use]
+pub fn region_needs_edge(ground: Color, content: Color) -> bool {
+    let l = |c: Color| f64::from(crate::color::Oklch::from_color(c).l);
+    (l(ground) - l(content)).abs() < crate::tokens::colors::REGION_MIN_STEP
 }
 
 /// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the
@@ -669,22 +679,23 @@ pub fn card_on(
 }
 
 /// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
-/// the theme's [`crate::chrome::panel_ground`] fill with the
-/// [`crate::chrome::panel_border`] edge on a crisp inset outline — HIG §9.5's
-/// Panel row, so an app never spells the fill + stroke pair itself. Rows
-/// inside it use [`separator`] with an `s3` inset and
-/// [`crate::chrome::selection_tier_on`] against the panel ground.
+/// the floating material ([`crate::floating_surface::Material::Floating`],
+/// the blurred backdrop under a panel-ground tint, opaque where blur is
+/// unavailable) with the [`crate::chrome::panel_border`] edge on a crisp
+/// inset outline — HIG §9.5's Panel row, so an app never spells the fill +
+/// stroke pair itself. Rows inside it use [`separator`] with an `s3` inset
+/// and [`crate::chrome::selection_tier_on`] against the panel ground.
 pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    scene.fill(
-        Fill::NonZero,
+    crate::floating_surface::paint_material(
+        scene,
         transform,
-        crate::chrome::panel_ground(theme),
-        None,
         &RoundedRect::from_rect(rect, radius),
+        crate::floating_surface::Material::Floating,
+        theme,
     );
     scene.stroke(
         &Stroke::new(1.0),
@@ -692,6 +703,36 @@ pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, them
         crate::chrome::panel_border(theme),
         None,
         &edge_outline(rect, radius),
+    );
+    floating_edge(scene, transform, rect, radius, theme);
+}
+
+/// The 1 px light edge a floating surface carries just inside its outline
+/// on a dark material ([`crate::tokens::Elevation::floating_edge`]); nothing
+/// on a light one. Paint it after the surface's body and border, at the
+/// surface's own radius: the edge's radius is concentric with it.
+pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let edge = theme.tokens.elevation.floating_edge;
+    if edge.a() == 0 {
+        return;
+    }
+    const INSET: f64 = 1.5;
+    let inner = snap(rect).inset(-INSET);
+    if inner.width() <= 0.0 || inner.height() <= 0.0 {
+        return;
+    }
+    let radii = &theme.tokens.radii;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a corner radius in logical pixels; f32 holds it exactly at UI scales"
+    )]
+    let inner_radius = radii.concentric(radius as f32, INSET as f32);
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge,
+        None,
+        &RoundedRect::from_rect(inner, f64::from(inner_radius)),
     );
 }
 
@@ -784,7 +825,7 @@ mod tests {
             // A 16 % accent wash over the light panel is still a light surface.
             for theme in [Theme::light(), Theme::dark()] {
                 let ground = theme.tokens.colors.surfaces.raised;
-                let wash = theme.accent_primary.with_alpha(0.16);
+                let wash = theme.tokens.colors.text_primary.with_alpha(0.16);
                 let seen = crate::tokens::colors::composite(wash, ground);
                 let derived = edge_on(seen);
                 assert!(
@@ -881,36 +922,30 @@ mod tests {
             assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
         }
 
-        // Case `chip_colors_selected_is_solid_accent_no_border`.
-        {
-            let theme = Theme::dark();
-            let (fill, border) = chip_colors(&theme, true);
-            assert_eq!(fill, theme.tokens.colors.accent[5]);
-            assert!(border.is_none(), "selected chip has no border");
-            let (fill_idle, border_idle) = chip_colors(&theme, false);
-            assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
-            assert!(border_idle.is_some(), "idle chip has a border");
-        }
-
-        // Case `chip_colors_quiet_edge_registers_on_every_preset`:
+        // Case `quiet_chip_edge_registers_on_every_preset`:
         // The quiet chip's edge is derived from its own fill, so it registers
         // on every preset — the declared `border_standard` it replaces measured
         // under the visibility floor on the dark preset's raised surface.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let (fill, border) = chip_colors(&theme, false);
-                let edge = border.expect("quiet chip has an edge");
+                let quiet = crate::widget::ChipStyle::Neutral.colors(
+                    &theme,
+                    theme.tokens.colors.surfaces.content,
+                    false,
+                    false,
+                );
+                let edge = quiet.edge.expect("quiet chip has an edge");
                 assert_eq!(
                     edge,
-                    edge_on(fill),
+                    edge_on(quiet.fill),
                     "{}: edge derives from the fill",
                     theme.name
                 );
                 assert!(
-                    edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    edge_delta(edge, quiet.fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
                     "{}: quiet chip edge moved only {:.4}",
                     theme.name,
-                    edge_delta(edge, fill)
+                    edge_delta(edge, quiet.fill)
                 );
             }
         }

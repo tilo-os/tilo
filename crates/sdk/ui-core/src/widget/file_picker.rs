@@ -31,10 +31,11 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::{Metrics, Spacing};
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -839,13 +840,13 @@ impl FilePicker {
     /// the painted glyphs — and stay matched when an event handler rebuilds
     /// the layout without a renderer. Runs once per paint.
     fn measure_crumbs(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {
-        let size = theme.tokens.typography.scale.sm;
+        let style = theme.text(TextRole::Caption);
         let labels: Vec<String> = (0..self.crumb_rects.len())
             .filter_map(|idx| self.crumb_label_for(idx))
             .collect();
         let mut changed = false;
         for label in labels {
-            let (tw, _) = text_renderer.measure(&label, size, None);
+            let (tw, _) = text_renderer.measure_style(&label, None, &style);
             let measured = f64::from(tw);
             if self.crumb_widths.get(&label) != Some(&measured) {
                 self.crumb_widths.insert(label, measured);
@@ -1102,7 +1103,7 @@ impl Widget for FilePicker {
         self.apply_layout_helper();
         self.measure_crumbs(text_renderer, theme);
         let tokens = &theme.tokens;
-        let radius = f64::from(tokens.radii.md);
+        let radius = f64::from(tokens.radii.control);
         let frame = RoundedRect::from_rect(self.rect, radius);
         // Panel role (HIG §9.1): panel ground + the derived panel edge as
         // a crisp 1 px inset stroke; the declared `border_standard` sat
@@ -1407,26 +1408,32 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
-        text_renderer.draw_text(
+        let title_style = tokens.typography.style(TextRole::Body);
+        text_renderer.draw_style(
             scene,
             &self.title,
-            title_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
                 self.rect.x0 + PADDING,
                 self.rect.y0 + self.metrics.header_inset_y,
             )),
             None,
+            &title_style,
         );
         if self.can_go_up() {
             let up_hovered = self.up_rect.contains(self.last_cursor);
             if up_hovered {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
-                scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &s);
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    tokens.colors.intent.selection_hover,
+                    None,
+                    &s,
+                );
             }
             if self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -1447,24 +1454,24 @@ impl FilePicker {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
         }
-        let crumb_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let crumb_style = tokens.typography.style(TextRole::Caption);
         let crumb_count = self.crumb_rects.len();
         for (idx, (_target, r)) in self.crumb_rects.iter().enumerate() {
             let label = self.crumb_label_for(idx).unwrap_or_default();
             let hovered = r.contains(self.last_cursor);
             let color = if hovered {
-                theme.accent_primary
+                tokens.colors.text_primary
             } else {
                 tokens.colors.text_dim
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                crumb_size,
                 color,
                 transform
                     .pre_translate(Vec2::new(r.x0 + self.metrics.crumb_label_inset, r.y0 + 2.0)),
                 None,
+                &crumb_style,
             );
             if idx.saturating_add(1) < crumb_count {
                 let sep_rect = Rect::new(
@@ -1495,7 +1502,7 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let row_style = tokens.typography.style(TextRole::Caption);
         for (i, rect) in &self.entry_rows {
             let i = *i;
             let is_selected = self.selection.is_selected(i);
@@ -1508,7 +1515,7 @@ impl FilePicker {
             // fill was invisible on the old `raised` panel and read as a
             // stack of bands once the panel took its own ground.
             let bg = if is_selected {
-                Some(tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX])
+                Some(tokens.colors.lift_on(tokens.colors.surfaces.overlay, 1.0))
             } else if is_hover {
                 Some(crate::tokens::Colors::hairline_on(
                     crate::chrome::panel_ground(theme),
@@ -1517,7 +1524,7 @@ impl FilePicker {
             } else {
                 None
             };
-            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
+            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.detail));
             if let Some(bg) = bg {
                 scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
             }
@@ -1539,13 +1546,7 @@ impl FilePicker {
             }
 
             if let Some(entry) = self.entries.get(i) {
-                let fg = if is_selected {
-                    tokens
-                        .colors
-                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-                } else {
-                    tokens.colors.text_primary
-                };
+                let fg = tokens.colors.text_primary;
                 let inset_x = self.metrics.inset_x;
                 let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
                 let icon_rect = Rect::new(
@@ -1564,17 +1565,17 @@ impl FilePicker {
                 );
                 // Centre on the measured line, not the font size, so the
                 // name shares the icon's vertical centre.
-                let (_, name_h) = text_renderer.measure(&entry.name, row_size, None);
-                text_renderer.draw_text(
+                let (_, name_h) = text_renderer.measure_style(&entry.name, None, &row_style);
+                text_renderer.draw_style(
                     scene,
                     &entry.name,
-                    row_size,
                     fg,
                     transform.pre_translate(Vec2::new(
                         rect.x0 + inset_x + ROW_ICON_PX + inset_x,
                         rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
                     )),
                     None,
+                    &row_style,
                 );
             }
         }
@@ -1590,28 +1591,22 @@ impl FilePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let row_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let row_style = tokens.typography.style(TextRole::Body);
         if self.mode == FilePickerMode::Save {
-            self.draw_filename_field(scene, transform, text_renderer, theme, row_size);
+            self.draw_filename_field(scene, transform, text_renderer, theme, &row_style);
         }
         if self.mode != FilePickerMode::Directory && self.filters.len() > 1 {
-            self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
+            self.draw_filter_chip(scene, transform, text_renderer, theme, &row_style);
         }
 
-        let cancel = footer_button(text_renderer, theme, self.cancel_rect, "Cancel", false)
+        let cancel = footer_button(self.cancel_rect, "Cancel", false)
             .hovered(self.hover_button == Some(0))
             .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
-        let confirm = footer_button(
-            text_renderer,
-            theme,
-            self.open_rect,
-            self.confirm_label(),
-            true,
-        )
-        .hovered(self.hover_button == Some(1))
-        .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
-        .disabled(!self.can_commit_open());
+        let confirm = footer_button(self.open_rect, self.confirm_label(), true)
+            .hovered(self.hover_button == Some(1))
+            .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
+            .disabled(!self.can_commit_open());
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
     }
 
@@ -1623,11 +1618,11 @@ impl FilePicker {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row_size: f32,
+        row_style: &TextStyle,
     ) {
         let tokens = &theme.tokens;
         let field = self.filename_rect;
-        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
+        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.detail));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1668,17 +1663,17 @@ impl FilePicker {
             tokens.colors.text_primary
         };
         // Centre on the measured line, not the font size.
-        let (_, shown_h) = text_renderer.measure(shown, row_size, None);
-        text_renderer.draw_text(
+        let (_, shown_h) = text_renderer.measure_style(shown, None, row_style);
+        text_renderer.draw_style(
             scene,
             shown,
-            row_size,
             color,
             transform.pre_translate(Vec2::new(
                 field.x0 + self.metrics.inset_x,
                 field.y0 + (field.height() - f64::from(shown_h)) / 2.0,
             )),
             None,
+            row_style,
         );
     }
 
@@ -1691,15 +1686,15 @@ impl FilePicker {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        row_size: f32,
+        row_style: &TextStyle,
     ) {
         let tokens = &theme.tokens;
         let hovered = self.filter_rect.contains(self.last_cursor);
-        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
+        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.detail));
         let fill = if hovered {
-            theme.bg_hover
+            tokens.colors.lift_on(tokens.colors.surfaces.raised, 0.5)
         } else {
-            tokens.colors.surfaces.base
+            tokens.colors.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, fill, None, &s);
         // Rest edge derived from the face actually painted (HIG §9.5).
@@ -1720,17 +1715,18 @@ impl FilePicker {
             );
         }
         // Centre on the measured line, not the font size.
-        let (_, filter_h) = text_renderer.measure(self.active_filter_label(), row_size, None);
-        text_renderer.draw_text(
+        let (_, filter_h) =
+            text_renderer.measure_style(self.active_filter_label(), None, row_style);
+        text_renderer.draw_style(
             scene,
             self.active_filter_label(),
-            row_size,
             tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(
                 self.filter_rect.x0 + self.metrics.inset_x,
                 self.filter_rect.y0 + (self.filter_rect.height() - f64::from(filter_h)) / 2.0,
             )),
             None,
+            row_style,
         );
     }
 
@@ -1964,25 +1960,12 @@ impl FilePicker {
 /// A footer button in the canonical immediate-mode button face, so the
 /// picker footer stays visually locked to the retained widget and every
 /// converted app. Callers add the hover, focus and disabled state.
-fn footer_button<'a>(
-    text_renderer: &TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    label: &'a str,
-    is_primary: bool,
-) -> crate::widget::ButtonFace<'a> {
-    crate::widget::ButtonFace::new(rect, label)
-        .radius(f64::from(theme.tokens.radii.md))
-        .text_size(renderer_type_size(
-            text_renderer,
-            theme.tokens.typography.scale.sm,
-        ))
-        .weight(crate::text_render::TextWeight::Regular)
-        .style(if is_primary {
-            crate::widget::ButtonStyle::Primary
-        } else {
-            crate::widget::ButtonStyle::Neutral
-        })
+fn footer_button(rect: Rect, label: &str, is_primary: bool) -> crate::widget::ButtonFace<'_> {
+    crate::widget::ButtonFace::new(rect, label).role(if is_primary {
+        ButtonRole::Primary
+    } else {
+        ButtonRole::Secondary
+    })
 }
 
 #[cfg(test)]

@@ -111,7 +111,7 @@ impl Widget for FormPage {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_app,
+            theme.tokens.colors.surfaces.content,
             None,
             &self.parts.rect,
         );

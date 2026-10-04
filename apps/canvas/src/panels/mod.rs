@@ -45,7 +45,7 @@ pub(crate) fn icon_button(
 ) -> Button {
     cx.button("", invoke)
         .with_icon(icon)
-        .ghost()
+        .role(ui::widget::ButtonRole::Plain)
         .with_accessible_name(name)
         .tooltip(name)
         .with_size(ICON_BUTTON, ICON_BUTTON)

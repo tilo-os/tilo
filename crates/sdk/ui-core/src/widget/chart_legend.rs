@@ -1,6 +1,106 @@
 //! Shared responsive legend layout for comparative charts.
+//!
+//! [`measure`], [`wrap`] and [`paint_entry`] lay out and paint a legend
+//! from the theme: each entry is a series swatch and its `Caption` label,
+//! measured by the renderer so long labels never overlap. [`layout`] is the
+//! older renderer-free estimate.
 
-use vello::kurbo::Rect;
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::peniko::{Color, Fill};
+
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::tokens::TextRole;
+
+/// One measured legend entry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LegendEntry {
+    pub width: f64,
+    pub height: f64,
+}
+
+fn swatch(theme: &Theme) -> (f64, f64) {
+    let spacing = &theme.tokens.spacing;
+    (f64::from(spacing.s2), f64::from(spacing.s2))
+}
+
+/// Measure each label as an entry: swatch, gap, label; one `Caption` line
+/// plus a tight step tall.
+pub fn measure<'a>(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> Vec<LegendEntry> {
+    let style = theme.text(TextRole::Caption);
+    let (dot, gap) = swatch(theme);
+    let line = f64::from(text.measure_style("Ag", None, &style).1);
+    let height = (line + f64::from(theme.tokens.spacing.rhythm.tight)).ceil();
+    labels
+        .into_iter()
+        .map(|label| LegendEntry {
+            width: (dot + gap + f64::from(text.measure_style(label, None, &style).0)).ceil(),
+            height,
+        })
+        .collect()
+}
+
+/// Place measured entries left to right from `top`, wrapping before
+/// `right`, a section step apart. An entry wider than the space is clamped
+/// to it (its label elides when painted).
+pub fn wrap(entries: &[LegendEntry], left: f64, right: f64, top: f64, theme: &Theme) -> Vec<Rect> {
+    let gap = f64::from(theme.tokens.spacing.rhythm.section);
+    let available = (right - left).max(1.0);
+    let mut x = left;
+    let mut y = top;
+    entries
+        .iter()
+        .map(|entry| {
+            let width = entry.width.min(available);
+            if x > left && x + width > right {
+                x = left;
+                y += entry.height;
+            }
+            let rect = Rect::new(x, y, x + width, y + entry.height);
+            x += width + gap;
+            rect
+        })
+        .collect()
+}
+
+/// Paint one entry into `rect`: the series swatch, then its label in
+/// secondary ink, elided to the rect.
+pub fn paint_entry(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    colour: Color,
+    label: &str,
+) {
+    let style = theme.text(TextRole::Caption);
+    let (dot, gap) = swatch(theme);
+    let cy = rect.center().y;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colour,
+        None,
+        &Circle::new(Point::new(rect.x0 + dot / 2.0, cy), dot / 2.0),
+    );
+    let room = crate::num::f32_of_f64((rect.width() - dot - gap).max(0.0));
+    let label = text.elide_to_width_style(label, room, &style);
+    let h = f64::from(text.measure_style(&label, None, &style).1);
+    text.draw_style(
+        scene,
+        &label,
+        theme.text_dim,
+        transform * Affine::translate((rect.x0 + dot + gap, cy - h / 2.0)),
+        None,
+        &style,
+    );
+}
 
 pub const ROW_HEIGHT: f64 = 24.0;
 const SWATCH_AND_GAP: f64 = 22.0;

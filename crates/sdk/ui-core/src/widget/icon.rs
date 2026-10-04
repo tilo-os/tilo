@@ -68,7 +68,7 @@ impl IconWidget {
     }
 
     /// Resolve the glyph through the active theme's primary accent. Prefer
-    /// this over capturing `Theme::dark().accent_primary` at construction so
+    /// this over capturing `Theme::dark().tokens.colors.intent.inverted` at construction so
     /// light, custom, and high-contrast themes remain truthful.
     #[must_use]
     pub fn accent(mut self) -> Self {
@@ -90,7 +90,7 @@ impl IconWidget {
         match self.tint {
             Tint::Primary => theme.text_primary,
             Tint::Dim => theme.text_dim,
-            Tint::Accent => theme.accent_primary,
+            Tint::Accent => theme.tokens.colors.intent.inverted,
             Tint::Fixed(c) => c,
         }
     }

@@ -15,15 +15,6 @@ use crate::theme::Theme;
 use crate::tokens::Colors;
 use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
-/// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
-/// surface — kept opaque because nothing here can blur a *backdrop* (vello
-/// only blurs shapes), so translucency is just contrast loss that varies
-/// with what's behind it: on the light palette the quick-settings panel
-/// measured `#ffffff` over a window and `#f7f7f7` over the desktop, one
-/// surface reading as two colours. Depth instead comes from the modal
-/// scrim, [`panel_ground`]/[`panel_border`], and the `e4` shadow.
-pub const CHROME_SURFACE_ALPHA: f32 = 1.0;
-
 /// Alpha of the hairline that gives a lifted control a defined edge.
 pub const HAIRLINE_ALPHA: u8 = 26;
 
@@ -82,22 +73,23 @@ impl ChromeRole {
         let radii = &theme.tokens.radii;
         match self {
             ChromeRole::Bar => 0.0,
-            ChromeRole::Panel | ChromeRole::Object => f64::from(radii.xl),
-            ChromeRole::Control => f64::from(radii.lg),
+            ChromeRole::Panel => f64::from(radii.panel),
+            ChromeRole::Object => f64::from(radii.tile),
+            ChromeRole::Control => f64::from(radii.control),
             ChromeRole::Selector => (height / 2.0).max(0.0),
         }
     }
 
-    /// Surface colour at chrome opacity where the role is translucent.
-    /// Reads the *semantic* surface tokens, never a ramp slot, so it
-    /// survives a theme whose author never saw this code.
+    /// The role's opaque surface colour. Reads the *semantic* surface
+    /// tokens, never a ramp slot, so it survives a theme whose author never
+    /// saw this code. A Panel's body is painted in the floating material
+    /// ([`crate::floating_surface::paint_material`]); this is the colour
+    /// that material tints with, and what it is where blur is unavailable.
     pub fn surface(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match self {
-            ChromeRole::Bar | ChromeRole::Panel => {
-                panel_ground(theme).with_alpha_factor(CHROME_SURFACE_ALPHA)
-            }
-            ChromeRole::Object => colors.surfaces.window_card,
+            ChromeRole::Bar | ChromeRole::Panel => panel_ground(theme),
+            ChromeRole::Object => colors.surfaces.content,
             // Body is state: see `selection_tier`.
             ChromeRole::Control | ChromeRole::Selector => Color::TRANSPARENT,
         }
@@ -184,28 +176,31 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
     }
 }
 
-/// Alpha ladder a lift walks when the base lift does not register on the
-/// ground a control actually sits on. The first step is the control
-/// hairline; the ladder only climbs where the ground is itself a wash of
-/// the same magnitude (a dark `panel_ground`, a near-black high-contrast
-/// base).
-pub const LIFT_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92, 120, 150];
+/// Smallest OKLCH lightness step between a selected row and the ground it
+/// stands on for the selection to read. Lightness, not relative
+/// luminance: luminance compresses at the dark end, where a perfectly
+/// visible step measures under a light-theme threshold.
+pub const SELECTION_MIN_STEP: f32 = 0.06;
+
+/// Where the rest face of a control with its own floor sits on the ramp
+/// [`selection_floor_ramp`] walks from the ground.
+pub const FLOOR_IDLE_T: f32 = 0.35;
+/// Where its hovered face sits.
+pub const FLOOR_HOVER_T: f32 = 0.65;
 
 /// [`selection_tier`] for a control that sits on `ground` rather than on
-/// `surfaces.base` — a menu row on [`panel_ground`], a list row on a
-/// raised sidebar, a card on a sheet. The lift is measured against that
-/// ground: the base lift is kept where it registers there, so every chosen
-/// control stays in one family, and otherwise the tier walks
-/// [`LIFT_ALPHA_STEPS`] until it does. Hover is halfway from the ground to
-/// the active fill, as it is on the base.
+/// `surfaces.base`: a list row on a sidebar, a menu row on
+/// [`panel_ground`], a card on a sheet. The active fill is one surface
+/// step of that ground ([`Colors::lift_on`]) and hover is half a step, so
+/// a selection is the same lift on every ground, including a raised or
+/// white one where a lift of the desktop would vanish into it.
 pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let lifted = state.active || state.pressed;
-    let active = lift_on(colors, ground);
     let fill = if lifted {
-        active
+        colors.lift_on(ground, 1.0)
     } else if state.hover {
-        crate::tokens::colors::mix8(ground, active, HOVER_LIFT_T)
+        colors.lift_on(ground, HOVER_LIFT_T)
     } else {
         Color::TRANSPARENT
     };
@@ -217,24 +212,56 @@ pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) ->
     }
 }
 
-/// The active-tier fill on `ground`: `Colors::lift(1.0)` where that clears
-/// the ground by the hairline threshold, else the first ladder step that does.
-fn lift_on(colors: &Colors, ground: Color) -> Color {
-    use crate::a11y::relative_luminance;
-    let registers =
-        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs() >= HAIRLINE_MIN_DELTA;
-    let base_lift = colors.lift(1.0);
-    if registers(base_lift) {
-        return base_lift;
+/// Paint the selection of one row of a list: the hover or active lift of
+/// `ground` ([`selection_tier_on`]) on `rect` with the item radius
+/// (`radii.item`), and nothing for an idle row. A row is a lift with
+/// primary ink and nothing else: no hue, no border, no leading bar.
+///
+/// The caller passes the row already inset from the list's edges (the
+/// list's `s2` inset); `NavList`, `TreeView` and [`super::paint_nav_row`]
+/// all paint through here, and a painted app's own rows do too.
+pub fn paint_row_selection(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    state: SelectionState,
+    ground: Color,
+    theme: &Theme,
+) {
+    if !(state.active || state.pressed || state.hover) || rect.width() <= 0.0 {
+        return;
     }
-    let mut last = base_lift;
-    for alpha in LIFT_ALPHA_STEPS {
-        last = crate::tokens::colors::composite(Colors::hairline_on(ground, *alpha), ground);
-        if registers(last) {
-            return last;
-        }
-    }
-    last
+    let fill = selection_tier_on(theme, state, ground).fill;
+    let radius = f64::from(theme.tokens.radii.item).min(rect.height() / 2.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+}
+
+/// The face of a control that has its own floor (a filled rest face rather
+/// than a transparent one), for `state`, standing on `ground`: one ordered
+/// ramp from the ground, so rest, hover and active are each further from
+/// the ground than the last on every material, and no state mixes a floor
+/// with the transparent tier.
+pub fn selection_floor_ramp(theme: &Theme, state: SelectionState, ground: Color) -> Color {
+    let t = if state.active || state.pressed {
+        1.0
+    } else if state.hover {
+        FLOOR_HOVER_T
+    } else {
+        FLOOR_IDLE_T
+    };
+    theme.tokens.colors.lift_on(ground, t)
+}
+
+/// OKLCH lightness distance between two colours.
+pub fn lightness_step(a: Color, b: Color) -> f32 {
+    use crate::color::Oklch;
+    (Oklch::from_color(a).l - Oklch::from_color(b).l).abs()
 }
 
 // ---------- glass ----------
@@ -298,7 +325,7 @@ pub fn glass_selector(theme: &Theme, state: SelectionState) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let ground = colors.surfaces.base;
     let lifted = state.active || state.pressed;
-    let film = theme.material_film();
+    let film = colors.glass_film();
     let alpha = if lifted {
         GLASS_ACTIVE_ALPHA
     } else if state.hover {
@@ -493,7 +520,7 @@ pub fn panel_ground(theme: &Theme) -> Color {
     let colors = &theme.tokens.colors;
     let base = colors.surfaces.base;
     let declared = colors.surfaces.overlay;
-    let grounds = [base, colors.surfaces.window_card];
+    let grounds = [base, colors.surfaces.content];
     let clears = |c: Color| {
         grounds
             .iter()
@@ -546,7 +573,7 @@ pub fn panel_shadow(
     if intensity <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let e = &theme.tokens.elevation.e4;
+    let e = &theme.tokens.elevation.floating;
     // The visible falloff ends about 2.5 standard deviations out; the ring
     // is given a little more than that so nothing is clipped mid-ramp.
     let reach = crate::surface::std_dev_for(e.blur) * 3.0 + f64::from(e.offset_y);
@@ -846,24 +873,24 @@ mod tests {
     #[test]
     fn selection_tiers_register_progressively_without_the_accent() {
         // Case `selection_tier_on_registers_on_every_ground_it_is_asked_about`:
-        // Per theme: a fixed white wash would pass this on dark and fail on
-        // light.
+        // per theme and per ground a list can stand on, the active lift is a
+        // visible lightness step and hover sits between it and the ground. A
+        // fixed white wash would pass on dark and vanish on a white well.
         {
-            use crate::a11y::relative_luminance;
-            for (name, theme) in [
-                ("dark", Theme::dark()),
-                ("light", Theme::light()),
-                ("high-contrast", Theme::high_contrast()),
-            ] {
+            for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let name = theme.name.clone();
                 let colors = &theme.tokens.colors;
                 let grounds = [
                     ("base", colors.surfaces.base),
+                    ("content", colors.surfaces.content),
+                    ("sidebar", colors.surfaces.sidebar),
+                    ("inspector", colors.surfaces.inspector),
                     ("raised", colors.surfaces.raised),
                     ("panel_ground", panel_ground(&theme)),
+                    ("white", Color::WHITE),
+                    ("black", Color::BLACK),
                 ];
                 for (ground_name, ground) in grounds {
-                    let delta =
-                        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
                     let active =
                         selection_tier_on(&theme, SelectionState::active(true), ground).fill;
                     let hover =
@@ -876,24 +903,27 @@ mod tests {
                         idle.components[3], 0.0,
                         "{name}/{ground_name}: idle is transparent"
                     );
+                    let step = lightness_step(active, ground);
                     assert!(
-                        delta(active) >= HAIRLINE_MIN_DELTA,
-                        "{name}/{ground_name}: active lift must register on its ground (Δ {:.4})",
-                        delta(active)
+                        step >= SELECTION_MIN_STEP,
+                        "{name}/{ground_name}: active lift must read on its ground (ΔL {step:.3})"
                     );
+                    // Half a step can round to the ground itself in 8-bit
+                    // sRGB at the black end; it never passes the full step.
+                    let half = lightness_step(hover, ground);
                     assert!(
-                        delta(hover) > 0.0 && delta(hover) < delta(active),
+                        half < step,
                         "{name}/{ground_name}: hover sits between the ground and the active tier"
                     );
-                }
-                // On the base the ground-aware tier is the base tier, so the two
-                // vocabularies agree wherever the shell already uses the latter.
-                let base = colors.surfaces.base;
-                if delta_on(base, colors.lift(1.0)) >= HAIRLINE_MIN_DELTA {
-                    assert_eq!(
-                        selection_tier_on(&theme, SelectionState::active(true), base).fill,
-                        selection_tier(&theme, SelectionState::active(true)).fill,
-                        "{name}: base tier unchanged"
+                    // A floored control's ramp is ordered from the same ground.
+                    let ramp =
+                        |state| lightness_step(selection_floor_ramp(&theme, state, ground), ground);
+                    let rest = ramp(SelectionState::default());
+                    let hovered = ramp(SelectionState::new(false, true, false));
+                    let chosen = ramp(SelectionState::active(true));
+                    assert!(
+                        rest < hovered && hovered < chosen,
+                        "{name}/{ground_name}: floor ramp {rest} {hovered} {chosen}"
                     );
                 }
             }
@@ -936,7 +966,7 @@ mod tests {
         // Case `selection_never_uses_the_accent`.
         {
             for (name, theme) in themes() {
-                let accent = theme.tokens.colors.accent[5];
+                let accent = theme.tokens.colors.intent.inverted;
                 for state in [
                     SelectionState::active(true),
                     SelectionState::new(false, true, false),
@@ -970,11 +1000,6 @@ mod tests {
         }
     }
 
-    fn delta_on(ground: Color, c: Color) -> f64 {
-        use crate::a11y::relative_luminance;
-        (relative_luminance(c) - relative_luminance(ground)).abs()
-    }
-
     #[test]
     fn chrome_radii_and_surfaces_follow_the_theme() {
         // Case `a_selector_is_a_capsule_at_every_height`.
@@ -998,10 +1023,10 @@ mod tests {
             let radii = &theme.tokens.radii;
             let on_scale = [
                 0.0,
-                f64::from(radii.sm),
-                f64::from(radii.md),
-                f64::from(radii.lg),
-                f64::from(radii.xl),
+                f64::from(radii.detail),
+                f64::from(radii.control),
+                f64::from(radii.tile),
+                f64::from(radii.panel),
             ];
             for role in [
                 ChromeRole::Bar,

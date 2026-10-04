@@ -18,6 +18,18 @@ fn invoke(app: &mut TestApp<App>, action: &str, confirm: bool) -> Result<(), Doo
         .map(|_| ())
 }
 
+/// Whether the app now says `fragment` in a notice: its headline or its detail.
+fn says(app: &mut TestApp<App>, fragment: &str, within: Duration) -> bool {
+    app.harness().wait_until(within, |driver| {
+        driver.a11y_nodes().iter().any(|(_, node)| {
+            [node.label(), node.description()]
+                .into_iter()
+                .flatten()
+                .any(|text| text.contains(fragment))
+        })
+    })
+}
+
 /// A home of its own, with no key the developer's environment names.
 #[expect(clippy::expect_used, reason = "a test without its home cannot run")]
 fn home() -> tilo_test_env::TestHome {
@@ -80,9 +92,10 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
     );
 
     invoke(&mut app, "create-key", true).expect("the job starts");
-    app.harness()
-        .expect(&SemanticExpectation::named("notice").name_contains("exists"))
-        .expect("an existing key is never replaced");
+    assert!(
+        says(&mut app, "exists", Duration::from_secs(2)),
+        "an existing key is never replaced"
+    );
     assert_eq!(
         registry_client::key::load(&written)
             .map(|again| again.to_bytes())
@@ -102,27 +115,22 @@ fn applying_reports_what_the_registry_answered() {
         invoke(&mut app, "apply", false).is_ok(),
         "the application starts as a job"
     );
-    app.harness()
-        .wait_for_named("notice", Duration::from_secs(5))
-        .expect("the job reports back");
-    app.harness()
-        .expect(
-            &SemanticExpectation::named("notice").name_contains("name a domain or a forge account"),
-        )
-        .expect("an application with nothing to claim says so");
+    assert!(
+        says(
+            &mut app,
+            "name a domain or a forge account",
+            Duration::from_secs(5)
+        ),
+        "an application with nothing to claim says so"
+    );
 
     app.invoke(Publisher::SET_DOMAIN.with("example.com".into()))
         .expect("domain");
     invoke(&mut app, "apply", false).expect("apply again");
-    app.harness()
-        .wait_until(Duration::from_secs(10), |driver| {
-            driver.a11y_nodes().iter().any(|(_, node)| {
-                node.label()
-                    .is_some_and(|label| label.contains("127.0.0.1:9"))
-            })
-        })
-        .then_some(())
-        .expect("an unreachable registry is named in the notice");
+    assert!(
+        says(&mut app, "127.0.0.1:9", Duration::from_secs(10)),
+        "an unreachable registry is named in the notice"
+    );
 }
 
 #[test]

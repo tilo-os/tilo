@@ -39,6 +39,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
+use ui::TextRole;
 use ui::a11y::Politeness;
 use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
@@ -57,6 +58,7 @@ pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
 use crate::auth::{AuthUpdate, spawn_auth};
 use crate::local_users::{LoginUser, discover_default_login_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
+use ui::widget::ButtonRole;
 
 const USERNAME_PATH: &str = "greeter.username";
 const SUBMIT_PATH: &str = "greeter.submit";
@@ -84,10 +86,6 @@ const CARD_PADDING: f32 = 24.0;
 /// Gap between a field's label and the field itself. Tight enough that the
 /// pair reads as one unit rather than two stacked rows.
 const LABEL_GAP: f32 = 7.0;
-/// Height of the primary action.
-const ACTION_HEIGHT: f32 = 44.0;
-/// Full-size power targets remain secondary through their ghost treatment.
-const POWER_HEIGHT: f32 = 44.0;
 /// The status row is reserved at this height in *every* state, so a message
 /// appearing — or a spinner replacing it — never resizes the card. Without
 /// the reservation the whole form jumps vertically the moment you get your
@@ -343,7 +341,7 @@ impl Widget for VStack {
     ) {
         if self.chrome {
             let tokens = &theme.tokens;
-            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.xl));
+            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.panel));
             let ground = ui::chrome::shell::panel_ground(theme);
             // Credentials sit on one opaque, quiet surface. Its derived edge
             // separates it from the moving backdrop without a heavy shadow.
@@ -353,11 +351,7 @@ impl Widget for VStack {
                 transform,
                 ui::tokens::Colors::hairline_on(
                     ground,
-                    if theme.name == "High Contrast" {
-                        180
-                    } else {
-                        26
-                    },
+                    if theme.colors_are_forced() { 180 } else { 26 },
                 ),
                 None,
                 &shape,
@@ -946,7 +940,7 @@ impl GreeterApp {
     /// names never competes with the value inside it.
     fn field_label(text: &str, theme: &Theme) -> Text {
         Text::new(text)
-            .with_size(12.0)
+            .with_role(TextRole::Caption)
             .with_color(theme.tokens.colors.text_dim)
     }
 
@@ -1001,7 +995,7 @@ impl GreeterApp {
                             .push(Box::new(Spinner::with_size(16.0)))
                             .push(Box::new(
                                 Text::new(live)
-                                    .with_size(13.0)
+                                    .with_role(TextRole::Body)
                                     .with_color(tint)
                                     .with_live(politeness),
                             )),
@@ -1012,7 +1006,7 @@ impl GreeterApp {
                 StatusKind::None => {}
                 StatusKind::Hint => rows.push(Box::new(
                     Text::new(&self.status)
-                        .with_size(13.0)
+                        .with_role(TextRole::Body)
                         .with_color(c.text_dim)
                         .with_live(Politeness::Assertive),
                 )),
@@ -1024,7 +1018,7 @@ impl GreeterApp {
                             ))
                             .push(Box::new(
                                 Text::new(&self.status)
-                                    .with_size(13.0)
+                                    .with_role(TextRole::Body)
                                     .with_color(c.semantic.danger)
                                     .with_live(Politeness::Assertive),
                             )),
@@ -1032,7 +1026,7 @@ impl GreeterApp {
                     if !self.detail.is_empty() {
                         rows.push(Box::new(
                             Text::new(&self.detail)
-                                .with_size(11.0)
+                                .with_role(TextRole::Caption)
                                 .with_color(c.text_tertiary),
                         ));
                     }
@@ -1046,8 +1040,8 @@ impl GreeterApp {
     fn build_auth_actions(&self, busy: bool, theme: &Theme) -> VStack {
         let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
             Button::new("greeter.login", self.login_label(), Some(SUBMIT_PATH))
-                .primary()
-                .fill_width(ACTION_HEIGHT),
+                .role(ButtonRole::Primary)
+                .fill_width(),
         )];
         // Once an attempt is running this action is inert and the live PAM
         // prompt is the information the person needs. Removing the disabled
@@ -1060,7 +1054,7 @@ impl GreeterApp {
                     "Use fingerprint",
                     Some(FINGERPRINT_PATH),
                 )
-                .fill_width(ACTION_HEIGHT),
+                .fill_width(),
             ));
         }
         actions.push(Box::new(self.build_status(theme)));
@@ -1083,7 +1077,7 @@ impl GreeterApp {
                     Box::new(
                         Text::new(&user.username)
                             .with_id("greeter.account")
-                            .with_size(15.0),
+                            .with_role(TextRole::Body),
                     ),
                 ],
             ))
@@ -1132,7 +1126,7 @@ impl GreeterApp {
                 identity.push(Box::new(
                     Text::new("Tilo")
                         .with_heading_level(1)
-                        .with_fixed_size(theme.tokens.typography.scale.x2l),
+                        .with_role(TextRole::LargeTitle),
                 ));
             }
             return Box::new(VStack::new(theme.tokens.spacing.s1, identity));
@@ -1142,11 +1136,11 @@ impl GreeterApp {
             let caption = if compact_for_large_text {
                 Text::new(&user.username)
                     .with_id("greeter.account")
-                    .with_size(13.0)
+                    .with_role(TextRole::Body)
                     .with_color(c.text_dim)
             } else {
                 Text::new("greeter-passcode-intro")
-                    .with_size(13.0)
+                    .with_role(TextRole::Body)
                     .with_color(c.text_dim)
             };
             // Keep the person's name as one intentional headline. Prefixing it
@@ -1157,9 +1151,9 @@ impl GreeterApp {
                 .with_id("greeter.welcome")
                 .with_heading_level(1);
             let welcome = if wide {
-                welcome.with_fixed_size(theme.tokens.typography.scale.x4l)
+                welcome.with_role(TextRole::Display)
             } else {
-                welcome.with_size(28.0)
+                welcome.with_role(TextRole::LargeTitle)
             };
             Box::new(VStack::new(
                 BRAND_GAP,
@@ -1174,19 +1168,16 @@ impl GreeterApp {
                 ],
             ))
         } else {
-            let wordmark = Text::new("Tilo").with_heading_level(1);
-            let wordmark = if wide {
-                wordmark.with_fixed_size(theme.tokens.typography.scale.x4l * 2.0)
-            } else {
-                wordmark.with_size(38.0)
-            };
+            let wordmark = Text::new("Tilo")
+                .with_heading_level(1)
+                .with_role(TextRole::Display);
             Box::new(VStack::new(
                 BRAND_GAP,
                 vec![
                     Box::new(wordmark),
                     Box::new(
                         Text::new("greeter-sign-in")
-                            .with_size(13.0)
+                            .with_role(TextRole::Body)
                             .with_color(c.text_dim),
                     ),
                 ],
@@ -1273,7 +1264,7 @@ impl GreeterApp {
                     ))
                     .push(Box::new(
                         Text::new("Caps Lock is on")
-                            .with_size(12.0)
+                            .with_role(TextRole::Caption)
                             .with_color(c.semantic.warning),
                     )),
             ));
@@ -1364,17 +1355,13 @@ impl GreeterApp {
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     Button::new("greeter.reboot", "Restart", Some(REBOOT_PATH))
-                        .ghost()
-                        .with_icon(Icon::Refresh)
-                        .content_sized()
-                        .with_min_height(POWER_HEIGHT),
+                        .role(ButtonRole::Plain)
+                        .with_icon(Icon::Refresh),
                 ))
                 .push(Box::new(
                     Button::new("greeter.poweroff", "Shut down", Some(POWEROFF_PATH))
-                        .ghost()
-                        .with_icon(Icon::Power)
-                        .content_sized()
-                        .with_min_height(POWER_HEIGHT),
+                        .role(ButtonRole::Plain)
+                        .with_icon(Icon::Power),
                 )),
         )
     }
@@ -3707,7 +3694,8 @@ mod tests {
         // Footer rectangles alone do not prove that enlarged labels fit: fixed
         // widths let the button painter draw glyphs outside their hit targets.
         {
-            for (viewport, scale, allow_wrap) in [
+            // `footer_wraps`: the narrow 2× footer stacks its two actions.
+            for (viewport, scale, footer_wraps) in [
                 ((320.0, 640.0), 1.0, false),
                 ((640.0, 480.0), 1.3, false),
                 ((640.0, 480.0), 2.0, false),
@@ -3723,28 +3711,33 @@ mod tests {
                 for id in ["greeter.reboot", "greeter.poweroff"] {
                     let rect = rect_for(&app, id).expect("power action");
                     let label = accessible_name_for(&app, id).expect("power label");
-                    // The shared Button paints its label at a 14px base size and
-                    // its 44px target uses a 22px icon with a 6px label gap. Check
+                    // The shared Button paints its label in its control size's
+                    // role and its 44px target uses a 22px icon with a 6px label gap. Check
                     // actual font measurement plus at least 8px breathing room on
                     // each side, independently of Button's intrinsic-width result.
                     #[allow(
                         clippy::cast_possible_truncation,
                         reason = "bounded logical test viewport"
                     )]
-                    let max_width = allow_wrap
-                        .then(|| rect.width() as f32 - theme.padding_standard * 2.0 - 28.0);
-                    let (label_width, label_height) = text.measure(&label, 14.0, max_width);
+                    // A button label stays on one line.
+                    let (label_width, label_height) = text.measure_style(
+                        &label,
+                        None,
+                        &ui::widget::ControlSize::default().label_style(&theme),
+                    );
                     assert!(label_width > 0.0 && label_height > 0.0);
                     assert!(
                         rect.width() >= f64::from(label_width) + 22.0 + 6.0 + 16.0,
                         "{id} at {scale}× cannot contain its painted label and icon: {rect:?}, label={label_width}"
                     );
                     assert!(
-                        rect.height() >= 44.0 && rect.height() >= f64::from(label_height),
+                        rect.height() >= ui::widget::ControlSize::Regular.height(&theme)
+                            && rect.height() >= f64::from(label_height),
                         "{id} at {scale}× needs a complete target and unclipped glyphs: {rect:?}"
                     );
                     assert!(
-                        rect.height() + 0.5 >= f64::from(label_height + theme.padding_standard),
+                        rect.height() + 0.5
+                            >= f64::from(label_height + 2.0 * theme.tokens.spacing.s1),
                         "{id} at {scale}× must reserve vertical label padding: {rect:?}, text={label_height}"
                     );
                     assert!(
@@ -3758,7 +3751,7 @@ mod tests {
                 }
                 let restart = rect_for(&app, "greeter.reboot").unwrap();
                 let shutdown = rect_for(&app, "greeter.poweroff").unwrap();
-                if allow_wrap {
+                if footer_wraps {
                     assert!(
                         restart.x1 <= shutdown.x0
                             || shutdown.x1 <= restart.x0

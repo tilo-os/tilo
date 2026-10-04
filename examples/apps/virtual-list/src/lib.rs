@@ -192,8 +192,7 @@ impl ResourceApp for App {
                     ListRowState::Ready if model.is_loaded(index) => {
                         let label = I18nManager::format("list-row", &[("id", (*key).into())]);
                         let open = actions.bind_invocation(
-                            Button::new(&format!("open-{key}"), "list-open", None)
-                                .fit_content(36.0),
+                            Button::new(&format!("open-{key}"), "list-open", None),
                             Feed::OPEN.with(*key),
                         );
                         Box::new(Container::new().with_height(height).with_child(Box::new(

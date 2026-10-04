@@ -183,6 +183,18 @@ fn duration(p: &Participant) -> f64 {
     VideoDoc::load_project(p.doc()).duration()
 }
 
+/// The colour a participant is drawn in: their identity colour, on the
+/// theme's presence palette (what every peer overlay paints with).
+fn drawn_colour(room: &PresenceCtx, who: &str) -> (u8, u8, u8) {
+    let colour = Theme::dark()
+        .tokens
+        .colors
+        .presence
+        .of_rgb(room.color_for(&UserId(who.to_string())))
+        .to_rgba8();
+    (colour.r, colour.g, colour.b)
+}
+
 /// Rasterise, and count how many pixels carry a colour.
 fn pixels_of_colour(rgba: &[u8], rgb: (u8, u8, u8)) -> usize {
     rgba.chunks_exact(4)
@@ -407,7 +419,7 @@ fn participants_presence_reaches_the_other_screen() {
         let empty_px = r.render(&alone, Color::BLACK);
         let peopled_px = r.render(&together, Color::BLACK);
 
-        let ada_colour = room.color_for(&UserId("ada".to_string()));
+        let ada_colour = drawn_colour(&room, "ada");
         let with = pixels_of_colour(&peopled_px, ada_colour);
         let without = pixels_of_colour(&empty_px, ada_colour);
         assert!(
@@ -521,6 +533,6 @@ fn colour_on_screen(bo: &mut Participant, room: &PresenceCtx, who: &str) -> (usi
     let mut r = OffscreenRenderer::new(W, H);
     let a = r.render(&with, Color::BLACK);
     let b = r.render(&without, Color::BLACK);
-    let colour = room.color_for(&UserId(who.to_string()));
+    let colour = drawn_colour(room, who);
     (pixels_of_colour(&a, colour), pixels_of_colour(&b, colour))
 }

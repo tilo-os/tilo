@@ -181,7 +181,7 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect>
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     table.scrollbar_thumb()
 }

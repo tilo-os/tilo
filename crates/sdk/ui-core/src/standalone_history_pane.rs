@@ -67,12 +67,17 @@ impl StandaloneHistoryPane {
         let summary_source = Rc::clone(&summary_value);
         Self {
             header: Row::new()
+                .with_justify(taffy::JustifyContent::SpaceBetween)
                 .push(Box::new(
                     Text::new("standalone-history-title").with_heading_level(2),
                 ))
                 .push(Box::new(
-                    Button::new("standalone-history-close", "standalone-history-close", None)
-                        .on_view(move || close_intents.borrow_mut().push_back(QueuedIntent::Close)),
+                    Button::icon_only(
+                        "standalone-history-close",
+                        crate::icons::Icon::X,
+                        &crate::i18n::I18nManager::lookup_plain("standalone-history-close"),
+                    )
+                    .on_view(move || close_intents.borrow_mut().push_back(QueuedIntent::Close)),
                 )),
             timeline: ActivityTimeline::new().on_activate_entry(move |id| {
                 activate_intents

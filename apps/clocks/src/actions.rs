@@ -79,7 +79,7 @@ fn op(id: &str, label: &str, value: &ClockOperation) -> ActionSpec {
 }
 
 fn timer_resource(timer: &crate::Timer) -> Resource {
-    let remaining = timer.remaining(chrono::Utc::now()).as_secs();
+    let remaining = timer.remaining(crate::app::now_utc()).as_secs();
     Resource::new(
         format!("clocks.timer:{}", timer.id),
         "clocks.timer",
@@ -87,7 +87,7 @@ fn timer_resource(timer: &crate::Timer) -> Resource {
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {} remaining",
+            "{}, {} remaining",
             if timer.ends_at_utc.is_some() {
                 "Running"
             } else {
@@ -135,9 +135,9 @@ fn alarm_resource(alarm: &crate::Alarm) -> Resource {
     )
     .with_presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {}",
-            alarm.local_time.format("%H:%M"),
-            crate::app::repeat_summary(&alarm.weekdays)
+            "{} at {}",
+            crate::app::repeat_summary(&alarm.weekdays),
+            alarm.local_time.format("%H:%M")
         )),
         badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
         preview: None,
@@ -160,7 +160,7 @@ fn stopwatch_resource(state: &ClockState) -> Resource {
             detail: Some(crate::app::duration(
                 state
                     .stopwatch
-                    .elapsed(chrono::Utc::now())
+                    .elapsed(crate::app::now_utc())
                     .as_millis()
                     .try_into()
                     .unwrap_or(u64::MAX),

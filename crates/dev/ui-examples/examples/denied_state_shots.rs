@@ -22,11 +22,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::permissions::{PermissionContext, PermissionScope, Verb};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
@@ -94,13 +96,13 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     let c = &theme.tokens.colors;
 
     let caption = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, y: f64, s: &str| {
-        tr.draw_text(
+        tr.draw_style(
             scene,
             s,
-            theme.tokens.typography.scale.sm,
             c.text_dim,
             Affine::translate((x, y)),
             None,
+            &theme.text(TextRole::Caption),
         );
     };
     caption(&mut scene, &mut tr, COL_ENABLED, 16.0, "granted");
@@ -114,7 +116,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
 
         // Accent-filled control: white label on the accent.
         let mut primary = Button::new("d_primary", "Publish", None)
-            .primary()
+            .role(ButtonRole::Primary)
             .with_permission_scope(locked());
         stamp(
             &mut scene,
@@ -164,7 +166,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
     }
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     Ok(())
 }

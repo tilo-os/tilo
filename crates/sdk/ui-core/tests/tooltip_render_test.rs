@@ -55,15 +55,15 @@ fn render_case(theme: &Theme, bg: Color, name: &str) {
     let mut buttons = [
         Button::new("search", "", None)
             .with_icon(Icon::Search)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("Search"),
         Button::new("add", "", None)
             .with_icon(Icon::Plus)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("New folder"),
         Button::new("more", "", None)
             .with_icon(Icon::MoreHorizontal)
-            .ghost()
+            .role(tilo_ui::widget::ButtonRole::Plain)
             .tooltip("View options"),
     ];
     for (b, r) in buttons.iter_mut().zip(rects.iter()) {

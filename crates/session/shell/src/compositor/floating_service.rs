@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use launcher::services::SHELL_UI_HANDSHAKE_VERSION;
 use ui::floating_surface::{
-    FLOATING_SURFACE_PROTOCOL_VERSION, FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage,
-    FloatingSurfaceHostMessage,
+    FLOATING_SURFACE_SERVICE, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
 };
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -211,7 +211,7 @@ fn serve_connection(
     let Ok(handshake) = serde_json::from_slice::<LauncherHandshake>(&handshake_frame) else {
         return;
     };
-    if handshake.protocol != FLOATING_SURFACE_PROTOCOL_VERSION
+    if handshake.protocol != SHELL_UI_HANDSHAKE_VERSION
         || handshake.app_id.trim().is_empty()
         || handshake.app_id.len() > 255
     {
@@ -275,6 +275,41 @@ fn serve_connection(
     let _ = events.send(FloatingServiceEvent::Disconnected { connection, app_id });
 }
 
+/// What each authenticated app was last told about where, and for whom,
+/// its window is shown ([`ui::WindowAppearance`]), so it is told again only
+/// when that changes.
+#[derive(Debug, Default)]
+pub struct AppearanceDelivery {
+    told: HashMap<u64, (String, Option<ui::WindowAppearance>)>,
+}
+
+impl AppearanceDelivery {
+    /// `app_id` connected on `connection`; it has been told nothing yet.
+    pub fn connected(&mut self, connection: u64, app_id: &str) {
+        self.told.insert(connection, (app_id.to_owned(), None));
+    }
+
+    pub fn disconnected(&mut self, connection: u64) {
+        self.told.remove(&connection);
+    }
+
+    /// Tell every connection whose window's appearance (`appearance_of` its
+    /// app id) differs from what it was last told.
+    pub fn publish(
+        &mut self,
+        appearance_of: impl Fn(&str) -> ui::WindowAppearance,
+        mut send: impl FnMut(u64, &FloatingSurfaceHostMessage),
+    ) {
+        for (connection, (app_id, told)) in &mut self.told {
+            let now = appearance_of(app_id);
+            if *told != Some(now) {
+                send(*connection, &FloatingSurfaceHostMessage::appearance(&now));
+                *told = Some(now);
+            }
+        }
+    }
+}
+
 fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<u8>>> {
     let mut frame = Vec::new();
     let count = reader.read_until(b'\n', &mut frame)?;
@@ -301,6 +336,89 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn each_app_is_told_its_window_appearance_once_per_change() {
+        use std::cell::Cell;
+        use ui::tokens::PresenceHue;
+
+        let warm = ui::WindowAppearance {
+            workspace_hue: Some(40.0),
+            your_colour: Some(PresenceHue::Teal),
+        };
+        let grey = ui::WindowAppearance {
+            workspace_hue: None,
+            your_colour: Some(PresenceHue::Teal),
+        };
+        let rooms = Cell::new((warm, grey));
+        let appearance_of = |app: &str| {
+            let (notes, files) = rooms.get();
+            if app == "so.tilo.notes" { notes } else { files }
+        };
+        let mut delivery = AppearanceDelivery::default();
+        delivery.connected(1, "so.tilo.notes");
+        delivery.connected(2, "so.tilo.files");
+        let mut sent = Vec::new();
+        delivery.publish(appearance_of, |connection, message| {
+            sent.push((connection, message.window_appearance()));
+        });
+        sent.sort_by_key(|(connection, _)| *connection);
+        assert_eq!(sent, vec![(1, Some(warm)), (2, Some(grey))]);
+
+        sent.clear();
+        delivery.publish(appearance_of, |connection, message| {
+            sent.push((connection, message.window_appearance()));
+        });
+        assert!(sent.is_empty(), "nothing changed, nothing is said");
+
+        rooms.set((grey, grey));
+        delivery.publish(appearance_of, |connection, message| {
+            sent.push((connection, message.window_appearance()));
+        });
+        assert_eq!(sent, vec![(1, Some(grey))], "only the window that moved");
+
+        sent.clear();
+        delivery.disconnected(1);
+        rooms.set((warm, warm));
+        delivery.publish(appearance_of, |connection, message| {
+            sent.push((connection, message.window_appearance()));
+        });
+        assert_eq!(
+            sent,
+            vec![(2, Some(warm))],
+            "a closed connection is forgotten"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_launcher_s_handshake_is_accepted() {
+        let runtime = tempfile::tempdir().expect("temporary runtime");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
+        let service = FloatingSurfaceService::start().expect("start floating service");
+        let mut app = UnixStream::connect(launcher::services::socket_for(FLOATING_SURFACE_SERVICE))
+            .expect("connect");
+        // The exact frame `launcher::services::authenticate_shell_ui_bind`
+        // writes before the app starts.
+        let mut handshake = serde_json::to_vec(&serde_json::json!({
+            "protocol": SHELL_UI_HANDSHAKE_VERSION,
+            "app_id": "so.tilo.notes",
+        }))
+        .unwrap();
+        handshake.push(b'\n');
+        app.write_all(&handshake).unwrap();
+        let mut connected = None;
+        tilo_test_env::wait_until("the authenticated app connects", || {
+            connected = service.drain().into_iter().find_map(|event| match event {
+                FloatingServiceEvent::Connected { app_id, .. } => Some(app_id),
+                _ => None,
+            });
+            connected.is_some()
+        });
+        assert_eq!(connected.as_deref(), Some("so.tilo.notes"));
+        drop(service);
+    }
 
     #[test]
     #[serial_test::serial(process_env)]

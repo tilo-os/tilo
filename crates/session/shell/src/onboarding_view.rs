@@ -5,7 +5,7 @@
 //! an application could imitate.
 //!
 //! The decisions all live in [`crate::onboarding::Onboarding`]; this
-//! file is only the composition, built from shared `ui` widgets (`Card`,
+//! file is only the composition, built from shared `ui` widgets (`Section`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
 //!
@@ -32,8 +32,8 @@ use taffy::{NodeId, TaffyTree};
 use ui::color_compat::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{
-    Banner, Button, Card, Checkbox, ChoiceCard, Column, FilePicker, FilePickerMode, IconWidget,
-    ProgressBar, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Banner, Button, Checkbox, ChoiceSection, Column, FilePicker, FilePickerMode, IconWidget,
+    ProgressBar, Row, Scrollable, Section, Spacer, Spinner, Text, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
@@ -48,6 +48,7 @@ use crate::onboarding::{
 };
 use crate::shell::i18n::{t, t_args};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
+use ui::widget::ButtonRole;
 
 /// How often setup looks for news from its background work (codec install,
 /// nearby pairing) while that work runs.
@@ -1544,7 +1545,7 @@ impl OnboardingView {
             // pages retain the viewport stop for Page/Home/End navigation.
             scroll = scroll.without_sequential_focus();
         }
-        let mut scroll = scroll.with_content_gutter(spacing.s3);
+        let mut scroll = scroll;
         if !backup_in_scroll {
             // This is first-run guidance, not an incidental list. Keep the
             // thumb visible whenever content overflows so compact and large
@@ -1619,13 +1620,12 @@ impl OnboardingView {
             },
             Some(KEY_BACKUP_BROWSE),
         )
-        .fit_content(40.0)
-        .with_style(if self.backup_was_verified {
+        .role(if self.backup_was_verified {
             // Continue remains the clear completion action after a verified
             // backup; making another copy is an optional follow-up task.
-            ui::widget::ButtonStyle::Neutral
+            ButtonRole::Secondary
         } else {
-            ui::widget::ButtonStyle::Primary
+            ButtonRole::Primary
         });
         Box::new(
             Column::new()
@@ -1799,21 +1799,17 @@ impl OnboardingView {
                     &t("onboarding-connect-retry-keyring"),
                     Some(KEY_CONNECT_RETRY),
                 )
-                .fit_content(40.0)
                 .with_icon(ui::icons::Icon::Refresh),
             )]),
             Screen::Existing => footer_actions(vec![back_button()]),
             Screen::Nearby => {
                 let mut actions = vec![back_button()];
                 if self.nearby_active() {
-                    actions.push(Box::new(
-                        Button::new(
-                            "onboarding.connect.cancel.button",
-                            &t("onboarding-cancel"),
-                            Some(KEY_CONNECT_CANCEL),
-                        )
-                        .fit_content(40.0),
-                    ));
+                    actions.push(Box::new(Button::new(
+                        "onboarding.connect.cancel.button",
+                        &t("onboarding-cancel"),
+                        Some(KEY_CONNECT_CANCEL),
+                    )));
                 } else {
                     actions.push(Box::new(
                         Button::new(
@@ -1821,9 +1817,8 @@ impl OnboardingView {
                             &t("onboarding-nearby-try-again"),
                             Some(KEY_CONNECT_NEARBY),
                         )
-                        .fit_content(40.0)
                         .with_icon(ui::icons::Icon::Refresh)
-                        .with_style(ui::widget::ButtonStyle::Primary),
+                        .role(ButtonRole::Primary),
                     ));
                 }
                 footer_actions(actions)
@@ -1836,9 +1831,8 @@ impl OnboardingView {
                         &t("onboarding-restore-backup"),
                         Some(KEY_IMPORT),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::ArrowRight)
-                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.connect_source_selected),
                 ),
             ]),
@@ -1850,31 +1844,26 @@ impl OnboardingView {
                         &t("onboarding-create-local-identity"),
                         Some(KEY_CREATE),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::Shield)
-                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.flow.can_create()),
                 ),
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => Self::finish_action(),
             Screen::Done if self.portable_backup_only => footer_actions(vec![
-                Box::new(
-                    Button::new(
-                        "onboarding.backup.cancel.button",
-                        &t("onboarding-cancel"),
-                        Some(KEY_FINISH),
-                    )
-                    .fit_content(40.0),
-                ),
+                Box::new(Button::new(
+                    "onboarding.backup.cancel.button",
+                    &t("onboarding-cancel"),
+                    Some(KEY_FINISH),
+                )),
                 Box::new(
                     Button::new(
                         "onboarding.backup.done.button",
                         &t("onboarding-done"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.backup_was_verified),
                 ),
             ]),
@@ -1885,27 +1874,22 @@ impl OnboardingView {
                         &t("onboarding-continue"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ButtonRole::Primary),
                 )])
             }
             Screen::Done if self.backup_was_verified => footer_actions(vec![
-                Box::new(
-                    Button::new(
-                        "onboarding.backup.another.button",
-                        &t("onboarding-backup-save-another"),
-                        Some(KEY_BACKUP_ANOTHER),
-                    )
-                    .fit_content(40.0),
-                ),
+                Box::new(Button::new(
+                    "onboarding.backup.another.button",
+                    &t("onboarding-backup-save-another"),
+                    Some(KEY_BACKUP_ANOTHER),
+                )),
                 Box::new(
                     Button::new(
                         "onboarding.backup.continue.button",
                         &t("onboarding-continue"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ButtonRole::Primary),
                 ),
             ]),
             Screen::Done => footer_actions(vec![Box::new(
@@ -1914,8 +1898,7 @@ impl OnboardingView {
                     &t("onboarding-backup-continue-without"),
                     Some(KEY_BACKUP_CONTINUE),
                 )
-                .fit_content(40.0)
-                .with_style(ui::widget::ButtonStyle::Neutral)
+                .role(ButtonRole::Secondary)
                 .with_enabled(self.backup_skip_acknowledged),
             )]),
         }
@@ -1993,7 +1976,6 @@ impl OnboardingView {
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)
-                        .with_content_gutter(theme.tokens.spacing.s3)
                         // Tour pages intentionally teach several concepts;
                         // expose overflow persistently instead of making a
                         // first-time user wait for a transient wheel hint.
@@ -2057,7 +2039,7 @@ impl OnboardingView {
                                 .with_role(ui::tokens::typography::TextRole::Label)
                                 .with_weight(ui::text_render::TextWeight::Semibold)
                                 .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                                .with_color(theme.accent_primary),
+                                .with_color(theme.tokens.colors.intent.you),
                         ))
                         .push(Box::new(
                             Column::new()
@@ -2089,13 +2071,13 @@ impl OnboardingView {
                             .push(Box::new(
                                 Text::new(&t(keys))
                                     .with_role(ui::tokens::typography::TextRole::Label)
-                                    .with_color(theme.accent_primary),
+                                    .with_color(theme.tokens.colors.intent.you),
                             ))
                             .push(paragraph(&t(copy), theme)),
                     ),
                     None => paragraph(&t(copy), theme),
                 };
-                body = body.push(Box::new(Card::titled(t(card_title), content)));
+                body = body.push(Box::new(Section::titled(t(card_title), vec![content])));
             }
         }
         Box::new(body)
@@ -2109,30 +2091,23 @@ impl OnboardingView {
             (t("onboarding-continue"), KEY_TOUR_NEXT)
         };
         footer_actions(vec![
-            Box::new(
-                Button::new(
-                    "onboarding.tour.skip.button",
-                    &t("onboarding-tour-skip"),
-                    Some(KEY_TOUR_SKIP),
-                )
-                .fit_content(40.0),
-            ),
-            Box::new(
-                Button::new(
-                    "onboarding.tour.back.button",
-                    &t("onboarding-back"),
-                    Some(KEY_TOUR_BACK),
-                )
-                .fit_content(40.0),
-            ),
+            Box::new(Button::new(
+                "onboarding.tour.skip.button",
+                &t("onboarding-tour-skip"),
+                Some(KEY_TOUR_SKIP),
+            )),
+            Box::new(Button::new(
+                "onboarding.tour.back.button",
+                &t("onboarding-back"),
+                Some(KEY_TOUR_BACK),
+            )),
             Box::new(
                 Button::new(
                     "onboarding.tour.next.button",
                     &primary_label,
                     Some(primary_key),
                 )
-                .fit_content(40.0)
-                .with_style(ui::widget::ButtonStyle::Primary),
+                .role(ButtonRole::Primary),
             ),
         ])
     }
@@ -2268,14 +2243,14 @@ impl OnboardingView {
             .with_on_change_path(KEY_CONNECT_PATH)
             .with_accessible_name(t("onboarding-connect-file"))
             .with_placeholder(&t("onboarding-connect-file-placeholder"))
-            .with_font_size(theme.tokens.typography.scale.base);
+            .with_font_size(theme.tokens.typography.size(TextRole::Body));
         let passphrase = secret_input(
             "onboarding.connect.passphrase.field",
             &self.connect_passphrase,
             &t("onboarding-connect-passphrase"),
             &t("onboarding-connect-passphrase-placeholder"),
         )
-        .with_font_size(theme.tokens.typography.scale.base);
+        .with_font_size(theme.tokens.typography.size(TextRole::Body));
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -2303,7 +2278,6 @@ impl OnboardingView {
                         &t("onboarding-connect-browse"),
                         Some(KEY_CONNECT_BROWSE),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::FolderOpen),
                 )),
             ));
@@ -2450,17 +2424,17 @@ impl OnboardingView {
                 theme,
             ))
             .push(paragraph(&body, theme))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-done-next-title"),
-                paragraph(&t("onboarding-done-next-body"), theme),
+                vec![paragraph(&t("onboarding-done-next-body"), theme)],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 if self.backup_was_verified {
                     t("onboarding-done-backup-verified")
                 } else {
                     t("onboarding-done-backup-recommended")
                 },
-                paragraph_with_id(
+                vec![paragraph_with_id(
                     &if self.backup_was_verified {
                         t("onboarding-done-backup-verified-body")
                     } else {
@@ -2468,13 +2442,13 @@ impl OnboardingView {
                     },
                     theme,
                     "onboarding.done.backup-guidance",
-                ),
+                )],
             )));
 
         if self.context == OnboardingContext::FullSystem {
-            page = page.push(Box::new(Card::titled(
+            page = page.push(Box::new(Section::titled(
                 t("onboarding-done-system-care-title"),
-                paragraph(&t("onboarding-done-system-care-body"), theme),
+                vec![paragraph(&t("onboarding-done-system-care-body"), theme)],
             )));
         }
         Box::new(page)
@@ -2526,13 +2500,17 @@ impl OnboardingView {
                 theme,
                 "onboarding.codecs.body",
             ))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-enables-title"),
-                enables,
+                vec![enables],
             )))
-            .push(Box::new(Card::titled(
+            .push(Box::new(Section::titled(
                 t("onboarding-codecs-source-title"),
-                paragraph_with_id(&codecs_source(), theme, "onboarding.codecs.source"),
+                vec![paragraph_with_id(
+                    &codecs_source(),
+                    theme,
+                    "onboarding.codecs.source",
+                )],
             )));
         Box::new(page)
     }
@@ -2542,11 +2520,11 @@ impl OnboardingView {
             self.codec_page_buttons()
                 .into_iter()
                 .map(|(id, label, key, primary)| {
-                    let button = Button::new(id, &label, Some(key)).fit_content(40.0);
+                    let button = Button::new(id, &label, Some(key));
                     let button = if primary {
                         button
                             .with_icon(ui::icons::Icon::ArrowRight)
-                            .with_style(ui::widget::ButtonStyle::Primary)
+                            .role(ButtonRole::Primary)
                     } else {
                         button
                     };
@@ -2566,22 +2544,21 @@ impl OnboardingView {
             "onboarding.tour.start.button",
             &t("onboarding-tour-take"),
             Some(KEY_TOUR_START),
-        )
-        .fit_content(40.0);
+        );
         let enter = Button::new(
             "onboarding.finish.button",
             &t("onboarding-finish"),
             Some(KEY_FINISH),
         )
-        .fit_content(40.0)
         .with_icon(ui::icons::Icon::ArrowRight)
-        .with_style(ui::widget::ButtonStyle::Primary);
+        .role(ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
     }
 }
 
+/// The title at the top of an onboarding page.
 fn heading(text: &str, _theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::Display))
+    Box::new(Text::new(text).with_role(ui::tokens::typography::TextRole::LargeTitle))
 }
 
 /// Secondary body copy. Takes the live theme rather than a hard-coded
@@ -2651,7 +2628,7 @@ fn numbered_step(number: usize, text: &str, theme: &Theme) -> Box<dyn Widget> {
                     .with_role(ui::tokens::typography::TextRole::Body)
                     .with_weight(ui::text_render::TextWeight::Semibold)
                     .with_numeric_style(ui::text_render::NumericStyle::TabularLining)
-                    .with_color(theme.accent_primary),
+                    .with_color(theme.tokens.colors.intent.you),
             ))
             .push(Box::new(
                 Text::new(text).with_role(ui::tokens::typography::TextRole::Body),
@@ -2682,7 +2659,6 @@ fn back_button() -> Box<dyn Widget> {
             &t("onboarding-back"),
             Some(KEY_BACK),
         )
-        .fit_content(40.0)
         .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }
@@ -2799,14 +2775,20 @@ impl OnboardingView {
             // competes with the tour's own keyboard focus.
             return;
         }
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
         if theme.name.eq_ignore_ascii_case("high contrast") {
             return;
         }
 
         // Quiet, theme-derived depth: two broad accent blooms make the
         // trusted setup surface distinct without becoming illustration.
-        let bloom = colors.accent[5].with_alpha_factor(0.10);
+        let bloom = colors.text_primary.with_alpha_factor(0.10);
         let radius = self.rect.width().max(self.rect.height()) * 0.34;
         scene.fill(
             Fill::NonZero,
@@ -2818,7 +2800,7 @@ impl OnboardingView {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[3].with_alpha_factor(0.07),
+            colors.intent.you.with_alpha_factor(0.07),
             None,
             &Circle::new(Point::new(self.rect.x1, self.rect.y1), radius * 0.82),
         );

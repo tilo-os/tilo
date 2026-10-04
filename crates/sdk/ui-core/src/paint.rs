@@ -1,15 +1,17 @@
 //! Scene-painting shorthands for apps that draw their own surfaces.
 //!
 //! Every hand-painted app needs the same handful of calls — fill a rect, fill
-//! or stroke a rounded rect, fade a theme colour — and each used to carry its
-//! own copy. These take the colour explicitly, so callers still read it from
-//! the [`crate::theme::Theme`] passed to `draw`.
+//! or stroke a rounded rect, fade a theme colour, set a line of text in a
+//! role — and each used to carry its own copy. These take the colour
+//! explicitly, so callers still read it from the [`crate::theme::Theme`]
+//! passed to `draw`.
 
 use crate::color_compat::ColorCompat;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Size, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
 /// The renderer state one immediate-mode paint pass threads through its helpers.
@@ -92,6 +94,54 @@ impl<'a> PaintCtx<'a> {
         self.text
             .draw_style(self.scene, text, color, transform, max_width, style);
     }
+
+    /// Paint `text` in the theme's `role` with its line box's top-left at
+    /// `origin`, wrapping at `max_width` when one is given. The role is
+    /// resolved against this context's theme, so it is scaled exactly once.
+    pub fn text_role(
+        &mut self,
+        text: &str,
+        role: TextRole,
+        color: Color,
+        origin: Point,
+        max_width: Option<f32>,
+    ) {
+        let style = self.theme.text(role);
+        self.text(text, &style, color, origin, max_width);
+    }
+
+    /// The size `text` takes in `role`, wrapped at `max_width` when one is
+    /// given: exactly what [`Self::text_role`] paints.
+    pub fn measure_role(&mut self, text: &str, role: TextRole, max_width: Option<f32>) -> Size {
+        let style = self.theme.text(role);
+        let (width, height) = self.text.measure_style(text, max_width, &style);
+        Size::new(f64::from(width), f64::from(height))
+    }
+
+    /// The measured height of one line of `role`: what a band, row or
+    /// control sizes itself from, and what
+    /// [`crate::text_metrics::centered_text_top`] centres. Grows with the text
+    /// scale because the role does.
+    pub fn line_box(&mut self, role: TextRole) -> f64 {
+        self.measure_role("Ag", role, None).height
+    }
+
+    /// Paint one line of `text` in `role`, starting at `x` and vertically
+    /// centred on its measured line box inside `band` — the row, bar or
+    /// control it labels.
+    pub fn text_role_in_band(
+        &mut self,
+        text: &str,
+        role: TextRole,
+        color: Color,
+        x: f64,
+        band: Rect,
+        max_width: Option<f32>,
+    ) {
+        let top =
+            crate::text_metrics::centered_text_top(band.y0, band.height(), self.line_box(role));
+        self.text_role(text, role, color, Point::new(x, top), max_width);
+    }
 }
 
 /// Fill `rect` with a solid colour.
@@ -170,5 +220,28 @@ mod tests {
         let replaced = Affine::translate((7.0, 0.0));
         assert_eq!(ctx.with_transform(replaced).transform, replaced);
         assert_eq!(ctx.transform, base);
+    }
+
+    #[test]
+    fn role_text_is_measured_in_the_contexts_theme_once() {
+        let mut scene = Scene::new();
+        let mut text = crate::font_catalog::fixture_renderer();
+        // A renderer at 2× must not grow a resolved role a second time.
+        text.set_text_scale(2.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let line = ctx.line_box(TextRole::Body);
+        let body = theme.text(TextRole::Body);
+        assert!(
+            (line - f64::from(body.line_height_px())).abs() < 0.01,
+            "one Body line is {line}, its role says {}",
+            body.line_height_px()
+        );
+        assert!(ctx.line_box(TextRole::Title) > line);
+        let measured = ctx.measure_role("Delete message", TextRole::Label, None);
+        let (w, h) = ctx
+            .text
+            .measure_style("Delete message", None, &theme.text(TextRole::Label));
+        assert_eq!(measured, Size::new(f64::from(w), f64::from(h)));
     }
 }

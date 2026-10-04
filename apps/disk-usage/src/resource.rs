@@ -146,7 +146,9 @@ impl ResourceApp for DiskUsageShell {
     const ICON: Option<&'static str> = Some("disk-usage");
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {
-        cx.surface(DiskUsageApp::new())
+        let mut app = DiskUsageApp::new();
+        app.host_actions(cx.actions());
+        cx.surface(app)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -157,6 +159,8 @@ impl ResourceApp for DiskUsageShell {
             "analysis-hover-narrow",
             "home",
             "home-narrow",
+            "loading",
+            "error",
         ]
     }
 
@@ -202,7 +206,7 @@ impl ResourceApp for DiskUsageShell {
 impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
     /// The remembered folders. A scan on screen is this machine's and stays.
     fn present(&mut self, state: &std::rc::Rc<DiskUsageState>) {
-        self.recent.clone_from(&state.recent);
+        self.present_recent(&state.recent);
     }
 
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
@@ -216,6 +220,10 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
     fn stage(&mut self, scenario: Option<&str>) {
         if scenario.is_some_and(|name| name.starts_with("analysis-hover")) {
             self.inspect("/home/you/projects");
+        } else if scenario.is_some_and(|name| name.starts_with("loading")) {
+            self.stage_loading();
+        } else if scenario.is_some_and(|name| name.starts_with("error")) {
+            self.stage_error();
         }
     }
 

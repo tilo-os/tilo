@@ -899,10 +899,10 @@ mod tests {
     fn member_colors_match_the_overlay_port() {
         let palette = ui::presence::PEER_PALETTE;
         for (id, index) in [
-            ("dave", 15usize),
-            ("eve", 13),
-            ("a1b2c3d4", 13),
-            (&"7f00aa55".repeat(8), 21),
+            ("dave", 3usize),
+            ("eve", 1),
+            ("a1b2c3d4", 1),
+            (&"7f00aa55".repeat(8), 9),
         ] {
             assert_eq!(ui::presence::user_color(id), palette[index], "{id}");
         }

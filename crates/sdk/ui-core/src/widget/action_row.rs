@@ -93,13 +93,13 @@ impl<'a> ActionRowFace<'a> {
         let background = if self.interact.disabled {
             colors.surfaces.base
         } else if self.interact.pressed {
-            theme.bg_active
+            theme.tokens.colors.intent.selection
         } else if self.accented && self.interact.hovered {
-            theme.accent_hover
+            theme.tokens.colors.intent.selection_hover
         } else if self.accented {
-            theme.accent_primary
+            theme.tokens.colors.intent.you
         } else if self.interact.hovered {
-            theme.bg_hover
+            theme.tokens.colors.intent.selection_hover
         } else if self.outlined {
             colors.surfaces.base
         } else {
@@ -133,7 +133,7 @@ impl<'a> ActionRowFace<'a> {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.border_focus,
+                theme.tokens.colors.intent.you,
                 None,
                 &RoundedRect::from_rect(self.rect, self.radius),
             );

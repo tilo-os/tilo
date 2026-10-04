@@ -14,7 +14,6 @@ use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -25,25 +24,24 @@ use vello::peniko::{
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::TextRole;
 use crate::widget::{FullscreenProvider, Widget};
 
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
+/// Height of the controls Panel at 1x: a Panel row (`metrics.panel_row_height`).
 const CONTROLS_BAR_HEIGHT: f64 = 44.0;
-const PLAY_BUTTON_SIZE: f64 = 30.0;
+/// The transport glyphs are the standard glyph (`metrics.icon_md`), each in
+/// a [`MIN_TARGET`] hit rect.
+const PLAY_BUTTON_SIZE: f64 = 20.0;
 /// Minimum pointer target for every control in the bar (HIG §9.6: a 20 px
 /// glyph gets a 32 px hit rect). Glyphs keep their painted size; the hit
 /// rect stored for input, tooltips and accessibility is at least this on
 /// each axis, clamped to the bar's height.
 const MIN_TARGET: f64 = 32.0;
-/// Opacity of the theme scrim behind the controls: dark enough for the
-/// ink `Theme::on_surface` picks for it to clear contrast over any frame.
-const CONTROLS_SCRIM_ALPHA: f32 = 0.67;
 const SCRUB_TRACK_HEIGHT: f64 = 5.0;
 /// The unfilled scrub / volume track is the bar's own dim ink at this
 /// alpha: derived from the scrim like every other mark on the bar, so it
@@ -324,6 +322,12 @@ struct ControlsLayout {
 }
 
 impl ControlsLayout {
+    /// Space between two neighbouring controls' glyphs: at least the pad,
+    /// and enough that their pointer targets touch but never overlap.
+    fn gap(&self) -> f64 {
+        self.pad.max(self.hit - self.icon)
+    }
+
     /// The hit rect for a control whose glyph is painted in `glyph`: at
     /// least `hit` on each axis, centred on the glyph.
     fn hit_rect(&self, glyph: Rect) -> Rect {
@@ -354,7 +358,7 @@ struct TimeLabel<'a> {
     /// Measured line-box height; the label is centred on this, not on
     /// `size`, so it holds the bar's centre line at every text scale.
     height: f32,
-    size: f32,
+    style: TextStyle,
 }
 
 impl VideoPlayer {
@@ -892,17 +896,21 @@ impl VideoPlayer {
         self.controls_visible_until = crate::time::now().checked_add(CONTROLS_AUTO_HIDE);
     }
 
+    /// The controls Panel: floating over the bottom of the picture, one
+    /// `spacing.s2` in from the sides and the bottom edge.
     fn controls_bar_rect(&self, theme: &Theme) -> Rect {
         let height = if theme.text_scale > 1.25 {
             (CONTROLS_BAR_HEIGHT * f64::from(theme.text_scale)).min(96.0)
         } else {
             CONTROLS_BAR_HEIGHT
         };
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let y1 = (self.rect.y1 - inset).max(self.rect.y0);
         Rect::new(
-            self.rect.x0,
-            (self.rect.y1 - height).max(self.rect.y0),
-            self.rect.x1,
-            self.rect.y1,
+            self.rect.x0 + inset,
+            (y1 - height).max(self.rect.y0),
+            (self.rect.x1 - inset).max(self.rect.x0 + inset),
+            y1,
         )
     }
 
@@ -1007,10 +1015,12 @@ impl VideoPlayer {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // The letterbox is the media's own near-black in every theme, never
+        // a theme surface that turns mid-grey in light.
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.base,
+            theme.tokens.colors.media.letterbox,
             None,
             &self.rect,
         );
@@ -1090,32 +1100,16 @@ impl VideoPlayer {
         if bar.width() <= 0.0 || bar.height() <= 0.0 {
             return;
         }
-        let colors = &theme.tokens.colors;
-
-        // Scrim so controls read over bright frames — the theme's scrim
-        // colour, so its hue belongs to the theme rather than being a black
-        // hole; the ink on it is chosen against that surface, not against
-        // the app background (near-black `text_primary` on a light theme
-        // would vanish here).
-        let scrim = colors.surfaces.scrim;
-        let on_scrim = theme.on_surface(scrim);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            scrim.with_alpha_factor(CONTROLS_SCRIM_ALPHA),
-            None,
-            &bar,
-        );
+        // Chrome over media is the floating material on the media: a Panel
+        // shaped to the controls, blurring the picture behind it. Everything
+        // on it is inked for the panel ground.
+        crate::widget::floating_surface::paint(scene, transform, bar, theme);
+        let panel_theme = theme.on_ground(crate::chrome::panel_ground(theme));
+        let theme = &panel_theme;
+        let on_panel = theme.on_surface(theme.tokens.colors.surfaces.content);
 
         if theme.text_scale > 1.25 {
             self.paint_large_text_controls(scene, transform, text_renderer, theme, bar);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.border_standard,
-                None,
-                &bar,
-            );
             self.paint_menu(scene, transform, text_renderer, theme);
             return;
         }
@@ -1139,14 +1133,15 @@ impl VideoPlayer {
             format_ms(self.position_ms),
             format_ms(self.duration_ms)
         );
-        let time_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (tw, th) = text_renderer.measure(&time_text, time_size, None);
+        let time_style = theme.text(TextRole::Caption);
+        let (tw, th) = text_renderer.measure_style(&time_text, None, &time_style);
         // The cluster reserves room for the label's *shortest* useful form
         // (the position alone): controls outrank the full "m:ss / m:ss",
         // which yields to them, so folding a setting icon into the gear to
         // protect a label that is then not painted would hide a reachable
         // control for nothing.
-        let (position_w, _) = text_renderer.measure(&format_ms(self.position_ms), time_size, None);
+        let (position_w, _) =
+            text_renderer.measure_style(&format_ms(self.position_ms), None, &time_style);
 
         let mut layout = ControlsLayout {
             bar,
@@ -1156,8 +1151,8 @@ impl VideoPlayer {
             hit,
             play_btn,
             cluster_x0: 0.0,
-            ink: on_scrim.ink,
-            ink_dim: on_scrim.ink_dim,
+            ink: on_panel.ink,
+            ink_dim: on_panel.ink_dim,
         };
         self.play_button_rect = layout.hit_rect(play_btn);
         self.draw_play_glyph(scene, transform, play_btn, layout.ink);
@@ -1167,17 +1162,9 @@ impl VideoPlayer {
             text: &time_text,
             width: tw,
             height: th,
-            size: time_size,
+            style: time_style,
         };
         self.paint_volume_time_track(scene, transform, text_renderer, theme, &layout, &time);
-
-        // Bar role (HIG §9.1): one crisp top hairline, derived from the scrim
-        // the bar is made of (§9.5) and covering exactly the bar's top pixel
-        // row. A Bar runs edge to edge, so no inset. The declared
-        // `border_standard` it replaces was a fixed colour neither theme's
-        // scrim had been measured against, stroked as a half-covered ring
-        // around all four sides.
-        crate::surface::separator(scene, transform, bar.x0, bar.x1, bar.y0 + 0.5, 0.0, scrim);
 
         self.paint_menu(scene, transform, text_renderer, theme);
     }
@@ -1205,8 +1192,8 @@ impl VideoPlayer {
             play_btn: Rect::ZERO,
             cluster_x0: bar.x1,
             hit: MIN_TARGET.min(bar.height()).max(icon),
-            ink: theme.on_surface(theme.tokens.colors.surfaces.scrim).ink,
-            ink_dim: theme.on_surface(theme.tokens.colors.surfaces.scrim).ink_dim,
+            ink: theme.text_primary,
+            ink_dim: theme.text_dim,
         };
         self.paint_scrub_track(
             scene,
@@ -1245,7 +1232,11 @@ impl VideoPlayer {
             bar.x0 + pad + icon,
             mid_y + icon * 0.5,
         );
-        self.play_button_rect = play;
+        let target = |glyph: Rect| {
+            let side = icon.max(MIN_TARGET);
+            Rect::from_center_size(glyph.center(), (side, side))
+        };
+        self.play_button_rect = target(play);
         self.draw_play_glyph(scene, transform, play, colors.text_primary);
         let fs = Rect::new(
             bar.x1 - pad - icon,
@@ -1253,7 +1244,7 @@ impl VideoPlayer {
             bar.x1 - pad,
             mid_y + icon * 0.5,
         );
-        self.fullscreen_button_rect = fs;
+        self.fullscreen_button_rect = target(fs);
         draw_fullscreen_glyph(scene, transform, fs, colors.text_primary, self.fullscreen);
         self.setting_icon_rects.clear();
         self.gear_entries.clear();
@@ -1268,14 +1259,18 @@ impl VideoPlayer {
                 mid_y + icon * 0.5,
             );
             let tint = if self.open_menu == Some(OpenMenu::Gear) {
-                colors.accent[ACCENT_PRIMARY_IDX]
+                colors.intent.inverted
             } else {
                 colors.text_primary
             };
-            Icon::Settings2.draw(scene, transform, inset_rect(rect, 5.0), tint);
+            Icon::Settings2.draw(scene, transform, rect, tint);
             rect
         };
-        self.gear_button_rect = gear;
+        self.gear_button_rect = if gear.width() > 0.0 {
+            target(gear)
+        } else {
+            gear
+        };
         (
             play,
             mid_y,
@@ -1293,7 +1288,7 @@ impl VideoPlayer {
     ) {
         let (play, mid_y, cluster_x0, pad, icon) = layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
         let time_text = format!(
             "{} / {}",
             format_ms(self.position_ms),
@@ -1401,11 +1396,11 @@ impl VideoPlayer {
             ..
         } = *layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let fs_size = icon;
         let btn = icon;
-        let gap = pad;
+        let gap = layout.gap();
 
         let (prio, zero) = self.settings_priority_lists();
 
@@ -1451,7 +1446,7 @@ impl VideoPlayer {
             } else {
                 ink
             };
-            Icon::Settings2.draw(scene, transform, inset_rect(r, 4.0), tint);
+            Icon::Settings2.draw(scene, transform, r, tint);
             r
         } else {
             Rect::ZERO
@@ -1522,9 +1517,9 @@ impl VideoPlayer {
         shown: &[usize],
     ) -> Option<f64> {
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
         let btn = layout.icon;
-        let gap = layout.pad;
+        let gap = layout.gap();
         let mid_y = layout.mid_y;
 
         self.setting_icon_rects.clear();
@@ -1540,7 +1535,7 @@ impl VideoPlayer {
             let on = matches!(s.control, PlayerSettingControl::Toggle { on: true });
             let menu_open = self.open_menu == Some(OpenMenu::Choice(idx));
             let tint = if on || menu_open { accent } else { layout.ink };
-            s.icon.draw(scene, transform, inset_rect(r, 4.0), tint);
+            s.icon.draw(scene, transform, r, tint);
             self.setting_icon_rects.push((idx, layout.hit_rect(r)));
         }
         leftmost
@@ -1581,20 +1576,20 @@ impl VideoPlayer {
             Some((time.text.to_string(), time.width))
         } else {
             let position = format_ms(self.position_ms);
-            let (pw, _) = text_renderer.measure(&position, time.size, None);
+            let (pw, _) = text_renderer.measure_style(&position, None, &time.style);
             (f64::from(pw) <= room).then_some((position, pw))
         };
         let track_x1 = if let Some((text, width)) = shown {
             let time_x0 = time_x1 - f64::from(width);
             let top = mid_y - f64::from(time.height) * 0.5;
             self.time_label_rect = Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &text,
-                time.size,
                 ink_dim,
                 translated(transform, time_x0, top),
                 None,
+                &time.style,
             );
             time_x0 - pad
         } else {
@@ -1623,34 +1618,28 @@ impl VideoPlayer {
             ..
         } = *layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
         let speaker = Rect::new(
             vol_x0,
-            mid_y - icon * 0.4,
-            vol_x0 + icon * 0.8,
-            mid_y + icon * 0.4,
+            mid_y - icon * 0.5,
+            vol_x0 + icon,
+            mid_y + icon * 0.5,
         );
         draw_speaker_glyph(scene, transform, speaker, ink, self.muted);
-        let vtrack_x0 = speaker.x1 + pad * 0.5;
+        // The speaker keeps its whole pointer target; the volume track's own
+        // target begins where it ends, so the two never claim one pixel.
+        let mute_hit = layout.hit_rect(speaker);
+        let vtrack_x0 = mute_hit.x1.max(speaker.x1 + pad * 0.5);
         let vtrack = Rect::new(
             vtrack_x0,
             mid_y - SCRUB_TRACK_HEIGHT * 0.5,
             vol_x1,
             mid_y + SCRUB_TRACK_HEIGHT * 0.5,
         );
-        // The speaker's hit rect grows to the minimum target but stops
-        // where the volume track's own hit rect begins, so the two never
-        // claim the same pixel.
-        let mute_hit = layout.hit_rect(speaker);
-        self.mute_button_rect = Rect::new(
-            mute_hit.x0,
-            mute_hit.y0,
-            mute_hit.x1.min(vtrack_x0),
-            mute_hit.y1,
-        );
+        self.mute_button_rect = mute_hit;
         if vtrack.width() > 0.0 {
             self.volume_track_rect = layout.track_hit_rect(vtrack);
             let shape = RoundedRect::from_rect(vtrack, SCRUB_TRACK_HEIGHT * 0.5);
@@ -1698,7 +1687,7 @@ impl VideoPlayer {
         }
         let mid_y = layout.mid_y;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let track = Rect::new(
             track_x0,
@@ -1867,34 +1856,19 @@ impl VideoPlayer {
         // Panel role (HIG §9.1): a settings menu floats over the video, so it
         // takes the panel ground and the panel edge — the declared
         // `border_standard` this replaces vanished on the dark preset.
-        let radius = f64::from(theme.tokens.radii.md);
-        let bg = RoundedRect::from_rect(panel_rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            crate::chrome::shell::panel_ground(theme),
-            None,
-            &bg,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::shell::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(panel_rect, radius),
-        );
+        crate::widget::floating_surface::paint(scene, transform, panel_rect, theme);
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &panel.title {
-            let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-            let (_, th) = text_renderer.measure(t, title_size, None);
-            text_renderer.draw_text(
+            let title_style = theme.text(TextRole::Caption);
+            let (_, th) = text_renderer.measure_style(t, None, &title_style);
+            text_renderer.draw_style(
                 scene,
                 t,
-                title_size,
                 colors.text_dim,
                 translated(transform, x0 + pad, y + (row_h - f64::from(th)) * 0.5),
                 None,
+                &title_style,
             );
             y += row_h;
         }
@@ -1963,7 +1937,7 @@ impl VideoPlayer {
         let pad = f64::from(theme.tokens.spacing.s2);
         let text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         if theme.text_scale > 1.25 {
             self.paint_large_setting_row(
@@ -1985,16 +1959,16 @@ impl VideoPlayer {
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
         // Control label and value are both `scale.sm` (HIG §9.6), centred on
         // the row from their measured line box.
-        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (_, lh) = text_renderer.measure(&s.name, label_size, None);
+        let label_style = theme.text(TextRole::Caption);
+        let (_, lh) = text_renderer.measure_style(&s.name, None, &label_style);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &s.name,
-            label_size,
             colors.text_primary,
             translated(transform, icon_r.x1 + 8.0, label_top),
             None,
+            &label_style,
         );
         let value: String = match &s.control {
             PlayerSettingControl::Toggle { on } => {
@@ -2010,14 +1984,13 @@ impl VideoPlayer {
             PlayerSettingControl::Button => String::new(),
         };
         if !value.is_empty() {
-            let (vw, vh) = text_renderer.measure(&value, label_size, None);
+            let (vw, vh) = text_renderer.measure_style(&value, None, &label_style);
             let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
                 .then_some(accent)
                 .unwrap_or(colors.text_dim);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &value,
-                label_size,
                 tint,
                 translated(
                     transform,
@@ -2025,6 +1998,7 @@ impl VideoPlayer {
                     y + (row_h - f64::from(vh)) * 0.5,
                 ),
                 None,
+                &label_style,
             );
         }
         self.menu_hit_rects.push((MenuHit::Setting(idx), row_rect));
@@ -2067,7 +2041,7 @@ impl VideoPlayer {
         if !value.is_empty() {
             let value = text_renderer.elide_to_width(&value, 12.0, text_budget);
             let tint = matches!(setting.control, PlayerSettingControl::Toggle { on: true })
-                .then_some(colors.accent[ACCENT_PRIMARY_IDX])
+                .then_some(colors.intent.inverted)
                 .unwrap_or(colors.text_dim);
             text_renderer.draw_text(
                 scene,
@@ -2105,7 +2079,7 @@ impl VideoPlayer {
         let row_h = row_rect.height() + 2.0;
         let pad = f64::from(theme.tokens.spacing.s2);
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let selected = *selected == oi;
         // The standalone popover has no header, so no indent.
@@ -2147,23 +2121,22 @@ impl VideoPlayer {
         } else {
             colors.text_primary
         };
-        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (_, lh) = text_renderer.measure(&label, label_size, None);
+        let label_style = theme.text(TextRole::Caption);
+        let (_, lh) = text_renderer.measure_style(&label, None, &label_style);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            label_size,
             tint,
             translated(transform, x0 + indent, label_top),
             None,
+            &label_style,
         );
         if selected {
-            let (cw, ch) = text_renderer.measure("✓", label_size, None);
-            text_renderer.draw_text(
+            let (cw, ch) = text_renderer.measure_style("✓", None, &label_style);
+            text_renderer.draw_style(
                 scene,
                 "✓",
-                label_size,
                 accent,
                 translated(
                     transform,
@@ -2171,48 +2144,17 @@ impl VideoPlayer {
                     y + (row_h - f64::from(ch)) * 0.5,
                 ),
                 None,
+                &label_style,
             );
         }
         self.menu_hit_rects
             .push((MenuHit::Option(idx, oi), row_rect));
     }
 
-    /// So a player with no media reads as intentionally empty ("nothing loaded
-    /// — Open a video") rather than a blank/broken black rect.
-    fn paint_empty_placeholder(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let dim = theme.tokens.colors.text_dim;
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        let r = (self.rect.width().min(self.rect.height()) * 0.08).clamp(16.0, 44.0);
-        if r <= 0.0 {
-            return;
-        }
-        scene.stroke(
-            &Stroke::new(2.0),
-            transform,
-            dim,
-            None,
-            &Circle::new((cx, cy), r),
-        );
-        if self.has_media() {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.accent[ACCENT_PRIMARY_IDX],
-                None,
-                &Circle::new((cx, cy), (r * 0.12).max(2.0)),
-            );
-        } else {
-            // Nudged right so the triangle reads centred.
-            let s = r * 0.62;
-            let mut p = BezPath::new();
-            p.move_to((cx - s * 0.35, cy - s * 0.62));
-            p.line_to((cx + s * 0.7, cy));
-            p.line_to((cx - s * 0.35, cy + s * 0.62));
-            p.close_path();
-            scene.fill(Fill::NonZero, transform, dim, None, &p);
-        }
-    }
+    /// A player with no frame shows only its letterbox: the embedding app
+    /// says what is missing (an empty state, an error), and no glyph is
+    /// ever painted under that text.
+    fn paint_empty_placeholder(&self, _scene: &mut Scene, _transform: Affine, _theme: &Theme) {}
 
     fn draw_play_glyph(&self, scene: &mut Scene, transform: Affine, r: Rect, color: Color) {
         let cx = r.center().x;
@@ -2246,17 +2188,12 @@ impl VideoPlayer {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &RoundedRect::from_rect(rect.inflate(3.0, 3.0), 6.0),
             );
         }
     }
-}
-
-/// Shrink `r` by `d` on every side (used to breathe a glyph inside its button).
-fn inset_rect(r: Rect, d: f64) -> Rect {
-    Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
 }
 
 /// Millisecond timestamps here are bounded by realistic media durations —
@@ -3654,6 +3591,41 @@ mod tests {
     }
 
     #[test]
+    fn over_media_chrome_is_legible_and_dark_in_every_theme() {
+        use crate::a11y::{contrast_ratio, relative_luminance};
+        for theme in [Theme::dark(), Theme::light()] {
+            let name = theme.name.clone();
+            // The letterbox stays the media's near-black in a light theme.
+            let letterbox = theme.tokens.colors.media.letterbox;
+            assert!(
+                relative_luminance(letterbox) < 0.02,
+                "{name}: the letterbox turned grey"
+            );
+            // Controls ink is measured against the Panel they sit on.
+            let panel = crate::chrome::panel_ground(&theme);
+            let on_panel = theme.on_ground(panel);
+            assert!(
+                contrast_ratio(on_panel.text_primary, panel) >= 4.5,
+                "{name}: controls ink on the media Panel"
+            );
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+            vp.show_controls();
+            draw_once_with_theme(&mut vp, &theme);
+            let bar = vp.controls_bar_rect(&theme);
+            let inset = f64::from(theme.tokens.spacing.s2);
+            assert!(
+                (bar.x0 - inset).abs() < 1e-9 && (vp.rect.y1 - bar.y1 - inset).abs() < 1e-9,
+                "{name}: the controls float as a Panel inside the picture"
+            );
+            assert!(
+                vp.play_button_rect.width() >= f64::from(theme.tokens.metrics.min_pointer_target),
+                "{name}: the play control is a full pointer target"
+            );
+        }
+    }
+
+    #[test]
     fn controls_bar_lays_out_reachable_aligned_targets_at_every_size() {
         // Case `large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged`.
         {
@@ -3812,7 +3784,7 @@ mod tests {
                 format_ms(vp.position_ms),
                 format_ms(vp.duration_ms)
             );
-            let (tw, _) = tr.measure(&full, theme.tokens.typography.scale.sm, None);
+            let (tw, _) = tr.measure_style(&full, None, &theme.text(TextRole::Caption));
             assert!(
                 (vp.time_label_rect.width() - f64::from(tw)).abs() < 1e-6,
                 "label rect {:?} is not the measured full label ({tw})",
@@ -3891,7 +3863,7 @@ mod tests {
         {
             let mut vp = VideoPlayer::new();
             // Narrow bar + many priority settings ⇒ only the top few fit as icons.
-            vp.rect = Rect::new(0.0, 0.0, 560.0, 315.0);
+            vp.rect = Rect::new(0.0, 0.0, 420.0, 236.0);
             vp.reveal_controls();
             for p in 1..=8 {
                 vp.set_setting(PlayerSetting::button(
@@ -4142,10 +4114,12 @@ mod tests {
                 image_count, 0,
                 "no frame → no image draw in the empty state"
             );
-            // The letterbox fill + the ring + the play triangle are all painted.
-            assert!(
-                scene.encoding().draw_tags.len() >= 2,
-                "empty state still paints a visible placeholder"
+            // Only the letterbox: the app's empty state or error says what is
+            // missing, and no glyph is painted under its text.
+            assert_eq!(
+                scene.encoding().draw_tags.len(),
+                1,
+                "an empty player paints its letterbox and nothing else"
             );
         }
 
@@ -4222,7 +4196,8 @@ mod tests {
                 clippy::cast_sign_loss,
                 reason = "a 320x120 test surface"
             )]
-            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                .render(&scene, theme.tokens.colors.surfaces.content);
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -4275,7 +4250,7 @@ mod tests {
                         (640, 360),
                         theme.clone(),
                     );
-                    harness.render_window_png(&png);
+                    harness.render_png(&png);
                     if let Ok(json) = harness.inspection_json() {
                         std::fs::write(png.with_extension("inspection.json"), json)
                             .expect("write inspection");
@@ -4295,7 +4270,8 @@ mod tests {
                     clippy::cast_sign_loss,
                     reason = "a 640x360 test surface"
                 )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                    .render(&scene, theme.tokens.colors.surfaces.content);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -4303,13 +4279,13 @@ mod tests {
                 )]
                 let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
 
-                // Bar: the top hairline against the scrim two rows under it.
+                // Controls Panel: its edge against its ground just inside it.
                 let bar = vp.controls_bar_rect(&theme);
-                let hairline = lum(bar.x0 + 2.0, bar.y0);
-                let scrim = lum(bar.x0 + 2.0, bar.y0 + 3.0);
+                let edge = lum(bar.x0, bar.center().y);
+                let ground = lum(bar.x0 + 4.0, bar.center().y);
                 assert!(
-                    (hairline - scrim).abs() >= EDGE_MIN,
-                    "{}: bar hairline {hairline:.4} vs scrim {scrim:.4} did not register",
+                    (edge - ground).abs() >= EDGE_MIN,
+                    "{}: controls Panel edge {edge:.4} vs ground {ground:.4} did not register",
                     theme.name
                 );
 

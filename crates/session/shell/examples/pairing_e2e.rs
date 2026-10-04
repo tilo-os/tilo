@@ -240,6 +240,6 @@ fn render(view: &mut PairingPromptView, out: &PathBuf) -> Result<(), String> {
         &theme,
         &PresenceCtx::default(),
     );
-    OffscreenRenderer::new(W, H).render_png(&scene, theme.bg_app, out);
+    OffscreenRenderer::new(W, H).render_png(&scene, theme.tokens.colors.surfaces.base, out);
     Ok(())
 }

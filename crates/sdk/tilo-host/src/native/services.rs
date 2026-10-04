@@ -141,7 +141,6 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             debug_overlay: crate::env::var_os("TILO_UI_DEBUG").is_some(),
             perf_log: ui_set("TILO_UI_PERF"),
             disable_scroll_fast_path: ui_set("TILO_UI_NO_SCROLL_OPT"),
-            disable_split_cache: ui_set("TILO_UI_NO_SPLIT_CACHE"),
             gpu_timestamps: std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|v| v == "1"),
             gpu_dispatch_timestamps: std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS")
                 .is_ok_and(|v| v == "1"),

@@ -1,4 +1,3 @@
-canvas-title = Canvas
 canvas-tool-select = Select
 canvas-tool-brush = Brush
 canvas-tool-rect = Rectangle
@@ -77,6 +76,11 @@ canvas-layer-lock-name = Lock { $name }
 canvas-layer-unlock-name = Unlock { $name }
 canvas-layer-up = Raise layer
 canvas-layer-down = Lower layer
+canvas-medium-ink = Ink
+canvas-medium-oil-impasto = Impasto oil
+canvas-medium-oil-glaze = Glazed oil
+canvas-medium-watercolour-wet = Wet watercolour
+canvas-medium-watercolour-dry = Dry watercolour
 canvas-layer-remove-name = Remove { $name }
 canvas-layer-opacity = Layer opacity
 canvas-layer-opacity-value = Opacity { $percent }

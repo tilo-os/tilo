@@ -12,10 +12,11 @@ use super::{Endpoint, FloatingSurfaceProvider, LatLon, MapInfo, MapsApp, Panel, 
 impl MapsApp {
     /// Stage `scenario`'s view state, once its actions are laid out.
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        let scenario = scenario.strip_suffix("-narrow").unwrap_or(scenario);
         match scenario {
             "explore" => self.set_active_panel(Panel::Explore),
             "directions" | "transit" | "transit-arrive" => self.set_active_panel(Panel::Directions),
-            "edit-from" => self.stage_edit_origin(),
+            "edit-from" | "edit-origin" => self.stage_edit_origin(),
             "search" => self.stage_search(),
             "pois" => self.stage_pois(),
             "traffic" | "traffic-empty" => self.stage_traffic(),
@@ -24,6 +25,15 @@ impl MapsApp {
             "attribution" => self.stage_attribution(),
             "error" => self.stage_error(),
             "nav-closed" => self.set_nav_open(false),
+            "collapsed" => self.panel_collapsed = true,
+            "navigation" => {
+                self.nav_open = false;
+                self.panel_collapsed = true;
+                self.model.zoom = 15.5;
+                if let Some(start) = self.model.origin {
+                    self.center_on(start);
+                }
+            }
             "floating-navigation" => self.stage_navigation("detached"),
             _ => {
                 if let Some(stage) = scenario.strip_prefix("floating-navigation-") {
@@ -110,13 +120,7 @@ impl MapsApp {
     /// Offline maps / Licenses options render expanded over the map, anchored
     /// above its bottom-right button.
     pub(super) fn stage_overflow(&mut self) {
-        let b = self.overflow_rect();
-        self.overflow.open_at([b.x1 as f32, b.y0 as f32]);
-        let mr = self.overflow.get_rect();
-        self.overflow.open_at([
-            (b.x1 - mr.width()) as f32,
-            (b.y0 - mr.height() - 6.0) as f32,
-        ]);
+        self.open_overflow();
     }
 
     /// Scenario stage for the production navigation renderer and its real
@@ -174,11 +178,13 @@ impl MapsApp {
     /// captured headlessly. Offline local data only — no network.
     pub(super) fn stage_search(&mut self) {
         self.model.panel = Panel::Explore;
-        self.search.set_focused(true);
         self.model.query = "Marienplatz".to_string();
         let mut results = self.model.places.clone();
         self.rank_by_proximity(&mut results);
-        self.search.replace_results(results);
+        self.model.results = results;
+        self.open_platform_search(
+            ui::search::SearchRequest::this_app().with_query(self.model.query.clone()),
+        );
     }
 
     /// Select a travel mode in the Directions panel of this window only, as

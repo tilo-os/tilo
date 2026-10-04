@@ -1,5 +1,5 @@
 //! Breadcrumb widget — a horizontal path indicator with clickable ancestor
-//! segments and a chevron (`>`) separator between them.
+//! segments and a chevron icon between them.
 //!
 //! When the total width exceeds the available rect, the widget truncates
 //! the middle with `...`: keeps the first segment, inserts `...`, keeps the
@@ -10,17 +10,18 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
 
-/// ASCII `>` so it always falls back to the system font even when no
-/// fancy chevron face is loaded.
-const SEPARATOR_GLYPH: &str = ">";
+/// The separator between two segments: a chevron from the one icon set,
+/// at the small glyph size, never a typed character.
+fn separator_width(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_sm)
+}
 
 /// Three ASCII dots (rather than the `…` codepoint) keep the truncation
 /// visible in plain-text dumps.
@@ -149,16 +150,15 @@ impl Breadcrumb {
 
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
-        let (sep_w, _sep_h) = tr.measure(SEPARATOR_GLYPH, size, None);
-        let sep_w = f64::from(sep_w);
+        let sep_w = separator_width(theme);
         let mut rects = Vec::with_capacity(labels.len());
         let mut cursor_x = self.rect.x0;
         let pill_y0 = self.rect.y0;
         let pill_y1 = self.rect.y1;
         for (i, label) in labels.iter().enumerate() {
-            let (w, _h) = tr.measure(label, size, None);
+            let (w, _h) = tr.measure_style(label, None, &style);
             let w = f64::from(w);
             let r = Rect::new(cursor_x, pill_y0, cursor_x + w, pill_y1);
             rects.push(r);
@@ -187,13 +187,12 @@ impl Breadcrumb {
 /// [`Breadcrumb::visible_segments`] to decide whether the full path
 /// fits. A free function (not a method) since it touches no `self` field.
 fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-    let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+    let style = theme.text(TextRole::Caption);
     let sep_pad = f64::from(theme.tokens.spacing.s2);
-    let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
-    let sep_block = f64::from(sep_w) + sep_pad * 2.0;
+    let sep_block = separator_width(theme) + sep_pad * 2.0;
     let mut total = 0.0_f64;
     for (i, label) in labels.iter().enumerate() {
-        let (w, _) = tr.measure(label, size, None);
+        let (w, _) = tr.measure_style(label, None, &style);
         total += f64::from(w);
         if i.saturating_add(1) < labels.len() {
             total += sep_block;
@@ -222,7 +221,7 @@ impl Widget for Breadcrumb {
     ) -> NodeId {
         // Width isn't known until taffy runs, so leave it auto; height is a
         // single line of `sm` text plus 1.5x line-height for click comfort.
-        let line_h = theme.tokens.typography.scale.sm * 1.5;
+        let line_h = theme.tokens.typography.size(TextRole::Caption) * 1.5;
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::auto(),
@@ -260,19 +259,19 @@ impl Widget for Breadcrumb {
         // available width retriggers truncation on the next paint.
         self.rebuild_rects(theme, text_renderer);
 
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         // One measured line height serves every segment and chevron: all are
-        // single lines at one size, so cosmic-text gives each the same line
-        // box. Centre that, not the font size — the latter sat the whole
+        // single lines at one style, so cosmic-text gives each the same line
+        // box. Centre that, not the font style — the latter sat the whole
         // trail 1.5 px below the row's centre.
-        let (_, line_h) = text_renderer.measure(SEPARATOR_GLYPH, size, None);
+        let (_, line_h) = text_renderer.measure_style("Home", None, &style);
         let text_y = centered_text_top(self.rect.y0, self.rect.height(), f64::from(line_h));
 
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
 
         let labels = self.cached_visible.clone();
         let n = labels.len();
@@ -293,24 +292,25 @@ impl Widget for Breadcrumb {
                 Some(_) if Some(i) == self.hover_idx => accent,
                 _ => text_dim,
             };
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                size,
                 color,
                 translated(transform, r.x0, text_y),
                 None,
+                &style,
             );
             // Always dim — the chevron is chrome, not content.
             if i.saturating_add(1) < n {
-                let sep_x = r.x1 + sep_pad;
-                text_renderer.draw_text(
+                let edge = separator_width(theme);
+                let centre = Point::new(r.x1 + sep_pad + edge / 2.0, self.rect.center().y);
+                crate::icons::draw_icon(
                     scene,
-                    SEPARATOR_GLYPH,
-                    size,
+                    transform,
+                    Rect::from_center_size(centre, (edge, edge)),
+                    crate::icons::Icon::ChevronRight,
                     text_dim,
-                    translated(transform, sep_x, text_y),
-                    None,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
@@ -473,16 +473,16 @@ mod tests {
             );
             assert_eq!(
                 scene.encoding().resources.glyph_runs.len(),
-                3,
-                "home, chevron, docs"
+                2,
+                "home and docs; the chevron is an icon, not a glyph"
             );
-            let size = theme.tokens.typography.scale.sm;
-            for (index, text) in ["home", SEPARATOR_GLYPH, "docs"].into_iter().enumerate() {
+            let style = theme.text(TextRole::Caption);
+            for (index, text) in ["home", "docs"].into_iter().enumerate() {
                 crate::widget::text::assert_glyph_run_centred_in_band(
                     &scene,
                     index,
                     text,
-                    size,
+                    &style,
                     rect.y0,
                     rect.height(),
                     &mut tr,

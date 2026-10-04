@@ -6,18 +6,16 @@
 //! [`Colors`], never hand-authored per theme, so a theme swap recolours every
 //! code surface coherently. Two properties hold on every preset:
 //!
-//! - **Polarity-aware accent steps.** Keywords and type names are the primary
-//!   accent moved a quarter and a half of the way toward the body text
-//!   colour — *away from the ground*: lighter on a dark theme, darker on a
-//!   light one. Fixed accent-ramp stops cannot promise that: the ramp is
-//!   eased around a pinned primary, so its "lighter" neighbours are darker
-//!   than the accent on some presets and wash out on paper on others.
+//! - **Polarity-aware steps.** Keywords and type names are the presence
+//!   palette's blue moved a quarter and a half of the way toward the body
+//!   text colour — *away from the ground*: lighter on a dark theme, darker on
+//!   a light one.
 //! - **A contrast floor.** Each role is walked toward the body text colour
 //!   until it clears WCAG AA against both code grounds (`surfaces.base` and
 //!   `surfaces.raised`); a preset whose body text sits at maximum contrast
 //!   (high contrast) asks for AAA instead.
 
-use super::colors::{ACCENT_PRIMARY_IDX, Colors, mix8};
+use super::colors::{Colors, mix8};
 use crate::color::contrast_ratio;
 use crate::widget::code_editor::TokenKind;
 use vello::peniko::Color;
@@ -29,6 +27,8 @@ const AAA: f64 = 7.0;
 /// Body text at or above this ratio marks a maximum-contrast preset, whose
 /// syntax colours then clear [`AAA`] too.
 const MAX_CONTRAST_TEXT: f64 = 19.0;
+/// The presence slot keywords and markup start from: the blue at 265°.
+const KEYWORD_SLOT: usize = 8;
 
 /// Theme-derived colour for every syntax role. Read it from
 /// `theme.tokens.syntax` and resolve a token with [`SyntaxPalette::color`].
@@ -63,10 +63,10 @@ impl SyntaxPalette {
     pub fn from_colors(c: &Colors) -> Self {
         let base = c.surfaces.base;
         let raised = c.surfaces.raised;
-        let accent = c.accent[ACCENT_PRIMARY_IDX];
-        // The accent moved toward the body text, i.e. away from the ground,
+        let blue = c.presence.get(KEYWORD_SLOT);
+        // The blue moved toward the body text, i.e. away from the ground,
         // so each step gains contrast on either polarity.
-        let step = |toward_text: f32| mix8(accent, c.text_primary, toward_text);
+        let step = |toward_text: f32| mix8(blue, c.text_primary, toward_text);
         let floor = if contrast_ratio(c.text_primary, base) >= MAX_CONTRAST_TEXT {
             AAA
         } else {
@@ -82,7 +82,7 @@ impl SyntaxPalette {
             comment: legible(c.text_dim),
             operator: legible(c.neutral[7]),
             attribute: legible(c.semantic.danger),
-            markup: legible(accent),
+            markup: legible(blue),
             raw: legible(step(0.5)),
             math: legible(step(0.25)),
             text: c.text_primary,
@@ -206,10 +206,10 @@ mod tests {
             let dark = Theme::dark();
             let light = Theme::light();
             let luminance = |theme: &Theme| relative_luminance(theme.tokens.syntax.keyword);
-            let accent =
-                |theme: &Theme| relative_luminance(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]);
-            assert!(luminance(&dark) > accent(&dark), "dark keywords lighten");
-            assert!(luminance(&light) < accent(&light), "light keywords darken");
+            let blue =
+                |theme: &Theme| relative_luminance(theme.tokens.colors.presence.get(KEYWORD_SLOT));
+            assert!(luminance(&dark) > blue(&dark), "dark keywords lighten");
+            assert!(luminance(&light) < blue(&light), "light keywords darken");
         }
         // phase: roles_that_carry_meaning_stay_distinct
         {

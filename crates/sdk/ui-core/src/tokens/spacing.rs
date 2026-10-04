@@ -16,6 +16,50 @@ pub struct Spacing {
     pub s8: f32,
     pub s12: f32,
     pub s16: f32,
+    /// The scale named by relationship: how far apart two things are
+    /// follows from how they relate, so one relationship never carries two
+    /// different gaps.
+    pub rhythm: Rhythm,
+}
+
+/// Gaps named by the relationship between two neighbours (HIG §7b), each a
+/// step of the [`Spacing`] scale and scaled with it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rhythm {
+    /// The smallest gap two neighbours may have; a control's face inset.
+    pub tight: f32,
+    /// Controls inside one cluster (a bar's tool buttons, a field and its
+    /// toggle).
+    pub related: f32,
+    /// Siblings of equal weight: clusters on a bar, cards and rows in a
+    /// list.
+    pub sibling: f32,
+    /// Padding inside a card or panel body; the gap between two sections.
+    pub section: f32,
+    /// The gap between groups of sections, and the content gutter.
+    pub group: f32,
+}
+
+impl Rhythm {
+    /// The rhythm on the unscaled scale: 4 / 8 / 12 / 16 / 24.
+    pub const BASE: Self = Self {
+        tight: 4.0,
+        related: 8.0,
+        sibling: 12.0,
+        section: 16.0,
+        group: 24.0,
+    };
+
+    #[must_use]
+    fn scaled(&self, factor: f32) -> Self {
+        Self {
+            tight: self.tight * factor,
+            related: self.related * factor,
+            sibling: self.sibling * factor,
+            section: self.section * factor,
+            group: self.group * factor,
+        }
+    }
 }
 
 impl Spacing {
@@ -33,6 +77,7 @@ impl Spacing {
         s8: 32.0,
         s12: 48.0,
         s16: 64.0,
+        rhythm: Rhythm::BASE,
     };
 
     /// The step's value on this (possibly scaled) scale.
@@ -66,6 +111,7 @@ impl Spacing {
             s8: self.s8 * factor,
             s12: self.s12 * factor,
             s16: self.s16 * factor,
+            rhythm: self.rhythm.scaled(factor),
         }
     }
 }
@@ -90,4 +136,24 @@ pub enum SpacingStep {
     S8,
     S12,
     S16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rhythm_is_monotone_scale_steps_and_scales_with_the_scale() {
+        let base = Spacing::BASE;
+        let r = base.rhythm;
+        assert_eq!(
+            [r.tight, r.related, r.sibling, r.section, r.group],
+            [base.s1, base.s2, base.s3, base.s4, base.s6]
+        );
+        let scaled = base.scaled(1.5);
+        assert!((scaled.rhythm.section - base.s4 * 1.5).abs() < 1e-4);
+        assert!((scaled.rhythm.tight - scaled.s1).abs() < 1e-4);
+        let dense = crate::Theme::dark().with_ui_scale(2.0);
+        assert!((dense.tokens.spacing.rhythm.sibling - 24.0).abs() < 1e-4);
+    }
 }

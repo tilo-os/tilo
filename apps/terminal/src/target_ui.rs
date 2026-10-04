@@ -352,7 +352,7 @@ impl TerminalWidget {
         let pad = f64::from(theme.tokens.spacing.s2);
         let inner = f64::from(theme.tokens.spacing.s3);
         let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs))
+            .renderer_input_style(&theme.text(ui::tokens::TextRole::Caption))
             .size;
         let label = format!("{label}  ▾");
         let max_w = (header.width() - pad * 2.0 - inner * 2.0).max(0.0) as f32;
@@ -733,7 +733,7 @@ impl TerminalWidget {
         let y0 = self.rect.y0 + margin + self.header_h();
         let panel_rect = Rect::new(x0, y0, x0 + panel_w, y0 + panel_h);
         self.environments_panel.rect = panel_rect;
-        let shape = RoundedRect::from_rect(panel_rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(panel_rect, f64::from(theme.tokens.radii.panel));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -915,7 +915,7 @@ impl TerminalWidget {
         label: &str,
     ) {
         let active = rect.contains(self.last_cursor_pos);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             Fill::NonZero,
             transform,

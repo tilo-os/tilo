@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::ColorCompat;
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::{TextRenderer, TextWeight};
@@ -99,7 +100,7 @@ impl Widget for Preview {
                     (self.rect.x0 + 210.0, self.rect.y1 - 60.0),
                     (self.rect.x1 - 44.0, self.rect.y0 + 38.0),
                 );
-                s.stroke(&Stroke::new(7.0), t, c.accent[4], None, &route);
+                s.stroke(&Stroke::new(7.0), t, c.intent.inverted_hover, None, &route);
                 let instruction = Rect::new(
                     self.rect.x0 + 14.0,
                     self.rect.y0 + 14.0,
@@ -113,22 +114,21 @@ impl Widget for Preview {
                     None,
                     &RoundedRect::from_rect(instruction, 14.0),
                 );
-                tr.draw_text_weighted(
+                tr.draw_style(
                     s,
                     "↱  Turn right on Main Street",
-                    theme.tokens.typography.scale.base,
                     c.text_primary,
                     t.pre_translate((instruction.x0 + 16.0, instruction.y0 + 17.0).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme.text(TextRole::Subheading),
                 );
-                tr.draw_text(
+                tr.draw_style(
                     s,
                     "300 m  ·  12 min  ·  4.2 km",
-                    theme.tokens.typography.scale.xs,
                     c.text_dim,
                     t.pre_translate((instruction.x0 + 43.0, instruction.y0 + 36.0).into()),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
             }
             PreviewKind::Call => {
@@ -140,7 +140,7 @@ impl Widget for Preview {
                     ),
                     46.0,
                 );
-                s.fill(Fill::NonZero, t, c.accent[3], None, &avatar);
+                s.fill(Fill::NonZero, t, c.presence.get(1), None, &avatar);
                 tr.draw_text_weighted(
                     s,
                     "AM",
@@ -150,14 +150,13 @@ impl Widget for Preview {
                     None,
                     TextWeight::Semibold,
                 );
-                tr.draw_text_weighted(
+                tr.draw_style(
                     s,
                     "Avery Morgan",
-                    theme.tokens.typography.scale.base,
                     c.text_primary,
                     t.pre_translate((self.rect.center().x - 55.0, avatar.center.y + 62.0).into()),
                     None,
-                    TextWeight::Medium,
+                    &theme.text(TextRole::Body).with_weight(TextWeight::Medium),
                 );
                 let chip = Rect::new(
                     self.rect.center().x - 38.0,
@@ -172,14 +171,15 @@ impl Widget for Preview {
                     None,
                     &RoundedRect::from_rect(chip, 14.0),
                 );
-                tr.draw_text_weighted(
+                tr.draw_style(
                     s,
                     "End call",
-                    theme.tokens.typography.scale.xs,
                     vello::peniko::Color::WHITE,
                     t.pre_translate((chip.x0 + 14.0, chip.y0 + 7.0).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
             }
         }
@@ -228,14 +228,13 @@ pub fn run(_: &[String]) {
     {
         let card = Rect::new(x0, 66.0, x1, 682.0);
         s_panel(&mut scene, &theme, card);
-        tr.draw_text_weighted(
+        tr.draw_style(
             &mut scene,
             title,
-            theme.tokens.typography.scale.base,
             c.text_dim,
             Affine::translate((x0 + 22.0, 84.0)),
             None,
-            TextWeight::Medium,
+            &theme.text(TextRole::Body).with_weight(TextWeight::Medium),
         );
         if i == 1 {
             for j in 0..4 {
@@ -248,7 +247,7 @@ pub fn run(_: &[String]) {
                 scene.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
-                    c.surface_white_5,
+                    c.overlay_subtle,
                     None,
                     &RoundedRect::from_rect(block, 16.0),
                 );

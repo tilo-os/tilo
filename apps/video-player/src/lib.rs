@@ -2,8 +2,9 @@
 //! and the reusable [`ui::widget::VideoPlayer`] widget.
 //!
 //! The binary is a thin entry point ([`crate`]'s `main`); all logic lives here.
-//! [`PlayerApp`] is the root widget; [`app_root`] / [`app_root_for_shot`] build
-//! it for the live event loop and the headless screenshot path respectively.
+//! [`PlayerApp`] is the root widget; [`live_player`] builds it for the live
+//! event loop, and the framework host ([`framework_launch_spec`]) stages it for
+//! captures.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -49,14 +50,10 @@ pub use app::{PlayerApp, source_for_path};
 use std::path::PathBuf;
 use ui::widget::Widget;
 
-/// The live app root: a player with collaborative playback attached (a peer on
-/// the same workspace can join and follow). Opens `open` immediately when given.
-pub fn app_root(open: Option<PathBuf>) -> Box<dyn Widget> {
-    app_root_source(open.map(|path| source_for_path(&path)), None)
-}
-
-/// Live root for either a file or an exact-target remote-stream handoff.
-pub fn app_root_source(open: Option<media::Source>, title: Option<String>) -> Box<dyn Widget> {
+/// The live player: collaborative playback attached (a peer on the same
+/// workspace can join and follow). Opens `open` immediately when given, for
+/// either a file or an exact-target remote-stream handoff.
+pub fn live_player(open: Option<media::Source>, title: Option<String>) -> PlayerApp {
     let mut app = match open {
         Some(source) => PlayerApp::new()
             .with_open_source(source, title.unwrap_or_else(|| "Handed-off media".into())),
@@ -65,7 +62,12 @@ pub fn app_root_source(open: Option<media::Source>, title: Option<String>) -> Bo
     if let Some((position_ms, resume_playing)) = media_handoff_transport_env() {
         app = app.with_handoff_transport(position_ms, resume_playing);
     }
-    Box::new(app.with_collab())
+    app.with_collab()
+}
+
+/// The live app root, opening `open` immediately when given.
+pub fn app_root(open: Option<PathBuf>) -> Box<dyn Widget> {
+    Box::new(live_player(open.map(|path| source_for_path(&path)), None))
 }
 
 fn media_handoff_transport_env() -> Option<(u64, bool)> {
@@ -86,10 +88,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Video Player")
 }
 
-/// The headless `--shots` root: a player staged with a frame + revealed
-/// controls, no collab socket. Opens `open` when given, else a demo clip.
-/// `scenario` selects a demo overlay (see [`PlayerApp::for_shot`]).
-pub fn app_root_for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Box<dyn Widget> {
-    Box::new(PlayerApp::for_shot(open, scenario))
-}
-pub use resource::{VideoPlayer, VideoPlayerShell, launch_spec as framework_launch_spec};
+pub use resource::{
+    VideoPlayer, VideoPlayerShell, launch_spec as framework_launch_spec, remember_launch_request,
+};

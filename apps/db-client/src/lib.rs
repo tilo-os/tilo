@@ -21,7 +21,7 @@
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
 //! - `ui::CodeEditor` — the shared CRDT-backed SQL editing surface.
-//! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
+//! - [`results`]      — the sortable, paginated, horizontally-scrollable results grid.
 //! - `schema_tree` — the database → schema → table → column browser.
 //! - [`structure`] — the columns/keys/indexes inspector.
 //! - [`connect_modal`] — the new-connection form.
@@ -58,16 +58,19 @@ pub mod doc;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
-pub mod grid;
+pub mod link;
 pub mod model;
+pub mod navigator;
+pub mod query;
+mod query_split;
 pub mod resource;
+pub mod results;
 pub mod sample;
-pub mod schema_nav;
 pub mod search;
 pub mod session;
 pub mod structure;
-pub mod theme_ext;
 pub mod worker;
+pub mod workspace;
 
 pub use app::DbClientApp;
 pub use resource::{DbClient, DbClientShell};

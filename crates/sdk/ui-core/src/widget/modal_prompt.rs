@@ -11,7 +11,7 @@
 //!     .with_caption("Choose a name for the volume.");
 //! let dialog = ModalDialog::new("Create volume", body)
 //!     .open(true)
-//!     .with_max_size(420.0, 200.0)
+//!     .with_max_width(420.0)
 //!     .primary_action("Create", move || submit.set(true))
 //!     .secondary_action("Cancel", move || cancel.set(true));
 //! // …on submit: dialog.content().value()
@@ -26,8 +26,9 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, Widget};
 
@@ -39,9 +40,6 @@ const CAPTION_BLOCK: f64 = 40.0;
 const LABEL_BLOCK: f64 = 22.0;
 /// Height of a single-line embedded text field.
 const FIELD_H: f64 = 44.0;
-
-const CAPTION_SIZE: f32 = 13.5;
-const LABEL_SIZE: f32 = 12.0;
 
 /// Renders `caption → label → field`, where caption and label are optional.
 pub struct PromptBody {
@@ -134,7 +132,7 @@ impl PromptBody {
 }
 
 /// Narrows a bounded on-screen dimension (a modal body's width, capped by
-/// [`crate::widget::ModalDialog::with_max_size`]) to `f32` for the text
+/// [`crate::widget::ModalDialog::with_max_width`]) to `f32` for the text
 /// renderer's wrap width. Never approaches `f32::MAX`.
 fn px(v: f64) -> f32 {
     #[allow(
@@ -156,15 +154,43 @@ impl Widget for PromptBody {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Full width; as tall as the stack it shows, so the sheet hugs it.
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
+                height: Dimension::auto(),
             },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(w) => w,
+            _ => 0.0,
+        });
+        let mut height = TOP_PAD + FIELD_H;
+        if !self.caption.is_empty() {
+            height += CAPTION_BLOCK;
+        }
+        if !self.label.is_empty() {
+            height += LABEL_BLOCK;
+        }
+        if self.multiline {
+            // Room for a few lines before the field scrolls.
+            height += FIELD_H * 2.0;
+        }
+        taffy::Size {
+            width,
+            height: px(height),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -190,25 +216,24 @@ impl Widget for PromptBody {
         let width = px(self.rect.width().max(1.0));
         let mut y = self.rect.y0 + TOP_PAD;
         if !self.caption.is_empty() {
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &self.caption,
-                CAPTION_SIZE,
                 c.text_dim,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 Some(width),
+                &theme.text(TextRole::Body),
             );
             y += CAPTION_BLOCK;
         }
         if !self.label.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.label,
-                LABEL_SIZE,
                 c.text_primary,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Label).strong(),
             );
         }
         self.input.draw(scene, transform, tr, theme, presence);
@@ -263,8 +288,7 @@ mod tests {
     fn laid_out(body: PromptBody, viewport: Rect) -> ModalDialog<PromptBody> {
         let mut d = ModalDialog::new("Prompt", body)
             .open(true)
-            .with_viewport(viewport)
-            .with_max_size(420.0, 220.0);
+            .with_max_width(420.0);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let theme = Theme::dark();

@@ -24,7 +24,7 @@ pub type ConnectionId = Uuid;
 /// RDP remains a variant so saved, older connection profiles can round-trip
 /// without data loss. Tilo device control is backed by the shell's authenticated
 /// workspace transport and is available for new profiles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnectionKind {
     /// Secure shell — an interactive terminal session.
     Ssh,
@@ -141,7 +141,7 @@ impl ConnectionKind {
 /// How a connection authenticates. Stored alongside the connection but
 /// never carries a live secret in the document — passwords are entered at
 /// connect time and held only in volatile memory.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AuthMethod {
     /// Username + password prompted at connect time.
     Password,
@@ -197,7 +197,7 @@ impl AuthMethod {
 
 /// Reachability of a saved machine, as this device last observed it. Live
 /// state of this device, never part of the saved profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Presence {
     /// Reachable on the last probe.
     Online,
@@ -208,7 +208,7 @@ pub enum Presence {
 }
 
 /// One saved remote machine.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Connection {
     pub id: ConnectionId,
     /// Display name shown in the list (e.g. "Home Server").

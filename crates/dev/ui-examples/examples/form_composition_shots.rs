@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
     Actions, Button, Checkbox, Column, Container, Density, Element, Field, Form, FormPage,
     FormSection, LabelPlacement, Row, Scrollable, Text, TextInput,
@@ -29,7 +30,7 @@ fn email_input() -> TextInput {
     input
 }
 fn actions() -> Actions {
-    Actions::new(Button::new("save", "Save account changes", None).primary())
+    Actions::new(Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
         .secondary(Button::new("cancel", "Cancel", None))
 }
 // Automatic authoring: content, grouping and order; no layout pixels or breakpoints.
@@ -192,7 +193,6 @@ fn primitive(width: u32, scale: f32) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(shot_theme().bg_app)
             .with_child(scroll),
     )
 }
@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shot_theme().with_text_scale(scale),
             );
             let stem = format!("{mode}-{name}");
-            harness.render_window_png(&output.join(format!("{stem}.png")));
+            harness.render_png(&output.join(format!("{stem}.png")));
             std::fs::write(
                 output.join(format!("{stem}.json")),
                 harness.inspection_json()?,
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if name == "narrow-large-text" {
                 harness.click_at(5.0, 5.0);
                 harness.scroll(0.0, -10000.0);
-                harness.render_window_png(&output.join(format!("{stem}-end.png")));
+                harness.render_png(&output.join(format!("{stem}-end.png")));
                 std::fs::write(
                     output.join(format!("{stem}-end.json")),
                     harness.inspection_json()?,
@@ -253,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shot_theme(),
     );
     resized.resize((340, 800))?;
-    resized.render_window_png(&output.join("automatic-resized-narrow.png"));
+    resized.render_png(&output.join("automatic-resized-narrow.png"));
     std::fs::write(
         output.join("automatic-resized-narrow.json"),
         resized.inspection_json()?,

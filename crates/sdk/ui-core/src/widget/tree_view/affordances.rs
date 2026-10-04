@@ -9,8 +9,9 @@ use super::{
     idx_to_f64, px,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::text_render::TextStyle;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::{Chip, ChipLead, ChipStyle, Widget};
+use crate::widget::{ChipFace, ChipLead, Widget};
 
 /// Prefix of the context menu's semantic targets inside the tree.
 const MENU_TARGET: &str = "menu:";
@@ -159,22 +160,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self
     }
 
-    /// Close the tree's trailing side with a hairline derived from its
-    /// ground — the split between a sidebar and the content beside it.
-    #[must_use]
-    pub fn with_trailing_edge(mut self) -> Self {
-        self.trailing_edge = true;
-        self
-    }
-
-    /// Start rows one spacing step in from the tree's leading edge, aligned
-    /// with the heading, instead of flush against it.
-    #[must_use]
-    pub fn inset_rows(mut self) -> Self {
-        self.inset_rows = true;
-        self
-    }
-
     /// Hide tooltips while something the host paints covers the tree.
     pub fn suppress_tooltips(&mut self, suppressed: bool) {
         self.tooltips_suppressed = suppressed;
@@ -303,11 +288,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.visible_row_rect(self.visible_index_of(id)?)
     }
 
-    /// The disclosure column of `id`'s row (whether or not it is a branch).
+    /// The disclosure of `id`'s row: the leading caret column of a tree row
+    /// (whether or not it is a branch), the trailing chevron or the whole
+    /// header of a navigation row.
     #[must_use]
     pub fn disclosure_rect(&self, id: NodeId) -> Option<Rect> {
         let index = self.visible_index_of(id)?;
         let row = self.visible_row_rect(index)?;
+        if let Some(nav) = self.nav_disclosure_rect(id, row) {
+            return nav;
+        }
         let (_, depth) = self.index.row_at(&self.model, index)?;
         let x0 = row.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
         Some(Rect::new(x0, row.y0, x0 + self.disclosure_w, row.y1))
@@ -328,6 +318,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if count == 0 {
             return Vec::new();
         }
+        if self.is_nav() {
+            let icons: Vec<Icon> = self.row_actions.iter().map(|action| action.icon).collect();
+            return self.nav_action_rects(row, &icons);
+        }
         let margin = f64::from(self.spacing.s1) / 2.0;
         let side = (row.height() - 2.0 * margin).max(1.0);
         let gap = f64::from(self.spacing.s1) / 2.0;
@@ -345,8 +339,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Whether the row actions of `key`'s row are showing.
     pub(super) fn row_actions_visible(&self, key: TreeRowKey) -> bool {
         !self.row_actions.is_empty()
-            && matches!(key, TreeRowKey::Node(_))
-            && self.hovered == Some(key)
+            && matches!(key, TreeRowKey::Node(id) if self.model.shows_row_actions(id))
+            && (self.hovered == Some(key) || (self.is_focused && self.focused == Some(key)))
             && !self.reorder.is_tracking()
             && !self.menu.is_open()
             && self.rename.is_none()
@@ -361,6 +355,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             if let Some(callback) = &mut self.on_heading_action {
                 callback();
             }
+            return true;
+        }
+        if self.is_nav() && self.press_nav_section_action(point) {
             return true;
         }
         let Some(key @ TreeRowKey::Node(id)) = self.row_key_at(point) else {
@@ -414,21 +411,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return;
         };
         let hovered = self.last_cursor.is_some_and(|point| rect.contains(point));
-        let style = if hovered {
-            ChipStyle::tinted(theme.accent_primary)
-        } else {
-            ChipStyle::quiet()
-        };
-        Chip::draw_at(
-            scene,
-            transform,
-            rect,
-            "",
-            ChipLead::Glyph(action.icon),
-            style,
-            theme,
-            text_renderer,
-        );
+        ChipFace::new(rect, "")
+            .lead(ChipLead::Glyph(action.icon))
+            .hovered(hovered)
+            .paint(scene, transform, text_renderer, theme);
     }
 
     /// Paint the hovered row's actions; the one under the pointer lifts.
@@ -455,7 +441,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                     transform,
                     lift,
                     None,
-                    &rect.to_rounded_rect(f64::from(tokens.radii.sm)),
+                    &rect.to_rounded_rect(f64::from(tokens.radii.detail)),
                 );
             }
             let inset = (rect.width() * 0.2).max(1.0);
@@ -507,7 +493,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        text_size: f32,
+        text_style: &TextStyle,
         line_h: f32,
     ) {
         if !self.reorder.is_active() {
@@ -531,8 +517,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             self.rect.x1 - inset,
             cursor.y + height / 2.0,
         );
-        let radius = f64::from(tokens.radii.sm);
-        crate::surface::shadow(scene, transform, ghost, radius, &tokens.elevation.e4);
+        let radius = f64::from(tokens.radii.detail);
+        crate::surface::shadow(scene, transform, ghost, radius, &tokens.elevation.floating);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -542,7 +528,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         );
         let x = ghost.x0 + self.disclosure_w;
         let max_w = (ghost.x1 - x - self.row_gap).max(0.0);
-        let label = text_renderer.elide_to_width(label, text_size, px(max_w));
+        let label = text_renderer.elide_to_width_style(label, px(max_w), text_style);
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
@@ -552,33 +538,13 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 x,
                 crate::widget::data_table::centered_text_top(ghost.y0, height, line_h),
             ));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            text_size,
             tokens.colors.text_primary,
             xf,
             None,
-        );
-    }
-
-    /// The trailing hairline of [`Self::with_trailing_edge`].
-    pub(super) fn paint_trailing_edge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        ground: vello::peniko::Color,
-    ) {
-        if !self.trailing_edge {
-            return;
-        }
-        let edge = Rect::new(self.rect.x1 - 1.0, self.rect.y0, self.rect.x1, self.rect.y1);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::surface::edge_on(ground),
-            None,
-            &edge,
+            text_style,
         );
     }
 
@@ -607,7 +573,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .draw(scene, transform, track, metrics, theme, false);
     }
 
-    /// The open context menu, painted above everything else the tree draws.
+    /// The open context menu, painted in the window's top layer.
     pub(super) fn paint_context_menu(
         &mut self,
         scene: &mut Scene,
@@ -618,7 +584,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     ) {
         if self.menu.is_open() {
             self.menu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
     }
 

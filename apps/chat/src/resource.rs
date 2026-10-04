@@ -160,7 +160,7 @@ impl Resource for Chat {
             PublishedResource::new(
                 format!("chat.draft:{key}"),
                 tilo_document::RichText::KIND,
-                format!("Draft · {key}"),
+                format!("Draft in {key}"),
             )
         }));
         children
@@ -209,6 +209,7 @@ impl ResourceApp for ChatShell {
     fn scenarios() -> &'static [&'static str] {
         &[
             "narrow",
+            "sidebar-narrow",
             "history",
             "compact",
             "starter",
@@ -217,6 +218,9 @@ impl ResourceApp for ChatShell {
             "collaboration",
             "context",
             "msgmenu",
+            "inbox",
+            "emoji",
+            "edit-history",
             "attach",
             "attach-loading",
             "attach-error",

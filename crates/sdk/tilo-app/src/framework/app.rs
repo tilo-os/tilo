@@ -132,12 +132,24 @@ pub trait ResourceApp: 'static {
         &[]
     }
 
+    /// Default capture viewport, overridden by a named scenario when supplied.
+    const SHOT_VIEWPORT: (u32, u32) = (1024, 720);
+
+    /// The viewport a named scenario is captured at, when it is not
+    /// [`Self::SHOT_VIEWPORT`]: a narrow-window scenario names its narrow
+    /// size here instead of the app building its own capture root.
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        let _ = name;
+        None
+    }
+
     /// The viewport a capture of `scenario` (`None` for a plain `--shots`)
     /// is drawn at, unless `--viewport` names one: a narrow scenario's
     /// phone-sized window.
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
-        let _ = scenario;
-        (1024, 720)
+        scenario
+            .and_then(Self::scenario_viewport)
+            .unwrap_or(Self::SHOT_VIEWPORT)
     }
 
     /// Prepare what a capture of `fixture.scenario()` shows that its actions

@@ -111,6 +111,16 @@ impl ResourceApp for SettingsShell {
         ..ComponentBehaviour::DEFAULT
     };
 
+    #[cfg(not(feature = "thin"))]
+    fn scenarios() -> &'static [&'static str] {
+        crate::shots::SCENARIOS
+    }
+
+    #[cfg(not(feature = "thin"))]
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        crate::shots::scenario_viewport(name)
+    }
+
     fn view(cx: &mut ViewCx<Settings>) -> Element {
         cx.surface(SettingsApp::new())
     }
@@ -129,6 +139,11 @@ impl ResourceSurface<Settings> for SettingsApp {
     // rows of the widget's own rather than through the resource.
     fn publishes_document_actions(&self) -> bool {
         true
+    }
+
+    #[cfg(not(feature = "thin"))]
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 

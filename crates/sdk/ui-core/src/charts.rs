@@ -5,7 +5,7 @@
 
 pub use crate::chart_palette::ChartPalette;
 
-pub use crate::widget::function_plane::{format_tick, nice_step};
+pub use crate::widget::function_plane::{format_tick, nice_step, nice_ticks};
 pub use crate::widget::{
     AxisLabelFormat, AxisRange, AxisScale, AxisTick, BarGauge, Candle, CandlestickChart,
     CandlestickStyle, CartesianAnimationStyle, CartesianAnnotation, CartesianAnnotationKind,
@@ -19,8 +19,7 @@ pub use crate::widget::{
     HistogramNormalization, LegendPosition, MarkerShape, PieChart, PieSlice, PieStyle,
     PieTooltipAnchor, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart, PolarAreaDatum,
     PolarAreaStyle, RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle, RangeBar,
-    RangeChart, RangeStyle, RingGauge, RollingSeries, SankeyChart, SankeyLink, SankeyNode,
-    SankeySelection, SankeyStyle, Series, SeriesKind, Sparkline, SunburstChart, SunburstNode,
-    SunburstStyle, Treemap, TreemapItem, TreemapStyle, TrendCurve, TrendFill, TrendRange,
-    TrendStyle,
+    RangeChart, RangeStyle, RollingSeries, SankeyChart, SankeyLink, SankeyNode, SankeySelection,
+    SankeyStyle, Series, SeriesKind, Sparkline, SunburstChart, SunburstNode, SunburstStyle,
+    Treemap, TreemapItem, TreemapStyle, TrendCurve, TrendFill, TrendRange, TrendStyle,
 };

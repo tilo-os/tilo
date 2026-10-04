@@ -9,7 +9,7 @@ use std::rc::Rc;
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::widget::{Badge, BadgeTone, EditableLabel, ListRow};
+use ui::widget::{Badge, EditableLabel, SelectableRow};
 
 use super::{caption, icon_button, percent};
 use crate::model::Artwork;
@@ -180,7 +180,7 @@ fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row 
         let chosen = tools.layer.clone();
         let target = layer.to_owned();
         let choose = Button::new(&format!("canvas-paint-{layer}"), "", None)
-            .ghost()
+            .role(ui::widget::ButtonRole::Plain)
             .with_accessible_name(name)
             .tooltip(name)
             .with_size(THUMB.0, THUMB.1)
@@ -219,7 +219,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
     });
     let name = cx.actions().bind(
         EditableLabel::new(&row.name)
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Body)
             .with_id(&format!("canvas-layer-name-{}", row.id))
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-layer-rename"))
             .renames_on_double_click()
@@ -230,10 +230,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
         .with_gap(6.0)
         .no_wrap()
         .with_align_items(ui::taffy::AlignItems::Center)
-        .push(Box::new(Badge::semantic_pill(
-            row.medium.clone(),
-            BadgeTone::Neutral,
-        )));
+        .push(Box::new(Badge::text(row.medium.clone())));
     if row.opacity < 1.0 {
         summary = summary.push(caption(&percent(row.opacity)));
     }
@@ -279,7 +276,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
             ArtworkResource::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked)),
         )));
     Box::new(
-        ListRow::new(content)
+        SelectableRow::new(content)
             .on_raised()
             .choosing_any(
                 &tools.layer,
@@ -390,7 +387,7 @@ fn mask_buttons(cx: &ViewCx<ArtworkResource>, row: &LayerRow) -> Element {
         ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip)),
     );
     if row.clip {
-        clip = clip.primary();
+        clip = clip.role(ui::widget::ButtonRole::Primary);
     }
     Box::new(buttons.push(Box::new(clip)))
 }
@@ -411,7 +408,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
         ArtworkResource::SET_MASK_INVERT.with((row.id.clone(), !mask.invert)),
     );
     if mask.invert {
-        invert = invert.primary();
+        invert = invert.role(ui::widget::ButtonRole::Primary);
     }
     Box::new(
         Row::new()

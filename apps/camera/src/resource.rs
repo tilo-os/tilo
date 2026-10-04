@@ -266,7 +266,7 @@ pub fn standalone_launch() -> bool {
             | "--disk"
             | "--crop"
             | "--timer-running" => return true,
-            "--screen" | "--mode" | "--dir" | "--scroll" | "--hover" | "--width" | "--height"
+            "--screen" | "--mode" | "--dir" | "--hover" | "--width" | "--height"
             | "--camera-state" => {
                 let _ = args.next();
                 return true;

@@ -12,6 +12,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId};
@@ -31,6 +32,7 @@ use crate::shell::foreign::ForeignSurfaceWidget;
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::WorkspaceTree;
 
+use ui::backdrop::{BackdropFrame, BackdropRecording, BackdropRegion, RecordedBackdrop};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -159,6 +161,10 @@ pub struct FramePaint {
     /// HDR output composites them at full precision; any other rendering of
     /// `scene` shows their tone-mapped SDR rendition.
     pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    /// What `scene`'s floating surfaces are drawn over. A renderer that
+    /// composites materials blurs these before rendering the scene; any
+    /// other shows the surfaces opaque.
+    pub backdrop: Option<Arc<BackdropFrame>>,
 }
 
 impl FramePaint {
@@ -174,7 +180,15 @@ impl FramePaint {
             workspace_hold: false,
             workspace_clip: None,
             hdr_layers: Vec::new(),
+            backdrop: None,
         }
+    }
+
+    /// The same frame, with its floating surfaces drawn over `backdrop`.
+    #[must_use]
+    pub fn with_backdrop(mut self, backdrop: Option<Arc<BackdropFrame>>) -> Self {
+        self.backdrop = backdrop;
+        self
     }
 
     /// The same frame, with `layers` composited where HDR is shown.
@@ -395,7 +409,15 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     text_renderer: TextRenderer,
     theme: Theme,
+    /// The theme the settings document describes, before the active
+    /// workspace's temperature and the person's colour dress it into
+    /// [`Self::theme`].
+    configured_theme: Theme,
     watch_configured_theme: bool,
+    /// Every workspace's temperature and the person's colour: what the
+    /// chrome wears for the active workspace, and what each app window is
+    /// sent for the workspace it is in.
+    windows: super::window_appearance::WindowAppearances,
     theme_store_stamp: Option<SystemTime>,
     last_theme_store_check: Instant,
     appearance_generation: u64,
@@ -464,6 +486,8 @@ pub struct FrameBuilder {
     next_scene_revision: u64,
     /// HDR layers of the latest [`Self::paint`], until taken.
     painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    /// The backdrops the latest [`Self::paint`] drew floating surfaces over.
+    painted_backdrop: Option<Arc<BackdropFrame>>,
     /// What the pointer shows right now, so captures draw the same image.
     pointer_image: crate::compositor::cursor::PointerImage,
     /// The session network, once peer sync is up, so a control invoke can
@@ -492,6 +516,17 @@ struct FramePresentationInputs {
     theme_store_stamp: Option<std::time::SystemTime>,
 }
 
+/// The theme `shots --theme NAME` asked for; read before
+/// `TILO_SHOTS_THEME`, for callers that cannot set the environment.
+static SHOTS_THEME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Render every frame builder this process creates in the theme `name`
+/// (`dark`, `light`, `high-contrast`). Offscreen capture only; the first
+/// request wins.
+pub fn request_shots_theme(name: String) {
+    let _ = SHOTS_THEME.set(name);
+}
+
 impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
@@ -510,12 +545,15 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=light|high-contrast|dark` and
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
     /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
     /// a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
-        let requested_theme = std::env::var("TILO_SHOTS_THEME").ok();
+        let requested_theme = SHOTS_THEME
+            .get()
+            .cloned()
+            .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
         let requested_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
@@ -523,15 +561,10 @@ impl FrameBuilder {
         if requested_theme.is_none() && requested_scale.is_none() {
             return None;
         }
-        let theme = match requested_theme
+        let theme = requested_theme
             .as_deref()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("light") => Theme::light(),
-            Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
-            _ => Theme::dark(),
-        };
+            .and_then(|name| Theme::named(name.trim()))
+            .unwrap_or_else(Theme::dark);
         Some(if let Some(scale) = requested_scale {
             theme.with_text_scale(scale)
         } else {
@@ -640,8 +673,12 @@ impl FrameBuilder {
             root_node: None,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
+            configured_theme: presentation.theme.clone(),
             theme: presentation.theme,
             watch_configured_theme: false,
+            windows: super::window_appearance::WindowAppearances::new(
+                ui::tokens::PresenceHue::Blue,
+            ),
             theme_store_stamp: presentation.theme_store_stamp,
             last_theme_store_check: Instant::now(),
             appearance_generation: 0,
@@ -677,6 +714,7 @@ impl FrameBuilder {
             last_produced_sections: None,
             next_scene_revision: 1,
             painted_hdr_layers: Vec::new(),
+            painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
         };
@@ -1316,15 +1354,79 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let backdrop = BackdropRecording::begin();
         let logical = self.paint_logical();
+        let surfaces = backdrop.finish();
         let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
+        // One scene: each surface's backdrop is what was drawn before it.
+        self.painted_backdrop = self.backdrop_to_scene(surfaces, |_| Some(Vec::new()));
         self.to_scene(logical)
     }
 
     /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
     pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
         std::mem::take(&mut self.painted_hdr_layers)
+    }
+
+    /// The backdrops the latest [`Self::paint`] drew its floating surfaces
+    /// over, in scene pixels. Hand them to the renderer of that scene.
+    pub fn take_backdrop(&mut self) -> Option<Arc<BackdropFrame>> {
+        self.painted_backdrop.take()
+    }
+
+    /// Recorded floating surfaces in scene pixels, each with the complete
+    /// scene below it: the layers `below_layer` names under its own layer,
+    /// then what its layer drew before it. A surface whose layer has no
+    /// known place (`None`) keeps its opaque placeholder.
+    fn backdrop_to_scene<'a>(
+        &self,
+        surfaces: Vec<RecordedBackdrop>,
+        below_layer: impl Fn(u32) -> Option<Vec<&'a Scene>>,
+    ) -> Option<Arc<BackdropFrame>> {
+        let regions: Vec<BackdropRegion> = surfaces
+            .into_iter()
+            .filter_map(|surface| {
+                let layers = below_layer(surface.layer)?;
+                let (rect, scale) = self.surface_to_scene(surface.bounds)?;
+                let below = if layers.is_empty() {
+                    surface.below
+                } else {
+                    let mut below = Scene::new();
+                    for layer in layers {
+                        below.append(layer, None);
+                    }
+                    below.append(&surface.below, None);
+                    below
+                };
+                Some(BackdropRegion {
+                    image: surface.image,
+                    rect,
+                    blur_px: surface.blur_px * scale,
+                    below: self.to_scene(below),
+                    ground: surface.ground,
+                })
+            })
+            .collect();
+        (!regions.is_empty()).then(|| Arc::new(BackdropFrame { regions }))
+    }
+
+    /// A floating surface's logical bounds in scene pixels, through the
+    /// display it is on, and that display's scale. Every display draws the
+    /// surface, but it sits on one; that is the one its backdrop is blurred
+    /// for.
+    fn surface_to_scene(&self, bounds: Rect) -> Option<(Rect, f64)> {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => {
+                let output = output_scene::output_at(outputs, bounds.center())?;
+                let transform = output.to_scene();
+                Some((
+                    transform.transform_rect_bbox(bounds),
+                    transform.determinant().abs().sqrt(),
+                ))
+            }
+            _ => Some((bounds, 1.0)),
+        }
     }
 
     /// Whether HDR surfaces may be composited outside the scene. A
@@ -1380,8 +1482,11 @@ impl FrameBuilder {
     /// logical coordinates, the space the widget tree is laid out in.
     fn paint_logical(&mut self) -> Scene {
         self.refresh_configured_theme();
+        self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let mut scene = Scene::new();
+        // One scene: a floating surface's backdrop is what was drawn before it.
+        ui::backdrop::layer_scene(&scene, 0);
         self.host.draw(
             &mut scene,
             Affine::IDENTITY,
@@ -1496,6 +1601,7 @@ impl FrameBuilder {
             workspace_hold,
             workspace_clip,
             hdr_layers: Vec::new(),
+            backdrop: None,
         })
     }
 
@@ -1508,6 +1614,7 @@ impl FrameBuilder {
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
+        self.refresh_workspace_temperature();
         self.refresh_magnifier();
         if let Some(frame) = self.paint_content_clip() {
             return frame;
@@ -1516,6 +1623,7 @@ impl FrameBuilder {
         let recording = self
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
+        let backdrop_recording = BackdropRecording::begin();
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1571,6 +1679,7 @@ impl FrameBuilder {
             );
         }
 
+        let backdrop_surfaces = backdrop_recording.finish();
         let hdr_layers = self.hdr_layers_to_scene(
             recording
                 .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
@@ -1593,6 +1702,9 @@ impl FrameBuilder {
         let damage_regions = (!global_filter)
             .then(|| self.damage_from_sections(&sections, global_filter))
             .flatten();
+        let damage_regions = self.with_backdrop_damage(damage_regions, &backdrop_surfaces);
+        let backdrop =
+            self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
 
         let mut scene = Scene::new();
         scene.append(&sections.backdrop, None);
@@ -1652,7 +1764,28 @@ impl FrameBuilder {
             workspace_hold,
             workspace_clip,
             hdr_layers,
+            backdrop,
         }
+    }
+
+    /// A floating surface shows a blur of what is below it, which can change
+    /// without its own section changing (a ticking clock under its edge, a
+    /// repaint inside the blur's reach). Any frame that repaints part of the
+    /// screen therefore repaints every blurred surface too. An unchanged
+    /// frame (`Some` and empty) stays unchanged: nothing below moved.
+    fn with_backdrop_damage(
+        &self,
+        damage: Option<Vec<FineDamageRect>>,
+        surfaces: &[RecordedBackdrop],
+    ) -> Option<Vec<FineDamageRect>> {
+        let mut regions = damage?;
+        if regions.is_empty() || surfaces.is_empty() {
+            return Some(regions);
+        }
+        for surface in surfaces {
+            regions.push(self.native_damage_rect(Some(surface.bounds))?);
+        }
+        Some(regions)
     }
 
     fn damage_from_sections(
@@ -1907,8 +2040,12 @@ impl FrameBuilder {
         let settings = settings_store::load();
         let scheduled_night_light =
             settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
-        let automatic_theme = settings_store::str_at(&settings, "appearance", "theme")
-            .is_some_and(settings_store::day_schedule::is_automatic);
+        let automatic_theme = settings_store::str_at(
+            &settings,
+            "appearance",
+            settings_store::day_schedule::MODE_KEY,
+        )
+        .is_some_and(settings_store::day_schedule::is_automatic);
         self.day_phase = (scheduled_night_light || automatic_theme).then(|| {
             let schedule = settings_store::day_schedule::Scheduled::from_settings(&settings);
             (schedule, schedule.is_night(ui::theme::local_moment()))
@@ -1959,6 +2096,7 @@ impl FrameBuilder {
     fn refresh_configured_theme(&mut self) {
         if !self.watch_configured_theme
             || std::env::var_os("TILO_SHOTS_THEME").is_some()
+            || SHOTS_THEME.get().is_some()
             || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
         {
             return;
@@ -1980,11 +2118,105 @@ impl FrameBuilder {
         }
         self.theme_store_stamp = stamp;
         self.appearance_generation = appearance_generation;
-        self.theme = Theme::configured();
+        self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.refresh_display_comfort();
         self.rebuild_layout_tree();
         self.relayout();
+    }
+
+    /// Read the configured theme and the person's colour (their stored
+    /// choice, or the one their identity derives) again, and dress the
+    /// chrome in them.
+    fn apply_configured_theme(&mut self) {
+        self.configured_theme = Theme::configured();
+        self.windows
+            .set_your_colour(crate::shell::state::read_local_presence_hue());
+        self.theme = self
+            .configured_theme
+            .clone()
+            .in_window(&self.windows.active());
+    }
+
+    /// Entering a workspace enters its temperature: the neutral material
+    /// takes the hue the person set for a workspace
+    /// (`appearance.workspace_temperatures`), or else its wallpaper's
+    /// ([`super::desktop_backdrop::native_workspace_hue`]); a grey wallpaper
+    /// leaves it neutral. Only the hue moves, so a neutral palette shows
+    /// none. Every workspace is looked at when the active one changes and
+    /// every few seconds otherwise, so a new wallpaper retints the room it
+    /// was set on, in the chrome and in every app window shown there. Live
+    /// sessions only: offscreen capture stays on the theme it was asked for.
+    fn refresh_workspace_temperature(&mut self) {
+        if !self.watch_configured_theme {
+            return;
+        }
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        let workspaces = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.0.to_string())
+            .collect::<Vec<_>>();
+        let active = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.id.0.to_string());
+        drop(tree);
+        drop(chrome);
+        let now = Instant::now();
+        if !self.windows.due(active.as_deref(), now) {
+            return;
+        }
+        let settings = serde_json::Value::Object(settings_store::load());
+        let mut temperature_of = |id: &str| {
+            ui::theme::workspace_temperature_override(&settings, id)
+                .or_else(|| super::desktop_backdrop::native_workspace_hue(id))
+        };
+        if !self
+            .windows
+            .update(&workspaces, active.as_deref(), now, &mut temperature_of)
+        {
+            return;
+        }
+        self.theme = self
+            .configured_theme
+            .clone()
+            .in_window(&self.windows.active());
+        self.rebuild_layout_tree();
+        self.relayout();
+    }
+
+    /// What the app window(s) of `app_id` are shown in: the temperature of
+    /// the workspace holding its window (the active one before it has a
+    /// tile) and the person's colour. The compositor sends it over the
+    /// app's shell-ui connection whenever it changes.
+    #[must_use]
+    pub fn window_appearance_for_app(&self, app_id: &str) -> ui::WindowAppearance {
+        let id = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| {
+                            matches!(
+                                &tab.tile,
+                                crate::shell::state::TileContent::Foreign { app_id: candidate, .. }
+                                    if candidate == app_id
+                            )
+                        })
+                })
+                .map(|workspace| workspace.id.0.to_string())
+        };
+        self.windows.in_workspace(id.as_deref())
     }
 
     /// Enable the session-wide configured theme and live settings watcher.
@@ -1992,7 +2224,7 @@ impl FrameBuilder {
     /// for a specific palette.
     pub fn enable_configured_theme(&mut self) {
         self.watch_configured_theme = true;
-        self.theme = Theme::configured();
+        self.apply_configured_theme();
         crate::shell::i18n::apply_configured_locale();
         self.appearance_generation = self.chrome.borrow().appearance_generation;
         self.refresh_display_comfort();
@@ -2065,6 +2297,12 @@ impl FrameBuilder {
     }
 
     #[cfg(feature = "hosted-test-control")]
+    /// Draw floating chrome as under the reduced-transparency setting, so a
+    /// capture can show the opaque material beside the blurred one.
+    pub fn set_reduce_transparency_for_shots(&mut self, on: bool) {
+        self.theme = self.theme.clone().with_reduce_transparency(on);
+    }
+
     pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
         self.presence
             .set_display_name(ui::permissions::UserId(user.to_string()), name.to_string());
@@ -2469,7 +2707,7 @@ impl FrameBuilder {
         if windows.is_empty() && prompts.is_empty() {
             return std::borrow::Cow::Borrowed(presented);
         }
-        let window_radius = f64::from(self.theme.tokens.radii.xl);
+        let window_radius = f64::from(self.theme.tokens.radii.tile);
         for rect in windows {
             // One pixel past the tile, so the client's antialiased edge is
             // covered too.
@@ -5808,13 +6046,13 @@ mod tests {
         invoke("appearance.theme.light");
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
-        let light_bg = frame.theme.bg_app;
+        let light_bg = frame.theme.tokens.colors.surfaces.base;
         let light_y = relative_luminance(light);
 
         invoke("appearance.theme.dark");
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
-        let dark_bg = frame.theme.bg_app;
+        let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
 
         assert_ne!(
@@ -5842,7 +6080,7 @@ mod tests {
 
         let write = |theme: &str| {
             let mut values = serde_json::Map::new();
-            values.insert("theme".into(), serde_json::Value::String(theme.into()));
+            values.insert("mode".into(), serde_json::Value::String(theme.into()));
             values.insert("high_contrast".into(), serde_json::Value::Bool(false));
             settings_store::update_section("appearance", values).expect("write appearance");
         };
@@ -5856,14 +6094,14 @@ mod tests {
         frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
-        let light_bg = frame.theme.bg_app;
+        let light_bg = frame.theme.tokens.colors.surfaces.base;
         let light_y = relative_luminance(light);
 
         write("dark");
         frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
-        let dark_bg = frame.theme.bg_app;
+        let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
 
         assert_ne!(

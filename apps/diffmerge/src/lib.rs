@@ -10,8 +10,8 @@
 //!   result mirrored into an Automerge `Text` so the output is collaboratively
 //!   editable with undo/redo for free.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! [`DiffmergeShell`] is the single integration point used by the live event
+//! loop, the web desktop and the `--shots` renderer alike.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -39,48 +39,26 @@
 
 pub mod actions;
 pub mod app;
+mod chrome;
 pub mod diff_view;
 pub mod doc;
 pub mod highlight;
+pub mod i18n;
 pub mod merge_view;
 pub mod model;
+mod pane;
 pub mod resource;
 pub mod samples;
+mod scroll;
 mod web_file;
 
 pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, HunkChoice};
 pub use app::{DiffMergeApp, Mode};
 pub use model::{DiffModel, MergeModel, Resolution};
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(DiffMergeApp::new_demo())
-}
-
-/// Screenshot-only: the seeded demo with the transient floating status bubble
-/// pinned open, so a single headless still shows the summary overlay (not a
-/// bottom strip).
-pub fn app_root_status() -> Box<dyn Widget> {
-    Box::new(DiffMergeApp::for_shot(Some("status")))
-}
-
-/// Screenshot-only fixture states for visual regression review.
-pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
-    Box::new(DiffMergeApp::for_shot(scenario))
-}
-
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(DiffMergeApp::new())
-}
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it: the live comparison and its actions.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.diffmerge", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .as_definition("Diff & Merge")
+    ui::framework::definition::<DiffmergeShell>()
 }
 
 pub use resource::{Diffmerge, DiffmergeShell, launch_spec};

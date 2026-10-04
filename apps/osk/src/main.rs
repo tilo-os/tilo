@@ -70,15 +70,24 @@ use std::sync::{Arc, Mutex};
 use osk::imclient::{ImState, InputMethodClient, try_input_method};
 use osk::inject::{TextInjector, default_injector};
 use osk::input_purpose_name;
+use osk::widget::Pose;
 use osk::{InputPurpose, OrderedRouter, OskOutput, OskWidget, PreeditEmulator, Step};
 use ui::app::UserEvent;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
-/// Default offscreen viewport for `--shots`. Phone-portrait-ish width with
-/// just enough height for the toolbar + suggestion bar + four key rows
-/// (48 + 40 + 4×56 = 312, rounded up).
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (720, 360);
+/// Width of the default offscreen viewport for `--shots`: phone-portrait-ish.
+const DEFAULT_SHOTS_WIDTH: u32 = 720;
+
+/// Default offscreen viewport for `--shots`: the keyboard's own height (the
+/// toolbar, the suggestion bar and the four key rows) at a phone's width, so
+/// the capture is the keyboard and nothing else.
+fn default_shots_viewport() -> (u32, u32) {
+    let rows = osk::KeyboardLayout::qwerty().row_count();
+    let height =
+        osk::widget::keyboard_height(rows, &ui::tokens::Spacing::BASE, &ui::tokens::Metrics::BASE);
+    (DEFAULT_SHOTS_WIDTH, height.ceil() as u32)
+}
 
 /// Paint the effective tap targets over the keys, to see how the typing
 /// context grows and shrinks them.
@@ -108,9 +117,9 @@ fn launch_spec_with_root(
     root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
 ) -> LaunchSpec {
     LaunchSpec::new_with_args("so.tilo.osk", root)
-        .history(&osk::framework_history::HISTORY)
         .shot_root(shot_root)
-        .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+        .scenarios(SCENARIOS)
+        .shot_viewport(|_| default_shots_viewport())
         .allowed_live_flags(&["--input-method", "--no-input-method", HIT_OVERLAY_FLAG])
         .allowed_live_options(&["--purpose"])
         .disable_headless()
@@ -128,12 +137,77 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     ))
 }
 
+/// The states `--scenario` photographs the keyboard in.
+const SCENARIOS: &[&str] = &[
+    "suggestions",
+    "autocorrect",
+    "shift",
+    "caps-lock",
+    "symbols",
+    "number",
+    "azerty",
+    "pressed",
+    "long-press",
+    "space-cursor",
+    "emoji",
+    "emoji-search",
+    "emoji-tones",
+];
+
 fn shot_root_with_model(args: &LaunchArgs, model: Box<dyn osk::SwipeModel>) -> Box<dyn Widget> {
     let mut widget = OskWidget::new_with_swipe_model(model);
     if let Some(purpose) = parse_purpose_arg(args) {
         widget.set_purpose(purpose);
     }
+    if let Some(scenario) = args.scenario.as_deref() {
+        widget = stage_scenario(widget, scenario);
+    }
     Box::new(widget)
+}
+
+/// Put the keyboard in the state `scenario` names, through the same key and
+/// touch paths a person uses.
+fn stage_scenario(mut widget: OskWidget, scenario: &str) -> OskWidget {
+    let type_text = |widget: &mut OskWidget, text: &str| {
+        for c in text.chars() {
+            let label = if c == ' ' { "space" } else { &c.to_string() };
+            widget.activate_label(label);
+        }
+    };
+    match scenario {
+        "suggestions" => type_text(&mut widget, "hel"),
+        "autocorrect" => type_text(&mut widget, "teh "),
+        "shift" => {
+            widget.activate_label("Shift");
+        }
+        "caps-lock" => {
+            widget.activate_label("Shift");
+            widget.activate_label("Shift");
+        }
+        "symbols" => {
+            widget.activate_label("?123");
+        }
+        "number" => widget.set_purpose(InputPurpose::Number),
+        "azerty" => widget = widget.with_active_layout("azerty"),
+        "pressed" => widget = widget.with_pose(Pose::Pressed("g".into())),
+        "long-press" => {
+            widget = widget.with_pose(Pose::LongPress {
+                key: "e".into(),
+                pick: 2,
+            });
+        }
+        "space-cursor" => {
+            type_text(&mut widget, "hello");
+            widget = widget.with_pose(Pose::SpaceCursor);
+        }
+        "emoji" => {
+            widget.activate_label("Emoji");
+        }
+        "emoji-search" => widget = widget.with_pose(Pose::EmojiSearch("smi".into())),
+        "emoji-tones" => widget = widget.with_pose(Pose::EmojiTones("\u{1F44D}".into())),
+        _ => {}
+    }
+    widget
 }
 
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -446,12 +520,6 @@ fn purpose_from_str(s: &str) -> Option<InputPurpose> {
 #[cfg(test)]
 mod launch_tests {
     use super::*;
-    #[test]
-    fn framework_history_canonical_launch_declares_preferences() {
-        launch_spec()
-            .validate_history_declaration()
-            .expect("canonical OSK launch must install preferences History");
-    }
     use automerge::{ReadDoc, transaction::Transactable};
     use std::{
         cell::{Cell, RefCell},
@@ -632,7 +700,6 @@ mod launch_tests {
                 .unwrap()
                 .is_none()
         );
-        launch_spec().validate_history_declaration().unwrap();
     }
     struct NativeObservedRoot {
         root: Box<dyn Widget>,

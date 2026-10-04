@@ -9,10 +9,13 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
     SurfaceCx, ViewCx,
 };
+use ui::icons::Icon;
+use ui::search::SearchRequest;
 use ui::secrets::SecretStore;
 use ui::tilo_actions::{ActionAddress, ResourcePresentation};
 use ui::tilo_resource::{self, Doc, Effect, Invoke, ModelError, Resource, SearchEntry};
-use ui::widget::Element;
+use ui::tokens::SpacingStep;
+use ui::widget::{ButtonRole, Element, NavShell, Spacer};
 
 use crate::actions::{
     TOTP_ACTION_TYPE, TotpAction, account_label, account_resource_id, add_account_action, register,
@@ -118,6 +121,9 @@ pub const SCENARIOS: &[&str] = &[
     "provision",
     "persistence-error",
     "missing-secret",
+    "hover",
+    "copied",
+    "expiring",
 ];
 
 /// Framework app: the authenticator widget over [`Totp`].
@@ -136,7 +142,30 @@ impl ResourceApp for TotpShell {
     };
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        cx.surface(AuthenticatorApp::new())
+        let has_accounts = cx.local(true);
+        let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(cx.search_button(SearchRequest::this_app()))
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(
+                    cx.effect_button("Add account", &TotpEffect::AddAccount)
+                        .with_icon(Icon::Plus)
+                        .role(ButtonRole::Primary),
+                )
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        Box::new(
+            NavShell::new()
+                .content(cx.surface(AuthenticatorApp::new().with_account_signal(has_accounts)))
+                .content_header("Accounts", vec![search, add]),
+        )
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -312,12 +341,52 @@ mod tests {
             .or_else(|| node.children.iter().find_map(|child| bounds(child, target)))
     }
 
-    /// Click what the window shows as `target`, as a person does.
+    /// Click the current control using its shared widget's accessible name,
+    /// or the stable row target for the painted list.
     fn click(app: &mut TestApp<TotpShell>, target: &str) {
-        let root = app.harness().inspection().root;
-        let rect = bounds(&root, target).unwrap_or_else(|| panic!("the window shows no {target}"));
-        let centre = rect.center();
-        app.harness().click_at(centre.x, centre.y);
+        let label = match target {
+            "totp.dialog.link" => Some("Paste a setup link"),
+            "totp.dialog.uri" => Some("Setup link"),
+            "totp.dialog.secret" => Some("Secret key"),
+            "totp.dialog.advanced" => Some("Show"),
+            "totp.dialog.digits:8" => Some("8"),
+            "totp.dialog.save" => {
+                let nodes = app.harness().a11y_nodes();
+                ["Save changes", "Set up", "Add account"]
+                    .into_iter()
+                    .find(|label| {
+                        nodes.iter().any(|(_, node)| {
+                            node.label() == Some(*label) && format!("{:?}", node.role()) == "Button"
+                        })
+                    })
+            }
+            _ => None,
+        };
+        if let Some(label) = label {
+            let node = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.label() == Some(label)
+                        && !matches!(
+                            format!("{:?}", node.role()).as_str(),
+                            "Dialog" | "StaticText" | "Label"
+                        )
+                })
+                .unwrap_or_else(|| panic!("the window shows no {label}"));
+            if let Some(rect) = node.1.bounds() {
+                app.harness()
+                    .click_at((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+            } else {
+                panic!("the control {label} has no bounds");
+            }
+        } else {
+            let root = app.harness().inspection().root;
+            let rect =
+                bounds(&root, target).unwrap_or_else(|| panic!("the window shows no {target}"));
+            app.harness().click_at(rect.center().x, rect.center().y);
+        }
         app.settle();
     }
 
@@ -334,7 +403,6 @@ mod tests {
         app.settle();
         click(app, "totp.dialog.link");
         type_into(app, "totp.dialog.uri", uri);
-        click(app, "totp.dialog.fill");
         click(app, "totp.dialog.save");
     }
 
@@ -355,6 +423,40 @@ mod tests {
         bytes
             .windows(secret.len())
             .any(|window| window == secret.as_bytes())
+    }
+
+    #[test]
+    fn the_shared_header_and_empty_state_open_the_protected_sheet() {
+        for scenario in ["list", "empty"] {
+            let mut app = TestApp::<TotpShell>::capture(Some(scenario)).unwrap();
+            let add = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.label() == Some("Add account") && format!("{:?}", node.role()) == "Button"
+                })
+                .expect("the window exposes the add control")
+                .0;
+            app.harness()
+                .perform_a11y_action(add, &ui::a11y::Action::Activate)
+                .unwrap();
+            app.settle();
+            assert!(
+                app.harness()
+                    .a11y_nodes()
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Secret key"))
+            );
+            app.harness().key("Escape");
+            app.settle();
+            assert!(
+                !app.harness()
+                    .a11y_nodes()
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Secret key"))
+            );
+        }
     }
 
     #[test]
@@ -559,7 +661,20 @@ mod tests {
         crate::doc::AuthDoc::set_label(&mut peer, id, "ada@corp.example");
 
         click(&mut app, &format!("totp.select:{id}"));
-        click(&mut app, "totp.edit");
+        let edit = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|name| name.starts_with("Edit GitHub"))
+            })
+            .expect("the selected row exposes its edit action")
+            .0;
+        app.harness()
+            .perform_a11y_action(edit, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
         click(&mut app, "totp.dialog.advanced");
         click(&mut app, "totp.dialog.digits:8");
         click(&mut app, "totp.dialog.save");
@@ -644,7 +759,7 @@ mod tests {
                 "provision" => assert!(shows("Secret key"), "{scenario}: {frame}"),
                 "persistence-error" => assert!(shows("Retry saving secrets"), "{frame}"),
                 "missing-secret" => assert!(shows("Set up GitHub"), "{frame}"),
-                "empty" => assert!(shows("No matching accounts"), "{frame}"),
+                "empty" => assert!(shows("No accounts"), "{frame}"),
                 _ => assert!(shows("Copy code for GitHub"), "{scenario}: {frame}"),
             }
         }

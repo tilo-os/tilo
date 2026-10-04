@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use ui::storage::{Scope, SettingsSchema};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prefs {
     /// Sampler cadence in milliseconds. Cycled through a small set in the
     /// header control.

@@ -1,6 +1,7 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 use crate::theme::Theme;
+use crate::widget::ButtonRole;
 use crate::widget::TextInput;
 
 fn fixture() -> Element {
@@ -133,7 +134,9 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn fixed_control_needs_do_not_inherit_an_expandable_entry_minimum() {
         let mut field = Field::new(
             "Count",
-            super::super::NumberInput::new(3.0).with_size(96.0, 47.0),
+            super::super::NumberInput::new(3.0)
+                .with_range(0.0, 99.0)
+                .compact(),
         );
         solve(&mut field, 220.0, &Theme::dark());
         assert_eq!(
@@ -141,8 +144,11 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
             LabelPlacement::Beside
         );
         let control = field.children()[1].children()[0].get_rect();
-        assert_eq!(control.width(), 96.0);
-        assert_eq!(control.height(), 47.0);
+        assert!(control.width() < 140.0, "{control:?}");
+        assert_eq!(
+            control.height(),
+            super::super::ControlSize::Regular.height(&Theme::dark())
+        );
     }
 
     wide_fields_align_controls_beside_measured_labels();
@@ -172,8 +178,29 @@ fn long_form() -> Form {
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
             .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
-            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).primary())
+            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel", None)))
+}
+/// A field with a validation error marks its control invalid: the control
+/// reports it to assistive technology (and edges itself in danger ink),
+/// while a field without one stays valid.
+#[test]
+fn a_validation_error_marks_its_control_invalid() {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(long_form()),
+        (900, 700),
+        Theme::dark(),
+    );
+    let root = harness.inspection().root;
+    let invalid = |id: &str| {
+        named(&root, id)
+            .semantics
+            .as_ref()
+            .is_some_and(|node| node.state.invalid)
+    };
+    assert!(invalid("email"), "the field with an error is invalid");
+    assert!(!invalid("name"), "a field without one is not");
 }
 #[test]
 fn form_page_edges_and_resize_match_fresh_layout() {
@@ -191,7 +218,13 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             let mut sections = Vec::new();
             collect(&snapshot.root, "FormSection", &mut sections);
             assert!(forms[0].rect[2] <= 720.0);
-            assert!((forms[0].rect[0] * 2.0 + forms[0].rect[2] - f64::from(width)).abs() < 1.0);
+            // Centred in the page's viewport, which keeps the scroll bar's
+            // gutter on its trailing edge.
+            let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+            assert!(
+                (forms[0].rect[0] * 2.0 + forms[0].rect[2] - (f64::from(width) - gutter)).abs()
+                    < 1.0
+            );
             for section in sections {
                 assert_eq!(section.rect[0], forms[0].rect[0]);
             }
@@ -509,6 +542,47 @@ fn form_overrides_apply_and_reset_independently() {
     page_width_override_and_reset_leave_label_adaptation_active();
     clearing_section_and_field_overrides_restores_only_the_selected_property();
 }
+#[test]
+fn grouped_sections_are_settings_rows_with_separators() {
+    use crate::widget::{Dropdown, Toggle};
+    let theme = Theme::dark();
+    let section = FormSection::new("Camera")
+        .grouped()
+        .field(Field::new("Grid lines", Toggle::new("grid", "grid")))
+        .field(Field::new(
+            "Photo format",
+            Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format"),
+        ));
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(section)),
+        (720, 400),
+        theme.clone(),
+    );
+    let snapshot = harness.inspection();
+    let mut fields = Vec::new();
+    collect(&snapshot.root, "Field", &mut fields);
+    assert_eq!(fields.len(), 2);
+    let row = f64::from(theme.tokens.metrics.panel_row_height + theme.tokens.spacing.s2);
+    for field in &fields {
+        assert!(
+            field.rect[3] >= row - 0.5,
+            "a grouped row is at least {row} tall"
+        );
+    }
+    // Rows sit edge to edge; the separator lives between them.
+    let gap = fields[1].rect[1] - (fields[0].rect[1] + fields[0].rect[3]);
+    assert!(gap.abs() < 0.5, "rows touch, got {gap}");
+    let mut titles = Vec::new();
+    collect(&snapshot.root, "Text", &mut titles);
+    let title = titles.first().expect("section title");
+    let expected = f64::from(theme.text(TextRole::Heading).line_height_px());
+    assert!(
+        (title.rect[3] - expected).abs() < 1.0,
+        "the title is a Heading"
+    );
+}
+
 fn trailing_fixture() -> Element {
     use crate::widget::Dropdown;
     Box::new(

@@ -964,6 +964,7 @@ dependencies = [
 name = "backups"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "hex",
  "host-fs",
  "runtime-dylib",
@@ -12977,7 +12978,6 @@ dependencies = [
  "desktop-policy",
  "hex",
  "launcher",
- "mail",
  "os-actions",
  "package-store",
  "quick-xml 0.41.0",
@@ -14476,16 +14476,8 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
- "serde",
  "serde_json",
- "taffy",
- "tilo-actions",
  "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "uuid",
  "workspace-hack",
 ]

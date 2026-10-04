@@ -27,6 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
 use crate::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
@@ -76,9 +77,6 @@ pub enum LineSignal {
         open_at: usize,
     },
 }
-
-/// Matches the body baseline the rest of the UI uses for `TextInput`.
-const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 /// Geometry shared by every mark segment `draw` paints in one frame, so
 /// `paint_mark_segment` doesn't need a fistful of separate parameters.
@@ -132,6 +130,8 @@ pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
     signal: Option<LineSignal>,
+    /// The line's 1× type size: its role's, or a document editor's own
+    /// (a heading block under the page zoom).
     font_size: f32,
     wrap: bool,
     inline_formatting: bool,
@@ -177,13 +177,11 @@ pub struct RichTextLine {
 impl RichTextLine {
     pub fn new() -> Self {
         // Block-editor cells render as document copy, not a form field.
-        let inner = TextInput::local()
-            .with_plain_chrome()
-            .with_font_size(DEFAULT_FONT_SIZE);
+        let inner = TextInput::local().with_plain_chrome();
         Self {
             inner,
             signal: None,
-            font_size: DEFAULT_FONT_SIZE,
+            font_size: crate::tokens::typography::stock().size(TextRole::Body),
             wrap: false,
             inline_formatting: true,
             measurement_theme: default_measurement_theme(),
@@ -234,12 +232,25 @@ impl RichTextLine {
         self
     }
 
-    /// For `BlockEditor` heading blocks (H1=28, H2=22, H3=18).
+    /// Set the line in `role`: `Body` for interface copy, `Reading` for
+    /// long-form text. The default is `Body`.
     #[must_use]
-    pub fn with_size(mut self, size: f32) -> Self {
-        self.stack_measure = None;
-        self.font_size = size;
-        self.inner.set_font_size(size);
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.set_text_role(role);
+        self
+    }
+
+    /// Change the line's role; its height is measured again.
+    pub fn set_text_role(&mut self, role: TextRole) {
+        self.inner.set_text_role(role);
+        self.set_size(crate::tokens::typography::stock().size(role));
+    }
+
+    /// A document editor's own 1× size for this line (a heading block, the
+    /// page zoom).
+    #[must_use]
+    pub(crate) fn with_size(mut self, size: f32) -> Self {
+        self.set_size(size);
         self
     }
 
@@ -465,16 +476,12 @@ impl RichTextLine {
         self.inner.apply_layout_external(rect);
     }
 
-    pub fn font_size(&self) -> f32 {
-        self.font_size
-    }
-
-    /// Change the line's type size; its height is measured again.
-    pub fn set_size(&mut self, size: f32) {
+    /// A document editor's own 1× size; its height is measured again.
+    pub(crate) fn set_size(&mut self, size: f32) {
         if self.font_size.to_bits() != size.to_bits() {
             self.stack_measure = None;
             self.font_size = size;
-            self.inner.set_font_size(size);
+            self.inner.set_base_size(size);
         }
     }
 
@@ -530,6 +537,12 @@ impl RichTextLine {
                 self.pending_marks.push(mark);
             }
         }
+    }
+
+    /// How far the line's text starts inside its rect: the text field's
+    /// own horizontal inset (none for the editor's plain lines).
+    pub fn text_inset(&self, theme: &Theme) -> f64 {
+        self.inner.text_inset_x(theme)
     }
 
     /// Returns 0.0 before the first draw.
@@ -671,7 +684,7 @@ impl RichTextLine {
     }
 
     fn prepare_attributes(&mut self, theme: &Theme) {
-        let color = theme.tokens.colors.accent[5];
+        let color = theme.tokens.colors.text_primary;
         self.accent_rgb = Some([color.r(), color.g(), color.b()]);
         self.syntax = Some(theme.tokens.syntax.clone());
         self.refresh_attributes();
@@ -782,7 +795,7 @@ impl RichTextLine {
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
                 if segment.code || segment.link.is_some() || segment.external_link {
-                    let color = theme.tokens.colors.accent[5];
+                    let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
                 Some(span)
@@ -798,7 +811,7 @@ impl RichTextLine {
         for span in &self.marks {
             let (color, strike) = match span.mark {
                 Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
-                    (theme.tokens.colors.accent[5], false)
+                    (theme.tokens.colors.text_primary, false)
                 }
                 Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
@@ -843,7 +856,7 @@ impl RichTextLine {
             self.measurement_theme = Arc::clone(theme);
             self.stack_measure = None;
         }
-        self.inner.set_font_size(self.font_size);
+        self.inner.set_base_size(self.font_size);
         self.inner.set_multiline(self.wrap);
         self.sync_wrapped_spans(theme);
     }
@@ -1027,11 +1040,13 @@ impl Widget for RichTextLine {
                 clippy::cast_precision_loss,
                 reason = "bounded image pixel dimensions are converted to the f32 layout coordinate space"
             )]
+            // The image stands on the editor's content edge, inside the
+            // line's text inset on both sides, at its native aspect.
+            let pad = self.text_inset(&self.measurement_theme) as f32;
+            let image_width = (width - 2.0 * pad).max(1.0);
             let preview_height = dimensions.map_or(
                 220.0 * self.measurement_theme.text_scale,
-                |(image_width, image_height)| {
-                    width * image_height.max(1) as f32 / image_width.max(1) as f32
-                },
+                |(image_w, image_h)| image_width * image_h.max(1) as f32 / image_w.max(1) as f32,
             );
             return Size {
                 width,
@@ -1339,11 +1354,7 @@ fn paint_mark_segment(
     }
 
     let tokens = &theme.tokens;
-    let color = if seg.link.is_some() || seg.external_link || seg.code {
-        tokens.colors.accent[5]
-    } else {
-        tokens.colors.text_primary
-    };
+    let color = tokens.colors.text_primary;
 
     let weight = if seg.bold {
         TextWeight::Bold
@@ -1415,7 +1426,7 @@ fn paint_segment_decorations(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.accent[5],
+            tokens.colors.text_primary,
             None,
             &underline,
         );

@@ -6,10 +6,16 @@
 //!
 //! `EmptyState` folds that into one theme-driven widget:
 //!
-//! - an optional hero [`Icon`] inside a soft tinted disc,
-//! - a **title** line (the "No messages" headline),
-//! - an optional **message** line (the dim one-liner underneath),
-//! - an optional **action** pill (e.g. "Compose", "Add contact").
+//! - an optional large [`Icon`] in tertiary ink, or an illustration the app
+//!   paints into the same slot (a weather scene),
+//! - a **title** in the `Title` role (the "No messages" headline),
+//! - an optional **message**: one sentence in secondary ink, `rhythm` s3
+//!   under the title,
+//! - an optional primary **action**, s4 under the text.
+//!
+//! An error state ([`EmptyState::error`]) tints its icon with the danger
+//! status colour and bounds its message to one elided line; assistive
+//! technology still reads the whole message.
 //!
 //! The content is centered on both axes inside whatever space the parent
 //! gives the widget, so dropping it as the sole child of a content pane
@@ -25,23 +31,18 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, Scrollable, TaffyTreeExt, Widget};
-
-/// Diameter of the hero-icon disc.
-const DISC_D: f64 = 72.0;
-/// Icon glyph size drawn inside the disc.
-const ICON_D: f64 = 34.0;
 
 /// Which elements a caller asked for.
 #[derive(Clone, Copy, Debug)]
@@ -61,7 +62,9 @@ struct Metrics {
     inner_width: f32,
     pad_x: f64,
     gap: f64,
+    text_gap: f64,
     btn_h: f64,
+    hero: f64,
 }
 
 /// Which elements actually fit, and how tall the result is.
@@ -72,14 +75,35 @@ struct Fit {
     total: f64,
 }
 
-/// What an empty state shows: optional hero icon, title, optional message
-/// and optional action-pill label.
-#[derive(Clone, Copy, Debug)]
+/// Paints an empty state's illustration into the square it is given.
+pub type Illustration<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
+
+/// What an empty state shows: optional icon or illustration, title,
+/// optional message and optional action label.
+#[derive(Clone, Copy)]
 pub struct EmptyStateContent<'a> {
     pub icon: Option<Icon>,
+    /// Painted in place of the icon, in a larger square.
+    pub illustration: Option<Illustration<'a>>,
     pub title: &'a str,
     pub message: Option<&'a str>,
     pub action_label: Option<&'a str>,
+    /// Something failed: the icon takes the danger colour and the message
+    /// is bounded to one line.
+    pub error: bool,
+}
+
+impl std::fmt::Debug for EmptyStateContent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmptyStateContent")
+            .field("icon", &self.icon)
+            .field("illustration", &self.illustration.is_some())
+            .field("title", &self.title)
+            .field("message", &self.message)
+            .field("action_label", &self.action_label)
+            .field("error", &self.error)
+            .finish()
+    }
 }
 
 impl<'a> EmptyStateContent<'a> {
@@ -87,15 +111,17 @@ impl<'a> EmptyStateContent<'a> {
     pub fn new(title: &'a str) -> Self {
         Self {
             icon: None,
+            illustration: None,
             title,
             message: None,
             action_label: None,
+            error: false,
         }
     }
 
     fn parts(&self) -> Parts {
         Parts {
-            icon: self.icon.is_some(),
+            icon: self.icon.is_some() || self.illustration.is_some(),
             message: self.message.is_some(),
             action: self.action_label.is_some(),
         }
@@ -109,42 +135,37 @@ struct StackStyle {
     message: TextStyle,
     action: TextStyle,
     gap: f64,
+    text_gap: f64,
     pad_y: f64,
+    min_button: f64,
+    glyph: f64,
 }
 
 impl StackStyle {
-    /// Theme styles before renderer scaling, as the retained widget lays out.
+    /// The theme's roles, as the retained widget lays out.
     fn layout(theme: &Theme) -> Self {
-        let typography = &theme.tokens.typography.scale;
+        let wrapped = |role| theme.text(role).with_wrap_mode(TextWrapMode::WordOrGlyph);
         Self {
-            title: TextStyle::new(typography.xl).with_wrap_mode(TextWrapMode::WordOrGlyph),
-            message: TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph),
-            action: TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph),
+            title: wrapped(TextRole::Title),
+            message: wrapped(TextRole::Body),
+            action: wrapped(TextRole::Label),
             gap: f64::from(theme.tokens.spacing.s4),
+            text_gap: f64::from(theme.tokens.spacing.s3),
             pad_y: f64::from(theme.tokens.spacing.s2),
+            min_button: f64::from(theme.tokens.metrics.min_pointer_target),
+            glyph: f64::from(theme.tokens.metrics.icon_lg) * 2.0,
         }
     }
 
-    /// Centered, renderer-scaled styles for painting.
-    fn resolved(text_renderer: &TextRenderer, theme: &Theme) -> Self {
+    /// The same roles centred, for painting.
+    fn resolved(theme: &Theme) -> Self {
         let layout = Self::layout(theme);
-        let centered = |style: TextStyle| {
-            text_renderer.renderer_input_style(&style.with_align(ParagraphAlign::Center))
-        };
+        let centered = |style: TextStyle| style.with_align(ParagraphAlign::Center);
         Self {
             title: centered(layout.title),
             message: centered(layout.message),
             action: centered(layout.action),
             ..layout
-        }
-    }
-
-    fn renderer_input(&self, text_renderer: &TextRenderer) -> Self {
-        Self {
-            title: text_renderer.renderer_input_style(&self.title),
-            message: text_renderer.renderer_input_style(&self.message),
-            action: text_renderer.renderer_input_style(&self.action),
-            ..*self
         }
     }
 
@@ -164,7 +185,12 @@ impl StackStyle {
         let (_, title_h) =
             text_renderer.measure_style(content.title, Some(inner_width), &self.title);
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
-            text_renderer.measure_style(value, Some(inner_width), &self.message)
+            if content.error {
+                // An error detail is one bounded line.
+                text_renderer.measure_style("Ag", None, &self.message)
+            } else {
+                text_renderer.measure_style(value, Some(inner_width), &self.message)
+            }
         });
         let (action_w, action_h) = content.action_label.map_or((0.0, 0.0), |value| {
             text_renderer.measure_style(value, Some(inner_width), &self.action)
@@ -177,10 +203,16 @@ impl StackStyle {
             inner_width,
             pad_x,
             gap,
+            text_gap: self.text_gap,
             btn_h: if content.action_label.is_some() {
-                34.0_f64.max(f64::from(action_h) + self.pad_y * 2.0)
+                self.min_button.max(f64::from(action_h) + self.pad_y * 2.0)
             } else {
                 0.0
+            },
+            hero: if content.illustration.is_some() {
+                self.glyph * 2.0
+            } else {
+                self.glyph
             },
         }
     }
@@ -196,10 +228,10 @@ impl Fit {
         let stack = |icon: bool, message: bool| {
             let mut t = m.title_h;
             if icon {
-                t += DISC_D + m.gap;
+                t += m.hero + m.gap;
             }
             if message {
-                t += m.gap * 0.5 + m.msg_h;
+                t += m.text_gap + m.msg_h;
             }
             if parts.action {
                 t += m.gap + m.btn_h;
@@ -244,7 +276,7 @@ fn paint_empty_state(
     }
     let theme = ctx.theme;
     let transform = ctx.transform;
-    let mut style = StackStyle::resolved(ctx.text, theme);
+    let mut style = StackStyle::resolved(theme);
     let mut metrics = style.measure(ctx.text, rect.width(), content);
     let gap = metrics.gap;
 
@@ -278,7 +310,7 @@ fn paint_empty_state(
             }
         }
     }
-    let icon = if fit.icon { content.icon } else { None };
+    let show_hero = fit.icon;
     let message = if fit.message { content.message } else { None };
     let total = fit.total;
 
@@ -289,19 +321,22 @@ fn paint_empty_state(
         rect.center().y - total / 2.0
     };
 
-    if let Some(icon) = icon {
-        let disc_center = Point::new(cx, y + DISC_D / 2.0);
-        let disc = Circle::new(disc_center, DISC_D / 2.0);
-        ctx.scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.accent_primary.with_alpha_factor(0.14),
-            None,
-            &disc,
+    if show_hero {
+        let slot = Rect::from_center_size(
+            Point::new(cx, y + metrics.hero / 2.0),
+            (metrics.hero, metrics.hero),
         );
-        let icon_rect = Rect::from_center_size(disc_center, (ICON_D, ICON_D));
-        icon.draw_with_stroke(ctx.scene, transform, icon_rect, theme.accent_primary, 1.75);
-        y += DISC_D + gap;
+        if let Some(illustration) = content.illustration {
+            illustration(ctx, slot);
+        } else if let Some(icon) = content.icon {
+            let ink = if content.error {
+                theme.tokens.colors.semantic.danger
+            } else {
+                theme.text_tertiary
+            };
+            icon.draw(ctx.scene, transform, slot, ink);
+        }
+        y += metrics.hero + gap;
     }
 
     let text_x = cx - f64::from(metrics.inner_width) / 2.0;
@@ -315,14 +350,27 @@ fn paint_empty_state(
     y += metrics.title_h;
 
     if let Some(msg) = message {
-        y += gap * 0.5;
-        ctx.text(
-            msg,
-            &style.message,
-            theme.text_dim,
-            Point::new(text_x, y),
-            Some(metrics.inner_width),
-        );
+        y += metrics.text_gap;
+        if content.error {
+            let line = ctx
+                .text
+                .elide_to_width_style(msg, metrics.inner_width, &style.message);
+            ctx.text(
+                &line,
+                &style.message,
+                theme.text_dim,
+                Point::new(text_x, y),
+                Some(metrics.inner_width),
+            );
+        } else {
+            ctx.text(
+                msg,
+                &style.message,
+                theme.text_dim,
+                Point::new(text_x, y),
+                Some(metrics.inner_width),
+            );
+        }
         y += metrics.msg_h;
     }
 
@@ -333,33 +381,27 @@ fn paint_empty_state(
         let action_rect = Rect::new(x0, y, x0 + bw, y + metrics.btn_h);
         let hovered = action_rect.contains(hover);
         let bg = if hovered {
-            theme.accent_hover
+            theme.tokens.colors.intent.inverted_hover
         } else {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         };
-        let pill = RoundedRect::from_rect(action_rect, f64::from(theme.tokens.radii.md));
+        let radius = f64::from(theme.tokens.radii.control);
+        let pill = RoundedRect::from_rect(action_rect, radius);
         ctx.scene.fill(Fill::NonZero, transform, bg, None, &pill);
         // An empty-state action is often the only route out of a first-use
         // screen. Keep the normal, high-visibility focus treatment even
         // though this compact state is painted as one immediate-mode widget.
         if action_focused {
-            ctx.scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &pill,
-            );
+            crate::widget::paint_focus_ring(ctx.scene, transform, action_rect, radius, theme);
         }
         let ty = action_rect.y0 + (metrics.btn_h - metrics.action_h) / 2.0;
         ctx.text(
             label,
             &style.action,
-            // Ink chosen against the accent fill (rest and hover), so the
-            // label reads on a light theme's accent too.
+            // Ink chosen against the inverted fill (rest and hover).
             theme.tokens.colors.ink_on_any(
-                &[bg, theme.accent_primary],
-                Color::WHITE,
+                &[bg, theme.tokens.colors.intent.inverted],
+                theme.tokens.colors.intent.on_inverted,
                 ON_FILL_MIN_CONTRAST,
             ),
             Point::new(text_x, ty),
@@ -374,6 +416,8 @@ fn paint_empty_state(
 /// A centered empty-state placeholder: hero icon + title + message + action.
 pub struct EmptyState {
     icon: Option<Icon>,
+    illustration: Option<Box<dyn Fn(&mut PaintCtx<'_>, Rect)>>,
+    error: bool,
     title: String,
     message: Option<String>,
     action_label: Option<String>,
@@ -405,6 +449,8 @@ impl EmptyState {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             icon: None,
+            illustration: None,
+            error: false,
             title: title.into(),
             message: None,
             action_label: None,
@@ -421,21 +467,39 @@ impl EmptyState {
         }
     }
 
-    /// Add a hero icon rendered inside a soft tinted disc above the title.
+    /// Something failed to load or open: `title` says what, `detail` says
+    /// why. The detail shows as one bounded line; assistive technology
+    /// reads all of it.
+    pub fn error(title: impl Into<String>, detail: impl Into<String>) -> Self {
+        let mut state = Self::new(title).with_message(detail);
+        state.error = true;
+        state
+    }
+
+    /// A large icon in tertiary ink above the title.
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
         self
     }
 
-    /// Add the dim one-line message under the title.
+    /// An illustration the app paints into the slot above the title (twice
+    /// the icon's size), from theme values. It is the first thing shed when
+    /// the pane is short.
+    #[must_use]
+    pub fn with_illustration(mut self, paint: impl Fn(&mut PaintCtx<'_>, Rect) + 'static) -> Self {
+        self.illustration = Some(Box::new(paint));
+        self
+    }
+
+    /// One sentence under the title, in secondary ink.
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
     }
 
-    /// Add an accent call-to-action pill under the message. The label is a
+    /// Add the one primary action under the message. The label is a
     /// pre-resolved display string (callers do the `i18n!` lookup).
     #[must_use]
     pub fn with_action(mut self, label: impl Into<String>) -> Self {
@@ -524,8 +588,7 @@ impl EmptyState {
             action_label,
             ..EmptyStateContent::new(title)
         };
-        let metrics =
-            StackStyle::resolved(text_renderer, theme).measure(text_renderer, width, &content);
+        let metrics = StackStyle::resolved(theme).measure(text_renderer, width, &content);
         metrics.title_h + action_label.map_or(0.0, |_| metrics.gap + metrics.btn_h)
     }
 
@@ -560,9 +623,14 @@ impl EmptyState {
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: self.icon,
+            illustration: self
+                .illustration
+                .as_deref()
+                .map(|paint| paint as Illustration<'_>),
             title: &self.title,
             message: self.message.as_deref(),
             action_label: self.action_label.as_deref(),
+            error: self.error,
         }
     }
 }
@@ -606,11 +674,9 @@ impl Widget for EmptyState {
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
         });
         let measured_width = width.unwrap_or(240.0).max(1.0);
-        let metrics = self.layout_style.renderer_input(text_renderer).measure(
-            text_renderer,
-            f64::from(measured_width),
-            &self.content(),
-        );
+        let metrics =
+            self.layout_style
+                .measure(text_renderer, f64::from(measured_width), &self.content());
         let essential_height = metrics.title_h
             + self
                 .action_label
@@ -930,7 +996,9 @@ mod tests {
             inner_width: 0.0,
             pad_x: 0.0,
             gap: 16.0,
+            text_gap: 12.0,
             btn_h: 34.0,
+            hero: 72.0,
         }
     }
 
@@ -1000,10 +1068,12 @@ mod tests {
             let width = (rect.width() - gap * 2.0).max(1.0) as f32;
             let title = "Couldn’t open this page";
             let message = "The site did not respond. Check your connection and try again.";
-            let title_style =
-                TextStyle::new(theme.tokens.typography.scale.xl).with_align(ParagraphAlign::Center);
-            let message_style =
-                TextStyle::new(theme.tokens.typography.scale.sm).with_align(ParagraphAlign::Center);
+            let title_style = theme
+                .text(TextRole::Title)
+                .with_align(ParagraphAlign::Center);
+            let message_style = theme
+                .text(TextRole::Caption)
+                .with_align(ParagraphAlign::Center);
             let mut renderer = TextRenderer::new();
             renderer.set_text_scale(theme.text_scale);
             let (_, title_one_line_height) = renderer.measure_style(title, None, &title_style);
@@ -1031,11 +1101,10 @@ mod tests {
             );
             let action = state.action_rect();
             assert!(rect.contains(action.center()));
-            let action_style = renderer.renderer_input_style(
-                &TextStyle::new(theme.tokens.typography.scale.sm)
-                    .with_wrap_mode(TextWrapMode::WordOrGlyph)
-                    .with_align(ParagraphAlign::Center),
-            );
+            let action_style = theme
+                .text(TextRole::Label)
+                .with_wrap_mode(TextWrapMode::WordOrGlyph)
+                .with_align(ParagraphAlign::Center);
             let (_, action_line_height) =
                 renderer.measure_style("Try again", Some(width), &action_style);
             assert!(
@@ -1058,6 +1127,8 @@ mod tests {
                         rect,
                         &EmptyStateContent {
                             icon: Some(Icon::Inbox),
+                            illustration: None,
+                            error: false,
                             title: "Keine synchronisierten Nachrichten in diesem Arbeitsbereich",
                             message: Some(
                         "Sobald eine Verbindung verfügbar ist, erscheinen neue Nachrichten automatisch.",
@@ -1105,6 +1176,8 @@ mod tests {
                 rect,
                 &EmptyStateContent {
                     icon: Some(Icon::Inbox),
+                    illustration: None,
+                    error: false,
                     title: "No messages are available",
                     message: Some("Reconnect to load messages."),
                     action_label: Some("Review connection settings"),
@@ -1355,6 +1428,8 @@ mod tests {
                 rect,
                 &EmptyStateContent {
                     icon: Some(Icon::Inbox),
+                    illustration: None,
+                    error: false,
                     title: "No mail",
                     message: Some("You're all caught up"),
                     action_label: Some("Compose"),
@@ -1369,6 +1444,8 @@ mod tests {
                 rect,
                 &EmptyStateContent {
                     icon: None,
+                    illustration: None,
+                    error: false,
                     title: "Empty",
                     message: None,
                     action_label: None,
@@ -1523,6 +1600,8 @@ mod tests {
                 rect,
                 &EmptyStateContent {
                     icon: None,
+                    illustration: None,
+                    error: false,
                     title: "No messages",
                     message: None,
                     action_label: Some("Compose"),
@@ -1557,5 +1636,97 @@ mod tests {
         roomy_scrollable_retains_the_icon_and_explanatory_message();
         roomy_manual_pane_keeps_the_essential_block_centered();
         accessibility_is_a_named_group();
+    }
+
+    #[test]
+    fn errors_use_the_danger_tone_and_one_bounded_line() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let detail = "The file ends before its cross-reference table. ".repeat(6);
+        let content = EmptyStateContent {
+            icon: Some(Icon::FileText),
+            message: Some(detail.as_str()),
+            error: true,
+            ..EmptyStateContent::new("Can't open this document")
+        };
+        let style = StackStyle::resolved(&theme);
+        let error = style.measure(&mut text, 360.0, &content);
+        let plain = style.measure(
+            &mut text,
+            360.0,
+            &EmptyStateContent {
+                error: false,
+                ..content
+            },
+        );
+        assert!(
+            error.msg_h < plain.msg_h,
+            "the detail is bounded to one line"
+        );
+        assert_eq!(error.text_gap, f64::from(theme.tokens.spacing.s3));
+        assert_eq!(error.gap, f64::from(theme.tokens.spacing.s4));
+
+        let state = EmptyState::error("Can't open this document", detail.clone());
+        let node = Widget::accessibility(&state).unwrap();
+        assert_eq!(
+            node.description.as_deref(),
+            Some(detail.as_str()),
+            "full text"
+        );
+
+        // The glyph is the danger colour, not an accent or the inverted fill.
+        let mut scene = Scene::new();
+        paint_empty_state(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 360.0, 400.0),
+            &content,
+            Point::new(-1.0, -1.0),
+            false,
+        );
+        let danger = theme.tokens.colors.semantic.danger.to_rgba8();
+        let encoded = scene.encoding();
+        let has_danger = encoded.draw_data.chunks(1).any(|word| {
+            word.first().is_some_and(|w| {
+                let [r, g, b, a] = w.to_le_bytes();
+                (r, g, b, a) == (danger.r, danger.g, danger.b, danger.a)
+                    || (a, b, g, r) == (danger.r, danger.g, danger.b, danger.a)
+            })
+        });
+        assert!(has_danger, "error glyph is painted in the danger colour");
+    }
+
+    #[test]
+    fn an_illustration_takes_the_hero_slot_and_sheds_first() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let painted = std::cell::Cell::new(None);
+        let paint = |_: &mut PaintCtx<'_>, rect: Rect| painted.set(Some(rect));
+        let content = EmptyStateContent {
+            illustration: Some(&paint),
+            message: Some("Search for a city to see its forecast."),
+            ..EmptyStateContent::new("No places yet")
+        };
+        let mut scene = Scene::new();
+        paint_empty_state(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 400.0, 500.0),
+            &content,
+            Point::new(-1.0, -1.0),
+            false,
+        );
+        let slot = painted.take().expect("illustration painted");
+        assert!((slot.width() - f64::from(theme.tokens.metrics.icon_lg) * 4.0).abs() < 0.5);
+        let mut cramped = Scene::new();
+        paint_empty_state(
+            &mut PaintCtx::new(&mut cramped, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 400.0, 80.0),
+            &content,
+            Point::new(-1.0, -1.0),
+            false,
+        );
+        assert!(
+            painted.take().is_none(),
+            "a short pane sheds the illustration"
+        );
     }
 }

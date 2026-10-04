@@ -380,16 +380,14 @@ fn history_label(entry: &HistoryEntry) -> String {
 }
 
 fn graph_label(kind: GraphKind, plot: &PlotFn) -> String {
-    let rhs = if plot.expr.trim().is_empty() {
-        "(empty)"
-    } else {
-        plot.expr.trim()
+    let (lhs, empty) = match kind {
+        GraphKind::Curve2d => ("y", "Empty function"),
+        GraphKind::Surface3d => ("z", "Empty surface"),
     };
-    let lhs = match kind {
-        GraphKind::Curve2d => "y",
-        GraphKind::Surface3d => "z",
-    };
-    clip(&format!("{lhs} = {rhs}"), 48)
+    if plot.expr.trim().is_empty() {
+        return empty.to_owned();
+    }
+    clip(&format!("{lhs} = {}", plot.expr.trim()), 48)
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -404,9 +402,18 @@ fn clip(s: &str, n: usize) -> String {
 /// Framework app: the calculator widget is the surface over [`Calculator`].
 pub struct CalculatorShell;
 
-/// The screenshot scenarios. A plain `--shots` is the lived-in 2D graph.
+/// The screenshot scenarios. A plain `--shots` is the lived-in Calculator.
 const SCENARIOS: &[&str] = &[
     "calculator",
+    "calculator-error",
+    "calculator-narrow",
+    "calculator-drawer",
+    "graph-2d",
+    "graph-2d-long-formula",
+    "graph-2d-narrow",
+    "graph-2d-drawer",
+    "graph-3d",
+    "graph-3d-narrow",
     "graph2d",
     "graph3d",
     "history-open",
@@ -419,10 +426,6 @@ const SCENARIOS: &[&str] = &[
     "error",
     "remote-cursor",
 ];
-
-/// A collaborator's pointer in the `remote-cursor` scenario: over the first
-/// function's formula, which draws it as their caret in the math.
-pub const REMOTE_POINTER: (f32, f32) = (110.0, 175.0);
 
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
@@ -438,17 +441,23 @@ impl ResourceApp for CalculatorShell {
         SCENARIOS
     }
 
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        (name.ends_with("-narrow") || name.ends_with("-drawer")).then_some((520, 820))
+    }
+
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario.is_some_and(|name| name.starts_with("narrow")) {
             (480, 800)
         } else {
-            (1280, 800)
+            scenario
+                .and_then(Self::scenario_viewport)
+                .unwrap_or((1280, 800))
         }
     }
 
     fn fixture(fixture: &mut Fixture<Calculator>) {
         if fixture.scenario() == Some("remote-cursor") {
-            let (x, y) = REMOTE_POINTER;
+            let (x, y) = CalculatorApp::fixture_remote_pointer();
             fixture.collaborator(
                 "Alice",
                 ResourceSelection::Pointer {
@@ -463,7 +472,7 @@ impl ResourceApp for CalculatorShell {
     /// A lived-in calculator: five calculations, four curves and three
     /// surfaces, or one long curve for `long-formula`; nothing for `empty`.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Calculator>> {
-        let model = match name {
+        let mut model = match name {
             Some("empty") => return Vec::new(),
             Some("long-formula") => CalcModel {
                 funcs: vec![PlotFn {
@@ -472,8 +481,44 @@ impl ResourceApp for CalculatorShell {
                 }],
                 ..CalcModel::default()
             },
+            Some("graph-2d-long-formula") => CalcModel {
+                funcs: vec![PlotFn {
+                    expr: LONG_FORMULA.into(),
+                    visible: true,
+                }],
+                ..CalcModel::seeded()
+            },
             _ => CalcModel::seeded(),
         };
+        // Retain the original graph fixtures and their stable row identities.
+        // The hyphenated visual scenarios keep their nonintersecting surfaces.
+        if name.is_some_and(|name| {
+            matches!(
+                name,
+                "calculator"
+                    | "history-open"
+                    | "history-closed"
+                    | "narrow"
+                    | "error"
+                    | "graph2d"
+                    | "graph3d"
+                    | "remote-cursor"
+                    | "selection"
+                    | "narrow-functions"
+            )
+        }) {
+            model.surfaces = [
+                crate::model::DEFAULT_SURFACE,
+                "0.05*(x^2+y^2)-3",
+                "3-0.06*(x^2+y^2)",
+            ]
+            .into_iter()
+            .map(|expr| PlotFn {
+                expr: expr.into(),
+                visible: true,
+            })
+            .collect();
+        }
         scenario_actions(&model)
             .iter()
             .filter_map(|action| Invoke::apply(action).ok())
@@ -599,7 +644,7 @@ mod tests {
     /// write the document.
     #[test]
     fn captures_stage_through_actions() {
-        let mut graph = TestApp::<CalculatorShell>::capture(None).unwrap();
+        let mut graph = TestApp::<CalculatorShell>::capture(Some("graph2d")).unwrap();
         let state = graph.state();
         assert_eq!(state.history.len(), 5);
         assert_eq!(state.history[0].1.expr, "12*(4+3)", "newest first");
@@ -610,5 +655,45 @@ mod tests {
 
         let empty = TestApp::<CalculatorShell>::capture(Some("empty")).unwrap();
         assert_eq!(empty.state(), CalculatorState::default());
+    }
+}
+
+#[cfg(test)]
+mod scenario_tests {
+    use super::*;
+    use crate::model;
+
+    /// Every scenario stages a lived-in calculator through the document's own
+    /// actions, and each narrow one captures at a phone-sized window.
+    #[test]
+    fn scenarios_stage_lived_in_content_and_declare_narrow_viewports() {
+        let history = model::DEMO_HISTORY.len();
+        let surfaces = model::DEMO_SURFACES.len();
+        let full = history + model::DEMO_CURVES.len() + surfaces;
+        for name in CalculatorShell::scenarios() {
+            let expected = match *name {
+                "empty" => 0,
+                "long-formula" => 1,
+                "graph-2d-long-formula" => history + 1 + surfaces,
+                name if name.starts_with("calculator-") || name.starts_with("graph-") => full,
+                _ => history + model::DEMO_CURVES.len() + 3,
+            };
+            assert_eq!(
+                CalculatorShell::scenario(Some(name)).len(),
+                expected,
+                "scenario {name}"
+            );
+            let narrow = name.ends_with("-narrow") || name.ends_with("-drawer");
+            assert_eq!(
+                CalculatorShell::scenario_viewport(name).is_some(),
+                narrow,
+                "viewport of {name}"
+            );
+        }
+        assert_eq!(
+            CalculatorShell::scenario(None).len(),
+            full,
+            "a plain capture is lived in too"
+        );
     }
 }

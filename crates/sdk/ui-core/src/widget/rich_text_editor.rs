@@ -43,7 +43,6 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
 use crate::presence::PresenceCtx;
 use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -54,6 +53,7 @@ use crate::text_selection::{
     word_boundaries,
 };
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::marks::{self, Mark, MarkSpan};
@@ -144,6 +144,9 @@ impl RichBlockStyle {
 pub struct RichTextEditor {
     key: String,
     placeholder: String,
+    /// `Body` for interface copy, `Reading` (serif) for long-form text.
+    text_role: TextRole,
+    /// The role's 1× size; block styles scale off it.
     base_font_size: f32,
     frame: bool,
 
@@ -191,7 +194,8 @@ impl RichTextEditor {
         Self {
             key: key.into(),
             placeholder: String::new(),
-            base_font_size: 16.0,
+            text_role: TextRole::Body,
+            base_font_size: crate::tokens::typography::stock().size(TextRole::Body),
             frame: true,
             field_obj: None,
             text_obj: None,
@@ -224,10 +228,13 @@ impl RichTextEditor {
         self.placeholder = text.into();
         self
     }
-    /// Override the base body font size (logical px). Block styles scale off it.
+    /// Set the editor's body in `role`: [`TextRole::Body`] (the default)
+    /// or [`TextRole::Reading`] for long-form text. Block styles scale off
+    /// the role.
     #[must_use]
-    pub fn with_font_size(mut self, px: f32) -> Self {
-        self.base_font_size = px;
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.text_role = role;
+        self.base_font_size = crate::tokens::typography::stock().size(role);
         self
     }
     /// Draw the editor without its rounded frame (for an inline title field).
@@ -534,7 +541,7 @@ impl RichTextEditor {
         let layout = RichTextLayout::shape_styled_browser(
             &mut tr.font_system,
             &spans,
-            &RichTextLayout::block_style(base_bold, size, FontFamily::Sans, 1.0),
+            &RichTextLayout::block_style(base_bold, size, self.body_family(), 1.0),
             Some(width),
             TextAlign::Left,
             underlines,
@@ -543,6 +550,14 @@ impl RichTextEditor {
         );
         tr.note_browser_rich_layout(&layout);
         layout
+    }
+
+    fn body_family(&self) -> FontFamily {
+        match self.text_role {
+            TextRole::Reading => FontFamily::Serif,
+            TextRole::Code => FontFamily::Mono,
+            _ => FontFamily::Sans,
+        }
     }
 
     fn ensure_layout(&mut self, tr: &mut TextRenderer, width: f32) {
@@ -935,14 +950,15 @@ impl Widget for RichTextEditor {
         _presence: &PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         if self.frame {
             let body = RoundedRect::from_rect(self.rect, radius);
-            scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &body);
+            let well = theme.tokens.colors.surfaces.raised;
+            scene.fill(Fill::NonZero, transform, well, None, &body);
             let border = if self.focused {
                 theme.border_focus
             } else {
-                crate::surface::edge_on(theme.bg_primary)
+                crate::surface::edge_on(well)
             };
             scene.stroke(&Stroke::new(1.0), transform, border, None, &body);
         }
@@ -976,7 +992,7 @@ impl Widget for RichTextEditor {
         if self.preedit.is_empty() {
             let r = self.core.range();
             if r.start < r.end {
-                let sel = theme.accent_primary.with_alpha_factor(0.30);
+                let sel = theme.tokens.colors.intent.selection_tint;
                 for (x0, y0, x1, y1) in layout.selection_rects(r.start, r.end) {
                     let rect =
                         Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
@@ -1012,7 +1028,13 @@ impl Widget for RichTextEditor {
                 f64::from(cx) + theme.caret_width,
                 f64::from(top + h),
             );
-            scene.fill(Fill::NonZero, t, theme.accent_primary, None, &caret);
+            scene.fill(
+                Fill::NonZero,
+                t,
+                theme.tokens.colors.intent.you,
+                None,
+                &caret,
+            );
         }
         self.redraw = false;
     }

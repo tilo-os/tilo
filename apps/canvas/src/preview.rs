@@ -71,7 +71,13 @@ impl VersionPreview {
             transform,
             &rect,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &rect,
+        );
         let margin = f64::from(theme.tokens.spacing.s6);
         let room = rect.inset(-margin);
         if room.width() > 1.0 && room.height() > 1.0 && art.width > 0.0 && art.height > 0.0 {
@@ -95,12 +101,12 @@ impl VersionPreview {
         scene.stroke(
             &Stroke::new(2.0),
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &rect.inset(-1.0),
         );
         let label = ui::i18n::I18nManager::lookup_plain("canvas-preview-banner");
-        let size = theme.tokens.typography.scale.sm;
+        let size = theme.tokens.typography.size(ui::tokens::TextRole::Caption);
         let (width, height) = text.measure(&label, size, None);
         let pad = f64::from(theme.tokens.spacing.s2);
         let pill = Rect::from_origin_size(
@@ -113,7 +119,7 @@ impl VersionPreview {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &pill.to_rounded_rect(pill.height() / 2.0),
         );
@@ -121,10 +127,11 @@ impl VersionPreview {
             scene,
             &label,
             size,
-            theme
-                .tokens
-                .colors
-                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
+            theme.tokens.colors.ink_on(
+                theme.tokens.colors.intent.you,
+                theme.tokens.colors.intent.on_inverted,
+                ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+            ),
             transform * Affine::translate(pill.origin().to_vec2() + Vec2::new(pad * 2.0, pad)),
             None,
         );

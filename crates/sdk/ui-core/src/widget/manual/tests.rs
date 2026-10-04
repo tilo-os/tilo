@@ -26,10 +26,11 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
     fn fractional_button_allocation_drives_inspection_semantics_and_click() {
         let mut harness = FrameHarness::new(
             crate::State::new(),
-            Box::new(fixed(Box::new(
-                Button::new("action", "A very long action title", Some("clicked"))
-                    .fit_content(40.0),
-            ))),
+            Box::new(fixed(Box::new(Button::new(
+                "action",
+                "A very long action title",
+                Some("clicked"),
+            )))),
             (400, 300),
         );
         let snapshot = harness.inspection();
@@ -89,12 +90,20 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
 
     fn row_and_column_keep_authored_allocation_separate_from_overflow() {
         for child in [
-            Box::new(Column::new().with_no_padding().push(Box::new(
-                Button::new("large", "Large", None).with_size(250.0, 90.0),
-            ))) as Element,
-            Box::new(Row::new().no_wrap().push(Box::new(
-                Button::new("large", "Large", None).with_size(250.0, 90.0),
-            ))) as Element,
+            Box::new(
+                Column::new().with_no_padding().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
+            Box::new(
+                Row::new().no_wrap().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
         ] {
             let harness =
                 FrameHarness::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
@@ -423,7 +432,9 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
             })
         })
         .child(Box::new(
-            Button::new("fixed", "OK", None).with_size(96.5, 44.25),
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(96.5, 44.25),
         ));
         let _ = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
     }

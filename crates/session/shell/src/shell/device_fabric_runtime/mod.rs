@@ -7067,7 +7067,7 @@ mod tests {
             clipboard: Vec::new(),
             settings: setting
                 .map(|value| RoamingSetting {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     value,
                     stamp,
                 })
@@ -7665,7 +7665,7 @@ mod tests {
                 media: Vec::new(),
                 clipboard: Vec::new(),
                 settings: vec![RoamingSetting {
-                    key: "tilo.appearance.theme".into(),
+                    key: "tilo.appearance.mode".into(),
                     value: Value::Bool(false),
                     stamp: old_stamp,
                 }],
@@ -7675,10 +7675,10 @@ mod tests {
             };
             let next_stamp = FabricStamp { counter: 9, device };
             let applied_remote =
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]);
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]);
 
             let received = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7686,7 +7686,7 @@ mod tests {
             assert_eq!(received, previous.settings);
 
             let edited = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(false))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(false))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7696,7 +7696,7 @@ mod tests {
 
             previous.settings.clear();
             let bootstrap = reconcile_roaming_settings(
-                BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
+                BTreeMap::from([("tilo.appearance.mode".into(), Value::Bool(true))]),
                 Some(&previous),
                 &applied_remote,
                 &next_stamp,
@@ -7919,7 +7919,7 @@ mod tests {
             let document = serde_json::json!({
                 "locale": {"currency": "EUR", "time_format": "H24"},
                 "appearance": {
-                    "theme": "Nord",
+                    "mode": "light",
                     "studio": {"id": "aurora"},
                     "wallpaper_path": "/home/person/private.png"
                 },
@@ -7944,7 +7944,7 @@ mod tests {
             for key in [
                 "tilo.locale.currency",
                 "tilo.locale.time_format",
-                "tilo.appearance.theme",
+                "tilo.appearance.mode",
                 "tilo.appearance.studio",
                 "tilo.input.keyboard_layouts",
                 "tilo.audio.mono_output",

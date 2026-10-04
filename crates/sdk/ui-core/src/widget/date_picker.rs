@@ -21,10 +21,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
@@ -349,7 +348,7 @@ impl Widget for DatePicker {
     ) {
         let tokens = &theme.tokens;
 
-        let radius = f64::from(tokens.radii.md);
+        let radius = f64::from(tokens.radii.control);
         let fill = tokens.colors.surfaces.raised;
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -543,7 +542,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
@@ -551,43 +550,36 @@ impl DatePicker {
         let header_label = format!("{month_name} {y}");
         // Every line in the picker is centred on its *measured* height; the
         // font size alone sat the 12 px labels 1.5 px low in each band.
-        let (label_w, label_h) = text_renderer.measure(&header_label, text_size, None);
+        let (label_w, label_h) = text_renderer.measure_style(&header_label, None, &text_style);
         let label_x = self.rect.center().x - f64::from(label_w) / 2.0;
         let label_y = centered_text_top(self.rect.y0, HEADER_HEIGHT, f64::from(label_h));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &header_label,
-            text_size,
             text_color,
             transform.pre_translate(Vec2::new(label_x, label_y)),
             None,
+            &text_style,
         );
 
-        // Drawn as text glyphs so we don't need a vector path.
-        let (lw, lh) = text_renderer.measure("\u{2039}", text_size, None);
-        let (rw, rh) = text_renderer.measure("\u{203A}", text_size, None);
-        text_renderer.draw_text(
-            scene,
-            "\u{2039}",
-            text_size,
-            text_color,
-            transform.pre_translate(Vec2::new(
-                self.prev_button_rect.center().x - f64::from(lw) / 2.0,
-                centered_text_top(self.prev_button_rect.y0, HEADER_HEIGHT, f64::from(lh)),
-            )),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "\u{203A}",
-            text_size,
-            text_color,
-            transform.pre_translate(Vec2::new(
-                self.next_button_rect.center().x - f64::from(rw) / 2.0,
-                centered_text_top(self.next_button_rect.y0, HEADER_HEIGHT, f64::from(rh)),
-            )),
-            None,
-        );
+        // Month steps are chevrons from the one icon set, centred on the
+        // header band.
+        let edge = f64::from(tokens.metrics.icon_sm);
+        for (button, icon) in [
+            (self.prev_button_rect, crate::icons::Icon::ChevronLeft),
+            (self.next_button_rect, crate::icons::Icon::ChevronRight),
+        ] {
+            let centre =
+                vello::kurbo::Point::new(button.center().x, self.rect.y0 + HEADER_HEIGHT / 2.0);
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::from_center_size(centre, (edge, edge)),
+                icon,
+                text_color,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
     }
 
     /// The Mo/Tu/We/… row above the day grid. Split out of `draw` to keep
@@ -600,22 +592,22 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let dim_color = tokens.colors.text_dim;
 
         let cell_w = self.rect.width() / grid_f64(GRID_COLS);
         let weekday_band_y0 = self.rect.y0 + HEADER_HEIGHT;
         for (col, label) in WEEKDAY_LABELS.iter().enumerate() {
-            let (lw, lh) = text_renderer.measure(label, text_size, None);
+            let (lw, lh) = text_renderer.measure_style(label, None, &text_style);
             let weekday_y = centered_text_top(weekday_band_y0, WEEKDAY_HEIGHT, f64::from(lh));
             let cx = self.rect.x0 + grid_f64(col) * cell_w + cell_w / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                text_size,
                 dim_color,
                 transform.pre_translate(Vec2::new(cx - f64::from(lw) / 2.0, weekday_y)),
                 None,
+                &text_style,
             );
         }
     }
@@ -630,7 +622,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let text_style = tokens.typography.style(TextRole::Caption);
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
@@ -650,11 +642,11 @@ impl DatePicker {
                     cell_rect.x1 - pad,
                     cell_rect.y1 - pad,
                 );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
+                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.detail));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                    tokens.colors.intent.inverted,
                     None,
                     &shape,
                 );
@@ -670,7 +662,7 @@ impl DatePicker {
                     cell_rect.x1 - pad,
                     cell_rect.y1 - pad,
                 );
-                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.sm));
+                let shape = RoundedRect::from_rect(inner, f64::from(tokens.radii.detail));
                 scene.stroke(
                     &Stroke::new(1.0),
                     transform,
@@ -682,24 +674,22 @@ impl DatePicker {
 
             let day_str = date.day().to_string();
             let color = if is_selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                tokens.colors.intent.on_inverted
             } else if is_in_view_month {
                 text_color
             } else {
                 dim_color
             };
-            let (tw, th) = text_renderer.measure(&day_str, text_size, None);
+            let (tw, th) = text_renderer.measure_style(&day_str, None, &text_style);
             let tx = cell_rect.center().x - f64::from(tw) / 2.0;
             let ty = centered_text_top(cell_rect.y0, cell_rect.height(), f64::from(th));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &day_str,
-                text_size,
                 color,
                 transform.pre_translate(Vec2::new(tx, ty)),
                 None,
+                &text_style,
             );
         }
     }
@@ -863,8 +853,9 @@ mod tests {
                 &theme,
                 &PresenceCtx::default(),
             );
-            let size = theme.tokens.typography.scale.sm;
-            // Draw order: header label, ‹, ›, seven weekday labels, then day cells.
+            let style = theme.text(TextRole::Caption);
+            // Draw order: header label, seven weekday labels, then day cells;
+            // the month steps are icons, not glyph runs.
             let header_band = (rect.y0, HEADER_HEIGHT);
             let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
             let first_cell = picker
@@ -873,7 +864,6 @@ mod tests {
                 .map(|(_, r)| *r)
                 .expect("day cells");
             let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
-                .chain([("\u{2039}", header_band), ("\u{203A}", header_band)])
                 .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
                 .chain(std::iter::once((
                     "27",
@@ -885,7 +875,7 @@ mod tests {
                     &scene,
                     index,
                     text,
-                    size,
+                    &style,
                     band_y0,
                     band_h,
                     &mut tr,

@@ -187,7 +187,10 @@ impl Resource for Remote {
                 anchor: Some(connection_resource_id(connection.id)),
                 title: connection.name.clone(),
                 text: connection.host.clone(),
-                action: None,
+                action: Some(ui::tilo_actions::ActionAddress::new(
+                    connection_resource_id(connection.id),
+                    "open",
+                )),
             })
             .collect()
     }
@@ -198,6 +201,11 @@ pub struct RemoteShell;
 
 /// The screenshot scenarios; a plain `--shots` is the saved-connection list.
 const SCENARIOS: &[&str] = &[
+    "empty",
+    "pinned",
+    "edit",
+    "form-invalid",
+    "session-closed",
     "narrow",
     "narrow-open",
     "form",
@@ -243,7 +251,10 @@ impl ResourceApp for RemoteShell {
     }
 
     /// A lived-in list of saved machines.
-    fn scenario(_name: Option<&str>) -> Vec<Invoke<Remote>> {
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Remote>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
         crate::app::sample_connections()
             .iter()
             .flat_map(|connection| {

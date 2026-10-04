@@ -40,10 +40,12 @@
 
 pub mod actions;
 pub mod app;
+mod detail_pane;
 pub mod doc;
 pub mod draw;
 pub mod expand;
 pub mod highlight;
+mod list_pane;
 pub mod model;
 pub mod resource;
 pub mod seed;
@@ -55,4 +57,35 @@ pub use resource::{LOCALES, Snippets, SnippetsShell};
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<SnippetsShell>()
+}
+
+/// The catalogs, loaded on first use on each thread: a host's manager gets
+/// them added, a thread without one starts in the person's locale.
+#[cfg(not(test))]
+static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library").with_system_locale();
+
+/// Tests read the source copy on every machine.
+#[cfg(test)]
+static CATALOG: ui::i18n::EmbeddedCatalog =
+    ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library")
+        .with_pinned_locale("en-US");
+
+/// A message of the app's catalogs in the person's language.
+pub(crate) fn tr(key: &str) -> String {
+    CATALOG.t(key)
+}
+
+/// A message with named text arguments.
+pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+        .iter()
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::Text((*value).to_string())))
+        .collect();
+    CATALOG.t_args(key, &args)
+}
+
+/// A message with a plural count.
+pub(crate) fn tr_count(key: &str, count: usize) -> String {
+    CATALOG.t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
 }

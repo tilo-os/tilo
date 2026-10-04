@@ -1164,6 +1164,12 @@ pub trait Widget {
 
     fn set_focus(&mut self, _focused: bool) {}
 
+    /// The form's validation verdict for this control, set by
+    /// [`Field::with_error`]: an invalid control edges itself in danger ink
+    /// and reports `invalid` to assistive technology. Controls without a
+    /// field face ignore it.
+    fn set_invalid(&mut self, _invalid: bool) {}
+
     /// An explicit runner focus request, after resolving the actual keyboard
     /// owner. Retained flags and layout restoration are not user gestures.
     /// Containers can observe this to reveal the owning viewport.
@@ -2184,7 +2190,9 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
+mod control_size;
+pub use control_size::ControlSize;
 mod checkbox;
 pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
@@ -2208,10 +2216,12 @@ pub use manual::{
 };
 mod row;
 pub use row::Row;
-mod list_row;
-pub use list_row::ListRow;
+mod selectable_row;
+pub use selectable_row::SelectableRow;
 mod toggle;
-pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors};
+pub use toggle::{
+    Toggle, ToggleColors, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors,
+};
 mod stack;
 pub use stack::Stack;
 mod container;
@@ -2224,25 +2234,20 @@ mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
-mod nav_split;
-pub use nav_split::{
-    DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushNav, PushPane, SplitLayout,
-    SplitMode,
-};
-mod app_shell;
-pub use app_shell::{
-    AppShell, DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH, NarrowScreen, ShellLayout,
-};
+mod flap;
+pub use flap::{FlapState, SplitLayout};
 mod sidebar;
 pub use sidebar::{
-    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarNav, SidebarNavItem,
-    SidebarNavSection, SidebarSide,
+    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
+    SidebarSide,
 };
 mod nav_shell;
+pub(crate) mod window_header;
 pub use nav_shell::{
-    Affordance, ContentLayout, DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
-    DEFAULT_NAVSHELL_SIDEBAR_WIDTH, NavPane, NavShell, ShellMode,
+    InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
+mod nav_list;
+pub use nav_list::{NavAction, NavDrop, NavItem, NavList, NavSection};
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
@@ -2250,10 +2255,6 @@ pub use document_viewport::{
 };
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
-mod segmented;
-pub use segmented::{
-    ColorSwatchPicker, DEFAULT_PALETTE, SegmentTone, TriStateControl, packed_color,
-};
 mod text;
 pub use text::Text;
 mod spacer;
@@ -2328,7 +2329,7 @@ pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
-mod floating_surface;
+pub mod floating_surface;
 pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
 mod virtual_table_semantics;
@@ -2338,8 +2339,7 @@ pub use virtual_table_semantics::{
 };
 mod virtual_list_semantics;
 pub use virtual_list_semantics::{ListSemanticRow, VirtualListSemantics};
-pub mod table;
-pub use table::Table;
+pub(crate) mod block_editor_table;
 pub mod icon_grid;
 pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
@@ -2381,16 +2381,12 @@ pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
-pub use color_swatch::ColorSwatchFace;
-pub mod popover_widget;
-pub use popover_widget::PopoverWidget;
+pub use color_picker::{ColorPicker, ColorPickerOutcome};
+pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
 pub mod popover;
-pub use popover::Popover;
+pub use popover::{Popover, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::ModalDialog;
-pub mod modal_frame;
-pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
@@ -2405,9 +2401,9 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarRing};
+pub use avatar::{Avatar, AvatarFace, AvatarSize, initials_for_name};
 pub mod badge;
-pub use badge::{Badge, BadgeTone};
+pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
 pub use icon::IconWidget;
 pub mod chart;
@@ -2415,6 +2411,7 @@ pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
     TrendRange, TrendStyle,
 };
+pub(crate) mod chart_labels;
 mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
@@ -2462,7 +2459,10 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, RingGauge};
+pub use gauge::{
+    BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
+    ProgressRingSize,
+};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
@@ -2485,6 +2485,25 @@ pub mod action_row;
 pub use action_row::ActionRowFace;
 pub mod choice_card;
 pub use choice_card::{ChoiceCard, ChoiceCardFace};
+mod activation;
+pub use activation::{Interaction, paint_focus_ring};
+pub mod media_card;
+pub use media_card::{
+    MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize, MediaSource,
+    OwnedBadge, justified_rows,
+};
+pub mod drop_zone;
+pub use drop_zone::{DropZone, DropZoneFace};
+pub mod skeleton;
+pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod stepper;
+pub use stepper::{Stepper, StepperFace};
+pub mod property_list;
+pub use property_list::{Property, PropertyList, PropertyListFace, PropertyRow};
+pub mod list_row;
+pub use list_row::{
+    ListRow, ListRowFace, RowAction, RowLeading, RowStatus, SwipeAction, badge_column_width,
+};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;
@@ -2502,23 +2521,27 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // widget tree.
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent};
+pub mod find_bar;
+pub use find_bar::{
+    FindBar, FindMatch, FindMode, FindOptions, FindScope, Findable, paint_find_match, with_findable,
+};
 pub mod search_field;
-pub use search_field::SearchField;
+pub use search_field::{FilterCount, Filterable, Filtered, SearchField, apply_filter, sync_filter};
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatTile, StatTileContent, Trend};
+pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
 pub use banner::{Banner, BannerContent, BannerKind};
 pub mod chip;
-pub use chip::{Chip, ChipLead, ChipStyle};
-mod card_composition;
-pub use card_composition::{Actions, ContentCard};
+pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;
+mod tone;
+pub use tone::Tone;
 pub mod collaboration_overview;
-pub use card::{Card, CardGrid, card_column_width, card_columns};
+pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
 mod section;
-pub use section::{DEFAULT_SECTION_GAP, Section};
+pub use section::{Section, SectionHeader};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,

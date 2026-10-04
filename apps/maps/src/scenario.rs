@@ -39,6 +39,13 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "floating-navigation-hover",
     "floating-navigation-returning",
     "floating-navigation-returned",
+    "edit-origin",
+    "collapsed",
+    "navigation",
+    "directions-narrow",
+    "explore-narrow",
+    "pois-narrow",
+    "navigation-narrow",
 ];
 
 /// What a capture's map shows in place of live imagery and a live session.
@@ -52,7 +59,7 @@ pub(crate) enum Sample {
 
 impl Sample {
     fn of(scenario: Option<&str>) -> Self {
-        match scenario {
+        match scenario.map(|name| name.strip_suffix("-narrow").unwrap_or(name)) {
             Some("empty" | "traffic-empty") => Self::Empty,
             _ => Self::City,
         }
@@ -68,6 +75,7 @@ pub(crate) fn prepare(fixture: &mut Fixture<Maps>) {
 /// The viewport `scenario` is captured at.
 pub(crate) fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
+        Some(name) if name.ends_with("-narrow") => (640, 800),
         Some("narrow" | "nav-closed") => (390, 844),
         _ => (1280, 800),
     }
@@ -80,7 +88,7 @@ pub(crate) fn actions(scenario: Option<&str>) -> Vec<Invoke<Maps>> {
         return Vec::new();
     }
     let mut actions = city();
-    match scenario {
+    match scenario.map(|name| name.strip_suffix("-narrow").unwrap_or(name)) {
         Some("transit") => {
             actions.push(MapsAction::SetTravelMode {
                 mode: TravelMode::Transit,

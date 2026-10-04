@@ -2009,7 +2009,7 @@ pub fn text_style(shape: &Shape) -> Option<ui::TextStyle> {
         _ => ui::ParagraphAlign::Start,
     };
     Some(
-        ui::TextStyle::new(narrow(*size))
+        ui::TextStyle::content(narrow(*size))
             .with_family(family)
             .with_weight(tier)
             // The shipped faces are variable: any weight between their
@@ -2319,13 +2319,13 @@ fn draw_grid(
             None,
             &Rect::new(x, y, x + width, y + pixel * 14.0),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &words,
-            font,
             label,
             transform * Affine::translate((x + pixel * 2.0, y + pixel)),
             None,
+            &ui::TextStyle::content(font),
         );
     };
     let lines = |from: f64, to: f64| {

@@ -3,7 +3,7 @@
 //!
 //! Most of a calculator is ephemeral: the expression being typed, the running
 //! display, which mode (Calc / 2D / 3D) is showing, the pan/zoom of a graph, the
-//! RAD/DEG toggle, the memory scratch register. None of that is a document
+//! angle-unit strip, the memory scratch register. None of that is a document
 //! mutation — it is presentation, computed or spliced live, and it never becomes
 //! an action.
 //!

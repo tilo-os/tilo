@@ -38,7 +38,7 @@ use crate::widget::identity_flow::sheet::{
     paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Confirm your recovery words";
@@ -428,7 +428,7 @@ impl RecoveryVerifyScreen {
         // Each blank takes its whole grid cell (the body clip trims its
         // paint); its pointer target is the part inside the visible body.
         for (editor, rect) in self.editors.iter_mut().zip(resolved.plan.slots.iter()) {
-            place_field(editor, *rect, text_renderer, theme);
+            place_field(editor, *rect);
         }
         for (slot, rect) in self.slot_rects.iter_mut().zip(resolved.plan.slots.iter()) {
             *slot = BodyScroll::visible(body, *rect);
@@ -558,7 +558,7 @@ impl RecoveryVerifyScreen {
             .as_ref()
             .is_some_and(|c| answer.trim().eq_ignore_ascii_case(&c.expected_word(slot)));
         if matches {
-            Some(theme.accent_primary)
+            Some(theme.tokens.colors.intent.inverted)
         } else if self.last_attempt_failed && !answer.is_empty() {
             Some(theme.tokens.colors.semantic.danger)
         } else {
@@ -589,7 +589,7 @@ impl RecoveryVerifyScreen {
                 transform,
                 edge,
                 None,
-                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.control)),
             );
         }
     }

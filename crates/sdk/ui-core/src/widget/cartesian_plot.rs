@@ -26,6 +26,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
@@ -1534,6 +1535,17 @@ impl CartesianPlot {
                     .collect();
             }
         }
+        if axis.scale == AxisScale::Linear {
+            // Round numbers inside the domain, not the domain cut in equal
+            // parts: an axis reads 0, 10, 20, never 0, 11.5, 23.
+            let values = crate::charts::nice_ticks(domain.min, domain.max, usize::from(count));
+            if values.len() >= 2 {
+                return values
+                    .into_iter()
+                    .map(|value| AxisTick::new(value, format_axis_value(value, axis.label_format)))
+                    .collect();
+            }
+        }
         (0..count)
             .map(|index| {
                 let fraction = f64::from(index) / f64::from(count - 1);
@@ -1736,7 +1748,7 @@ impl CartesianPlot {
         yd: Domain,
     ) {
         let grid = alpha(theme.tokens.colors.border_standard, 100);
-        let size = theme.tokens.typography.scale.xs;
+        let size = theme.text(TextRole::Caption);
         for tick in Self::ticks(&self.style.y_axis, yd, plot.height()) {
             let Some(y) = Self::project(
                 tick.value,
@@ -1756,14 +1768,14 @@ impl CartesianPlot {
                     &Line::new((plot.x0, y), (plot.x1, y)),
                 );
             }
-            let (width, _) = tr.measure(&tick.label, size, None);
-            tr.draw_text(
+            let (width, _) = tr.measure_style(&tick.label, None, &size);
+            tr.draw_style(
                 scene,
                 &tick.label,
-                size,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((plot.x0 - f64::from(width) - 10.0, y - 6.0)),
                 None,
+                &size,
             );
         }
         for tick in Self::ticks(&self.style.x_axis, xd, plot.width()) {
@@ -1785,38 +1797,36 @@ impl CartesianPlot {
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
             }
-            let (width, _) = tr.measure(&tick.label, size, None);
-            tr.draw_text(
+            let (width, _) = tr.measure_style(&tick.label, None, &size);
+            tr.draw_style(
                 scene,
                 &tick.label,
-                size,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + 10.0)),
                 None,
+                &size,
             );
         }
-        let title_size = theme.tokens.typography.scale.xs;
+        let title_style = theme.text(TextRole::Caption);
         if !self.style.x_axis.title.is_empty() {
             let title = Self::fitted_axis_title(&self.style.x_axis.title, plot.width());
-            let (width, _) = tr.measure(&title, title_size, None);
-            tr.draw_text_weighted(
+            let (width, _) = tr.measure_style(&title, None, &title_style);
+            tr.draw_style(
                 scene,
                 &title,
-                title_size,
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((plot.center().x - f64::from(width) / 2.0, plot.y1 + 30.0)),
                 None,
-                TextWeight::Semibold,
+                &title_style.clone().with_weight(TextWeight::Semibold),
             );
         }
         if !self.style.y_axis.title.is_empty() {
             let title = Self::fitted_axis_title(&self.style.y_axis.title, plot.height());
-            let (width, _) = tr.measure(&title, title_size, None);
-            tr.draw_text_weighted(
+            let (width, _) = tr.measure_style(&title, None, &title_style);
+            tr.draw_style(
                 scene,
                 &title,
-                title_size,
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
@@ -1825,7 +1835,7 @@ impl CartesianPlot {
                     ))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
-                TextWeight::Semibold,
+                &title_style.clone().with_weight(TextWeight::Semibold),
             );
         }
     }
@@ -2386,8 +2396,8 @@ impl CartesianPlot {
         let Some(anchor) = anchor.filter(|_| !annotation.label.is_empty()) else {
             return;
         };
-        let size = context.theme.tokens.typography.scale.xs;
-        let (width, height) = context.text.measure(&annotation.label, size, None);
+        let style = context.theme.text(TextRole::Caption);
+        let (width, height) = context.text.measure_style(&annotation.label, None, &style);
         let width = f64::from(width) + 16.0;
         let height = f64::from(height) + 10.0;
         let plot = context.plot;
@@ -2412,13 +2422,13 @@ impl CartesianPlot {
             None,
             &rect,
         );
-        context.text.draw_text(
+        context.text.draw_style(
             context.scene,
             &annotation.label,
-            size,
             context.theme.tokens.colors.text_primary,
             context.transform * Affine::translate((x + 8.0, y + 5.0)),
             None,
+            &style,
         );
     }
 
@@ -2470,13 +2480,13 @@ impl CartesianPlot {
                 None,
                 &Circle::new((x + 4.0, y + 6.0), 4.0),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &series.name,
-                theme.tokens.typography.scale.xs,
                 text_color,
                 transform * Affine::translate((x + 14.0, y)),
                 Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
+                &theme.text(TextRole::Caption),
             );
             self.legend_hits.push((series.id.clone(), item));
         }
@@ -2532,8 +2542,8 @@ impl CartesianPlot {
         } else {
             datum.detail.clone()
         };
-        let (title_width, _) = tr.measure(title, theme.tokens.typography.scale.sm, None);
-        let (detail_width, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+        let (title_width, _) = tr.measure_style(title, None, &theme.text(TextRole::Caption));
+        let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
         let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
         let content_width = f64::from(title_width.max(detail_width));
         let available_width = (self.rect.width() - 16.0).max(1.0);
@@ -2561,24 +2571,25 @@ impl CartesianPlot {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             title,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((x + padding, y + padding - 2.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((x + padding, y + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -2608,8 +2619,8 @@ impl CartesianPlot {
         } else {
             annotation.detail.as_str()
         };
-        let (title_width, _) = tr.measure(title, theme.tokens.typography.scale.sm, None);
-        let (detail_width, _) = tr.measure(detail, theme.tokens.typography.scale.xs, None);
+        let (title_width, _) = tr.measure_style(title, None, &theme.text(TextRole::Caption));
+        let (detail_width, _) = tr.measure_style(detail, None, &theme.text(TextRole::Caption));
         let padding = self.style.tooltip.padding.clamp(8.0, 32.0);
         let available_width = (self.rect.width() - 16.0).max(1.0);
         let width = self
@@ -2633,31 +2644,32 @@ impl CartesianPlot {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             alpha(annotation.color, 180),
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             title,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding - 2.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + padding, rect.y0 + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -2976,14 +2988,13 @@ impl Widget for CartesianPlot {
             }
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         self.draw_axes(scene, transform, tr, theme, plot, xd, yd);
@@ -3002,7 +3013,7 @@ impl Widget for CartesianPlot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                alpha(theme.accent_primary, 42),
+                alpha(theme.tokens.colors.intent.inverted, 42),
                 None,
                 &brush,
             );

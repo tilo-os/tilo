@@ -32,10 +32,12 @@
 
 pub mod app;
 pub mod doc;
+mod map;
 pub mod model;
 pub mod ops;
 pub mod probe;
 pub mod resource;
+mod view;
 
 pub use app::DisksApp;
 pub use model::{Drive, DriveKind, Partition, SmartInfo, Topology};

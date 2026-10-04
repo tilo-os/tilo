@@ -409,7 +409,7 @@ mod tests {
                 sample.transit.len(),
                 "`{scenario}` planned transit"
             );
-            match *scenario {
+            match scenario.strip_suffix("-narrow").unwrap_or(scenario) {
                 "transit" | "transit-arrive" => {
                     assert_eq!(state.mode, TravelMode::Transit);
                     assert!(state.route.is_none(), "`{scenario}` draws no road");

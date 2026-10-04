@@ -125,7 +125,7 @@ impl Desk {
         self.app.harness().set_theme(ui::Theme::light());
         self.app
             .harness()
-            .render_window_png(&dir.join(format!("{name}.png")));
+            .render_png(&dir.join(format!("{name}.png")));
     }
 }
 

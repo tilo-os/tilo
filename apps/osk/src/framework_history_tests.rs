@@ -753,7 +753,7 @@ fn framework_history_passive_rendering_retains_runtime_and_current_im_queue() {
         f.driver
             .inspection_json()
             .unwrap()
-            .contains("Saved layout: AZERTY")
+            .contains("Layout: Azerty")
     );
     assert!(
         f.driver
@@ -812,7 +812,6 @@ fn framework_history_preview_geometry_paints_builtins_without_live_construction_
         assert!(accessible.pages.is_empty());
         assert!(accessible.description.contains("Suggestions: off"));
         assert!(accessible.description.contains("Personalization: on"));
-        assert!(accessible.description.contains("layout definitions"));
         assert!(!preview.navigate(PreviewNavigation::Reveal("osk:key:0:0".into())));
         let mut text = TextRenderer::new();
         let theme = Theme::dark();

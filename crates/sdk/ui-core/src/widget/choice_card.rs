@@ -19,8 +19,7 @@ use winit::event::WindowEvent;
 use crate::a11y::AccessNode;
 use crate::color_compat::ColorCompat;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 use super::button::ButtonInteract;
@@ -66,21 +65,13 @@ impl Geometry {
     }
 }
 
-fn title_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.lg
-}
-
-fn description_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.base
-}
-
 /// The authored minimum, or both text lines plus padding once larger type
 /// needs more.
 fn card_height(theme: &Theme) -> f64 {
     let geometry = Geometry::of(theme);
-    let text = f64::from(TextStyle::new(title_size(theme)).line_height_px())
+    let text = f64::from(theme.text(crate::TextRole::Heading).line_height_px())
         + geometry.text_gap
-        + f64::from(TextStyle::new(description_size(theme)).line_height_px());
+        + f64::from(theme.text(crate::TextRole::Body).line_height_px());
     (text + 2.0 * geometry.pad)
         .ceil()
         .max(geometry.min_height())
@@ -175,14 +166,21 @@ impl<'a> ChoiceCardFace<'a> {
             .pressed(self.interact.pressed)
             .focused(self.interact.focused)
             .disabled(self.interact.disabled)
-            .radius(f64::from(theme.tokens.radii.lg))
+            .radius(f64::from(theme.tokens.radii.tile))
             .paint(scene, transform, theme);
 
         // A pressed card drops to the shared active ground, where accent ink
         // would no longer read.
         let on_accent = self.emphasized && !self.interact.pressed;
         let foreground = if on_accent {
-            theme.tokens.colors.on_accent(4.5)
+            theme.tokens.colors.ink_on_any(
+                &[
+                    theme.tokens.colors.intent.you,
+                    theme.tokens.colors.intent.selection_hover,
+                ],
+                theme.tokens.colors.intent.on_inverted,
+                4.5,
+            )
         } else {
             theme.tokens.colors.text_primary
         };
@@ -200,16 +198,16 @@ impl<'a> ChoiceCardFace<'a> {
             center_y + geometry.icon_tile / 2.0,
         );
         let tile_fill = if on_accent {
-            crate::tokens::Colors::hairline_on(theme.accent_primary, 46)
+            crate::tokens::Colors::hairline_on(theme.tokens.colors.intent.you, 46)
         } else {
-            theme.accent_primary.with_alpha_factor(0.14)
+            theme.tokens.colors.intent.you.with_alpha_factor(0.14)
         };
         scene.fill(
             Fill::NonZero,
             transform,
             tile_fill,
             None,
-            &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.control)),
         );
         draw_icon(
             scene,
@@ -222,47 +220,45 @@ impl<'a> ChoiceCardFace<'a> {
             if on_accent {
                 foreground
             } else {
-                theme.accent_primary
+                theme.tokens.colors.intent.you
             },
             LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        let title_size = renderer_type_size(text_renderer, title_size(theme));
-        let description_size = renderer_type_size(text_renderer, description_size(theme));
+        let title_style = theme.text(crate::TextRole::Heading);
+        let description_style = theme.text(crate::TextRole::Body);
         let (text_x, text_width) = geometry.text_span(self.rect);
         let text_width = px(text_width);
-        let title = text_renderer.elide_to_width_weighted(
-            self.title.as_ref(),
-            title_size,
+        let title =
+            text_renderer.elide_to_width_style(self.title.as_ref(), text_width, &title_style);
+        let description = text_renderer.elide_to_width_style(
+            self.description.as_ref(),
             text_width,
-            TextWeight::Semibold,
+            &description_style,
         );
-        let description =
-            text_renderer.elide_to_width(self.description.as_ref(), description_size, text_width);
-        let (_, title_height) =
-            text_renderer.measure_weighted(&title, title_size, None, TextWeight::Semibold);
-        let (_, description_height) = text_renderer.measure(&description, description_size, None);
+        let (_, title_height) = text_renderer.measure_style(&title, None, &title_style);
+        let (_, description_height) =
+            text_renderer.measure_style(&description, None, &description_style);
         let block = f64::from(title_height) + geometry.text_gap + f64::from(description_height);
         let top = center_y - block / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             foreground,
             transform.pre_translate(Vec2::new(text_x, top)),
             None,
-            TextWeight::Semibold,
+            &title_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            description_size,
             secondary,
             transform.pre_translate(Vec2::new(
                 text_x,
                 top + f64::from(title_height) + geometry.text_gap,
             )),
             None,
+            &description_style,
         );
         draw_icon(
             scene,
@@ -498,16 +494,15 @@ mod tests {
             assert!(!scene.encoding().draw_tags.is_empty());
 
             let available = px(Geometry::of(&theme).text_span(rect).1);
-            let title = renderer.elide_to_width_weighted(
+            let title = renderer.elide_to_width_style(
                 face.title.as_ref(),
-                renderer_type_size(&renderer, title_size(&theme)),
                 available,
-                TextWeight::Semibold,
+                &theme.text(crate::TextRole::Heading),
             );
-            let description = renderer.elide_to_width(
+            let description = renderer.elide_to_width_style(
                 face.description.as_ref(),
-                renderer_type_size(&renderer, description_size(&theme)),
                 available,
+                &theme.text(crate::TextRole::Body),
             );
             assert_ne!(title, face.title.as_ref());
             assert_ne!(description, face.description.as_ref());
@@ -563,12 +558,7 @@ mod tests {
         let theme = Theme::dark();
         let minimum = Geometry::of(&theme).min_height();
         assert!((card_height(&theme) - minimum).abs() < f64::EPSILON);
-        let mut large = Theme::dark();
-        large.tokens.typography.scale = crate::tokens::TypeScale {
-            lg: 32.0,
-            base: 28.0,
-            ..large.tokens.typography.scale
-        };
+        let large = Theme::dark().with_text_scale(2.0);
         assert!(card_height(&large) > minimum);
     }
 }

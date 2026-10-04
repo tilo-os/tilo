@@ -192,6 +192,13 @@ pub enum Icon {
     SquaresIntersect,
     /// Where either shape is, but not both. Lucide `squares-exclude`.
     SquaresExclude,
+    // --- Status set ---
+    /// A warning: Lucide `triangle-alert`.
+    TriangleAlert,
+    // --- Window navigation set ---
+    /// Show or hide the sidebar: a window with a rule near its leading
+    /// edge. Lucide `panel-left`.
+    PanelLeft,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -942,6 +949,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         .into_iter()
         .map(path_from_d)
         .collect(),
+        Icon::TriangleAlert => vec![
+            path_from_d("m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"),
+            path_from_d("M12 9v4"),
+            path_from_d("M12 17h.01"),
+        ],
+        Icon::PanelLeft => vec![rect_path(3.0, 3.0, 18.0, 18.0, 2.0), path_from_d("M9 3v18")],
     }
 }
 
@@ -1531,6 +1544,7 @@ mod tests {
                 Icon::SquaresSubtract,
                 Icon::SquaresIntersect,
                 Icon::SquaresExclude,
+                Icon::TriangleAlert,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
@@ -1605,6 +1619,8 @@ mod tests {
                 Icon::Info,
                 Icon::CloudDownload,
                 Icon::ArrowUpDown,
+                Icon::PanelLeft,
+                Icon::PanelRight,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

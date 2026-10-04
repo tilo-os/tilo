@@ -178,6 +178,17 @@ pub struct LaunchArgs {
     pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
+    /// `--theme NAME`: the shipped theme a capture renders in
+    /// ([`Theme::named`]), over `TILO_SHOTS_THEME`.
+    pub theme: Option<String>,
+    /// `--workspace-hue DEGREES` and `--your-colour NAME`: what the shell
+    /// would tell the captured window about where and for whom it is shown
+    /// ([`crate::theme::WindowAppearance`]). Without them a capture is what
+    /// a window without a shell shows: neutral, in the default colour.
+    pub window: crate::theme::WindowAppearance,
+    /// `--history`: a capture shows History open, where the app has
+    /// History.
+    pub history: bool,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -197,6 +208,9 @@ impl LaunchArgs {
             native_audit: false,
             pseudo_locale: false,
             text_scale: None,
+            theme: None,
+            window: crate::theme::WindowAppearance::default(),
+            history: false,
             extras: Vec::new(),
             values: Vec::new(),
             positionals: Vec::new(),
@@ -844,14 +858,8 @@ pub fn build_shot_scenario(
     }
     // Validation should have rejected unknown names; keep a hard error
     // so a table/spec drift cannot silently fall through to the default.
-    Err(LaunchError::Scenario(format!(
-        "unknown screenshot scenario {name:?}; expected one of {}",
-        table
-            .iter()
-            .map(|pose| format!("{:?}", pose.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )))
+    let declared: Vec<&str> = table.iter().map(|pose| pose.name).collect();
+    Err(LaunchError::Scenario(unknown_scenario(name, &declared)))
 }
 
 pub enum LaunchError {
@@ -1252,6 +1260,10 @@ fn run_with_args_with_attachment(
         spec.max_positionals,
     )?;
     validate_spec_args(&args, spec)?;
+    // A capture shows the same date and time on every run.
+    if args.shots.is_some() || args.responsive_matrix.is_some() {
+        crate::clock::freeze_for_capture();
+    }
     crate::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
         crate::i18n::PseudoLocale::Expanded
     } else {
@@ -1361,10 +1373,14 @@ fn run_parsed(
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
                     driver.prepare_component_output();
+                    show_history_for_capture(&mut driver, &args)?;
+                    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                     driver.render_png(out);
                 } else if let Some(directory) = &args.responsive_matrix {
+                    show_history_for_capture(&mut driver, &args)?;
                     for (name, viewport) in RESPONSIVE_VIEWPORTS {
                         driver.resize_component_capture(viewport);
+                        driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                         driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
                     }
                 }
@@ -1413,7 +1429,9 @@ fn run_parsed(
         }
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
-        let harness = build_history_capture(spec, &args, root, viewport)?;
+        let mut harness = build_history_capture(spec, &args, root, viewport)?;
+        show_history_for_capture(&mut harness, &args)?;
+        harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
         harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
         return Ok(());
@@ -1431,7 +1449,9 @@ fn run_parsed(
                 handler(&matrix_args)?;
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
-                let harness = build_history_capture(spec, &matrix_args, root, viewport)?;
+                let mut harness = build_history_capture(spec, &matrix_args, root, viewport)?;
+                show_history_for_capture(&mut harness, &matrix_args)?;
+                harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
                 harness.render_png(&out);
             }
             println!(
@@ -1641,7 +1661,7 @@ fn dispatch_definition_with_manager(
         )?);
         // The host prepared the component's presentation; a capture that
         // names a palette is drawn in it, as every other `--shots` path is.
-        if std::env::var_os("TILO_SHOTS_THEME").is_some() {
+        if args.theme.is_some() || std::env::var_os("TILO_SHOTS_THEME").is_some() {
             driver.set_theme(shot_theme(args));
         }
         if !args.native_audit
@@ -1671,6 +1691,21 @@ fn dispatch_definition_with_manager(
     .map_err(LaunchError::Operation)??;
     crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
+}
+
+/// `--history`: open History before the capture settles, so the shot shows
+/// History mode as a person sees it.
+#[cfg(feature = "native")]
+fn show_history_for_capture(
+    driver: &mut FrameHarness,
+    args: &LaunchArgs,
+) -> Result<(), LaunchError> {
+    if args.history {
+        driver
+            .open_history()
+            .map_err(|error| LaunchError::Operation(format!("--history: {error}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native")]
@@ -2029,43 +2064,57 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     if let Some(scenario) = args.scenario.as_deref()
         && !spec.scenarios.contains(&scenario)
     {
-        return Err(LaunchError::Scenario(format!(
-            "unknown screenshot scenario {scenario:?}; expected one of {}",
-            spec.scenarios
-                .iter()
-                .map(|name| format!("{name:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
+        return Err(LaunchError::Scenario(unknown_scenario(
+            scenario,
+            spec.scenarios,
         )));
     }
     Ok(())
 }
+
+/// The refusal of an undeclared `--scenario`, listing the declared ones.
+fn unknown_scenario(name: &str, declared: &[&str]) -> String {
+    if declared.is_empty() {
+        format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
+    } else {
+        format!(
+            "unknown screenshot scenario {name:?}; expected one of {}",
+            declared
+                .iter()
+                .map(|name| format!("{name:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+/// How long a capture waits for the window to settle (animations finished,
+/// thumbnails loaded) before it writes anyway.
+pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
 
 /// Resolve the palette, text scale, and motion policy used by screenshot
 /// capture. An explicit `--text-scale` wins over the
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
 #[must_use]
 pub fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = std::env::var("TILO_SHOTS_THEME")
-        .or_else(|_| std::env::var("TILO_SHOTS_THEME"))
-        .ok()
+    let theme = args
+        .theme
+        .clone()
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
     // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
-    // app follows.
+    // app takes as the person's own colour: the presence hue nearest it.
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
+        .and_then(crate::tokens::PresenceHue::nearest)
     {
-        Some(accent) => {
-            use crate::color_compat::ColorCompat;
-            theme.with_accent([accent.r(), accent.g(), accent.b()])
-        }
+        Some(hue) => theme.with_your_colour(hue),
         None => theme,
     };
-    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .or_else(|_| std::env::var("TILO_SHOTS_TEXT_SCALE"))
-        .ok();
+    let theme = theme.in_window(&args.window);
+    let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     let theme = theme.with_text_scale(shot_text_scale(
         args.text_scale,
         environment_scale.as_deref(),
@@ -2079,11 +2128,10 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
 /// The same capture presentation for app-specific fixture drivers.
 #[must_use]
 pub fn capture_theme(text_scale: Option<f32>) -> Theme {
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
+    let theme = std::env::var("TILO_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark);
     let theme = if let Some(scale) = text_scale {
         theme.with_text_scale(scale)
     } else {
@@ -2188,6 +2236,9 @@ fn parse_args_extended(
         native_audit: false,
         pseudo_locale: false,
         text_scale: None,
+        theme: None,
+        window: crate::theme::WindowAppearance::default(),
+        history: false,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -2230,6 +2281,46 @@ fn parse_args_extended(
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.scenario, value.to_owned(), flag)?;
             }
+            "--theme" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                if Theme::named(value).is_none() {
+                    return Err(LaunchError::Scenario(format!(
+                        "{flag}: no shipped theme is called {value:?} (one of {})",
+                        Theme::ALL.join(", ")
+                    )));
+                }
+                set_once(&mut parsed.theme, value.to_owned(), flag)?;
+            }
+            "--workspace-hue" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let hue = value
+                    .trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|hue| hue.is_finite())
+                    .ok_or_else(|| {
+                        LaunchError::Scenario(format!(
+                            "{flag}: {value:?} is not a hue in OKLCH degrees"
+                        ))
+                    })?;
+                set_once(
+                    &mut parsed.window.workspace_hue,
+                    hue.rem_euclid(360.0),
+                    flag,
+                )?;
+            }
+            "--your-colour" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let hue = crate::tokens::PresenceHue::from_id(value).ok_or_else(|| {
+                    LaunchError::Scenario(format!(
+                        "{flag}: no presence colour is called {value:?} (one of {})",
+                        crate::tokens::PresenceHue::ALL
+                            .map(crate::tokens::PresenceHue::id)
+                            .join(", ")
+                    ))
+                })?;
+                set_once(&mut parsed.window.your_colour, hue, flag)?;
+            }
             "--headless-drive" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 let value = headless::parse_spec(value)
@@ -2241,6 +2332,12 @@ fn parse_args_extended(
                     return Err(LaunchError::Duplicate(flag.to_owned()));
                 }
                 parsed.native_audit = true;
+            }
+            "--history" if inline.is_none() => {
+                if parsed.history {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.history = true;
             }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
@@ -2283,6 +2380,13 @@ fn parse_args_extended(
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
+    if parsed.history
+        && parsed.shots.is_none()
+        && parsed.shots_dir.is_none()
+        && parsed.responsive_matrix.is_none()
+    {
+        return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
     // Every scenario is captured; naming one is a single `--shots`.
     if parsed.shots_dir.is_some() && parsed.scenario.is_some() {
         return Err(LaunchError::ConflictingModes);
@@ -2294,6 +2398,15 @@ fn parse_args_extended(
     {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
+        }
+        if parsed.theme.is_some() {
+            return Err(LaunchError::ShotsOnly("--theme".to_owned()));
+        }
+        if parsed.window.workspace_hue.is_some() {
+            return Err(LaunchError::ShotsOnly("--workspace-hue".to_owned()));
+        }
+        if parsed.window.your_colour.is_some() {
+            return Err(LaunchError::ShotsOnly("--your-colour".to_owned()));
         }
         // A headless drive may name a scenario: it dumps that fixture's
         // geometry, the counterpart of `--shots --scenario`.
@@ -2783,6 +2896,43 @@ mod tests {
             assert_eq!(parsed.viewport, Some((640, 480)));
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
             assert!(parsed.has("--empty"));
+            assert_eq!(
+                parsed.window,
+                crate::theme::WindowAppearance::default(),
+                "a capture without a shell is neutral"
+            );
+        }
+
+        // Case `a_capture_can_stand_in_a_workspace_for_a_person`.
+        {
+            let args = strings(&[
+                "app",
+                "--shots=/tmp/shot.png",
+                "--workspace-hue=400",
+                "--your-colour",
+                "violet",
+            ]);
+            let parsed = parse_args(&args, &[], &[]).unwrap();
+            assert_eq!(
+                parsed.window,
+                crate::theme::WindowAppearance {
+                    workspace_hue: Some(40.0),
+                    your_colour: Some(crate::tokens::PresenceHue::Violet),
+                }
+            );
+            let theme = shot_theme(&LaunchArgs {
+                theme: Some("light".into()),
+                ..parsed
+            });
+            assert_eq!(theme.document.palette.hue, Some(40.0));
+            assert_eq!(theme.tokens.colors.you, crate::tokens::PresenceHue::Violet);
+            for bad in [
+                &["app", "--shots=/tmp/s.png", "--workspace-hue=warm"][..],
+                &["app", "--shots=/tmp/s.png", "--your-colour=chartreuse"][..],
+                &["app", "--workspace-hue=40"][..],
+            ] {
+                assert!(parse_args(&strings(bad), &[], &[]).is_err(), "{bad:?}");
+            }
         }
 
         // Case `parses_responsive_matrix_and_pseudo_locale_as_common_audit_modes`.
@@ -2944,6 +3094,21 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
                 Err(LaunchError::Duplicate(_))
+            ));
+        }
+
+        // Case `history_is_a_capture_option`.
+        {
+            let shot = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(shot.history);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--history"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
             ));
         }
 

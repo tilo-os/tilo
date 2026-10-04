@@ -167,7 +167,7 @@ impl Widget for RevealToggle {
         let side = f64::from(metrics.bar_control_height).min(self.rect.height());
         let face = RoundedRect::from_rect(
             Rect::from_center_size(self.rect.center(), (side, side)),
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.control),
         );
         let glyph = f64::from(metrics.icon_md).min(side);
         if self.enabled && (self.hovered || self.pressed) {
@@ -175,9 +175,9 @@ impl Widget for RevealToggle {
                 vello::peniko::Fill::NonZero,
                 transform,
                 if self.pressed {
-                    theme.bg_active
+                    theme.tokens.colors.lift(1.0)
                 } else {
-                    theme.bg_hover
+                    theme.tokens.colors.lift(0.5)
                 },
                 None,
                 &face,

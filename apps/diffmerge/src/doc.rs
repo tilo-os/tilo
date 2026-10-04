@@ -79,13 +79,29 @@ pub struct SharedMerge {
     pub theirs_label: String,
 }
 
+/// What a merge of `ours` and `theirs` is called: the file when both sides
+/// are the same file, else both names.
+pub fn merge_title(ours: &str, theirs: &str) -> String {
+    use crate::i18n::{t, t_args, text};
+    let (ours_name, theirs_name) = (
+        crate::highlight::file_name(ours),
+        crate::highlight::file_name(theirs),
+    );
+    if ours.is_empty() && theirs.is_empty() {
+        t("merge-title-empty")
+    } else if ours_name == theirs_name {
+        t_args("merge-title", &[("name", text(ours_name))])
+    } else {
+        t_args(
+            "merge-title-pair",
+            &[("ours", text(ours_name)), ("theirs", text(theirs_name))],
+        )
+    }
+}
+
 impl SharedMerge {
     pub fn title(&self) -> String {
-        if self.ours_label.is_empty() && self.theirs_label.is_empty() {
-            "Merge result".into()
-        } else {
-            format!("Merge · {} ↔ {}", self.ours_label, self.theirs_label)
-        }
+        merge_title(&self.ours_label, &self.theirs_label)
     }
 
     pub fn into_model(&self) -> MergeModel {

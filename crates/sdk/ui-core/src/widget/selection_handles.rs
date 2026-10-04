@@ -315,7 +315,7 @@ impl SelectionHandles {
         theme: &Theme,
     ) {
         let zoom = zoom.max(1e-6);
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let surface = theme.tokens.colors.surfaces.base;
         let line = Stroke::new(1.5);
         let place = preview * self.orientation();

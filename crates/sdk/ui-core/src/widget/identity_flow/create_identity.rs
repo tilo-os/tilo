@@ -61,7 +61,7 @@ use crate::widget::identity_flow::sheet::{
 use crate::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 /// Default accent-tile palette. Picked so each tile reads as a
@@ -423,7 +423,7 @@ impl CreateIdentityScreen {
         self.body_height = body.height();
         // The widget takes the whole row (the body clip trims its paint);
         // its pointer target is the part inside the visible body.
-        place_field(&mut self.name, resolved.plan.input, text_renderer, theme);
+        place_field(&mut self.name, resolved.plan.input);
         self.input_rect = BodyScroll::visible(body, resolved.plan.input);
         self.tile_rects = resolved
             .plan
@@ -498,10 +498,10 @@ impl CreateIdentityScreen {
         }
     }
 
-    /// The accent-colour tiles: `radii.md` swatches, the chosen one ringed
+    /// The accent-colour tiles: `radii.control` swatches, the chosen one ringed
     /// in the card's ink a hairline outside its edge.
     fn draw_accent_tiles(&self, scene: &mut Scene, transform: Affine, theme: &Theme, plan: &Plan) {
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let ring_gap = f64::from(theme.tokens.spacing.s1) / 2.0;
         for (i, r) in plan.tiles.iter().enumerate() {
             // `tiles` is built 1:1 with `ACCENT_PALETTE`, so this is

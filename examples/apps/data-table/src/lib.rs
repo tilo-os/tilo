@@ -218,7 +218,7 @@ impl ResourceApp for App {
                     Box::new(
                         actions.bind_invocation(
                             Button::new(&format!("open-{}", row.id), "data-open", None)
-                                .fit_content(28.0),
+                                .control_size(ui::widget::ControlSize::Small),
                             Review::OPEN.with(row.id),
                         ),
                     )

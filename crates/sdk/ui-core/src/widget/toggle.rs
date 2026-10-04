@@ -190,10 +190,6 @@ pub struct ToggleInteract {
     pub disabled: bool,
 }
 
-/// Hover is visible without a colour swap: the knob is pushed this multiple
-/// of the contrast it already reached, rather than resolved to a second tone.
-const HOVER_KNOB_GAIN: f64 = 1.4;
-
 /// The switch's visual footprint: a 44×24 pill centred in whatever target
 /// rect layout assigns (32 px tall at a fine pointer, 48 at a coarse one), so
 /// the pill itself never stretches. Off the spacing scale on purpose: 24 is
@@ -214,84 +210,87 @@ fn track_rect(target: Rect) -> Rect {
     )
 }
 
-/// Single source of truth for both the retained [`Toggle`]'s draw and
-/// [`Toggle::paint`], so every switch shares one palette per state.
-pub fn toggle_face_colors(
-    theme: &Theme,
-    on: bool,
-    interact: ToggleInteract,
-) -> (
-    vello::peniko::Color,
-    vello::peniko::Color,
-    vello::peniko::Color,
-    f64,
-) {
-    face_for(theme, theme.accent_primary, on, interact)
+/// The resolved colours of one switch face.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToggleColors {
+    /// The track: the inverted fill when on, a lift of the ground when off.
+    pub track: vello::peniko::Color,
+    /// The knob.
+    pub knob: vello::peniko::Color,
+    /// A ring round the knob where the knob is a raised object rather than
+    /// a glyph of its track (off, on a light material).
+    pub knob_edge: Option<vello::peniko::Color>,
+    /// The track's rest edge, or your colour when focused.
+    pub edge: vello::peniko::Color,
+    pub edge_width: f64,
 }
 
-/// One palette for a switch whose on track is `on_track` — the accent for
-/// [`toggle_face_colors`], a semantic colour for [`ToggleFace::on_color`].
-/// Off is a lift off the ground, not a ramp slot: `neutral[3]` was one fixed
-/// grey per theme and read as a dead control on a raised card (HIG §9.2,
-/// §9.5 "Rest edges"). The rest edge derives from the track; focus keeps
-/// `border_focus`.
-fn face_for(
-    theme: &Theme,
-    on_track: vello::peniko::Color,
-    on: bool,
-    interact: ToggleInteract,
-) -> (
-    vello::peniko::Color,
-    vello::peniko::Color,
-    vello::peniko::Color,
-    f64,
-) {
-    let off_track = theme.tokens.colors.lift(1.0);
-    let track = if on { on_track } else { off_track };
-    let knob = knob_ink(theme, &[off_track, on_track], track, interact.hovered);
-    let (border, border_w) = if interact.focused {
-        (theme.border_focus, 2.0)
+impl ToggleColors {
+    /// What outlines the knob against the track: its ring where it has one,
+    /// otherwise its own fill.
+    pub fn knob_outline(&self) -> vello::peniko::Color {
+        self.knob_edge.unwrap_or(self.knob)
+    }
+}
+
+/// Single source of truth for both the retained [`Toggle`]'s draw and
+/// [`Toggle::paint`], so every switch shares one palette per state.
+///
+/// On, the switch is an inverted control: the track is `intent.inverted` and
+/// the knob its label colour (`intent.on_inverted`). Off, the track is a lift
+/// of the ground (HIG §9.2, §9.5 "Rest edges"). On a light material the off
+/// knob is a raised white object with a derived ring, never a dark disc; on a
+/// dark one it is the secondary ink, and hover lifts it to the primary ink.
+/// Focus is your colour round the track.
+pub fn toggle_face_colors(theme: &Theme, on: bool, interact: ToggleInteract) -> ToggleColors {
+    let colors = &theme.tokens.colors;
+    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    // A lift of the window ground: lighter on a dark material, darker on a
+    // light one, so a white knob always stands out from it.
+    let off_track = colors.intent.selection;
+    let track = if on {
+        colors.intent.inverted
+    } else {
+        off_track
+    };
+    // Hover is the same knob pressed harder: one contrast step (1:1)
+    // further from the track, never across it.
+    let harder = |tone: vello::peniko::Color| {
+        let reached = worst_contrast(tone, &[track]);
+        ink_across(&[track], tone, reached + 1.0)
+    };
+    let (knob, knob_edge) = if on {
+        let knob = ink_across(&[track], colors.intent.on_inverted, floor);
+        (if interact.hovered { harder(knob) } else { knob }, None)
+    } else if light_material(colors) {
+        let ring = ink_across(&[track], colors.text_tertiary, floor);
+        (
+            colors.surfaces.raised,
+            Some(if interact.hovered { harder(ring) } else { ring }),
+        )
+    } else if interact.hovered {
+        (ink_across(&[track], colors.text_primary, floor), None)
+    } else {
+        (ink_across(&[track], colors.text_dim, floor), None)
+    };
+    let (edge, edge_width) = if interact.focused {
+        (colors.intent.you, 2.0)
     } else {
         (crate::surface::edge_on(track), 1.0)
     };
-    (track, knob, border, border_w)
+    ToggleColors {
+        track,
+        knob,
+        knob_edge,
+        edge,
+        edge_width,
+    }
 }
 
-/// **One knob colour for both states** wherever a single tone can clear
-/// [`crate::tokens::colors::NON_TEXT_MIN_CONTRAST`] on the off *and* the on
-/// track — the shipped dark and light presets both can. Resolved per state,
-/// the knob flipped from light on the off track to dark on the accent, so a
-/// switch appeared to swap knobs as it moved. Hover pushes that one tone
-/// further out rather than swapping to a second one (the dim tone would
-/// otherwise jump near-white to near-black under the pointer on a light
-/// accent).
-///
-/// Where the two tracks straddle too far for *any* single tone — the
-/// high-contrast accent `#0099FF` sits at 2.9995:1 to white over a black
-/// off-track; a bright semantic `on_color` over the dark off-track — the
-/// knob is resolved against the track it actually rides, because a knob you
-/// cannot see is the state that matters.
-fn knob_ink(
-    theme: &Theme,
-    tracks: &[vello::peniko::Color],
-    track: vello::peniko::Color,
-    hovered: bool,
-) -> vello::peniko::Color {
-    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-    let shared = ink_across(tracks, theme.text_dim, floor);
-    let (grounds, knob): (&[vello::peniko::Color], vello::peniko::Color) =
-        if worst_contrast(shared, tracks) >= floor {
-            (tracks, shared)
-        } else {
-            let own = core::slice::from_ref(&track);
-            (own, ink_across(own, theme.text_dim, floor))
-        };
-    if hovered {
-        let reached = worst_contrast(knob, grounds);
-        ink_across(grounds, knob, reached * HOVER_KNOB_GAIN)
-    } else {
-        knob
-    }
+/// Whether `colors` is a light material (dark ink on a light window
+/// ground), where a knob is a raised white object rather than an ink glyph.
+pub(crate) fn light_material(colors: &crate::tokens::colors::Colors) -> bool {
+    crate::a11y::relative_luminance(colors.surfaces.content) > 0.5
 }
 
 /// The lowest contrast `ink` reaches over any of `grounds`.
@@ -354,7 +353,6 @@ pub struct ToggleFace {
     rect: Rect,
     on: bool,
     interact: ToggleInteract,
-    on_color: Option<vello::peniko::Color>,
 }
 
 impl ToggleFace {
@@ -363,7 +361,6 @@ impl ToggleFace {
             rect,
             on,
             interact: ToggleInteract::default(),
-            on_color: None,
         }
     }
     #[must_use]
@@ -381,31 +378,8 @@ impl ToggleFace {
         self.interact.disabled = v;
         self
     }
-    /// Override the active track for a semantic switch (for example a
-    /// connection-status switch). Off, focus, hover, and contrast behavior
-    /// remain shared.
-    #[must_use]
-    pub fn on_color(mut self, color: vello::peniko::Color) -> Self {
-        self.on_color = Some(color);
-        self
-    }
-    pub fn colors(
-        &self,
-        theme: &Theme,
-    ) -> (
-        vello::peniko::Color,
-        vello::peniko::Color,
-        vello::peniko::Color,
-        f64,
-    ) {
-        // A semantic on colour is the same face with a different on track —
-        // still one knob for both states, resolved against both tracks.
-        face_for(
-            theme,
-            self.on_color.unwrap_or(theme.accent_primary),
-            self.on,
-            self.interact,
-        )
+    pub fn colors(&self, theme: &Theme) -> ToggleColors {
+        toggle_face_colors(theme, self.on, self.interact)
     }
 }
 
@@ -438,7 +412,7 @@ impl Toggle {
     /// [`Toggle`]'s look. Callers keep their own hit-testing; only the
     /// palette ([`toggle_face_colors`]) is shared.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &ToggleFace) {
-        let (track, knob, border, border_w) = face.colors(theme);
+        let colors = face.colors(theme);
         let radius = face.rect.height() / 2.0;
         let track_shape = RoundedRect::from_rect(face.rect, radius);
         let dim = face.interact.disabled;
@@ -454,17 +428,9 @@ impl Toggle {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            track,
+            colors.track,
             None,
             &track_shape,
-        );
-        // Rest edge and focus ring share one half-pixel-inset outline.
-        scene.stroke(
-            &Stroke::new(border_w),
-            transform,
-            border,
-            None,
-            &crate::surface::edge_outline(face.rect, radius),
         );
         // Knob radius follows the track: 10 px inside the 24 px default.
         let kr = (radius - KNOB_EDGE_GAP).max(1.0);
@@ -477,13 +443,32 @@ impl Toggle {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            knob,
+            colors.knob,
             None,
             &Circle::new(Point::new(cx, cy), kr),
         );
+        if let Some(ring) = colors.knob_edge {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                ring,
+                None,
+                &Circle::new(Point::new(cx, cy), kr - 0.5),
+            );
+        }
         if dim {
             scene.pop_layer();
         }
+        // Rest edge and focus ring share one half-pixel-inset outline, drawn
+        // outside the disabled layer so a disabled switch keeps its bounds
+        // at full strength (HIG §9.5).
+        scene.stroke(
+            &Stroke::new(colors.edge_width),
+            transform,
+            colors.edge,
+            None,
+            &crate::surface::edge_outline(face.rect, radius),
+        );
     }
 }
 
@@ -857,7 +842,7 @@ mod tests {
                     focused,
                     disabled: !enabled,
                 };
-                let (track, knob, border, border_w) = toggle_face_colors(&theme, on, interact);
+                let colors = toggle_face_colors(&theme, on, interact);
                 let mut expected = Scene::new();
                 if !enabled {
                     expected.push_layer(
@@ -871,31 +856,41 @@ mod tests {
                 expected.fill(
                     vello::peniko::Fill::NonZero,
                     Affine::IDENTITY,
-                    track,
+                    colors.track,
                     None,
                     &pill_shape,
-                );
-                // The edge (and the focus ring) ride the shared half-pixel-inset
-                // outline, so a 1 px hairline covers the pill's outermost pixel
-                // row instead of bleeding half onto the ground.
-                expected.stroke(
-                    &Stroke::new(border_w),
-                    Affine::IDENTITY,
-                    border,
-                    None,
-                    &crate::surface::edge_outline(pill, 12.0),
                 );
                 let knob_x = if on { pill.x1 - 12.0 } else { pill.x0 + 12.0 };
                 expected.fill(
                     vello::peniko::Fill::NonZero,
                     Affine::IDENTITY,
-                    knob,
+                    colors.knob,
                     None,
                     &Circle::new(Point::new(knob_x, 46.0), 10.0),
                 );
+                if let Some(ring) = colors.knob_edge {
+                    expected.stroke(
+                        &Stroke::new(1.0),
+                        Affine::IDENTITY,
+                        ring,
+                        None,
+                        &Circle::new(Point::new(knob_x, 46.0), 9.5),
+                    );
+                }
                 if !enabled {
                     expected.pop_layer();
                 }
+                // The edge (and the focus ring) ride the shared half-pixel-inset
+                // outline, so a 1 px hairline covers the pill's outermost pixel
+                // row instead of bleeding half onto the ground. It sits
+                // outside the disabled layer, at full strength.
+                expected.stroke(
+                    &Stroke::new(colors.edge_width),
+                    Affine::IDENTITY,
+                    colors.edge,
+                    None,
+                    &crate::surface::edge_outline(pill, 12.0),
+                );
 
                 let state =
                     format!("on={on} hovered={hovered} focused={focused} enabled={enabled}");
@@ -917,49 +912,52 @@ mod tests {
             let theme = Theme::dark();
             let off = toggle_face_colors(&theme, false, ToggleInteract::default());
             let on = toggle_face_colors(&theme, true, ToggleInteract::default());
-            assert_eq!(on.0, theme.accent_primary, "on-track is the accent fill");
             assert_eq!(
-                off.0,
-                theme.tokens.colors.lift(1.0),
+                on.track, theme.tokens.colors.intent.inverted,
+                "on-track is the inverted fill"
+            );
+            assert_eq!(
+                off.track, theme.tokens.colors.intent.selection,
                 "off-track is a lift off the ground, not a ramp slot"
             );
-            assert_ne!(on.0, off.0, "on and off tracks must differ");
+            assert_ne!(on.track, off.track, "on and off tracks must differ");
         }
 
-        // Case `toggle_knob_is_one_colour_for_both_states_where_a_tone_exists`.
-        // HIG §9.5: one knob colour for both states wherever a single tone can
-        // clear the floor on both tracks — true of the shipped dark and light
-        // presets, including light, where the off track (white) and the on
-        // track (mid blue) straddle the light/dark line. High contrast is the
-        // documented exception: its accent `#0099FF` is 2.9995:1 to white over a
-        // black off-track, so no one tone exists and the knob resolves per
-        // track — legible either way, which every preset asserts below.
+        // Case `toggle_knob_is_inverted_on_and_a_raised_object_off_in_light`.
+        // On, the switch is an inverted control and its knob is the inverted
+        // label colour. Off, a light material shows a raised white knob with
+        // a derived ring (never a dark disc); a dark one the secondary ink.
+        // Legible on every material either way.
         {
-            for (theme, one_tone) in [
-                (Theme::dark(), true),
-                (Theme::light(), true),
-                (Theme::high_contrast(), false),
-            ] {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let colors = &theme.tokens.colors;
                 let off = toggle_face_colors(&theme, false, ToggleInteract::default());
                 let on = toggle_face_colors(&theme, true, ToggleInteract::default());
-                if one_tone {
-                    assert_eq!(
-                        off.1, on.1,
-                        "{}: knob must not change colour with the state",
+                assert_eq!(on.knob, colors.intent.on_inverted, "{}", theme.name);
+                assert_eq!(on.knob_edge, None);
+                if light_material(colors) {
+                    assert_eq!(off.knob, colors.surfaces.raised, "{}", theme.name);
+                    assert!(
+                        crate::a11y::relative_luminance(off.knob)
+                            > crate::a11y::relative_luminance(off.track),
+                        "{}: the off knob is lighter than its track",
                         theme.name
                     );
+                } else {
+                    assert_eq!(off.knob, colors.text_dim, "{}", theme.name);
+                    assert_eq!(off.knob_edge, None);
                 }
-                for (state, (track, knob, ..)) in [("off", off), ("on", on)] {
-                    let ratio = crate::a11y::contrast_ratio(knob, track);
+                for (state, face) in [("off", off), ("on", on)] {
+                    let ratio = crate::a11y::contrast_ratio(face.knob_outline(), face.track);
                     assert!(
                         ratio >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                        "{} {state}: knob {knob:?} on track {track:?} is only {ratio:.2}:1",
+                        "{} {state}: knob outline on its track is only {ratio:.2}:1",
                         theme.name
                     );
                 }
                 assert_eq!(
-                    off.2,
-                    crate::surface::edge_on(off.0),
+                    off.edge,
+                    crate::surface::edge_on(off.track),
                     "{}: rest edge derives from the track",
                     theme.name
                 );
@@ -979,16 +977,16 @@ mod tests {
                 },
             );
             assert_eq!(
-                focused.2, theme.border_focus,
-                "focused border is the focus ring colour"
+                focused.edge, theme.tokens.colors.intent.you,
+                "focus is your colour"
             );
-            assert_eq!(focused.3, 2.0, "focused border is 2px");
+            assert_eq!(focused.edge_width, 2.0, "focused border is 2px");
             assert_eq!(
-                rest.2,
-                crate::surface::edge_on(rest.0),
+                rest.edge,
+                crate::surface::edge_on(rest.track),
                 "rest edge is derived from the track it sits on"
             );
-            assert_eq!(rest.3, 1.0);
+            assert_eq!(rest.edge_width, 1.0);
         }
 
         // Case `toggle_face_matches_shared_colors`.
@@ -1005,19 +1003,6 @@ mod tests {
                         ..Default::default()
                     }
                 ),
-            );
-        }
-
-        // Case `toggle_face_accepts_semantic_active_track`.
-        {
-            let theme = Theme::dark();
-            let semantic = theme.tokens.colors.semantic.success;
-            let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).on_color(semantic);
-            let (track, knob, _, _) = face.colors(&theme);
-            assert_eq!(track, semantic);
-            assert!(
-                crate::a11y::contrast_ratio(knob, track)
-                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
             );
         }
     }

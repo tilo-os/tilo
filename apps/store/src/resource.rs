@@ -47,11 +47,16 @@ pub struct StoreState {
     pub reports: Vec<ReportProjection>,
 }
 
+/// The id of the catalogue's root resource: its kind, which is the id the
+/// framework publishes it under, so a control bound to it resolves in every
+/// host.
+pub const CATALOGUE_ID: &str = "store.catalog";
+
 /// The app-store catalogue resource.
 pub struct Store;
 
 impl Resource for Store {
-    const KIND: &'static str = "store.catalog";
+    const KIND: &'static str = CATALOGUE_ID;
     const LABEL: &'static str = "App Store";
     const ACTION_TYPE: &'static str = STORE_DOCUMENT_ACTION_TYPE;
 
@@ -407,6 +412,10 @@ const SCENARIOS: &[&str] = &[
     "wide",
     "narrow",
     "detail",
+    "detail-narrow",
+    "detail-update",
+    "detail-flatpak",
+    "search",
     "remotes",
     "progress",
     "error",
@@ -436,6 +445,10 @@ impl ResourceApp for StoreShell {
 
     fn view(cx: &mut ViewCx<Store>) -> Element {
         cx.surface(StoreApp::new())
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.ends_with("narrow").then_some((520, 820))
     }
 
     /// A `.flatpakref` (handed over, or its path) shows its app ready to
@@ -479,6 +492,7 @@ impl ResourceApp for StoreShell {
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
             Some("narrow") => (420, 860),
+            Some("detail-narrow") => (520, 820),
             _ => (1200, 760),
         }
     }
@@ -540,6 +554,7 @@ impl ResourceSurface<Store, StoreEffect> for StoreApp {
         match cx.mode() {
             RunMode::Live => self.start_worker(cx.waker()),
             RunMode::Capture => {
+                self.set_capture_images();
                 if let Some(catalogue) = cx.fixture::<CaptureCatalogue>() {
                     self.show_capture_catalogue(catalogue.items.clone());
                 }

@@ -182,6 +182,9 @@ impl Resource for Monitor {
 /// The screenshot scenarios: the sample machine, staged.
 const SCENARIOS: &[&str] = &[
     "detail",
+    "interval",
+    "flat",
+    "kernel-threads",
     "interval-popover",
     "resources",
     "resources-many",
@@ -307,7 +310,31 @@ mod tests {
     fn shown_selected(app: &mut TestApp<MonitorShell>, id: &str) -> Option<bool> {
         let inspection: serde_json::Value =
             serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        keyed(&inspection, &format!("monitor.{id}")).map(|node| node["state"]["selected"] == true)
+        let (pid, started_at) = crate::app::parse_process_resource_id(id)?;
+        targeted(
+            &inspection,
+            &format!("row:{}:0", crate::view::process_row_key(pid, started_at)),
+        )
+        .map(|node| node["state"]["selected"] == true)
+    }
+
+    fn targeted(node: &serde_json::Value, target: &str) -> Option<serde_json::Value> {
+        if node
+            .get("action_target")
+            .and_then(serde_json::Value::as_str)
+            == Some(target)
+        {
+            return Some(node.clone());
+        }
+        match node {
+            serde_json::Value::Object(fields) => {
+                fields.values().find_map(|child| targeted(child, target))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|child| targeted(child, target))
+            }
+            _ => None,
+        }
     }
 
     fn named_node(app: &mut TestApp<MonitorShell>, name: &str) -> serde_json::Value {
@@ -318,10 +345,21 @@ mod tests {
 
     /// The interval the window shows, as a screen reader hears it.
     fn shown_interval(app: &mut TestApp<MonitorShell>) -> String {
-        named_node(app, "Refresh interval")["value"]
-            .as_str()
-            .unwrap()
-            .to_owned()
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        fn find(node: &serde_json::Value) -> Option<String> {
+            if let Some(name) = node.get("name").and_then(serde_json::Value::as_str)
+                && (name.starts_with("Every ") && name.ends_with(" s") || name == "Paused")
+            {
+                return Some(name.to_owned());
+            }
+            match node {
+                serde_json::Value::Object(fields) => fields.values().find_map(find),
+                serde_json::Value::Array(items) => items.iter().find_map(find),
+                _ => None,
+            }
+        }
+        find(&inspection).expect("the cadence is announced")
     }
 
     /// Click the control named `name` where a person sees it.
@@ -342,7 +380,7 @@ mod tests {
     #[test]
     fn preferences_follow_the_person_and_stay_out_of_the_document() {
         let mut app = TestApp::<MonitorShell>::new().unwrap();
-        assert_eq!(shown_interval(&mut app), "1.5s");
+        assert_eq!(shown_interval(&mut app), "Every 1.5 s");
 
         // Another of the person's devices changed them.
         app.settings::<MonitorPreferences>()
@@ -353,12 +391,13 @@ mod tests {
             })
             .unwrap();
         app.harness().relayout();
-        assert_eq!(shown_interval(&mut app), "3s");
+        assert_eq!(shown_interval(&mut app), "Every 3 s");
 
-        // A click here cycles the cadence and stores it for every device.
+        // The cadence menu stores the selected frequency for every device.
         let versions = app.versions().len();
-        click(&mut app, "Refresh interval");
-        assert_eq!(shown_interval(&mut app), "5s");
+        click(&mut app, "Every 3 s");
+        click(&mut app, "Every 5 seconds");
+        assert_eq!(shown_interval(&mut app), "Every 5 s");
         assert_eq!(
             app.settings::<MonitorPreferences>().get(),
             MonitorPreferences {
@@ -374,7 +413,7 @@ mod tests {
         );
 
         let mut app = app.reopen().unwrap();
-        assert_eq!(shown_interval(&mut app), "5s");
+        assert_eq!(shown_interval(&mut app), "Every 5 s");
     }
 
     #[test]
@@ -413,7 +452,7 @@ mod tests {
         assert_eq!(app.state().sort_key, "name");
         assert!(!app.state().sort_desc, "text columns sort ascending first");
         assert_eq!(app.versions().len(), versions + 1);
-        click(&mut app, "Tree process view");
+        click(&mut app, "Tree view");
         assert!(!app.state().tree_mode);
         assert!(app.undo());
         assert!(app.state().tree_mode);
@@ -427,14 +466,14 @@ mod tests {
         let inspection: serde_json::Value =
             serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
         assert_eq!(
-            keyed(&inspection, "monitor.search").unwrap()["value"],
+            keyed(&inspection, "monitor.filter").unwrap()["value"],
             "cargo"
         );
         app.effect(&MonitorEffect::ShowTab {
             tab: "resources".into(),
         })
         .unwrap();
-        assert_eq!(named_node(&mut app, "Resources")["state"]["selected"], true);
+        assert_eq!(named_node(&mut app, "Resources")["state"]["checked"], true);
         assert!(
             app.effect(&MonitorEffect::ShowTab {
                 tab: "graphs".into()
@@ -496,7 +535,7 @@ mod tests {
         .unwrap();
 
         // Inspecting its row through the door selects it.
-        click(&mut app, "Tree process view");
+        click(&mut app, "Tree view");
         assert_eq!(
             shown_selected(&mut app, &id),
             Some(false),
@@ -544,8 +583,8 @@ mod tests {
             app.harness().relayout();
             let inspection: serde_json::Value =
                 serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-            let resources_shown = keyed(&inspection, "monitor.tab.resources")
-                .map(|tab| tab["state"]["selected"] == true);
+            let resources_shown =
+                announced(&inspection, "Resources").map(|tab| tab["state"]["checked"] == true);
             let expected = if *scenario == "kill-confirm" {
                 // The confirmation is modal: only the dialog is announced.
                 None

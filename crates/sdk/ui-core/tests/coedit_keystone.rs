@@ -228,7 +228,7 @@ fn render_widget(
 
 fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
-        .with_font_size(28.0)
+        .with_text_role(tilo_ui::TextRole::LargeTitle)
         .with_plain_chrome();
     input.bind_text(bound.clone());
     render_widget(input, doc, presence)
@@ -238,7 +238,7 @@ fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> 
 /// the same key paints into this widget's local render.
 fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
     let input = TextInput::new(path)
-        .with_font_size(28.0)
+        .with_text_role(tilo_ui::TextRole::LargeTitle)
         .with_plain_chrome();
     let mut throwaway = AutoCommit::new();
     render_widget(input, &mut throwaway, presence)

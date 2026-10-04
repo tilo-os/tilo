@@ -2575,7 +2575,7 @@ impl PhotoResourceSeed {
                 parts.push(format!("Pets: {}", analysis.pets.join(", ")));
             }
         }
-        parts.join(" · ")
+        parts.join(". ")
     }
 }
 
@@ -2607,7 +2607,7 @@ fn analysis_text_resource(id: &str, kind: &str, label: &str, text: &str) -> Reso
         id,
         kind,
         format!(
-            "{label} · {} character{} · {} part{}",
+            "{label}, {} character{} in {} part{}",
             text.chars().count(),
             if text.chars().count() == 1 { "" } else { "s" },
             chunks.len(),
@@ -2923,7 +2923,7 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
             format!("{}#location", photo.id),
             "photos.location",
             format!(
-                "{} · explicitly shared from {}",
+                "{}, explicitly shared from {}",
                 location.display_name(),
                 location.provenance.source
             ),

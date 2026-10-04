@@ -105,7 +105,7 @@ impl Widget for Thumb {
         if self.rect.width() < 1.0 || self.art.width <= 0.0 || self.art.height <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.item);
         let frame = RoundedRect::from_rect(self.rect, radius);
         scene.push_layer(
             Fill::NonZero,
@@ -114,7 +114,13 @@ impl Widget for Thumb {
             transform,
             &frame,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &self.rect,
+        );
         let scale = (self.rect.width() / self.art.width).min(self.rect.height() / self.art.height);
         let offset = Point::new(
             self.rect.center().x - self.art.width * scale / 2.0,
@@ -140,7 +146,7 @@ impl Widget for Thumb {
             scene.stroke(
                 &Stroke::new(ring),
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.intent.you,
                 None,
                 &frame
                     .rect()

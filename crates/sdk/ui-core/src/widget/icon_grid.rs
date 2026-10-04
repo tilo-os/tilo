@@ -21,9 +21,10 @@ use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
+use crate::widget::data_table::{text_band, type_line_height};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
@@ -285,8 +286,8 @@ impl Widget for IconGrid {
             // label across (96 px at 1×) and the glyph, its label gap and one
             // label line plus a section inset above and below (88 px at 1×).
             // An authored `with_cell_size` is left exactly as written.
-            let label_size = f64::from(tokens.typography.scale.sm);
-            let label_line = type_line_height(tokens.typography.scale.sm);
+            let label_size = f64::from(tokens.typography.size(TextRole::Caption));
+            let label_line = type_line_height(&tokens.typography, TextRole::Caption);
             self.cell_w = text_band(DEFAULT_CELL_W, label_size * DEFAULT_CELL_LABEL_EMS, 0.0);
             self.cell_h = text_band(
                 DEFAULT_CELL_H,
@@ -345,7 +346,7 @@ impl Widget for IconGrid {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let label_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let label_style = tokens.typography.style(TextRole::Caption);
         let label_gap = f64::from(tokens.spacing.s2);
         let label_inset = f64::from(tokens.spacing.s2);
         for (i, item) in self.items.iter().enumerate() {
@@ -357,33 +358,27 @@ impl Widget for IconGrid {
             let hovered = self.hover == Some(i) && !selected;
             if selected || hovered {
                 let bg = if selected {
-                    tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                    tokens.colors.lift_on(tokens.colors.surfaces.content, 1.0)
                 } else {
-                    theme.bg_hover
+                    tokens.colors.intent.selection_hover
                 };
-                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
-            let label = text_renderer.elide_to_width(
+            let label = text_renderer.elide_to_width_style(
                 &item.label,
-                label_size,
                 crate::num::f32_of_f64(self.cell_w - label_inset),
+                &label_style,
             );
-            let (tw, th) = text_renderer.measure(&label, label_size, None);
+            let (tw, th) = text_renderer.measure_style(&label, None, &label_style);
             // The glyph + label block is centred in the cell so the margins
             // above and below match; the label is centred under the glyph.
             let block_h = self.icon_px + label_gap + f64::from(th);
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
             let icon_y = cell.y0 + ((self.cell_h - block_h) / 2.0).max(0.0);
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
-            let glyph_color = if selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
+            let glyph_color = tokens.colors.text_primary;
             draw_icon(
                 scene,
                 transform,
@@ -395,20 +390,14 @@ impl Widget for IconGrid {
 
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + label_gap;
-            let label_color = if selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
-            text_renderer.draw_text(
+            let label_color = tokens.colors.text_primary;
+            text_renderer.draw_style(
                 scene,
                 &label,
-                label_size,
                 label_color,
                 translated(transform, tx, ty),
                 None,
+                &label_style,
             );
         }
 
@@ -419,7 +408,7 @@ impl Widget for IconGrid {
         {
             let cell = self.cell_rect(i);
             if !presence.should_cull(cell) {
-                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,

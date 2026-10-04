@@ -231,17 +231,6 @@ fn carry(provider: &SharedProvider, change: &RouteChange) -> Result<(), String> 
 /// Framework app.
 pub struct WindowsShell;
 
-/// Every screenshot scenario, over the sample catalogue.
-const SCENARIOS: &[&str] = &[
-    "wide",
-    "detail",
-    "vm-detail",
-    "running",
-    "error",
-    "error-compact",
-    "confirm-delete",
-];
-
 /// The installer a launch names is installed through the same effect the
 /// palette and the install button reach.
 const INSTALL: ActionRef<Windows, String> = ActionRef::new("install", &["path"]);
@@ -268,13 +257,13 @@ impl ResourceApp for WindowsShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        SCENARIOS
+        WindowsApp::SCENARIOS
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario.unwrap_or("wide") {
             "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
-            "running" | "error" => (1000, 760),
+            "running" | "error" | "pending-install" => (1000, 760),
             _ => (1280, 800),
         }
     }
@@ -288,6 +277,10 @@ impl ResourceApp for WindowsShell {
         }
         fixture.provide(sample);
     }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        WindowsApp::scenario_viewport(name)
+    }
 }
 
 impl ResourceSurface<Windows> for WindowsApp {
@@ -297,7 +290,10 @@ impl ResourceSurface<Windows> for WindowsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Windows>) {
         match cx.mode() {
-            RunMode::Live => self.use_provider(WindowsApp::live_provider()),
+            RunMode::Live => {
+                self.connect_appliance();
+                self.use_provider(WindowsApp::live_provider());
+            }
             RunMode::Capture => {
                 if let Some(sample) = cx.fixture::<SampleProvider>() {
                     self.use_provider(Box::new((*sample).clone()));
@@ -323,7 +319,7 @@ impl ResourceSurface<Windows> for WindowsApp {
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario.unwrap_or("wide"));
+        self.stage_scenario(scenario);
     }
 
     /// Route edits for the application the window shows, beside the
@@ -516,7 +512,7 @@ mod tests {
         let mut detail = TestApp::<WindowsShell>::capture(Some("confirm-delete")).unwrap();
         assert_eq!(detail.harness().inspection().viewport, [480, 800]);
         let frame = detail.harness().inspection_json().unwrap();
-        assert!(frame.contains("windows.delete-confirm"), "{frame}");
+        assert!(frame.contains("windows-confirmation"), "{frame}");
 
         let mut wide = TestApp::<WindowsShell>::capture(Some("wide")).unwrap();
         assert_eq!(wide.harness().inspection().viewport, [1280, 800]);
@@ -535,5 +531,21 @@ mod tests {
                     && row["action"] == "use-proton-route"),
             "the shown application's route edits are bound on the manager"
         );
+    }
+}
+
+#[cfg(test)]
+mod capture_tests {
+    /// Every declared scenario stages through the framework's capture hook
+    /// and renders, the same path `--shots --scenario NAME` takes.
+    #[test]
+    fn every_scenario_stages_and_renders_in_the_framework_app() {
+        let dir = tempfile::tempdir().unwrap();
+        for scenario in super::WindowsApp::SCENARIOS {
+            let mut app = ui::framework::testing::TestApp::<super::WindowsShell>::new().unwrap();
+            app.stage(Some(scenario)).unwrap();
+            app.harness()
+                .render_png(&dir.path().join(format!("{scenario}.png")));
+        }
     }
 }

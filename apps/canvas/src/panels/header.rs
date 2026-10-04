@@ -29,7 +29,7 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         )
         .with_plain_chrome()
         .with_font_family(FontChoice::Serif)
-        .with_font_size(17.0)
+        .with_text_role(TextRole::Heading)
         .with_placeholder(&ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
         .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-artwork-title"));
     let lookup = ui::i18n::I18nManager::lookup_plain;
@@ -86,7 +86,7 @@ fn add_picture(tools: &Tools) -> Element {
     Box::new(
         Button::new("canvas-add-picture", "", None)
             .with_icon(Icon::Image)
-            .ghost()
+            .role(ui::widget::ButtonRole::Plain)
             .with_accessible_name(&name)
             .tooltip(name.clone())
             .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
@@ -224,12 +224,12 @@ impl Command {
         let button = if labelled {
             Button::new(&self.id, &label, None)
                 .with_icon(self.icon)
-                .ghost()
-                .fit_content(super::ICON_BUTTON)
+                .role(ui::widget::ButtonRole::Plain)
+                .control_size(ui::widget::ControlSize::Regular)
         } else {
             Button::new(&self.id, "", None)
                 .with_icon(self.icon)
-                .ghost()
+                .role(ui::widget::ButtonRole::Plain)
                 .with_accessible_name(&label)
                 .tooltip(label.clone())
                 .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
@@ -322,10 +322,9 @@ fn strip(
         .with_align_items(ui::taffy::AlignItems::Center);
     if let Some((said, owner, _)) = lead {
         row = row
-            .push(Box::new(ui::widget::Badge::semantic_pill(
-                said,
-                ui::widget::BadgeTone::Accent,
-            )))
+            .push(Box::new(
+                ui::widget::Badge::text(said).style(ui::widget::ChipStyle::Live),
+            ))
             .push(mask_back(tools, owner))
             .push(Box::new(Spacer::fixed(8.0)));
     }
@@ -399,7 +398,7 @@ fn mask_back(tools: &Tools, owner: String) -> Element {
     Box::new(
         Button::new("canvas-paint-layer", "", None)
             .with_icon(Icon::Brush)
-            .ghost()
+            .role(ui::widget::ButtonRole::Plain)
             .with_accessible_name(&label)
             .tooltip(label.clone())
             .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
@@ -545,7 +544,7 @@ fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Ele
     Box::new(
         Button::new(id, "", None)
             .with_icon(icon)
-            .ghost()
+            .role(ui::widget::ButtonRole::Plain)
             .with_accessible_name(&name)
             .tooltip(name.clone())
             .with_size(super::ICON_BUTTON, super::ICON_BUTTON)
@@ -559,7 +558,7 @@ fn toggle(state: &LocalState<bool>, id: &str, icon: Icon) -> Button {
     let name = ui::i18n::I18nManager::lookup_plain(id);
     Button::new(id, "", None)
         .with_icon(icon)
-        .ghost()
+        .role(ui::widget::ButtonRole::Plain)
         .with_accessible_name(&name)
         .tooltip(name.clone())
         .with_size(super::ICON_BUTTON, super::ICON_BUTTON)

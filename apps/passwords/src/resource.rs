@@ -15,7 +15,8 @@ use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
 use ui::widget::Element;
 
 use crate::actions::PasswordsEffect;
-use crate::showcase::{PasswordsSurface, demo_vault};
+use crate::demo::demo_vault;
+use crate::window::PasswordsSurface;
 
 /// The password vault resource: the door the vault's rows and effects are
 /// published on.
@@ -38,16 +39,7 @@ impl Resource for Passwords {
 pub struct DemoVault(pub PathBuf);
 
 /// The screenshot scenarios.
-pub const SCENARIOS: &[&str] = &[
-    "vault",
-    "editor",
-    "health",
-    "app-access",
-    "import",
-    "export",
-    "delete-confirm",
-    "long-list",
-];
+pub const SCENARIOS: &[&str] = crate::window::SCENARIOS;
 
 /// Framework app: the passwords surface over [`Passwords`].
 pub struct PasswordsShell;
@@ -83,15 +75,10 @@ impl ResourceApp for PasswordsShell {
     /// A vault of synthetic items in the capture's scratch directory: a
     /// screenshot never opens the person's vault.
     fn fixture(fixture: &mut Fixture<Passwords>) {
-        let copies = if fixture.scenario() == Some("long-list") {
-            3
-        } else {
-            0
-        };
         let Ok(root) = fixture.directory().map(std::path::Path::to_path_buf) else {
             return;
         };
-        demo_vault(&root, copies);
+        demo_vault(&root, fixture.scenario());
         fixture.provide(DemoVault(root));
     }
 }
@@ -296,10 +283,68 @@ mod tests {
     }
 
     #[test]
+    fn revealed_secrets_stay_out_of_the_hosted_inspection_and_accessibility_tree() {
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Private account", "ada", "opaque-reveal-7A");
+        let id = model.save_item(&mut item).unwrap();
+        drop(model);
+        let clipboard = std::sync::Arc::new(Clipboard::default());
+        let _host = ui::host::enter(
+            &ui::host::HostServices::null().with_clipboard(std::sync::Arc::clone(&clipboard) as _),
+        );
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        app.effect(&PasswordsEffect::Select { item: id.0 }).unwrap();
+        // Operate the actual PropertyList's synthetic accessibility actions,
+        // including the reveal, instead of bypassing the row with a Request.
+        for name in ["Show password", "Hide password", "Show password"] {
+            let node = app.harness().a11y_node_named(name).expect(name);
+            app.harness()
+                .perform_a11y_action(node, &ui::a11y::Action::Activate)
+                .unwrap();
+            app.settle();
+            let frame = app.harness().inspection_json().unwrap();
+            let next = if name == "Hide password" {
+                "Show password"
+            } else {
+                "Hide password"
+            };
+            assert!(frame.contains(next), "the production row changed: {frame}");
+            assert!(
+                !frame.contains("opaque-reveal-7A"),
+                "inspection/a11y leaked the revealed value"
+            );
+        }
+        let copy = app
+            .harness()
+            .a11y_node_named("Copy")
+            .expect("identity copy action");
+        app.harness()
+            .perform_a11y_action(copy, &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        assert_eq!(clipboard.0.lock().unwrap().as_deref(), Some("ada"));
+        app.harness()
+            .send(&winit::event::WindowEvent::Focused(false));
+        app.settle();
+        let hidden = app.harness().inspection_json().unwrap();
+        assert!(
+            hidden.contains("Show password"),
+            "focus loss rebuilt the retained row: {hidden}"
+        );
+        assert!(!hidden.contains("Hide password"));
+        assert!(!hidden.contains("opaque-reveal-7A"));
+        let published = serde_json::to_string(&app.agent_surface()).unwrap();
+        assert!(!published.contains("opaque-reveal-7A"));
+        assert!(published.contains("Reveal password"));
+    }
+
+    #[test]
     fn an_item_saved_from_the_editor_lands_in_the_vault() {
         let _profile = profile();
         let mut app = TestApp::<PasswordsShell>::new().unwrap();
         app.effect(&PasswordsEffect::Add).unwrap();
+        app.harness().click_named("passwords.field.name").unwrap();
         app.harness().type_text("Mail");
         app.effect(&PasswordsEffect::Generate).unwrap();
         app.effect(&PasswordsEffect::Save).unwrap();
@@ -323,12 +368,19 @@ mod tests {
             assert!(!frame.contains("never-rendered"), "{scenario}: {frame}");
             let shows = |text: &str| frame.contains(text);
             match *scenario {
-                "editor" => assert!(shows("Northstar Bank") && shows("Save"), "{frame}"),
-                "delete-confirm" => assert!(shows("Delete item?"), "{frame}"),
-                "import" => assert!(shows("Review import"), "{frame}"),
-                "export" => assert!(shows("Export as plaintext CSV"), "{frame}"),
-                "app-access" => assert!(shows("Apps with ongoing access"), "{frame}"),
-                "health" => assert!(selected(&root, "Password review"), "{frame}"),
+                "editor" => assert!(shows("Northstar Bank") && shows("Save changes"), "{frame}"),
+                "delete-confirm" | "delete" => assert!(
+                    shows("Delete “Northstar Bank”?") && shows("Delete item"),
+                    "{frame}"
+                ),
+                "import" => assert!(shows("Import") && shows("login"), "{frame}"),
+                "export" => assert!(shows("Export passwords"), "{frame}"),
+                "app-access" => assert!(shows("App access"), "{frame}"),
+                "health" | "review" => assert!(selected(&root, "Password review"), "{frame}"),
+                "empty" => assert!(!shows("Northstar Bank") && shows("New item"), "{frame}"),
+                "new-item" => assert!(shows("New item") && shows("Save item"), "{frame}"),
+                "transfer" => assert!(shows("Import and export"), "{frame}"),
+                "backup" => assert!(shows("backup"), "{frame}"),
                 _ => assert!(shows("Northstar Bank"), "{scenario}: {frame}"),
             }
         }

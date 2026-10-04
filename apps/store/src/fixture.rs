@@ -17,6 +17,67 @@ use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, Sto
     clippy::too_many_lines,
     reason = "the deterministic visual fixture keeps every app/action state together so screenshot review can see the complete catalogue vocabulary"
 )]
+/// How many previews each fixture app lists.
+const PREVIEWS: usize = 3;
+
+/// Where the fixture catalogue's artwork nominally lives.
+const ARTWORK_HOST: &str = "https://artwork.invalid/";
+
+macro_rules! artwork {
+    ($($file:literal),* $(,)?) => {
+        &[$(($file, include_bytes!(concat!("../fixtures/artwork/", $file)))),*]
+    };
+}
+
+/// The bundled artwork of the fixture apps: an icon and previews each.
+const ARTWORK: &[(&str, &[u8])] = artwork![
+    "Notes.png",
+    "Terminal.png",
+    "Files.png",
+    "Chess.png",
+    "Inkscape.png",
+    "VLC.png",
+    "Notes-preview-1.png",
+    "Notes-preview-2.png",
+    "Notes-preview-3.png",
+    "Terminal-preview-1.png",
+    "Terminal-preview-2.png",
+    "Terminal-preview-3.png",
+    "Files-preview-1.png",
+    "Files-preview-2.png",
+    "Files-preview-3.png",
+    "Chess-preview-1.png",
+    "Chess-preview-2.png",
+    "Chess-preview-3.png",
+    "Inkscape-preview-1.png",
+    "Inkscape-preview-2.png",
+    "Inkscape-preview-3.png",
+    "VLC-preview-1.png",
+    "VLC-preview-2.png",
+    "VLC-preview-3.png",
+];
+
+/// The image store of a capture: it serves the bundled artwork for the
+/// fixture catalogue's URLs and nothing else, so no capture touches the
+/// network.
+pub fn artwork_store() -> ui::ImageStore {
+    let fetch: ui::Fetcher = std::sync::Arc::new(|url: &str| {
+        let name = url.strip_prefix(ARTWORK_HOST)?;
+        ARTWORK
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|(_, bytes)| bytes.to_vec())
+    });
+    ui::ImageStore::with_workers(&fetch, 2)
+}
+
+/// The preview URLs the fixture lists for the app called `name`.
+fn previews(name: &str) -> Vec<String> {
+    (1..=PREVIEWS)
+        .map(|index| format!("{ARTWORK_HOST}{name}-preview-{index}.png"))
+        .collect()
+}
+
 pub fn fixture_catalog() -> Vec<StoreItem> {
     let tilo =
         |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {
@@ -27,7 +88,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             supported_languages: Vec::new(),
             categories: vec![cat.into()],
             icon_url: Some(format!("https://artwork.invalid/{name}.png")),
-            screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
+            screenshot_urls: previews(name),
             homepage_url: None,
             source_url: None,
             install_ref_path: None,
@@ -53,7 +114,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         supported_languages: Vec::new(),
         categories: vec![cat.into()],
         icon_url: Some(format!("https://artwork.invalid/{name}.png")),
-        screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
+        screenshot_urls: previews(name),
         homepage_url: None,
         source_url: None,
         install_ref_path: None,

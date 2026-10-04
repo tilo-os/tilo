@@ -92,6 +92,7 @@ const LAB_SOURCES: &[&str] = &[
 ];
 const SHOT_SOURCES: &[&str] = &[
     "chart_gallery_shots.rs",
+    "content_shots.rs",
     "ctrl_k_palette.rs",
     "data_table.rs",
     "denied_state_shots.rs",
@@ -106,12 +107,13 @@ const SHOT_SOURCES: &[&str] = &[
     "scrollbar_shots.rs",
     "search_showcase.rs",
     "soft_shadow_shots.rs",
-    "table_shots.rs",
     "text_shots.rs",
     "textinput_ext_shots.rs",
     "undo_controls_shots.rs",
     "widget_showcase_snapshot.rs",
     "widget_snapshot.rs",
+    "widget_states_shots.rs",
+    "window_chrome_shots.rs",
 ];
 const PERF_SOURCES: &[&str] = &[
     "dashboard_perf_bench.rs",
@@ -285,6 +287,7 @@ mod tests {
         "native_file_picker.rs",
         "native_input_probe.rs",
         "search_latency.rs",
+        "type_specimen_shots.rs",
         "windows_host.rs",
     ];
 

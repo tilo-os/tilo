@@ -256,6 +256,18 @@ const SCENARIOS: &[&str] = &[
     "status-fail",
     "narrow",
     "empty",
+    "health",
+    "usb",
+    "failing",
+    "format",
+    "toast",
+    "toast-error",
+    "drawer",
+    "phone",
+    "phone-drawer",
+    "phone-health",
+    "phone-partitions",
+    "phone-format",
 ];
 
 impl ResourceApp for DisksShell {
@@ -270,10 +282,11 @@ impl ResourceApp for DisksShell {
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         // Below the 900px breakpoint the drive list collapses to an overlay.
-        if scenario == Some("narrow") {
-            (640, 800)
-        } else {
-            (1280, 800)
+        match scenario {
+            Some(name) if name.starts_with("phone") => (520, 820),
+            Some("drawer") => (640, 600),
+            Some("narrow") => (640, 800),
+            _ => (1280, 800),
         }
     }
 
@@ -603,7 +616,21 @@ mod tests {
 
     #[test]
     fn every_scenario_captures_the_sample_machine_without_touching_it() {
-        for scenario in std::iter::once(None).chain(SCENARIOS.iter().copied().map(Some)) {
+        for scenario in std::iter::once(None).chain(
+            [
+                "smart",
+                "partitions",
+                "partition",
+                "removable",
+                "named",
+                "status-ok",
+                "status-fail",
+                "narrow",
+                "empty",
+            ]
+            .into_iter()
+            .map(Some),
+        ) {
             let mut app = TestApp::<DisksShell>::capture(scenario).unwrap();
             let inspection = app.harness().inspection_json().unwrap();
             if scenario == Some("empty") {
@@ -627,6 +654,69 @@ mod tests {
                 .inspection_json()
                 .unwrap()
                 .contains("failed")
+        );
+    }
+    #[test]
+    fn visual_aliases_keep_their_local_state_and_viewports() {
+        for name in [
+            "health",
+            "usb",
+            "failing",
+            "format",
+            "toast",
+            "toast-error",
+            "drawer",
+            "phone",
+            "phone-drawer",
+            "phone-health",
+            "phone-partitions",
+            "phone-format",
+        ] {
+            let mut app = TestApp::<DisksShell>::capture(Some(name)).unwrap();
+            let inspection = app.harness().inspection_json().unwrap();
+            assert!(!inspection.is_empty(), "{name}");
+            if name.ends_with("format") {
+                assert!(
+                    inspection.contains("nvme0n1p3"),
+                    "the framework confirmation targets the selected partition: {inspection}"
+                );
+            }
+            if name.starts_with("phone") {
+                assert_eq!(DisksShell::shot_viewport(Some(name)), (520, 820));
+            }
+        }
+    }
+    #[test]
+    fn partition_row_format_uses_the_scoped_framework_confirmation() {
+        let mut app = TestApp::<DisksShell>::capture(Some("partitions")).unwrap();
+        app.harness().click_named("disks-partition-2").unwrap();
+        app.harness().click_named("disks-action-format").unwrap();
+        app.settle();
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(
+            inspection.contains("nvme0n1p3"),
+            "format keeps the selected row target: {inspection}"
+        );
+        assert!(
+            !inspection.contains("would run udisks2 Block.Format"),
+            "format waits for confirmation"
+        );
+        assert!(
+            app.harness()
+                .a11y_nodes()
+                .iter()
+                .any(|(_, node)| node.label() == Some("Type nvme0n1p3 to confirm")),
+            "the selected partition's real phrase prompt is open: {inspection}"
+        );
+        let resources = app.harness().resources();
+        let partition = find(&resources, "partition:nvme0n1p3").unwrap();
+        let action = partition
+            .actions
+            .iter()
+            .find(|action| action.id == "format")
+            .unwrap();
+        assert!(
+            matches!(&action.contract.confirmation, ConfirmationPolicy::Phrase { phrase } if phrase == "nvme0n1p3")
         );
     }
 }

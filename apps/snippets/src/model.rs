@@ -58,7 +58,7 @@ impl Language {
     /// Human-readable label shown on the badge and in the picker.
     pub fn label(self) -> &'static str {
         match self {
-            Language::PlainText => "Plain Text",
+            Language::PlainText => "Plain text",
             Language::Shell => "Shell",
             Language::Rust => "Rust",
             Language::Sql => "SQL",
@@ -104,23 +104,33 @@ impl Language {
             .unwrap_or(Language::PlainText)
     }
 
-    /// A short one-or-two-letter sigil for the compact list-row badge.
-    pub fn sigil(self) -> &'static str {
+    /// The language's name in the person's language: the proper names of
+    /// programming languages stay as they are; plain text is translated.
+    pub fn name(self) -> String {
         match self {
-            Language::PlainText => "Tx",
-            Language::Shell => "Sh",
-            Language::Rust => "Rs",
-            Language::Sql => "Sql",
+            Language::PlainText => crate::tr("snippets-language-plain-text"),
+            other => other.label().to_string(),
+        }
+    }
+
+    /// The short name the list-row badge shows: the language's own
+    /// abbreviation where it has one, otherwise its name.
+    pub fn badge(self) -> &'static str {
+        match self {
+            Language::PlainText => "Text",
+            Language::Shell => "Shell",
+            Language::Rust => "Rust",
+            Language::Sql => "SQL",
             Language::Git => "Git",
-            Language::Python => "Py",
-            Language::JavaScript => "Js",
-            Language::Json => "{}",
-            Language::Yaml => "Ya",
-            Language::Markdown => "Md",
-            Language::Html => "<>",
-            Language::Css => "Css",
-            Language::Toml => "Tm",
-            Language::Dockerfile => "Dk",
+            Language::Python => "Python",
+            Language::JavaScript => "JS",
+            Language::Json => "JSON",
+            Language::Yaml => "YAML",
+            Language::Markdown => "MD",
+            Language::Html => "HTML",
+            Language::Css => "CSS",
+            Language::Toml => "TOML",
+            Language::Dockerfile => "Docker",
         }
     }
 }
@@ -151,7 +161,7 @@ impl Snippet {
     pub fn blank(folder: &str) -> Self {
         Self {
             id: Uuid::new_v4(),
-            title: "Untitled snippet".to_string(),
+            title: crate::tr("snippets-untitled"),
             language: Language::PlainText,
             folder: folder.to_string(),
             tags: Vec::new(),
@@ -260,12 +270,23 @@ pub enum SmartFolder {
 }
 
 impl SmartFolder {
-    pub fn label(self) -> &'static str {
+    /// The stable, locale-independent key of the folder: control ids and
+    /// sidebar item ids are built from it.
+    pub fn key(self) -> &'static str {
         match self {
-            SmartFolder::All => "All Snippets",
-            SmartFolder::Favorites => "Favorites",
-            SmartFolder::MostUsed => "Most Used",
+            SmartFolder::All => "all",
+            SmartFolder::Favorites => "favorites",
+            SmartFolder::MostUsed => "most-used",
         }
+    }
+
+    /// The folder's name in the person's language.
+    pub fn label(self) -> String {
+        crate::tr(match self {
+            SmartFolder::All => "snippets-folder-all",
+            SmartFolder::Favorites => "snippets-folder-favorites",
+            SmartFolder::MostUsed => "snippets-folder-most-used",
+        })
     }
 }
 
@@ -338,9 +359,8 @@ impl Library {
         counts.into_iter().collect()
     }
 
-    /// Resolve a sidebar [`Selection`] + a search query into the ordered
-    /// list of snippet ids to show in the list pane. Favorites sort
-    /// first within each result set, then by title.
+    /// Resolve a sidebar selection and private filter into ordered snippet ids.
+    /// Supports plain terms, `language:rust`, `lang:rust` and `tag:deploy`.
     pub fn query(&self, selection: &Selection, search: &str) -> Vec<SnippetId> {
         let parsed = SearchQuery::parse(search);
         let mut matched: Vec<&Snippet> = self
@@ -349,7 +369,7 @@ impl Library {
             .filter(|s| selection_matches(selection, s))
             .filter(|s| parsed.matches(s))
             .collect();
-        // Smart "Most Used" sorts by usage desc; everything else sorts
+        // Smart "Most used" sorts by usage desc; everything else sorts
         // favorites-first then alphabetical.
         if matches!(selection, Selection::Smart(SmartFolder::MostUsed)) {
             matched.sort_by(|a, b| b.uses.cmp(&a.uses).then(a.title.cmp(&b.title)));

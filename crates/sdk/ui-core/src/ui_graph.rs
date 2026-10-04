@@ -11,7 +11,7 @@ use crate::time::SystemTime;
 use crate::tokens::TextRole;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
-    Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
+    Button, ButtonRole, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
 };
 use automerge::{AutoCommit, ObjId};
@@ -35,7 +35,7 @@ pub const LIVE_GRAPH_DIR_ENV: &str = "TILO_UI_GRAPH_DIR";
 pub const LIVE_GRAPH_OPERATION: &str = "tilo.ui.graph";
 
 pub use tilo_ui_graph::{
-    UI_GRAPH_VERSION, UiButtonStyle, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
+    UI_GRAPH_VERSION, UiButtonRole, UiDocument, UiGraphEdit, UiGraphError, UiNavigation, UiNode,
     UiTextRole, UiTextSource, parse_ui_graph_edits,
 };
 
@@ -104,13 +104,13 @@ impl UiBuildContext {
     }
 }
 
-impl From<UiButtonStyle> for ButtonStyle {
-    fn from(value: UiButtonStyle) -> Self {
+impl From<UiButtonRole> for ButtonRole {
+    fn from(value: UiButtonRole) -> Self {
         match value {
-            UiButtonStyle::Neutral => Self::Neutral,
-            UiButtonStyle::Primary => Self::Primary,
-            UiButtonStyle::Danger => Self::Danger,
-            UiButtonStyle::Ghost => Self::Ghost,
+            UiButtonRole::Primary => Self::Primary,
+            UiButtonRole::Secondary => Self::Secondary,
+            UiButtonRole::Destructive => Self::Destructive,
+            UiButtonRole::Plain => Self::Plain,
         }
     }
 }
@@ -118,13 +118,15 @@ impl From<UiButtonStyle> for ButtonStyle {
 impl From<UiTextRole> for TextRole {
     fn from(value: UiTextRole) -> Self {
         match value {
-            UiTextRole::Caption => Self::Caption,
-            UiTextRole::Label => Self::Label,
-            UiTextRole::Body => Self::Body,
-            UiTextRole::Reading => Self::Reading,
+            UiTextRole::Display => Self::Display,
+            UiTextRole::LargeTitle => Self::LargeTitle,
             UiTextRole::Title => Self::Title,
             UiTextRole::Heading => Self::Heading,
-            UiTextRole::Display => Self::Display,
+            UiTextRole::Subheading => Self::Subheading,
+            UiTextRole::Body => Self::Body,
+            UiTextRole::Label => Self::Label,
+            UiTextRole::Caption => Self::Caption,
+            UiTextRole::Reading => Self::Reading,
             UiTextRole::Code => Self::Code,
         }
     }
@@ -241,21 +243,12 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             }
             Box::new(container)
         }
-        UiNode::Text {
-            id,
-            text,
-            role,
-            size,
-        } => {
+        UiNode::Text { id, text, role } => {
             let text = match text {
                 UiTextSource::Static { value } => Text::new(value),
                 UiTextSource::Document { path } => Text::from_document_string(path),
             };
-            let mut text = text.with_role((*role).into()).with_id(id);
-            if let Some(size) = size {
-                text = text.with_size(*size);
-            }
-            Box::new(text)
+            Box::new(text.with_role((*role).into()).with_id(id))
         }
         UiNode::Button {
             id,
@@ -266,7 +259,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             click_value,
             navigate,
             enabled,
-            style,
+            role,
         } => {
             let navigation_bound = navigate.as_ref().is_none_or(|navigation| {
                 context
@@ -281,7 +274,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             });
             let mut button = Button::new(id, label, on_click_path.as_deref())
                 .with_enabled(*enabled && (navigation_bound || on_click_path.is_some()))
-                .with_style((*style).into());
+                .role((*role).into());
             if let Some(name) = accessible_name {
                 button = button.with_accessible_name(name);
             }
@@ -1706,7 +1699,6 @@ enum EditableProperty {
     ContainerWidth,
     ContainerHeight,
     TextDocumentPath,
-    TextSize,
     ButtonLabel,
     ButtonAccessibleName,
     ButtonTooltip,
@@ -1746,7 +1738,7 @@ enum EditableBool {
 enum EditableChoice {
     TextSource,
     TextRole,
-    ButtonStyle,
+    ButtonRole,
     ButtonNavigation,
 }
 
@@ -1770,7 +1762,7 @@ fn build_editor_child(
     flatten_nodes(&document.root, 0, &mut flattened);
 
     let mut hierarchy = Column::new().with_intrinsic_height();
-    hierarchy = hierarchy.push(Box::new(Text::new("Hierarchy").with_size(20.0)));
+    hierarchy = hierarchy.push(Box::new(Text::new("Hierarchy").with_role(TextRole::Title)));
     for (id, kind, depth) in flattened {
         let button_id = format!("builder-node-{id}");
         let label = format!("{}{}  {id}", "  ".repeat(depth), kind);
@@ -1780,11 +1772,10 @@ fn build_editor_child(
         let id_for_click = id.clone();
         hierarchy = hierarchy.push(Box::new(
             Button::new(&button_id, &label, None)
-                .fit_content(34.0)
-                .with_style(if selected_row {
-                    ButtonStyle::Primary
+                .role(if selected_row {
+                    ButtonRole::Secondary
                 } else {
-                    ButtonStyle::Ghost
+                    ButtonRole::Plain
                 })
                 .on_click(move || {
                     if let Err(error) = graph.finish_edit_group() {
@@ -1863,7 +1854,7 @@ fn build_editor_child(
 
     let mut inspector = Column::new().with_intrinsic_height();
     inspector = inspector
-        .push(Box::new(Text::new("Inspector").with_size(20.0)))
+        .push(Box::new(Text::new("Inspector").with_role(TextRole::Title)))
         .push(Box::new(Text::new(&format!(
             "{} · {}",
             node_kind(selected_node),
@@ -2023,7 +2014,7 @@ fn editable_properties(
                 "builder-container-height",
             ));
         }
-        UiNode::Text { text, size, .. } => {
+        UiNode::Text { text, .. } => {
             let (property, value, label, id) = match text {
                 UiTextSource::Static { value } => (
                     EditableProperty::StaticText,
@@ -2039,12 +2030,6 @@ fn editable_properties(
                 ),
             };
             properties.push((property, value, label, id));
-            properties.push((
-                EditableProperty::TextSize,
-                optional_number(*size),
-                "Size (optional px)",
-                "builder-text-size",
-            ));
         }
         UiNode::Button {
             label,
@@ -2210,7 +2195,6 @@ fn parse_editable_property(
         EditableProperty::ColumnGap
             | EditableProperty::ContainerWidth
             | EditableProperty::ContainerHeight
-            | EditableProperty::TextSize
     ) {
         return if raw.trim().is_empty() {
             Ok(ParsedProperty::OptionalNumber(None))
@@ -2277,11 +2261,6 @@ fn set_editable_property(node: &mut UiNode, property: EditableProperty, value: P
             EditableProperty::TextDocumentPath,
             ParsedProperty::Text(value),
         ) => *text = UiTextSource::Document { path: value },
-        (
-            UiNode::Text { size, .. },
-            EditableProperty::TextSize,
-            ParsedProperty::OptionalNumber(value),
-        ) => *size = value,
         (
             UiNode::Button { label, .. },
             EditableProperty::ButtonLabel,
@@ -2599,7 +2578,6 @@ fn boolean_property_button(
         &format!("{label}: {}", if value { "On" } else { "Off" }),
         None,
     )
-    .fit_content(36.0)
     .on_click(move || {
         let result = graph.update_node(&selected, |node| set_editable_bool(node, property, !value));
         let status = state.borrow().status.clone();
@@ -2635,14 +2613,12 @@ fn editable_choices(
                 "builder-text-role",
             ),
         ],
-        UiNode::Button {
-            style, navigate, ..
-        } => vec![
+        UiNode::Button { role, navigate, .. } => vec![
             (
-                EditableChoice::ButtonStyle,
-                button_style_name(*style),
-                "Style",
-                "builder-button-style",
+                EditableChoice::ButtonRole,
+                button_role_name(*role),
+                "Role",
+                "builder-button-role",
             ),
             (
                 EditableChoice::ButtonNavigation,
@@ -2667,20 +2643,18 @@ fn choice_property_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     let selected = selected.to_owned();
-    Button::new(id, &format!("{label}: {value}"), None)
-        .fit_content(36.0)
-        .on_click(move || {
-            let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
-            let status = state.borrow().status.clone();
-            match result {
-                Ok(()) => {
-                    let mut editor = state.borrow_mut();
-                    editor.chrome_dirty = true;
-                    status.set("Preview updated".to_owned());
-                }
-                Err(error) => status.set(format!("Edit rejected: {error}")),
+    Button::new(id, &format!("{label}: {value}"), None).on_click(move || {
+        let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
+        let status = state.borrow().status.clone();
+        match result {
+            Ok(()) => {
+                let mut editor = state.borrow_mut();
+                editor.chrome_dirty = true;
+                status.set("Preview updated".to_owned());
             }
-        })
+            Err(error) => status.set(format!("Edit rejected: {error}")),
+        }
+    })
 }
 
 fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
@@ -2698,12 +2672,12 @@ fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
         (UiNode::Text { role, .. }, EditableChoice::TextRole) => {
             *role = next_text_role(*role);
         }
-        (UiNode::Button { style, .. }, EditableChoice::ButtonStyle) => {
-            *style = match style {
-                UiButtonStyle::Neutral => UiButtonStyle::Primary,
-                UiButtonStyle::Primary => UiButtonStyle::Danger,
-                UiButtonStyle::Danger => UiButtonStyle::Ghost,
-                UiButtonStyle::Ghost => UiButtonStyle::Neutral,
+        (UiNode::Button { role, .. }, EditableChoice::ButtonRole) => {
+            *role = match role {
+                UiButtonRole::Secondary => UiButtonRole::Primary,
+                UiButtonRole::Primary => UiButtonRole::Destructive,
+                UiButtonRole::Destructive => UiButtonRole::Plain,
+                UiButtonRole::Plain => UiButtonRole::Secondary,
             };
         }
         (UiNode::Button { navigate, .. }, EditableChoice::ButtonNavigation) => {
@@ -2723,36 +2697,40 @@ fn cycle_editable_choice(node: &mut UiNode, property: EditableChoice) {
 
 const fn text_role_name(role: UiTextRole) -> &'static str {
     match role {
-        UiTextRole::Caption => "Caption",
-        UiTextRole::Label => "Label",
-        UiTextRole::Body => "Body",
-        UiTextRole::Reading => "Reading",
+        UiTextRole::Display => "Display",
+        UiTextRole::LargeTitle => "Large title",
         UiTextRole::Title => "Title",
         UiTextRole::Heading => "Heading",
-        UiTextRole::Display => "Display",
+        UiTextRole::Subheading => "Subheading",
+        UiTextRole::Body => "Body",
+        UiTextRole::Label => "Label",
+        UiTextRole::Caption => "Caption",
+        UiTextRole::Reading => "Reading",
         UiTextRole::Code => "Code",
     }
 }
 
 const fn next_text_role(role: UiTextRole) -> UiTextRole {
     match role {
-        UiTextRole::Caption => UiTextRole::Label,
-        UiTextRole::Label => UiTextRole::Body,
-        UiTextRole::Body => UiTextRole::Reading,
-        UiTextRole::Reading => UiTextRole::Title,
+        UiTextRole::Display => UiTextRole::LargeTitle,
+        UiTextRole::LargeTitle => UiTextRole::Title,
         UiTextRole::Title => UiTextRole::Heading,
-        UiTextRole::Heading => UiTextRole::Display,
-        UiTextRole::Display => UiTextRole::Code,
-        UiTextRole::Code => UiTextRole::Caption,
+        UiTextRole::Heading => UiTextRole::Subheading,
+        UiTextRole::Subheading => UiTextRole::Body,
+        UiTextRole::Body => UiTextRole::Label,
+        UiTextRole::Label => UiTextRole::Caption,
+        UiTextRole::Caption => UiTextRole::Reading,
+        UiTextRole::Reading => UiTextRole::Code,
+        UiTextRole::Code => UiTextRole::Display,
     }
 }
 
-const fn button_style_name(style: UiButtonStyle) -> &'static str {
-    match style {
-        UiButtonStyle::Neutral => "Neutral",
-        UiButtonStyle::Primary => "Primary",
-        UiButtonStyle::Danger => "Danger",
-        UiButtonStyle::Ghost => "Ghost",
+const fn button_role_name(role: UiButtonRole) -> &'static str {
+    match role {
+        UiButtonRole::Primary => "Primary",
+        UiButtonRole::Secondary => "Secondary",
+        UiButtonRole::Destructive => "Destructive",
+        UiButtonRole::Plain => "Plain",
     }
 }
 
@@ -2780,7 +2758,7 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-save", "Save", None)
-        .primary()
+        .role(ButtonRole::Primary)
         .on_click(move || {
             let status = state.borrow().status.clone();
             if let Err(error) = graph.finish_edit_group() {
@@ -2809,7 +2787,6 @@ fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-undo", "Undo", None)
-        .fit_content(36.0)
         .with_enabled(handle.can_undo())
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2825,7 +2802,6 @@ fn redo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-redo", "Redo", None)
-        .fit_content(36.0)
         .with_enabled(handle.can_redo())
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2850,7 +2826,6 @@ fn add_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new(id, label, None)
-        .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2898,7 +2873,6 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
                 value: "New text".to_owned(),
             },
             role: UiTextRole::Body,
-            size: None,
         },
         InsertKind::Button => UiNode::Button {
             id,
@@ -2909,7 +2883,7 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
             click_value: None,
             navigate: None,
             enabled: true,
-            style: UiButtonStyle::Neutral,
+            role: UiButtonRole::Secondary,
         },
         InsertKind::Row => UiNode::Row {
             id,
@@ -2933,7 +2907,6 @@ fn new_editor_node(document: &UiDocument, kind: InsertKind) -> UiNode {
                     value: "Content".to_owned(),
                 },
                 role: UiTextRole::Body,
-                size: None,
             }),
             background: true,
             no_padding: false,
@@ -2997,7 +2970,6 @@ fn move_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new(id, label, None)
-        .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
             let result = (|| {
@@ -3033,7 +3005,7 @@ fn delete_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     Button::new("builder-delete", "Delete", None)
-        .danger()
+        .role(ButtonRole::Destructive)
         .with_enabled(enabled)
         .on_click(move || {
             let result = (|| {
@@ -3251,7 +3223,6 @@ mod tests {
                         path: "title".into(),
                     },
                     role: UiTextRole::Title,
-                    size: None,
                 },
                 UiNode::TextInput {
                     id: "title-input".into(),
@@ -3272,7 +3243,7 @@ mod tests {
                     click_value: Some("yes".into()),
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             ],
             gap: Some(8.0),
@@ -3417,7 +3388,6 @@ mod tests {
                 value: "Replacement".into(),
             },
             role: UiTextRole::Body,
-            size: None,
         });
         assert!(matches!(
             handle.replace(replacement),
@@ -3509,7 +3479,6 @@ mod tests {
                             value: title.into(),
                         },
                         role: UiTextRole::Title,
-                        size: None,
                     },
                     button,
                 ],
@@ -3534,7 +3503,7 @@ mod tests {
                     route: "settings".into(),
                 }),
                 enabled: true,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
             },
         );
         let settings = screen(
@@ -3549,7 +3518,7 @@ mod tests {
                 click_value: None,
                 navigate: Some(UiNavigation::Back),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
+                role: UiButtonRole::Secondary,
             },
         );
         let router = crate::widget::Router::new(
@@ -3627,7 +3596,7 @@ mod tests {
                     route: "missing".into(),
                 }),
                 enabled: true,
-                style: UiButtonStyle::Neutral,
+                role: UiButtonRole::Secondary,
             });
         }
         let route = crate::widget::RouteHandle::new("home", ["home"]).unwrap();
@@ -3699,9 +3668,9 @@ mod tests {
 
         handle
             .update_node("save", |node| {
-                if let UiNode::Button { label, style, .. } = node {
+                if let UiNode::Button { label, role, .. } = node {
                     *label = "Publish".into();
-                    *style = UiButtonStyle::Danger;
+                    *role = UiButtonRole::Destructive;
                 }
             })
             .unwrap();
@@ -3764,7 +3733,6 @@ mod tests {
                         value: "Hello".into(),
                     },
                     role: UiTextRole::Title,
-                    size: None,
                 },
                 UiNode::TextInput {
                     id: "name".into(),
@@ -4002,7 +3970,6 @@ mod tests {
                         value: "A small project".into(),
                     },
                     role: UiTextRole::Caption,
-                    size: None,
                 },
             )
             .unwrap();
@@ -4064,7 +4031,6 @@ mod tests {
                     value: "Before".into(),
                 },
                 role: UiTextRole::Body,
-                size: None,
             }),
             background: true,
             no_padding: false,
@@ -4088,7 +4054,7 @@ mod tests {
                     click_value: None,
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             )
             .unwrap();
@@ -4228,7 +4194,7 @@ mod tests {
                     click_value: Some("requested".into()),
                     navigate: None,
                     enabled: true,
-                    style: UiButtonStyle::Primary,
+                    role: UiButtonRole::Primary,
                 },
             )
             .unwrap();
@@ -4278,7 +4244,7 @@ mod tests {
             )
             .unwrap();
         driver
-            .perform_named("builder-button-style", &Action::Activate)
+            .perform_named("builder-button-role", &Action::Activate)
             .unwrap();
         driver.relayout();
         driver
@@ -4348,7 +4314,7 @@ mod tests {
                 click_value: Some(click_value),
                 navigate: Some(UiNavigation::Push { route }),
                 enabled: false,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
                 ..
             }) if label == "Publish"
                 && accessible_name == "Publish changes"
@@ -4372,7 +4338,7 @@ mod tests {
                 on_click_path: Some(on_click_path),
                 navigate: Some(UiNavigation::Push { route }),
                 enabled: false,
-                style: UiButtonStyle::Primary,
+                role: UiButtonRole::Primary,
                 ..
             }) if label == "Publish"
                 && accessible_name == "Publish changes"
