@@ -1588,6 +1588,52 @@ struct ShimSpliceCtx<'a> {
     keep_fds: &'a [RawFd],
 }
 
+/// The Landlock rules for the paths the sandbox's binds expose: the payload
+/// and runtime mounts, minimal-libs binds, the manifest's read paths, the
+/// system read profile and the capability-granted paths.
+fn push_landlock_paths(argv: &mut Vec<String>, ctx: &ShimSpliceCtx<'_>) {
+    // Sandbox-side ro paths for Landlock: the payload mount, the runtime
+    // mount (if any), minimal-libs binds, and the manifest's read paths.
+    let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
+    argv.push("--ro".to_string());
+    argv.push(payload_mount.display().to_string());
+    if let Some((rt_root, ver)) = ctx.runtime_arg {
+        let rt = crate::sandbox::runtime_mount_for(ver);
+        argv.push("--ro".to_string());
+        argv.push(rt.display().to_string());
+        // Also allow the canonical loader paths re-bound out of the bundle —
+        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
+        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
+            let no_slash = canonical.trim_start_matches('/');
+            if rt_root.join("lib").join(no_slash).exists() {
+                argv.push("--ro".to_string());
+                argv.push((*canonical).to_string());
+            }
+        }
+    }
+    for p in ctx.extra_ro_paths {
+        argv.push("--ro".to_string());
+        argv.push(p.clone());
+    }
+    // System read profile, derived from the same list the binds came from —
+    // an unnamed bind is visible but returns EACCES on every open, which
+    // looks like a corrupted system rather than a policy.
+    for path in crate::profile::landlock_ro_paths(ctx.egress.shares_host_network()) {
+        argv.push("--ro".to_string());
+        argv.push(path.display().to_string());
+    }
+    // Capability-granted paths need matching Landlock rules from the same
+    // plan, or the bind is visible but every open() returns EACCES.
+    for path in &ctx.capabilities.ro_paths {
+        argv.push("--ro".to_string());
+        argv.push(path.display().to_string());
+    }
+    for path in &ctx.capabilities.rw_paths {
+        argv.push("--rw".to_string());
+        argv.push(path.display().to_string());
+    }
+}
+
 /// In-sandbox shim: bind this launcher binary in and rewrite the trailing
 /// entrypoint token into `<shim> __sandbox-exec [rules…] -- <entry>`. Two
 /// jobs justify it alone: apply Landlock after bwrap's mount namespace is
@@ -1631,46 +1677,7 @@ fn splice_sandbox_shim(
         argv.push("--net-gate-port".to_string());
         argv.push(bind.port.to_string());
     }
-    // Sandbox-side ro paths for Landlock: the payload mount, the runtime
-    // mount (if any), minimal-libs binds, and the manifest's read paths.
-    let payload_mount = crate::sandbox::payload_mount_for(&ctx.manifest.package_id);
-    argv.push("--ro".to_string());
-    argv.push(payload_mount.display().to_string());
-    if let Some((rt_root, ver)) = ctx.runtime_arg {
-        let rt = crate::sandbox::runtime_mount_for(ver);
-        argv.push("--ro".to_string());
-        argv.push(rt.display().to_string());
-        // Also allow the canonical loader paths re-bound out of the bundle —
-        // otherwise the entry ELF's INTERP is blocked by Landlock despite the bind.
-        for canonical in crate::sandbox::CANONICAL_LOADER_PATHS {
-            let no_slash = canonical.trim_start_matches('/');
-            if rt_root.join("lib").join(no_slash).exists() {
-                argv.push("--ro".to_string());
-                argv.push((*canonical).to_string());
-            }
-        }
-    }
-    for p in ctx.extra_ro_paths {
-        argv.push("--ro".to_string());
-        argv.push(p.clone());
-    }
-    // System read profile, derived from the same list the binds came from —
-    // an unnamed bind is visible but returns EACCES on every open, which
-    // looks like a corrupted system rather than a policy.
-    for path in crate::profile::landlock_ro_paths(ctx.egress.shares_host_network()) {
-        argv.push("--ro".to_string());
-        argv.push(path.display().to_string());
-    }
-    // Capability-granted paths need matching Landlock rules from the same
-    // plan, or the bind is visible but every open() returns EACCES.
-    for path in &ctx.capabilities.ro_paths {
-        argv.push("--ro".to_string());
-        argv.push(path.display().to_string());
-    }
-    for path in &ctx.capabilities.rw_paths {
-        argv.push("--rw".to_string());
-        argv.push(path.display().to_string());
-    }
+    push_landlock_paths(argv, ctx);
     // A bound D-Bus socket also needs a Landlock read grant on the
     // sandbox-side path, or ashpd's connect() surfaces EACCES.
     if let Some(plan) = ctx.dbus_plan {
