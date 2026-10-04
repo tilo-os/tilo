@@ -179,6 +179,7 @@ export function createLiveLayer(peer, runtime, room, {
   const participants = new Map();
   const previews = new Map();
   const members = new Set();
+  const memberEpochs = new Map();
   const watched = new Map(); // record key -> record
   const subscriptions = new Map(); // `${publisher}\u0000${track}` -> cleanup
   const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set(), agentActivity: new Set()};
@@ -197,8 +198,12 @@ export function createLiveLayer(peer, runtime, room, {
   // names; one this device cannot seal is dropped, never sent in the clear.
   // Sealing and opening run in the session's order, so frames keep theirs.
   const sealed = bytes => peer.sealLive(room, bytes).then(frame => frame ?? null, () => null);
-  const opened = (payload, handle) => {
-    peer.openLive(room, payload).then(frame => { if (frame) handle(frame); }, () => {});
+  const opened = (from, payload, handle) => {
+    const epoch = memberEpochs.get(from), current = session;
+    if (!epoch || !current || stopped) return;
+    peer.openLive(room, payload).then(frame => {
+      if (frame && !stopped && session === current && memberEpochs.get(from) === epoch) handle(frame);
+    }, () => {});
   };
   const publishSealed = (bytes, publish) => {
     if (!session) return false;
@@ -215,7 +220,7 @@ export function createLiveLayer(peer, runtime, room, {
   });
 
   function onPresence(from, payload, receivedAtMs) {
-    opened(payload, frame => presenceOpened(from, frame, receivedAtMs));
+    opened(from, payload, frame => presenceOpened(from, frame, receivedAtMs));
   }
   function presenceOpened(from, payload, receivedAtMs) {
     let decoded;
@@ -236,7 +241,7 @@ export function createLiveLayer(peer, runtime, room, {
     }
   }
   function onOps(publisherId, payload) {
-    opened(payload, frame => opsOpened(publisherId, frame));
+    opened(publisherId, payload, frame => opsOpened(publisherId, frame));
   }
   function opsOpened(publisherId, payload) {
     let decoded;
@@ -257,26 +262,36 @@ export function createLiveLayer(peer, runtime, room, {
   // with backoff until the member leaves or the session changes.
   function keepSubscribed(publisherId, key, open, attempt = 0, wanted = () => true) {
     const current = session;
+    const epoch = memberEpochs.get(publisherId);
     if (stopped || !current || subscriptions.has(key) || !members.has(publisherId) || !wanted()) return;
     const cleanup = open(current, () => {
       if (subscriptions.get(key) !== cleanup) return;
       subscriptions.delete(key);
-      if (stopped || session !== current || !members.has(publisherId)) return;
+      if (stopped || session !== current || memberEpochs.get(publisherId) !== epoch) return;
       const delay = SUBSCRIBE_RETRY_MS[Math.min(attempt, SUBSCRIBE_RETRY_MS.length - 1)];
-      setTimer(() => { if (session === current) keepSubscribed(publisherId, key, open, attempt + 1, wanted); }, delay);
+      setTimer(() => {
+        if (session === current && memberEpochs.get(publisherId) === epoch) keepSubscribed(publisherId, key, open, attempt + 1, wanted);
+      }, delay);
     });
     subscriptions.set(key, cleanup);
   }
   function subscribeRecord(publisherId, record) {
     const track = runtime.liveRecordTrack(JSON.stringify(record));
+    const epoch = memberEpochs.get(publisherId);
     keepSubscribed(publisherId, `${publisherId}\u0000${track}`,
-      (current, ended) => current.subscribeOps(publisherId, track, payload => onOps(publisherId, payload), ended));
+      (current, ended) => current.subscribeOps(publisherId, track, payload => {
+        if (memberEpochs.get(publisherId) === epoch) onOps(publisherId, payload);
+      }, ended));
   }
   function onMember(publisherId, active) {
     if (active) {
+      if (!members.has(publisherId)) memberEpochs.set(publisherId, Symbol());
+      const epoch = memberEpochs.get(publisherId);
       members.add(publisherId);
       keepSubscribed(publisherId, `${publisherId}\u0000presence`,
-        (current, ended) => current.subscribePresence(publisherId, (payload, at) => onPresence(publisherId, payload, at), ended));
+        (current, ended) => current.subscribePresence(publisherId, (payload, at) => {
+          if (memberEpochs.get(publisherId) === epoch) onPresence(publisherId, payload, at);
+        }, ended));
       for (const record of watched.values()) subscribeRecord(publisherId, record);
       for (const track of rawWatched.keys()) subscribeFrames(publisherId, track);
       for (const key of memberFrames.keys()) {
@@ -285,6 +300,8 @@ export function createLiveLayer(peer, runtime, room, {
       }
     } else {
       members.delete(publisherId);
+      memberEpochs.delete(publisherId);
+      participants.delete(publisherId);
       remotes.delete(publisherId);
       previews.delete(publisherId);
       for (const [key, cleanup] of subscriptions) {
@@ -336,7 +353,9 @@ export function createLiveLayer(peer, runtime, room, {
       publisherId = grant.publisher;
       retry = 0;
       setState('live');
-      session.watchMembers({onMember});
+      session.watchMembers({onMember: (from, active) => {
+        if (!stopped && session === opened) onMember(from, active);
+      }});
       if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
       publisher.start();
       const renewIn = Math.max(1000, grant.expiresAtNs / 1e6 - wallNow() - GRANT_RENEW_MS);

@@ -573,6 +573,11 @@ inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/wind
 readers = ["crates/windows/compat-service/src/plan.rs"]
 
 [[cargo]]
+package = "legacy-vm"
+inputs = ["os/legacy-guest-snapshot.env"]
+readers = ["crates/runtime/legacy-vm/src/image.rs"]
+
+[[cargo]]
 package = "installer"
 inputs = ["os/usr/share/tilo/installer-locales.txt", "crates/system/block-devices/tests/fixtures/installer.json"]
 readers = ["crates/session/installer/src/disks.rs", "crates/session/installer/src/locales.rs"]

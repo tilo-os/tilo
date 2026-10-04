@@ -38,6 +38,40 @@ pub struct ScanResult {
     pub error: Option<String>,
 }
 
+impl ScanResult {
+    /// A finished scan of a made-up home folder: what a screenshot shows in
+    /// place of scanning the machine it is taken on.
+    pub fn sample() -> Self {
+        let path = PathBuf::from("/home/you");
+        let entries: Vec<Entry> = [
+            ("Projects", 84_200_000_000),
+            ("Videos", 48_600_000_000),
+            ("Photos", 31_800_000_000),
+            ("Downloads", 19_400_000_000),
+            ("Documents", 8_700_000_000),
+            ("Other", 5_100_000_000),
+        ]
+        .into_iter()
+        .map(|(name, bytes)| Entry {
+            path: path.join(name.to_lowercase()),
+            name: name.into(),
+            bytes,
+            files: bytes / 1_000_000,
+            unreadable: 0,
+        })
+        .collect();
+        let total = entries.iter().map(|entry| entry.bytes).sum();
+        Self {
+            path,
+            entries,
+            total,
+            files: 12_842,
+            unreadable: 0,
+            error: None,
+        }
+    }
+}
+
 fn measure(path: &Path, cancellation: &ScanCancellation) -> (u64, u64, u64) {
     if cancellation.is_cancelled() {
         return (0, 0, 0);
