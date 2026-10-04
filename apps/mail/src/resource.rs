@@ -10,15 +10,16 @@
 
 use tilo_document::RichText;
 use ui::framework::{
-    Dispatcher, Effected, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp,
+    ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionParam, ActionSpec, ParamType, Resource as PublishedResource};
+use ui::tilo_actions::{ActionParam, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, publish_child};
 use ui::widget::Element;
 
 use crate::actions::{
-    MAIL_ACTION_TYPE, MailAction, MessageRow, Outgoing, ServerUpdate,
-    mailbox_bound_document_actions, mailbox_local_operations, publish_document_children, register,
+    MAIL_ACTION_TYPE, MailAction, MailEffect, MessageRow, Outgoing, ServerUpdate,
+    mailbox_bound_document_actions, publish_document_children, register,
 };
 use crate::app::MailApp;
 use crate::doc::MailDoc;
@@ -148,8 +149,13 @@ impl Resource for Mail {
         mailbox_bound_document_actions()
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        mailbox_local_operations()
+    fn child(state: &MailboxState, id: &str) -> Option<tilo_actions::Resource> {
+        let message = id.strip_prefix("mail.message:")?;
+        state
+            .messages
+            .iter()
+            .find(|row| row.id == message)
+            .map(crate::actions::publish_message_document)
     }
 
     fn children(state: &MailboxState) -> Vec<tilo_actions::Resource> {
@@ -312,7 +318,7 @@ impl ResourceApp for MailShell {
     }
 }
 
-impl ResourceSurface<Mail> for MailApp {
+impl ResourceSurface<Mail, MailEffect> for MailApp {
     /// Every message already loaded, outside Trash: its subject, sender and
     /// body come from the engine, not the document.
     fn search_entries(&self) -> Vec<SearchEntry> {
@@ -385,6 +391,57 @@ impl ResourceSurface<Mail> for MailApp {
             self.request_stage(scenario);
         }
     }
+
+    fn effect(&mut self, effect: MailEffect, cx: &mut EffectCx<Mail, Self>) -> EffectAnswer {
+        if let MailEffect::Save { message, index } = &effect {
+            let (name, bytes) = self.attachment_to_save(message, *index)?;
+            let resource = format!("mail.attachment:{message}:{index}");
+            let request = ui::portal::PickRequest::save("Save attachment", "Save", &name)
+                .thread_name("mail-portal-save-attachment")
+                .filter(ui::portal::FileFilter::all_files());
+            return Ok(
+                cx.save_file(request, bytes, move |app: &mut Self, saved, _| {
+                    Ok(app.finish_attachment_save(saved, &name, resource))
+                }),
+            );
+        }
+        let invocation = cx.invocation().unwrap_or_default();
+        let answer = self.begin_effect(invocation, effect)?;
+        if matches!(answer, Effected::Pending) {
+            self.await_effect(invocation, cx.reply());
+        }
+        Ok(answer)
+    }
+
+    /// Fetching and preparing an invitation need a connected account.
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.can_sync() {
+            return Vec::new();
+        }
+        vec![
+            EffectStatus::unavailable(
+                MailEffect::REFRESH,
+                "account_offline",
+                "No connected mail account is available",
+            ),
+            EffectStatus::unavailable(
+                MailEffect::PREPARE_CALENDAR_INVITATION,
+                "account_offline",
+                "Connect a Mail account before preparing an invitation",
+            ),
+        ]
+    }
+
+    /// The accounts, an in-flight send and a search-index fault.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.live_rows()
+    }
+
+    /// A loaded message, thread, attachment or account the mailbox does not
+    /// publish.
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.live_row(id)
+    }
 }
 
 #[cfg(test)]
@@ -392,6 +449,26 @@ mod tests {
     use super::*;
     use tilo_actions::OperationKind;
     use ui::widget::Widget;
+
+    #[test]
+    fn effects_reach_the_window_through_the_door() {
+        let mut app = ui::framework::testing::TestApp::<MailShell>::new().unwrap();
+        let surface = app.agent_surface().to_string();
+        assert!(surface.contains("prepare-calendar-invitation"), "{surface}");
+        app.effect(&MailEffect::Compose)
+            .expect("composing needs no account");
+        assert!(
+            app.effect(&MailEffect::Refresh).is_err(),
+            "nothing to refresh without a connected account"
+        );
+        app.effect_on(
+            "mail.folder:archive",
+            &MailEffect::Open {
+                target: crate::actions::MailTarget::Folder("archive".into()),
+            },
+        )
+        .expect("a folder row opens its folder");
+    }
 
     #[test]
     fn resource_publish_owns_folder_and_message_document_ops_and_the_window_keeps_no_second_door() {
@@ -449,24 +526,30 @@ mod tests {
             );
         }
 
-        assert!(ui::resources::resource(&app, &doc, "mail.mailbox").is_none());
-        assert!(
-            ui::resources::resource(&app, &doc, "mail.folder:inbox").is_some(),
-            "a hosted folder stays the published row"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &doc);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "mail.mailbox"),
-            "hosted must not republish mail.mailbox beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
+        // What the window adds beside the mailbox is its live rows, which
+        // never carry a document action.
+        for row in app.live_rows() {
+            let row = row.into_resource();
+            assert_ne!(row.kind, "mail.mailbox");
+            assert!(
+                row.actions
+                    .iter()
+                    .all(|action| action.kind != OperationKind::Document),
+                "{}",
+                row.id.as_str()
+            );
+        }
+        let opened = message
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("a published message opens where it is");
+        assert_eq!(opened.kind, OperationKind::View);
 
         // Empty present must not wipe unpublished local mail.
         let before = app.mailbox_message_count();
         assert!(before > 0, "sample app has a local mailbox corpus");
-        <MailApp as ResourceSurface<Mail>>::present(
+        <MailApp as ResourceSurface<Mail, MailEffect>>::present(
             &mut app,
             &std::rc::Rc::new(MailboxState::default()),
         );

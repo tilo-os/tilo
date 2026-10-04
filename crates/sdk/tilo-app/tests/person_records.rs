@@ -239,3 +239,52 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
         "nothing more of the person's to undo"
     );
 }
+
+/// Another app, reading the history the queue app keeps.
+struct ReaderApp;
+
+impl ResourceApp for ReaderApp {
+    type Resource = Queue;
+    const ID: &'static str = "so.tilo.test-reader";
+    const TITLE: &'static str = "Reader";
+
+    fn view(_cx: &mut ViewCx<Queue>) -> Element {
+        Box::new(Column::new())
+    }
+}
+
+#[test]
+fn another_apps_record_of_the_persons_is_read_on_its_route_and_edited_only_by_its_owner() {
+    let mut owner_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+    let mut reader_app = TestApp::<ReaderApp>::for_person(&ada()).unwrap();
+    let owned = owner_app.person::<Watched>().unwrap();
+    let read = reader_app.person_of::<Watched>(QueueApp::ID).unwrap();
+    assert!(owned.editable());
+    assert!(!read.editable());
+    assert_eq!(
+        read.record().route().unwrap(),
+        owned.record().route().unwrap(),
+        "the reader follows the owner's record, not one of its own"
+    );
+
+    owned
+        .invoke(&Watched::WATCH.with("kept-by-the-owner".into()))
+        .unwrap();
+    read.record()
+        .merge_peer_document(owned.record().document().unwrap())
+        .unwrap();
+    assert_eq!(videos(&read), ["kept-by-the-owner"]);
+
+    assert!(
+        read.invoke(&Watched::WATCH.with("from-the-reader".into()))
+            .is_err(),
+        "only the owner edits it"
+    );
+    assert_eq!(videos(&read), ["kept-by-the-owner"]);
+    // The reader's own record of the kind is a different one.
+    let own = reader_app.person::<Watched>().unwrap();
+    assert_ne!(
+        own.record().route().unwrap(),
+        owned.record().route().unwrap()
+    );
+}

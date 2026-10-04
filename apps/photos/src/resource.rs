@@ -22,7 +22,7 @@ use crate::model::{LibraryPhoto, OpenImage, PhotoLibrary};
 
 /// The shared photograph library: every photograph, how it is filed and
 /// the edits it is shown with.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhotosState {
     pub library: PhotoLibrary,
 }

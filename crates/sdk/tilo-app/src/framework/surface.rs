@@ -183,16 +183,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     fn search_entries(&self) -> Vec<SearchEntry> {
         Vec::new()
     }
-
-    /// Whether the document actions this surface's own `PublishesResources`
-    /// offers (edits bound to its selection, published as hand-built rows)
-    /// still reach the published tree. Otherwise they are dropped, and a
-    /// debug build stops at the first one. The surfaces that answer `true`
-    /// are listed in the policy baseline, which only shrinks: their edits
-    /// move to [`bound_declarations`](Self::bound_declarations).
-    fn publishes_document_actions(&self) -> bool {
-        false
-    }
 }
 
 /// What a hosted surface adds to its resource's publication, as the root
@@ -203,26 +193,6 @@ pub(crate) trait SurfacePublication<R: Resource> {
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn search_entries(&self) -> Vec<SearchEntry>;
-}
-
-impl<R: Resource, S: ResourceSurface<R, E>, E: Effect> SurfaceHost<R, S, E> {
-    /// `resource` as the surface may publish it beside the resource.
-    fn admitted(&self, resource: tilo_actions::Resource) -> tilo_actions::Resource {
-        if self.surface.publishes_document_actions() {
-            resource
-        } else {
-            outside_document(resource)
-        }
-    }
-
-    /// `resource`, resolved by id, as the surface may answer it.
-    fn resolved(&self, resource: tilo_actions::Resource) -> tilo_actions::Resource {
-        if self.surface.publishes_document_actions() {
-            resource
-        } else {
-            resolved_outside_document(resource)
-        }
-    }
 }
 
 /// What a surface receives when attached.
@@ -431,6 +401,15 @@ impl<R: Resource> SurfaceCx<R> {
     /// as [`ViewCx::person`](super::ViewCx::person) opens it.
     pub fn person<P: tilo_resource::Resource>(&self) -> Option<super::PersonRecord<P>> {
         self.storage.person::<P>()
+    }
+
+    /// Another app's record of the person's, as
+    /// [`ViewCx::person_of`](super::ViewCx::person_of) opens it.
+    pub fn person_of<P: tilo_resource::Resource>(
+        &self,
+        owner: &'static str,
+    ) -> Option<super::PersonRecord<P>> {
+        self.storage.person_of::<P>(owner)
     }
 
     /// The app's files, secrets and settings documents, as its host gave
@@ -693,23 +672,21 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 }
 
 // What the surface publishes as a widget passes through here, without
-// document actions: those are the resource's, through its dispatcher. A
-// surface still publishing its own says so
-// (`ResourceSurface::publishes_document_actions`).
+// document actions: those are the resource's, through its dispatcher.
 impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
     ui_core::resources::PublishesResources for SurfaceHost<R, S, E>
 {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui_core::resources::resources(&self.surface, doc)
             .into_iter()
-            .map(|resource| self.admitted(resource))
+            .map(outside_document)
             .collect()
     }
 
     fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui_core::resources::caller_view_resources(&self.surface, doc)
             .into_iter()
-            .map(|resource| self.admitted(resource))
+            .map(outside_document)
             .collect()
     }
 
@@ -725,11 +702,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
             cursor,
             max_results,
         )?;
-        page.resources = page
-            .resources
-            .into_iter()
-            .map(|resource| self.admitted(resource))
-            .collect();
+        page.resources = page.resources.into_iter().map(outside_document).collect();
         Some(page)
     }
 
@@ -745,7 +718,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        ui_core::resources::resource(&self.surface, doc, id).map(|resource| self.resolved(resource))
+        ui_core::resources::resource(&self.surface, doc, id).map(resolved_outside_document)
     }
 
     fn resources_for(
@@ -755,7 +728,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
     ) -> Vec<tilo_actions::Resource> {
         ui_core::resources::resources_for(&self.surface, participant, doc)
             .into_iter()
-            .map(|resource| self.admitted(resource))
+            .map(outside_document)
             .collect()
     }
 
@@ -766,7 +739,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
         id: &str,
     ) -> Option<tilo_actions::Resource> {
         ui_core::resources::resource_for(&self.surface, participant, doc, id)
-            .map(|resource| self.resolved(resource))
+            .map(resolved_outside_document)
     }
 
     fn action_directory_visibility(

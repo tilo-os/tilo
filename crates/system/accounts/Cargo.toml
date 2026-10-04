@@ -43,6 +43,13 @@ url.workspace = true
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-command" }
 
+# The person's accounts as a record of their own (`person`): the resource
+# layer, without any UI.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+
+[features]
+person = ["dep:tilo-resource"]
+
 [dev-dependencies]
 # Tests stage and inspect key files through the vault's own private-file
 # checks, and edit Windows ACLs through a bounded `icacls` call.
