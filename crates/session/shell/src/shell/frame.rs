@@ -453,6 +453,9 @@ pub struct FrameBuilder {
     osk_commits: u64,
     /// The keyboard serves one of the shell's own fields.
     osk_serves_shell: bool,
+    /// The lock screen's keyboard keys by name and where they sit, while it
+    /// shows; for the state dump.
+    lock_keyboard_keys: Vec<(String, Rect)>,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -678,6 +681,7 @@ impl FrameBuilder {
             osk_active: false,
             osk_commits: 0,
             osk_serves_shell: false,
+            lock_keyboard_keys: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
             last_produced_sections: None,
@@ -2932,6 +2936,16 @@ impl FrameBuilder {
     /// Record how many commits the on-screen keyboard has made.
     pub fn set_osk_commits(&mut self, commits: u64) {
         self.osk_commits = commits;
+    }
+
+    /// Record where the lock screen's keyboard keys sit (empty: hidden).
+    pub fn set_lock_keyboard_keys(&mut self, keys: Vec<(String, Rect)>) {
+        self.lock_keyboard_keys = keys;
+    }
+
+    /// The lock screen's keyboard keys by name, while it shows.
+    pub fn lock_keyboard_keys(&self) -> &[(String, Rect)] {
+        &self.lock_keyboard_keys
     }
 
     /// Whether the keyboard serves one of the shell's own fields rather
