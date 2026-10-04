@@ -10,6 +10,7 @@ import unittest
 from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
+PUBLISH_SCRIPT = ROOT / 'tools/apps/publish-collections.sh'
 
 
 def bash_path(path: Path) -> str:
@@ -122,7 +123,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
             self.assertNotIn('SOURCE_TOKEN', history_helper)
             self.assertNotIn('extraheader', history_helper)
-            publish = source.split('\n  publish:\n', 1)[1]
+            publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
             self.assertIn('needs: [plan, authorize-publish, build]', publish)
             self.assertIn('persist-credentials: false', publish)
             self.assertNotIn('TAG_AUDIENCE', publish)
@@ -194,6 +195,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                     'tools/ci/__init__.py',
                     'tools/ci/python.py',
                     'tools/ci/resolve_builder.py',
+                    'tools/ci/images.toml',
                 ],
             )
             for relative, size, digest in bootstrap['FILES']:
@@ -235,13 +237,12 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                 self.assertEqual(opener.request.get_header('Authorization'), 'token scoped-token')
                 self.assertEqual((Path(directory) / 'tools/example.py').read_bytes(), payload)
 
-    def test_pull_requests_plan_without_packaging_or_signing_secrets(self):
-        with self.subTest(phase='every main pr plans but never packages'):
+    def test_pull_requests_start_no_jobs_and_never_package(self):
+        with self.subTest(phase='prs start nothing; packaging excludes them regardless'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             self.assertIn('- "tools/apps/**"', source)
-            pr = source.split('  pull_request:\n', 1)[1].split('\n  push:', 1)[0]
-            self.assertRegex(pr, r'(?m)^    branches: \[main\]$')
-            self.assertNotRegex(pr, r'(?m)^    (?:paths|paths-ignore):')
+            triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
+            self.assertNotRegex(triggers, r'(?m)^  pull_request(?:_target)?:')
             plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
             self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/')\"", plan)
             self.assertIn('python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', plan)
@@ -270,35 +271,17 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
             self.assertRegex(push, r'(?m)^    branches: \[main\]$')
             self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
-        with self.subTest(phase='pr plan skips builder resolution but release events resolve'):
+        with self.subTest(phase='every plan resolves one builder'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
             builder = plan.split('        id: builder\n', 1)[1].split('\n      - ', 1)[0]
             self.assertIn('run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', builder)
-            condition = re.search(r'(?m)^        if: (.+)$', builder).group(1).strip('"')
-            # Execute the actual step predicate. Both publishing releases and the
-            # nonpublishing coordinator dispatch still require immutable resolution.
-            for event, ref_type, allowed in [('pull_request', 'branch', False),
-                                             ('push', 'branch', True),
-                                             ('push', 'tag', False),
-                                             ('workflow_dispatch', 'branch', True)]:
-                with self.subTest(event=event, ref_type=ref_type):
-                    predicate = condition.replace(
-                        'github.event_name', shlex.quote(event)
-                    ).replace(
-                        "!startsWith(github.ref, 'refs/tags/')",
-                        shlex.quote(ref_type) + ' != "tag"',
-                    )
-                    with tempfile.TemporaryDirectory(dir=ROOT) as directory:
-                        script = Path(directory) / 'predicate.sh'
-                        script.write_text(
-                            '#!/usr/bin/env bash\n[[ ' + predicate + ' ]]\n', newline='\n'
-                        )
-                        result = subprocess.run(['bash', bash_path(script)])
-                    self.assertEqual(0 if allowed else 1, result.returncode)
+            self.assertNotRegex(builder, r'(?m)^        if:')
+            # Tags never reach the plan job, so it resolves for every event it runs on.
+            self.assertIn("    if: \"!startsWith(github.ref, 'refs/tags/')\"", plan)
             selection = plan.split('        id: plan\n', 1)[1].split('\n      - ', 1)[0]
-            # Only main pushes, which always resolve a builder, compare it with
-            # the prior collection's builder; PR selection never reads it.
+            # Only main pushes compare the resolved builder with the prior
+            # collection's builder.
             self.assertEqual(1, selection.count('steps.builder.outputs'))
             self.assertIn('BUILDER: ${{ steps.builder.outputs.image }}', selection)
             pushed = selection.split('if [[ $GITHUB_EVENT_NAME == push ]]', 1)
@@ -332,6 +315,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             contract = Path(directory) / 'contract.sh'
             contract.write_text(
                 'set -euo pipefail\napps=' + shlex.quote(bash_path(path)) + '\n'
+                'apps_publish=' + shlex.quote(bash_path(PUBLISH_SCRIPT)) + '\n'
                 'ok() { :; }\nbad() { exit 1; }\n' + script[start:end],
                 newline='\n',
             )
@@ -375,7 +359,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
         with self.subTest(phase='persisted collection urls use the configured public origin'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-            publish = source.split('\n  publish:\n', 1)[1]
+            publish = source.split('\n  publish:\n', 1)[1] + PUBLISH_SCRIPT.read_text()
             self.assertIn('TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}', publish)
             self.assertIn('package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}', publish)
             self.assertIn('bundle_url="$package_public_api/tilo-app-collections/', publish)
@@ -387,6 +371,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         with self.subTest(phase='published tapps are submitted to the signed registry'):
             source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
             build, publish = source.split('\n  publish:\n', 1)
+            publish += PUBLISH_SCRIPT.read_text()
             self.assertIn('install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package', build)
             self.assertIn('dist/app-release/tilo-app-package', build)
             self.assertIn(

@@ -31,7 +31,6 @@ pub enum Command {
     SaveAs,
     SaveAll,
     RevertFile,
-    CloseTab,
     Find,
     Replace,
     SearchProject,
@@ -59,7 +58,6 @@ impl Command {
             Self::SaveAs => "save-as",
             Self::SaveAll => "save-all",
             Self::RevertFile => "revert-file",
-            Self::CloseTab => "close-tab",
             Self::Find => "find",
             Self::Replace => "replace",
             Self::SearchProject => "search-project",
@@ -104,7 +102,6 @@ impl Command {
             (Command::SaveAs, "File: Save As\u{2026}", "Ctrl+Shift+S"),
             (Command::SaveAll, "File: Save All", "Ctrl+Alt+S"),
             (Command::RevertFile, "File: Revert to Saved", ""),
-            (Command::CloseTab, "View: Close Active Tab", "Ctrl+W"),
             (Command::Find, "Edit: Find in File", "Ctrl+F"),
             (Command::Replace, "Edit: Replace in File", "Ctrl+H"),
             (

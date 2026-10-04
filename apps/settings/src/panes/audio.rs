@@ -78,7 +78,9 @@ use winit::event::WindowEvent;
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::prefs::{AudioPrefs, SystemPrefs};
-use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
+use crate::widgets::{
+    caption, card, choice_row_described, error_caption, error_row, rows, setting_row,
+};
 use media::event_sound::SoundTheme;
 use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs};
 
@@ -340,23 +342,25 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
     out
 }
 
-/// Enumerate the audio devices via `wpctl status`. Best-effort: an empty set
-/// when `wpctl` is missing or fails, so a non-Tilo host with no `PipeWire` shows
-/// no device pickers rather than fabricated devices.
-fn list_audio_devices() -> AudioDevices {
-    let Ok(out) = bounded_command::run(
-        "wpctl",
-        &["status"],
-        None,
-        1024 * 1024,
-        Duration::from_secs(5),
-    ) else {
-        return AudioDevices::default();
-    };
+/// Run `wpctl args…`, answering its standard output or why it failed.
+fn wpctl(args: &[&str]) -> Result<String, String> {
+    let out = bounded_command::run("wpctl", args, None, 1024 * 1024, Duration::from_secs(5))
+        .map_err(|error| format!("wpctl: {error}"))?;
     if !out.status.success() {
-        return AudioDevices::default();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = stderr.trim();
+        return Err(if stderr.is_empty() {
+            format!("wpctl exited with {}", out.status)
+        } else {
+            format!("wpctl: {stderr}")
+        });
     }
-    parse_wpctl_status(&String::from_utf8_lossy(&out.stdout))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Enumerate the audio devices via `wpctl status`, or why they could not be.
+fn list_audio_devices() -> Result<AudioDevices, String> {
+    wpctl(&["status"]).map(|out| parse_wpctl_status(&out))
 }
 
 /// Side-effect interface for switching the default audio device. Production
@@ -388,22 +392,15 @@ impl DeviceControl for NoopDevice {
 }
 
 /// Read the default source gain as a `0.0..=1.0` fraction, so the input
-/// slider rests at the current source level. Best-effort; `None` on any
-/// failure (no `wpctl`, parse error) so callers fall back to a default.
-fn get_source_volume() -> Option<f32> {
-    let out = bounded_command::run(
-        "wpctl",
-        &["get-volume", "@DEFAULT_AUDIO_SOURCE@"],
-        None,
-        1024 * 1024,
-        Duration::from_secs(5),
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    // `Volume: 0.42` (optionally ` [MUTED]`).
+/// slider rests at the current source level, or why it could not be read.
+fn get_source_volume() -> Result<f32, String> {
+    let stdout = wpctl(&["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
+    parse_source_volume(&stdout)
+        .ok_or_else(|| format!("wpctl answered an unreadable volume: {}", stdout.trim()))
+}
+
+/// `Volume: 0.42` (optionally ` [MUTED]`) as a `0.0..=1.0` fraction.
+fn parse_source_volume(stdout: &str) -> Option<f32> {
     let after = stdout.lines().next()?.split(':').nth(1)?.trim();
     after
         .split_whitespace()
@@ -456,6 +453,13 @@ pub struct AudioPane {
     sound_themes: Vec<SoundTheme>,
     /// Whether this machine can play event sounds at all.
     event_sounds_available: bool,
+    /// Why the output volume could not be read; the slider and mute switch
+    /// are then not offered at a made-up level.
+    volume_error: Option<String>,
+    /// Why the input level could not be read.
+    input_error: Option<String>,
+    /// Why the device list could not be read.
+    devices_error: Option<String>,
     advanced: bool,
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
@@ -523,14 +527,26 @@ impl Default for AudioPane {
 
 impl AudioPane {
     pub fn new() -> Self {
-        let initial_state = os_actions::get_volume_state().unwrap_or(os_actions::VolumeState {
-            level: 0.5,
-            muted: false,
-        });
+        let (initial_state, volume_error) = match os_actions::get_volume_state() {
+            Ok(state) => (state, None),
+            Err(error) => (
+                os_actions::VolumeState {
+                    level: 0.0,
+                    muted: false,
+                },
+                Some(error),
+            ),
+        };
         let initial = initial_state.level;
-        let initial_input = get_source_volume().unwrap_or(0.75);
+        let (initial_input, input_error) = match get_source_volume() {
+            Ok(level) => (level, None),
+            Err(error) => (0.0, Some(error)),
+        };
         let prefs = SystemPrefs::load().audio;
-        let mut devices = list_audio_devices();
+        let (mut devices, mut devices_error) = match list_audio_devices() {
+            Ok(devices) => (devices, None),
+            Err(error) => (AudioDevices::default(), Some(error)),
+        };
         // Enumerate the PipeWire graph for the per-application streams (and the
         // devices they route to). Empty on a host with no PipeWire, so the
         // Applications card simply shows its empty state.
@@ -562,6 +578,7 @@ impl AudioPane {
         }
         if !graph.sinks.is_empty() || !graph.sources.is_empty() {
             devices = devices_from_graph(&graph);
+            devices_error = None;
         }
         let last_sink = devices.default_sink().map(str::to_string);
         let last_source = devices.default_source().map(str::to_string);
@@ -589,6 +606,9 @@ impl AudioPane {
             sound_themes: media::event_sound::installed_themes(),
             event_sounds_available: media::event_sound::sound_backend()
                 != media::event_sound::SoundBackend::Unavailable,
+            volume_error,
+            input_error,
+            devices_error,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
@@ -654,6 +674,9 @@ impl AudioPane {
             system_sounds: SystemSoundPrefs::default(),
             sound_themes: Vec::new(),
             event_sounds_available: false,
+            volume_error: None,
+            input_error: None,
+            devices_error: None,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
@@ -1011,6 +1034,12 @@ impl AudioPane {
     /// mono / speaker-test controls the runtime reports support for.
     fn build_output_card(&self) -> crate::widgets::El {
         let mut output_rows = Vec::new();
+        if let Some(error) = &self.devices_error {
+            output_rows.push(error_caption(&t_args(
+                "sound-devices-error",
+                &[("error", error.as_str().into())],
+            )));
+        }
         if self.devices.sinks.len() >= 2 {
             let opts: Vec<String> = self.devices.sinks.iter().map(|d| d.name.clone()).collect();
             let mut dd = Dropdown::new(opts, OUTPUT_DEVICE_KEY).with_id("audio.output_device");
@@ -1030,28 +1059,35 @@ impl AudioPane {
             }
             output_rows.push(setting_row(&t("sound-output-device"), Box::new(dd)));
         }
-        output_rows.push(setting_row(
-            &t("sound-volume"),
-            Box::new(
-                Slider::new("settings.audio.volume", VOLUME_KEY)
-                    .with_id("audio.volume")
-                    .on_action(
-                        crate::actions::audio_number_binding("volume")
-                            .expect("output volume is part of the static resource contract"),
-                    ),
-            ),
-        ));
-        output_rows.push(setting_row(
-            &t("sound-mute"),
-            Box::new(
-                Toggle::new("settings.audio.mute", MUTED_KEY)
-                    .with_id("audio.mute")
-                    .on_action(
-                        crate::actions::audio_bool_binding("muted")
-                            .expect("output mute is part of the static resource contract"),
-                    ),
-            ),
-        ));
+        if let Some(error) = &self.volume_error {
+            output_rows.push(error_row(
+                &t("sound-volume"),
+                &t_args("sound-volume-error", &[("error", error.as_str().into())]),
+            ));
+        } else {
+            output_rows.push(setting_row(
+                &t("sound-volume"),
+                Box::new(
+                    Slider::new("settings.audio.volume", VOLUME_KEY)
+                        .with_id("audio.volume")
+                        .on_action(
+                            crate::actions::audio_number_binding("volume")
+                                .expect("output volume is part of the static resource contract"),
+                        ),
+                ),
+            ));
+            output_rows.push(setting_row(
+                &t("sound-mute"),
+                Box::new(
+                    Toggle::new("settings.audio.mute", MUTED_KEY)
+                        .with_id("audio.mute")
+                        .on_action(
+                            crate::actions::audio_bool_binding("muted")
+                                .expect("output mute is part of the static resource contract"),
+                        ),
+                ),
+            ));
+        }
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
             output_rows.push(setting_row(
@@ -1159,17 +1195,24 @@ impl AudioPane {
             }
             input_rows.push(setting_row(&t("sound-input-device"), Box::new(dd)));
         }
-        input_rows.push(setting_row(
-            &t("sound-input-level"),
-            Box::new(
-                Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
-                    .with_id("audio.input_volume")
-                    .on_action(
-                        crate::actions::audio_number_binding("input-volume")
-                            .expect("input volume is part of the static resource contract"),
-                    ),
-            ),
-        ));
+        if let Some(error) = &self.input_error {
+            input_rows.push(error_row(
+                &t("sound-input-level"),
+                &t_args("sound-input-error", &[("error", error.as_str().into())]),
+            ));
+        } else {
+            input_rows.push(setting_row(
+                &t("sound-input-level"),
+                Box::new(
+                    Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
+                        .with_id("audio.input_volume")
+                        .on_action(
+                            crate::actions::audio_number_binding("input-volume")
+                                .expect("input volume is part of the static resource contract"),
+                        ),
+                ),
+            ));
+        }
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
             let running = self.mic_session.is_some();
             let activity = if running {
@@ -1893,10 +1936,14 @@ impl AudioPane {
     /// one switch per event while it is on.
     fn build_system_sounds_card(&self) -> crate::widgets::El {
         if !self.event_sounds_available {
-            return card(
-                &t("sound-system"),
-                rows(vec![caption(&t("sound-system-missing"))]),
-            );
+            let reason = match super::installed_programs_unreadable() {
+                Some(error) => error_caption(&t_args(
+                    "settings-programs-error",
+                    &[("error", error.into())],
+                )),
+                None => caption(&t("sound-system-missing")),
+            };
+            return card(&t("sound-system"), rows(vec![reason]));
         }
         let mut sound_rows = vec![setting_row(
             &t("sound-system"),
@@ -2513,6 +2560,33 @@ mod tests {
     #[derive(Default)]
     struct RecordingInput {
         calls: Mutex<Vec<f32>>,
+    }
+
+    /// Levels that could not be read are reported, not drawn as sliders at
+    /// a made-up position.
+    #[test]
+    fn unreadable_levels_are_shown_as_errors() {
+        let mut pane = AudioPane::with_controls(
+            Arc::new(RecordingDispatcher::default()) as Arc<dyn Dispatcher + Send + Sync>,
+            Arc::new(RecordingInput::default()),
+            0.5,
+            0.75,
+        );
+        pane.volume_error = Some("wpctl: Could not connect to PipeWire".into());
+        pane.input_error = Some("wpctl: Could not connect to PipeWire".into());
+        pane.devices_error = Some("wpctl: Could not connect to PipeWire".into());
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        for expected in [
+            "Can't read the output volume: wpctl: Could not connect to PipeWire",
+            "Can't read the input level: wpctl: Could not connect to PipeWire",
+            "Can't list audio devices: wpctl: Could not connect to PipeWire",
+        ] {
+            assert!(
+                text.iter().any(|line| line == expected),
+                "{expected}: {text:#?}"
+            );
+        }
+        assert_eq!(parse_source_volume("Volume: 0.42 [MUTED]"), Some(0.42));
     }
 
     struct FakeSession {

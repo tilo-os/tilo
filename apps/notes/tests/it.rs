@@ -16,6 +16,10 @@ mod click_link_navigates;
 mod e2e_smoke;
 #[path = "framework_body.rs"]
 mod framework_body;
+#[path = "framework_new_note.rs"]
+mod framework_new_note;
+#[path = "framework_save_status.rs"]
+mod framework_save_status;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
 #[path = "launch_cli.rs"]
@@ -30,10 +34,14 @@ mod markdown_marks_roundtrip;
 mod markdown_phase3_roundtrip;
 #[path = "offscreen_smoke.rs"]
 mod offscreen_smoke;
+#[path = "outline_commands.rs"]
+mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
 #[path = "page_file_io.rs"]
 mod page_file_io;
+#[path = "paste_image.rs"]
+mod paste_image;
 #[path = "peer_caret_visual.rs"]
 mod peer_caret_visual;
 #[path = "responsive_drawer.rs"]
@@ -48,10 +56,14 @@ mod sidebar_collab_growth;
 mod sidebar_dnd;
 #[path = "slash_menu_focus.rs"]
 mod slash_menu_focus;
+#[path = "tab_nesting.rs"]
+mod tab_nesting;
 #[path = "tree_operations.rs"]
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
 mod two_peer_sync;
+#[path = "typing_order.rs"]
+mod typing_order;
 #[path = "welcome_page_renders_all_block_kinds.rs"]
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]
@@ -110,3 +122,14 @@ mod capture_runtime;
 
 #[path = "continuation_discovery.rs"]
 mod continuation_discovery;
+
+#[path = "block_commands.rs"]
+mod block_commands;
+
+#[path = "clipboard_safety.rs"]
+mod clipboard_safety;
+
+#[path = "find_replace.rs"]
+mod find_replace;
+
+mod slash_text_input;

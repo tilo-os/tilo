@@ -132,8 +132,8 @@ class TiloVm:
                         timeout=timeout, check=check)
 
     def root_exec(self, script: str, timeout: float = 120) -> str:
-        """Run a read-only POSIX sh script as root in the VM. The compositor is not dumpable,
-        so only root reads its /proc entries; slot exec cannot."""
+        """Run a POSIX sh script as root in the VM: reads of the compositor's /proc entries
+        (it is not dumpable, so slot exec cannot), or a check's setup of this throwaway VM."""
         return self.vm_cmd("ssh", "--", "sh -c " + shlex.quote(script), timeout=timeout)
 
     def slot_uid(self) -> int:

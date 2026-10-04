@@ -37,8 +37,10 @@ def modules_importing(modules: set[str], checks_dir: Path) -> set[str]:
 def select(changed: list[str], suite: Path = HERE) -> str:
     sys.path.insert(0, str(suite))
     from acceptance import core  # noqa: PLC0415
-    from acceptance.checks import (apps, basics, daily_apps, provenance,  # noqa: PLC0415,F401
-                                   resources, search, ui, window)
+    import importlib  # noqa: PLC0415
+    for module in sorted((suite / CHECKS).glob("*.py")):
+        if module.stem != "__init__":
+            importlib.import_module(f"acceptance.checks.{module.stem}")
 
     modules: set[str] = set()
     inert = False

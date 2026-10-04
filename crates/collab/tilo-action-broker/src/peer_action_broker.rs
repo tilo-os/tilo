@@ -69,14 +69,34 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         directories: Rc<LocalActionDirectoryRegistry>,
     ) -> Option<tokio::task::JoinHandle<()>> {
-        let mut receiver = self
+        /// Hands the queue back when the bridge task is dropped with its
+        /// broker thread's runtime, so a restarted thread bridges again.
+        struct Lent {
+            state: Arc<CapnpBrokerState>,
+            receiver: Option<tokio::sync::mpsc::Receiver<crate::peer_actions::Request>>,
+        }
+        impl Drop for Lent {
+            fn drop(&mut self) {
+                if let Ok(mut slot) = self.state.peer_action_rx.lock() {
+                    *slot = self.receiver.take();
+                }
+            }
+        }
+        let receiver = self
             .peer_action_rx
             .lock()
             .ok()
             .and_then(|mut rx| rx.take())?;
+        let mut lent = Lent {
+            state: self.clone(),
+            receiver: Some(receiver),
+        };
         let state = self.clone();
         Some(tokio::task::spawn_local(async move {
-            while let Some(request) = receiver.recv().await {
+            while let Some(receiver) = lent.receiver.as_mut() {
+                let Some(request) = receiver.recv().await else {
+                    break;
+                };
                 let state = state.clone();
                 let directories = directories.clone();
                 tokio::task::spawn_local(async move {
@@ -312,6 +332,7 @@ impl CapnpBrokerState {
                     request.peer_id,
                     offered,
                     InvocationInputs {
+                        execution: None,
                         argument: request.argument.as_deref(),
                         actor: &actor,
                         confirmation_token: token.as_deref(),

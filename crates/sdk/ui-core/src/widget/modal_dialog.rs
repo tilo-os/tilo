@@ -410,29 +410,42 @@ impl<C: Widget> ModalDialog<C> {
     fn forward_to_content(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
         let (Some(taffy), Some(node)) = (self.content_taffy.as_ref(), self.content_node) else {
             return false;
         };
         let mut inner_handled = false;
+        let mut inner_focus = None;
         self.content.handle_event(
             event,
             &mut crate::widget::EventCtx {
-                scale_factor,
-                modifiers: &modifiers,
-                state,
-                path,
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: ctx.state,
+                path: ctx.path,
                 handled: &mut inner_handled,
-                focus_target,
+                focus_target: &mut inner_focus,
                 node_id: node,
                 taffy,
             },
         );
+        // The content is laid out for drawing in a tree of its own, so a
+        // widget in it asks for focus by that tree's node. The host knows
+        // the same widget by the node the body was registered under in its
+        // tree (`build_layout`): the same place in a tree of the same shape.
+        if let Some(inner) = inner_focus {
+            let (host_taffy, dialog) = (ctx.taffy, ctx.node_id);
+            let body = host_taffy
+                .children(dialog)
+                .ok()
+                .and_then(|children| children.first().copied());
+            if let Some(target) =
+                body.and_then(|body| same_place(taffy, node, inner, host_taffy, body))
+            {
+                *ctx.focus_target = Some(target);
+            }
+        }
         inner_handled
     }
 
@@ -448,6 +461,27 @@ impl<C: Widget> ModalDialog<C> {
     pub fn is_open(&self) -> bool {
         self.open
     }
+}
+
+/// The node of `to_tree` at the place `target` has in `from_tree` below
+/// `from`, walking down from `to`: the trees were built from the same
+/// widgets, so their shapes agree.
+fn same_place(
+    from_tree: &TaffyTree<()>,
+    from: NodeId,
+    target: NodeId,
+    to_tree: &TaffyTree<()>,
+    to: NodeId,
+) -> Option<NodeId> {
+    if from == target {
+        return Some(to);
+    }
+    let from_children = from_tree.children(from).ok()?;
+    let to_children = to_tree.children(to).ok()?;
+    from_children
+        .iter()
+        .zip(to_children.iter())
+        .find_map(|(&from, &to)| same_place(from_tree, from, target, to_tree, to))
 }
 
 /// Local to this module rather than reusing `permission_prompt::draw_button`,
@@ -667,14 +701,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 self.pointer_inside = true;
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
-                self.forward_to_content(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
+                self.forward_to_content(event, ctx);
             }
             // No `CursorMoved` follows the pointer out of the window, so the
             // footer buttons' hover has to be dropped here.
@@ -704,14 +731,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     },
                 ..
             } => {
-                let content_handled = self.forward_to_content(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
+                let content_handled = self.forward_to_content(event, ctx);
                 if !content_handled && let Some(action) = self.primary_action.as_mut() {
                     (action.on_click)();
                 }
@@ -720,14 +740,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             // Text arrives from an input method (and in a browser page only
             // from one), not only as key presses.
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
-                self.forward_to_content(
-                    event,
-                    ctx.scale_factor,
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.path,
-                    ctx.focus_target,
-                );
+                self.forward_to_content(event, ctx);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -746,14 +759,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                         (action.on_click)();
                     }
                 } else if self.rect.contains(p) {
-                    self.forward_to_content(
-                        event,
-                        ctx.scale_factor,
-                        *ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.focus_target,
-                    );
+                    self.forward_to_content(event, ctx);
                 } else if let Some(cb) = self.on_dismiss.as_mut() {
                     cb();
                 }
@@ -763,14 +769,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 // Still forward in-box presses so e.g. a right-click context
                 // affordance in the content can react.
                 if self.rect.contains(self.last_cursor) {
-                    self.forward_to_content(
-                        event,
-                        ctx.scale_factor,
-                        *ctx.modifiers,
-                        ctx.state,
-                        ctx.path,
-                        ctx.focus_target,
-                    );
+                    self.forward_to_content(event, ctx);
                 }
                 *ctx.handled = true;
             }

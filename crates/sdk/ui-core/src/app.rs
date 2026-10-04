@@ -491,19 +491,7 @@ pub struct ControlBindingCoverage {
     pub status: ControlBindingStatus,
 }
 
-/// One visible expression of a domain action in the retained UI. The action
-/// address remains the execution identity; this route is presentation
-/// metadata for focus, presence, animation, and “show me where” behavior.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ActionUiRoute {
-    pub address: tilo_actions::ActionAddress,
-    pub control_id: String,
-    /// Root-to-control semantic path. Fewer nodes is the cheaper UI route.
-    pub path: Vec<crate::a11y_tree::SemanticId>,
-    pub bounds: Option<vello::kurbo::Rect>,
-    pub focused: bool,
-    pub disabled: bool,
-}
+pub use crate::action_locus::ActionUiRoute;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -1162,6 +1150,39 @@ impl App {
             *handled = true;
             self.needs_sync = true;
             self.layout.layout_dirty = true;
+        }
+    }
+
+    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS)
+    /// when no widget consumed the press: tabs are the shell's, so every app
+    /// answers them the same way through [`crate::shell_tabs`].
+    #[cfg(feature = "native")]
+    fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
+        if *handled {
+            return;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key,
+                    state: winit::event::ElementState::Pressed,
+                    repeat: false,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return;
+        };
+        let modifiers = self.input.modifiers.state();
+        let command = self.input.platform.command_modifier_down(modifiers);
+        // Ctrl and Super together are a different chord on every platform.
+        let other = modifiers.alt_key() || (modifiers.control_key() && modifiers.super_key());
+        if let Some(request) =
+            crate::shell_tabs::chord_request(logical_key, command, modifiers.shift_key(), other)
+        {
+            crate::shell_tabs::request(request);
+            *handled = true;
         }
     }
 

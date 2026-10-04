@@ -7,6 +7,18 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: NamedKey, modifiers
 }
 
 fn send_key(editor: &mut BlockEditor, doc: &mut AutoCommit, key: &Key, modifiers: ModifiersState) {
+    assert!(
+        dispatch_key(editor, doc, key, modifiers),
+        "{key:?} must remain owned by the editor"
+    );
+}
+
+fn dispatch_key(
+    editor: &mut BlockEditor,
+    doc: &mut AutoCommit,
+    key: &Key,
+    modifiers: ModifiersState,
+) -> bool {
     let mut event: KeyEvent = unsafe { std::mem::zeroed() };
     event.logical_key = key.clone();
     event.physical_key =
@@ -31,12 +43,146 @@ fn send_key(editor: &mut BlockEditor, doc: &mut AutoCommit, key: &Key, modifiers
             taffy: &TaffyTree::new(),
         },
     );
-    assert!(handled, "{key:?} must remain owned by the code editor");
     editor.sync(doc, &ROOT);
+    handled
 }
 
 fn code(text: &str) -> Block {
     Block::code_block(Some("python".into()), text)
+}
+
+#[test]
+fn selected_outline_roots_indent_once_and_exclude_a_column_zero_endpoint() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("Parent"),
+        Block::bullet(0, "First"),
+        Block::checklist(1, true, "Descendant"),
+        Block::paragraph("Second"),
+        Block::paragraph("Outside selection"),
+    ]);
+    editor.focus_block(1, CursorPlacement::Start);
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 4, byte: 0 },
+    );
+    let selected = editor.document_selection();
+    let text = editor.selected_text();
+    let mut doc = AutoCommit::new();
+    send(
+        &mut editor,
+        &mut doc,
+        NamedKey::Tab,
+        ModifiersState::empty(),
+    );
+    assert_eq!(
+        editor.blocks.iter().map(Block::indent).collect::<Vec<_>>(),
+        [0, 1, 2, 1, 0]
+    );
+    assert_eq!(editor.document_selection(), selected);
+    assert_eq!(editor.selected_text(), text);
+    send(&mut editor, &mut doc, NamedKey::Tab, ModifiersState::SHIFT);
+    assert_eq!(
+        editor.blocks.iter().map(Block::indent).collect::<Vec<_>>(),
+        [0, 0, 1, 0, 0]
+    );
+}
+
+#[test]
+fn escape_releases_tab_to_host_focus_navigation_until_editing_resumes() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("Parent"), Block::paragraph("Child")]);
+    editor.focus_block(1, CursorPlacement::End);
+    let mut doc = AutoCommit::new();
+    assert!(Widget::wants_tab_input(&editor));
+    send(
+        &mut editor,
+        &mut doc,
+        NamedKey::Escape,
+        ModifiersState::empty(),
+    );
+    assert!(
+        !Widget::wants_tab_input(&editor),
+        "Escape then Tab must leave the editor"
+    );
+    editor.set_focus(false);
+    editor.set_focus(true);
+    assert!(Widget::wants_tab_input(&editor));
+    send(
+        &mut editor,
+        &mut doc,
+        NamedKey::Tab,
+        ModifiersState::empty(),
+    );
+    assert_eq!(editor.blocks[1].indent(), 1);
+}
+
+#[test]
+fn escape_clears_retained_batch_and_releases_shift_tab() {
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&[
+        BlockContent::paragraph("a", "A"),
+        BlockContent::paragraph("b", ""),
+    ]);
+    editor.retain_block_selection(vec!["a".into(), "b".into()], false);
+    let mut doc = AutoCommit::new();
+    send(
+        &mut editor,
+        &mut doc,
+        NamedKey::Escape,
+        ModifiersState::empty(),
+    );
+    assert!(editor.retained_block_selection.is_none());
+    assert!(editor.document_selection().is_none());
+    assert!(!Widget::wants_tab_input(&editor));
+    dispatch_key(
+        &mut editor,
+        &mut doc,
+        &Key::Named(NamedKey::Shift),
+        ModifiersState::SHIFT,
+    );
+    assert!(!dispatch_key(
+        &mut editor,
+        &mut doc,
+        &Key::Named(NamedKey::Tab),
+        ModifiersState::SHIFT
+    ));
+}
+
+#[test]
+fn local_caret_and_typing_gestures_clear_a_refused_batch() {
+    for key in [
+        Key::Named(NamedKey::ArrowLeft),
+        Key::Character("x".into()),
+        Key::Named(NamedKey::Space),
+    ] {
+        let rows = [
+            BlockContent::paragraph("a", "A"),
+            BlockContent::paragraph("b", "B"),
+            BlockContent::paragraph("c", "C"),
+        ];
+        let mut editor = BlockEditor::new();
+        editor.present_blocks(&rows);
+        editor.retain_block_selection(vec!["a".into(), "b".into()], false);
+        editor.present_blocks(&[
+            rows[0].clone(),
+            BlockContent::paragraph("peer", "Peer"),
+            rows[1].clone(),
+            rows[2].clone(),
+        ]);
+        assert_eq!(editor.selected_block_range(), None);
+        assert!(
+            editor
+                .blocks()
+                .iter()
+                .all(|block| block.line.selection_range().is_none())
+        );
+        let mut doc = AutoCommit::new();
+        dispatch_key(&mut editor, &mut doc, &key, ModifiersState::empty());
+        assert!(editor.retained_block_selection.is_none());
+        assert_eq!(editor.selected_block_move(false), Some((2..3, 4)));
+        assert_eq!(editor.blocks()[1].text(), "Peer");
+    }
 }
 
 #[test]
@@ -420,4 +566,29 @@ fn code_tab_indentation_preserves_identity_and_emits_canonical_undoable_edits() 
     bound_code_indent_and_exit_have_undo_redo_checkpoints();
     code_indentation_emits_canonical_text_edits_for_stable_blocks();
     long_code_line_scrolls_to_keep_the_keyboard_caret_visible();
+}
+
+#[test]
+fn pressing_shift_after_escape_keeps_backward_focus_navigation_available() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::bullet(1, "Child")]);
+    editor.focus_block(0, CursorPlacement::End);
+    let mut doc = AutoCommit::new();
+    send(
+        &mut editor,
+        &mut doc,
+        NamedKey::Escape,
+        ModifiersState::empty(),
+    );
+    dispatch_key(
+        &mut editor,
+        &mut doc,
+        &Key::Named(NamedKey::Shift),
+        ModifiersState::SHIFT,
+    );
+    assert!(
+        !Widget::wants_tab_input(&editor),
+        "Shift must not cancel Escape then Shift+Tab"
+    );
+    assert_eq!(editor.blocks[0].indent(), 1);
 }

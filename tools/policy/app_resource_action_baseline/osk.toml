@@ -1,0 +1,11 @@
+# Audited ceilings of apps/osk (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/osk/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+"apps/osk/src/main.rs" = 1
+
+[ratchets.widget_owned_document]
+"apps/osk/src/framework_history.rs" = 1

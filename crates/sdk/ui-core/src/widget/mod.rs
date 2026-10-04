@@ -1448,6 +1448,16 @@ pub trait Widget {
         false
     }
 
+    /// One-shot (reading MUST clear it) request to change the window's
+    /// accessibility preferences, raised by a control the person used. The
+    /// host applies it before the next frame. Default forwards the first
+    /// request found among the children.
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        self.children_mut()
+            .into_iter()
+            .find_map(|child| child.take_accessibility_request())
+    }
+
     /// Route history when this widget, or one it contains, is a [`Router`](router::Router).
     ///
     /// Dev reload writes this beside the document so the same screen is showing
@@ -2278,8 +2288,6 @@ pub mod marks;
 pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line;
 pub use rich_text_line::{LineSignal, RichTextLine};
-pub mod rich_text_editor;
-pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
     Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
@@ -2484,7 +2492,7 @@ pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, 
 pub mod action_row;
 pub use action_row::ActionRowFace;
 pub mod choice_card;
-pub use choice_card::ChoiceCardFace;
+pub use choice_card::{ChoiceCard, ChoiceCardFace};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;

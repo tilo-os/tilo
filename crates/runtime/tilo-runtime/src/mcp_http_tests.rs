@@ -27,6 +27,7 @@ mod schema_rows {
 
 #[derive(Clone, Default)]
 struct StubHost {
+    room: Option<String>,
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
     callers: Arc<StdMutex<Vec<Caller>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
@@ -83,7 +84,7 @@ impl ActionHost for StubHost {
         page.providers = vec![CatalogueProvider {
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
-            room: "room".into(),
+            room: self.room.clone().unwrap_or_else(|| "room".into()),
             record_id: String::new(),
             browsable: true,
         }];
@@ -537,13 +538,84 @@ fn beyond_loopback_needs_a_token() {
     let open = Config {
         address: "0.0.0.0:7070".parse().unwrap(),
         token: None,
+        room: None,
     };
     assert!(open.validate().is_err());
     let loopback = Config {
         address: "127.0.0.1:7070".parse().unwrap(),
         token: None,
+        room: None,
     };
     assert!(loopback.validate().is_ok());
+}
+
+#[test]
+fn explicit_mcp_room_is_only_a_canonical_room_identifier() {
+    let mut config = Config {
+        address: "127.0.0.1:7070".parse().unwrap(),
+        token: None,
+        room: None,
+    };
+    assert!(config.validate().is_ok());
+    for room in [
+        "",
+        "Writer",
+        "00000000-0000-0000-0000-000000000000",
+        "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+    ] {
+        config.room = Some(room.into());
+        assert!(config.validate().is_err());
+    }
+    config.room = Some("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into());
+    assert!(
+        config.validate().is_ok(),
+        "syntax validation does not grant admission"
+    );
+}
+
+#[test]
+fn client_metadata_cannot_replace_the_host_selected_mcp_audience() {
+    let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let host = StubHost {
+        room: Some(room.into()),
+        ..Default::default()
+    };
+    let endpoint = Endpoint::new(
+        host.clone(),
+        room.into(),
+        "profile-actor".into(),
+        None,
+        None,
+    );
+    run(async {
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "clientInfo":{"name":"forged-room-name","room":"other"},
+            "room":"other", "actor":"forged", "capabilities":{}
+        }});
+        let response = endpoint
+            .dispatch(
+                &Method::POST,
+                "/mcp",
+                &HeaderMap::new(),
+                request.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()[SESSION_HEADER]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let result = invoke(&endpoint, &session).await;
+        assert_ne!(result["result"]["isError"], true, "{result}");
+        let callers = host.callers.lock().unwrap().clone();
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].room(), Some(room));
+        assert_eq!(
+            callers[0].principal(),
+            &tilo_actions::remote::CallerPrincipal::Person("profile-actor".into())
+        );
+        assert!(callers[0].execution_id().is_some());
+    });
 }
 
 #[test]

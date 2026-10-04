@@ -350,6 +350,7 @@ fn the_lock_screen_is_never_captured() {
         notification_count: 3,
         verifying: false,
         now_playing: None,
+        keyboard: None,
     };
     let lock = lock_screen::draw_lock_scene_at_time(
         &outputs,
@@ -540,7 +541,9 @@ fn the_shells_secret_prompts_are_never_captured() {
         fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
         for (state, secret) in [
             (OnboardingVisualState::Intro, false),
-            (OnboardingVisualState::Connect, true),
+            (OnboardingVisualState::Existing, false),
+            (OnboardingVisualState::NearbyCode, true),
+            (OnboardingVisualState::Restore, true),
             (OnboardingVisualState::Protect, false),
             (OnboardingVisualState::Backup, true),
             (OnboardingVisualState::BackupVerified, true),
@@ -560,6 +563,43 @@ fn the_shells_secret_prompts_are_never_captured() {
             }
         }
         drop(fb);
+    }
+}
+
+/// A shortcut step that asks for a secret is withheld; one that asks for
+/// plain text is captured as it is.
+#[test]
+fn a_shortcut_steps_secret_answer_is_never_captured() {
+    use shell::shell::portal_dialog::{PortalDialogQueue, ShortcutStepField, ShortcutStepRequest};
+
+    for masked in [true, false] {
+        let mut fb = FrameBuilder::new((W, H));
+        let queue = PortalDialogQueue::default();
+        fb.host_mut().set_portal_dialog_queue(queue.clone());
+        queue
+            .enqueue_shortcut_step(
+                ShortcutStepRequest {
+                    handle: "shortcut-step:capture-protection".into(),
+                    shortcut: "Publish".into(),
+                    title: "Publishing token".into(),
+                    detail: String::new(),
+                    confirm_label: "Continue".into(),
+                    choices: Vec::new(),
+                    field: Some(ShortcutStepField { masked }),
+                },
+                |_| {},
+            )
+            .expect("the sheet is queued");
+        fb.host_mut().pump_portal_dialogs();
+        if masked {
+            assert_secret_prompts_withheld(&mut fb, "a shortcut step's secret answer");
+        } else {
+            let _ = frame(&mut fb);
+            assert!(
+                fb.host().secret_prompt_rects().is_empty(),
+                "a plain shortcut answer is no secret"
+            );
+        }
     }
 }
 
@@ -588,7 +628,7 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     h.state.osk_surface = Some(KEYBOARD);
     let mut fb = FrameBuilder::new((W, H));
     store().publish_rgba(KEYBOARD, &solid(960, 360, CLIENT), 960, 360);
-    fb.set_osk_surface(Some(KEYBOARD), None, true);
+    fb.set_osk_surface(Some(KEYBOARD), None, None, true);
     // Paint until the keyboard's frame is presented and any opening
     // cross-fade is over, so samples measure the keyboard itself.
     let settled = std::time::Instant::now()

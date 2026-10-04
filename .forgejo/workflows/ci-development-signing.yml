@@ -6,7 +6,7 @@ on:
       proof:
         description: Native proof to run; full runs every fixture
         type: choice
-        options: [full, prediction, retention, prediction-retention, wpe-artifact]
+        options: [full, prediction, retention, prediction-retention]
         default: full
   push:
     branches: [main]
@@ -53,14 +53,6 @@ on:
       - os/tests/test_development_loader.py
       - os/tests/development_stage_reuse.py
       - os/dev/sign-development-rootfs.py
-      - os/dev/prepare-wpe-stage.py
-      - os/tests/test_prepare_wpe_stage.py
-      - os/tests/wpe_stage_cache.py
-      - os/dev/wpe-stage-artifact.py
-      - os/Containerfile.wpe
-      - os/tests/test_wpe_stage_artifact.py
-      - os/tests/test_wpe_recipe_inputs.py
-      - os/tests/development_wpe_artifact_native.py
       - os/dev/private_disk_image.py
       - os/tests/test_private_disk_image.py
       - os/Containerfile.development-loader
@@ -84,8 +76,6 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Require native execution and install pinned Cosign
         run: |
           bash os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -112,14 +102,11 @@ jobs:
           }
           trap cleanup EXIT
           mkdir "$context/dev"
-          cp os/dev/{verify-development-source.py,development_boot.py,development_prediction.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py,sign-development-rootfs.py,private_disk_image.py,prepare-wpe-stage.py} "$context/dev/"
-          cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_prediction.py,development_prediction_native.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py,test_prepare_wpe_stage.py,wpe_stage_cache.py} "$context/"
+          cp os/dev/{verify-development-source.py,development_boot.py,development_prediction.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py,sign-development-rootfs.py,private_disk_image.py} "$context/dev/"
+          cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_prediction.py,development_prediction_native.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py} "$context/"
           cp os/Containerfile.development-loader "$context/"
           cp os/dev/{retain-development-rootfs.py,import-development-rootfs.py,rebind-development-trust.py,initramfs-trust.py,complete-initramfs-rebind.py,rebind-development-rootfs.py} "$context/dev/"
           cp os/dev/{audit-rootfs-layers.py,installed_material_audit.py} "$context/dev/"
-          cp os/dev/wpe-stage-artifact.py "$context/dev/"
-          mkdir -p "$context/os" && cp os/Containerfile.wpe "$context/os/"
-          cp os/tests/{test_wpe_stage_artifact.py,test_wpe_recipe_inputs.py,development_wpe_artifact_native.py} "$context/"
           cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py,test_tls_registry_fixture.py} "$context/"
           cp os/tests/{test_rootfs_layer_audit.py,development_layer_audit_native.py} "$context/"
           cp os/tests/development_rebind_native.py "$context/"
@@ -145,8 +132,5 @@ jobs:
             prediction-retention)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
                 "$image" -uc 'status=0; for fixture in development_prediction_native.py test_initramfs_trust.py initramfs_trust_native.py test_rebind_development_trust.py test_complete_initramfs_rebind.py test_rebind_development_rootfs.py test_retain_development_rootfs.py test_import_development_rootfs.py development_retention_native.py test_rootfs_layer_audit.py development_layer_audit_native.py development_rebind_native.py; do python3 "/fixture/os/tests/$fixture" || status=1; done; exit "$status"' ;;
-            wpe-artifact)
-              docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
-                "$image" -euc 'python3 /fixture/os/tests/test_prepare_wpe_stage.py; python3 /fixture/os/tests/test_wpe_stage_artifact.py; python3 -O /fixture/os/tests/test_wpe_stage_artifact.py; python3 /fixture/os/tests/test_wpe_recipe_inputs.py; python3 /fixture/os/tests/development_wpe_artifact_native.py' ;;
             *) echo 'Unknown native proof selection' >&2; exit 2 ;;
           esac

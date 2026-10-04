@@ -17,6 +17,7 @@ ROOT = TOOLS.parent
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 
+from ci import runner_labels
 from ci import workspace_graph as ci_select
 
 
@@ -34,6 +35,7 @@ BINARY_INPUTS = {
     "os/dev/cache-github-assets.sh",
     "tools/ci/check-build-env.sh",
     "tools/ci/resolve_builder.py",
+    "tools/ci/images.toml",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
@@ -51,6 +53,7 @@ VERIFICATION_INPUTS = {
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
     "tools/ci/workspace_graph.py",
+    "tools/ci/runner_labels.py",
     "tools/apps/app_channel_manifest.py",
     "tools/apps/canonical_app_verifier.py",
     "tools/apps/create_app_receipt.py",
@@ -70,7 +73,6 @@ FULL_REBUILD_PREFIXES = (
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
 # A change reaching their graph affects the shared runtime or every emitted tapp.
 FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
-OS_INTEGRATED_APPS = {"browser"}
 
 
 def architecture_matrix(
@@ -96,10 +98,8 @@ def architecture_matrix(
         "include": [
             {
                 "arch": architecture,
-                "runner": "runner" if architecture == "x86_64" else "runner-arm64",
-                "build_runner": (
-                    "runner-large" if architecture == "x86_64" else "runner-large-arm64"
-                ),
+                "runner": runner_labels.NATIVE[architecture],
+                "build_runner": runner_labels.LARGE[architecture],
             }
             for architecture in architectures
         ]
@@ -264,7 +264,7 @@ def apps_from_changes(
         or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
         for path in paths
     ):
-        return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
+        return sorted(catalog)
     selected = {
         parts[1]
         for path in paths
@@ -276,7 +276,7 @@ def apps_from_changes(
         packages, by_dir = ci_select.package_maps(metadata, root)
         if any(path.startswith(("apps/", "crates/", "fs/", "shell/"))
                and ci_select.owner_for(path, by_dir) is None for path in paths):
-            return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
+            return sorted(catalog)
         seeds = {
             owner
             for path in paths
@@ -285,11 +285,11 @@ def apps_from_changes(
         seeds.update(lock_affected_packages or ())
         affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
         if affected & FLEET_BUILD_PACKAGES:
-            return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
+            return sorted(catalog)
         selected.update(
             name for name, app in catalog.items() if app["package"] in affected
         )
-    return sorted(selected.difference(OS_INTEGRATED_APPS))
+    return sorted(selected)
 
 
 def prior_collection_base(source: str, collection_builder: str, builder: str) -> str | None:
@@ -326,8 +326,6 @@ def plan(args: argparse.Namespace) -> dict:
     tag_app = app_from_tag(args.tag, catalog) if args.tag else None
     classification = {"binary": [], "packaging": [], "verification": []}
     if tag_app:
-        if tag_app in OS_INTEGRATED_APPS:
-            raise ValueError(f"{tag_app} is released by the OS-native integration pipeline")
         tag_version = args.tag.rsplit("-v", 1)[1]
         if catalog[tag_app]["version"] != tag_version:
             raise ValueError(
@@ -365,12 +363,6 @@ def plan(args: argparse.Namespace) -> dict:
     unknown = set(selected).difference(catalog)
     if unknown:
         raise ValueError(f"unknown apps: {', '.join(sorted(unknown))}")
-    integrated = set(selected).intersection(OS_INTEGRATED_APPS)
-    if integrated:
-        raise ValueError(
-            "OS-integrated apps cannot use the generic tapp builder: "
-            + ", ".join(sorted(integrated))
-        )
     features = cfg.get("features", {})
     for name in selected:
         cargo_manifest = args.root / "apps" / name / "Cargo.toml"

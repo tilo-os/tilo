@@ -66,12 +66,27 @@ pub fn apply(current: &[GuestShare], plan: &MountPlan) -> (Vec<GuestShare>, Vec<
         }
         let argv = mount_argv(share);
         let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-        match run(&argv) {
+        match mount_when_present(&argv) {
             Ok(()) => mounted.push(share.clone()),
             Err(error) => failures.push(format!("mount {}: {error}", share.path)),
         }
     }
     (mounted, failures)
+}
+
+/// The host attaches a share live, just before asking for the mount; the
+/// guest's PCI hotplug may not have bound the device yet (notably right
+/// after boot), so an unknown tag is retried for a few seconds.
+fn mount_when_present(argv: &[&str]) -> Result<(), String> {
+    let mut last = String::new();
+    for _ in 0..30 {
+        match run(argv) {
+            Ok(()) => return Ok(()),
+            Err(error) => last = error,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    Err(last)
 }
 
 fn run(argv: &[&str]) -> Result<(), String> {
