@@ -380,6 +380,10 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             // Visits and addresses are the person's own: they follow them to
             // their other devices and never reach a collaborator. A private
             // window keeps none.
+            // Downloads stay on this device, in its settings.
+            if !cx.is_private() {
+                self.attach_downloads(cx.storage().settings());
+            }
             if !cx.is_private()
                 && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
             {
@@ -454,6 +458,15 @@ mod tests {
                 find(&resource.children, id)
             }
         })
+    }
+
+    #[test]
+    fn the_manifest_asks_for_the_engine_runtime_this_build_drives() {
+        let expected = format!(
+            "\noptional-runtimes = [\"{}\"]\n",
+            ui::webview::chromium::runtime::RUNTIME_REF
+        );
+        assert!(include_str!("../tilo-app.toml").contains(&expected));
     }
 
     #[test]

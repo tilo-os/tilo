@@ -3,10 +3,10 @@
 //!
 //! Document mutations (folder CRUD, bulk triage, per-message read/star/
 //! archive/delete/labels, discard draft) live on this resource via
-//! [`Resource::children`] and [`Resource::bound_actions`]. Hosted
-//! [`PublishesResources::resources`] returns only live extras that are not
-//! document state — never a second hand-built `mail.mailbox` Document door
-//! beside [`tilo_resource::publish`].
+//! [`Resource::children`] and [`Resource::bound_actions`]. The window adds
+//! only live rows that are not document state ([`ResourceSurface::live_rows`]):
+//! accounts, loaded threads and attachments, an in-flight send — never a
+//! second `mail.mailbox` door beside [`tilo_resource::publish`].
 
 use tilo_document::RichText;
 use ui::framework::{
@@ -66,10 +66,8 @@ impl Resource for Mail {
         let messages = MailDoc::list_message_flags(doc)
             .into_iter()
             .map(|flags| MessageRow {
-                id: flags.id.clone(),
-                thread_id: flags.id,
+                id: flags.id,
                 subject: String::new(),
-                thread_subject: String::new(),
                 folder: flags.folder,
                 read: flags.read,
                 starred: flags.starred,

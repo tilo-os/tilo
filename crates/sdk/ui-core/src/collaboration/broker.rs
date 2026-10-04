@@ -201,6 +201,21 @@ pub(super) fn flush_settings() {
     let _ = enqueue_sdk_command(&sender, SdkCommand::FlushSettings, &BridgeState::new());
 }
 
+/// Have the connected transport's worker send the app's live activity
+/// ([`super::channel_live_activity`]). Without a connected transport it waits
+/// for the primary route, whose join sends it.
+pub(super) fn flush_live_activity() {
+    let Some(sender) = SETTINGS_COMMAND_BRIDGE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|bridge| bridge.as_ref().and_then(tokio_mpsc::WeakSender::upgrade))
+    else {
+        return;
+    };
+    let _ = enqueue_sdk_command(&sender, SdkCommand::FlushLiveActivity, &BridgeState::new());
+}
+
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
 /// bounded. Durable overflow makes the bridge unavailable rather than
 /// silently losing an action or invocation transition; a document change
@@ -493,6 +508,8 @@ enum SdkCommand {
     },
     /// Send the app's unsent settings writes over the primary route.
     FlushSettings,
+    /// Send the app's live activity over the primary route.
+    FlushLiveActivity,
 }
 
 struct PrimaryHello {
@@ -903,9 +920,10 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             }
             meter.finish()
         }
-        SdkCommand::PrimaryReady(_) | SdkCommand::PublicationBarrier(_) => {
-            Some(std::mem::size_of::<SdkCommand>())
-        }
+        SdkCommand::PrimaryReady(_)
+        | SdkCommand::PublicationBarrier(_)
+        | SdkCommand::FlushSettings
+        | SdkCommand::FlushLiveActivity => Some(std::mem::size_of::<SdkCommand>()),
         // The group was allocated by the caller before entering the bridge,
         // and installation is synchronous under `&mut self`, so at most one
         // is ever queued. Only the command itself is counted: reserving the
@@ -938,7 +956,6 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             serialized_bytes(command, &mut meter);
             meter.finish()
         }
-        SdkCommand::FlushSettings => Some(std::mem::size_of::<SdkCommand>()),
     }
 }
 
@@ -3103,6 +3120,9 @@ async fn drive_shovel(
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
     // The app's settings over the primary route, when the shell keeps them.
     let mut settings_link: Option<SettingsLink> = None;
+    // The app's live activity over the primary route, when the shell
+    // presents live activities.
+    let mut live_activity_link: Option<LiveActivityLink> = None;
     // The first document mutation since the last publication barrier that
     // did not reach the broker, reported to (and cleared by) that barrier.
     let mut unpublished: Option<String> = None;
@@ -3175,6 +3195,10 @@ async fn drive_shovel(
                     settings_link = link_settings(&route.channel, &inbound_tx).await;
                     if let Some(link) = settings_link.as_ref() {
                         link.flush(&inbound_tx).await;
+                    }
+                    live_activity_link = link_live_activity(&route.channel, &inbound_tx).await;
+                    if let Some(link) = live_activity_link.as_ref() {
+                        link.flush(true).await;
                     }
                 }
             }
@@ -3342,6 +3366,11 @@ async fn drive_shovel(
             SdkCommand::FlushSettings => {
                 if let Some(link) = settings_link.as_ref() {
                     link.flush(&inbound_tx).await;
+                }
+            }
+            SdkCommand::FlushLiveActivity => {
+                if let Some(link) = live_activity_link.as_ref() {
+                    link.flush(false).await;
                 }
             }
         }
@@ -3728,6 +3757,75 @@ async fn spawn_invocation_stream(
             }
         });
     }
+}
+
+/// The primary route's live-activity capability and the task following the
+/// controls pressed on it.
+struct LiveActivityLink {
+    handle: runtime_collab::LiveActivityHandle,
+    follower: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LiveActivityLink {
+    fn drop(&mut self) {
+        self.follower.abort();
+    }
+}
+
+impl LiveActivityLink {
+    /// Send the app's activity if it changed, or again after a join.
+    #[allow(
+        clippy::future_not_send,
+        reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+    )]
+    async fn flush(&self, resend: bool) {
+        let Some(unsent) = super::channel_live_activity::take_unsent(resend) else {
+            return;
+        };
+        if let Err(error) = self.handle.show(unsent.activity.as_ref()).await {
+            tracing::warn!(%error, "live activity: the shell did not take it");
+        }
+    }
+}
+
+/// Open the primary route's live activity and follow the controls pressed
+/// on it, waking the owner on each.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn link_live_activity(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &InboundBridge,
+) -> Option<LiveActivityLink> {
+    let handle = match channel.live_activity().await {
+        Ok(handle) => handle,
+        Err(error) => {
+            tracing::debug!(%error, "live activity: the shell presents none for this app");
+            return None;
+        }
+    };
+    let follower = {
+        let handle = handle.clone();
+        let wake = inbound_tx.state.owner_wake.clone();
+        tokio::task::spawn_local(async move {
+            let mut after = 0;
+            loop {
+                match handle.controls(after).await {
+                    Ok((serial, controls)) => {
+                        after = serial;
+                        super::channel_live_activity::received(controls);
+                        wake.wake();
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "live activity: following its controls stopped");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    Some(LiveActivityLink { handle, follower })
 }
 
 /// The primary route's settings capability and the task following it.
@@ -5968,6 +6066,8 @@ mod tests {
         op_stream_delay: Option<Duration>,
         /// The app and the records whose settings the channel hands out.
         settings: Option<(String, Arc<dyn settings_store::SettingsSource>)>,
+        /// The app and the board whose live activity the channel hands out.
+        live_activities: Option<(String, Arc<runtime_collab::LiveActivities>)>,
         #[cfg(unix)]
         directory: DirectoryCaptures,
         committed_history_fixture: Option<Vec<u8>>,
@@ -6351,6 +6451,24 @@ mod tests {
                     Arc::new(|| Ok(())),
                 ));
             results.get().set_settings(settings);
+            Promise::ok(())
+        }
+
+        fn live_activity(
+            self: Rc<Self>,
+            _params: channel_handle::LiveActivityParams,
+            mut results: channel_handle::LiveActivityResults,
+        ) -> Promise<(), capnp::Error> {
+            let Some((app, board)) = self.captures.lock().unwrap().live_activities.clone() else {
+                return Promise::err(capnp::Error::unimplemented("no live activities".into()));
+            };
+            let activity: runtime_collab::collab_capnp::live_activity::Client =
+                capnp_rpc::new_client(runtime_collab::live_activity::LiveActivityServer::new(
+                    app,
+                    board,
+                    Arc::new(|| Ok(())),
+                ));
+            results.get().set_activity(activity);
             Promise::ok(())
         }
 
@@ -8703,6 +8821,48 @@ mod tests {
                 .is_none()
         );
         super::super::channel_settings::uninstall();
+    }
+
+    #[test]
+    fn an_apps_live_activity_reaches_the_shell_and_its_controls_come_back() {
+        const APP: &str = "so.tilo.clocks";
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let captures = Captures {
+            live_activities: Some((APP.to_owned(), Arc::clone(&board))),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        // Shown before the channel joins: the join sends it.
+        super::super::channel_live_activity::show(Some(serde_json::json!({"label": "Tea"})));
+        let _manager = CollaborationManager::from_sdk_fd_for_test(fd, APP, Uuid::new_v4());
+        eventually("the activity reaches the shell", || {
+            board.activity(APP) == Some(serde_json::json!({"label": "Tea"}))
+        });
+
+        super::super::channel_live_activity::show(Some(serde_json::json!({"label": "Eggs"})));
+        eventually("a change reaches the shell", || {
+            board.activity(APP) == Some(serde_json::json!({"label": "Eggs"}))
+        });
+
+        board.press(APP, serde_json::json!({"command": "toggle"}));
+        let mut taken = Vec::new();
+        eventually("the control comes back to the app", || {
+            taken.extend(super::super::channel_live_activity::take_controls());
+            !taken.is_empty()
+        });
+        assert_eq!(taken, vec![serde_json::json!({"command": "toggle"})]);
+
+        super::super::channel_live_activity::show(None);
+        eventually("ending it takes it off the shell", || {
+            board.activity(APP).is_none()
+        });
     }
 
     #[cfg(unix)]

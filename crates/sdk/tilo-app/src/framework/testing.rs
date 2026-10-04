@@ -27,7 +27,7 @@ use super::app::{
     DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
     role_permissions, settle_launch,
 };
-use super::launch::{LaunchInput, split_command_line};
+use super::launch::LaunchInput;
 use super::root::ResourceRoot;
 
 const INSTANCE: u64 = 7;
@@ -173,7 +173,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// open it.
     pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.person::<P>())
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.storage.person::<P>())
             .flatten()
     }
 
@@ -182,7 +182,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &mut self,
     ) -> Option<super::PersonRecord<P>> {
         self.harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.shared_person::<P>())
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                root.storage.shared_person::<P>()
+            })
             .flatten()
     }
 
@@ -482,7 +484,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
         let outcome = self
             .harness()
-            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.open_here(&arguments))
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.run.open_here(&arguments))
             .ok_or_else(|| format!("{} is not hosted here", A::TITLE))??;
         self.harness().relayout();
         outcome
@@ -738,6 +740,69 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.effect_as(row, effect.id(), &serde_json::Map::new(), true)
     }
 
+    /// Start `effect` through the host door without waiting for it, as a
+    /// caller that may cancel it does, confirmed: the invocation its job
+    /// runs under.
+    ///
+    /// # Errors
+    /// The host's refusal, the effect's failure, or that it answered at
+    /// once and so started no job.
+    pub fn start_effect<E: Effect>(
+        &mut self,
+        effect: &E,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        self.start_effect_at(
+            <A::Resource as Resource>::KIND,
+            effect.id(),
+            &effect.arguments(),
+        )
+    }
+
+    /// [`Self::start_effect`] as the published child or live row `row`
+    /// offers it, bound to its arguments.
+    ///
+    /// # Errors
+    /// As [`Self::start_effect`].
+    pub fn start_effect_on<E: Effect>(
+        &mut self,
+        row: &str,
+        effect: &E,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        self.start_effect_at(row, effect.id(), &serde_json::Map::new())
+    }
+
+    fn start_effect_at(
+        &mut self,
+        resource: &str,
+        id: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_actions::InvocationId, tilo_actions::DoorError> {
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, id),
+        };
+        let (invocation, started) = self
+            .harness()
+            .start_bound_job_for(None, &address, arguments, true)?;
+        self.last_effect = Some(invocation);
+        if started.completed().is_some() {
+            return Err(tilo_actions::DoorError::Failed(format!(
+                "`{id}` answered at once; it started no job"
+            )));
+        }
+        Ok(invocation)
+    }
+
+    /// Cancel the job of an effect [`Self::start_effect`] started, as its
+    /// caller does: what it ended as, `Cancelled` when it stopped. `None`
+    /// when it already finished.
+    pub fn cancel_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.harness().cancel_job(invocation)
+    }
+
     /// What the job of the last [`Self::effect`] reported, in order: its
     /// progress, then its result.
     pub fn effect_progress(&mut self) -> Vec<tilo_actions::InvocationUpdate> {
@@ -807,7 +872,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
         self.harness()
             .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
-                root.find_mut::<T>().map(visit)
+                find_mut::<T>(root.content.as_mut()).map(visit)
             })
             .flatten()
     }
@@ -1096,7 +1161,8 @@ pub fn surface_in_root<A: ResourceApp, S: 'static>(
 }
 
 fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
-    root.content_mut()
+    root.content
+        .as_mut()
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<S>())
 }
@@ -1184,7 +1250,7 @@ pub fn resolve<R: Resource>(
     doc: &mut tilo_resource::Doc,
 ) -> Result<Vec<Vec<R::Action>>, String> {
     let mut applied = Vec::new();
-    while let Some(invocation) = dispatcher.take() {
+    while let Some((invocation, _)) = dispatcher.take_attributed() {
         if invocation.address.resource != dispatcher.resource_id() {
             return Err(format!(
                 "`{}` on `{}` is not an action of {}",
@@ -1224,11 +1290,59 @@ pub fn resolve<R: Resource>(
 pub fn search_source<R: Resource>(
     entries: Vec<tilo_resource::SearchEntry>,
 ) -> impl ui_core::search::SearchProvider {
-    super::root::ResourceSearch::over(R::LABEL, entries)
+    super::root::ResourceSearch::new(
+        R::LABEL,
+        std::sync::Arc::new(super::root::IndexedEntries::built(entries, 0)),
+    )
 }
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
         let _ = self.close();
     }
+}
+
+/// The first widget of type `T` in `widget`, whatever wraps it: a custom
+/// surface is found by its own type.
+fn find_mut<T: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut T> {
+    if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
+        return widget.as_any_mut()?.downcast_mut::<T>();
+    }
+    widget.children_mut().into_iter().find_map(find_mut::<T>)
+}
+
+/// Split a command line into its arguments and the app's own `options`
+/// (each taking the next word, or written `--name=value`) and `flags`, as
+/// the launcher reads it: a word naming neither is an argument.
+fn split_command_line(
+    words: &[String],
+    options: &[&str],
+    flags: &[&str],
+) -> (Vec<String>, Vec<ui_core::application::LaunchOption>) {
+    let mut arguments = Vec::new();
+    let mut named = Vec::new();
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        if flags.contains(&word.as_str()) {
+            named.push(ui_core::application::LaunchOption {
+                name: word.clone(),
+                value: None,
+            });
+        } else if let Some((name, value)) = word.split_once('=')
+            && options.contains(&name)
+        {
+            named.push(ui_core::application::LaunchOption {
+                name: name.to_owned(),
+                value: Some(value.to_owned()),
+            });
+        } else if options.contains(&word.as_str()) {
+            named.push(ui_core::application::LaunchOption {
+                name: word.clone(),
+                value: Some(words.next().cloned().unwrap_or_default()),
+            });
+        } else {
+            arguments.push(word.clone());
+        }
+    }
+    (arguments, named)
 }

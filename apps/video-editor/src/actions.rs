@@ -41,12 +41,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
-    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource,
 };
 
-use ui::tilo_resource::ActionDecl;
+use ui::tilo_resource::{self, ActionDecl, Effect};
 
 use crate::curve::Curve;
 use crate::doc::VideoDoc;
@@ -59,7 +58,6 @@ use crate::resource::VideoProject;
 
 /// Registry `type_id` for every video-editor action.
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
-pub const VIDEO_EDITOR_OPERATION_TYPE: &str = "video_editor.operation";
 
 pub fn track_resource_id(id: Uuid) -> String {
     format!("video.track:{id}")
@@ -104,101 +102,88 @@ pub fn reveal_media_address(id: Uuid) -> ActionAddress {
     ActionAddress::new(media_resource_id(id), "open")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VideoEditorOperation {
+/// What the editor does that is no edit of the project: revealing a track,
+/// clip, effect, marker or source, and the project file and render jobs.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "video_editor.effect")]
+pub enum VideoEditorEffect {
+    /// Reveal track.
+    #[effect(view, row, idempotent)]
     RevealTrack {
+        #[param("The track's id")]
         track: String,
     },
+    /// Reveal clip.
+    #[effect(view, row, idempotent)]
     RevealClip {
+        #[param("The clip's id")]
         clip: String,
     },
+    /// Reveal effect.
+    #[effect(view, row, idempotent)]
     RevealEffect {
+        #[param("The clip the effect is on")]
         clip: String,
+        #[param("The effect's id")]
         effect: String,
     },
+    /// Reveal marker.
+    #[effect(view, row, idempotent)]
     RevealMarker {
+        #[param("The marker's id")]
         marker: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[param("The clip the marker is on; omit for a project marker")]
         clip: Option<String>,
     },
+    /// Reveal media.
+    #[effect(view, row, idempotent)]
     RevealMedia {
+        #[param("The source's id")]
         media: String,
     },
-    ImportMedia {
+    /// Import media.
+    #[effect(job, device_only)]
+    Import {
+        #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    OpenProject {
+    /// Open project.
+    #[effect(job, device_only)]
+    Open {
+        #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    SaveProject {
+    /// Save project.
+    #[effect(job, device_only)]
+    Save {
+        #[param("Direct filesystem path; omit to save to the current project file")]
         path: Option<String>,
     },
-    SaveProjectAs {
+    /// Save project as.
+    #[effect(job, device_only)]
+    SaveAs {
+        #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
+    /// Export video.
+    #[effect(cancellable, device_only)]
     Export {
+        #[param("Direct export path; omit to use the system picker")]
         path: Option<String>,
     },
+    /// Cancel export.
+    #[effect(destructive)]
     CancelExport,
 }
 
-pub fn operation_kind(operation: &VideoEditorOperation) -> OperationKind {
-    match operation {
-        VideoEditorOperation::RevealTrack { .. }
-        | VideoEditorOperation::RevealClip { .. }
-        | VideoEditorOperation::RevealEffect { .. }
-        | VideoEditorOperation::RevealMarker { .. }
-        | VideoEditorOperation::RevealMedia { .. } => OperationKind::View,
-        VideoEditorOperation::ImportMedia { .. }
-        | VideoEditorOperation::OpenProject { .. }
-        | VideoEditorOperation::SaveProject { .. }
-        | VideoEditorOperation::SaveProjectAs { .. }
-        | VideoEditorOperation::Export { .. }
-        | VideoEditorOperation::CancelExport => OperationKind::Effect,
+impl VideoEditorEffect {
+    /// This effect as the `open` action of the row it reveals.
+    pub(crate) fn reveal(&self, label: &str) -> ActionSpec {
+        let mut spec = self.bound();
+        spec.id = "open".into();
+        spec.label = label.into();
+        spec
     }
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "the passed enum is a serde-derived local value, so ActionSpec encoding is infallible by construction"
-)]
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    value: &VideoEditorOperation,
-) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, VIDEO_EDITOR_OPERATION_TYPE, value)
-        .expect("VideoEditorOperation is always serializable");
-    match value {
-        VideoEditorOperation::RevealTrack { .. }
-        | VideoEditorOperation::RevealClip { .. }
-        | VideoEditorOperation::RevealEffect { .. }
-        | VideoEditorOperation::RevealMarker { .. }
-        | VideoEditorOperation::RevealMedia { .. } => spec
-            .with_contract(ActionContract::view())
-            .retry_policy(RetryPolicy::Idempotent),
-        _ => spec,
-    }
-}
-
-/// Decode a palette operation payload, or `None` when `type_id` is not the
-/// editor's operation type.
-///
-/// # Errors
-///
-/// The deserializer's message when the payload is not a
-/// [`VideoEditorOperation`].
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<VideoEditorOperation>, String> {
-    if type_id != VIDEO_EDITOR_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
 }
 
 /// A serializable snapshot of a clip's scalar fields, in exactly the
@@ -2228,93 +2213,6 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
             p.name.clone()
         },
     );
-    for (id, label, variant) in [
-        ("import", "Import media", 0_u8),
-        ("open", "Open project", 1),
-        ("save", "Save project", 2),
-        ("save-as", "Save project as", 3),
-    ] {
-        root = root.with_action(
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system picker/current project)",
-                OperationKind::Effect,
-                VIDEO_EDITOR_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct filesystem path",
-                )],
-                move |args: &ActionArgs| {
-                    let path = args
-                        .text("path")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(str::to_string);
-                    let op = match variant {
-                        0 => VideoEditorOperation::ImportMedia { path },
-                        1 => VideoEditorOperation::OpenProject { path },
-                        2 => VideoEditorOperation::SaveProject { path },
-                        _ => VideoEditorOperation::SaveProjectAs { path },
-                    };
-                    EncodedAction::encode_operation(VIDEO_EDITOR_OPERATION_TYPE, &op)
-                        .expect("video operation serializes")
-                },
-            )
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        );
-    }
-    // The action's identity, parameters, and job contract do not disappear
-    // when this build lacks an encoder. Consumers can still discover the
-    // canonical operation and explain its availability consistently; only
-    // invocation is refused until an encoder-capable build is present.
-    let export = ActionSpec::typed_operation(
-        "export",
-        "Export video",
-        "path (omit to use the system picker)",
-        OperationKind::Effect,
-        VIDEO_EDITOR_OPERATION_TYPE,
-        vec![ActionParam::optional_owned(
-            "path",
-            ParamType::Text,
-            "Direct export path",
-        )],
-        |args: &ActionArgs| {
-            EncodedAction::encode_operation(
-                VIDEO_EDITOR_OPERATION_TYPE,
-                &VideoEditorOperation::Export {
-                    path: args
-                        .text("path")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(str::to_string),
-                },
-            )
-            .expect("export operation serializes")
-        },
-    )
-    .execution(ExecutionMode::Background { cancellable: true })
-    .returns(ResultSpec::Job);
-    root = root.with_action(match crate::export::unavailable_reason() {
-        Some(_) => export.unavailable(
-            "export_unavailable",
-            "Video export is unavailable on this system",
-        ),
-        None => export,
-    });
-    if let Ok(spec) = ActionSpec::operation(
-        "cancel-export",
-        "Cancel export",
-        OperationKind::Effect,
-        VIDEO_EDITOR_OPERATION_TYPE,
-        &VideoEditorOperation::CancelExport,
-    ) {
-        root = root.with_action(spec.destructive().unavailable(
-            "runtime_state_required",
-            "Cancel is offered in the Export panel while a render is running",
-        ));
-    }
-
     // Project-level: rename (settings live in the doc).
     {
         let snap = p.clone();
@@ -2504,15 +2402,13 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "video.marker",
                 marker.name.clone(),
             )
-            .with_action(operation(
-                "open",
-                "Reveal marker",
-                OperationKind::View,
-                &VideoEditorOperation::RevealMarker {
+            .with_action(
+                VideoEditorEffect::RevealMarker {
                     marker: marker.id.to_string(),
                     clip: None,
-                },
-            ))
+                }
+                .reveal("Reveal marker"),
+            )
             .with_action(ActionSpec::typed(
                 "rename",
                 "Rename marker",
@@ -2606,14 +2502,12 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     for track in p.display_tracks() {
         let tid = track.id;
         let mut tr = Resource::new(track_resource_id(tid), "video.track", track.name.clone())
-            .with_action(operation(
-                "open",
-                "Reveal track",
-                OperationKind::View,
-                &VideoEditorOperation::RevealTrack {
+            .with_action(
+                VideoEditorEffect::RevealTrack {
                     track: tid.to_string(),
-                },
-            ));
+                }
+                .reveal("Reveal track"),
+            );
 
         // Track-level: rename, toggle mute (deterministic flip against the
         // snapshot), delete (with its clips).
@@ -2719,15 +2613,12 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
             let label = p
                 .media(clip.media)
                 .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
-            let mut cr =
-                Resource::new(clip_resource_id(cid), "video.clip", label).with_action(operation(
-                    "open",
-                    "Reveal clip",
-                    OperationKind::View,
-                    &VideoEditorOperation::RevealClip {
-                        clip: cid.to_string(),
-                    },
-                ));
+            let mut cr = Resource::new(clip_resource_id(cid), "video.clip", label).with_action(
+                VideoEditorEffect::RevealClip {
+                    clip: cid.to_string(),
+                }
+                .reveal("Reveal clip"),
+            );
 
             // Every clip linked to this one. A clip that is not linked is a
             // group of one, so every operation below is written against the
@@ -3102,15 +2993,13 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     "video.effect",
                     effect.kind.label(),
                 )
-                .with_action(operation(
-                    "open",
-                    "Reveal effect",
-                    OperationKind::View,
-                    &VideoEditorOperation::RevealEffect {
+                .with_action(
+                    VideoEditorEffect::RevealEffect {
                         clip: cid.to_string(),
                         effect: effect_id.to_string(),
-                    },
-                ));
+                    }
+                    .reveal("Reveal effect"),
+                );
 
                 er = er.with_action(ActionSpec::typed(
                     "set-amount",
@@ -3558,15 +3447,13 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         "video.marker",
                         marker.name.clone(),
                     )
-                    .with_action(operation(
-                        "open",
-                        "Reveal marker",
-                        OperationKind::View,
-                        &VideoEditorOperation::RevealMarker {
+                    .with_action(
+                        VideoEditorEffect::RevealMarker {
                             marker: marker.id.to_string(),
                             clip: Some(cid.to_string()),
-                        },
-                    ))
+                        }
+                        .reveal("Reveal marker"),
+                    )
                     .with_action(ActionSpec::typed(
                         "rename",
                         "Rename marker",
@@ -3638,14 +3525,12 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     for m in bin_media {
         let mid = m.id;
         let mut mr = Resource::new(media_resource_id(mid), "video.media", m.name.clone())
-            .with_action(operation(
-                "open",
-                "Reveal media",
-                OperationKind::View,
-                &VideoEditorOperation::RevealMedia {
+            .with_action(
+                VideoEditorEffect::RevealMedia {
                     media: mid.to_string(),
-                },
-            ));
+                }
+                .reveal("Reveal media"),
+            );
         let rename_snap = m.clone();
         if let Some(text) = m.text.clone() {
             let base = m.clone();
@@ -4450,6 +4335,7 @@ mod tests {
     use crate::app::VideoEditorApp;
     use automerge::AutoCommit;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ExecutionMode, ResultSpec};
     use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
 
@@ -4465,10 +4351,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         VideoDoc::seed_sample(&mut doc);
         let mut app = VideoEditorApp::new();
-        ui::framework::ResourceSurface::<crate::resource::VideoProject>::present(
-            &mut app,
-            &std::rc::Rc::new(VideoDoc::load_project(&doc)),
-        );
+        ui::framework::ResourceSurface::<
+            crate::resource::VideoProject,
+            crate::actions::VideoEditorEffect,
+        >::present(&mut app, &std::rc::Rc::new(VideoDoc::load_project(&doc)));
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }
@@ -4701,10 +4587,10 @@ mod tests {
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = VideoEditorApp::new();
         let mut doc = doc.clone();
-        ui::framework::ResourceSurface::<crate::resource::VideoProject>::present(
-            &mut app,
-            &std::rc::Rc::new(VideoDoc::load_project(&doc)),
-        );
+        ui::framework::ResourceSurface::<
+            crate::resource::VideoProject,
+            crate::actions::VideoEditorEffect,
+        >::present(&mut app, &std::rc::Rc::new(VideoDoc::load_project(&doc)));
         app.sync(&mut doc, &automerge::ROOT);
         published(&app, &doc)
     }
@@ -6312,8 +6198,8 @@ mod tests {
         }
         // Case `file_and_render_effects_are_canonical_and_not_falsely_reversible`.
         {
-            let resources = provide_resources(&VideoResourceCtx::default());
-            let root = &resources[0];
+            use ui::tilo_resource::Effect;
+            let specs = VideoEditorEffect::specs();
             for id in [
                 "import",
                 "open",
@@ -6322,7 +6208,7 @@ mod tests {
                 "export",
                 "cancel-export",
             ] {
-                let action = root.actions.iter().find(|action| action.id == id).unwrap();
+                let action = specs.iter().find(|action| action.id == id).unwrap();
                 assert_eq!(action.kind, OperationKind::Effect, "{id}");
                 assert!(!action.contract.reversible, "{id}");
                 if id != "cancel-export" {
@@ -6334,12 +6220,6 @@ mod tests {
                     assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
                 }
             }
-            let cancel = root
-                .actions
-                .iter()
-                .find(|a| a.id == "cancel-export")
-                .unwrap();
-            assert!(!cancel.contract.availability.is_available());
         }
         // Case `concurrent_effect_actions_replay_in_either_order_with_one_stable_stack`.
         {

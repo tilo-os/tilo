@@ -14079,10 +14079,10 @@ impl Hit {
         match self {
             Self::Open => PhotosEffect::Import { path: None },
             Self::Library => PhotosEffect::ViewLibrary,
-            Self::RotateLeft => PhotosEffect::RotateLeft,
-            Self::RotateRight => PhotosEffect::RotateRight,
-            Self::CropToView => PhotosEffect::CropToView,
-            Self::Reset => PhotosEffect::ResetEdits,
+            Self::RotateLeft => PhotosEffect::RotateShownLeft,
+            Self::RotateRight => PhotosEffect::RotateShownRight,
+            Self::CropToView => PhotosEffect::CropShownToView,
+            Self::Reset => PhotosEffect::ResetShownEdits,
             Self::Copy => PhotosEffect::Copy,
             Self::Share => PhotosEffect::ShareShown,
             Self::Save => PhotosEffect::Save { path: None },
@@ -14207,10 +14207,10 @@ impl Control {
     fn of(effect: &PhotosEffect) -> Option<Self> {
         use PhotosEffect as E;
         Some(match effect.clone() {
-            E::RotateLeft => Self::Toolbar(Hit::RotateLeft),
-            E::RotateRight => Self::Toolbar(Hit::RotateRight),
-            E::CropToView => Self::Toolbar(Hit::CropToView),
-            E::ResetEdits => Self::Toolbar(Hit::Reset),
+            E::RotateShownLeft => Self::Toolbar(Hit::RotateLeft),
+            E::RotateShownRight => Self::Toolbar(Hit::RotateRight),
+            E::CropShownToView => Self::Toolbar(Hit::CropToView),
+            E::ResetShownEdits => Self::Toolbar(Hit::Reset),
             E::ShareShown => Self::Toolbar(Hit::Share),
             E::ToggleMoreMenu => Self::Toolbar(Hit::More),
             E::NewAlbum => Self::Album(AlbumEditorHit::New),

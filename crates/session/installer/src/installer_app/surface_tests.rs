@@ -217,7 +217,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         let (mut by_action, mut action_doc) = app(&backend);
         for app in [&mut by_row, &mut by_action] {
             app.step = Step::Disk;
-            app.erase_confirmation = "stale".into();
+            app.erase_confirmation.set("stale".into());
         }
         let _ = row_doc.put(&automerge::ROOT, disk_path(1).as_str(), true);
         by_row.sync(&mut row_doc, &automerge::ROOT);
@@ -229,7 +229,11 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         );
         assert_eq!(by_row.selected_disk, Some(1));
         assert_eq!(by_row.selected_disk, by_action.selected_disk);
-        assert_eq!(by_row.erase_confirmation, by_action.erase_confirmation);
+        assert_eq!(local_text(&by_row.erase_confirmation), "");
+        assert_eq!(
+            local_text(&by_row.erase_confirmation),
+            local_text(&by_action.erase_confirmation)
+        );
 
         // A control whose action is unavailable shows the published reason: the
         // same sentence an external caller receives.

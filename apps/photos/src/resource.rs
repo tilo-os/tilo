@@ -332,7 +332,7 @@ mod tests {
 
         // A toolbar control reaches the window through its effect, as every
         // other caller does.
-        app.effect(&PhotosEffect::RotateRight)
+        app.effect(&PhotosEffect::RotateShownRight)
             .expect("rotating the shown photograph is offered");
         app.harness().relayout();
         assert_eq!(
@@ -354,7 +354,7 @@ mod tests {
             .into_iter()
             .map(|spec| spec.id)
             .collect();
-        assert!(offered.iter().any(|id| id == "rotate-right"));
+        assert!(offered.iter().any(|id| id == "rotate-shown-right"));
     }
 
     /// The saved scenario `tilo-app test` drives runs against the framework

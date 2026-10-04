@@ -1,9 +1,10 @@
 //! `TubeApp` — the root widget.
 //!
 //! Tube renders a single in-memory [`TubeModel`]. The shared library in it
-//! (likes, queue, subscriptions, comment likes, settings) is what the
-//! resource was last presented; the catalogue, navigation, playback and
-//! notices are this window's own, and the watch history the person's.
+//! (likes, queue, subscriptions, comment likes) is what the resource was
+//! last presented; the catalogue, navigation, playback and notices are this
+//! window's own, and the watch history and playback preferences the
+//! person's.
 //! Navigation rebuilds the whole widget tree from the model in
 //! `build_layout` (the `RebuildHarness` pattern), so the screen functions in
 //! `screens.rs` can stay pure.
@@ -92,6 +93,9 @@ pub struct TubeApp {
     /// The person's watch history, a record in their own room, in a live
     /// window.
     history: Option<PersonRecord<WatchHistory>>,
+    /// The person's playback preferences, a personal setting, once the
+    /// framework attaches the surface; a bare widget keeps them in its model.
+    preferences: Option<ui::framework::Setting<crate::model::Settings>>,
     /// The history a window without the person's record edits instead: a
     /// capture's sample, or a bare widget's. Kept in memory only.
     local_history: Option<ui::tilo_resource::Replica<WatchHistory>>,
@@ -121,10 +125,9 @@ pub struct TubeApp {
     /// accessibility and keyboard shortcuts) without creating an Automerge
     /// object that another collaborator could overwrite.
     search_query: ui::LocalState<String>,
-    /// Process-local text for the transient Ctrl+K overlay. This intentionally
-    /// survives shell rebuilds in this app instance but is never persisted or
-    /// sent to another device.
-    palette_query: ui::LocalState<String>,
+    /// Latched by the compact search button; the host drains it through
+    /// [`Widget::take_search_request`] and opens its search palette.
+    search_requested: bool,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -240,6 +243,7 @@ impl TubeApp {
             model: crate::sample::model(),
             dispatcher: None,
             history: None,
+            preferences: None,
             local_history: None,
             bus: action::new_bus(),
             worker: None,
@@ -254,7 +258,7 @@ impl TubeApp {
             rect: Rect::ZERO,
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
-            palette_query: ui::LocalState::new(String::new()),
+            search_requested: false,
             sidebar_open: None,
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
@@ -287,8 +291,20 @@ impl TubeApp {
     ///
     /// Returns why the effect cannot run: a screen that does not exist, or
     /// device sync that refused the request.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one short arm per effect Tube answers; splitting them would only scatter the \
+                  vocabulary"
+    )]
     pub(crate) fn perform(&mut self, effect: TubeEffect) -> Result<(), String> {
         self.structure_dirty = true;
+        if let Some(settings) = effect.preferences(&self.model.settings) {
+            let settings = settings?;
+            if !self.change_preferences(|current| *current = settings) {
+                return Err("Your playback preferences could not be saved".into());
+            }
+            return Ok(());
+        }
         match effect {
             TubeEffect::ShowScreen { screen } => {
                 let route = TubeEffect::screen(&screen)
@@ -384,6 +400,10 @@ impl TubeApp {
                 #[cfg(not(feature = "grayjay-sync"))]
                 let _ = device;
             }
+            // Answered above, as preferences.
+            TubeEffect::SetPreference { .. }
+            | TubeEffect::SetPreferredQuality { .. }
+            | TubeEffect::SetSegmentHandling { .. } => {}
         }
         Ok(())
     }
@@ -469,9 +489,10 @@ impl TubeApp {
         true
     }
 
-    /// Bring in what an approved Grayjay device sent: its subscriptions and
-    /// settings as library edits through the same door as the visible
-    /// controls, its watch history into the person's own.
+    /// Bring in what an approved Grayjay device sent: its subscriptions as
+    /// library edits through the same door as the visible controls, its
+    /// watch history into the person's own, its settings into the person's
+    /// preferences.
     ///
     /// The transport carries a compact, bounded metadata package; every
     /// imported identifier is validated here first.
@@ -512,64 +533,24 @@ impl TubeApp {
             }
         }
 
-        if let Some(settings) = remote.settings {
-            use crate::action::SettingFlag;
-            let current = &self.model.settings;
-            for (setting, enabled, now) in [
-                (
-                    SettingFlag::SponsorBlock,
-                    settings.sponsorblock_enabled,
-                    current.sponsorblock_enabled,
-                ),
-                (
-                    SettingFlag::DeArrow,
-                    settings.dearrow_enabled,
-                    current.dearrow_enabled,
-                ),
-                (
-                    SettingFlag::DeArrowTitles,
-                    settings.dearrow_titles,
-                    current.dearrow_titles,
-                ),
-                (
-                    SettingFlag::DeArrowThumbnails,
-                    settings.dearrow_thumbnails,
-                    current.dearrow_thumbnails,
-                ),
-                (
-                    SettingFlag::ReturnDislike,
-                    settings.return_dislike_enabled,
-                    current.return_dislike_enabled,
-                ),
-                (SettingFlag::Autoplay, settings.autoplay, current.autoplay),
-                (
-                    SettingFlag::ShowComments,
-                    settings.show_comments,
-                    current.show_comments,
-                ),
-            ] {
-                if enabled != now {
-                    edits.push(TubeAction::SetSetting { setting, enabled });
-                }
+        let preferences_changed = remote.settings.is_some_and(|remote| {
+            let mut settings = self.model.settings.clone();
+            for flag in crate::action::SettingFlag::ALL {
+                flag.set(&mut settings, flag.get(&remote));
             }
-            if QUALITIES.contains(&settings.preferred_quality.as_str())
-                && current.preferred_quality != settings.preferred_quality
-            {
-                edits.push(TubeAction::SetPreferredQuality {
-                    quality: settings.preferred_quality,
-                });
+            if QUALITIES.contains(&remote.preferred_quality.as_str()) {
+                settings.preferred_quality = remote.preferred_quality;
             }
             for category in crate::model::Category::ALL {
-                if let Some(mode) = settings.categories.get(category.api_key())
-                    && current.categories.get(category.api_key()) != Some(mode)
-                {
-                    edits.push(TubeAction::SetSponsorCategory {
-                        category,
-                        mode: *mode,
-                    });
+                if let Some(mode) = remote.categories.get(category.api_key()) {
+                    settings
+                        .categories
+                        .insert(category.api_key().to_owned(), *mode);
                 }
             }
-        }
+            settings != self.model.settings
+                && self.change_preferences(|current| *current = settings)
+        });
 
         let watched_at_ms = history_now_ms();
         let pulled: Vec<(String, u64)> = remote
@@ -600,7 +581,7 @@ impl TubeApp {
                 }
             });
         }
-        library_changed || history_changed
+        library_changed || history_changed || preferences_changed
     }
 
     /// Edits bound to the open watch page: like it, queue it, subscribe to
@@ -689,10 +670,6 @@ impl TubeApp {
     #[must_use]
     pub fn online(mut self) -> Self {
         self.online = true;
-        #[cfg(feature = "grayjay-sync")]
-        {
-            self.device_sync = crate::sync::DeviceSync::production("Tilo Tube");
-        }
         // The online app starts with an empty catalogue and populates it from
         // live results. The bundled `sample` catalogue is reserved for the
         // hermetic `--shots`/demo path; Home shows a loading skeleton first.
@@ -719,13 +696,12 @@ impl TubeApp {
     #[must_use]
     pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
         self.search_query.set(model.search_query.clone());
-        self.palette_query.set(model.palette_query.clone());
         self.model = model;
         self
     }
 
     /// Show the shared library the resource holds: likes, the queue,
-    /// subscriptions, comment likes and settings. Every presentation is the
+    /// subscriptions and comment likes. Every presentation is the
     /// whole library, so an emptied one (everything unliked, the queue
     /// cleared) shows empty.
     pub(crate) fn present_library(&mut self, state: &TubeShared) {
@@ -733,8 +709,60 @@ impl TubeApp {
         self.model.queue = TubeShared::on(&state.queue);
         self.model.subscriptions = TubeShared::on(&state.subscriptions);
         self.model.comment_likes.clone_from(&state.comment_likes);
-        self.model.settings.clone_from(&state.settings);
         self.structure_dirty = true;
+    }
+
+    /// Start Grayjay device sync over the app's secret store, which holds
+    /// this device's key seed, and the devices paired on this device.
+    #[cfg(feature = "grayjay-sync")]
+    pub(crate) fn start_device_sync(
+        &mut self,
+        secrets: &ui::secrets::SecretStore,
+        paired: ui::storage::Settings<crate::sync::PairedDevices>,
+    ) {
+        self.device_sync = crate::sync::DeviceSync::production("Tilo Tube", secrets, paired);
+    }
+
+    /// Follow the person's playback preferences: show them, keep what this
+    /// window changes, and take what another window or device changed.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        setting: ui::framework::Setting<crate::model::Settings>,
+    ) {
+        self.model.settings = setting.get();
+        self.preferences = Some(setting);
+        self.structure_dirty = true;
+    }
+
+    /// Show preferences another window or device stored.
+    fn refresh_preferences(&mut self) -> bool {
+        let Some(setting) = &self.preferences else {
+            return false;
+        };
+        let stored = setting.get();
+        if stored == self.model.settings {
+            return false;
+        }
+        self.model.settings = stored;
+        true
+    }
+
+    /// Change the person's preferences and keep them; false (and says so)
+    /// when they cannot be stored.
+    fn change_preferences(&mut self, change: impl FnOnce(&mut crate::model::Settings)) -> bool {
+        let mut settings = self.model.settings.clone();
+        change(&mut settings);
+        if let Some(setting) = &self.preferences
+            && let Err(error) = setting.set(settings.clone())
+        {
+            tracing::warn!(%error, "could not keep the Tube preferences");
+            self.model
+                .push_notice("Your playback preferences could not be saved.");
+            return false;
+        }
+        self.model.settings = settings;
+        self.structure_dirty = true;
+        true
     }
 
     /// Attach the framework's door for the resource and, in a live window,
@@ -796,7 +824,6 @@ impl TubeApp {
             "loading" => self.show_loading_home(),
             #[cfg(feature = "grayjay-sync")]
             "device-sync" => self.show_device_sync_sample(),
-            "palette" => self.open_palette_with("rust"),
             "play-demo" => self.play_demo(),
             "narrow" => self.force_sidebar_open_shot = true,
             "trending" => self.show_route(Route::Trending),
@@ -872,22 +899,6 @@ impl TubeApp {
         self.scroll_cells
             .borrow_mut()
             .insert("settings".into(), Rc::new(Cell::new((0.0, y))));
-    }
-
-    /// Test/shots hook: start with the Ctrl+K command palette already open, and
-    /// optionally pre-seed its query. Used by headless click-tests (which can't
-    /// synthesise the Ctrl+K key event — winit's `KeyEvent` is not constructible
-    /// outside the crate) and by the palette `--shots`.
-    #[must_use]
-    pub fn with_palette_open_for_test(mut self, query: &str) -> Self {
-        self.open_palette_with(query);
-        self
-    }
-
-    fn open_palette_with(&mut self, query: &str) {
-        self.model.palette_open = true;
-        self.model.palette_query = query.to_string();
-        self.palette_query.set(query.to_string());
     }
 
     /// Test/shots hook: open a watch page with the shared [`VideoPlayer`] already
@@ -1038,11 +1049,6 @@ impl TubeApp {
         self.nav.can_go_back()
     }
 
-    /// Test accessor: whether the command palette is open.
-    pub fn palette_open_for_test(&self) -> bool {
-        self.model.palette_open
-    }
-
     /// Test accessor: read-only view of the model, so integration tests can
     /// assert on real state (likes, notices, settings, playhead) after driving
     /// the widget tree.
@@ -1164,7 +1170,7 @@ impl TubeApp {
         };
         split.snap_open(open);
 
-        let mut root = Flex::col()
+        let root = Flex::col()
             .fill_w()
             .fill_h()
             .push(screens::top_bar(
@@ -1176,11 +1182,6 @@ impl TubeApp {
                 self.text_scale >= 1.5 && self.rect.width() <= 480.0,
             ))
             .push(split);
-
-        // The Ctrl+K command palette overlays the whole shell when open.
-        if let Some(palette) = screens::command_palette(m, theme, bus, &self.palette_query) {
-            root = root.push(palette.overlay());
-        }
 
         Box::new(root)
     }
@@ -1408,16 +1409,14 @@ impl TubeApp {
     /// resolution choice round-trips into the model's preferred quality; other
     /// settings are ignored for now. This is the production drain path (called
     /// from `sync`), factored out so it is directly testable.
-    fn apply_player_setting_event(&self, ev: ui::widget::video_player::PlayerSettingEvent) {
+    fn apply_player_setting_event(&mut self, ev: ui::widget::video_player::PlayerSettingEvent) {
         use ui::widget::video_player::PlayerSettingEvent as E;
         if let E::Chose { id, index } = ev
             && id == "resolution"
             && let Some(q) = QUALITIES.get(index)
             && self.model.settings.preferred_quality != *q
         {
-            self.edit(&TubeAction::SetPreferredQuality {
-                quality: (*q).to_owned(),
-            });
+            self.change_preferences(|settings| (*q).clone_into(&mut settings.preferred_quality));
         }
     }
 
@@ -1550,7 +1549,7 @@ impl TubeApp {
 
     /// Open a video's watch page: record history, route to it, reset the
     /// playhead and start playing, and kick off metadata/branding fetches.
-    /// Shared by the card/palette open paths and by autoplay-next so they stay
+    /// Shared by the card and search-result open paths and by autoplay-next so they stay
     /// in lockstep.
     fn open_video(&mut self, id: String) {
         let watched_at_ms = history_now_ms();
@@ -1708,28 +1707,15 @@ impl TubeApp {
                     let _ = self.perform(TubeEffect::Share { video: id });
                 }
             }
-            Action::OpenPalette => {
-                self.model.palette_open = true;
-            }
-            Action::ClosePalette => {
-                self.model.palette_open = false;
-            }
-            Action::ActivateHit(link) => {
-                use crate::search_type::SearchHit;
-                if let Some(id) = SearchHit::parse_watch_link(&link) {
-                    self.open_video(id);
-                } else if let Some(id) = SearchHit::parse_channel_link(&link) {
-                    self.navigate_to(Route::Channel(id.clone()));
-                    self.request_live(Request::Channel(id));
-                }
-                self.model.palette_open = false;
-                self.dismiss_overlay_rail();
+            Action::OpenSearch => {
+                self.search_requested = true;
+                return false;
             }
             Action::Edit(edit) => {
                 self.edit(&edit);
                 return false;
             }
-            Action::Confirm(effect) => {
+            Action::Effect(effect) => {
                 self.invoke(&effect);
                 return false;
             }
@@ -2117,7 +2103,7 @@ impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        if self.follow_history() {
+        if self.follow_history() | self.refresh_preferences() {
             self.structure_dirty = true;
         }
         #[cfg(feature = "grayjay-sync")]
@@ -2148,16 +2134,6 @@ impl Widget for TubeApp {
         // A persisted/boot route that is already a watch page starts playing on
         // the first live sync (guarded so it fires once).
         self.ensure_playback();
-        // Reflect the process-local palette query into the rendering model so
-        // the overlay filters while typing. This is intentionally not a CRDT
-        // read: a collaborator's document cannot open or rewrite local UI.
-        if self.model.palette_open {
-            let live = self.palette_query.get();
-            if live != self.model.palette_query {
-                self.model.palette_query = live;
-                self.structure_dirty = true;
-            }
-        }
         if let Some(c) = &mut self.root_child {
             c.sync(state, path);
         }
@@ -2319,32 +2295,6 @@ impl Widget for TubeApp {
                   branch is a short, independent dispatch to an already-extracted helper"
     )]
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        // Ctrl+K toggles the global command palette, regardless of focus. This
-        // is intercepted before children so a focused text field can't swallow
-        // it. `Ctrl+K` opens; a second `Ctrl+K` (or Esc, below) closes.
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(c),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-            && ctx.modifiers.state().control_key()
-            && c.eq_ignore_ascii_case("k")
-        {
-            action::push(
-                &self.bus,
-                if self.model.palette_open {
-                    Action::ClosePalette
-                } else {
-                    Action::OpenPalette
-                },
-            );
-            *ctx.handled = true;
-        }
-
         // Enter submits a search regardless of which field has focus.
         if let WindowEvent::KeyboardInput {
             event:
@@ -2362,16 +2312,15 @@ impl Widget for TubeApp {
         // Back-navigation via the keyboard: Alt+Left / the BrowserBack key pop the
         // nav stack (the Back button, Escape below and the edge-swipe do too).
         // Only when there is history and no overlay owns the key.
-        if !self.model.palette_open
-            && let WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
         {
             let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
                 || (ctx.modifiers.state().alt_key()
@@ -2431,12 +2380,8 @@ impl Widget for TubeApp {
             ..
         } = event
         {
-            // Esc closes the command palette first (it's the topmost overlay),
-            // then an open overlay flap, then finally acts as Back.
-            if self.model.palette_open {
-                action::push(&self.bus, Action::ClosePalette);
-                *ctx.handled = true;
-            } else if self.nav_is_overlay() && self.sidebar_currently_open() {
+            // Esc closes an open overlay flap first, then acts as Back.
+            if self.nav_is_overlay() && self.sidebar_currently_open() {
                 self.sidebar_open = Some(false);
             } else if self.nav.can_go_back() {
                 action::push(&self.bus, Action::Back);
@@ -2599,6 +2544,14 @@ impl Widget for TubeApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn take_search_request(&mut self) -> bool {
+        std::mem::take(&mut self.search_requested)
+            || self
+                .root_child
+                .as_mut()
+                .is_some_and(|child| child.take_search_request())
     }
 }
 
@@ -3013,23 +2966,23 @@ mod tests {
     }
 
     #[test]
-    fn settings_and_queries_keep_shared_and_local_state_apart() {
-        // Case `collaborative_settings_reconcile_without_serializing_device_ui_state`.
+    fn library_and_queries_keep_shared_and_local_state_apart() {
+        // Case `library_edits_reconcile_without_serializing_device_ui_state`.
         {
             let (mut app, mut doc) = fresh();
             app.model.route = Route::Watch("vid_donut".into());
             app.model.playhead = 42.0;
             tilo_actions::Action::apply(
-                &crate::actions::TubeAction::SetSetting {
-                    setting: crate::action::SettingFlag::DeArrow,
-                    enabled: false,
+                &crate::actions::TubeAction::SetVideoLiked {
+                    video_id: "vid_donut".into(),
+                    liked: true,
                 },
                 &mut doc,
             )
-            .expect("structured setting action applies");
+            .expect("structured library action applies");
             app.present_library(&crate::resource::Tube::read(&doc).unwrap());
             Widget::sync(&mut app, &mut doc, &automerge::ROOT);
-            assert!(!app.model.settings.dearrow_enabled);
+            assert!(app.model.liked.iter().any(|id| id == "vid_donut"));
             assert!(
                 doc.get(&automerge::ROOT, "tube_state")
                     .expect("document read")
@@ -3037,24 +2990,16 @@ mod tests {
                 "route, playback and fetched catalogue are never mirrored into collaboration"
             );
         }
-        // Case `search_and_palette_queries_stay_local_to_each_tube_instance`.
+        // Case `search_query_stays_local_to_each_tube_instance`.
         {
             use automerge::transaction::Transactable;
 
             let (mut first, mut doc) = fresh();
             first.search_query.set("rust async".into());
-            first.palette_query.set("compositor".into());
-            first.model.palette_open = true;
             Widget::sync(&mut first, &mut doc, &automerge::ROOT);
 
-            assert_eq!(first.model.palette_query, "compositor");
             assert!(
                 doc.get(&automerge::ROOT, "search_query")
-                    .expect("document read")
-                    .is_none()
-            );
-            assert!(
-                doc.get(&automerge::ROOT, "palette_query")
                     .expect("document read")
                     .is_none()
             );
@@ -3062,25 +3007,17 @@ mod tests {
             let mut second = TubeApp::new();
             Widget::sync(&mut second, &mut doc, &automerge::ROOT);
             assert!(second.search_query.get().is_empty());
-            assert!(second.palette_query.get().is_empty());
-            assert!(second.model.palette_query.is_empty());
             assert_eq!(first.search_query.get(), "rust async");
-            assert_eq!(first.palette_query.get(), "compositor");
 
-            // Legacy documents may still contain the old keys. A new app must not
-            // adopt either value merely because a collaborator's older client
-            // emitted it.
+            // A document holding a search key must not hand its value to a new
+            // app merely because a collaborator's client emitted it.
             let mut legacy_doc = AutoCommit::new();
             legacy_doc
                 .put(&automerge::ROOT, "search_query", "remote query")
                 .expect("legacy search seed");
-            legacy_doc
-                .put(&automerge::ROOT, "palette_query", "remote palette")
-                .expect("legacy palette seed");
             let mut third = TubeApp::new();
             Widget::sync(&mut third, &mut legacy_doc, &automerge::ROOT);
             assert!(third.search_query.get().is_empty());
-            assert!(third.palette_query.get().is_empty());
         }
     }
 

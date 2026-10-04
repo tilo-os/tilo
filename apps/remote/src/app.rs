@@ -726,6 +726,8 @@ pub struct RemoteApp {
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Remote>>,
     /// This device's store for the connections' passwords and passphrases.
     secrets: Option<ui::secrets::SecretStore>,
+    /// This device's SSH host-key trust, in the app's device-local settings.
+    known_hosts: crate::ssh::KnownHostStore,
     /// Built for a screenshot: no transport starts.
     capture: bool,
     /// The time "last used" is read against in a screenshot.
@@ -1015,6 +1017,7 @@ impl RemoteApp {
             dirty: true,
             dispatch: None,
             secrets: None,
+            known_hosts: crate::ssh::KnownHostStore::of_session(),
             capture: false,
             now_override: None,
             pending_resource_operation: None,
@@ -1423,17 +1426,8 @@ impl RemoteApp {
                     );
                     return;
                 }
-                let path = match crate::ssh::default_known_hosts_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.notice = Some(format!(
-                            "Could not use private SSH host-key storage: {error}"
-                        ));
-                        return;
-                    }
-                };
                 match crate::ssh::trust_host_key(
-                    &path,
+                    &self.known_hosts,
                     &connection.host,
                     connection.port,
                     &observed,
@@ -1452,16 +1446,11 @@ impl RemoteApp {
                     self.notice = Some("The SSH host key is no longer the changed key you approved for removal. Reconnect to review it again.".into());
                     return;
                 }
-                let path = match crate::ssh::default_known_hosts_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.notice = Some(format!(
-                            "Could not use private SSH host-key storage: {error}"
-                        ));
-                        return;
-                    }
-                };
-                match crate::ssh::forget_host_key(&path, &connection.host, connection.port) {
+                match crate::ssh::forget_host_key(
+                    &self.known_hosts,
+                    &connection.host,
+                    connection.port,
+                ) {
                     Ok(true) => {
                         self.notice = Some("Forgot the local SSH host-key pin. Reconnect to review the next key before trusting it.".into());
                         self.disconnect_session();
@@ -1581,14 +1570,6 @@ impl RemoteApp {
     fn start_live(&mut self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
-                let known_hosts_path = match crate::ssh::default_known_hosts_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        return LiveSession::Error(format!(
-                            "SSH host-key trust is unavailable: {error}"
-                        ));
-                    }
-                };
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
                 let secret = self.saved_secret(secret_purpose(c.kind, c.auth), c.id);
                 let auth = match crate::ssh::resolve_auth(
@@ -1611,7 +1592,7 @@ impl RemoteApp {
                     auth,
                     cols: 80,
                     rows: 24,
-                    known_hosts_path,
+                    known_hosts: self.known_hosts.clone(),
                 }) {
                     Ok(s) => LiveSession::Ssh(Box::new(s)),
                     Err(e) => LiveSession::Error(e.to_string()),
@@ -2078,6 +2059,9 @@ impl RemoteApp {
     ) {
         self.dispatch = Some(cx.dispatcher());
         self.secrets = Some(cx.secrets());
+        self.known_hosts = crate::ssh::KnownHostStore::in_settings(
+            cx.storage().settings::<crate::ssh::KnownHostsSetting>(),
+        );
         self.capture = cx.mode() == ui::framework::RunMode::Capture;
         if let Some(sample) = cx.fixture::<Sample>() {
             self.workspace.presence.clone_from(&sample.presence);
@@ -3610,10 +3594,13 @@ impl RemoteApp {
                 "the observed SSH host key is stale; reconnect to inspect the current key".into(),
             );
         }
-        let path = crate::ssh::default_known_hosts_path()
-            .map_err(|error| format!("private SSH host-key storage is unavailable: {error}"))?;
-        crate::ssh::trust_host_key(&path, &connection.host, connection.port, observed)
-            .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+        crate::ssh::trust_host_key(
+            &self.known_hosts,
+            &connection.host,
+            connection.port,
+            observed,
+        )
+        .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
         self.open_session(connection_id);
         Ok(())
     }
@@ -3630,9 +3617,7 @@ impl RemoteApp {
         ) {
             return Err("only the currently observed changed SSH host key can be forgotten".into());
         }
-        let path = crate::ssh::default_known_hosts_path()
-            .map_err(|error| format!("private SSH host-key storage is unavailable: {error}"))?;
-        crate::ssh::forget_host_key(&path, &connection.host, connection.port)
+        crate::ssh::forget_host_key(&self.known_hosts, &connection.host, connection.port)
             .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
         self.disconnect_session();
         Ok(())

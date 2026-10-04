@@ -537,6 +537,9 @@ pub struct HostServices {
     /// and the shared sections (`settings_store::app_scope`). Without it
     /// apps have no settings beyond their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
+    /// Every app's live activity, as the host presents it. Without it no
+    /// app shows anything outside its windows.
+    pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     /// What each application declared it may do on the action door under

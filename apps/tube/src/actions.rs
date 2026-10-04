@@ -1,7 +1,7 @@
 //! Tube's document actions, its effects, and the library it publishes.
 //!
 //! [`TubeAction`] is every change to the shared library: likes, the watch
-//! queue, subscriptions, comment likes and replies, and playback settings.
+//! queue, subscriptions, and comment likes and replies.
 //! It writes a structured sub-tree under the document's `"tube"` map, keyed
 //! by stable ids so concurrent edits merge and replays converge:
 //!
@@ -11,13 +11,12 @@
 //! ├── "queue"           (Map)  video_id   -> bool (membership/tombstone)
 //! ├── "subscriptions"   (Map)  channel_id -> bool
 //! ├── "comment_likes"   (Map)  comment_id -> bool (membership/tombstone)
-//! ├── "comment_replies" (Map)  comment_id -> (Map reply_id -> {text, active})
-//! └── "settings"        (Map)  playback preferences
+//! └── "comment_replies" (Map)  comment_id -> (Map reply_id -> {text, active})
 //! ```
 //!
 //! [`TubeEffect`] is everything Tube does that changes no document:
-//! navigating, playing, sharing, the person's own watch history and Grayjay
-//! device sync. Fetched catalogue rows and paired devices are the surface's
+//! navigating, playing, sharing, the person's own watch history and playback
+//! preferences, and Grayjay device sync. Fetched catalogue rows and paired devices are the surface's
 //! live rows (`crate::rows`); they offer effects, and the edits on them are
 //! the declarations here, named by the row's id.
 
@@ -31,7 +30,7 @@ use tilo_actions::{
 use ui::tilo_resource::{self, ActionDecl, Effect};
 
 use crate::action::SettingFlag;
-use crate::model::{Category, Route, SkipMode};
+use crate::model::{Category, Route, Settings, SkipMode};
 use crate::resource::{Tube, TubeShared};
 
 const MAX_RESOURCE_ENTITIES: usize = 100;
@@ -134,6 +133,60 @@ pub enum TubeEffect {
         #[param("The device's id")]
         device: String,
     },
+    /// Set a playback preference.
+    ///
+    /// Your own choice, which follows you to your other devices and never
+    /// reaches collaborators.
+    #[effect(permission = "read")]
+    SetPreference {
+        #[param(
+            "The preference",
+            choices = [
+                "autoplay",
+                "comments",
+                "sponsorblock",
+                "dearrow",
+                "dearrow-titles",
+                "dearrow-thumbnails",
+                "dislikes"
+            ]
+        )]
+        preference: String,
+        #[param("true to turn it on, false to turn it off")]
+        enabled: bool,
+    },
+    /// Set preferred quality.
+    ///
+    /// Your own choice, which follows you to your other devices.
+    #[effect(permission = "read")]
+    SetPreferredQuality {
+        #[param("The quality", choices = ["1080p", "720p", "480p", "auto"])]
+        quality: String,
+    },
+    /// Set segment handling.
+    ///
+    /// How playback treats one category of marked segments: skip it, show it
+    /// with a skip button, or ignore it. Your own choice, which follows you to
+    /// your other devices.
+    #[effect(permission = "read")]
+    SetSegmentHandling {
+        #[param(
+            "The SponsorBlock category",
+            choices = [
+                "sponsor",
+                "selfpromo",
+                "interaction",
+                "intro",
+                "outro",
+                "preview",
+                "music_offtopic",
+                "filler"
+            ]
+        )]
+        category: String,
+        #[param("How it is handled", choices = ["skip", "show", "disabled"])]
+        mode: String,
+    },
 }
 
 impl TubeEffect {
@@ -148,6 +201,44 @@ impl TubeEffect {
             "settings" => Route::Settings,
             _ => return None,
         })
+    }
+
+    /// The preferences `settings` becomes under this effect, or why it
+    /// cannot; `None` for an effect that sets no preference.
+    pub(crate) fn preferences(&self, settings: &Settings) -> Option<Result<Settings, String>> {
+        let mut changed = settings.clone();
+        match self {
+            TubeEffect::SetPreference {
+                preference,
+                enabled,
+            } => {
+                let Some(flag) = SettingFlag::from_id(preference) else {
+                    return Some(Err(format!("there is no preference `{preference}`")));
+                };
+                flag.set(&mut changed, *enabled);
+            }
+            TubeEffect::SetPreferredQuality { quality } => {
+                if !QUALITY_OPTIONS.contains(&quality.as_str()) {
+                    return Some(Err(format!("unsupported preferred quality: {quality}")));
+                }
+                changed.preferred_quality.clone_from(quality);
+            }
+            TubeEffect::SetSegmentHandling { category, mode } => {
+                let Some(category) = Category::from_api_key(category) else {
+                    return Some(Err(format!(
+                        "there is no SponsorBlock category `{category}`"
+                    )));
+                };
+                let Some(mode) = SkipMode::from_key(mode) else {
+                    return Some(Err(format!("there is no segment handling `{mode}`")));
+                };
+                changed
+                    .categories
+                    .insert(category.api_key().to_owned(), mode);
+            }
+            _ => return None,
+        }
+        Some(Ok(changed))
     }
 
     /// The label a control invoking this effect is announced with.
@@ -209,21 +300,6 @@ pub enum TubeAction {
         channel_id: String,
         subscribed: bool,
     },
-    SetSetting {
-        setting: SettingFlag,
-        enabled: bool,
-    },
-    /// One of [`QUALITY_OPTIONS`].
-    SetPreferredQuality {
-        quality: String,
-    },
-    /// Set one `SponsorBlock` category's handling mode. The target mode is
-    /// carried rather than inferred from the document so the visible control,
-    /// a replay and an agent all make the same transition.
-    SetSponsorCategory {
-        category: Category,
-        mode: SkipMode,
-    },
     /// `liked: false` is kept as a tombstone rather than deleting an address
     /// a concurrent client may still be updating.
     SetCommentLiked {
@@ -254,37 +330,8 @@ fn child_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionEr
     }
 }
 
-/// The document key of a boolean setting.
-pub(crate) fn setting_key(setting: SettingFlag) -> &'static str {
-    match setting {
-        SettingFlag::SponsorBlock => "sponsorblock",
-        SettingFlag::DeArrow => "dearrow",
-        SettingFlag::DeArrowTitles => "dearrow_titles",
-        SettingFlag::DeArrowThumbnails => "dearrow_thumbnails",
-        SettingFlag::ReturnDislike => "return_dislike",
-        SettingFlag::Autoplay => "autoplay",
-        SettingFlag::ShowComments => "show_comments",
-    }
-}
-
-/// The document form of a skip mode.
-pub(crate) fn skip_mode_key(mode: SkipMode) -> &'static str {
-    match mode {
-        SkipMode::Skip => "skip",
-        SkipMode::Show => "show",
-        SkipMode::Disabled => "disabled",
-    }
-}
-
 impl Action for TubeAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-        if let TubeAction::SetPreferredQuality { quality } = self
-            && !QUALITY_OPTIONS.contains(&quality.as_str())
-        {
-            return Err(ActionError::Refused(format!(
-                "unsupported preferred quality: {quality}"
-            )));
-        }
         let tube = tube_map(doc)?;
         match self {
             TubeAction::SetVideoLiked { video_id, liked } => {
@@ -304,31 +351,6 @@ impl Action for TubeAction {
                     &subscriptions,
                     channel_id.as_str(),
                     ScalarValue::Boolean(*subscribed),
-                )?;
-            }
-            TubeAction::SetSetting { setting, enabled } => {
-                let settings = child_map(doc, &tube, "settings")?;
-                doc.put(
-                    &settings,
-                    setting_key(*setting),
-                    ScalarValue::Boolean(*enabled),
-                )?;
-            }
-            TubeAction::SetPreferredQuality { quality } => {
-                let settings = child_map(doc, &tube, "settings")?;
-                doc.put(
-                    &settings,
-                    "preferred_quality",
-                    ScalarValue::Str(quality.as_str().into()),
-                )?;
-            }
-            TubeAction::SetSponsorCategory { category, mode } => {
-                let settings = child_map(doc, &tube, "settings")?;
-                let categories = child_map(doc, &settings, "sponsor_categories")?;
-                doc.put(
-                    &categories,
-                    category.api_key(),
-                    ScalarValue::Str(skip_mode_key(*mode).into()),
                 )?;
             }
             TubeAction::SetCommentLiked { comment_id, liked } => {
@@ -363,10 +385,7 @@ impl Action for TubeAction {
             }
             TubeAction::SetVideoLiked { .. }
             | TubeAction::SetCommentLiked { .. }
-            | TubeAction::SetSubscription { .. }
-            | TubeAction::SetSetting { .. }
-            | TubeAction::SetPreferredQuality { .. }
-            | TubeAction::SetSponsorCategory { .. } => ExecutionLocus::ClientLocal,
+            | TubeAction::SetSubscription { .. } => ExecutionLocus::ClientLocal,
         }
     }
 }
@@ -483,19 +502,6 @@ pub(crate) fn declarations() -> Vec<ActionDecl<Tube>> {
             },
         )
         .describe("Reply to a comment, visible to everyone sharing this library."),
-        ActionDecl::new(
-            Tube::SET_PREFERRED_QUALITY.id,
-            "Set preferred quality",
-            vec![
-                ActionParam::required("quality", ParamType::Text, "1080p | 720p | 480p | auto")
-                    .with_choices(QUALITY_OPTIONS),
-            ],
-            |args, _| {
-                Ok(TubeAction::SetPreferredQuality {
-                    quality: text_arg(args, "quality")?,
-                })
-            },
-        ),
     ]
 }
 
@@ -535,8 +541,7 @@ fn with_specs(resource: Resource, specs: impl IntoIterator<Item = Option<ActionS
 }
 
 /// The library the document holds, beneath the resource: the creators the
-/// library subscribes to, the shared queue, replies to comments, and the
-/// playback settings.
+/// library subscribes to, the shared queue and replies to comments.
 pub(crate) fn document_children(state: &TubeShared) -> Vec<Resource> {
     let mut subscriptions = Resource::new("tube.subscriptions", "tube.collection", "Subscriptions");
     for channel_id in on(&state.subscriptions).take(MAX_RESOURCE_ENTITIES) {
@@ -625,11 +630,12 @@ pub(crate) fn document_children(state: &TubeShared) -> Vec<Resource> {
             .with_child(subscriptions)
             .with_child(queue)
             .with_child(replies),
-        settings_resource(&state.settings),
     ]
 }
 
-fn next_quality(current: &str) -> String {
+/// The quality after `current` in [`QUALITY_OPTIONS`], for a control that
+/// cycles through them.
+pub(crate) fn next_quality(current: &str) -> String {
     let index = QUALITY_OPTIONS
         .iter()
         .position(|quality| *quality == current)
@@ -639,101 +645,4 @@ fn next_quality(current: &str) -> String {
         .copied()
         .unwrap_or("1080p")
         .to_string()
-}
-
-fn settings_resource(settings: &crate::model::Settings) -> Resource {
-    let mut resource = Resource::new("tube.settings", "tube.settings", "Playback settings");
-    for (id, label, setting, enabled) in [
-        (
-            "autoplay",
-            "Toggle autoplay",
-            SettingFlag::Autoplay,
-            settings.autoplay,
-        ),
-        (
-            "comments",
-            "Toggle comments",
-            SettingFlag::ShowComments,
-            settings.show_comments,
-        ),
-        (
-            "sponsorblock",
-            "Toggle SponsorBlock",
-            SettingFlag::SponsorBlock,
-            settings.sponsorblock_enabled,
-        ),
-        (
-            "dearrow",
-            "Toggle DeArrow",
-            SettingFlag::DeArrow,
-            settings.dearrow_enabled,
-        ),
-        (
-            "dearrow-titles",
-            "Toggle DeArrow titles",
-            SettingFlag::DeArrowTitles,
-            settings.dearrow_titles,
-        ),
-        (
-            "dearrow-thumbnails",
-            "Toggle DeArrow thumbnails",
-            SettingFlag::DeArrowThumbnails,
-            settings.dearrow_thumbnails,
-        ),
-        (
-            "dislikes",
-            "Toggle dislike counts",
-            SettingFlag::ReturnDislike,
-            settings.return_dislike_enabled,
-        ),
-    ] {
-        resource = with_specs(
-            resource,
-            [immediate_spec(
-                id,
-                label,
-                &TubeAction::SetSetting {
-                    setting,
-                    enabled: !enabled,
-                },
-            )],
-        );
-    }
-    resource = resource.with_child(with_specs(
-        Resource::new(
-            "tube.setting:preferred-quality",
-            "tube.setting",
-            format!("Preferred quality: {}", settings.preferred_quality),
-        ),
-        [immediate_spec(
-            "cycle",
-            "Cycle preferred quality",
-            &TubeAction::SetPreferredQuality {
-                quality: next_quality(&settings.preferred_quality),
-            },
-        )],
-    ));
-    for category in Category::ALL {
-        let stored = settings
-            .categories
-            .get(category.api_key())
-            .copied()
-            .unwrap_or(SkipMode::Skip);
-        resource = resource.with_child(with_specs(
-            Resource::new(
-                format!("tube.setting:sponsor-category:{}", category.api_key()),
-                "tube.setting",
-                format!("SponsorBlock {}: {}", category.label(), stored.label()),
-            ),
-            [immediate_spec(
-                "cycle",
-                &format!("Cycle {} handling", category.label()),
-                &TubeAction::SetSponsorCategory {
-                    category,
-                    mode: stored.next(),
-                },
-            )],
-        ));
-    }
-    resource
 }

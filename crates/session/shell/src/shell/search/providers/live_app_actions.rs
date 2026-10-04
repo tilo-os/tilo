@@ -398,6 +398,7 @@ impl LocalStart {
         self.host.invoke_job(
             &Caller::local_person(&self.actor).in_room(&self.room),
             InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: self.provider.clone(),
@@ -1513,6 +1514,7 @@ impl LiveAppActionsProvider {
                 let admission = host.invoke_job(
                     &Caller::local_person(&actor).in_room(&cluster_id),
                     InvokeRequest {
+                        on_behalf_of: None,
                         invocation: tilo_actions::InvocationId::new(),
                         target: RemoteActionTarget {
                             provider: peer_id.to_string(),

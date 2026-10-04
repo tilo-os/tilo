@@ -22,6 +22,9 @@ use crate::app::RemoteApp;
 use crate::doc::{CONNECTIONS, RemoteDoc};
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind};
 
+/// The app's id, which its settings are kept under.
+pub const REMOTE_APP_ID: &str = "so.tilo.remote";
+
 /// The remote connections list resource.
 pub struct Remote;
 
@@ -213,7 +216,7 @@ const SCENARIOS: &[&str] = &[
 
 impl ResourceApp for RemoteShell {
     type Resource = Remote;
-    const ID: &'static str = "so.tilo.remote";
+    const ID: &'static str = REMOTE_APP_ID;
     const TITLE: &'static str = "Remote Desktop";
     const ICON: Option<&'static str> = Some("remote");
 

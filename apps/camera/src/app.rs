@@ -32,7 +32,7 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect};
 use vello::peniko::Color;
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected};
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, Setting};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_render::TextRenderer;
@@ -51,8 +51,8 @@ use crate::doc;
 use crate::frame::{self, FrameBuf};
 use crate::library;
 use crate::model::{
-    Capture, CaptureKind, CaptureMode, CodeKind, Facing, PhotoFormat, Resolution, ScanEntry,
-    ScannedCode, Screen, Settings, Timer, classify,
+    CameraDevicePreferences, Capture, CaptureKind, CaptureMode, CapturePreferences, CodeKind,
+    Facing, PhotoFormat, Resolution, ScanEntry, ScannedCode, Screen, Settings, Timer, classify,
 };
 use crate::paint as p;
 use crate::resource::Camera;
@@ -384,11 +384,17 @@ pub struct CameraApp {
     )]
     initial_screen: Screen,
 
-    // CRDT-backed caches (refreshed every sync)
     screen: Screen,
     mode: CaptureMode,
     facing: Facing,
+    /// The capture preferences on screen: the person's and this device's.
     settings: Settings,
+    /// Where they are kept, in a live window.
+    preferences: Option<(
+        Setting<CapturePreferences>,
+        Setting<CameraDevicePreferences>,
+    )>,
+    /// The record's scan history, as last presented.
     scans: Vec<ScanEntry>,
 
     // One contextual recent-capture handoff. Camera never owns a media library.
@@ -551,6 +557,7 @@ impl CameraApp {
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             settings: Settings::default(),
+            preferences: None,
             scans: Vec::new(),
             captures: Vec::new(),
             return_to: Screen::Camera,
@@ -616,35 +623,13 @@ impl CameraApp {
     }
 
     fn media_handoff_resource(app_id: &str, label: &str) -> tilo_actions::Resource {
-        use tilo_actions::{
-            ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
-        };
+        use tilo_actions::Resource;
 
-        let launch_app_id = app_id.to_owned();
-        let spec = ActionSpec::typed_operation(
+        let spec = crate::actions::ApplicationLaunch::content_spec(
+            app_id,
             "open",
-            format!("Open {label}"),
-            format!("Open the latest capture in {label}"),
-            OperationKind::Effect,
-            crate::actions::APPLICATION_LAUNCH_TYPE,
-            vec![ActionParam::required(
-                "content_hash",
-                ParamType::Text,
-                "Verified portable BLAKE3 media hash",
-            )],
-            move |args| {
-                EncodedAction::encode_operation(
-                    crate::actions::APPLICATION_LAUNCH_TYPE,
-                    &serde_json::json!({
-                        "app_id": launch_app_id,
-                        "content_hash": args.text("content_hash").unwrap_or(""),
-                    }),
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: crate::actions::APPLICATION_LAUNCH_TYPE.into(),
-                    payload: Vec::new(),
-                })
-            },
+            &format!("Open {label}"),
+            &format!("Open the latest capture in {label}"),
         );
         Resource::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
     }
@@ -1338,11 +1323,6 @@ impl CameraApp {
         self.dispatcher = Some(dispatcher);
     }
 
-    /// Draw again: the record changed.
-    pub(crate) fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-
     /// Read the time from `now` (Unix seconds) instead of the machine's
     /// clock, as a screenshot does.
     pub(crate) fn set_clock(&mut self, now: i64) {
@@ -1475,8 +1455,8 @@ impl CameraApp {
             Action::Shutter => self.apply_shutter(doc, root),
             Action::OpenPhotos => self.open_photos(),
             Action::OpenRecentCapture => self.open_recent_capture(),
-            Action::SetMode(m) => self.apply_set_mode(m, doc, root),
-            Action::CycleFacing => self.apply_cycle_facing(doc, root),
+            Action::SetMode(m) => self.apply_set_mode(m),
+            Action::CycleFacing => self.apply_cycle_facing(),
             Action::DismissScan => self.scan_dismissed = true,
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
             Action::ImportScanImage => {
@@ -1509,7 +1489,7 @@ impl CameraApp {
             | Action::ToggleGeotag
             | Action::ToggleHdr
             | Action::CycleDefaultFacing) => {
-                self.apply_settings_toggle(&settings_action, doc, root);
+                self.apply_settings_toggle(&settings_action);
             }
         }
     }
@@ -2038,11 +2018,10 @@ impl CameraApp {
         }
     }
 
-    fn apply_set_mode(&mut self, m: CaptureMode, doc: &mut AutoCommit, _root: &ObjId) {
+    fn apply_set_mode(&mut self, m: CaptureMode) {
         // Switching mode mid-record would strand the clip; ignore.
         if !self.is_recording() && !self.is_counting_down() {
             self.mode = m;
-            self.perform_action(doc, &crate::actions::CameraAction::SetMode { mode: m });
             // Photo/Video also bring the viewfinder forward when chosen
             // from the scanner's shared switcher.
             if self.screen != Screen::Camera {
@@ -2051,15 +2030,16 @@ impl CameraApp {
         }
     }
 
-    fn apply_cycle_facing(&mut self, doc: &mut AutoCommit, _root: &ObjId) {
-        self.facing = self.facing.next();
-        self.perform_action(
-            doc,
-            &crate::actions::CameraAction::SetFacing {
-                facing: self.facing,
-            },
-        );
-        self.cam_view = None;
+    fn apply_cycle_facing(&mut self) {
+        self.use_lens(self.facing.next());
+    }
+
+    /// Look through `facing`.
+    fn use_lens(&mut self, facing: Facing) {
+        if facing != self.facing {
+            self.facing = facing;
+            self.cam_view = None;
+        }
     }
 
     fn apply_scan_action(&mut self, i: usize, doc: &mut AutoCommit, root: &ObjId) {
@@ -2078,64 +2058,108 @@ impl CameraApp {
         }
     }
 
-    fn apply_settings_toggle(&mut self, action: &Action, doc: &mut AutoCommit, root: &ObjId) {
-        let camera_action = match action {
+    fn apply_settings_toggle(&mut self, action: &Action) {
+        self.change_settings(|settings| match action {
             Action::CycleResolution => {
-                self.settings.resolution = cycle(&Resolution::ALL, self.settings.resolution);
-                crate::actions::CameraAction::SetResolution {
-                    resolution: self.settings.resolution,
-                }
+                settings.resolution = cycle(&Resolution::ALL, settings.resolution);
             }
             Action::CycleFormat => {
-                self.settings.photo_format = cycle(&PhotoFormat::ALL, self.settings.photo_format);
-                crate::actions::CameraAction::SetPhotoFormat {
-                    photo_format: self.settings.photo_format,
-                }
+                settings.photo_format = cycle(&PhotoFormat::ALL, settings.photo_format);
             }
-            Action::SetTimer(tm) => {
-                self.settings.timer = *tm;
-                crate::actions::CameraAction::SetTimer { timer: *tm }
-            }
-            Action::ToggleGrid => {
-                self.settings.grid = !self.settings.grid;
-                crate::actions::CameraAction::SetGrid {
-                    on: self.settings.grid,
-                }
-            }
-            Action::ToggleLevel => {
-                self.settings.level = !self.settings.level;
-                crate::actions::CameraAction::SetLevel {
-                    on: self.settings.level,
-                }
-            }
-            Action::ToggleMirror => {
-                self.settings.mirror_front = !self.settings.mirror_front;
-                crate::actions::CameraAction::SetMirrorFront {
-                    on: self.settings.mirror_front,
-                }
-            }
-            Action::ToggleGeotag => {
-                self.settings.geotag = !self.settings.geotag;
-                crate::actions::CameraAction::SetGeotag {
-                    on: self.settings.geotag,
-                }
-            }
-            Action::ToggleHdr => {
-                self.settings.hdr = !self.settings.hdr;
-                crate::actions::CameraAction::SetHdr {
-                    on: self.settings.hdr,
-                }
-            }
+            Action::SetTimer(tm) => settings.timer = *tm,
+            Action::ToggleGrid => settings.grid = !settings.grid,
+            Action::ToggleLevel => settings.level = !settings.level,
+            Action::ToggleMirror => settings.mirror_front = !settings.mirror_front,
+            Action::ToggleGeotag => settings.geotag = !settings.geotag,
+            Action::ToggleHdr => settings.hdr = !settings.hdr,
             Action::CycleDefaultFacing => {
-                self.settings.default_facing = self.settings.default_facing.next();
-                crate::actions::CameraAction::SetDefaultFacing {
-                    facing: self.settings.default_facing,
-                }
+                settings.default_facing = settings.default_facing.next();
             }
-            _ => return,
+            _ => {}
+        });
+    }
+
+    /// Change the capture preferences on screen and keep them: the person's
+    /// and this device's settings in a live window.
+    fn change_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+        change(&mut self.settings);
+        self.dirty = true;
+        let Some((person, device)) = &self.preferences else {
+            return;
         };
-        self.perform_action(doc, &camera_action);
-        self.settings = doc::read_settings(doc, root);
+        let kept = person
+            .set(self.settings.person())
+            .and_then(|()| device.set(self.settings.device()));
+        if let Err(error) = kept {
+            self.toast = Some(format!("Couldn't keep the setting: {error}"));
+        }
+    }
+
+    /// Follow the person's and this device's capture preferences, opening
+    /// on the default lens.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        person: Setting<CapturePreferences>,
+        device: Setting<CameraDevicePreferences>,
+    ) {
+        self.settings = Settings::from_parts(person.get(), device.get());
+        self.facing = self.settings.default_facing;
+        self.preferences = Some((person, device));
+    }
+
+    /// Show `person` and `device` preferences a capture stages.
+    pub(crate) fn stage_preferences(
+        &mut self,
+        person: CapturePreferences,
+        device: CameraDevicePreferences,
+    ) {
+        self.settings = Settings::from_parts(person, device);
+    }
+
+    /// Film or photograph, as a capture stages.
+    pub(crate) fn stage_mode(&mut self, mode: CaptureMode) {
+        self.mode = mode;
+    }
+
+    /// The capture mode on screen.
+    pub fn capture_mode(&self) -> CaptureMode {
+        self.mode
+    }
+
+    /// The capture preferences on screen.
+    pub fn capture_settings(&self) -> Settings {
+        self.settings
+    }
+
+    /// The record's scan history and recent capture, as presented.
+    pub(crate) fn present_record(&mut self, state: &crate::resource::CameraState) {
+        self.scans.clone_from(&state.scans);
+        // Camera retains exactly one collaborative handoff. Photos and Video
+        // Player own collection browsing, deletion, favorites, and metadata.
+        // The sample storage has no bytes for it and draws a procedural scene.
+        let scene = u8::from(matches!(self.storage, Storage::Sample));
+        let next = state.recent.clone().map(|shared| Capture {
+            id: shared.id,
+            kind: shared.kind,
+            ts: shared.ts,
+            w: shared.w,
+            h: shared.h,
+            dur_ms: shared.dur_ms,
+            label: shared.label,
+            facing: shared.facing,
+            scene,
+            path: None,
+            media_id: Some(shared.media_id),
+        });
+        let changed = self.captures.first().map(|capture| &capture.id)
+            != next.as_ref().map(|capture| &capture.id);
+        self.captures = next.into_iter().collect();
+        if changed {
+            self.thumb_pending.clear();
+            self.thumb_failed.clear();
+            self.thumbs.clear();
+        }
+        self.dirty = true;
     }
 
     /// Take a photo: write the current frame to disk (live) or append an
@@ -2209,6 +2233,38 @@ impl CameraApp {
             CameraEffect::OpenScanner => self.screen = Screen::Scanner,
             CameraEffect::OpenDocument => self.screen = Screen::Document,
             CameraEffect::OpenSettings => self.screen = Screen::Settings,
+            CameraEffect::UseMode { mode } => {
+                if self.is_recording() {
+                    return Err("Stop recording to switch modes".into());
+                }
+                self.apply_set_mode(CaptureMode::parse_str(&mode));
+            }
+            CameraEffect::UseLens { lens } => self.use_lens(Facing::parse_str(&lens)),
+            CameraEffect::SetResolution { resolution } => {
+                let resolution = Resolution::parse_str(&resolution);
+                self.change_settings(|settings| settings.resolution = resolution);
+            }
+            CameraEffect::SetPhotoFormat { format } => {
+                let format = PhotoFormat::parse_str(&format);
+                self.change_settings(|settings| settings.photo_format = format);
+            }
+            CameraEffect::SetTimer { seconds } => {
+                let timer = Timer::from_seconds(seconds.trim().parse().unwrap_or(0));
+                self.change_settings(|settings| settings.timer = timer);
+            }
+            CameraEffect::SetGrid { on } => self.change_settings(|settings| settings.grid = on),
+            CameraEffect::SetLevel { on } => self.change_settings(|settings| settings.level = on),
+            CameraEffect::SetMirrorFront { on } => {
+                self.change_settings(|settings| settings.mirror_front = on);
+            }
+            CameraEffect::SetGeotag { on } => {
+                self.change_settings(|settings| settings.geotag = on);
+            }
+            CameraEffect::SetHdr { on } => self.change_settings(|settings| settings.hdr = on),
+            CameraEffect::SetDefaultLens { lens } => {
+                let facing = Facing::parse_str(&lens);
+                self.change_settings(|settings| settings.default_facing = facing);
+            }
             CameraEffect::Capture => {
                 self.capture(cx.invocation())?;
                 if self.pending_capture.is_some() {
@@ -2870,13 +2926,15 @@ impl Widget for CameraApp {
                 self.toast = Some(format!("Save failed: {error}"));
             }
         }
-        // Don't let a persisted mode flip mid-record.
-        if self.recording.is_none() {
-            self.mode = doc::read_mode(state, path);
+        // Another window, or another of the person's devices, changed the
+        // capture preferences.
+        if let Some((person, device)) = &self.preferences {
+            let kept = Settings::from_parts(person.get(), device.get());
+            if kept != self.settings {
+                self.settings = kept;
+                self.dirty = true;
+            }
         }
-        self.facing = doc::read_facing(state, path);
-        self.settings = doc::read_settings(state, path);
-        self.scans = doc::read_scans(state, path);
 
         #[cfg(feature = "live-capture")]
         self.poll_camera();
@@ -2887,33 +2945,6 @@ impl Widget for CameraApp {
             let seed = Self::viewfinder_seed(self.facing).wrapping_add((self.frame_gen as u8) & 3);
             let fb = frame::viewfinder(seed, 480, 270);
             let _ = self.push_camera_frame(fb);
-            self.dirty = true;
-        }
-
-        // Camera retains exactly one collaborative handoff. Photos and Video
-        // Player own collection browsing, deletion, favorites, and metadata.
-        // The sample storage has no bytes for it and draws a procedural scene.
-        let scene = u8::from(matches!(self.storage, Storage::Sample));
-        let next = doc::read_recent_capture(state, path).map(|shared| Capture {
-            id: shared.id,
-            kind: shared.kind,
-            ts: shared.ts,
-            w: shared.w,
-            h: shared.h,
-            dur_ms: shared.dur_ms,
-            label: shared.label,
-            facing: shared.facing,
-            scene,
-            path: None,
-            media_id: Some(shared.media_id),
-        });
-        let changed = self.captures.first().map(|capture| &capture.id)
-            != next.as_ref().map(|capture| &capture.id);
-        self.captures = next.into_iter().collect();
-        if changed {
-            self.thumb_pending.clear();
-            self.thumb_failed.clear();
-            self.thumbs.clear();
             self.dirty = true;
         }
     }
@@ -6461,22 +6492,36 @@ mod tests {
         let mut doc = AutoCommit::new();
         tilo_actions::Action::apply(&crate::resource::sample_capture(), &mut doc).unwrap();
         let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        app.sync_record(&mut doc, &root);
         (app, doc, root)
     }
 
-    /// A fresh camera record stays empty. Readers still report Photo, the back
-    /// camera, and default settings.
+    /// Hand `app` the record as the framework presents it.
+    fn present(app: &mut CameraApp, doc: &AutoCommit) {
+        let state = <Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
+        app.present_record(&state);
+    }
+
+    impl CameraApp {
+        /// One frame as the framework runs it: the surface syncs, then is
+        /// handed the record its actions left.
+        fn sync_record(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+            Widget::sync(self, doc, root);
+            present(self, doc);
+        }
+    }
+
+    /// The camera record holds the recent capture alone: the mode, the lens
+    /// and the capture preferences are never written into it.
     #[test]
-    fn a_fresh_camera_record_stays_empty_until_a_capture_action() {
-        let (_app, doc, root) = sample_app();
-        assert!(
-            !doc::is_seeded(&doc, &root),
-            "default preferences are not written into a new record"
-        );
-        assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Photo);
-        assert_eq!(doc::read_facing(&doc, &root), Facing::Back);
-        assert_eq!(doc::read_settings(&doc, &root), Settings::default());
+    fn the_camera_record_holds_no_preferences() {
+        use automerge::ReadDoc as _;
+        let (app, doc, root) = sample_app();
+        let keys: Vec<String> = doc.keys(&root).collect();
+        assert_eq!(keys, ["recent_capture"]);
+        assert_eq!(app.mode, CaptureMode::Photo);
+        assert_eq!(app.facing, Facing::Back);
+        assert_eq!(app.settings, Settings::default());
     }
 
     #[test]
@@ -6506,7 +6551,7 @@ mod tests {
     ) {
         let deadline = tilo_test_env::hang_deadline();
         while !done(app) && ui::time::now() < deadline {
-            app.sync(doc, root);
+            app.sync_record(doc, root);
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(
@@ -7040,7 +7085,7 @@ mod tests {
                 &mut state.doc,
                 &root,
             ));
-            camera.sync(&mut state.doc, &root);
+            camera.sync_record(&mut state.doc, &root);
             assert_eq!(camera.captures.len(), 1);
             assert_ne!(camera.captures[0].id, before);
         }
@@ -7054,7 +7099,7 @@ mod tests {
             let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync_record(&mut doc, &root);
             app.camera_issue = Some(CameraIssue::PermissionDenied);
             let mut app = render_at(app, doc, 320.0, 680.0);
             let tree = app.accessibility().expect("camera has semantics");
@@ -7213,7 +7258,7 @@ mod tests {
             assert!(app.is_counting_down());
             assert_eq!(app.captures.len(), before, "timer does not capture early");
             app.countdown.as_mut().expect("armed timer").due = ui::time::now();
-            app.sync(&mut doc, &root);
+            app.sync_record(&mut doc, &root);
             assert!(!app.is_counting_down());
             assert_eq!(app.captures.len(), 1);
             assert_ne!(
@@ -7231,7 +7276,7 @@ mod tests {
             let (mut app, mut doc, root) = sample_app();
             let before = app.captures[0].id.clone();
             app.apply(Action::Shutter, &mut doc, &root);
-            app.sync(&mut doc, &root);
+            app.sync_record(&mut doc, &root);
             assert_eq!(app.captures.len(), 1);
             assert_ne!(app.captures[0].id, before);
             assert!(app.toast.is_some());
@@ -7305,7 +7350,7 @@ mod tests {
                     })
                 })
             {
-                app.sync(&mut doc, &root);
+                app.sync_record(&mut doc, &root);
                 std::thread::sleep(Duration::from_millis(1));
             }
             // A real JPEG landed on disk. Camera publishes the portable identity,
@@ -7346,13 +7391,12 @@ mod tests {
 
     #[test]
     fn video_recording_locks_mode_requests_frames_and_saves_a_real_clip() {
-        // Phase `set_mode_persists_and_locks_while_recording`.
+        // Phase `set_mode_locks_while_recording`.
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.mode, CaptureMode::Photo);
             app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
             assert_eq!(app.mode, CaptureMode::Video);
-            assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Video);
 
             // Shutter in video mode starts recording; mode can't be flipped while
             // a clip is in progress.
@@ -7380,7 +7424,7 @@ mod tests {
             app.apply(Action::Shutter, &mut doc, &root);
             assert!(app.is_recording());
             for _ in 0..6 {
-                app.sync(&mut doc, &root);
+                app.sync_record(&mut doc, &root);
             }
             assert!(
                 app.frame_gen >= 6,
@@ -7417,7 +7461,7 @@ mod tests {
             let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync_record(&mut doc, &root);
             app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
 
             // A frame arrives, then record: start seeds with it, further frames are
@@ -7518,6 +7562,28 @@ mod tests {
         );
     }
 
+    /// A photo whose caller cancelled it while it was being saved is
+    /// dropped when it arrives, with its file: nothing is registered.
+    #[test]
+    fn a_cancelled_capture_is_discarded_with_its_file() {
+        let (mut app, dir) = disk_camera("photo-cancelled");
+        push_frame(&mut app, 1);
+        let invocation = app
+            .start_effect_on(crate::actions::CAPTURE_ROW, &CameraEffect::Capture)
+            .expect("the photo is being saved");
+        assert!(matches!(
+            app.cancel_effect(invocation),
+            Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
+        ));
+        app.harness()
+            .wait_until(ui::time::Duration::from_secs(2), |_| false);
+        assert!(app.state().recent.is_none(), "nothing is registered");
+        let photos =
+            std::fs::read_dir(&dir).map_or(0, |entries| entries.filter_map(Result::ok).count());
+        assert_eq!(photos, 0, "the saved file is removed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn capture_effects_answer_once_the_capture_is_registered() {
         // Phase `a_photo_answers_with_the_registered_capture`.
@@ -7542,12 +7608,9 @@ mod tests {
         // Phase `a_clip_answers_once_it_is_saved_and_registered`.
         {
             let (mut app, dir) = disk_camera("video-effect");
-            app.invoke(
-                ui::tilo_resource::Invoke::apply(&crate::actions::CameraAction::SetMode {
-                    mode: CaptureMode::Video,
-                })
-                .unwrap(),
-            )
+            app.effect(&CameraEffect::UseMode {
+                mode: "video".into(),
+            })
             .unwrap();
             push_frame(&mut app, 1);
             assert!(
@@ -7888,7 +7951,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_preferences_persist_while_screen_reveals_stay_local() {
+    fn capture_preferences_and_screens_change_no_record() {
         // Phase `screen_reveals_are_presentation_only`.
         {
             let (mut app, mut doc, root) = sample_app();
@@ -7897,21 +7960,23 @@ mod tests {
             assert_eq!(app.screen, Screen::Settings);
             assert_eq!(doc.get_heads(), before);
         }
-        // Phase `cycle_facing_and_persist`.
+        // Phase `cycle_facing`.
         {
             let (mut app, mut doc, root) = sample_app();
+            let before = doc.get_heads();
             assert_eq!(app.facing, Facing::Back);
             app.apply(Action::CycleFacing, &mut doc, &root);
             assert_eq!(app.facing, Facing::Front);
-            assert_eq!(doc::read_facing(&doc, &root), Facing::Front);
+            assert_eq!(doc.get_heads(), before);
         }
-        // Phase `toggle_grid_persists_to_settings`.
+        // Phase `toggle_grid`.
         {
             let (mut app, mut doc, root) = sample_app();
             let before = app.settings.grid;
+            let heads = doc.get_heads();
             app.apply(Action::ToggleGrid, &mut doc, &root);
             assert_eq!(app.settings.grid, !before);
-            assert_eq!(doc::read_settings(&doc, &root).grid, !before);
+            assert_eq!(doc.get_heads(), heads);
         }
         // Phase `resolution_cycles`.
         {
@@ -7933,7 +7998,7 @@ mod tests {
             let mut app = CameraApp::sample();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root); // decodes the sample poster → scanned set
+            app.sync_record(&mut doc, &root); // decodes the sample poster → scanned set
             // Force the scanner to decode by rendering once would need a GPU; the
             // sample scanner frame is produced lazily on draw, so seed a scanned
             // code directly to exercise the action path.
@@ -7973,7 +8038,7 @@ mod tests {
             let mut app = CameraApp::sample();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync_record(&mut doc, &root);
             app.scanned = Some(ScannedCode {
                 raw: payload.to_string(),
                 kind,
@@ -8105,8 +8170,9 @@ mod tests {
             "open-scanner",
             "open-document",
             "open-settings",
-            "photo-mode",
-            "lens-front",
+            "use-mode",
+            "use-lens",
+            "set-grid",
         ] {
             assert!(
                 camera_ids.contains(&id.to_owned()),

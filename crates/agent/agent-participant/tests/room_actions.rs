@@ -296,6 +296,7 @@ fn sheet_named(name: &str) -> InvokeArgument {
 
 fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> InvokeRequest {
     InvokeRequest {
+        on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.into(),
@@ -355,6 +356,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         }
         let receipt = browser
             .invoke(InvokeRequest {
+                on_behalf_of: None,
                 confirmation: Some(Confirmation::Confirmed),
                 ..request(
                     &provider,
@@ -523,6 +525,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         }
     );
     let confirmed = InvokeRequest {
+        on_behalf_of: None,
         confirmation: Some(Confirmation::Confirmed),
         ..unconfirmed
     };

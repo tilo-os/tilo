@@ -4,11 +4,11 @@
 //! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /
 //! intro / outro segments; `DeArrow` swaps clickbait titles and thumbnails
 //! for community-sourced factual ones. Everything is built on the CRDT-
-//! native `ui` toolkit. Likes, the watch queue, subscriptions, comment likes
-//! and replies, and playback settings are the shared library, changed by
-//! actions; fetched catalogues, navigation and playback stay with the window,
-//! and the watch history follows the person to their own devices without
-//! reaching collaborators.
+//! native `ui` toolkit. Likes, the watch queue, subscriptions, and comment
+//! likes and replies are the shared library, changed by actions; fetched
+//! catalogues, navigation and playback stay with the window, and the watch
+//! history and playback preferences follow the person to their own devices
+//! without reaching collaborators.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
 //! from live results (yt-dlp / rustypipe / trending). The bundled [`sample`]
@@ -66,17 +66,6 @@ pub mod widgets;
 
 pub use app::TubeApp;
 
-/// Descriptors used by hosts that want type-specific search presentation in
-/// addition to Tube's standard [`ui::search::SearchProvider`] integration.
-pub fn searchable_types() -> Vec<search_type::SearchableType> {
-    vec![
-        search_type::video_searchable_type(),
-        search_type::channel_searchable_type(),
-        search_type::playlist_searchable_type(),
-        search_type::history_searchable_type(),
-    ]
-}
-
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<TubeShell>()
@@ -87,33 +76,9 @@ pub use resource::{Tube, TubeShared, TubeShell};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search_type::{CHANNEL_TYPE_ID, HISTORY_TYPE_ID, PLAYLIST_TYPE_ID, VIDEO_TYPE_ID};
 
     #[test]
-    fn search_types_are_registered_and_an_empty_app_starts_without_a_catalogue() {
-        // Case `registers_all_tube_searchable_types`.
-        {
-            let types = searchable_types();
-            let ids: Vec<&str> = types.iter().map(|t| t.id).collect();
-            assert!(
-                ids.contains(&VIDEO_TYPE_ID),
-                "video type registered: {ids:?}"
-            );
-            assert!(
-                ids.contains(&CHANNEL_TYPE_ID),
-                "channel type registered: {ids:?}"
-            );
-            assert!(
-                ids.contains(&PLAYLIST_TYPE_ID),
-                "playlist type registered: {ids:?}"
-            );
-            assert!(
-                ids.contains(&HISTORY_TYPE_ID),
-                "history type registered: {ids:?}"
-            );
-            // Every result can carry a thumbnail, so an OS palette reserves image space.
-            assert!(types.iter().all(|t| t.has_thumbnail));
-        }
+    fn an_empty_app_starts_without_a_catalogue() {
         // An app without the network must not show the bundled sample
         // catalogue (invented channels, subscriber and view counts) as
         // though it were real.

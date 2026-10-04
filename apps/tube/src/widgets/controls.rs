@@ -225,16 +225,16 @@ impl Widget for Switch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{self, SettingFlag};
-    use crate::actions::TubeAction;
+    use crate::action;
+    use crate::actions::TubeEffect;
     use automerge::AutoCommit;
 
     fn switch() -> Switch {
         Switch::new(
             false,
             &action::new_bus(),
-            Action::Edit(TubeAction::SetSetting {
-                setting: SettingFlag::Autoplay,
+            Action::Effect(TubeEffect::SetPreference {
+                preference: "autoplay".into(),
                 enabled: true,
             }),
         )
@@ -263,8 +263,8 @@ mod tests {
             let mut switch = Switch::new(
                 true,
                 &bus,
-                Action::Edit(TubeAction::SetSetting {
-                    setting: SettingFlag::ShowComments,
+                Action::Effect(TubeEffect::SetPreference {
+                    preference: "comments".into(),
                     enabled: false,
                 }),
             );
@@ -277,8 +277,8 @@ mod tests {
             ));
             assert_eq!(
                 action::drain(&bus),
-                vec![Action::Edit(TubeAction::SetSetting {
-                    setting: SettingFlag::ShowComments,
+                vec![Action::Effect(TubeEffect::SetPreference {
+                    preference: "comments".into(),
                     enabled: false,
                 })]
             );

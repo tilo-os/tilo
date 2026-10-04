@@ -15,7 +15,7 @@ use crate::action::{Action, ActionBus, SettingFlag};
 use crate::actions::{TubeAction, TubeEffect};
 use crate::images::Imgs;
 use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video};
-use crate::util::{clock, human_count, human_views};
+use crate::util::{human_count, human_views};
 use crate::widgets::{
     Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, LargeVideoMeta, Len, PlayerHost,
     SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, divider_on,
@@ -764,7 +764,7 @@ pub fn top_bar(
         .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
     let search = if compact {
-        icon_button(theme, bus, Icon::Search, Action::OpenPalette).id("compact_search")
+        icon_button(theme, bus, Icon::Search, Action::OpenSearch).id("compact_search")
     } else {
         search_field
     };
@@ -1051,7 +1051,7 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
                             bus,
                             "Clear history",
                             Some(Icon::Trash),
-                            Action::Confirm(TubeEffect::ClearHistory),
+                            Action::Effect(TubeEffect::ClearHistory),
                             false,
                         ),
                     ),
@@ -2046,7 +2046,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         })
         .on_click(
             bus,
-            Action::Edit(TubeAction::SetPreferredQuality {
+            Action::Effect(TubeEffect::SetPreferredQuality {
                 quality: next.to_string(),
             }),
         )
@@ -2254,9 +2254,9 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         })
         .on_click(
             bus,
-            Action::Edit(TubeAction::SetSponsorCategory {
-                category: cat,
-                mode: mode.next(),
+            Action::Effect(TubeEffect::SetSegmentHandling {
+                category: cat.api_key().to_owned(),
+                mode: mode.next().key().to_owned(),
             }),
         )
         .accessible_name(format!("{}: {}", cat.label(), mode.label()))
@@ -2699,7 +2699,7 @@ fn pending_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRe
             bus,
             &format!("grayjay_approve_{}", peer.short_id()),
             "Approve",
-            Action::Confirm(TubeEffect::ApproveDevice {
+            Action::Effect(TubeEffect::ApproveDevice {
                 device: peer.id.clone(),
             }),
             false,
@@ -2741,7 +2741,7 @@ fn add_active_devices(
                     bus,
                     "grayjay_sync_now",
                     "Sync now",
-                    Action::Confirm(TubeEffect::SyncDevices),
+                    Action::Effect(TubeEffect::SyncDevices),
                     false,
                 )),
         );
@@ -2778,7 +2778,7 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
             bus,
             &format!("grayjay_revoke_{}", peer.short_id()),
             "Revoke",
-            Action::Confirm(TubeEffect::RevokeDevice {
+            Action::Effect(TubeEffect::RevokeDevice {
                 device: peer.id.clone(),
             }),
             true,
@@ -2792,172 +2792,6 @@ fn relative_sync_time(time: i64) -> String {
     format!("Last synced {}", ui::format::relative(current - time))
 }
 
-// ---------------------------------------------------------------------------
-// Ctrl+K command palette
-// ---------------------------------------------------------------------------
-
-/// One result row in the command palette.
-fn palette_row(
-    theme: &Theme,
-    bus: &ActionBus,
-    hit: &crate::search_type::SearchHit,
-    index: usize,
-) -> Flex {
-    use crate::search_type::CHANNEL_TYPE_ID;
-    let is_channel = hit.type_id == CHANNEL_TYPE_ID;
-    let kind = if is_channel {
-        Icon::GalleryVerticalEnd
-    } else {
-        Icon::Play
-    };
-    let meta = if is_channel {
-        format!("Channel · {}", hit.creator)
-    } else {
-        format!("{} · {}", hit.creator, clock(f64::from(hit.length_secs)))
-    };
-    Flex::row()
-        .id(&format!("palette_row_{index}"))
-        .fill_w()
-        .gap(12.0)
-        .pad_xy(12.0, 9.0)
-        .align(Align::Center)
-        .hover_surface(Surface {
-            fill: Some(hover_fill(theme)),
-            radius: f64::from(theme.tokens.radii.md),
-            border: None,
-        })
-        .on_click(bus, Action::ActivateHit(hit.deep_link.clone()))
-        .accessible_name(format!("Open search result: {}", hit.title))
-        .push(
-            Flex::row()
-                .fixed(34.0, 34.0)
-                .justify(Justify::Center)
-                .align(Align::Center)
-                .surface(subtle_surface(theme))
-                .push(icon(kind, 16.0, theme.text_dim)),
-        )
-        .push(
-            Flex::col()
-                .grow(1.0)
-                .gap(2.0)
-                .push(text(&hit.title, 14.0))
-                .push(dim(theme, &meta, 12.0)),
-        )
-        .push(icon(Icon::ChevronRight, 14.0, theme.text_dim))
-}
-
-/// Tube's in-app Ctrl+K overlay. The host-wide palette receives the canonical
-/// [`ui::search::SearchProvider`] separately; this lightweight local overlay
-/// keeps the current query immediate while typing. Returns `None` when closed.
-pub fn command_palette(
-    model: &TubeModel,
-    theme: &Theme,
-    bus: &ActionBus,
-    palette_query: &ui::LocalState<String>,
-) -> Option<Flex> {
-    if !model.palette_open {
-        return None;
-    }
-
-    let backend = crate::backend::offline::OfflineBackend::with_model(model.clone());
-    let provider =
-        crate::search_type::VideoSearchProvider::new(&backend, model.settings.dearrow_titles_on());
-    let hits = crate::search_type::palette_hits(&provider, model, &model.palette_query);
-
-    // Always-present, placeholder-backed input (same reachability fix as the
-    // top-bar search box): the field must exist in the tree even while empty so
-    // it can be focused and typed into — that's the whole point of the palette.
-    let input = TextInput::from_state(palette_query)
-        .with_id("palette_input")
-        .with_kind(ui::widget::TextInputKind::Search)
-        .with_plain_chrome()
-        .with_font_size(16.0)
-        .with_placeholder("Search videos and channels…");
-
-    let field = Flex::row()
-        .fill_w()
-        .h(Len::Px(46.0))
-        .gap(10.0)
-        .pad_xy(14.0, 0.0)
-        .align(Align::Center)
-        .surface(Surface {
-            fill: Some(subtle_fill(theme)),
-            radius: f64::from(theme.tokens.radii.md),
-            border: Some((1.0, theme.border_focus)),
-        })
-        .push(icon(Icon::Search, 18.0, theme.accent_primary))
-        .push(Flex::row().grow(1.0).push(input))
-        .push(
-            Flex::row()
-                .pad_xy(7.0, 3.0)
-                .surface(subtle_surface(theme))
-                .push(text_c("Ctrl K", 11.0, theme.text_dim)),
-        );
-
-    let mut list = Flex::col().fill_w().gap(2.0);
-    if model.palette_query.trim().is_empty() {
-        list = list.push(
-            Flex::col()
-                .fill_w()
-                .pad(20.0)
-                .align(Align::Center)
-                .push(dim(theme, "Type to search across Tube", 13.0)),
-        );
-    } else if hits.is_empty() {
-        list = list.push(
-            Flex::col()
-                .fill_w()
-                .pad(20.0)
-                .align(Align::Center)
-                .push(dim(theme, "No matches", 13.0)),
-        );
-    } else {
-        for (i, h) in hits.iter().take(8).enumerate() {
-            list = list.push(palette_row(theme, bus, h, i));
-        }
-    }
-
-    let card = Flex::col()
-        .id("palette_card")
-        .w(Len::Pct(0.94))
-        .max_w(560.0)
-        .gap(10.0)
-        .pad(14.0)
-        // A floating dialog: Panel role ground + border (HIG §9.5); the rule
-        // between field and list derives against that ground.
-        .surface(Surface {
-            fill: Some(ui::chrome::panel_ground(theme)),
-            radius: f64::from(theme.tokens.radii.lg),
-            border: Some((1.0, ui::chrome::panel_border(theme))),
-        })
-        // Swallow clicks on the card chrome so they don't reach the scrim and
-        // close the palette. `OpenPalette` is idempotent (already open).
-        .on_click(bus, Action::OpenPalette)
-        .accessible_name("Action search dialog")
-        .push(field)
-        .push(divider_on(ui::chrome::panel_ground(theme)))
-        .push(list);
-
-    // Full-bleed scrim; clicking it (outside the card) closes the palette.
-    Some(
-        Flex::col()
-            .id("palette_scrim")
-            .fill_w()
-            .fill_h()
-            .align(Align::Center)
-            .justify(Justify::Start)
-            .pad_each(0.0, 96.0, 0.0, 0.0)
-            .surface(Surface {
-                fill: Some(Color::from_rgba8(0, 0, 0, 140)),
-                radius: 0.0,
-                border: None,
-            })
-            .on_click(bus, Action::ClosePalette)
-            .accessible_name("Close action search")
-            .push(card),
-    )
-}
-
 /// Subscribe to the creator `id`, or unsubscribe from it under the key the
 /// library holds it by (an imported subscription may be its channel URL).
 fn subscribe_edit(model: &TubeModel, id: &str) -> Action {
@@ -2967,21 +2801,11 @@ fn subscribe_edit(model: &TubeModel, id: &str) -> Action {
     })
 }
 
-/// Flip the boolean setting `setting`.
+/// Flip the boolean preference `setting`.
 fn toggle_setting(model: &TubeModel, setting: SettingFlag) -> Action {
-    let settings = &model.settings;
-    let enabled = match setting {
-        SettingFlag::SponsorBlock => settings.sponsorblock_enabled,
-        SettingFlag::DeArrow => settings.dearrow_enabled,
-        SettingFlag::DeArrowTitles => settings.dearrow_titles,
-        SettingFlag::DeArrowThumbnails => settings.dearrow_thumbnails,
-        SettingFlag::ReturnDislike => settings.return_dislike_enabled,
-        SettingFlag::Autoplay => settings.autoplay,
-        SettingFlag::ShowComments => settings.show_comments,
-    };
-    Action::Edit(TubeAction::SetSetting {
-        setting,
-        enabled: !enabled,
+    Action::Effect(TubeEffect::SetPreference {
+        preference: setting.id().to_owned(),
+        enabled: !setting.get(&model.settings),
     })
 }
 
@@ -3124,41 +2948,6 @@ mod search_screen_tests {
                     "the {label} type chip is present",
                 );
             }
-        }
-        // Case `palette_keeps_a_touch_safe_inset_at_the_narrow_breakpoint`.
-        {
-            fn rect_for_id(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
-                if w.test_id() == Some(id) {
-                    return Some(w.get_rect());
-                }
-                w.children()
-                    .iter()
-                    .find_map(|child| rect_for_id(*child, id))
-            }
-
-            let mut model = crate::sample::model();
-            model.palette_open = true;
-            model.palette_query = "rust".into();
-            let palette_query = ui::LocalState::new(model.palette_query.clone());
-            let theme = Theme::dark();
-            let bus = crate::action::new_bus();
-            let palette =
-                command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
-            let palette = ui::headless::Framed::new(
-                ui::State::new(),
-                palette,
-                ui::headless::viewport((560.0, 720.0)),
-                theme,
-            );
-            let card = rect_for_id(&*palette, "palette_card").expect("palette card rect");
-            assert!(
-                card.x0 >= 16.0 && card.x1 <= 544.0,
-                "card has safe side insets: {card:?}"
-            );
-            assert!(
-                (card.width() - 526.4).abs() < 1.0,
-                "94% narrow width preserves the 560px max-width composition: {card:?}"
-            );
         }
         // Case `search_result_row_paints_the_fetched_thumbnail`:
         // Rendered through the real `search` screen with an image store that has

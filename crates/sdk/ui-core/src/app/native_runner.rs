@@ -2556,6 +2556,12 @@ impl AppHandler {
             window.request_redraw();
         }
 
+        if app.root_widget.take_search_request() && app.actions.action_palette.is_none() {
+            app.open_action_palette();
+            app.layout.layout_dirty = true;
+            window.request_redraw();
+        }
+
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
@@ -3332,6 +3338,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
+        if self.app.open_requested_palette() {
+            request_primary_redraw();
+        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;

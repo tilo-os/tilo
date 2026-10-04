@@ -4,7 +4,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::chart_palette::ChartPalette;
-use ui::framework::{Dispatcher, EffectCx, Effected, LiveRow};
+use ui::framework::{Dispatcher, EffectCx, Effected, LiveRow, Setting};
 use ui::presence::PresenceCtx;
 use ui::taffy::{
     Dimension, LengthPercentageAuto, NodeId, Position, Rect as TRect, Size, Style, TaffyTree,
@@ -17,7 +17,7 @@ use ui::vello::peniko::Fill;
 use ui::widget::{Button, ButtonFace, PieChart, PieSlice, PieStyle, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::resource::{DiskUsage, DiskUsageAction, DiskUsageEffect, analyze, folder_row};
+use crate::resource::{DiskUsage, DiskUsageEffect, RecentFolders, analyze, folder_row, recent_row};
 use crate::scan::{ScanCancellation, ScanResult};
 use ui::format::bytes_si;
 
@@ -41,7 +41,11 @@ enum View {
 pub struct DiskUsageApp {
     view: View,
     history: Vec<PathBuf>,
+    /// The folders analyzed lately, as a capture or this device's setting
+    /// last showed them.
     pub(crate) recent: Vec<PathBuf>,
+    /// This device's remembered folders, in a live window.
+    pub(crate) recents: Option<Setting<RecentFolders>>,
     places: Vec<Place>,
     chart: PieChart,
     rect: Rect,
@@ -87,6 +91,7 @@ impl DiskUsageApp {
             view: View::Home,
             history: Vec::new(),
             recent: Vec::new(),
+            recents: None,
             places,
             chart: PieChart::new(Vec::new()).with_style(PieStyle::default()),
             rect: Rect::ZERO,
@@ -135,6 +140,29 @@ impl DiskUsageApp {
         self.view = View::Analysis(result);
     }
 
+    /// The folders analyzed lately, newest first.
+    pub(crate) fn recent_folders(&self) -> Vec<PathBuf> {
+        self.recents
+            .as_ref()
+            .map_or_else(|| self.recent.clone(), |recents| recents.get().folders)
+    }
+
+    /// Remember `folder` among this device's recent ones. Best effort: a
+    /// device that keeps no settings for the app shows it until it closes.
+    fn remember(&mut self, folder: PathBuf) {
+        if let Some(recents) = &self.recents {
+            if let Err(error) = recents.update(|recent| recent.remember(folder)) {
+                tracing::warn!(%error, "could not remember the analyzed folder");
+            }
+        } else {
+            let mut recent = RecentFolders {
+                folders: std::mem::take(&mut self.recent),
+            };
+            recent.remember(folder);
+            self.recent = recent.folders;
+        }
+    }
+
     /// Invoke `effect` through the door every caller uses.
     fn invoke(&self, effect: &DiskUsageEffect) {
         if let Some(dispatcher) = &self.dispatcher {
@@ -143,7 +171,7 @@ impl DiskUsageApp {
     }
 
     /// Scan `path` in the background and show it when done, remembering the
-    /// folder in the shared recents.
+    /// folder among this device's recent ones.
     pub(crate) fn scan(
         &mut self,
         path: PathBuf,
@@ -160,7 +188,7 @@ impl DiskUsageApp {
         let worker = cancellation.clone();
         cx.thread(
             move |_| crate::scan::scan_with_cancellation(path, &worker),
-            move |app: &mut Self, result: ScanResult, cx| {
+            move |app: &mut Self, result: ScanResult, _cx| {
                 if cancellation.is_cancelled() {
                     return Err("The scan was stopped".into());
                 }
@@ -169,9 +197,7 @@ impl DiskUsageApp {
                     app.view = View::Error(result.path, message.clone());
                     return Err(message);
                 }
-                cx.apply(&DiskUsageAction::Remember {
-                    path: result.path.to_string_lossy().into_owned(),
-                });
+                app.remember(result.path.clone());
                 let answer = serde_json::json!({
                     "path": result.path,
                     "bytes": result.total,
@@ -239,8 +265,8 @@ impl DiskUsageApp {
 
     fn cards(&self) -> Vec<Place> {
         let recent_limit = if self.rect.width() < 700.0 { 2 } else { 5 };
-        let mut out = self
-            .recent
+        let recent = self.recent_folders();
+        let mut out = recent
             .iter()
             .take(recent_limit)
             .map(|path| Place {
@@ -776,6 +802,7 @@ impl DiskUsageApp {
             .iter()
             .map(|place| folder_row(&place.label, &place.path))
             .collect();
+        rows.extend(self.recent_folders().iter().map(|path| recent_row(path)));
         if let View::Analysis(result) = &self.view {
             rows.extend(
                 result

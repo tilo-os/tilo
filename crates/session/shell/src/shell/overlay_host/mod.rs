@@ -7229,6 +7229,7 @@ impl ShellOverlayHost {
         let admission = crate::shell::remote_actions::BrokerActionHost::new(broker).invoke_job(
             &caller,
             InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: application_action_target(
                     &workspace_room,

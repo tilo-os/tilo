@@ -77,6 +77,7 @@ async fn recv_delta_into(session: &RelayCoeditSession, doc: &mut AutoCommit) {
             Inbound::Ready { .. }
             | Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
+            | Inbound::RecordContent { .. }
             | Inbound::Live { .. }
             | Inbound::Voice(_) => {}
         }
@@ -339,6 +340,7 @@ async fn catch_up_first_connection(
             }
             other @ (Inbound::Presence { .. }
             | Inbound::RemoteAction { .. }
+            | Inbound::RecordContent { .. }
             | Inbound::Live { .. }
             | Inbound::Voice(_)) => {
                 panic!("unexpected inbound {other:?}")

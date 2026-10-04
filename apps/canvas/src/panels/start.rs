@@ -392,62 +392,65 @@ fn start_tiles(choices: &Choices) -> Vec<Element> {
 /// Portrait or landscape, and for any size its sides.
 fn orientation(cx: &ViewCx<ArtworkResource>, choices: &Choices) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
-    let orientation = ui::widget::ToggleGroup::from_state(
-        vec![
-            (
-                false,
-                ui::widget::toggle_group::Segment::new(lookup("canvas-portrait")),
-            ),
-            (
-                true,
-                ui::widget::toggle_group::Segment::new(lookup("canvas-landscape")),
-            ),
-        ],
-        &choices.landscape,
-    )
-    .with_id("canvas-new-orientation");
-    let custom = {
-        let choices = choices.clone();
-        cx.switch(&choices.size.clone(), move |_, size| {
-            if size != CUSTOM {
-                return Box::new(Spacer::fixed(0.0)) as Element;
-            }
-            let width = TextInput::from_state(&choices.width)
-                .with_id("canvas-new-width")
-                .with_accessible_name(lookup("canvas-artwork-width"));
-            let height = TextInput::from_state(&choices.height)
-                .with_id("canvas-new-height")
-                .with_accessible_name(lookup("canvas-artwork-height"));
-            Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_gap(8.0)
-                    .with_align_items(ui::taffy::AlignItems::Center)
-                    .push(caption(&lookup("canvas-artwork-width")))
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_width(SIDE_FIELD)
-                            .with_child(Box::new(width)),
-                    ))
-                    .push(caption(&lookup("canvas-artwork-height")))
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_width(SIDE_FIELD)
-                            .with_child(Box::new(height)),
-                    ))
-                    .push(caption(&lookup("canvas-units"))),
+    let choices = choices.clone();
+    cx.switch(&choices.size.clone(), move |_, size| {
+        if size == CUSTOM {
+            return custom_sides(&choices);
+        }
+        // A square stands the same either way: nothing to choose.
+        if document::size(size)
+            .is_some_and(|preset| (preset.width - preset.height).abs() < f64::EPSILON)
+        {
+            return Box::new(Spacer::fixed(0.0)) as Element;
+        }
+        Box::new(
+            ui::widget::ToggleGroup::from_state(
+                vec![
+                    (
+                        false,
+                        ui::widget::toggle_group::Segment::new(lookup("canvas-portrait")),
+                    ),
+                    (
+                        true,
+                        ui::widget::toggle_group::Segment::new(lookup("canvas-landscape")),
+                    ),
+                ],
+                &choices.landscape,
             )
-        })
-    };
+            .with_id("canvas-new-orientation"),
+        )
+    })
+}
+
+/// A custom size's width and height, typed.
+fn custom_sides(choices: &Choices) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let width = TextInput::from_state(&choices.width)
+        .with_id("canvas-new-width")
+        .with_accessible_name(lookup("canvas-artwork-width"));
+    let height = TextInput::from_state(&choices.height)
+        .with_id("canvas-new-height")
+        .with_accessible_name(lookup("canvas-artwork-height"));
     Box::new(
         Row::new()
             .no_wrap()
-            .with_gap(12.0)
+            .with_gap(8.0)
             .with_align_items(ui::taffy::AlignItems::Center)
-            .push(Box::new(orientation))
-            .push(custom),
+            .push(caption(&lookup("canvas-artwork-width")))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(SIDE_FIELD)
+                    .with_child(Box::new(width)),
+            ))
+            .push(caption(&lookup("canvas-artwork-height")))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(SIDE_FIELD)
+                    .with_child(Box::new(height)),
+            ))
+            .push(caption(&lookup("canvas-units"))),
     )
 }
 

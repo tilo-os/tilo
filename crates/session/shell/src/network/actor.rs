@@ -298,8 +298,8 @@ pub enum NetCmd {
 
 /// A piece of a record's content on its way to the device of the room that
 /// asked: over the direct plane when that device is a live peer of the
-/// room's topic, otherwise on the topic itself. Never handed to workspace
-/// hosts, which keep no content.
+/// room's topic, else through the room's workspace hosts, which hand it to
+/// that device alone and keep nothing, else on the topic itself.
 #[derive(Debug)]
 pub struct RecordContentDelivery {
     pub ws: WorkspaceId,
@@ -1906,6 +1906,23 @@ impl ActorState {
         if let Some(target) = target
             && self.peers_seen.contains_key(&(ws, target))
             && self.publish_direct(ws, target, msg.clone()).await
+        {
+            return;
+        }
+        // The workspace hosts route it to that device alone when it is
+        // connected to them.
+        if let Some(target) = target
+            && let Ok(frame) = postcard::to_allocvec(&msg)
+            && self
+                .host_sessions
+                .iter()
+                .filter(|((session_ws, _), _)| *session_ws == ws)
+                .any(|(_, runtime)| {
+                    runtime
+                        .session
+                        .publish_record_content(*target.as_bytes(), frame.clone())
+                        .is_ok()
+                })
         {
             return;
         }
@@ -3926,6 +3943,12 @@ fn spawn_host_pump(
                         msg: NeighbourMsg::RemoteAction { frame },
                     }
                 }
+                HostInbound::RecordContent { from, frame } => {
+                    let Some(event) = record_content_event(&from, &frame) else {
+                        continue;
+                    };
+                    event
+                }
                 HostInbound::Delta { author, data } if native_scope.is_some() => {
                     let Ok(msg) = postcard::from_bytes(&data) else {
                         continue;
@@ -3980,6 +4003,19 @@ fn spawn_host_pump(
                 event: HostEvent::Closed,
             })
             .await;
+    })
+}
+
+/// A piece of a record's content a workspace host handed this device from
+/// `from`; `None` for anything else.
+fn record_content_event(from: &[u8; 32], frame: &[u8]) -> Option<HostEvent> {
+    let author = EndpointId::from_bytes(from).ok()?;
+    let msg = postcard::from_bytes(frame).ok()?;
+    matches!(msg, NeighbourMsg::RecordContentPiece { .. }).then(|| HostEvent::Message {
+        author,
+        fingerprint: message_fingerprint(frame),
+        replayed: false,
+        msg,
     })
 }
 

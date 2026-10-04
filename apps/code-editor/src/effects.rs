@@ -6,7 +6,7 @@
 
 use ui::tilo_resource::{self, Effect};
 
-use crate::command_palette::Command;
+use crate::commands::Command;
 
 /// Code's effect vocabulary. File ids are the UUIDs of the project's file
 /// records; paths are absolute filesystem paths.

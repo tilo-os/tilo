@@ -1,4 +1,4 @@
-"""Explicit Music/Remote additions to the private local runtime profile."""
+"""Explicit per-app additions to the private local runtime profile."""
 from __future__ import annotations
 
 import copy
@@ -7,16 +7,19 @@ import time
 
 import collection
 import collection_local_runtime as runtime
+import collection_media_runtime as media
 from collection_native import system_library
 from collection_runtime import formula_evidence
 
 PLUGINS = {
+    **{name: media.PLUGINS | extra for name, extra in media.PLUGIN_ADDITIONS.items()},
     'remote': {'coreelements', 'app', 'videoconvertscale', 'videoparsersbad'},
     'music': {'coreelements', 'app', 'playback', 'typefindfunctions', 'audioconvert',
               'audioresample', 'autodetect', 'osxaudio', 'volume', 'audiofx', 'audioparsers',
               'ogg', 'isomp4', 'matroska', 'wavparse', 'aiff', 'asf', 'id3demux', 'apetag'},
 }
 LIBRARIES = {
+    **{name: media.LIBRARIES | extra for name, extra in media.LIBRARY_ADDITIONS.items()},
     'remote': {'libgstcodecparsers-1.0.0.dylib'},
     'music': {'libgstsdp-1.0.0.dylib', 'libgstrtp-1.0.0.dylib', 'libgstrtsp-1.0.0.dylib',
               'libgstriff-1.0.0.dylib', 'libogg.0.8.6.dylib', 'libgstfft-1.0.0.dylib'},
@@ -27,21 +30,15 @@ DOMAINS = {'gst-plugins-good-1.0', 'gst-plugins-bad-1.0', 'gst-plugins-ugly-1.0'
 def additional_assets(plan, profile, name):
     deadline = time.monotonic() + 30
     assets = plan['assets']
-    if name != 'music':
+    if name in media.PLUGIN_ADDITIONS:
+        media.additional_assets(plan, profile)
+    if name != 'music' and name not in media.PLUGIN_ADDITIONS:
         return
-    package = next(record for root, record in profile['packages'].items()
-                   if Path(root).parent.name == 'libogg')
-    notices = package['top_level_notice_candidates']
-    if not notices:
-        raise ValueError('libogg requires its recorded local notices')
-    for item in notices:
-        source = Path(item['path'])
-        if collection.digest(source) != item['sha256']:
-            raise ValueError('libogg notice changed')
-        runtime.add_asset(assets, source, 'Contents/Resources/Notices/libogg/' + source.name,
-                          (Path(package['package_root']),), deadline)
+    if name == 'music':
+        music_notices(plan, profile, deadline)
     locale = Path(plan['locale_prefixes']['gstreamer'])
     found = set()
+    domains = DOMAINS if name in ('music', 'video-editor') else {'gst-plugins-good-1.0'}
     for language in runtime.directory_entries(locale, 512, deadline):
         if language.is_symlink():
             raise ValueError('symlink locale directory')
@@ -52,15 +49,29 @@ def additional_assets(plan, profile, name):
             raise ValueError('symlink message directory')
         if not messages.is_dir():
             continue
-        for domain in sorted(DOMAINS):
+        for domain in sorted(domains):
             source = messages / (domain + '.mo')
             if source.exists():
                 target = 'Contents/Resources/locale/' + str(source.relative_to(locale))
                 runtime.add_asset(assets, source, target, (locale,), deadline)
                 found.add(domain)
-    if found != DOMAINS:
+    if found != domains:
         raise ValueError('missing additional GStreamer translation catalogs')
     plan['extended_locale_catalogs'] = True
+
+
+def music_notices(plan, profile, deadline):
+    package = next(record for root, record in profile['packages'].items()
+                   if Path(root).parent.name == 'libogg')
+    notices = package['top_level_notice_candidates']
+    if not notices:
+        raise ValueError('libogg requires its recorded local notices')
+    for item in notices:
+        source = Path(item['path'])
+        if collection.digest(source) != item['sha256']:
+            raise ValueError('libogg notice changed')
+        runtime.add_asset(plan['assets'], source, 'Contents/Resources/Notices/libogg/' + source.name,
+                          (Path(package['package_root']),), deadline)
 
 
 def prepare(path, expected, entry, binary, base):
@@ -104,9 +115,14 @@ def prepare(path, expected, entry, binary, base):
         destinations.add(target.casefold())
         plan['images'][source] = {'destination': target, **facts}
     expected_packages = {'gstreamer', 'libogg'} if name == 'music' else {'gstreamer'}
+    if set(profile['packages']) != set(packages):
+        raise ValueError('app profile includes unused package evidence')
+    if name in media.PLUGIN_ADDITIONS:
+        expected_packages = media.expected_packages(name)
     if {Path(root).parent.name for root in packages} != expected_packages:
         raise ValueError('app profile added an unreviewed package')
-    if sum(item['bytes'] for item in images.values()) > 8 * 1024**2:
+    limit = 24 if name in media.PLUGIN_ADDITIONS else 8
+    if sum(item['bytes'] for item in images.values()) > limit * 1024**2:
         raise ValueError('app runtime delta exceeds its byte bound')
     main_name = entry['binary']
     if main_name != name:
@@ -122,6 +138,7 @@ def prepare(path, expected, entry, binary, base):
     return plan, {'profile_sha256': expected, 'additional_sources': sorted(images),
                   'main_source': binary['path'], 'main_real': main_target,
                   'adapter_sha256': collection.digest(Path(__file__)),
+                  'media_adapter_sha256': collection.digest(Path(media.__file__)),
                   'runtime_qualified': False}
 
 
@@ -129,6 +146,9 @@ def augment(app, plan, guard):
     details = plan['app_runtime']
     if details['adapter_sha256'] != collection.digest(Path(__file__)):
         raise ValueError('app runtime adapter changed')
+    if (plan['runtime_plan'].get('media_data') and
+            details.get('media_adapter_sha256') != collection.digest(Path(media.__file__))):
+        raise ValueError('media runtime adapter changed')
     main = app / plan['runtime_plan']['app_launcher']
     real = app / details['main_real']
     if real.exists() or collection.digest(main) != plan['binary_sha256']:

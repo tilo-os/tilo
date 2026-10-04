@@ -578,10 +578,6 @@ impl<R: Resource> Dispatcher<R> {
         self.last.borrow_mut().take();
     }
 
-    pub(crate) fn take(&self) -> Option<ControlInvocation> {
-        self.take_attributed().map(|(invocation, _)| invocation)
-    }
-
     /// The next queued invocation, with the effect invocation it continues.
     pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
         self.queue.borrow_mut().pop_front()

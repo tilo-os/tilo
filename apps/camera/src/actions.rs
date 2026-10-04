@@ -5,17 +5,17 @@
 //! — and the *device I/O* around them
 //! (opening a lens, decoding a QR out of a frame, the live viewfinder) is
 //! external, not collaborative. What lives in the shared Automerge document
-//! (see [`crate::doc`]) is the *metadata*: portable capture registrations,
-//! mode and capture preferences, and scan history. Those durable
-//! choices are [`CameraAction`]s: small serializable values that
+//! (see [`crate::doc`]) is the *metadata*: portable capture registrations
+//! and scan history. Those durable records are [`CameraAction`]s: small serializable values that
 //! deterministically mutate the CRDT and therefore replicate, replay and undo
 //! for free.
 //!
 //! ## What is *not* an action
 //!
 //! Capturing a photo/video (the frame write is device I/O), scanning codes
-//! and documents, and switching screens are the [`CameraEffect`]
-//! vocabulary. Media-library management is owned by Photos or Video Player.
+//! and documents, switching screens, mode and lens, and changing the capture
+//! preferences (settings of the person and of this device, never document
+//! state) are the [`CameraEffect`] vocabulary. Media-library management is owned by Photos or Video Player.
 //! The one recent handoff, zoom, and an open chooser are presentation-only.
 //!
 //! ## Determinism contract
@@ -29,19 +29,17 @@
 use automerge::ROOT;
 use serde::{Deserialize, Serialize};
 
-use tilo_actions::{
-    Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind, Resource,
-};
+use tilo_actions::{Action, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource};
 use ui::framework::LiveRow;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Effect};
 
 use crate::doc;
-use crate::model::{CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, Settings, Timer};
+use crate::model::{CaptureKind, CaptureMode, Facing, Settings};
 
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
-pub const APPLICATION_LAUNCH_TYPE: &str = "tilo.application.launch";
+pub use ui::tilo_actions::remote::ApplicationLaunch;
 /// Device discovery is external and potentially hostile. Publishing a small,
 /// deterministic prefix keeps resource/search materialization bounded.
 pub const MAX_PUBLISHED_CAMERA_DEVICES: usize = 16;
@@ -68,6 +66,70 @@ pub enum CameraEffect {
     /// Open Settings
     #[effect(view)]
     OpenSettings,
+    /// Use capture mode
+    ///
+    /// Switches the viewfinder between photo and video. Unavailable while a
+    /// video records.
+    #[effect(view)]
+    UseMode {
+        #[param("Capture mode", choices = ["photo", "video"])]
+        mode: String,
+    },
+    /// Use lens
+    #[effect(view)]
+    UseLens {
+        #[param("Lens", choices = ["back", "front", "wide"])]
+        lens: String,
+    },
+    /// Set resolution
+    ///
+    /// The resolution this device's cameras capture at.
+    SetResolution {
+        #[param("Resolution", choices = ["12mp", "4k", "1080p", "720p"])]
+        resolution: String,
+    },
+    /// Set photo format
+    SetPhotoFormat {
+        #[param("Photo format", choices = ["jpeg", "png"])]
+        format: String,
+    },
+    /// Set self-timer
+    SetTimer {
+        #[param("Seconds before the shutter", choices = ["0", "3", "10"])]
+        seconds: String,
+    },
+    /// Show composition grid
+    SetGrid {
+        #[param("Whether the grid is shown")]
+        on: bool,
+    },
+    /// Show level guide
+    SetLevel {
+        #[param("Whether the level guide is shown")]
+        on: bool,
+    },
+    /// Mirror front camera
+    SetMirrorFront {
+        #[param("Whether front-camera photos are mirrored")]
+        on: bool,
+    },
+    /// Tag photo location
+    SetGeotag {
+        #[param("Whether photos record where they were taken")]
+        on: bool,
+    },
+    /// Use HDR
+    SetHdr {
+        #[param("Whether photos use HDR")]
+        on: bool,
+    },
+    /// Set default lens
+    ///
+    /// The lens this device's Camera opens with.
+    SetDefaultLens {
+        #[param("Lens", choices = ["back", "front", "wide"])]
+        lens: String,
+    },
     /// Capture photo
     ///
     /// Saves the current frame and answers once the photo is registered.
@@ -147,51 +209,12 @@ pub enum CameraAction {
         label: String,
         facing: Facing,
     },
-    SetMode {
-        mode: CaptureMode,
-    },
-    SetFacing {
-        facing: Facing,
-    },
-    /// One scalar capture preference.  These stay deliberately granular: a
-    /// collaborator changing the grid must not overwrite a concurrently
-    /// selected timer or resolution.
-    SetResolution {
-        resolution: Resolution,
-    },
-    SetPhotoFormat {
-        photo_format: PhotoFormat,
-    },
-    SetTimer {
-        timer: Timer,
-    },
-    SetGrid {
-        on: bool,
-    },
-    SetLevel {
-        on: bool,
-    },
-    SetMirrorFront {
-        on: bool,
-    },
-    SetGeotag {
-        on: bool,
-    },
-    SetHdr {
-        on: bool,
-    },
-    SetDefaultFacing {
-        facing: Facing,
-    },
     /// Record a decoded code into the shared scan history. The QR/barcode
     /// decode is device I/O (external); this metadata row-insert is the
     /// replayable action. `ts` is minted at authoring time and carried here so
     /// `apply` stays pure; the insert deduplicates and caps deterministically
     /// against the replay base.
-    RecordScan {
-        raw: String,
-        ts: i64,
-    },
+    RecordScan { raw: String, ts: i64 },
 }
 
 impl Action for CameraAction {
@@ -223,23 +246,6 @@ impl Action for CameraAction {
                 },
             )
             .map_err(ActionError::Refused)?,
-            CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
-            CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
-            CameraAction::SetResolution { resolution } => {
-                doc::set_resolution(doc, &ROOT, *resolution);
-            }
-            CameraAction::SetPhotoFormat { photo_format } => {
-                doc::set_photo_format(doc, &ROOT, *photo_format);
-            }
-            CameraAction::SetTimer { timer } => doc::set_timer(doc, &ROOT, *timer),
-            CameraAction::SetGrid { on } => doc::set_grid(doc, &ROOT, *on),
-            CameraAction::SetLevel { on } => doc::set_level(doc, &ROOT, *on),
-            CameraAction::SetMirrorFront { on } => doc::set_mirror_front(doc, &ROOT, *on),
-            CameraAction::SetGeotag { on } => doc::set_geotag(doc, &ROOT, *on),
-            CameraAction::SetHdr { on } => doc::set_hdr(doc, &ROOT, *on),
-            CameraAction::SetDefaultFacing { facing } => {
-                doc::set_default_facing(doc, &ROOT, *facing);
-            }
             CameraAction::RecordScan { raw, ts } => {
                 doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
             }
@@ -344,15 +350,6 @@ impl Default for CameraResourceCtx {
     }
 }
 
-/// Builds the palette spec for `action`, or `None` if it fails to encode (it
-/// does not for today's plain string/bool/i64 `CameraAction` fields) — a
-/// resource simply drops the action rather than crashing the palette.
-fn immediate_spec(id: &str, label: &str, action: &CameraAction) -> Option<ActionSpec> {
-    ActionSpec::immediate(id, label, CAMERA_ACTION_TYPE, action)
-        .ok()
-        .map(ActionSpec::reversible)
-}
-
 fn item_label(it: &CaptureItem) -> String {
     let l = it.label.trim();
     let base = if l.is_empty() { it.id.as_str() } else { l };
@@ -382,23 +379,10 @@ pub(crate) const fn capture_destination(is_video: bool) -> (&'static str, &'stat
 /// action here lets the painted handoff, global search, agents,
 /// and history all address the exact same external operation.
 pub fn open_photos_action() -> ActionSpec {
-    ActionSpec::typed_operation(
+    ApplicationLaunch::app("so.tilo.photos").spec(
         "open-photos",
         "Open Photos",
         "Browse your photo library in Photos",
-        OperationKind::Effect,
-        APPLICATION_LAUNCH_TYPE,
-        Vec::new(),
-        |_| {
-            EncodedAction::encode_operation(
-                APPLICATION_LAUNCH_TYPE,
-                &serde_json::json!({ "app_id": "so.tilo.photos" }),
-            )
-            .unwrap_or_else(|_| EncodedAction {
-                type_id: APPLICATION_LAUNCH_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
     )
 }
 
@@ -429,28 +413,10 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     {
         let (app_id, destination) = capture_destination(it.is_video);
         let label = format!("Open in {destination}");
-        let app_id = app_id.to_owned();
-        let content_hash = content_hash.to_owned();
-        let spec = ActionSpec::typed_operation(
+        let spec = ApplicationLaunch::with_content(app_id, content_hash).spec(
             "open",
             &label,
             "Open the verified portable capture in its owning app",
-            OperationKind::Effect,
-            APPLICATION_LAUNCH_TYPE,
-            Vec::new(),
-            move |_| {
-                EncodedAction::encode_operation(
-                    APPLICATION_LAUNCH_TYPE,
-                    &serde_json::json!({
-                        "app_id": app_id,
-                        "content_hash": content_hash,
-                    }),
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: APPLICATION_LAUNCH_TYPE.into(),
-                    payload: Vec::new(),
-                })
-            },
         );
         child = child.with_action(spec);
     }
@@ -466,166 +432,12 @@ pub(crate) fn capture_item_from_shared(shared: &doc::SharedCapture) -> CaptureIt
     }
 }
 
-/// Mode / lens Document actions bound from live capture state.
-pub(crate) fn bound_mode_facing_actions(facing: Facing, recording: bool) -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for (id, label, mode) in [
-        ("photo-mode", "Use photo mode", CaptureMode::Photo),
-        ("video-mode", "Use video mode", CaptureMode::Video),
-    ] {
-        if let Some(spec) = immediate_spec(id, label, &CameraAction::SetMode { mode }) {
-            specs.push(if recording {
-                spec.unavailable("recording_active", "Stop recording before changing mode")
-            } else {
-                spec
-            });
-        }
-    }
-    for next in Facing::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("lens-{}", next.as_str()),
-            &format!("Use {} lens", next.label()),
-            &CameraAction::SetFacing { facing: next },
-        ) {
-            specs.push(if next == facing {
-                spec.unavailable("already_selected", "This lens is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    specs
-}
-
-/// Capture-settings Document child for [`tilo_resource::publish`].
-#[allow(
-    clippy::too_many_lines,
-    reason = "settings surface lists every capture preference inline"
-)]
-pub(crate) fn settings_document_resource(settings: &Settings) -> Resource {
-    let mut node = Resource::new("camera.settings", "camera.settings", "Capture settings");
-    for resolution in Resolution::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("resolution-{}", resolution.as_str()),
-            &format!("Use {} resolution", resolution.label()),
-            &CameraAction::SetResolution { resolution },
-        ) {
-            node = node.with_action(if resolution == settings.resolution {
-                spec.unavailable("already_selected", "This resolution is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for photo_format in PhotoFormat::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("format-{}", photo_format.as_str()),
-            &format!("Use {} photos", photo_format.label()),
-            &CameraAction::SetPhotoFormat { photo_format },
-        ) {
-            node = node.with_action(if photo_format == settings.photo_format {
-                spec.unavailable("already_selected", "This photo format is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for timer in Timer::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("timer-{}", timer.seconds()),
-            &format!("Use {} timer", timer.label()),
-            &CameraAction::SetTimer { timer },
-        ) {
-            node = node.with_action(if timer == settings.timer {
-                spec.unavailable("already_selected", "This timer is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for (id, label, action) in [
-        (
-            "grid",
-            if settings.grid {
-                "Turn off composition grid"
-            } else {
-                "Turn on composition grid"
-            },
-            CameraAction::SetGrid { on: !settings.grid },
-        ),
-        (
-            "level",
-            if settings.level {
-                "Turn off level guide"
-            } else {
-                "Turn on level guide"
-            },
-            CameraAction::SetLevel {
-                on: !settings.level,
-            },
-        ),
-        (
-            "mirror-front",
-            if settings.mirror_front {
-                "Turn off front-camera mirroring"
-            } else {
-                "Turn on front-camera mirroring"
-            },
-            CameraAction::SetMirrorFront {
-                on: !settings.mirror_front,
-            },
-        ),
-        (
-            "geotag",
-            if settings.geotag {
-                "Turn off photo location"
-            } else {
-                "Turn on photo location"
-            },
-            CameraAction::SetGeotag {
-                on: !settings.geotag,
-            },
-        ),
-        (
-            "hdr",
-            if settings.hdr {
-                "Turn off HDR"
-            } else {
-                "Turn on HDR"
-            },
-            CameraAction::SetHdr { on: !settings.hdr },
-        ),
-    ] {
-        if let Some(spec) = immediate_spec(id, label, &action) {
-            node = node.with_action(spec);
-        }
-    }
-    for next in Facing::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("default-lens-{}", next.as_str()),
-            &format!("Use {} as the default camera", next.label()),
-            &CameraAction::SetDefaultFacing { facing: next },
-        ) {
-            node = node.with_action(if next == settings.default_facing {
-                spec.unavailable(
-                    "already_selected",
-                    "This default camera is already selected",
-                )
-            } else {
-                spec
-            });
-        }
-    }
-    node
-}
-
-/// Document-derived children: settings, recent handoff, scan history rows.
+/// Document-derived children: the recent handoff and scan history rows.
 pub(crate) fn publish_document_children(
-    settings: &Settings,
     recent: Option<&CaptureItem>,
     scans: &[crate::model::ScanEntry],
 ) -> Vec<Resource> {
-    let mut children = vec![settings_document_resource(settings)];
+    let mut children = Vec::new();
     if let Some(it) = recent {
         children.push(capture_resource(it));
     }
@@ -775,8 +587,8 @@ fn document_row(ctx: &CameraResourceCtx) -> LiveRow {
 
 /// What the surface publishes beside the document: the capture pipeline
 /// with its cameras, the code scanner and the document scanner, each with
-/// the effects it offers now. Mode, lens and settings are the resource's
-/// own actions.
+/// the effects it offers now. Mode, lens and the capture preferences are
+/// effects on the resource.
 pub(crate) fn live_rows(ctx: &CameraResourceCtx) -> Vec<LiveRow> {
     vec![capture_row(ctx), scanner_row(ctx), document_row(ctx)]
 }
@@ -788,6 +600,7 @@ mod tests {
     use automerge::AutoCommit;
     use tilo_actions::ActionInput;
     use tilo_actions::ActionRegistry;
+    use ui::tilo_actions::OperationKind;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -802,6 +615,9 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::resource::sample_capture().apply(&mut doc).unwrap();
         app.sync(&mut doc, &ROOT);
+        app.present_record(
+            &<crate::resource::Camera as ui::tilo_resource::Resource>::read(&doc).unwrap(),
+        );
         (app, doc)
     }
 
@@ -816,12 +632,9 @@ mod tests {
         resources
     }
 
-    /// The tree for `ctx` alone: its mode, lens, settings and recent capture.
+    /// The tree for `ctx` alone: its rows and recent capture.
     fn provide_resources(ctx: &CameraResourceCtx) -> Vec<Resource> {
         let state = crate::resource::CameraState {
-            mode: ctx.mode,
-            facing: ctx.facing,
-            settings: ctx.settings,
             scans: Vec::new(),
             recent: ctx.recent.as_ref().map(|item| doc::SharedCapture {
                 id: item.id.clone(),
@@ -857,6 +670,7 @@ mod tests {
         let mut app = CameraApp::sample();
         app.sync(&mut doc.clone(), &ROOT);
         let state = <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
+        app.present_record(&state);
         tree(&app.camera_resource_ctx(), &state)
     }
 
@@ -869,18 +683,12 @@ mod tests {
         registry: registry(),
         resources: |doc| published(doc),
         palette: [
-            "Use video mode",
-            "Use 4K resolution",
-            "Turn off composition grid",
             "Open Photos",
         ],
         replay: [
             // The scan-history row-insert: dedup + cap run deterministically
             // against the shared base on each replica.
             record_scan => |_| encoded(&record_scan_action("https://example.test/hello", 1234)),
-            set_grid => |doc| encoded(&CameraAction::SetGrid {
-                on: !doc::read_settings(doc, &ROOT).grid,
-            }),
             register_capture => |_| encoded(&CameraAction::RegisterCapture {
                 id: "IMG_peer.jpg".into(),
                 media_id: crate::media::store(
@@ -898,20 +706,6 @@ mod tests {
         ],
         undo: [
             record_scan => |_| encoded(&record_scan_action("https://example.test/undo", 99)),
-            set_mode => |_| encoded(&CameraAction::SetMode { mode: CaptureMode::Video }),
-        ],
-        encodes: [
-            video_mode => ("camera", "video-mode", |_, _| {
-                encoded(&CameraAction::SetMode { mode: CaptureMode::Video })
-            }),
-            resolution_4k => ("camera.settings", "resolution-4k", |_, _| {
-                encoded(&CameraAction::SetResolution { resolution: Resolution::R4K })
-            }),
-            grid => ("camera.settings", "grid", |doc, _| {
-                encoded(&CameraAction::SetGrid {
-                    on: !doc::read_settings(doc, &ROOT).grid,
-                })
-            }),
         ],
     }
 
@@ -944,7 +738,7 @@ mod tests {
                 .expect("capture surface routes browsing to Photos");
             assert_eq!(
                 browse.operation_type.as_deref(),
-                Some(APPLICATION_LAUNCH_TYPE)
+                Some(ApplicationLaunch::TYPE)
             );
             let ActionInput::Immediate(encoded) = &browse.input else {
                 panic!("Photos browse is a zero-argument application handoff");
@@ -968,7 +762,7 @@ mod tests {
                     .expect("capture has its typed open handoff");
                 assert_eq!(
                     action.operation_type.as_deref(),
-                    Some(APPLICATION_LAUNCH_TYPE)
+                    Some(ApplicationLaunch::TYPE)
                 );
                 assert!(
                     !resource.actions.iter().any(|action| {
@@ -1000,7 +794,6 @@ mod tests {
                 .collect();
             assert!(ids.contains(&"camera.scanner"));
             assert!(ids.contains(&"camera.document-scanner"));
-            assert!(ids.contains(&"camera.settings"));
             assert!(
                 !ids.iter()
                     .any(|id| { matches!(*id, "so.tilo.photos.app" | "so.tilo.video-player.app") }),
@@ -1069,36 +862,35 @@ mod tests {
             assert!(
                 specs
                     .iter()
-                    .all(|spec| spec.kind == OperationKind::View && spec.id.starts_with("open-")),
-                "only the screen reveals are offered unbound: {:?}",
+                    .filter(|spec| spec.kind == OperationKind::View)
+                    .all(|spec| spec.id.starts_with("open-") || spec.id.starts_with("use-")),
+                "only the screen, mode and lens reveals are views: {:?}",
                 specs.iter().map(|spec| &spec.id).collect::<Vec<_>>()
             );
         }
         // Phase `ctrl_k_exposes_every_capture_preference`.
         {
-            let resources = provide_resources(&CameraResourceCtx::default());
-            let settings = resources
-                .iter()
-                .flat_map(|resource| std::iter::once(resource).chain(resource.children.iter()))
-                .find(|resource| resource.id.as_str() == "camera.settings")
-                .expect("stable settings resource");
-            let ids: Vec<&str> = settings
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
+            let ids: Vec<String> = CameraEffect::specs()
+                .into_iter()
+                .map(|spec| spec.id)
                 .collect();
             for id in [
-                "resolution-4k",
-                "format-png",
-                "timer-3",
-                "grid",
-                "level",
-                "mirror-front",
-                "geotag",
-                "hdr",
-                "default-lens-front",
+                "use-mode",
+                "use-lens",
+                "set-resolution",
+                "set-photo-format",
+                "set-timer",
+                "set-grid",
+                "set-level",
+                "set-mirror-front",
+                "set-geotag",
+                "set-hdr",
+                "set-default-lens",
             ] {
-                assert!(ids.contains(&id), "missing settings action {id}: {ids:?}");
+                assert!(
+                    ids.iter().any(|known| known == id),
+                    "missing preference {id}: {ids:?}"
+                );
             }
         }
         // Phase `device_effects_are_honest_and_unverified_captures_publish_no_action`.

@@ -2012,9 +2012,6 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-app",
- "tilo-files",
- "tilo-paths",
- "tilo-process",
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
@@ -3180,12 +3177,12 @@ dependencies = [
 name = "disk-usage"
 version = "0.1.0"
 dependencies = [
- "fnv",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tilo-app",
  "tilo-paths",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -11705,7 +11702,6 @@ dependencies = [
  "anyhow",
  "des",
  "iroh-base",
- "private-fs",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -11713,12 +11709,12 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-callstream",
- "tilo-files",
  "tilo-paths",
  "tilo-relay-protocol",
  "tilo-test-env",
@@ -17657,7 +17653,6 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-net",
- "tilo-paths",
  "tilo-secrets",
  "tilo-test-env",
  "tilo-vello",

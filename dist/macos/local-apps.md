@@ -79,6 +79,96 @@ The command intentionally has no `sign`, `install`, or `notarize` action. Its
 receipts and signing inventory make the next step concrete while user presence
 is pending.
 
+## Tube media profile
+
+Tube's default `media/decode` feature uses the shared media engine's `playbin`,
+appsink video path and audio bin. Its normal resolved stream is a progressive
+HTTP(S) media URL. A separately pinned `--app-profile` now covers this shape;
+it does not disable production features or relax the ordinary SDK adapter.
+The same main-executable relocation and inside-out signing inventory used by
+Music and Remote apply. Actual playback remains unqualified until signed tests
+can run. This profile does not promise adaptive HLS/DASH or additional apps.
+
+The reviewed delta from the 41-image base is 20 plugins: `coreelements`, `app`,
+`playback`, `typefindfunctions`, `videoconvertscale`, `videofilter`, `deinterlace`,
+`audioconvert`, `audioresample`, `autodetect`, `osxaudio`, `volume`, `audioparsers`,
+`videoparsersbad`, `isomp4`, `matroska`, `subparse`, `pango`, `assrender`, `reqwest`.
+Their 26 additional libraries and exact 20-package set are enumerated in
+`collection_media_runtime.py`. The installed input versions contribute
+18,089,696 image bytes, bounded to 24 MiB; any plugin, library, package, hash or
+architecture change requires a new reviewed profile. X11 libraries are linked
+dependencies of the installed Cairo build; no X server or display is started.
+
+The additional package names are libass, libunibreak, harfbuzz, graphite2,
+freetype, libpng, fribidi, cairo, pixman, libxcb, libxdmcp, libxau, libxrender,
+libx11, libxext, fontconfig, pango, libthai and libdatrie. Their installed notices
+are pinned alongside the libraries. libunibreak's `LICENCE` and libthai's
+`share/libthai/thbrk.tri` are explicit hash-pinned data inputs. No package or
+dependency installation is performed; this remains a private local profile,
+not evidence of public redistribution qualification.
+
+The adapter adds 70 data/notice files (1,377,495 bytes for the reviewed inputs),
+including the Good translation catalogs and a source-controlled Fontconfig
+configuration. The media launcher selects that configuration and a bundle-local
+Thai dictionary. Fontconfig reads `/System/Library/Fonts` and `/Library/Fonts`
+in place, with no Homebrew or user configuration includes. It uses the explicit
+Pango Fontconfig backend and puts XDG caches under the existing per-profile,
+per-location runtime cache. This changes `XDG_CACHE_HOME` only in this media
+profile's launched processes. It rejects missing configuration/dictionary paths.
+The HTTP plugin uses the native macOS trust path; inherited `SSL_CERT_FILE` and
+`SSL_CERT_DIR` overrides are removed. No TLS verification exception is added.
+
+After user presence permits signing, verify local MP4/WebM playback, actual
+HTTP range seeking, successful trusted HTTPS and rejected invalid certificates,
+text/ASS subtitles, system font discovery, Thai line breaking, locale catalogs,
+and a relocated bundle path containing spaces. Observe resource loads to prove
+that no build-host/Homebrew configuration, dictionary, module or cache is used.
+Static Mach-O closure checks alone do not establish these behaviors. Missing
+runtime coverage remains a qualification blocker, never a reason to silently
+add plugins, change entitlements, or disable a feature.
+
+Sources: [GStreamer HTTP source](https://gstreamer.freedesktop.org/documentation/reqwest/index.html),
+[subtitle overlay](https://gstreamer.freedesktop.org/documentation/playback/subtitleoverlay.html),
+[Fontconfig configuration](https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-user.html),
+[Pango backend selection](https://gitlab.gnome.org/GNOME/pango/-/blob/main/pango/pangocairo-fontmap.c),
+and [LibThai dictionary selection](https://github.com/tlwg/libthai/blob/master/src/thbrk/brk-common.c).
+
+## Video Player and Video Editor profiles
+
+These are separate app-pinned profiles built on Tube's reviewed media set. A
+profile cannot be reused under another app name or silently add package roots.
+The launcher and data policy are unchanged. All three media deltas remain
+bounded to 24 MiB of additional code; this does not change the Music/Remote limit.
+
+Video Player's file chooser includes AVI alongside MP4, MOV, WebM and Matroska.
+Its profile adds `avi` (232,720 bytes), with no additional library or package.
+The full delta from the base payload is 47 images (18,322,416 bytes) and the
+same 70 data/notice files as Tube. A completed bundle contains 92 code objects.
+
+Video Editor's default features include both preview and export. Its profile
+adds `avi`, `x264`, `opus`, `ogg`, `wavparse`, `aiff`, `asf`, `flac`, `flv`,
+`mpegpsdemux`, `mpegtsdemux`, `id3demux` and `apetag` beyond Tube. These bring five
+libraries: `libgstmpegts`, `libFLAC`, `libogg`, `libgstsdp` and `libgstrtsp`.
+Only FLAC and libogg are additional packages; x264 and Opus libraries are already
+in the base payload. MP4/MOV export uses the app's existing H.264/AAC selection;
+WebM uses VP8/Opus. Adding the installed plugins does not change that selection
+policy or introduce a Cisco download or a hardware-encoding claim.
+
+The Editor delta beyond Tube is 18 images (2,780,752 bytes). From the base payload
+it is 64 images (20,870,448 bytes) and 168 resource/notice files (1,671,792 bytes),
+including the Bad/Ugly catalogs and the new packages' notices. A completed bundle
+contains 109 code objects. Package versions, image names, input hashes, notice
+hashes and data assets are all validated before copying. An extra package record
+or a second version cannot redirect resource collection.
+
+The profiles support static assembly of the default compiled apps, not proof of
+every import recognized by their file probes. Some probe extensions intentionally
+return unknown metadata in production; this profile does not promise all of
+them. After signing access is available, exercise AVI and the usual MP4/WebM/MOV
+playback paths, subtitle/font/dictionary behavior, waveform/audio preview, and
+real MP4/MOV/WebM exports with audio, cancellation and end-of-stream completion.
+Do not call the apps runtime-qualified or installable until those checks pass.
+
 ## Music and Remote main-process profiles
 
 These apps directly link GStreamer in their main executable. The ordinary local

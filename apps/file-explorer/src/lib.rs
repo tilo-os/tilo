@@ -75,14 +75,12 @@ pub use resource::{FileExplorer, FileExplorerShell};
 
 /// The Files a host mounted, when `widget` is the root of a Files tab: for a
 /// host's test that drives the Files it shows.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn mounted_files(widget: &mut dyn ui::widget::Widget) -> Option<&mut FileExplorerWidget> {
     ui::framework::testing::surface_in_root::<FileExplorerShell, FileExplorerWidget>(widget)
 }
 
 /// The Files a test harness runs as its app: the component a host mounted
 /// and the harness drives.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn mounted_files_in(
     harness: &mut ui::headless::FrameHarness,
 ) -> Option<&mut FileExplorerWidget> {

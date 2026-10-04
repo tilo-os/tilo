@@ -219,9 +219,10 @@ impl ComponentReplacement {
 }
 
 /// What became of a request to show another record in a window: nothing
-/// yet, shown, or refused with the reason. The asking component reads it on
-/// its next frame, before the host closes it, so the operation that asked
-/// is answered and a refusal is shown to the person.
+/// yet, shown, or refused with the reason. The host answers before it
+/// closes the asking component and polls the operation that asked, so that
+/// operation can be answered from it; a refusal leaves the component open to
+/// tell the person on its next frame.
 #[derive(Clone, Default)]
 pub struct ReplacementOutcome(Rc<RefCell<Option<Result<(), String>>>>);
 

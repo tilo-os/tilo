@@ -1,21 +1,16 @@
-//! The session-private channel between Clocks and the shell: the app
-//! publishes the clock floating above other windows, and the shell hands
-//! back the controls pressed on it. The runtime directory is already
-//! per-login; owner and mode checks on the shell side prevent forged status.
-
-use std::io;
+//! The clock Clocks keeps floating above other windows, as its live
+//! activity over the app's channel: the shell presents it, and hands back
+//! the controls pressed on it.
 
 use serde::{Deserialize, Serialize};
-use tilo_files::{Dir, VPath, blocking};
 
-/// The floating clock as the shell reads it.
+/// The floating clock as the shell presents it.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "mirrors the JSON wire format the shell reads; each flag is independent"
+    reason = "the activity the shell presents; each flag is independent"
 )]
 pub struct ShellSnapshot {
-    pub version: u8,
     pub active: bool,
     /// The timer shown; `None` is the stopwatch.
     #[serde(default)]
@@ -26,12 +21,9 @@ pub struct ShellSnapshot {
     #[serde(default)]
     pub paused: bool,
     pub overlay: bool,
-    pub generation: u64,
-    pub producer_pid: u32,
-    /// Stable identity for the latest due event. It is deliberately separate
-    /// from `generation`: live snapshots are refreshed often, while a due
-    /// event must be announced exactly once even if the shell observes it
-    /// after the timer has already left the active set.
+    /// Stable identity for the latest due event: a due event is announced
+    /// exactly once even if the shell takes it in after the timer has
+    /// already left the active set.
     #[serde(default)]
     pub notification_id: Option<String>,
     #[serde(default)]
@@ -41,58 +33,28 @@ pub struct ShellSnapshot {
 }
 
 /// A control pressed on the shell's floating clock.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct ShellCommand {
     pub command: String,
     /// The timer it names; `None` for the stopwatch.
+    #[serde(default)]
     pub activity_id: Option<String>,
 }
 
-/// `$XDG_RUNTIME_DIR/tilo`, which the shell reads and writes too.
-fn runtime() -> io::Result<Dir> {
-    let location = tilo_paths::AppPaths::for_app("tilo")
-        .runtime()
-        .map_err(|error| io::Error::new(io::ErrorKind::NotFound, error))?;
-    Dir::open(location).map_err(io::Error::other)
+/// Show `snapshot` as Clocks' live activity, or end it when there is nothing
+/// running and nothing to announce.
+pub fn publish(snapshot: &ShellSnapshot) {
+    let shown = (snapshot.active || snapshot.notification_id.is_some())
+        .then(|| serde_json::to_value(snapshot).ok())
+        .flatten();
+    ui::collaboration::channel_live_activity::show(shown);
 }
 
-/// Atomically writes `snapshot` to the private transport file.
-///
-/// # Errors
-///
-/// Fails when the session has no runtime directory, serialization fails, or
-/// the file cannot be written.
-pub fn publish(snapshot: &ShellSnapshot) -> io::Result<()> {
-    let name = VPath::new("clocks.json").map_err(io::Error::other)?;
-    blocking::write_private(&runtime()?, &name, &serde_json::to_vec(snapshot)?)
-        .map_err(io::Error::other)
-}
-
-#[derive(Deserialize)]
-struct Command {
-    version: u8,
-    #[expect(
-        clippy::struct_field_names,
-        reason = "the field name is the JSON key the shell writes"
-    )]
-    command: String,
-    #[serde(default)]
-    activity_id: Option<String>,
-}
-
-/// The control the shell handed over since the last call, if any.
+/// The controls pressed on the floating clock since the last call.
 #[must_use]
-pub fn take_command() -> Option<ShellCommand> {
-    let dir = runtime().ok()?;
-    let name = VPath::new("clocks-command.json").ok()?;
-    let bytes = blocking::read(&dir, &name).ok()?;
-    let _ = blocking::remove(&dir, &name);
-    if bytes.len() > 1024 {
-        return None;
-    }
-    let command: Command = serde_json::from_slice(&bytes).ok()?;
-    (command.version == 1).then_some(ShellCommand {
-        command: command.command,
-        activity_id: command.activity_id,
-    })
+pub fn take_commands() -> Vec<ShellCommand> {
+    ui::collaboration::channel_live_activity::take_controls()
+        .into_iter()
+        .filter_map(|control| serde_json::from_value(control).ok())
+        .collect()
 }

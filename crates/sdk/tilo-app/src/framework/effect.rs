@@ -535,6 +535,41 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             None => Err(CHOOSER_GONE.into()),
         })
     }
+
+    /// Ask the host to show what a launch naming `arguments` opens in this
+    /// window, in place of the record it shows ([`OpenHere::open`]), then
+    /// run `then` on the UI thread with its answer: shown, or why not. The
+    /// answer arrives even when the window shows the new record before this
+    /// surface draws another frame. Cancelling the effect withdraws a
+    /// request the host has not taken up yet. The effect must be declared
+    /// `job`.
+    pub fn open_here(
+        &mut self,
+        opener: &super::OpenHere,
+        arguments: &[String],
+        then: impl FnOnce(&mut H, Result<(), String>, &mut Self) -> EffectAnswer + 'static,
+    ) -> Effected {
+        /// Withdraws the request when the job stops unanswered.
+        struct Asked(ui_core::application::ReplacementOutcome);
+        impl Drop for Asked {
+            fn drop(&mut self) {
+                self.0.withdraw();
+            }
+        }
+        let asked = Asked(opener.open(arguments));
+        let (progress, _) = self.track(Some(Self::then(then)));
+        if let Some(started) = self.started.as_mut() {
+            started.source = Some(Box::new(move || {
+                // The job's own channel stays open while it waits here.
+                let _waiting = &progress;
+                asked
+                    .0
+                    .get()
+                    .map(|answer| Box::new(answer) as Box<dyn Any + Send>)
+            }));
+        }
+        Effected::Pending
+    }
 }
 
 /// Work a view or surface starts on its own, with nobody invoking an
@@ -1701,6 +1736,80 @@ mod tests {
             })
             .unwrap_err();
         assert!(refused.contains("no document"), "{refused}");
+    }
+
+    /// An effect waiting to show another record here: the opener it asked,
+    /// and the requests it made.
+    fn opener() -> (
+        super::super::OpenHere,
+        Rc<RefCell<Vec<ui_core::application::ReplacementOutcome>>>,
+    ) {
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let requests = Rc::clone(&asked);
+        let opener = super::super::OpenHere::new(move |_| {
+            let outcome = ui_core::application::ReplacementOutcome::default();
+            requests.borrow_mut().push(outcome.clone());
+            outcome
+        });
+        (opener, asked)
+    }
+
+    fn open_here_job(
+        runner: &mut EffectRunner<Probe, (), Work>,
+        opener: &super::super::OpenHere,
+    ) -> InvocationId {
+        let invocation = InvocationId::new();
+        let payload = payload(&Work::Count);
+        let op = ResourceOperation::local(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            Work::OPERATION,
+            &payload,
+        );
+        let opener = opener.clone();
+        runner
+            .start(&op, &mut (), None, move |(), _, cx| {
+                Ok(cx.open_here(&opener, &["b.pdf".into()], |(), answer, _| {
+                    answer.map(|()| Effected::value("shown"))
+                }))
+            })
+            .unwrap();
+        invocation
+    }
+
+    #[test]
+    fn opening_here_answers_with_the_hosts_answer_or_withdraws_when_cancelled() {
+        let (opener, asked) = opener();
+        let mut runner = runner();
+
+        let shown = open_here_job(&mut runner, &opener);
+        assert!(
+            runner.poll(shown, false, &mut ()).is_none(),
+            "waits for the host"
+        );
+        asked.borrow()[0].answer(Ok(()));
+        assert!(matches!(
+            runner.poll(shown, false, &mut ()),
+            Some(InvocationUpdate::Succeeded { output, .. })
+                if output.value == Some(serde_json::json!("shown"))
+        ));
+
+        let refused = open_here_job(&mut runner, &opener);
+        asked.borrow()[1].answer(Err("the file is gone".into()));
+        assert!(matches!(
+            runner.poll(refused, false, &mut ()),
+            Some(InvocationUpdate::Failed { error, .. }) if error.message == "the file is gone"
+        ));
+
+        let cancelled = open_here_job(&mut runner, &opener);
+        assert!(matches!(
+            runner.poll(cancelled, true, &mut ()),
+            Some(InvocationUpdate::Cancelled { .. })
+        ));
+        assert!(
+            !asked.borrow()[2].withdraw(),
+            "the cancelled effect withdrew its request before the host took it"
+        );
     }
 
     #[test]

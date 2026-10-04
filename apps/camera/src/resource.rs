@@ -1,13 +1,14 @@
-//! Camera as a [`tilo_resource::Resource`]: one action vocabulary for capture
-//! prefs, scan history and the recent-capture handoff; the shutter, devices
-//! and scanners are live rows the surface publishes.
+//! Camera as a [`tilo_resource::Resource`]: one action vocabulary for scan
+//! history and the recent-capture handoff; the shutter, devices and scanners
+//! are live rows the surface publishes.
 //!
-//! Document mutations (mode, lens, settings toggles) live on this resource via
-//! [`Resource::bound_actions`] / [`Resource::children`]. Everything else is
-//! the surface's [`CameraEffect`] vocabulary: the screen reveals are offered
-//! on the camera, while shutter, record, camera chooser, code-scanner import
-//! and document-scanner effects ride the surface's
-//! [`ResourceSurface::live_rows`].
+//! Everything else is the surface's [`CameraEffect`] vocabulary: the screen,
+//! mode and lens reveals and the capture preferences are offered on the
+//! camera, while shutter, record, camera chooser, code-scanner import and
+//! document-scanner effects ride the surface's
+//! [`ResourceSurface::live_rows`]. Capture preferences are settings — the
+//! person's [`CapturePreferences`] and this device's
+//! [`CameraDevicePreferences`] — never document state.
 
 use std::rc::Rc;
 
@@ -16,41 +17,28 @@ use ui::framework::{
     Command, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
     RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_actions::Resource as PublishedResource;
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    CAMERA_ACTION_TYPE, CameraAction, CameraEffect, bound_mode_facing_actions,
-    capture_item_from_shared, publish_document_children,
+    CAMERA_ACTION_TYPE, CameraAction, CameraEffect, capture_item_from_shared,
+    publish_document_children,
 };
 use crate::app::CameraApp;
 use crate::doc::{self, SharedCapture};
-use crate::model::{CaptureKind, CaptureMode, Facing, ScanEntry, Settings, Timer};
+use crate::model::{
+    CameraDevicePreferences, CaptureKind, CaptureMode, CapturePreferences, Facing, ScanEntry, Timer,
+};
 
 /// Stable id for the published camera root.
 pub const CAMERA_RESOURCE_ID: &str = "camera";
 
 /// Shared camera document projection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CameraState {
-    pub mode: CaptureMode,
-    pub facing: Facing,
-    pub settings: Settings,
     pub scans: Vec<ScanEntry>,
     pub recent: Option<SharedCapture>,
-}
-
-impl Default for CameraState {
-    fn default() -> Self {
-        Self {
-            mode: CaptureMode::Photo,
-            facing: Facing::Back,
-            settings: Settings::default(),
-            scans: Vec::new(),
-            recent: None,
-        }
-    }
 }
 
 /// The camera resource.
@@ -66,26 +54,14 @@ impl Resource for Camera {
 
     fn read(doc: &Doc) -> Result<CameraState, ModelError> {
         Ok(CameraState {
-            mode: doc::read_mode(doc, &ROOT),
-            facing: doc::read_facing(doc, &ROOT),
-            settings: doc::read_settings(doc, &ROOT),
             scans: doc::read_scans(doc, &ROOT),
             recent: doc::read_recent_capture(doc, &ROOT),
         })
     }
 
-    fn bound_actions(state: &CameraState) -> Vec<ActionSpec> {
-        // Recording is live state the resource cannot see: the surface
-        // withholds the mode switch while it records.
-        bound_mode_facing_actions(state.facing, false)
-            .into_iter()
-            .filter(|spec| spec.kind == OperationKind::Document)
-            .collect()
-    }
-
     fn children(state: &CameraState) -> Vec<PublishedResource> {
         let recent = state.recent.as_ref().map(capture_item_from_shared);
-        publish_document_children(&state.settings, recent.as_ref(), &state.scans)
+        publish_document_children(recent.as_ref(), &state.scans)
     }
 
     fn search(state: &CameraState) -> Vec<SearchEntry> {
@@ -182,25 +158,23 @@ impl ResourceApp for CameraShell {
         (1280, 800)
     }
 
+    /// The video scenario films; the timer scenario counts down from a
+    /// three-second self-timer the person chose.
     fn fixture(fixture: &mut Fixture<Camera>) {
         fixture.provide(ShotClock(SHOT_NOW));
-    }
-
-    /// Every screenshot has a recent capture to hand off; the video and
-    /// timer scenarios set the mode and the timer as a person would.
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Camera>> {
-        let mut actions = vec![sample_capture()];
-        match name {
-            Some("video") => actions.push(CameraAction::SetMode {
-                mode: CaptureMode::Video,
+        match fixture.scenario() {
+            Some("video") => fixture.provide(CaptureMode::Video),
+            Some("timer") => fixture.provide(CapturePreferences {
+                timer: Timer::S3,
+                ..CapturePreferences::default()
             }),
-            Some("timer") => actions.push(CameraAction::SetTimer { timer: Timer::S3 }),
             _ => {}
         }
-        actions
-            .iter()
-            .filter_map(|action| Invoke::apply(action).ok())
-            .collect()
+    }
+
+    /// Every screenshot has a recent capture to hand off.
+    fn scenario(_name: Option<&str>) -> Vec<Invoke<Camera>> {
+        Invoke::apply(&sample_capture()).into_iter().collect()
     }
 
     fn commands() -> &'static [Command] {
@@ -234,17 +208,33 @@ fn emit_photos(dir: &str) -> Result<(), String> {
 }
 
 impl ResourceSurface<Camera, CameraEffect> for CameraApp {
-    /// The surface reads the record in `sync`, from the document it is
-    /// handed: the live one, or a past version in History.
-    fn present(&mut self, _state: &Rc<CameraState>) {
-        self.mark_dirty();
+    /// The scan history and the recent capture, from the live record or a
+    /// past version in History.
+    fn present(&mut self, state: &Rc<CameraState>) {
+        self.present_record(state);
     }
 
+    /// A live window follows the person's and this device's capture
+    /// preferences; a capture shows its scenario's; a past version the
+    /// defaults.
     fn attach(&mut self, cx: SurfaceCx<Camera>) {
-        if cx.mode() == RunMode::Capture
-            && let Some(clock) = cx.fixture::<ShotClock>()
-        {
-            self.set_clock(clock.0);
+        match cx.mode() {
+            RunMode::Capture => {
+                if let Some(clock) = cx.fixture::<ShotClock>() {
+                    self.set_clock(clock.0);
+                }
+                if let Some(mode) = cx.fixture::<CaptureMode>() {
+                    self.stage_mode(*mode);
+                }
+                if let Some(person) = cx.fixture::<CapturePreferences>() {
+                    self.stage_preferences(*person, CameraDevicePreferences::default());
+                }
+            }
+            RunMode::Live => self.follow_preferences(
+                cx.settings::<CapturePreferences>(),
+                cx.settings::<CameraDevicePreferences>(),
+            ),
+            RunMode::Past => {}
         }
         self.attach_dispatcher(cx.dispatcher());
     }
@@ -263,20 +253,15 @@ impl ResourceSurface<Camera, CameraEffect> for CameraApp {
 
     /// Switching between photo and video stops nothing: while a video
     /// records, the switch is unavailable.
-    fn availability(&self) -> Vec<EffectStatus> {
+    fn effects(&self) -> Vec<EffectStatus> {
         if !self.is_recording() {
             return Vec::new();
         }
-        ["photo-mode", "video-mode"]
-            .into_iter()
-            .map(|id| {
-                EffectStatus::unavailable(
-                    ActionRef::<Camera, ()>::new(id, &[]),
-                    "recording",
-                    "Stop recording to switch modes",
-                )
-            })
-            .collect()
+        vec![EffectStatus::unavailable(
+            CameraEffect::USE_MODE,
+            "recording",
+            "Stop recording to switch modes",
+        )]
     }
 }
 
@@ -286,30 +271,31 @@ mod tests {
     use ui::prelude::TestApp;
 
     #[test]
-    fn the_published_camera_owns_the_document_door_and_rows_carry_effects() {
-        let state = CameraState {
-            mode: CaptureMode::Video,
-            ..CameraState::default()
-        };
-        let published = ui::tilo_resource::publish::<Camera>(CAMERA_RESOURCE_ID, "Camera", &state);
+    fn mode_lens_and_preferences_are_effects_and_rows_carry_effects() {
+        let mut app = TestApp::<CameraShell>::new().unwrap();
+        let surface = serde_json::to_string(&app.agent_surface()).unwrap();
+        for id in [
+            "use-mode",
+            "use-lens",
+            "set-grid",
+            "set-hdr",
+            "set-default-lens",
+        ] {
+            assert!(surface.contains(id), "{id} is published: {surface}");
+        }
+        let published = ui::tilo_resource::publish::<Camera>(
+            CAMERA_RESOURCE_ID,
+            "Camera",
+            &CameraState::default(),
+        );
         assert_eq!(published.kind, "camera");
-        for id in ["photo-mode", "video-mode", "lens-back", "lens-front"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == id),
-                "{id} must be on the framework resource"
-            );
-        }
-        let settings = published
-            .children
-            .iter()
-            .find(|child| child.kind == "camera.settings")
-            .expect("settings child on the published door");
-        for id in ["grid", "hdr"] {
-            assert!(
-                settings.actions.iter().any(|action| action.id == id),
-                "{id} must be on settings"
-            );
-        }
+        assert!(
+            !published
+                .children
+                .iter()
+                .any(|child| child.kind == "camera.settings"),
+            "preferences are not document state"
+        );
 
         let rows: Vec<_> = CameraApp::sample()
             .live_rows()
@@ -326,15 +312,36 @@ mod tests {
         assert!(
             rows.iter()
                 .flat_map(|row| row.actions.iter())
-                .all(|action| action.kind != OperationKind::Document),
+                .all(|action| action.kind != ui::tilo_actions::OperationKind::Document),
             "rows carry views and effects only"
         );
     }
 
-    /// Every screenshot is a capture of sample frames at a fixed time, its
-    /// recent capture and modes staged through actions.
+    /// A preference set through its effect is the person's or this device's
+    /// setting, not an edit of the record.
     #[test]
-    fn captures_stage_the_record_through_actions() {
+    fn preferences_are_settings_of_the_person_and_the_device() {
+        let mut app = TestApp::<CameraShell>::new().unwrap();
+        let versions = app.versions().len();
+        app.effect(&CameraEffect::SetGrid { on: false }).unwrap();
+        app.effect(&CameraEffect::SetResolution {
+            resolution: "4k".into(),
+        })
+        .unwrap();
+        app.settle();
+        assert!(!app.settings::<CapturePreferences>().get().grid);
+        assert_eq!(
+            app.settings::<CameraDevicePreferences>().get().resolution,
+            crate::model::Resolution::R4K
+        );
+        assert_eq!(app.versions().len(), versions, "no edit of the record");
+    }
+
+    /// Every screenshot is a capture of sample frames at a fixed time, its
+    /// recent capture staged through actions and its mode and timer through
+    /// fixtures.
+    #[test]
+    fn captures_stage_the_record_and_the_preferences() {
         let mut viewfinder = TestApp::<CameraShell>::capture(None).unwrap();
         assert_eq!(viewfinder.harness().inspection().viewport, [1280, 800]);
         let recent = viewfinder
@@ -342,12 +349,19 @@ mod tests {
             .recent
             .expect("a recent capture to hand off");
         assert_eq!(recent.label, "Golden hour");
-        assert_eq!(viewfinder.state().mode, CaptureMode::Photo);
+        let mode = |app: &mut TestApp<CameraShell>| {
+            app.with_surface(|camera: &mut CameraApp| camera.capture_mode())
+                .unwrap()
+        };
+        assert_eq!(mode(&mut viewfinder), CaptureMode::Photo);
 
-        let video = TestApp::<CameraShell>::capture(Some("video")).unwrap();
-        assert_eq!(video.state().mode, CaptureMode::Video);
+        let mut video = TestApp::<CameraShell>::capture(Some("video")).unwrap();
+        assert_eq!(mode(&mut video), CaptureMode::Video);
 
-        let timer = TestApp::<CameraShell>::capture(Some("timer")).unwrap();
-        assert_eq!(timer.state().settings.timer, Timer::S3);
+        let mut timer = TestApp::<CameraShell>::capture(Some("timer")).unwrap();
+        let chosen = timer
+            .with_surface(|camera: &mut CameraApp| camera.capture_settings().timer)
+            .unwrap();
+        assert_eq!(chosen, Timer::S3);
     }
 }

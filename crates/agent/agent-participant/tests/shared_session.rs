@@ -177,6 +177,7 @@ async fn call(
 ) -> InvocationReceipt {
     let invocation = InvocationId::new();
     let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: AGENTS_PROVIDER.into(),

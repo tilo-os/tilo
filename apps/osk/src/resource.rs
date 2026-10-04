@@ -235,10 +235,24 @@ mod tests {
             assert!(published.contains(address), "{address} is published");
         }
         assert!(
-            !published.contains("secret")
-                && !published.contains("Composing")
-                && !published.contains("osk.learned"),
+            !published.contains("secret") && !published.contains("Composing"),
             "neither the word being typed nor what was learned reaches a palette, agent or script: {published}"
+        );
+        // The person's record of what was learned offers taking a change
+        // back, never what it holds.
+        let surface = app.agent_surface();
+        let learned_actions: Vec<&str> = surface
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|action| action["resource"] == "person:osk.learned")
+            .filter_map(|action| action["action"].as_str())
+            .collect();
+        assert!(
+            learned_actions
+                .iter()
+                .all(|action| matches!(*action, "undo" | "redo")),
+            "{learned_actions:?}"
         );
     }
 

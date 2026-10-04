@@ -1815,6 +1815,83 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
 }
 
 #[test]
+fn with_a_broker_an_effects_edit_is_admitted_there_for_its_invoker() {
+    let terminal = |sent: &[CollabRequest], invocation: tilo_actions::InvocationId| {
+        sent.iter().find_map(|request| match request {
+            CollabRequest::UpdateInvocation { update, .. }
+                if update.is_terminal() && update.invocation() == invocation =>
+            {
+                Some(update.clone())
+            }
+            _ => None,
+        })
+    };
+    for refused in [true, false] {
+        let mut card = CounterCard::new();
+        card.bump_after_ping = true;
+        let mut app = App::new(State::new(), Box::new(card));
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        let sent = Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+        let invocation = tilo_actions::InvocationId::new();
+        app.invoke_published_action(
+            9,
+            invocation,
+            "test.counter".into(),
+            "ping".into(),
+            None,
+            "agent:Scribe",
+            None,
+        );
+        assert_eq!(
+            counter(&app),
+            0,
+            "nothing is applied before the broker admits it"
+        );
+        let follow_up = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                } => Some(invoke.clone()),
+                _ => None,
+            })
+            .expect("the edit goes to the broker");
+        assert_eq!(follow_up.on_behalf_of, Some(invocation));
+        assert_eq!(follow_up.target.address.action, "bump");
+        assert!(
+            terminal(&sent.borrow(), invocation).is_none(),
+            "the effect answers once its edit is admitted"
+        );
+
+        let request_id = *app.actions.follow_ups.keys().next().unwrap();
+        let receipt = if refused {
+            Err("NotPermitted".to_owned())
+        } else {
+            Ok((
+                follow_up.invocation,
+                tilo_actions::InvocationUpdate::Accepted {
+                    invocation: follow_up.invocation,
+                },
+            ))
+        };
+        assert!(app.settle_follow_up(request_id, &receipt));
+        match terminal(&sent.borrow(), invocation) {
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) if refused => {
+                assert_eq!(error.code, "permission_denied");
+            }
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. }) if !refused => {}
+            other => panic!("unexpected answer: {other:?}"),
+        }
+        assert!(app.actions.acting_for.is_empty());
+    }
+}
+
+#[test]
 fn broker_invocation_uuid_collision_preserves_original_operation_route() {
     for conflicting_action in ["bump", "async-bump"] {
         let mut app = App::new_with_controlled_inputs(

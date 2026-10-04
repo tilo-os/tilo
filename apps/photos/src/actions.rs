@@ -270,14 +270,14 @@ pub enum PhotosEffect {
     AnalyzeImage { resource_id: String },
     /// Rotate left: turn the photograph this window shows a quarter turn
     /// anticlockwise.
-    RotateLeft,
+    RotateShownLeft,
     /// Rotate right: turn the photograph this window shows a quarter turn
     /// clockwise.
-    RotateRight,
+    RotateShownRight,
     /// Crop to view: keep what this window frames of its photograph.
-    CropToView,
+    CropShownToView,
     /// Reset edits of the photograph this window shows.
-    ResetEdits,
+    ResetShownEdits,
     /// Share the photograph this window shows: copy its portable address.
     #[effect(device_only)]
     ShareShown,
@@ -1583,23 +1583,6 @@ pub fn encode(action: &PhotosAction) -> EncodedAction {
     EncodedAction::encode(PHOTOS_ACTION_TYPE, action).expect("PhotosAction is always serializable")
 }
 
-/// `ActionSpec::immediate` for a [`PhotosAction`] that lands `next` outright.
-/// Every field it carries always serializes — see [`encode`].
-#[allow(
-    clippy::expect_used,
-    reason = "PhotosAction always serializes (Rect01/u8 fields only); see encode()"
-)]
-fn immediate_photos_spec(photo_id: &str, id: &str, label: &str, next: Edits) -> ActionSpec {
-    ActionSpec::immediate(
-        id,
-        label,
-        PHOTOS_ACTION_TYPE,
-        &PhotosAction::set(photo_id, &next),
-    )
-    .expect("PhotosAction is always serializable")
-    .reversible()
-}
-
 /// Parse the `x,y,w,h` argument a prompted crop collects.
 ///
 /// Accepts four comma-separated numbers in `0..1`. Returns `None` for anything
@@ -1713,42 +1696,13 @@ pub(crate) fn library_child(library: &crate::model::PhotoLibrary, id: &str) -> O
 /// a region, reset, and producing the edited pixels as content.
 fn photo_edit_actions(photo: &PhotoResourceSeed) -> Vec<ActionSpec> {
     let edits = photo.edits;
-    let id = photo.id.clone();
-    let mut actions = vec![
-        immediate_photos_spec(&id, "rotate-right", "Rotate right", edits.rotated_right())
-            .with_description("Turn the photograph a quarter turn clockwise"),
-        immediate_photos_spec(&id, "rotate-left", "Rotate left", edits.rotated_left())
-            .with_description("Turn the photograph a quarter turn anticlockwise"),
-        ActionSpec::typed(
-            "crop",
-            "Crop to a region",
-            "0.25,0.25,0.5,0.5",
-            ExecutionLocus::ClientLocal,
-            vec![ActionParam::required(
-                "region",
-                ParamType::Text,
-                "normalized x,y,width,height values between 0 and 1",
-            )
-            .with_schema(serde_json::json!({
-                "type": "string",
-                "pattern": "^[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*$"
-            }))],
-            move |args: &ActionArgs| {
-                let next = match args.text("region").and_then(parse_crop_arg) {
-                    Some(rect) => edits.cropped_from_view(rect),
-                    None => edits,
-                };
-                encode(&PhotosAction::set(&id, &next))
-            },
-        )
-        .reversible()
-        .with_description("Keep a region of what is currently shown, in normalized coordinates"),
-    ];
+    let bound = edits_values(&photo.id, &edits);
+    let mut actions: Vec<ActionSpec> = ["rotate-right", "rotate-left", "crop"]
+        .into_iter()
+        .filter_map(|id| row_action(id, &bound))
+        .collect();
     if !edits.is_identity() {
-        actions.push(
-            immediate_photos_spec(&photo.id, "reset", "Reset edits", Edits::default())
-                .with_description("Discard the crop and rotation, returning to the original"),
-        );
+        actions.extend(row_action("reset", &photo_value(&photo.id)));
     }
     if let Some(source_content) = photo.content.clone() {
         let spec = operation(
@@ -1830,13 +1784,351 @@ pub(crate) fn library_children(library: &crate::model::PhotoLibrary) -> Vec<Reso
     children
 }
 
-/// Album and metadata edits of the whole library, declared by name.
+/// Album and metadata edits of the whole library, and each row's edits,
+/// declared by name.
 pub(crate) fn library_declarations() -> Vec<ActionDecl<crate::resource::Photos>> {
-    vec![
+    let mut declarations = vec![
         create_album_spec(),
         set_favorites_spec(),
         set_metadata_batch_spec(),
+    ];
+    declarations.extend(row_declarations());
+    declarations
+}
+
+/// The library's edits of one photograph, album or person, declared by name
+/// with the item they act on as a parameter. Each row of the published tree
+/// offers the ones that apply to it with that parameter bound
+/// ([`items::bound`](ui::tilo_resource::items::bound)), so the palette and
+/// agents act on *this* photograph; scripts name the item.
+type Decl = ActionDecl<crate::resource::Photos>;
+
+fn photo_param() -> ActionParam {
+    ActionParam::required("photo_id", ParamType::Text, "stable photos.photo:… id")
+}
+
+fn album_param() -> ActionParam {
+    ActionParam::required("album_id", ParamType::Text, "stable photos.album:… id")
+}
+
+fn person_param() -> ActionParam {
+    ActionParam::required("person", ParamType::Text, "approved person label")
+}
+
+fn text(args: &ActionArgs, name: &str) -> String {
+    args.text(name).unwrap_or_default().trim().to_owned()
+}
+
+/// The edits a turn or crop starts from: the photograph's crop and turn as
+/// its row binds them.
+fn edits_in(args: &ActionArgs) -> Result<Edits, String> {
+    let crop = match args.text("crop") {
+        Some(value) => parse_crop_arg(value).ok_or("the crop is not x,y,width,height in 0..1")?,
+        None => Rect01::default(),
+    };
+    let rotate_quarters = args
+        .integer("rotate_quarters")
+        .and_then(|turns| u8::try_from(turns).ok())
+        .unwrap_or_default();
+    Ok(Edits {
+        crop,
+        rotate_quarters,
+    })
+}
+
+fn edits_params() -> Vec<ActionParam> {
+    vec![
+        photo_param(),
+        ActionParam::optional(
+            "crop",
+            ParamType::Text,
+            "the crop in force, normalized x,y,width,height",
+        ),
+        ActionParam::optional(
+            "rotate_quarters",
+            ParamType::Integer,
+            "the quarter turns in force",
+        ),
     ]
+}
+
+/// A photograph's crop and turn, as its row binds them.
+pub(crate) fn edits_values(photo: &str, edits: &Edits) -> Vec<(&'static str, serde_json::Value)> {
+    let crop = edits.crop;
+    vec![
+        ("photo_id", serde_json::Value::String(photo.to_owned())),
+        (
+            "crop",
+            serde_json::Value::String(format!("{},{},{},{}", crop.x, crop.y, crop.w, crop.h)),
+        ),
+        (
+            "rotate_quarters",
+            serde_json::Value::from(edits.rotate_quarters),
+        ),
+    ]
+}
+
+fn photo_value(photo: &str) -> Vec<(&'static str, serde_json::Value)> {
+    vec![("photo_id", serde_json::Value::String(photo.to_owned()))]
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "every row edit of the library is declared side by side"
+)]
+pub(crate) fn row_declarations() -> Vec<Decl> {
+    vec![
+        Decl::new("rotate-right", "Rotate right", edits_params(), |args, _| {
+            Ok(PhotosAction::set(&text(args, "photo_id"), &edits_in(args)?.rotated_right()))
+        })
+        .describe("Turn the photograph a quarter turn clockwise"),
+        Decl::new("rotate-left", "Rotate left", edits_params(), |args, _| {
+            Ok(PhotosAction::set(&text(args, "photo_id"), &edits_in(args)?.rotated_left()))
+        })
+        .describe("Turn the photograph a quarter turn anticlockwise"),
+        Decl::new(
+            "crop",
+            "Crop to a region",
+            {
+                let mut params = edits_params();
+                params.push(
+                    ActionParam::required(
+                        "region",
+                        ParamType::Text,
+                        "normalized x,y,width,height values between 0 and 1",
+                    )
+                    .with_schema(serde_json::json!({
+                        "type": "string",
+                        "pattern": "^[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*$"
+                    })),
+                );
+                params
+            },
+            |args, _| {
+                let region = args
+                    .text("region")
+                    .and_then(parse_crop_arg)
+                    .ok_or("the region is not x,y,width,height in 0..1")?;
+                Ok(PhotosAction::set(
+                    &text(args, "photo_id"),
+                    &edits_in(args)?.cropped_from_view(region),
+                ))
+            },
+        )
+        .describe("Keep a region of what is currently shown, in normalized coordinates"),
+        Decl::new("reset", "Reset edits", vec![photo_param()], |args, _| {
+            Ok(PhotosAction::set(&text(args, "photo_id"), &Edits::default()))
+        })
+        .describe("Discard the crop and rotation, returning to the original"),
+        Decl::new("favorite", "Favorite", vec![photo_param()], |args, _| {
+            Ok(PhotosAction::SetFavorite {
+                photo_id: text(args, "photo_id"),
+                favorite: true,
+            })
+        }),
+        Decl::new("remove-favorite", "Remove favorite", vec![photo_param()], |args, _| {
+            Ok(PhotosAction::SetFavorite {
+                photo_id: text(args, "photo_id"),
+                favorite: false,
+            })
+        }),
+        Decl::new(
+            "set-metadata",
+            "Set photo metadata",
+            vec![
+                photo_param(),
+                ActionParam::optional("folder", ParamType::Text, "shared folder label"),
+                ActionParam::optional("people", ParamType::Text, "comma-separated people"),
+                ActionParam::optional("tags", ParamType::Text, "comma-separated tags"),
+                ActionParam::optional("captured_at", ParamType::Text, "capture date or time"),
+            ],
+            |args, _| {
+                Ok(PhotosAction::SetMetadata {
+                    photo_id: text(args, "photo_id"),
+                    folder: optional_metadata_text(args, "folder"),
+                    people: metadata_labels(args, "people"),
+                    tags: metadata_labels(args, "tags"),
+                    captured_at: optional_metadata_text(args, "captured_at"),
+                })
+            },
+        )
+        .describe("Replace this photograph's shared folder, people, tags, and capture date"),
+        Decl::new(
+            "set-location",
+            "Set shared location",
+            vec![
+                photo_param(),
+                ActionParam::required("latitude", ParamType::Number, "latitude from -90 to 90"),
+                ActionParam::required("longitude", ParamType::Number, "longitude from -180 to 180"),
+                ActionParam::optional("label", ParamType::Text, "optional shared place label"),
+                ActionParam::optional(
+                    "source",
+                    ParamType::Text,
+                    "user, exif, or device; defaults to user",
+                ),
+            ],
+            |args, _| {
+                Ok(PhotosAction::SetPhotoLocation {
+                    photo_id: text(args, "photo_id"),
+                    location: PhotoLocation {
+                        latitude: args.number("latitude").unwrap_or(f64::NAN),
+                        longitude: args.number("longitude").unwrap_or(f64::NAN),
+                        label: optional_metadata_text(args, "label"),
+                        provenance: crate::model::LocationProvenance {
+                            source: optional_metadata_text(args, "source")
+                                .unwrap_or_else(|| "user".to_owned()),
+                            scope: "shared".to_owned(),
+                        },
+                    },
+                })
+            },
+        )
+        .describe(
+            "Explicitly share a compact location. Photos never uploads it for geocoding or map tiles.",
+        ),
+        Decl::new(
+            "clear-location",
+            "Remove shared location",
+            vec![photo_param()],
+            |args, _| {
+                Ok(PhotosAction::ClearPhotoLocation {
+                    photo_id: text(args, "photo_id"),
+                })
+            },
+        )
+        .destructive()
+        .describe(
+            "Remove the explicit shared location from this photograph; no files or pixels are changed",
+        ),
+        Decl::new(
+            "remove-analysis",
+            "Remove shared analysis",
+            vec![photo_param()],
+            |args, _| {
+                Ok(PhotosAction::SetImageAnalysis {
+                    photo_id: text(args, "photo_id"),
+                    analysis: None,
+                })
+            },
+        )
+        .destructive()
+        .describe(
+            "Remove recognized text, description, object and pet labels, and their provenance without changing the photograph",
+        ),
+        Decl::new("remove-photo", "Remove from library", vec![photo_param()], |args, _| {
+            Ok(PhotosAction::RemovePhoto {
+                photo_id: text(args, "photo_id"),
+            })
+        })
+        .destructive(),
+        Decl::new("remove-album", "Remove album", vec![album_param()], |args, _| {
+            Ok(PhotosAction::RemoveAlbum {
+                id: text(args, "album_id"),
+            })
+        })
+        .destructive(),
+        Decl::new(
+            "rename-album",
+            "Rename album",
+            vec![
+                album_param(),
+                ActionParam::required("name", ParamType::Text, "new album name"),
+            ],
+            |args, _| {
+                Ok(PhotosAction::RenameAlbum {
+                    id: text(args, "album_id"),
+                    name: text(args, "name"),
+                })
+            },
+        )
+        .describe("Change this album's visible name while keeping its stable id"),
+        Decl::new(
+            "set-album-membership",
+            "Set album membership",
+            vec![
+                album_param(),
+                photo_ids_param(
+                    true,
+                    "JSON array of stable photo ids; an empty array clears the album",
+                    0,
+                ),
+            ],
+            |args, _| {
+                Ok(PhotosAction::SetAlbumMembership {
+                    album_id: text(args, "album_id"),
+                    photo_ids: membership_ids(args),
+                })
+            },
+        )
+        .describe("Replace this album's photograph membership atomically"),
+        Decl::new(
+            "save-album",
+            "Save album",
+            vec![
+                album_param(),
+                ActionParam::required("name", ParamType::Text, "visible album name"),
+                photo_ids_param(false, "JSON array of stable photo ids", 0),
+            ],
+            |args, _| {
+                Ok(PhotosAction::SaveAlbum {
+                    id: text(args, "album_id"),
+                    name: text(args, "name"),
+                    photo_ids: membership_ids(args),
+                    create: false,
+                })
+            },
+        )
+        .describe("Atomically rename this album and replace its membership"),
+        Decl::new(
+            "set-person-membership",
+            "Set person membership",
+            vec![
+                person_param(),
+                photo_ids_param(
+                    true,
+                    "JSON array of stable photo ids; an empty array removes this person label",
+                    0,
+                ),
+            ],
+            |args, _| {
+                Ok(PhotosAction::SetPersonMembership {
+                    person: text(args, "person"),
+                    photo_ids: membership_ids(args),
+                })
+            },
+        )
+        .describe("Create a shared person or replace one person's complete approved membership"),
+        Decl::new(
+            "rename-person",
+            "Rename or merge person",
+            vec![
+                person_param(),
+                ActionParam::required("name", ParamType::Text, "new approved person label"),
+            ],
+            |args, _| {
+                Ok(PhotosAction::RenamePerson {
+                    from: text(args, "person"),
+                    to: text(args, "name"),
+                })
+            },
+        )
+        .describe("Rename this approved person label, or merge it into an existing label"),
+        Decl::new("remove-person", "Remove person label", vec![person_param()], |args, _| {
+            Ok(PhotosAction::RemovePerson {
+                person: text(args, "person"),
+            })
+        })
+        .destructive()
+        .describe("Remove this approved person label from every shared photograph"),
+    ]
+}
+
+/// The row edit `id`, offered with `values` bound.
+fn row_action(id: &str, values: &[(&'static str, serde_json::Value)]) -> Option<ActionSpec> {
+    row_declarations()
+        .into_iter()
+        .find(|decl| decl.id == id)
+        .map(|decl| ui::tilo_resource::items::bound(&decl, values))
 }
 
 /// Canonical address for whole-library local intelligence. Runtime progress is
@@ -2148,7 +2440,6 @@ pub(crate) fn people_root_resource(library: &crate::model::PhotoLibrary) -> Reso
             "Use the opt-in signed local face model on a bounded local batch; suggestions remain private until approved",
         ));
     }
-    resource = resource.with_action(person_membership_with_name_spec());
     resource
 }
 
@@ -2349,20 +2640,11 @@ pub(crate) fn person_resource(person: &str, count: usize) -> Resource {
         );
         item = item.with_action(spec.with_description("Show photographs tagged with this person"));
     }
-    item = item
-        .with_action(person_membership_spec(person))
-        .with_action(person_rename_spec(person));
-    if let Some(spec) = direct_spec(
-        "remove-person",
-        "Remove person label",
-        &PhotosAction::RemovePerson {
-            person: person.to_owned(),
-        },
-    ) {
-        item =
-            item.with_action(spec.destructive().reversible().with_description(
-                "Remove this approved person label from every shared photograph",
-            ));
+    let bound = [("person", serde_json::Value::String(person.to_owned()))];
+    for id in ["set-person-membership", "rename-person", "remove-person"] {
+        if let Some(spec) = row_action(id, &bound) {
+            item = item.with_action(spec);
+        }
     }
     item
 }
@@ -2729,17 +3011,8 @@ fn analysis_resource(photo_id: &str, analysis: &ImageAnalysis) -> Resource {
     // read-modify-write `SetImageAnalysis`: replaying that snapshot could
     // erase a concurrent refresh of the other component. Whole-record removal
     // is the only deletion whose current action semantics are unambiguous.
-    if let Some(spec) = direct_spec(
-        "remove",
-        "Remove all shared analysis",
-        &PhotosAction::SetImageAnalysis {
-            photo_id: photo_id.to_owned(),
-            analysis: None,
-        },
-    ) {
-        root = root.with_action(spec.destructive().reversible().with_description(
-            "Remove recognized text, description, object and pet labels, and their provenance without changing the photograph",
-        ));
+    if let Some(spec) = row_action("remove-analysis", &photo_value(photo_id)) {
+        root = root.with_action(spec);
     }
     root
 }
@@ -2880,19 +3153,16 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
     for action in photo_edit_actions(photo) {
         item = item.with_action(action);
     }
-    if let Some(spec) = direct_spec(
-        "favorite",
+    let photo_bound = photo_value(&photo.id);
+    if let Some(spec) = row_action(
         if photo.favorite {
-            "Remove favorite"
+            "remove-favorite"
         } else {
-            "Favorite"
+            "favorite"
         },
-        &PhotosAction::SetFavorite {
-            photo_id: photo.id.clone(),
-            favorite: !photo.favorite,
-        },
+        &photo_bound,
     ) {
-        item = item.with_action(spec.reversible());
+        item = item.with_action(spec);
     }
     {
         let spec = operation(
@@ -2905,20 +3175,15 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
             "Copy this library photograph's portable resource reference to the local clipboard",
         ));
     }
-    item = item.with_action(photo_metadata_spec(&photo.id));
-    item = item.with_action(photo_location_spec(&photo.id));
+    for id in ["set-metadata", "set-location"] {
+        if let Some(spec) = row_action(id, &photo_bound) {
+            item = item.with_action(spec);
+        }
+    }
     if photo.location.is_some()
-        && let Some(spec) = direct_spec(
-            "clear-location",
-            "Remove shared location",
-            &PhotosAction::ClearPhotoLocation {
-                photo_id: photo.id.clone(),
-            },
-        )
+        && let Some(spec) = row_action("clear-location", &photo_bound)
     {
-        item = item.with_action(spec.destructive().reversible().with_description(
-            "Remove the explicit shared location from this photograph; no files or pixels are changed",
-        ));
+        item = item.with_action(spec);
     }
     {
         let spec = operation(
@@ -2952,25 +3217,12 @@ pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
         });
     }
     if photo.analysis.is_some()
-        && let Some(spec) = direct_spec(
-            "remove-analysis",
-            "Remove shared analysis",
-            &PhotosAction::SetImageAnalysis {
-                photo_id: photo.id.clone(),
-                analysis: None,
-            },
-        )
+        && let Some(spec) = row_action("remove-analysis", &photo_bound)
     {
-        item = item.with_action(spec.destructive().reversible());
+        item = item.with_action(spec);
     }
-    if let Some(spec) = direct_spec(
-        "remove",
-        "Remove from library",
-        &PhotosAction::RemovePhoto {
-            photo_id: photo.id.clone(),
-        },
-    ) {
-        item = item.with_action(spec.destructive().reversible());
+    if let Some(spec) = row_action("remove-photo", &photo_bound) {
+        item = item.with_action(spec);
     }
     item
 }
@@ -3220,72 +3472,6 @@ fn optional_metadata_text(args: &ActionArgs, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn photo_metadata_spec(photo_id: &str) -> ActionSpec {
-    let photo_id = photo_id.to_owned();
-    ActionSpec::typed(
-        "set-metadata",
-        "Set photo metadata",
-        "Folder, people, tags, and capture date",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::optional("folder", ParamType::Text, "shared folder label"),
-            ActionParam::optional("people", ParamType::Text, "comma-separated people"),
-            ActionParam::optional("tags", ParamType::Text, "comma-separated tags"),
-            ActionParam::optional("captured_at", ParamType::Text, "capture date or time"),
-        ],
-        move |args| {
-            encode(&PhotosAction::SetMetadata {
-                photo_id: photo_id.clone(),
-                folder: optional_metadata_text(args, "folder"),
-                people: metadata_labels(args, "people"),
-                tags: metadata_labels(args, "tags"),
-                captured_at: optional_metadata_text(args, "captured_at"),
-            })
-        },
-    )
-    .reversible()
-    .with_description("Replace this photograph's shared folder, people, tags, and capture date")
-}
-
-fn photo_location_spec(photo_id: &str) -> ActionSpec {
-    let photo_id = photo_id.to_owned();
-    ActionSpec::typed(
-        "set-location",
-        "Set shared location",
-        "Explicit WGS-84 coordinates and optional place label",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("latitude", ParamType::Number, "latitude from -90 to 90"),
-            ActionParam::required("longitude", ParamType::Number, "longitude from -180 to 180"),
-            ActionParam::optional("label", ParamType::Text, "optional shared place label"),
-            ActionParam::optional(
-                "source",
-                ParamType::Text,
-                "user, exif, or device; defaults to user",
-            ),
-        ],
-        move |args| {
-            encode(&PhotosAction::SetPhotoLocation {
-                photo_id: photo_id.clone(),
-                location: PhotoLocation {
-                    latitude: args.number("latitude").unwrap_or(f64::NAN),
-                    longitude: args.number("longitude").unwrap_or(f64::NAN),
-                    label: optional_metadata_text(args, "label"),
-                    provenance: crate::model::LocationProvenance {
-                        source: optional_metadata_text(args, "source")
-                            .unwrap_or_else(|| "user".to_owned()),
-                        scope: "shared".to_owned(),
-                    },
-                },
-            })
-        },
-    )
-    .reversible()
-    .with_description(
-        "Explicitly share a compact location. Photos never uploads it for geocoding or map tiles.",
-    )
-}
-
 pub(crate) fn album_resource(album: &Album) -> Resource {
     album_resource_from_fields(&album.id, &album.name, album.photo_ids.len())
 }
@@ -3307,16 +3493,17 @@ pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usiz
             spec.with_description("Show this album's photographs without changing membership"),
         );
     }
-    if let Some(spec) = direct_spec(
-        "remove",
-        "Remove album",
-        &PhotosAction::RemoveAlbum { id: id.to_owned() },
-    ) {
-        item = item.with_action(spec.destructive().reversible());
+    let bound = [("album_id", serde_json::Value::String(id.to_owned()))];
+    for action in [
+        "remove-album",
+        "rename-album",
+        "set-album-membership",
+        "save-album",
+    ] {
+        if let Some(spec) = row_action(action, &bound) {
+            item = item.with_action(spec);
+        }
     }
-    item = item.with_action(album_rename_spec(id));
-    item = item.with_action(album_membership_spec(id));
-    item = item.with_action(album_save_spec(id));
     item
 }
 
@@ -3352,82 +3539,6 @@ fn photo_ids_param(required: bool, description: &'static str, min_items: usize) 
             "maxLength": MAX_RESOURCE_ID_CHARS
         }
     }))
-}
-
-/// The complete membership is supplied by an explicit People review.  The
-/// visible proposal/cluster remains device-local; this action carries only
-/// already-approved photograph ids and a label a collaborator can understand.
-fn person_membership_spec(person: &str) -> ActionSpec {
-    let person = person.to_owned();
-    ActionSpec::typed(
-        "set-membership",
-        "Set person membership",
-        "JSON array of approved photos.photo:… ids (an empty array removes the label)",
-        ExecutionLocus::ClientLocal,
-        vec![photo_ids_param(
-            true,
-            "JSON array of stable photo ids; an empty array removes this person label",
-            0,
-        )],
-        move |args| {
-            encode(&PhotosAction::SetPersonMembership {
-                person: person.clone(),
-                photo_ids: membership_ids(args),
-            })
-        },
-    )
-    .reversible()
-    .with_description("Replace this approved person's shared photograph membership atomically")
-}
-
-/// The People root exposes creation as the same complete-membership action
-/// used by each person resource. This lets an agent or assistive technology
-/// correct a mistaken shared group (set the old membership, then create the
-/// new one) without reaching into a visual review card.
-fn person_membership_with_name_spec() -> ActionSpec {
-    ActionSpec::typed(
-        "set-person-membership",
-        "Create or set person membership",
-        "An approved name and the complete JSON array of approved photos.photo:… ids",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("name", ParamType::Text, "approved person label"),
-            photo_ids_param(true, "JSON array of stable photo ids", 0),
-        ],
-        |args| {
-            encode(&PhotosAction::SetPersonMembership {
-                person: args.text("name").unwrap_or_default().trim().to_owned(),
-                photo_ids: membership_ids(args),
-            })
-        },
-    )
-    .reversible()
-    .with_description("Create a shared person or replace one person's complete approved membership")
-}
-
-/// Renaming to an existing label deliberately merges explicit labels.  It
-/// does not, and cannot, merge private local face clusters.
-fn person_rename_spec(person: &str) -> ActionSpec {
-    let from = person.to_owned();
-    ActionSpec::typed(
-        "rename",
-        "Rename or merge person",
-        "New approved person label; an existing label merges shared memberships",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "name",
-            ParamType::Text,
-            "new approved person label",
-        )],
-        move |args| {
-            encode(&PhotosAction::RenamePerson {
-                from: from.clone(),
-                to: args.text("name").unwrap_or_default().trim().to_owned(),
-            })
-        },
-    )
-    .reversible()
-    .with_description("Rename this approved person label, or merge it into an existing label")
 }
 
 fn create_album_spec() -> ActionDecl<crate::resource::Photos> {
@@ -3581,80 +3692,6 @@ fn set_metadata_batch_spec() -> ActionDecl<crate::resource::Photos> {
     .describe(
         "Atomically change chosen metadata: labels can be set, added, removed, or cleared without replacing unrelated values",
     )
-}
-
-fn album_save_spec(album_id: &str) -> ActionSpec {
-    let id = album_id.to_owned();
-    ActionSpec::typed(
-        "save",
-        "Save album",
-        "Name and complete membership",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required("name", ParamType::Text, "visible album name"),
-            photo_ids_param(false, "JSON array of stable photo ids", 0),
-        ],
-        move |args| {
-            encode(&PhotosAction::SaveAlbum {
-                id: id.clone(),
-                name: args.text("name").unwrap_or_default().trim().to_owned(),
-                photo_ids: membership_ids(args),
-                create: false,
-            })
-        },
-    )
-    .reversible()
-    .with_description("Atomically rename this album and replace its membership")
-}
-
-fn album_rename_spec(album_id: &str) -> ActionSpec {
-    let album_id = album_id.to_owned();
-    ActionSpec::typed(
-        "rename",
-        "Rename album",
-        "New album name",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "name",
-            ParamType::Text,
-            "new album name",
-        )],
-        move |args: &ActionArgs| {
-            encode(&PhotosAction::RenameAlbum {
-                id: album_id.clone(),
-                name: args.text("name").unwrap_or_default().trim().to_owned(),
-            })
-        },
-    )
-    .reversible()
-    .with_description("Change this album's visible name while keeping its stable id")
-}
-
-fn album_membership_spec(album_id: &str) -> ActionSpec {
-    let album_id = album_id.to_owned();
-    ActionSpec::typed(
-        "set-membership",
-        "Set album membership",
-        "JSON array of photos.photo:… ids (an empty array clears the album)",
-        ExecutionLocus::ClientLocal,
-        vec![photo_ids_param(
-            true,
-            "JSON array of stable photo ids; an empty array clears the album",
-            0,
-        )],
-        move |args: &ActionArgs| {
-            encode(&PhotosAction::SetAlbumMembership {
-                album_id: album_id.clone(),
-                photo_ids: membership_ids(args),
-            })
-        },
-    )
-    .reversible()
-    .with_description("Replace this album's photograph membership atomically")
-}
-
-fn direct_spec(id: &str, label: &str, action: &PhotosAction) -> Option<ActionSpec> {
-    ActionSpec::immediate(id, label, PHOTOS_ACTION_TYPE, action).ok()
 }
 
 /// The resource `kind` a library photograph publishes under.
@@ -3907,14 +3944,15 @@ mod tests {
             }
             .apply(&mut doc)
             .unwrap();
-            let people = PhotosResources
-                .publish_resource(&doc, "photos.people")
-                .expect("People is a canonical resource");
+            let library = PhotosResources
+                .publish_resource(&doc, "photos.library")
+                .expect("the library is a canonical resource");
             assert!(
-                people
+                library
                     .actions
                     .iter()
-                    .any(|action| action.id == "set-person-membership"),
+                    .any(|action| action.id == "set-person-membership"
+                        && action.params().iter().any(|param| param.name == "person")),
                 "a new person is necessary to split an approved mistaken group"
             );
             assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
@@ -3926,9 +3964,14 @@ mod tests {
                 person
                     .actions
                     .iter()
-                    .any(|action| action.id == "set-membership")
+                    .any(|action| action.id == "set-person-membership")
             );
-            assert!(person.actions.iter().any(|action| action.id == "rename"));
+            assert!(
+                person
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "rename-person")
+            );
             assert!(
                 person
                     .actions
@@ -4186,7 +4229,12 @@ mod tests {
                 .expect("analysis is directly addressable");
             assert_eq!(resource.kind, "photos.analysis");
             assert_eq!(resource.children.len(), 2, "only OCR and vision components");
-            assert!(resource.actions.iter().any(|action| action.id == "remove"));
+            assert!(
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "remove-analysis")
+            );
 
             let ocr = PhotosResources
                 .publish_resource(&doc, &format!("{analysis_id}/ocr"))
@@ -5140,7 +5188,7 @@ mod tests {
                     "set-location",
                     "analyze-text",
                     "analyze-image",
-                    "remove",
+                    "remove-photo",
                 ]
             );
         }
@@ -5295,6 +5343,43 @@ mod tests {
     }
 
     #[test]
+    fn row_edits_are_declarations_bound_to_their_row_and_kept_out_of_the_palette() {
+        let mut doc = doc_with_image();
+        let id = first_id(&doc);
+        let library = PhotosResources.publish_resources(&doc).pop().unwrap();
+        // On the library, a row edit names its item and is for scripts.
+        let root_remove = library
+            .actions
+            .iter()
+            .find(|action| action.id == "remove-photo")
+            .expect("the declaration stays on the library");
+        assert!(root_remove.is_programmatic());
+        assert!(
+            root_remove
+                .params()
+                .iter()
+                .any(|param| param.name == "photo_id")
+        );
+        // On the photograph, the same declaration is bound to it.
+        let resources = PhotosResources.publish_resources(&doc);
+        let remove = published_photo(&resources)
+            .actions
+            .iter()
+            .find(|action| action.id == "remove-photo")
+            .expect("the row offers its removal")
+            .clone();
+        assert!(!remove.is_programmatic());
+        assert!(remove.params().is_empty(), "the row names the photograph");
+        let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
+            panic!("a bound removal asks nothing");
+        };
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
+        assert!(PhotosDoc::photo(&doc, &id).is_none());
+    }
+
+    #[test]
     fn library_photo_resources_remove_share_and_refuse_hostile_payloads() {
         eprintln!("phase the_selected_photo_can_be_removed_through_its_canonical_resource");
         {
@@ -5304,7 +5389,7 @@ mod tests {
             let remove = resource
                 .actions
                 .iter()
-                .find(|action| action.id == "remove")
+                .find(|action| action.id == "remove-photo")
                 .expect("the selected photo still offers removal");
             let mut registry = ActionRegistry::new();
             register(&mut registry);
@@ -5995,12 +6080,12 @@ mod tests {
                     favorite: true,
                 })
             }),
-            remove_photo => ("photos.photo", "remove", |_, res| {
+            remove_photo => ("photos.photo", "remove-photo", |_, res| {
                 encode(&PhotosAction::RemovePhoto {
                     photo_id: res.id.0.clone(),
                 })
             }),
-            remove_album => ("photos.album:summer", "remove", |_, _| {
+            remove_album => ("photos.album:summer", "remove-album", |_, _| {
                 encode(&PhotosAction::RemoveAlbum {
                     id: "photos.album:summer".into(),
                 })

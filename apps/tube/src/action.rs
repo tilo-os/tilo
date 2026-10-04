@@ -12,8 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::actions::{TubeAction, TubeEffect};
-use crate::model::{ChannelId, PlaylistId, Route, SearchType, VideoId};
-use serde::{Deserialize, Serialize};
+use crate::model::{ChannelId, PlaylistId, Route, SearchType, Settings, VideoId};
 
 /// Everything a click can request.
 #[derive(Clone, Debug, PartialEq)]
@@ -38,17 +37,16 @@ pub enum Action {
     Share(VideoId),
     /// Only visible on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,
-    OpenPalette,
-    ClosePalette,
-    /// `hit` is a deep-link (`tube://watch/<id>`, `tube://channel/<id>`);
-    /// routes to the right screen and closes the palette.
-    ActivateHit(String),
+    /// Ask the host to open its search palette, which finds Tube's videos,
+    /// creators, playlists and watch history among everything else.
+    OpenSearch,
     /// A change to the shared library, submitted as it is through the
     /// framework's door.
     Edit(TubeAction),
-    /// An effect the framework confirms before it runs: clearing the watch
-    /// history, approving or revoking a device, syncing.
-    Confirm(TubeEffect),
+    /// An effect, run through the framework's door, which confirms the ones
+    /// that ask for it (clearing the watch history, approving or revoking a
+    /// device) first.
+    Effect(TubeEffect),
     /// Pair with the Grayjay invite currently held in the local-only input.
     PairDevice,
 }
@@ -76,25 +74,20 @@ impl Action {
             Self::SubmitSearch => "Search",
             Self::Share(_) => "Copy share link",
             Self::ToggleSidebar => "Show or hide navigation",
-            Self::OpenPalette => "Search Tube actions",
-            Self::ClosePalette => "Close action search",
-            Self::ActivateHit(_) => "Open search result",
+            Self::OpenSearch => "Open search",
             Self::Edit(TubeAction::SetVideoLiked { .. }) => "Like or unlike video",
             Self::Edit(TubeAction::SetQueueMembership { .. }) => "Add to or remove from queue",
             Self::Edit(TubeAction::SetSubscription { .. }) => "Subscribe or unsubscribe",
-            Self::Edit(TubeAction::SetSetting { .. }) => "Change setting",
-            Self::Edit(TubeAction::SetPreferredQuality { .. }) => "Change playback quality",
-            Self::Edit(TubeAction::SetSponsorCategory { .. }) => "Change segment handling",
             Self::Edit(TubeAction::SetCommentLiked { .. }) => "Like or unlike comment",
             Self::Edit(TubeAction::SetCommentReply { .. }) => "Reply to comment",
-            Self::Confirm(effect) => effect.label(),
+            Self::Effect(effect) => effect.label(),
             Self::PairDevice => "Pair Grayjay device",
         }
     }
 }
 
-/// Named boolean settings the settings page can flip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Named boolean preferences the settings page can flip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingFlag {
     SponsorBlock,
     DeArrow,
@@ -103,6 +96,79 @@ pub enum SettingFlag {
     ReturnDislike,
     Autoplay,
     ShowComments,
+}
+
+impl SettingFlag {
+    /// Every flag, in the order the published settings list them.
+    pub const ALL: [SettingFlag; 7] = [
+        SettingFlag::Autoplay,
+        SettingFlag::ShowComments,
+        SettingFlag::SponsorBlock,
+        SettingFlag::DeArrow,
+        SettingFlag::DeArrowTitles,
+        SettingFlag::DeArrowThumbnails,
+        SettingFlag::ReturnDislike,
+    ];
+
+    /// The stable name an effect names this preference by.
+    pub fn id(self) -> &'static str {
+        match self {
+            SettingFlag::SponsorBlock => "sponsorblock",
+            SettingFlag::DeArrow => "dearrow",
+            SettingFlag::DeArrowTitles => "dearrow-titles",
+            SettingFlag::DeArrowThumbnails => "dearrow-thumbnails",
+            SettingFlag::ReturnDislike => "dislikes",
+            SettingFlag::Autoplay => "autoplay",
+            SettingFlag::ShowComments => "comments",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|flag| flag.id() == id)
+    }
+
+    /// What the preference is called.
+    pub fn name(self) -> &'static str {
+        match self {
+            SettingFlag::SponsorBlock => "SponsorBlock",
+            SettingFlag::DeArrow => "DeArrow",
+            SettingFlag::DeArrowTitles => "DeArrow titles",
+            SettingFlag::DeArrowThumbnails => "DeArrow thumbnails",
+            SettingFlag::ReturnDislike => "Dislike counts",
+            SettingFlag::Autoplay => "Autoplay",
+            SettingFlag::ShowComments => "Comments",
+        }
+    }
+
+    /// Whether it is on in `settings`.
+    pub fn get(self, settings: &Settings) -> bool {
+        match self {
+            SettingFlag::SponsorBlock => settings.sponsorblock_enabled,
+            SettingFlag::DeArrow => settings.dearrow_enabled,
+            SettingFlag::DeArrowTitles => settings.dearrow_titles,
+            SettingFlag::DeArrowThumbnails => settings.dearrow_thumbnails,
+            SettingFlag::ReturnDislike => settings.return_dislike_enabled,
+            SettingFlag::Autoplay => settings.autoplay,
+            SettingFlag::ShowComments => settings.show_comments,
+        }
+    }
+
+    /// Turn it on or off in `settings`.
+    pub fn set(self, settings: &mut Settings, enabled: bool) {
+        *self.slot(settings) = enabled;
+    }
+
+    fn slot(self, settings: &mut Settings) -> &mut bool {
+        match self {
+            SettingFlag::SponsorBlock => &mut settings.sponsorblock_enabled,
+            SettingFlag::DeArrow => &mut settings.dearrow_enabled,
+            SettingFlag::DeArrowTitles => &mut settings.dearrow_titles,
+            SettingFlag::DeArrowThumbnails => &mut settings.dearrow_thumbnails,
+            SettingFlag::ReturnDislike => &mut settings.return_dislike_enabled,
+            SettingFlag::Autoplay => &mut settings.autoplay,
+            SettingFlag::ShowComments => &mut settings.show_comments,
+        }
+    }
 }
 
 /// Shared, single-threaded queue of pending actions.

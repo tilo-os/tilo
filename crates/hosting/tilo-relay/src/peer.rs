@@ -1758,6 +1758,10 @@ async fn handle_envelope(
             frame,
         )
         .await),
+        env @ Envelope::RecordContent { .. } => {
+            route_record_content(peer, session, subscribed, env).await;
+            Ok(None)
+        }
         env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
         Envelope::LiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await
@@ -5675,6 +5679,42 @@ async fn handle_remote_action(
     } else {
         undeliverable("addressed device is not connected to the workspace")
     }
+}
+
+/// Hand a piece of a record's content to the one device it is addressed
+/// to, stamped with the authenticated sender. Never stored, never fanned
+/// out, never answered: a piece that cannot be delivered is dropped, and
+/// the device that wanted it asks again.
+async fn route_record_content(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    envelope: Envelope,
+) {
+    let Envelope::RecordContent {
+        workspace_id,
+        to_device_public_key: to,
+        frame,
+        ..
+    } = envelope
+    else {
+        return;
+    };
+    if !subscribed.contains(&workspace_id)
+        || frame.len() > crate::transport::MAX_RECORD_CONTENT_FRAME_BYTES
+    {
+        return;
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    let stamped = Envelope::RecordContent {
+        workspace_id,
+        to_device_public_key: to,
+        from_device_public_key: peer.device_public_key,
+        frame,
+    };
+    ws.lock().await.route_lossy(&to, stamped);
 }
 
 /// Answer a frame addressed to this relay through its app-serving plane,
