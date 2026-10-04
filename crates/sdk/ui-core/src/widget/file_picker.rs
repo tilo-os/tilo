@@ -373,13 +373,21 @@ impl FilePicker {
     #[must_use]
     pub fn with_filename(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
-        self.filename.set_text(&name);
+        self.set_filename_text(&name);
         self
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
         self.apply_layout_helper();
+    }
+
+    /// Put `name` in the filename field with the caret at its end, so typing
+    /// continues the name.
+    fn set_filename_text(&mut self, name: &str) {
+        self.filename.set_text(name);
+        self.filename
+            .set_caret_position(crate::text_selection::TextPosition::new(name.len()));
     }
 
     pub fn current_dir(&self) -> &Path {
@@ -1035,7 +1043,7 @@ impl FilePicker {
         }
         // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
-            self.filename.set_text(&entry.name);
+            self.set_filename_text(&entry.name);
         }
         if is_double && self.mode == FilePickerMode::Directory {
             self.last_click = None;
