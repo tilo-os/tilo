@@ -1960,6 +1960,8 @@ COPY \
     os/usr/lib/systemd/system/tilo-relay.service \
     os/usr/lib/systemd/system/tilo-fs-replica.service \
     os/usr/lib/systemd/system/tilo-relay-firstboot.service \
+    os/usr/lib/systemd/system/tilo-direct-peer-prune.path \
+    os/usr/lib/systemd/system/tilo-direct-peer-prune.service \
     os/usr/lib/systemd/system/tilo-network-start.timer \
     os/usr/lib/systemd/system/tilo-network-start.target \
     /usr/lib/systemd/system/
@@ -2473,6 +2475,7 @@ RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
+    systemctl enable tilo-direct-peer-prune.path && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \

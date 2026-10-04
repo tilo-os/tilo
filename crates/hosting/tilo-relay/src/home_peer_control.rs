@@ -16,6 +16,7 @@ use tilo_relay::{DeviceRole, RelayConfig, ReplicationIntent, WorkspaceBinding};
 const RELAY_CONFIG: &str = "/etc/tilo/relay.toml";
 const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
 const MAX_REQUEST: u64 = 64 * 1024;
+const IDENTITY_ROOT: &str = "/var/lib/tilo";
 const MAX_HOME_PEER_EXPORT: u64 = 8 * 1024 * 1024;
 
 #[derive(Parser)]
@@ -29,6 +30,9 @@ struct Cli {
 enum BrokerCommand {
     /// Apply the bounded JSON request read from stdin and restart affected services.
     Apply,
+    /// Remove from this machine's direct-peer list the devices its own
+    /// identities revoked, as recorded under `/var/lib/tilo`.
+    PruneRevoked,
     /// Open a one-minute LAN enrollment approval window.
     ApproveEnrollment {
         #[arg(long)]
@@ -737,6 +741,45 @@ fn remember_approved_device(
     Ok(())
 }
 
+/// Prune from the direct-peer list under `identity_root` the devices that an
+/// identity this machine is certified for revoked. The revocation directory is
+/// writable by the identity group, so the identity whose revocations count is
+/// taken only from this machine's own certificates: a key this machine does not
+/// hold a valid certificate of can neither revoke nor prune anything here.
+/// Returns the devices removed.
+fn prune_revoked(identity_root: &Path) -> anyhow::Result<Vec<[u8; 32]>> {
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        .context("this machine's device key is unreadable")?;
+    let device = device.verifying_key().to_bytes();
+    let revocations = tilo_relay_protocol::personal_devices::read_revocations(identity_root)?;
+    let mut identities: Vec<[u8; 32]> = revocations
+        .iter()
+        .map(|entry| entry.user_public_key)
+        .collect();
+    identities.sort_unstable();
+    identities.dedup();
+    let mut removed = Vec::new();
+    for user in identities {
+        let own = tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(&user))
+            .or_else(|_| tilo_user_identity::persist::read_device_cert(&paths.device_cert))
+            .ok()
+            .filter(|cert| {
+                cert.user_public_key == user
+                    && cert.device_public_key == device
+                    && tilo_user_identity::verify_device_cert(cert).is_ok()
+            });
+        if own.is_none() {
+            continue;
+        }
+        removed.extend(
+            tilo_relay_protocol::personal_devices::prune_revoked_direct_peers(identity_root, &user)
+                .context("prune the direct-peer list")?,
+        );
+    }
+    Ok(removed)
+}
+
 fn main() -> anyhow::Result<std::process::ExitCode> {
     // Automerge isolation workers re-enter this binary; serve them first.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
@@ -749,6 +792,12 @@ fn run() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
+        BrokerCommand::PruneRevoked => {
+            for device in prune_revoked(Path::new(IDENTITY_ROOT))? {
+                println!("{}", hex::encode(device));
+            }
+            Ok(())
+        }
         BrokerCommand::ApproveEnrollment {
             identity_root,
             workspace_ids,
@@ -822,6 +871,50 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn only_this_machines_own_identities_prune_its_direct_peers() {
+        use tilo_relay_protocol::personal_devices as devices;
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path());
+        let (device, _) = tilo_user_identity::persist::load_or_create_device_key(&paths).unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Board A".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        let peers = dir.path().join(devices::DIRECT_PEERS_FILE);
+        devices::remember_direct_peers(&peers, &[[1; 32], [2; 32]]).unwrap();
+        let revoke = |by: &ed25519_dalek::SigningKey, device: [u8; 32]| {
+            let mut entry = RevocationEntry {
+                user_public_key: by.verifying_key().to_bytes(),
+                revoked_device_public_key: device,
+                revoked_at_ns: 5,
+                reason: RevocationReason::Lost,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, by).unwrap();
+            devices::record_revocation(dir.path(), &entry).unwrap();
+        };
+        // A stranger's identity cannot prune this machine's peers.
+        revoke(&stranger, [2; 32]);
+        assert!(prune_revoked(dir.path()).unwrap().is_empty());
+        revoke(&root, [1; 32]);
+        assert_eq!(prune_revoked(dir.path()).unwrap(), vec![[1; 32]]);
+        assert_eq!(devices::read_direct_peers(&peers).unwrap(), vec![[2; 32]]);
+    }
 
     #[test]
     fn the_requesting_account_comes_from_polkit_or_sudo_and_is_never_root() {

@@ -23,7 +23,9 @@ mod unix {
     use tilo_identity_host::device_fleet::DeviceFleetStore;
     use tilo_identity_host::provisioning::{self, IdentityStorage, ProvisionOutcome};
     use tilo_relay_protocol::personal_devices;
-    use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationReason};
+    use tilo_user_identity::{
+        DeviceCert, IdentityPaths, RevocationEntry, RevocationReason, RootOnly,
+    };
 
     const ENROLL: &str = "/usr/bin/tilo-enroll";
     const HELPER: &str = "/usr/libexec/tilo-home-peer-control";
@@ -137,7 +139,10 @@ mod unix {
         RestartSession,
         /// List the devices certified for this identity.
         Devices,
-        /// Revoke a device: it can no longer act as this identity.
+        /// Revoke a device: it can no longer act as this identity. Needs the
+        /// identity's root, so it runs on a device that can approve devices.
+        /// The revoked device leaves the direct-peer lists of this device at
+        /// once and of the person's other devices once they hear of it.
         Revoke {
             /// The device id (or a unique prefix), from `tilo-identity devices`.
             device: String,
@@ -279,6 +284,7 @@ mod unix {
             } => {
                 refuse_root()?;
                 let record = active_record(&context.identity_dir)?;
+                refuse_without_root(context, &record, RootOnly::BackupIdentity, "backup")?;
                 let passphrase = backup_passphrase(passphrase_file.as_deref())?;
                 let info = write_backup(&record, &to, &passphrase)?;
                 emit(
@@ -500,10 +506,10 @@ mod unix {
             .context("read this identity's device fleet")?;
         let local =
             device_cert(&context.paths, identity.public_key).map(|cert| cert.device_public_key);
-        let direct = personal_devices::read_direct_peers(
-            &context
-                .identity_root()
-                .join(personal_devices::DIRECT_PEERS_FILE),
+        let direct = personal_devices::live_direct_peers(
+            &context.identity_root(),
+            &identity.public_key,
+            &fleet.revocation_list(),
         )
         .unwrap_or_default();
         let (snapshot, running) = presence();
@@ -1268,9 +1274,11 @@ mod unix {
             )
         })?;
         if !cert.capabilities.can_admit_devices {
-            return Err(guided(
-                "this device cannot approve devices",
-                "approve from the device that created the identity",
+            return Err(root_only(
+                context,
+                &identity,
+                RootOnly::AdmitDevice,
+                "approve",
             ));
         }
         if !context.json {
@@ -1344,6 +1352,50 @@ mod unix {
         Ok(())
     }
 
+    /// The labels of the identity's devices that hold its root.
+    fn root_holders(context: &Context, identity: &ActiveIdentity) -> Vec<String> {
+        DeviceFleetStore::at(&context.identity_dir, context.paths.clone())
+            .load(&identity.id)
+            .map(|fleet| fleet.root_holder_labels(now_ns()))
+            .unwrap_or_default()
+    }
+
+    /// The refusal for a root-only `operation` on a device without the root,
+    /// pointing at a device that holds it.
+    fn root_only(
+        context: &Context,
+        identity: &ActiveIdentity,
+        operation: RootOnly,
+        command: &str,
+    ) -> anyhow::Error {
+        let holders = root_holders(context, identity);
+        let next = match holders.first() {
+            Some(holder) => format!("run `tilo-identity {command}` on '{holder}'"),
+            None => {
+                format!("run `tilo-identity {command}` on the device that created the identity")
+            }
+        };
+        guided(operation.refusal(holders.iter().map(String::as_str)), next)
+    }
+
+    /// Refuse `operation` up front when the active record holds no root.
+    fn refuse_without_root(
+        context: &Context,
+        record: &Path,
+        operation: RootOnly,
+        command: &str,
+    ) -> anyhow::Result<()> {
+        let identity = runtime_identity::load_from_path(record.to_path_buf())
+            .map_err(|error| anyhow!("{error}"))
+            .context("open this account's identity")?;
+        if tilo_identity_host::device_fleet::holds_root(&identity) {
+            return Ok(());
+        }
+        let active = active_identity(&context.identity_dir)?
+            .ok_or_else(|| guided("this account has no identity", "see `tilo-identity status`"))?;
+        Err(root_only(context, &active, operation, command))
+    }
+
     fn revoke(context: &Context, device: &str, reason: Reason, yes: bool) -> anyhow::Result<()> {
         refuse_root()?;
         let identity = active_identity(&context.identity_dir)?
@@ -1392,17 +1444,76 @@ mod unix {
                 now_ns(),
             )
             .map_err(|error| {
-                anyhow!(error).context("revoke the device (signing needs this account's session)")
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    root_only(context, &identity, RootOnly::RevokeDevice, "revoke")
+                } else {
+                    anyhow!(error)
+                        .context("revoke the device (signing needs this account's session)")
+                }
             })?;
+        let peers = forget_revoked_peer(&context.identity_root(), &entry);
         emit(
             context,
             &json!({
                 "revoked_device": hex::encode(entry.revoked_device_public_key),
                 "label": cert.device_label,
+                "direct_peers": peers.json(),
             }),
-            &format!("Revoked '{}'.", cert.device_label),
+            &format!("Revoked '{}'.\n{}", cert.device_label, peers.text()),
         );
         Ok(())
+    }
+
+    /// What became of the revoked device in this machine's direct-peer list.
+    enum PeerPruning {
+        Removed,
+        Pending,
+        Failed(String),
+    }
+
+    impl PeerPruning {
+        fn json(&self) -> Value {
+            match self {
+                Self::Removed => json!("removed"),
+                Self::Pending => json!("pending"),
+                Self::Failed(error) => json!({ "error": error }),
+            }
+        }
+
+        fn text(&self) -> String {
+            match self {
+                Self::Removed => "It is no longer a direct peer of this device.".into(),
+                Self::Pending => "This device stops dialing it now; the system removes it from \
+                    the direct-peer list within seconds. Your other devices refuse it as soon \
+                    as they hear of the revocation from this one."
+                    .into(),
+                Self::Failed(error) => format!(
+                    "Recording the revocation for the direct-peer list failed ({error}); \
+                     this device's session still refuses it."
+                ),
+            }
+        }
+    }
+
+    /// Record the revocation beside the identity root, where the session and
+    /// the privileged pruning pass find it, and prune right away when this
+    /// account may rewrite the list itself.
+    fn forget_revoked_peer(identity_root: &Path, entry: &RevocationEntry) -> PeerPruning {
+        if let Err(error) = personal_devices::record_revocation(identity_root, entry) {
+            return PeerPruning::Failed(error.to_string());
+        }
+        match personal_devices::prune_revoked_direct_peers(identity_root, &entry.user_public_key) {
+            Ok(_)
+                if !personal_devices::read_direct_peers(
+                    &identity_root.join(personal_devices::DIRECT_PEERS_FILE),
+                )
+                .unwrap_or_default()
+                .contains(&entry.revoked_device_public_key) =>
+            {
+                PeerPruning::Removed
+            }
+            _ => PeerPruning::Pending,
+        }
     }
 }
 

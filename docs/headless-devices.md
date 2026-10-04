@@ -120,7 +120,22 @@ tilo-identity revoke <id prefix> --reason lost --yes
 ```
 
 A revoked device can no longer act as the identity. You cannot revoke the
-device you are using; do it from another one.
+device you are using; do it from another one. Revoking needs the identity's
+root key, so run it on a device that can approve devices (`status` shows
+`can approve devices`); elsewhere it names the device to use.
+
+What revocation reaches, and when:
+
+- The device you revoke from refuses the revoked device's signatures at once,
+  stops dialing it, and drops it from `/var/lib/tilo/personal-device-peers.json`
+  within seconds (`tilo-direct-peer-prune.path` applies the revocation that
+  `revoke` records in `/var/lib/tilo/device-revocations`).
+- Your other devices learn the revocation when they next exchange identities
+  with a device that holds it, which happens whenever they connect. From then on
+  they refuse the revoked device, remember the revocation in their own fleet,
+  and drop it from their direct peers the same way.
+- A revocation is permanent and covers everything the revoked key signs from
+  then on, whatever time the signature claims.
 
 ## What happens underneath
 
@@ -150,7 +165,7 @@ device you are using; do it from another one.
 |---|---|
 | `no device is waiting to pair on this network` | Start `tilo-identity pair` on the new device first; check both are on one network segment. |
 | `no approving Tilo device answered` | Run `tilo-identity approve` while `pair` waits. |
-| `this device cannot approve devices` | Approve from the device that created the identity. |
+| `... needs the identity's root key, which this device does not hold; do this on '<device>'` | Approving, revoking, certifying and backing up stay with the devices holding the root; run the command on the named device. |
 | `this device's key ... is missing` | `sudo systemctl start tilo-device-key-init.service`; make sure your account is in the `tilo-identity` group, then log in again. |
 | `online state unknown (session not running)` | Start or restart the Tilo session (`tilo-board-headless-session@$USER` on a board). |
 | A device shows `not a direct peer` | It was enrolled before devices recorded each other; pair it again. |
@@ -164,8 +179,6 @@ device you are using; do it from another one.
 - A device enrolled by another device holds only the identity's public record;
   apps that need to sign as the identity (authored launches) do not start on
   it yet, so a continued app may stay "Available elsewhere" there.
-- Revoking a device does not yet remove it from the other devices' direct-peer
-  lists; the revoked device is refused when it connects.
 
 See also [Device sync, remote control and serving mesh](device-mesh.md) and
 [Identity signing boundary](identity-security.md).
