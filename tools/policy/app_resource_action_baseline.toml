@@ -43,7 +43,6 @@
 "apps/themes/src/resource.rs" = 2
 "apps/tube/src/app.rs" = 2
 "apps/tube/src/resource.rs" = 2
-"apps/typst-editor/src/app.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
 
@@ -74,8 +73,6 @@
 "apps/themes/src/main.rs" = 2
 "apps/tube/src/lib.rs" = 2
 "apps/tube/src/main.rs" = 2
-"apps/typst-editor/src/lib.rs" = 2
-"apps/typst-editor/src/main.rs" = 1
 "apps/word-processor/src/main.rs" = 3
 
 [ratchets.direct_document_api]
@@ -116,7 +113,6 @@
 "apps/slides/src/framework_history.rs" = 2
 "apps/themes/src/framework_history.rs" = 1
 "apps/tube/src/app.rs" = 3
-"apps/typst-editor/src/framework_history.rs" = 1
 "apps/video-editor/src/project_file.rs" = 2
 "apps/video-player/src/actions.rs" = 1
 "apps/video-player/src/resource.rs" = 1
