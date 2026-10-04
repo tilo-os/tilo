@@ -186,8 +186,8 @@ jobs:
           if ! command -v skopeo >/dev/null; then
             if command -v apt-get >/dev/null; then
               export DEBIAN_FRONTEND=noninteractive
-              { sudo -n apt-get -o Acquire::Retries=3 update \
-                && sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo; } || true
+              { sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update \
+                && sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends skopeo; } || true
             elif command -v dnf >/dev/null; then
               sudo -n dnf --setopt=retries=3 install -y skopeo || true
             fi
@@ -375,8 +375,8 @@ jobs:
           done
           if ((${#missing[@]})); then
             if command -v apt-get >/dev/null; then
-              sudo -n apt-get update
-              sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 update
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "${missing[@]}"
             else
               sudo -n dnf install -y "${missing[@]}"
             fi
@@ -424,8 +424,8 @@ jobs:
           sudo -n true
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
-            sudo -n apt-get -o Acquire::Retries=3 update
-            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends skopeo
           elif command -v dnf >/dev/null; then
             sudo -n dnf --setopt=retries=3 install -y skopeo
           else
@@ -776,8 +776,8 @@ jobs:
           python3 os/dev/require-private-oci-owner.py
           if ! command -v podman >/dev/null; then
             if command -v apt-get >/dev/null; then
-              sudo -n apt-get -o Acquire::Retries=3 update
-              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman jq
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends podman jq
             elif command -v dnf >/dev/null; then
               sudo -n dnf --setopt=retries=3 install -y podman jq
             else
@@ -2021,8 +2021,8 @@ jobs:
             trap '\''echo "$?" > "$TILO_SPLASH_LOG.status"'\'' EXIT
             if command -v apt-get >/dev/null; then
               if [[ $ARCH == x86_64 ]]; then firmware="ovmf qemu-system-x86"; else firmware="qemu-efi-aarch64 qemu-system-arm"; fi
-              sudo -n apt-get update -qq
-              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 update -qq
+              sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -qq --no-install-recommends \
                 cryptsetup-bin dosfstools fdisk mtools skopeo zstd $firmware >/dev/null
             else
               if [[ $ARCH == x86_64 ]]; then firmware="edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga"; else firmware="edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci"; fi
@@ -2215,8 +2215,8 @@ jobs:
           FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
         run: |
           set -euo pipefail
-          command -v podman >/dev/null || { sudo -n apt-get -o Acquire::Retries=3 update \
-            && sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman; }
+          command -v podman >/dev/null || { sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update \
+            && sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends podman; }
           authfile=$(mktemp "${RUNNER_TEMP:?}/tilo-firmware-auth.XXXXXX")
           store=$(mktemp -d "${RUNNER_TEMP:?}/tilo-firmware-login.XXXXXX")
           trap 'sudo -n rm -rf -- "$authfile" "$store"' EXIT
@@ -2503,13 +2503,13 @@ jobs:
           # unpack cost. The image build itself is not repeated.
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
-            sudo -n apt-get update
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 update
             if [[ '${{ matrix.arch }}' == x86_64 ]]; then
               qemu_packages='ovmf qemu-system-x86'
             else
               qemu_packages='qemu-efi-aarch64 qemu-system-arm'
             fi
-            sudo -n apt-get install -y --no-install-recommends \
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends \
               binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs ipxe-qemu openssh-client podman \
               jq qemu-system-gui qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux $qemu_packages
@@ -3176,8 +3176,8 @@ jobs:
           sudo -n true
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
-            sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends jq podman skopeo
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 update
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends jq podman skopeo
           elif command -v dnf >/dev/null; then
             sudo -n dnf install -y jq podman skopeo
           else
@@ -3413,8 +3413,8 @@ jobs:
           set -euo pipefail
           if ! command -v skopeo >/dev/null || ! command -v jq >/dev/null; then
             if command -v apt-get >/dev/null; then
-              sudo -n apt-get -o Acquire::Retries=3 update
-              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends jq skopeo
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update
+              sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends jq skopeo
             else
               sudo -n dnf install -y jq skopeo
             fi
@@ -3526,12 +3526,12 @@ jobs:
           set -euo pipefail
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
-            sudo -n apt-get -o Acquire::Retries=3 update
-            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends \
               binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs jq podman \
               qemu-utils skopeo systemd uidmap util-linux
             command -v systemd-repart >/dev/null \
-              || sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends systemd-repart
+              || sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends systemd-repart
           else
             sudo -n dnf --setopt=retries=3 install -y binutils btrfs-progs dosfstools e2fsprogs \
               fuse-overlayfs jq podman qemu-img skopeo systemd util-linux
@@ -3543,7 +3543,7 @@ jobs:
         if: matrix.board == 'orangepi-3b-v2-1'
         run: |
           set -euo pipefail
-          sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+          sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends \
             bc bison curl device-tree-compiler flex gcc libc6-dev libgnutls28-dev libssl-dev make \
             python3-dev python3-pyelftools python3-setuptools swig
 
@@ -3670,8 +3670,8 @@ jobs:
           set -euo pipefail
           sudo -n true
           if command -v apt-get >/dev/null; then
-            sudo -n apt-get -o Acquire::Retries=3 update
-            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends jq skopeo
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 update
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 -o Acquire::Retries=3 install -y --no-install-recommends jq skopeo
           elif command -v dnf >/dev/null; then
             sudo -n dnf --setopt=retries=3 install -y jq skopeo
           else
@@ -3766,8 +3766,8 @@ jobs:
           sudo -n true
           if command -v apt-get >/dev/null; then
             export DEBIAN_FRONTEND=noninteractive
-            sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends git jq podman skopeo
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 update
+            sudo -n apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends git jq podman skopeo
           elif command -v dnf >/dev/null; then
             sudo -n dnf install -y git jq podman skopeo
           else
