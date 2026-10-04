@@ -352,3 +352,41 @@ fn apply_now_reports_the_checked_changes() {
     let frame = app.harness().inspection_json().unwrap();
     assert!(frame.contains("changes checked"), "{frame}");
 }
+
+/// The rules are one list, allows first; pressing a header sorts by that
+/// column and pressing it again flips the order.
+#[test]
+fn the_rules_are_one_list_sorted_from_its_headers() {
+    let mut app = framed(1280.0, 800.0);
+    let rules = app.config.zone(ZoneKind::Public).unwrap().rules.clone();
+    let rows = |app: &Framed<FirewallApp>| {
+        let mut rows: Vec<(f64, Action)> = rules
+            .iter()
+            .map(|rule| {
+                let delete = target(app, &format!("firewall-rule-delete-{}", rule.id));
+                (delete.y0, rule.action)
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+        rows.into_iter()
+            .map(|(_, action)| action)
+            .collect::<Vec<_>>()
+    };
+    let order = rows(&app);
+    assert!(order.contains(&Action::Allow) && order.contains(&Action::Deny));
+    assert!(order.is_sorted_by_key(|action| *action == Action::Deny));
+
+    let table = target(&app, "firewall-rules");
+    let header = Point::new(table.x0 + 24.0, table.y0 + 12.0);
+    Framed::harness_mut(&mut app).click_at(header.x, header.y);
+    Framed::harness_mut(&mut app).poll_frame().unwrap();
+    assert_eq!(
+        app.rule_sort,
+        view::RuleSort {
+            key: view::RuleSortKey::Action,
+            ascending: false
+        }
+    );
+    let flipped = rows(&app);
+    assert!(flipped.is_sorted_by_key(|action| *action == Action::Allow));
+}

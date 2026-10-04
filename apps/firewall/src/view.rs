@@ -21,8 +21,8 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Badge, Banner, Button, ButtonRole, ChipStyle, Column, Decorator, Dropdown, Element, EmptyState,
     Field, FormControl, LabelPlacement, ModalDialog, NavItem, NavList, NavSection, Property,
-    PropertyList, Row, Scrollable, Section, SectionHeader, SegmentedStyle, Spacer, StatGroup,
-    StatTile, Text, TextInput, TextInputKind, Toggle, ToggleGroup, Tone, Widget,
+    PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer, StatGroup, StatTile, Text,
+    TextInput, TextInputKind, Toggle, ToggleGroup, Tone, Widget,
 };
 
 use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, Zone, ZoneKind};
@@ -34,6 +34,8 @@ use crate::model::{Action, FirewallConfig, Proto, Rule, RuleId, ServiceCatalog, 
 pub(crate) enum Intent {
     SelectZone(ZoneKind),
     SelectRule(RuleId),
+    /// Sort the rules by a column; the same column again flips direction.
+    SortRules(RuleSortKey),
     SetTab(Tab),
     SetMatchService(bool),
     SetProto(Proto),
@@ -47,6 +49,77 @@ pub(crate) enum Intent {
     MakeActive,
     Apply,
     Retry,
+}
+
+/// The rule columns a person can sort by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuleSortKey {
+    Action,
+    Rule,
+    Protocol,
+    Source,
+}
+
+impl RuleSortKey {
+    /// The rules table's column at `index`, when it sorts.
+    fn of_column(index: usize) -> Option<Self> {
+        [Self::Action, Self::Rule, Self::Protocol, Self::Source]
+            .get(index)
+            .copied()
+    }
+
+    fn column(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Rule => "rule",
+            Self::Protocol => "protocol",
+            Self::Source => "source",
+        }
+    }
+
+    fn compare(self, a: &RuleRow, b: &RuleRow) -> std::cmp::Ordering {
+        match self {
+            Self::Action => action_rank(a.action).cmp(&action_rank(b.action)),
+            Self::Rule => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+            Self::Protocol => a.protocol.cmp(b.protocol),
+            Self::Source => a.source.cmp(&b.source),
+        }
+    }
+}
+
+/// Rules that let traffic through come before the ones that stop it.
+fn action_rank(action: Action) -> u8 {
+    match action {
+        Action::Allow => 0,
+        Action::Deny => 1,
+    }
+}
+
+/// How the rules table is sorted: by a column, ascending or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RuleSort {
+    pub key: RuleSortKey,
+    pub ascending: bool,
+}
+
+impl Default for RuleSort {
+    fn default() -> Self {
+        Self {
+            key: RuleSortKey::Action,
+            ascending: true,
+        }
+    }
+}
+
+impl RuleSort {
+    /// Sorting by `key`: the same column flips, another starts ascending.
+    #[must_use]
+    pub(crate) fn by(self, key: RuleSortKey) -> Self {
+        Self {
+            key,
+            ascending: key != self.key || !self.ascending,
+        }
+    }
 }
 
 /// The queue controls write to and the app drains.
@@ -373,6 +446,7 @@ pub(crate) struct PageModel<'a> {
     pub zone: &'a Zone,
     pub tab: Tab,
     pub selected_rule: Option<RuleId>,
+    pub rule_sort: RuleSort,
     pub pending_delete: Option<&'a Rule>,
     pub draft: &'a Draft,
     /// The add-rule dialog is open.
@@ -559,8 +633,8 @@ impl RuleRow {
     }
 }
 
-/// The zone's rules, the ones that let traffic through apart from the ones
-/// that stop it, so what a rule does reads from where it stands.
+/// The zone's rules in one list: what each does is a badge in its own
+/// column, and the list sorts by any of its text columns.
 fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Element {
     if model.zone.rules.is_empty() {
         return Box::new(
@@ -569,54 +643,54 @@ fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Eleme
                 .dimmed(),
         );
     }
-    let mut groups = Column::new()
-        .with_intrinsic_height()
-        .with_no_padding()
-        .with_rhythm(Rhythm::Group);
-    for action in [Action::Allow, Action::Deny] {
-        let rows: Vec<RuleRow> = model
-            .zone
-            .rules
-            .iter()
-            .filter(|rule| rule.action == action)
-            .map(RuleRow::of)
-            .collect();
-        if rows.is_empty() {
-            continue;
+    let mut rows: Vec<RuleRow> = model.zone.rules.iter().map(RuleRow::of).collect();
+    let sort = model.rule_sort;
+    rows.sort_by(|a, b| {
+        let order = sort.key.compare(a, b);
+        if sort.ascending {
+            order
+        } else {
+            order.reverse()
         }
-        let title = match action {
-            Action::Allow => "Rules that allow",
-            Action::Deny => "Rules that deny",
-        };
-        groups = groups.push(Box::new(
-            Section::new(vec![Box::new(rule_table(
-                action,
-                rows,
-                model.selected_rule,
-                intents,
-                switches,
-            ))])
-            .with_header(SectionHeader::group(title)),
-        ));
-    }
-    Box::new(groups)
+    });
+    Box::new(rule_table(
+        rows,
+        sort,
+        model.selected_rule,
+        intents,
+        switches,
+    ))
 }
 
 fn rule_table(
-    action: Action,
     rows: Vec<RuleRow>,
+    sort: RuleSort,
     selected: Option<RuleId>,
     intents: &Intents,
     switches: &Switches,
 ) -> DataTable<RuleRow> {
     let toggles = switches.clone();
     let delete = intents.clone();
+    let sorter = intents.clone();
     let mut table = DataTable::new(vec![
+        ColumnDef::new("action", "Action", ColumnWidth::Auto)
+            .sortable(true)
+            .with_align(CellAlign::Center)
+            .with_badge(|row: &RuleRow| {
+                let tone = match row.action {
+                    Action::Allow => Tone::Success,
+                    Action::Deny => Tone::Danger,
+                };
+                (row.action.title().to_string(), tone)
+            }),
         ColumnDef::new("rule", "Rule", ColumnWidth::Flex(1.0))
+            .sortable(true)
             .with_text(|row: &RuleRow| row.title.clone()),
         ColumnDef::new("protocol", "Protocol", ColumnWidth::Auto)
+            .sortable(true)
             .with_text(|row: &RuleRow| row.protocol.to_string()),
         ColumnDef::new("source", "Source", ColumnWidth::Flex(1.0))
+            .sortable(true)
             .with_kind(TextKind::Identifier)
             .with_optional_text(|row: &RuleRow| row.source.clone(), "Anywhere"),
         ColumnDef::new("enabled", "Enabled", ColumnWidth::Auto)
@@ -645,15 +719,15 @@ fn rule_table(
             )
         }),
     ])
-    .with_id(match action {
-        Action::Allow => "firewall-allow-rules",
-        Action::Deny => "firewall-deny-rules",
-    })
-    .with_accessible_name(match action {
-        Action::Allow => "Rules that allow",
-        Action::Deny => "Rules that deny",
+    .with_id("firewall-rules")
+    .with_accessible_name("Rules")
+    .on_header_click(move |index| {
+        if let Some(key) = RuleSortKey::of_column(index) {
+            sorter.push(Intent::SortRules(key));
+        }
     })
     .selectable(true);
+    table.set_sort_indicator(sort.key.column(), sort.ascending);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
     if let Some(index) = selected.and_then(|id| ids.iter().position(|row| *row == id)) {
         table.selection_mut().select_only(index);
