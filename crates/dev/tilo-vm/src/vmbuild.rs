@@ -300,25 +300,22 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(
-                rsync_source(Path::new(r"C:\Users\xaver\tilo-tilo-main")),
-                "/c/Users/xaver/tilo-tilo-main"
+                rsync_source(Path::new(r"C:\Users\you\src\tilo")),
+                "/c/Users/you/src/tilo"
             );
             let mut ssh = remote::ssh_command(
                 &endpoint(),
-                Some(r"C:\Users\xaver\keys\vm_ed25519"),
+                Some(r"C:\Users\you\.ssh\vm_ed25519"),
                 &[],
                 false,
             );
-            use_msys_ssh(
-                &mut ssh,
-                Path::new(r"C:\Users\xaver\msys64\usr\bin\ssh.exe"),
-            );
-            assert_eq!(ssh.program, "/c/Users/xaver/msys64/usr/bin/ssh.exe");
+            use_msys_ssh(&mut ssh, Path::new(r"C:\msys64\usr\bin\ssh.exe"));
+            assert_eq!(ssh.program, "/c/msys64/usr/bin/ssh.exe");
             assert!(ssh.args.contains(&"-i".into()));
-            assert!(ssh.args.contains(&"/c/Users/xaver/keys/vm_ed25519".into()));
+            assert!(ssh.args.contains(&"/c/Users/you/.ssh/vm_ed25519".into()));
             assert!(
                 ssh.args.contains(
-                    &"UserKnownHostsFile=/c/Users/xaver/keys/vm_ed25519.known_hosts".into()
+                    &"UserKnownHostsFile=/c/Users/you/.ssh/vm_ed25519.known_hosts".into()
                 )
             );
         }
