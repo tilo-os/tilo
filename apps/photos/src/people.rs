@@ -81,12 +81,12 @@ pub enum FaceCapability {
 impl FaceCapability {
     /// Return a calm, non-technical explanation appropriate for an inline UI.
     #[must_use]
-    pub fn summary(&self) -> &'static str {
-        match self {
-            Self::DisabledByOwner => "People recognition is off on this device",
-            Self::NoVerifiedFaceModel => "No verified local face model is installed",
-            Self::Ready { .. } => "Face clusters stay on this device until you approve labels",
-        }
+    pub fn summary(&self) -> String {
+        crate::strings::tr(match self {
+            Self::DisabledByOwner => "photos-people-state-off",
+            Self::NoVerifiedFaceModel => "photos-people-state-no-model",
+            Self::Ready { .. } => "photos-people-state-ready",
+        })
     }
 
     #[must_use]
@@ -138,11 +138,11 @@ pub enum ProposalOrigin {
 
 impl ProposalOrigin {
     #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::VerifiedLocalPipeline => "Local suggestion",
-            Self::ImportedOrManual => "Imported suggestion",
-        }
+    pub fn label(self) -> String {
+        crate::strings::tr(match self {
+            Self::VerifiedLocalPipeline => "photos-people-local-suggestion",
+            Self::ImportedOrManual => "photos-people-imported-suggestion",
+        })
     }
 }
 
