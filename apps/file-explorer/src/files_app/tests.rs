@@ -4292,12 +4292,30 @@ mod responsive_body_tests {
         // provider: find the visual button in an AccessKit update, dispatch
         // its action through App, then require the newly opened menu item in
         // the next update. A `DoAction` reply alone is not enough.
+        //
+        // The item is matched by role as well as name: the folder's
+        // "New folder" resource action is exported as a button whether or not
+        // the menu is open, so a name alone cannot tell the opened menu apart
+        // from the closed one. The installed-image AT-SPI smoke looks for this
+        // same menu item.
+        let new_folder_item = t("files-menu-new-folder");
+        let exports_new_folder_item = |update: &ui::accesskit::TreeUpdate| {
+            update.nodes.iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::MenuItem
+                    && node.label() == Some(new_folder_item.as_str())
+                    && !node.is_hidden()
+            })
+        };
         let mut app = ui::App::new(
             ui::State::new(),
             Box::new(FileExplorerWidget::with_persistence(None, None)),
         );
         app.init_layout();
         let before = app.build_a11y_tree_update(1.0);
+        assert!(
+            !exports_new_folder_item(&before),
+            "the closed View options menu exports no New Folder item"
+        );
         let view_options = before
             .nodes
             .iter()
@@ -4313,10 +4331,7 @@ mod responsive_body_tests {
         );
         let after = app.build_a11y_tree_update(1.0);
         assert!(
-            after
-                .nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some(t("files-menu-new-folder").as_str())),
+            exports_new_folder_item(&after),
             "AT-SPI activation must publish the actual View options menu, not only acknowledge Click"
         );
     }

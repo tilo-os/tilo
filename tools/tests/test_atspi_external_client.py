@@ -117,14 +117,15 @@ class TypingTargetTests(unittest.TestCase):
 
         client = mock.Mock()
         client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
-        client.call.return_value = "('document frame',)"
+        # AccessKit answers GetRole with an AtspiRole number; 82 is a document frame.
+        client.role.return_value = 82
         target = CLIENT.is_typing_target
         with self.subTest(phase="a block editor's editable line, by name"):
             self.assertTrue(target(client, "/1", "(<'Block text'>,)", "Block text"))
             self.assertFalse(target(client, "/2", "(<'Page title'>,)", "Block text"))
         with self.subTest(phase="without a field name, the document"):
             self.assertTrue(target(client, "/3", "(<''>,)", None))
-            client.call.return_value = "('push button',)"
+            client.role.return_value = 43  # a push button
             self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
 
 
@@ -243,10 +244,14 @@ class FakeShell:
     def property(self, path, _name):
         return f"(<'{self.nodes[path][1]}'>,)"
 
+    def role(self, path):
+        return CLIENT.AtspiClient.role(self, path)
+
     def call(self, path, method, *args, check=True):
         role, _name, kids = self.nodes[path]
-        if method.endswith("GetRoleName"):
-            return f"('{role}',)"
+        if method.endswith("GetRole"):
+            number = {"frame": 23, "page tab": 37, "page tab list": 38, "push button": 43}[role]
+            return f"(uint32 {number},)"
         if method.endswith("GetChildren"):
             return "([" + ", ".join(f"(':1.2', objectpath '{kid}')" for kid in kids) + "],)"
         raise AssertionError(method)

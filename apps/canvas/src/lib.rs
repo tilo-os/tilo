@@ -18,6 +18,7 @@ pub mod adjust;
 pub mod answer;
 pub mod author;
 pub mod brushes;
+pub mod detail;
 pub mod doc;
 pub mod document;
 pub mod fonts;
