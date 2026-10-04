@@ -255,8 +255,7 @@ fn message_resource(
 }
 
 /// Chat as every host runs and mounts it: the chat widget is the surface
-/// over [`Chat`], kept by the room as its own record
-/// (`ApplicationDefinition::keeps_room_record`).
+/// over [`Chat`], kept by the room as its own record.
 pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
@@ -289,6 +288,7 @@ impl ResourceApp for ChatShell {
     const ID: &'static str = "so.tilo.chat";
     const TITLE: &'static str = "Chat";
     const ICON: Option<&'static str> = Some("chat");
+    const ROOM_RECORD: bool = true;
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
         crate::i18n::ensure();

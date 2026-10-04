@@ -50,6 +50,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create: |_, _, _| unreachable!(),
     };
     let prepare = |instance| {

@@ -814,6 +814,7 @@ mod native_process_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: rejected_factory,
         }
     }

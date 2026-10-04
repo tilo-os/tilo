@@ -454,6 +454,7 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create: bound_factory,
     };
     let target = crate::application::LaunchTarget::New;
