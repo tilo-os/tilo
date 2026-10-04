@@ -374,6 +374,32 @@ mod tests {
         );
     }
 
+    /// Work on the repository reaches this machine's disk, so only the
+    /// person at it may ask for it; the diff preferences are the person's
+    /// settings and reach nothing of the machine.
+    #[test]
+    fn only_repository_work_is_device_only() {
+        use ui::tilo_resource::Effect as _;
+        let device_only = |id: &str| {
+            GitClientEffect::declarations()
+                .into_iter()
+                .find(|decl| decl.id == id)
+                .unwrap_or_else(|| panic!("{id} is declared"))
+                .device_only
+        };
+        for id in ["commit", "stage-all", "fetch", "discard-file"] {
+            assert!(device_only(id), "{id}");
+        }
+        for id in [
+            "diff-layout",
+            "syntax-highlight",
+            "show-whitespace",
+            "wrap-lines",
+        ] {
+            assert!(!device_only(id), "{id}");
+        }
+    }
+
     /// The client's effects are published on the repository and on the
     /// items they act on, and every one reaches the repository on disk:
     /// staging a changed file through its row, committing, creating and
