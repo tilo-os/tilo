@@ -7,12 +7,12 @@
 )]
 
 use canvas::App;
-use ui::prelude::TestApp;
+use ui::prelude::{ResourceApp, TestApp};
 
 #[test]
 fn the_inspector_drawer_holds_its_controls_inside_the_window() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
-    app.stage(Some("landscape")).expect("the scenario stages");
+    let mut app = TestApp::<App>::capture_at(Some("landscape"), App::shot_viewport(None))
+        .expect("the app opens with the landscape scenario");
     let width = 600.0;
     app.harness().resize((600, 800)).expect("resizes");
     let toggle = app

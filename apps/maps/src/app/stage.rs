@@ -7,7 +7,7 @@ use vello::kurbo::{Point, Rect};
 
 #[cfg(test)]
 use super::TravelMode;
-use super::{Endpoint, FloatingSurfaceProvider, LatLon, MapInfo, MapsApp, Panel, Widget, sample};
+use super::{Endpoint, FloatingSurfaceProvider, LatLon, MapInfo, MapsApp, Panel, sample};
 
 impl MapsApp {
     /// Stage `scenario`'s view state, once its actions are laid out.
@@ -180,7 +180,11 @@ impl MapsApp {
         self.model.panel = Panel::Explore;
         self.model.query = "Marienplatz".to_string();
         let mut results = self.model.places.clone();
-        self.rank_by_proximity(&mut results);
+        let anchor = self.search_anchor();
+        results.sort_by(|a, b| {
+            crate::geo::haversine_m(a.pos, anchor)
+                .total_cmp(&crate::geo::haversine_m(b.pos, anchor))
+        });
         self.model.results = results;
         self.open_platform_search(
             ui::search::SearchRequest::this_app().with_query(self.model.query.clone()),

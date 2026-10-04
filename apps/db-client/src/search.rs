@@ -506,7 +506,7 @@ fn push_revision_part(parts: &mut String, value: &str) {
 mod tests {
     use super::*;
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
-    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider, SearchQuery};
 
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
         let address = result.action_address().expect("canonical action address");
@@ -536,7 +536,7 @@ mod tests {
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
             let provider = index.provider();
-            let page = provider.search_page("albums", None, 20, 20);
+            let page = provider.search_page(&SearchQuery::new("albums"), None, 20, 20);
             assert!(page.inspected <= 20);
             let hit = page
                 .results
@@ -571,7 +571,7 @@ mod tests {
             );
             assert_eq!(
                 provider
-                    .search_page("", None, usize::MAX, usize::MAX)
+                    .search_page(&SearchQuery::new(""), None, usize::MAX, usize::MAX)
                     .results
                     .len(),
                 DEFAULT_SEARCH_RESULT_LIMIT
@@ -678,7 +678,7 @@ mod tests {
             let index = DbSearchIndex::default();
             index.sync(&session).unwrap();
             let provider = index.provider();
-            let first = provider.search_page("", None, 1, 1);
+            let first = provider.search_page(&SearchQuery::new(""), None, 1, 1);
             let cursor = first.next.expect("large catalog has a continuation");
             let mut relation = session.schema.schemas[0].tables[0].clone();
             relation.name = "cursor-change".into();
@@ -694,7 +694,7 @@ mod tests {
             index.sync(&session).unwrap();
             let provider = index.provider();
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("sample catalog is pageable");
 
@@ -714,7 +714,7 @@ mod tests {
             let provider = index.provider();
             let old_relation = provider.search_limited("albums", 4).remove(0);
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("sample catalog is pageable");
 

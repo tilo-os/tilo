@@ -28,7 +28,7 @@ use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Column, ModalDialog, NavPane, NavShell, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 struct RateSample {

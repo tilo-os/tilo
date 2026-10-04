@@ -1,6 +1,7 @@
 use super::*;
 use accounts::{SecretId, SecretItem};
 use taffy::{Style, TaffyTree};
+use ui::automerge;
 use zeroize::Zeroizing;
 
 use crate::vault::{Dialog, DraftField, Request};

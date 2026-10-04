@@ -866,7 +866,7 @@ impl ui::widget::Decorator for DisksApp {
             root.children.push(shell);
         }
         if !self.status.is_empty() {
-            let mut status = AccessNode::new(Role::Status).with_name(&self.status);
+            let mut status = AccessNode::new(Role::StaticText).with_name(&self.status);
             status.live = Some(Politeness::Polite);
             root.children.push(status);
         }

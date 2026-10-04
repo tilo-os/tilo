@@ -221,7 +221,10 @@ impl CalculatorApp {
             &theme,
             &PresenceCtx::empty(),
         );
-        let point = app.g2.field_rect(0).map_or(Point::ZERO, Rect::center);
+        let point = app
+            .g2
+            .field_rect(0)
+            .map_or(Point::ZERO, |rect| rect.center());
         (point.x as f32, point.y as f32)
     }
 

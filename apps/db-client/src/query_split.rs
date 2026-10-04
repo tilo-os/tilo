@@ -122,7 +122,7 @@ impl Widget for QueryDivider {
             Fill::NonZero,
             transform,
             if self.focused {
-                theme.accent_primary
+                theme.border_focus
             } else {
                 theme.text_dim
             },
@@ -263,6 +263,20 @@ impl Widget for QueryResizeMenu {
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // ContextMenu prepares its text metrics here and paints in the
+        // overlay pass, above both query panes.
+        self.menu
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
 
     fn draw_overlay(
         &mut self,
@@ -608,6 +622,34 @@ impl ui::widget::Decorator for QuerySplit {
         }
         self.drain();
     }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.split.draw(scene, transform, text, theme, presence);
+        self.divider.draw(scene, transform, text, theme, presence);
+        self.menu.draw(scene, transform, text, theme, presence);
+    }
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &ui::permissions::PermissionContext,
+    ) {
+        self.split
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
+        self.divider
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
+        self.menu
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
+    }
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -664,6 +706,49 @@ mod tests {
     fn divider(driver: &Driver) -> Rect {
         driver.targets()["db.query-divider"]
     }
+    #[test]
+    fn hosted_frame_paints_the_focused_query_divider() {
+        // Use an otherwise unused focus color to identify the actual encoded
+        // grip paint, without requiring a GPU or asserting incidental glyphs.
+        let focus_color = ui::vello::peniko::Color::from_rgb8(17, 243, 119);
+        let mut marker = Scene::new();
+        marker.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            focus_color,
+            None,
+            &Rect::new(0.0, 0.0, 1.0, 1.0),
+        );
+        let focus_paint = marker.encoding().draw_data[0];
+        let mut theme = Theme::dark();
+        theme.border_focus = focus_color;
+        let mut frame = ui::headless::FrameHarness::for_root(
+            crate::app::sample_state(),
+            QuerySplit::new(&Link::new()),
+            (1000, 700),
+            theme,
+        );
+        assert!(
+            !frame
+                .frame_output()
+                .scene
+                .encoding()
+                .draw_data
+                .contains(&focus_paint)
+        );
+        frame.click_named("db.query-divider").unwrap();
+        assert!(frame.root::<QuerySplit>().divider.focused);
+        assert!(
+            frame
+                .frame_output()
+                .scene
+                .encoding()
+                .draw_data
+                .contains(&focus_paint),
+            "the native presence-aware frame must paint the focused divider grip"
+        );
+    }
+
     #[test]
     fn automatic_height_is_measured_on_the_first_frame_and_restored_after_reset() {
         let mut driver = mounted((1200, 800));

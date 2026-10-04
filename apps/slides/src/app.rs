@@ -8858,7 +8858,7 @@ mod tests {
         geometry.deck = deck;
         geometry.bootstrapped = true;
         geometry.rect = app.harness().targets()["BoundComponent"];
-        geometry.sync_flaps(0.0, false);
+        geometry.sync_flaps(None);
         let chrome = geometry.compute_chrome();
         let element = geometry.deck.slides[0].element(&id).unwrap();
         let at = render::element_dest(chrome.slide_dest, chrome.scale, element).center();

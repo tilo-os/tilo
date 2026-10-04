@@ -322,7 +322,7 @@ impl FirewallApp {
     }
 
     /// Dispatch an edit through the framework; presentation-only widgets are inert.
-    fn perform_action(&self, _state: &mut AutoCommit, action: &FirewallAction) {
+    fn dispatch_edit(&self, _state: &mut AutoCommit, action: &FirewallAction) {
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.apply(action);
         }
@@ -641,7 +641,7 @@ impl FirewallApp {
         };
         let id = rule.id;
         let title = rule.matcher.title();
-        self.perform_action(
+        self.dispatch_edit(
             state,
             &crate::actions::add_rule_action(self.selected_zone, rule),
         );
@@ -654,7 +654,7 @@ impl FirewallApp {
     }
 
     fn delete_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
-        self.perform_action(
+        self.dispatch_edit(
             state,
             &crate::actions::delete_rule_action(self.selected_zone, id),
         );
@@ -670,7 +670,7 @@ impl FirewallApp {
             .selected_zone_ref()
             .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id));
         if exists {
-            self.perform_action(
+            self.dispatch_edit(
                 state,
                 &crate::actions::set_rule_enabled_action(self.selected_zone, id, on),
             );
@@ -679,14 +679,14 @@ impl FirewallApp {
 
     fn set_service(&mut self, id: &str, on: bool, state: &mut AutoCommit) {
         // Resolved at authoring time so the action is order-free on replay.
-        self.perform_action(
+        self.dispatch_edit(
             state,
             &crate::actions::set_service_action(self.selected_zone, id, on),
         );
     }
 
     fn set_active_zone(&mut self, state: &mut AutoCommit) {
-        self.perform_action(
+        self.dispatch_edit(
             state,
             &crate::actions::set_default_zone_action(self.selected_zone),
         );
@@ -697,11 +697,11 @@ impl FirewallApp {
     }
 
     fn set_panic(&self, state: &mut AutoCommit, on: bool) {
-        self.perform_action(state, &crate::actions::set_panic_action(on));
+        self.dispatch_edit(state, &crate::actions::set_panic_action(on));
     }
 
     fn set_enabled(&self, state: &mut AutoCommit, on: bool) {
-        self.perform_action(state, &crate::actions::set_enabled_action(on));
+        self.dispatch_edit(state, &crate::actions::set_enabled_action(on));
     }
 
     /// Announce a completed device projection from the framework.
@@ -828,7 +828,7 @@ impl ui::widget::Decorator for FirewallApp {
                             self.select_zone(*zone);
                         }
                     } else if key.eq_ignore_ascii_case("p") {
-                        self.perform_action(
+                        self.dispatch_edit(
                             doc,
                             &crate::actions::set_panic_action(!self.config.panic_mode),
                         );

@@ -379,7 +379,9 @@ pub(crate) mod tests {
             }
             widget.children().into_iter().any(password_is_protected)
         }
-        assert!(password_is_protected(harness.root_mut::<ModalDialog>()));
+        assert!(password_is_protected(
+            harness.root_mut::<ModalDialog<ConnectForm>>()
+        ));
 
         assert!(!harness.inspection_json().unwrap().contains("correct horse"));
         harness.key("Ctrl+a");

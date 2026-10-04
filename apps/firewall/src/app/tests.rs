@@ -86,9 +86,9 @@ fn populated_firewall_passes_native_certification() {
         Some("narrow"),
         Some("service-error"),
     ] {
-        let mut app = ui::framework::testing::HeadlessApp::<crate::FirewallShell>::new()
-            .expect("the app opens headlessly");
-        app.stage(scenario).expect("the scenario stages");
+        let mut app =
+            ui::framework::testing::HeadlessApp::<crate::FirewallShell>::capture(scenario)
+                .expect("the scenario opens headlessly");
         let audit = app.harness().native_app_audit();
         // The window's History control binds the host's History door, which
         // the window publishes and the headless harness's resource tree does

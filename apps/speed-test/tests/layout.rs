@@ -12,10 +12,7 @@ use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;
 
 fn staged(scenario: &str, viewport: (u32, u32)) -> HeadlessApp<SpeedTestShell> {
-    let mut app = HeadlessApp::<SpeedTestShell>::new().unwrap();
-    app.harness().resize(viewport).unwrap();
-    app.stage(Some(scenario)).unwrap();
-    app
+    HeadlessApp::<SpeedTestShell>::capture_at(Some(scenario), viewport).unwrap()
 }
 
 fn target(app: &mut HeadlessApp<SpeedTestShell>, name: &str) -> Rect {

@@ -316,8 +316,8 @@ mod tests {
         use ui::framework::testing::HeadlessApp;
         use ui::headless::{Control, ControlInput};
 
-        let mut app = HeadlessApp::<DiffmergeShell>::new().expect("the app opens");
-        app.stage(Some("diff")).expect("the diff stages");
+        let mut app = HeadlessApp::<DiffmergeShell>::capture(Some("diff"))
+            .expect("the app opens with the diff scenario");
         let find = |app: &mut HeadlessApp<DiffmergeShell>, name: &str| -> Option<Control> {
             app.harness()
                 .controls()

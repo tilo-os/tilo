@@ -169,7 +169,7 @@ pub fn choices(
     binding_options(&shortcut, catalog, &step_path(path), param)
         .into_iter()
         .map(|BindingOption { binding, .. }| Choice {
-            label: describe(&binding, &draft.program.0.steps),
+            label: describe(&binding, &shortcut.steps),
             binding,
         })
         .collect()

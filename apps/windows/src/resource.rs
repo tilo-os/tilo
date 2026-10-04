@@ -542,8 +542,9 @@ mod capture_tests {
     fn every_scenario_stages_and_renders_in_the_framework_app() {
         let dir = tempfile::tempdir().unwrap();
         for scenario in super::WindowsApp::SCENARIOS {
-            let mut app = ui::framework::testing::TestApp::<super::WindowsShell>::new().unwrap();
-            app.stage(Some(scenario)).unwrap();
+            let mut app =
+                ui::framework::testing::TestApp::<super::WindowsShell>::capture(Some(scenario))
+                    .unwrap();
             app.harness()
                 .render_png(&dir.path().join(format!("{scenario}.png")));
         }

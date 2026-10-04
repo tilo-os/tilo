@@ -95,7 +95,7 @@ impl ui::widget::Decorator for DraftInput {
         &mut self.input
     }
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.input.sync(state, path);
+        Widget::sync(&mut self.input, state, path);
         self.suggestions.sync(state, path);
     }
     fn build_layout(
@@ -104,7 +104,7 @@ impl ui::widget::Decorator for DraftInput {
         theme: &ui::theme::Theme,
         nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
-        let node = self.input.build_layout(taffy, theme, nodes);
+        let node = Widget::build_layout(&mut self.input, taffy, theme, nodes);
         ui::widget::decorator::register_node(nodes, node, self);
         node
     }
@@ -155,7 +155,7 @@ impl ui::widget::Decorator for DraftInput {
             }
         }
         let before = self.input.control().value().to_owned();
-        self.input.handle_event(event, ctx);
+        Widget::handle_event(&mut self.input, event, ctx);
         if before != self.input.control().value() {
             self.open_suggestions();
         }
@@ -168,18 +168,17 @@ impl ui::widget::Decorator for DraftInput {
         theme: &ui::theme::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        self.input
-            .draw_overlay(scene, transform, text, theme, presence);
+        Widget::draw_overlay(&mut self.input, scene, transform, text, theme, presence);
         self.suggestions
-            .apply_layout_external(self.input.get_rect());
+            .apply_layout_external(Widget::get_rect(&self.input));
         self.suggestions
             .draw_overlay(scene, transform, text, theme, presence);
     }
     fn wants_pointer_capture(&self) -> bool {
-        self.suggestions.is_open() || self.input.wants_pointer_capture()
+        self.suggestions.is_open() || Widget::wants_pointer_capture(&self.input)
     }
     fn set_focus(&mut self, focused: bool) {
-        self.input.set_focus(focused);
+        Widget::set_focus(&mut self.input, focused);
         if !focused {
             self.suggestions.close();
         }

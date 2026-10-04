@@ -322,7 +322,7 @@ fn zoom_scroll_and_search_typing_stay_under_frame_budget() {
         use ui::profiling::{PerfScenario, PerfStep, run_scenario_on};
         let mut app = MapsApp::offline();
         app.seed_perf_tiles(1280.0, 800.0);
-        app.set_demo_edit_origin();
+        app.stage_edit_origin();
         let scenario = PerfScenario {
             name: "maps-endpoint-typing".into(),
             viewport: (1280, 800),
@@ -945,7 +945,7 @@ fn platform_search_opens_finds_and_activates_places() {
     // through the normal event path.
     {
         let mut a = app_at(1280.0, 720.0);
-        a.set_demo_edit_origin();
+        a.stage_edit_origin();
         a.model.origin_query.clear();
         a.endpoints
             .sync_queries(&a.model.origin_query, &a.model.dest_query);

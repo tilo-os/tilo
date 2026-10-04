@@ -2117,23 +2117,23 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.panel),
             colors.surfaces.raised,
         );
-        let size = tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Label);
         let text = |text_renderer: &mut TextRenderer,
                     scene: &mut Scene,
                     label: &str,
                     color,
                     x: f64,
                     y: f64| {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                size,
                 color,
                 transform.pre_translate((x, y).into()),
                 None,
+                &label_style,
             );
         };
         text(
@@ -2160,11 +2160,10 @@ impl WorkspaceSettingsOverlay {
                     ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
                 ),
             );
-            let (width, _) = text_renderer.measure(label, size, None);
-            text_renderer.draw_text(
+            let (width, _) = text_renderer.measure_style(label, None, &label_style);
+            text_renderer.draw_style(
                 scene,
                 label,
-                size,
                 ink,
                 transform.pre_translate(
                     (
@@ -2174,6 +2173,7 @@ impl WorkspaceSettingsOverlay {
                         .into(),
                 ),
                 None,
+                &label_style,
             );
         };
         self.device_toggle_rects.clear();
@@ -2201,6 +2201,11 @@ impl WorkspaceSettingsOverlay {
                 card.x1 - 16.0,
                 y + 32.0 * scale,
             );
+            let toggle_fill = if device.shown {
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true)).fill
+            } else {
+                colors.surfaces.base
+            };
             button(
                 scene,
                 text_renderer,
@@ -2210,12 +2215,12 @@ impl WorkspaceSettingsOverlay {
                 } else {
                     "workspace-settings-device-hidden"
                 }),
-                if device.shown {
-                    colors.accent[5]
-                } else {
-                    colors.surfaces.base
-                },
-                colors.text_primary,
+                toggle_fill,
+                colors.ink_on(
+                    toggle_fill,
+                    colors.text_primary,
+                    ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                ),
             );
             self.device_toggle_rects.push(toggle);
             y += 40.0 * scale;

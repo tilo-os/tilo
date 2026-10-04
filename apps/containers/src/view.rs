@@ -124,7 +124,11 @@ pub(crate) fn section_list(
         .selected(place_id(selected))
         .with_id("containers-sections")
         .with_accessible_name("Sections")
-        .on_select(move |id| intents.push(Intent::ShowSection(Place::parse(&id))))
+        .on_select(move |id| {
+            if let Some(place) = Place::parse(&id) {
+                intents.push(Intent::ShowSection(place));
+            }
+        })
 }
 
 /// The sidebar: the sections, and at its foot whether the engine answers.

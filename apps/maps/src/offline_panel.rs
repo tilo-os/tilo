@@ -150,7 +150,7 @@ impl OfflinePanel {
         self.cache_bytes = bytes;
     }
 
-    #[cfg(test)]
+    /// Stage the offline-area scenario without requesting geocoding or tiles.
     pub fn set_demo(&mut self, cache_bytes: u64, query: &str, results: Vec<RegionHit>) {
         self.open = true;
         self.zoom_extra = 2;
@@ -205,7 +205,8 @@ impl OfflinePanel {
     ) -> bool {
         let on_levels = self.levels_rect.is_some_and(|rect| rect.contains(mouse));
         if on_levels || self.levels.is_editing() {
-            let handled = drive(&mut self.levels, event, scale, modifiers);
+            let handled =
+                crate::endpoint_editor::drive(&mut self.levels, event, scale, modifiers, doc);
             if let Some(levels) = self.levels.take_changed() {
                 self.zoom_extra = (levels.round() as u8).saturating_sub(1).min(MAX_EXTRA_ZOOM);
             }

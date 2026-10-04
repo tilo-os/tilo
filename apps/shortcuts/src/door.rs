@@ -273,7 +273,7 @@ impl DoorCore {
         let catalog = catalog.ok_or("the action catalogue has not been read yet")?;
         self.state.update(|state| state.notice = None);
         let problems = editor::problems(&draft, &catalog, &saved);
-        if let Some(first) = editor::problem_lines(&draft.program.0.steps, &problems).first() {
+        if let Some(first) = editor::problem_lines(&draft.program().steps, &problems).first() {
             return Err(first.clone());
         }
         let shortcut = editor::candidate(&draft, &catalog);

@@ -502,6 +502,7 @@ settings-users-protection-service = Durch deinen Schlüsselbund geschützt
 settings-users-protection-file = In einer privaten Datei gespeichert
 settings-users-protection-hardware-backed = Durch Hardware geschützt
 settings-users-protection-legacy = Muss geschützt werden
+settings-users-protection-device-certificate = Kein Identitätsschlüssel auf diesem Gerät; es signiert mit seinem Gerätezertifikat
 settings-users-protection-unavailable = Nicht verfügbar
 settings-users-placeholder-full-name = Vollständiger Name
 settings-users-placeholder-username = anmeldename

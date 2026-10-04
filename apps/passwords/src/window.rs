@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::SecretItemKind;
-use automerge::AutoCommit;
+use ui::automerge::AutoCommit;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;

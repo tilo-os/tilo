@@ -1883,7 +1883,7 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
         ]);
     }
     let copy_control = Rc::clone(&detail.control);
-    let copy_address = ActionAddress::new(&detail.resource.id, "copy-pid");
+    let copy_address = ActionAddress::new(detail.resource.id.as_str(), "copy-pid");
     properties.extend([
         Property::new("PID", process.pid.to_string())
             .with_kind(TextKind::Numeric)

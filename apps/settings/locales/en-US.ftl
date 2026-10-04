@@ -502,6 +502,7 @@ settings-users-protection-service = Protected by your keyring
 settings-users-protection-file = Stored in a private file
 settings-users-protection-hardware-backed = Protected by hardware
 settings-users-protection-legacy = Needs protecting
+settings-users-protection-device-certificate = No identity key on this device; it signs with its device certificate
 settings-users-protection-unavailable = Not available
 settings-users-placeholder-full-name = Full name
 settings-users-placeholder-username = login-name

@@ -22,7 +22,9 @@ use ui::framework::{
 };
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
-use ui::widget::{CardGrid, TextInput, Widget};
+#[cfg(test)]
+use ui::widget::CardGrid;
+use ui::widget::{TextInput, Widget};
 use ui::{
     Theme, icons::Icon, permissions::PermissionContext, presence::PresenceCtx,
     text_render::TextRenderer,
@@ -35,6 +37,7 @@ use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
 use crate::resource::{ReportProjection, Store, StoreEffect, report_note_dispatcher};
 use crate::sources::distinct_categories;
+#[cfg(test)]
 use crate::widgets::{CardAction, CardDetails};
 use crate::worker::{Outcome, Request, StoreWorker};
 
@@ -336,7 +339,7 @@ fn safety_back_button() -> ui::widget::Button {
     }
     button
         .with_icon(Icon::ArrowLeft)
-        .fit_content(40.0)
+        .control_size(ui::widget::ControlSize::Large)
         .tooltip("Return to the app catalogue")
 }
 
@@ -966,7 +969,9 @@ impl Widget for StoreApp {
                 },
                 padding: taffy::Rect {
                     bottom: taffy::LengthPercentage::length(Self::status_bubble_band(theme)),
-                    ..Default::default()
+                    left: taffy::LengthPercentage::length(0.0),
+                    right: taffy::LengthPercentage::length(0.0),
+                    top: taffy::LengthPercentage::length(0.0),
                 },
                 ..Default::default()
             },

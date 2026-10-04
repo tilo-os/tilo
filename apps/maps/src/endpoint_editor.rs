@@ -12,7 +12,7 @@ use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::icons::Icon;

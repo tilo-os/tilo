@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
-use automerge::AutoCommit;
+use ui::automerge::AutoCommit;
 use ui::widget::NavPane;
 use vello::kurbo::{Point, Rect};
 use zeroize::Zeroizing;

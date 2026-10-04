@@ -71,7 +71,7 @@ impl ui::widget::Decorator for EditorPane {
         if let Some(dispatcher) = self.link.sql_dispatcher() {
             self.editor.attach(dispatcher);
         }
-        self.editor.sync(state, path);
+        Widget::sync(&mut self.editor, state, path);
         self.link.set_sql(self.editor.control().value());
     }
 
