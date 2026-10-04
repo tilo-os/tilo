@@ -17,8 +17,8 @@ use super::{
 use ui::TextRole;
 use ui::surface::Region;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, DropZoneFace, SegmentedFace,
-    ToggleGroup,
+    Button, ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, DropZoneFace, Segment,
+    SegmentedFace, ToggleGroup,
 };
 
 /// What a measured width belongs to: a button face (with or without a
@@ -195,9 +195,11 @@ pub(super) enum ButtonKind {
         active: bool,
     },
     /// One segment of a segmented strip. Consecutive segments of one
-    /// `group` on one row paint as one strip.
+    /// `group` on one row paint as one strip. An icon segment shows its
+    /// icon, and `label` is its accessible name.
     Segment {
         label: String,
+        icon: Option<Icon>,
         active: bool,
         group: u8,
     },
@@ -219,6 +221,24 @@ pub(super) struct UiButton {
 }
 
 /// Segment groups of the inspector.
+/// One choice of a segmented strip in the inspector.
+struct SegmentItem {
+    label: String,
+    icon: Option<Icon>,
+    active: bool,
+    hit: Hit,
+}
+
+/// The glyph of a text alignment.
+fn align_icon(align: TextAlign) -> Icon {
+    match align {
+        TextAlign::Left => Icon::AlignLeft,
+        TextAlign::Center => Icon::AlignCenter,
+        TextAlign::Right => Icon::AlignRight,
+        TextAlign::Justify => Icon::AlignJustify,
+    }
+}
+
 const SEG_ALIGN: u8 = 0;
 const SEG_BACKGROUND: u8 = 1;
 
@@ -336,7 +356,7 @@ pub(super) fn insert_tools() -> [(String, Option<Icon>, Hit); 5] {
         ),
         (
             tr("slides-tool-ellipse"),
-            None,
+            Some(Icon::Circle),
             Hit::Insert(ElementKind::Ellipse),
         ),
         (
@@ -1079,9 +1099,14 @@ impl SlidesApp {
             y = toggles_y + m.control_h + m.s6;
 
             Self::push_section_label(m, labels, x0, &mut y, &tr("slides-alignment"));
-            let items: Vec<(String, bool, Hit)> = TextAlign::ALL
+            let items: Vec<SegmentItem> = TextAlign::ALL
                 .iter()
-                .map(|a| (a.glyph().to_owned(), *a == el.align, Hit::SetAlign(*a)))
+                .map(|a| SegmentItem {
+                    label: a.glyph().to_owned(),
+                    icon: Some(align_icon(*a)),
+                    active: *a == el.align,
+                    hit: Hit::SetAlign(*a),
+                })
                 .collect();
             y = self.segment_rows(buttons, x0, x1, y, SEG_ALIGN, items);
             y += m.s6;
@@ -1164,14 +1189,13 @@ impl SlidesApp {
 
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-background"));
         let background = self.slide().map_or(Background::Surface, |s| s.background);
-        let items: Vec<(String, bool, Hit)> = Background::ALL
+        let items: Vec<SegmentItem> = Background::ALL
             .iter()
-            .map(|b| {
-                (
-                    b.label().to_owned(),
-                    *b == background,
-                    Hit::SetBackground(*b),
-                )
+            .map(|b| SegmentItem {
+                label: b.label().to_owned(),
+                icon: None,
+                active: *b == background,
+                hit: Hit::SetBackground(*b),
             })
             .collect();
         y = self.segment_rows(buttons, x0, x1, y, SEG_BACKGROUND, items);
@@ -1203,13 +1227,20 @@ impl SlidesApp {
         x1: f64,
         y: f64,
         group: u8,
-        items: Vec<(String, bool, Hit)>,
+        items: Vec<SegmentItem>,
     ) -> f64 {
         let m = &self.chrome_metrics;
         let n = items.len().max(1);
+        // An icon segment wants a pointer target; a labelled one its label.
         let widest = items
             .iter()
-            .map(|(label, ..)| m.width(label, Measure::Segment))
+            .map(|item| {
+                if item.icon.is_some() {
+                    m.control_h
+                } else {
+                    m.width(&item.label, Measure::Segment)
+                }
+            })
             .fold(0.0_f64, f64::max);
         let cols = if widest <= (x1 - x0) / n as f64 + 0.5 {
             n
@@ -1217,7 +1248,7 @@ impl SlidesApp {
             2
         };
         let seg_w = (x1 - x0) / cols as f64;
-        for (i, (label, active, hit)) in items.into_iter().enumerate() {
+        for (i, item) in items.into_iter().enumerate() {
             let col = i % cols;
             let row = (i / cols) as f64;
             let sx = x0 + col as f64 * seg_w;
@@ -1226,11 +1257,12 @@ impl SlidesApp {
             buttons.push(UiButton {
                 rect: Rect::new(sx, sy, ex, sy + m.control_h),
                 kind: ButtonKind::Segment {
-                    label,
-                    active,
+                    label: item.label,
+                    icon: item.icon,
+                    active: item.active,
                     group,
                 },
-                hit,
+                hit: item.hit,
             });
         }
         let rows = n.div_ceil(cols) as f64;
@@ -1542,11 +1574,16 @@ impl SlidesApp {
         row: &[&UiButton],
     ) {
         let rects: Vec<Rect> = row.iter().map(|b| b.rect).collect();
-        let labels: Vec<&str> = row
+        let segments: Vec<Segment> = row
             .iter()
             .map(|b| match &b.kind {
-                ButtonKind::Segment { label, .. } => label.as_str(),
-                _ => "",
+                ButtonKind::Segment {
+                    label,
+                    icon: Some(icon),
+                    ..
+                } => Segment::icon(*icon, label.as_str()),
+                ButtonKind::Segment { label, .. } => Segment::new(label.as_str()),
+                _ => Segment::new(""),
             })
             .collect();
         let selected = row
@@ -1559,7 +1596,7 @@ impl SlidesApp {
             t,
             tr,
             theme,
-            &SegmentedFace::new(&rects, &labels, selected).hovered(hovered),
+            &SegmentedFace::of_segments(&rects, &segments, selected).hovered(hovered),
         );
     }
 

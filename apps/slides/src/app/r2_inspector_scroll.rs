@@ -11,10 +11,11 @@ use winit::event::MouseScrollDelta;
 use super::tests::measured_app;
 use super::*;
 
-/// A wide window (both panels docked) at `text_scale` with the first
+/// A window wide enough for both panels to dock at 2x text (their
+/// breakpoints grow with the text) at `text_scale`, with the first
 /// element selected.
 fn docked_inspector(text_scale: f32) -> SlidesApp {
-    let (mut app, _tr) = measured_app(2000.0, text_scale);
+    let (mut app, _tr) = measured_app(3200.0, text_scale);
     app.sel = app
         .slide()
         .and_then(|s| s.elements.first().map(|e| e.id.clone()));

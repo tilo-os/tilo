@@ -270,6 +270,9 @@ pub struct PageSidebar {
     read_only: bool,
     /// Something droppable (a file, a page from elsewhere) is over the rail.
     drop_armed: bool,
+    /// The dragged page is over a drop target of the host's own (a delete
+    /// zone) that shows the drop itself, so no ghost is painted.
+    ghost_hidden: bool,
 }
 
 /// The hairline that seats a page thumbnail on the rail.
@@ -304,6 +307,7 @@ impl PageSidebar {
             marked: Vec::new(),
             read_only: false,
             drop_armed: false,
+            ghost_hidden: false,
         }
     }
 
@@ -325,6 +329,13 @@ impl PageSidebar {
     /// outside): the list is ringed in your colour while armed.
     pub fn set_drop_target_armed(&mut self, armed: bool) {
         self.drop_armed = armed;
+    }
+
+    /// Hide the dragged page's ghost while it is over a drop target of the
+    /// host's own (a delete zone) that shows the drop itself; the drag
+    /// goes on, and the ghost returns once it leaves.
+    pub fn set_ghost_hidden(&mut self, hidden: bool) {
+        self.ghost_hidden = hidden;
     }
 
     /// Whether the rail shows itself as a drop target.
@@ -775,7 +786,8 @@ impl PageSidebar {
         }
         scene.pop_layer();
 
-        if let (Some(from), Some(ghost)) = (
+        if let (false, Some(from), Some(ghost)) = (
+            self.ghost_hidden,
             drag_from,
             self.drag.ghost_rect_sized(
                 self.list_vp.x0 + self.m.pad + self.m.num_gutter,

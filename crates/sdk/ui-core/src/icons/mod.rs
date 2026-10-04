@@ -76,6 +76,12 @@ pub enum Icon {
     Trash2,
     Pencil,
     Square,
+    /// Make the text smaller.
+    AArrowDown,
+    /// Make the text larger.
+    AArrowUp,
+    /// Show or hide a ruler.
+    Ruler,
     /// A window's minimize control.
     Minus,
     FolderPlus,
@@ -375,7 +381,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon, in declaration order.
-    pub const ALL: [Self; 215] = [
+    pub const ALL: [Self; 218] = [
         Self::LayoutGrid,
         Self::Settings2,
         Self::Mouse,
@@ -427,6 +433,9 @@ impl Icon {
         Self::Trash2,
         Self::Pencil,
         Self::Square,
+        Self::AArrowDown,
+        Self::AArrowUp,
+        Self::Ruler,
         Self::Minus,
         Self::FolderPlus,
         Self::FilePlus,
@@ -650,6 +659,9 @@ impl Icon {
             Self::Trash2 => "trash-2",
             Self::Pencil => "pencil",
             Self::Square => "square",
+            Self::AArrowDown => "a-arrow-down",
+            Self::AArrowUp => "a-arrow-up",
+            Self::Ruler => "ruler",
             Self::Minus => "minus",
             Self::FolderPlus => "folder-plus",
             Self::FilePlus => "file-plus",
@@ -1282,6 +1294,27 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m15 5 4 4"),
         ],
         Icon::Square => vec![rect_path(3.0, 3.0, 18.0, 18.0, 2.0)],
+        Icon::AArrowDown => vec![
+            path_from_d("m14 12 4 4 4-4"),
+            path_from_d("M18 16V7"),
+            path_from_d("m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16"),
+            path_from_d("M3.304 13h6.392"),
+        ],
+        Icon::AArrowUp => vec![
+            path_from_d("m14 11 4-4 4 4"),
+            path_from_d("M18 16V7"),
+            path_from_d("m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16"),
+            path_from_d("M3.304 13h6.392"),
+        ],
+        Icon::Ruler => vec![
+            path_from_d(
+                "M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z",
+            ),
+            path_from_d("m14.5 12.5 2-2"),
+            path_from_d("m11.5 9.5 2-2"),
+            path_from_d("m8.5 6.5 2-2"),
+            path_from_d("m17.5 15.5 2-2"),
+        ],
         Icon::Minus => vec![path_from_d("M5 12h14")],
         Icon::FolderPlus => vec![
             path_from_d("M12 10v6"),
@@ -2795,6 +2828,10 @@ mod tests {
             (Icon::Crop, 2),
             (Icon::Usb, 7),
             (Icon::CircleCheck, 2),
+            (Icon::Circle, 1),
+            (Icon::AArrowDown, 4),
+            (Icon::AArrowUp, 4),
+            (Icon::Ruler, 5),
             (Icon::Disc3, 4),
             (Icon::Bold, 1),
             (Icon::Italic, 3),
