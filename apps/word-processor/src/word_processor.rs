@@ -9,7 +9,7 @@ use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use tilo_doc::model::Region;
-use tilo_doc::{Containers, DocMut, IdGen};
+use tilo_doc::{Containers, IdGen};
 use ui::text_edit::{Edit, EditCore};
 
 /// One block's `(block_id, start, end)` character range, as returned by the
@@ -130,6 +130,11 @@ pub struct WordProcessor {
     /// Where the document's binary inputs (its images) live. The document only references them
     /// by content address. In memory until the app hands over its store.
     content: tilo_content::ContentStore,
+    /// Where every edit goes: the framework's dispatcher, which checks the
+    /// participant's permission, attributes the edit and groups typing into
+    /// undo steps. Without one (a view that was never attached) nothing is
+    /// written.
+    dispatch: Option<ui::framework::Dispatcher<crate::framework::Document>>,
 }
 
 impl Default for WordProcessor {
@@ -151,7 +156,16 @@ impl WordProcessor {
             footer_caret: None,
             edit_core: EditCore::new(),
             content: tilo_content::ContentStore::memory(),
+            dispatch: None,
         }
+    }
+
+    /// Submit every edit through `dispatch` from now on.
+    pub(crate) fn attach(
+        &mut self,
+        dispatch: ui::framework::Dispatcher<crate::framework::Document>,
+    ) {
+        self.dispatch = Some(dispatch);
     }
 
     /// Keep the document's binary inputs in `content` (the app's store) from now on.
@@ -406,7 +420,7 @@ impl WordProcessor {
             del: char_end.saturating_sub(char_start),
             ins: text.to_string(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Replace the **entire body** with `markdown`, in place, on the live document:
@@ -428,7 +442,7 @@ impl WordProcessor {
         bytes: &[u8],
         format: crate::WpFormat,
     ) -> bool {
-        let Some(action) = self.stage_replacement(state, bytes, format) else {
+        let Some(action) = self.stage_replacement(bytes, format) else {
             return false;
         };
         if !self.apply_rich(state, action) {
@@ -442,39 +456,12 @@ impl WordProcessor {
     /// Does not write `state`. The returned action is what Open submits.
     pub fn stage_replacement(
         &mut self,
-        state: &AutoCommit,
         bytes: &[u8],
         format: crate::WpFormat,
     ) -> Option<crate::actions::RichTextAction> {
-        let containers = self.containers.clone()?;
-        let mut ids = self.ids.clone()?;
-        // Codecs can reject malformed input after writing partial content. Stage
-        // the entire replacement so a failed Open cannot delete the live body,
-        // annotations, or other document state (including pending local edits).
-        let mut staged = state.clone();
-        let existing = tilo_doc::model::blocks_in_order(&staged, &containers);
-        let mut dm = DocMut {
-            doc: &mut staged,
-            c: &containers,
-            ids: &mut ids,
-        };
-        for id in &existing {
-            dm.remove_block(id);
-        }
-        let mut inputs = tilo_content::ContentInputs::new();
-        if format.import(bytes, &mut dm, &mut inputs).is_err() {
-            return None;
-        }
-        // The document only names its images; keep them before the shared write.
-        if let Err(error) = self.content.put_inputs(&inputs) {
-            eprintln!("word-processor: could not keep the opened file's images: {error}");
-            return None;
-        }
-        let format = Self::import_format(format)?;
-        Some(crate::actions::RichTextAction::ReplaceFormatted {
-            format,
-            bytes: bytes.to_vec(),
-        })
+        crate::import_action(bytes, format, &self.content)
+            .map_err(|error| eprintln!("word-processor: could not open the file: {error}"))
+            .ok()
     }
 
     /// Move the caret to the start of the document after a replacement action
@@ -495,18 +482,6 @@ impl WordProcessor {
             None => self.caret = Caret::default(),
         }
         self.clear_anchor();
-    }
-
-    fn import_format(format: crate::WpFormat) -> Option<crate::actions::ImportFormat> {
-        match format {
-            crate::WpFormat::Markdown => Some(crate::actions::ImportFormat::Markdown),
-            crate::WpFormat::Text => Some(crate::actions::ImportFormat::Text),
-            crate::WpFormat::Html => Some(crate::actions::ImportFormat::Html),
-            crate::WpFormat::Rtf => Some(crate::actions::ImportFormat::Rtf),
-            crate::WpFormat::Docx => Some(crate::actions::ImportFormat::Docx),
-            crate::WpFormat::Odt => Some(crate::actions::ImportFormat::Odt),
-            crate::WpFormat::Pdf | crate::WpFormat::Epub => None,
-        }
     }
 
     /// Load the document's stylesheet from the **CRDT styles container** (the
@@ -583,19 +558,6 @@ impl WordProcessor {
         }
     }
 
-    /// On first bind, seed the built-in defaults into the styles container if it
-    /// is empty. Idempotent — a doc whose container already has styles is left
-    /// untouched.
-    fn seed_styles(&mut self, state: &mut AutoCommit) {
-        let Some(c) = self.containers.as_ref() else {
-            return;
-        };
-        if !tilo_doc::model::style_ids(state, c).is_empty() {
-            return;
-        }
-        self.set_stylesheet(state, &StyleSheet::default());
-    }
-
     /// The document's persisted page margins as `[top, right, bottom, left]` (px),
     /// or `None` when the document does not record them (a fresh / legacy doc, so
     /// the widget keeps its defaults). Stored as four document-level meta strings
@@ -625,7 +587,7 @@ impl WordProcessor {
             bottom: margins[2],
             left: margins[3],
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Assign a style id to every block in the selection (or the caret's block).
@@ -653,7 +615,7 @@ impl WordProcessor {
             key: "style".into(),
             value: crate::actions::AttrVal::Str(style_id.to_string()),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Delete a **custom** paragraph style: remove it from the document's style
@@ -740,7 +702,7 @@ impl WordProcessor {
             width: w,
             height: h,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle a mirror flip on an `image` block: `horizontal` flips the
@@ -766,7 +728,7 @@ impl WordProcessor {
             key: key.into(),
             value: crate::actions::AttrVal::Bool(next),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
         next
     }
 
@@ -905,7 +867,7 @@ impl WordProcessor {
             level,
             ordered,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     fn set_block_attr(
@@ -924,7 +886,7 @@ impl WordProcessor {
             key: key.to_string(),
             value,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     #[allow(
@@ -935,7 +897,11 @@ impl WordProcessor {
         if self.containers.is_none() || self.ids.is_none() {
             return false;
         }
-        action.apply_under(state, &automerge::ROOT).is_ok()
+        let Some(dispatch) = &self.dispatch else {
+            return false;
+        };
+        let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", &action);
+        dispatch.apply_now_with(state, &action, context).is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {
@@ -981,7 +947,7 @@ impl WordProcessor {
             key: "align".into(),
             value: crate::actions::AttrVal::Str(align.to_string()),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Whether the caret's block forces a page break before it (the
@@ -1019,7 +985,7 @@ impl WordProcessor {
             key: "page_break_before".into(),
             value: crate::actions::AttrVal::Bool(on),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle the page break on the caret's block (Ctrl+Enter when the caret
@@ -1082,7 +1048,7 @@ impl WordProcessor {
             value: Some(Self::mark_val(value)),
             also_clear: Vec::new(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Set the font size (pt) over the selection (per-run), or the caret block.
@@ -1130,7 +1096,7 @@ impl WordProcessor {
             value: None,
             also_clear: Vec::new(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle an inline mark over the selection (across blocks). Region-aware.
@@ -1158,7 +1124,7 @@ impl WordProcessor {
             },
             also_clear: Vec::new(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Set the highlight (background) colour (`#rrggbb`) over the selection
@@ -1216,7 +1182,7 @@ impl WordProcessor {
                 id: id.map(str::to_string),
             }
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// The tracked-change ids present in the document, sorted by their anchored
@@ -1257,7 +1223,7 @@ impl WordProcessor {
         let action = crate::actions::RichTextAction::ResolveComment {
             id: comment_id.to_string(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Whether a named boolean run mark covers the whole of `ranges`.
@@ -1380,7 +1346,7 @@ impl WordProcessor {
                 vec![clears.to_string()]
             },
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     /// Toggle the `super` (superscript) run mark over the selection / caret block,
@@ -1976,32 +1942,6 @@ impl WordProcessor {
         }
     }
 
-    /// Initialize a new canonical document before an application projects it.
-    ///
-    /// # Errors
-    ///
-    /// Never fails today; the `Result` matches the record-initializer contract.
-    pub fn initialize_empty_document(state: &mut AutoCommit) -> Result<(), String> {
-        let mut editor = Self::new();
-        editor.bind(state, &automerge::ROOT);
-        Ok(())
-    }
-
-    /// Project an admitted document without seeding schema, styles or paragraphs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the document does not carry the Writer schema.
-    pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
-        let containers =
-            tilo_doc::model::open(state, &automerge::ROOT).map_err(|error| error.to_string())?;
-        let mut editor = Self::new();
-        editor.ids = Some(tilo_doc::model::seeded_id_gen(state, &containers));
-        editor.containers = Some(containers);
-        editor.reconcile(state);
-        Ok(editor)
-    }
-
     /// Reconcile caret state without authoring document changes.
     pub fn reconcile(&mut self, state: &AutoCommit) {
         // The caret's block has to exist in the *active region's* blocks, not
@@ -2077,30 +2017,15 @@ impl WordProcessor {
                 .min(self.block_len(state, &self.caret.block));
             return;
         }
-        let containers = if let Some(c) = self.containers.clone() {
-            c
-        } else {
-            let c = tilo_doc::model::open(state, root)
-                .unwrap_or_else(|_| tilo_doc::model::init(state, root));
+        if self.containers.is_none() {
+            // The record's genesis made the document; a view never creates it.
+            let Ok(c) = tilo_doc::model::open(state, root) else {
+                return;
+            };
             // Seed past existing block ids so editing a loaded/imported document
             // never re-mints (and overwrites) an existing block.
             self.ids = Some(tilo_doc::model::seeded_id_gen(state, &c));
-            self.containers = Some(c.clone());
-            // Populate the styles container with the built-in defaults on
-            // first bind.
-            self.seed_styles(state);
-            c
-        };
-        // A document always has somewhere to write. The framework seed and
-        // this action both insert one empty paragraph, and a replay is a
-        // no-op once a block exists.
-        if tilo_doc::model::blocks_in_order(state, &containers).is_empty() {
-            let _ = self.apply_rich(
-                state,
-                crate::actions::RichTextAction::EnsureRegionBlock {
-                    region: crate::actions::RegionKind::Body,
-                },
-            );
+            self.containers = Some(c);
         }
         self.reconcile(state);
     }
@@ -2187,7 +2112,7 @@ impl WordProcessor {
             del,
             ins: ins.to_string(),
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     fn region_set_kind(&self, state: &mut AutoCommit, block: &str, kind: &str) {
@@ -2201,7 +2126,7 @@ impl WordProcessor {
             level: None,
             ordered: None,
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     fn region_remove_block(&self, state: &mut AutoCommit, block: &str) {
@@ -2218,7 +2143,7 @@ impl WordProcessor {
                 blocks: vec![block.to_string()],
             }
         };
-        let _ = action.apply_under(state, &automerge::ROOT);
+        let _ = self.apply_rich(state, action);
     }
 
     #[allow(
@@ -2866,7 +2791,9 @@ mod tests {
 
     fn bound() -> (WordProcessor, AutoCommit) {
         let mut wp = WordProcessor::new();
+        wp.attach(ui::framework::testing::detached_dispatcher("test-author"));
         let mut state = AutoCommit::new();
+        crate::initialize_empty_document(&mut state).unwrap();
         wp.bind(&mut state, &ROOT);
         (wp, state)
     }
@@ -2922,7 +2849,7 @@ mod tests {
             assert_failed_import_preserves_document(crate::WpFormat::Odt);
         }
 
-        // Phase: successful_format_import_preserves_live_document_identity_and_commit_boundary.
+        // Phase: successful_format_import_preserves_live_document_identity.
         {
             for format in [crate::WpFormat::Docx, crate::WpFormat::Odt] {
                 let (mut source, mut source_state) = bound();
@@ -2951,11 +2878,6 @@ mod tests {
                     state.get(ROOT, "host-marker").unwrap().unwrap().0.as_str(),
                     Some("preserve me")
                 );
-                assert!(
-                    state.pending_ops() > 0,
-                    "the host still owns the commit boundary"
-                );
-                state.commit();
                 assert_eq!(
                     state.get_changes(&heads).len(),
                     1,
@@ -3046,17 +2968,10 @@ mod tests {
             wp.selection_anchor = Some(wp.caret.clone());
             state.delete(&c.blocks, &id).unwrap();
             wp.bind(&mut state, &ROOT);
-            let canonical = tilo_doc::model::blocks_in_order(&state, &c);
-            assert_eq!(canonical.len(), 1, "empty body is reseeded");
-            assert_ne!(canonical[0], id);
-            assert_eq!(
-                wp.caret,
-                Caret {
-                    block: canonical[0].clone(),
-                    offset: 0
-                }
+            assert!(
+                tilo_doc::model::blocks_in_order(&state, &c).is_empty(),
+                "a view never reseeds the body"
             );
-            assert_eq!(wp.selection_anchor, None);
         }
 
         // Phase: bind_rejects_noncanonical_body_carets_and_keeps_region_fallbacks.
@@ -3124,26 +3039,28 @@ mod tests {
         }
     }
 
-    /// `bind` seeds builtin styles into the container and `set_stylesheet` persists through it.
+    /// A new document resolves the built-in styles without writing them, and
+    /// `set_stylesheet` persists through the container.
     #[test]
-    fn stylesheets_seed_and_persist_through_the_container() {
-        // Phase: bind_seeds_builtin_styles_into_the_container.
+    fn stylesheets_resolve_builtins_and_persist_through_the_container() {
+        // Phase: a_new_document_resolves_builtin_styles_without_writing_them.
         {
-            let (wp, state) = bound();
+            let (wp, mut state) = bound();
+            let heads = state.get_heads();
             let c = wp.containers.as_ref().unwrap();
-            let ids = tilo_doc::model::style_ids(&state, c);
-            for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
-                assert!(
-                    ids.contains(&k.to_string()),
-                    "built-in style {k} seeded into container: {ids:?}"
-                );
-            }
-            // And `stylesheet()` reads them back faithfully (incl. fractional size).
+            assert!(
+                tilo_doc::model::style_ids(&state, c).is_empty(),
+                "viewing a document writes no styles into it"
+            );
             let sheet = wp.stylesheet(&state);
+            for k in ["body", "heading1", "heading2", "heading3", "list", "quote"] {
+                assert!(sheet.styles.contains_key(k), "built-in style {k} resolves");
+            }
+            assert_eq!(state.get_heads(), heads);
             assert_eq!(sheet.get("body").name, "Body");
             assert!(
                 (sheet.get("body").size - 16.5).abs() < 1e-6,
-                "fractional size survived the container"
+                "the built-in body keeps its fractional size"
             );
             assert!(sheet.get("quote").italic, "quote stays italic");
         }

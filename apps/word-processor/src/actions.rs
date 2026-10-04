@@ -36,10 +36,6 @@ pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WordProcessorOperation {
-    ResolveFileChoice {
-        generation: u64,
-        use_selected: bool,
-    },
     Open {
         path: Option<String>,
     },
@@ -60,17 +56,12 @@ pub enum WordProcessorOperation {
     ToggleStyles,
     ToggleRuler,
     ToggleOutline,
-    ToggleHistory,
     /// Focus one exact body range. Used by bounded search-hit/comment resources
     /// instead of an index into the renderer's transient cache.
     NavigateTo {
         block: String,
         start: usize,
         end: usize,
-    },
-    /// Open history focused on a stable change-graph position.
-    ShowRevision {
-        index: usize,
     },
 }
 
@@ -107,15 +98,6 @@ fn operation(
         return None;
     };
     match value {
-        WordProcessorOperation::ResolveFileChoice { use_selected, .. } => Some(
-            spec.with_contract(if *use_selected {
-                ActionContract::default()
-            } else {
-                ActionContract::view()
-            })
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        ),
         WordProcessorOperation::Open { .. }
         | WordProcessorOperation::Save { .. }
         | WordProcessorOperation::SaveAs { .. } => Some(
@@ -323,7 +305,7 @@ fn add_file_operations(root: &mut Resource, file: Option<&continuation::FileCont
     }
 }
 
-pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
+pub(crate) fn view_operations() -> Vec<ActionSpec> {
     let mut specs = Vec::new();
     for (id, label, value) in [
         ("find", "Find in document", WordProcessorOperation::Find),
@@ -355,15 +337,7 @@ pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
             "Toggle outline",
             WordProcessorOperation::ToggleOutline,
         ),
-        (
-            "history",
-            "Toggle history",
-            WordProcessorOperation::ToggleHistory,
-        ),
     ] {
-        if !include_history && id == "history" {
-            continue;
-        }
         if let Some(spec) = operation(id, label, OperationKind::View, &value) {
             specs.push(spec);
         }
@@ -372,7 +346,7 @@ pub(crate) fn view_operations(include_history: bool) -> Vec<ActionSpec> {
 }
 
 fn add_view_operations(root: &mut Resource) {
-    for spec in view_operations(true) {
+    for spec in view_operations() {
         if let Some(existing) = root.actions.iter_mut().find(|action| action.id == spec.id) {
             *existing = spec;
         } else {
@@ -987,44 +961,6 @@ fn add_review_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocS
     place_child(root, review);
 }
 
-fn add_revision_resources(root: &mut Resource, doc: &AutoCommit) {
-    let mut history_doc = doc.clone();
-    // Revision resources need labels and hashes, not reconstructed operation
-    // payloads for every change in the document's history.
-    let changes = history_doc.get_changes_meta(&[]);
-    if changes.is_empty() {
-        return;
-    }
-    let mut history = Resource::new(
-        "word-processor.revisions",
-        "word_processor.revisions",
-        "Revision history",
-    );
-    let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
-    for (index, change) in changes.iter().enumerate().skip(start) {
-        let label = change.message.as_deref().map_or_else(
-            || format!("Revision {}", index + 1),
-            |message| short(message, "Revision"),
-        );
-        if let Some(spec) = operation(
-            "show",
-            "Show revision",
-            OperationKind::View,
-            &WordProcessorOperation::ShowRevision { index },
-        ) {
-            history.children.push(
-                Resource::new(
-                    format!("word-processor.revision:{}", change.hash),
-                    "word_processor.revision",
-                    label,
-                )
-                .with_action(spec),
-            );
-        }
-    }
-    root.children.push(history);
-}
-
 fn add_metadata_resources(root: &mut Resource, snapshot: &tilo_doc::snapshot::DocSnapshot) {
     if !snapshot.notes.is_empty() {
         let mut notes = Resource::new("word-processor.notes", "word_processor.notes", "Notes");
@@ -1614,7 +1550,7 @@ pub(crate) fn provide_resources_with_file(
         return vec![resource_root(ctx, doc, file, None)];
     };
     let snapshot = tilo_doc::model::materialize(doc, &containers);
-    provide_resources_from(ctx, doc, file, None, &snapshot, true)
+    provide_resources_from(ctx, doc, file, None, &snapshot)
 }
 
 /// The operations every tree has, before any listing is read from the
@@ -1645,22 +1581,13 @@ fn provide_resources_from(
     file: Option<&continuation::FileContext>,
     body: Option<&tilo_document::BodyOrder>,
     listed: &tilo_doc::snapshot::DocSnapshot,
-    revisions: bool,
 ) -> Vec<Resource> {
     let mut root = resource_root(ctx, doc, file, body);
-    if !revisions {
-        // A hosted document's History is the framework's surface; the
-        // editor's own version strip is not offered beside it.
-        root.actions.retain(|action| action.id != "history");
-    }
     editing::add_operations(&mut root, ctx, doc, body);
     view_ops::add_operations(&mut root, ctx);
     add_search_resources(&mut root, ctx, listed);
     add_document_edit_actions(&mut root, ctx);
     add_review_resources(&mut root, listed);
-    if revisions {
-        add_revision_resources(&mut root, doc);
-    }
     add_metadata_resources(&mut root, listed);
     add_style_resources(&mut root, listed);
     add_structural_resources(&mut root, listed);
@@ -1712,14 +1639,12 @@ fn declare_changes(resource: &mut Resource, ids: &[&str]) {
 /// objects (headings, images, tables), review, notes, styles and properties,
 /// and the paragraphs Find is pointing at — never the document's prose, so
 /// listing it costs as much as what it lists however long the document is.
-/// A hosted document's revisions are the framework's History, not listed
-/// here.
+/// Its revisions are the framework's History, not listed here.
 pub(crate) fn provide_resources_listed(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
     file: Option<&continuation::FileContext>,
     state: &tilo_document::RichTextState,
-    revisions: bool,
 ) -> Vec<Resource> {
     let c = state.containers();
     let body = state.body();
@@ -1763,41 +1688,12 @@ pub(crate) fn provide_resources_listed(
         changes: state.changes().as_ref().clone(),
         ..tilo_doc::snapshot::DocSnapshot::default()
     };
-    provide_resources_from(ctx, doc, file, Some(&**body), &listed, revisions)
-}
-
-pub(crate) fn file_choice_resource(generation: u64) -> Result<Resource, String> {
-    let mut resource = Resource::new(
-        format!("word-processor.file-choice:{generation}"),
-        "word_processor.file_choice",
-        crate::i18n::t("file-choice-title"),
-    );
-    for (id, label, use_selected) in [
-        ("keep-workspace", "file-choice-keep", false),
-        ("use-selected", "file-choice-use", true),
-    ] {
-        resource.actions.push(
-            operation(
-                id,
-                &crate::i18n::t(label),
-                OperationKind::Effect,
-                &WordProcessorOperation::ResolveFileChoice {
-                    generation,
-                    use_selected,
-                },
-            )
-            .ok_or("file choice operation could not be encoded")?,
-        );
-    }
-    Ok(resource)
+    provide_resources_from(ctx, doc, file, Some(&**body), &listed)
 }
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::widget::WordProcessorWidget {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if let Some(resource) = self.file_choice_resource() {
-            return vec![resource];
-        }
         let Some(ctx) = self.wp_resource_ctx(doc) else {
             return Vec::new();
         };
@@ -1967,7 +1863,7 @@ mod tests {
             }
         }
 
-        // Phase: resource_results_and_revisions_are_bounded_and_precisely_addressable.
+        // Phase: resource_results_are_bounded_and_precisely_addressable.
         {
             let (mut state, ids) =
                 seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
@@ -1995,7 +1891,6 @@ mod tests {
                 .put(automerge::ROOT, "unfinished-fixture", true)
                 .unwrap();
             let pending = (state.doc.base_heads(), state.doc.pending_ops());
-            let expected = state.doc.clone().get_changes(&[]);
             let block = ids[0].clone();
             let resources = provide_resources(&overflowing_resource_ctx(&block), &state.doc);
             let root = &resources[0];
@@ -2014,54 +1909,10 @@ mod tests {
                 hit.actions.iter().any(|action| action.id == "go-to")
                     && hit.id.as_str().contains(&block)
             }));
-            let revisions = root
-                .children
-                .iter()
-                .find(|resource| resource.id.as_str() == "word-processor.revisions")
-                .expect("history resource group");
-            assert_eq!(revisions.children.len(), MAX_RESOURCE_REVISIONS);
-            let start = expected.len() - MAX_RESOURCE_REVISIONS;
-            for (index, (revision, change)) in revisions
-                .children
-                .iter()
-                .zip(&expected[start..])
-                .enumerate()
-            {
-                let index = start + index;
-                assert_eq!(
-                    revision.id.as_str(),
-                    format!("word-processor.revision:{}", change.hash())
-                );
-                let label = change.message().map_or_else(
-                    || format!("Revision {}", index + 1),
-                    |message| short(message, "Revision"),
-                );
-                assert_eq!(revision.label, label);
-                let show = revision
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "show")
-                    .unwrap();
-                assert_eq!(
-                    show.build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
-                        .unwrap(),
-                    EncodedAction::encode_operation(
-                        WORD_PROCESSOR_OPERATION_TYPE,
-                        &WordProcessorOperation::ShowRevision { index }
-                    )
-                    .unwrap()
-                );
-            }
             assert_eq!(
                 (state.doc.base_heads(), state.doc.pending_ops()),
                 pending,
                 "resource discovery must not commit the owner"
-            );
-            assert!(
-                revisions
-                    .children
-                    .iter()
-                    .all(|revision| revision.actions.iter().any(|action| action.id == "show"))
             );
         }
     }
@@ -2355,20 +2206,10 @@ mod tests {
     /// A `ui::State` holding a canonical document seeded from `markdown`, plus the
     /// ordered body block ids.
     fn seeded(markdown: &str) -> (ui::State, Vec<String>) {
-        let mut state = ui::State::new();
-        let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
-        {
-            use tilo_doc_codecs::FormatProvider;
-            let mut dm = ed.edit(&mut state.doc);
-            tilo_doc_codecs::MarkdownCodec
-                .import(
-                    markdown.as_bytes(),
-                    &mut dm,
-                    &mut tilo_content::ContentInputs::new(),
-                )
-                .unwrap();
-        }
-        let ids = tilo_doc::model::blocks_in_order(&state.doc, &ed.containers);
+        let mut state = crate::initialized_state();
+        tilo_actions::Action::apply(&replace_body_action(markdown), &mut state.doc).unwrap();
+        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let ids = tilo_doc::model::blocks_in_order(&state.doc, &c);
         (state, ids)
     }
 

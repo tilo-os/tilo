@@ -450,7 +450,6 @@ def proof_environment(profile, app_state):
         {
             "TILO_RUNTIME_PROFILE": str(profile),
             "TILO_USER_HOME": str(app_state / "home"),
-            "TILO_WP_RECOVERY_DIR": str(app_state / "word-processor-recovery"),
             "XDG_CONFIG_HOME": str(app_state / "config"),
             "XDG_DATA_HOME": str(app_state / "data"),
             "XDG_STATE_HOME": str(app_state / "state"),

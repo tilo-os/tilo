@@ -3,12 +3,11 @@ use super::{
     RegionKind, SelectionTarget, Span, WORD_PROCESSOR_OPERATION_TYPE, WordProcessorOperation,
 };
 use crate::WpFormat;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tilo_actions::{
     ActionInput, ActionSpec, ContinuationArguments, ContinuationEvidence, ContinuationKey,
     ContinuationQuery, EncodedAction,
 };
-use ui::widget::ActionDirectoryInvocationDomain;
 
 type Parts = Vec<Vec<u8>>;
 fn key(kind: &str, parts: Parts) -> ContinuationKey {
@@ -120,7 +119,6 @@ pub(crate) fn pure(spec: ActionSpec, handler: &'static str, domain: Parts) -> Ac
 pub(crate) struct FileContext {
     pub(crate) path: Option<PathBuf>,
     pub(crate) format: Option<WpFormat>,
-    pub(crate) canonical: bool,
 }
 fn format_tag(format: WpFormat) -> u8 {
     match format {
@@ -136,7 +134,7 @@ fn format_tag(format: WpFormat) -> u8 {
 }
 impl FileContext {
     fn parts(&self, variant: u8) -> Parts {
-        let mut parts = vec![vec![variant], vec![u8::from(self.canonical)]];
+        let mut parts = vec![vec![variant]];
         match &self.path {
             Some(path) => parts.extend([vec![1], path.as_os_str().as_encoded_bytes().to_vec()]),
             None => parts.push(vec![0]),
@@ -192,30 +190,17 @@ pub(super) fn file(spec: ActionSpec, variant: u8, context: Option<&FileContext>)
     })
 }
 
-pub(crate) fn bind_file_choice(
-    resource: &mut tilo_actions::Resource,
-    generation: u64,
-    path: &Path,
-    bytes: &[u8],
-    format: WpFormat,
-) -> ActionDirectoryInvocationDomain {
-    let parts = vec![
-        generation.to_be_bytes().to_vec(),
-        path.as_os_str().as_encoded_bytes().to_vec(),
-        vec![format_tag(format)],
-        tilo_content::hash_bytes(bytes).into_bytes(),
-    ];
-    for spec in &mut resource.actions {
-        *spec = pure(spec.clone(), "retained-file-choice.v1", parts.clone());
-    }
-    ActionDirectoryInvocationDomain::versioned(&evidence("retained-file-choice.v1", parts, false))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::*;
     use tilo_actions::{ContinuationArguments, ContinuationQuery};
     use ui::widget::{ActionDirectoryInvocationDomain, Widget};
+
+    fn attached(doc: &mut AutoCommit) -> crate::WordProcessorWidget {
+        let mut widget = crate::WordProcessorWidget::detached();
+        widget.sync(doc, &automerge::ROOT);
+        widget
+    }
 
     fn document() -> (AutoCommit, WpResourceCtx) {
         let mut doc = AutoCommit::new();
@@ -292,8 +277,8 @@ mod tests {
     }
     #[test]
     fn writer_continuation_file_context_changes_but_chooser_destination_is_unknown() {
-        let (doc, _) = document();
-        let mut widget = crate::WordProcessorWidget::from_document(&doc).unwrap();
+        let (mut doc, _) = document();
+        let mut widget = attached(&mut doc);
         widget.set_file(
             std::path::PathBuf::from("first.md"),
             crate::WpFormat::Markdown,
@@ -326,9 +311,9 @@ mod tests {
         );
     }
     #[test]
-    fn writer_continuation_file_offer_noop_stays_exact_and_blob_domain_stays_unknown() {
+    fn writer_continuation_blob_domain_stays_unknown() {
         let (mut doc, _) = document();
-        let mut widget = crate::WordProcessorWidget::from_document(&doc).unwrap();
+        let widget = attached(&mut doc);
         assert_eq!(
             ui::resources::action_directory_invocation_domain(&widget, &doc),
             ActionDirectoryInvocationDomain::Unsupported
@@ -339,61 +324,6 @@ mod tests {
                 .continuation_identity(ContinuationQuery::Draft)
                 .is_none()
         );
-        widget
-            .offer_file_choice(
-                "selected.md".into(),
-                b"selected history".to_vec(),
-                crate::WpFormat::Markdown,
-            )
-            .unwrap();
-        let before = ui::resources::action_directory_invocation_domain(&widget, &doc);
-        assert!(matches!(
-            before,
-            ActionDirectoryInvocationDomain::Versioned(_)
-        ));
-        widget.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            ui::resources::action_directory_invocation_domain(&widget, &doc),
-            before
-        );
-        let a = action(&ui::resources::resources(&widget, &doc), "use-selected");
-        assert!(
-            a.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
-                .is_some()
-        );
-        for (path, bytes, format) in [
-            (
-                "other.md",
-                b"selected history".as_slice(),
-                crate::WpFormat::Markdown,
-            ),
-            (
-                "selected.md",
-                b"different history".as_slice(),
-                crate::WpFormat::Markdown,
-            ),
-            (
-                "selected.md",
-                b"selected history".as_slice(),
-                crate::WpFormat::Html,
-            ),
-        ] {
-            let mut changed = crate::WordProcessorWidget::from_document(&doc).unwrap();
-            changed
-                .offer_file_choice(path.into(), bytes.to_vec(), format)
-                .unwrap();
-            assert_ne!(
-                ui::resources::action_directory_invocation_domain(&changed, &doc),
-                before
-            );
-            let other = action(&ui::resources::resources(&changed, &doc), "use-selected");
-            assert_ne!(
-                other.continuation_identity(ContinuationQuery::Exact(
-                    ContinuationArguments::Immediate
-                )),
-                a.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
-            );
-        }
     }
     #[test]
     fn writer_continuation_region_span_order_and_reply_parent_cannot_alias() {
@@ -446,8 +376,8 @@ mod tests {
 
     #[test]
     fn writer_continuation_save_uses_actual_default_format_and_read_encodes() {
-        let (doc, _) = document();
-        let mut widget = crate::WordProcessorWidget::from_document(&doc).unwrap();
+        let (mut doc, _) = document();
+        let mut widget = attached(&mut doc);
         widget.set_file("same-name.md".into(), crate::WpFormat::Html);
         let first = action(&widget.publish_resources(&doc), "save");
         let args = serde_json::Map::new();

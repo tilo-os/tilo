@@ -15,15 +15,11 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use tilo_actions::{ActionContext, ActionError};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction, RichTextState};
-use ui::framework::{
-    Dispatcher, LaunchInput, Live, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{LaunchInput, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx};
 use ui::record::RecordId;
-use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Reader, Resource};
+use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
@@ -199,7 +195,7 @@ impl ResourceApp for WordProcessorApp {
         // History is the framework's own surface. The editor's version strip
         // is not offered beside it. Open, save, and save-as are Effects on
         // this door.
-        let mut specs = crate::actions::view_operations(false);
+        let mut specs = crate::actions::view_operations();
         specs.extend(crate::actions::file_operation_specs(None));
         specs
     }
@@ -263,15 +259,49 @@ impl ResourceApp for WordProcessorApp {
     }
 }
 
-/// Where the editor reads the document from.
-pub(crate) enum StateSource {
-    /// Standalone (its own tests, file-based launches): the editor follows
-    /// the document itself, with the same incremental reader the framework
-    /// uses.
-    Own(Option<Reader<RichText>>),
-    /// Hosted: the framework's live state, shared with History mode, search
-    /// and the palette.
-    Hosted(Live<Document>),
+impl ResourceSurface<Document> for WordProcessorWidget {
+    /// The editor reads the live state where it needs it; a new state only
+    /// asks for a redraw.
+    fn present(&mut self, state: &Rc<RichTextState>) {
+        // An editor that has not drawn yet still has a caret, at the start
+        // of the body, so edits bound to it (a table at the caret) can be
+        // invoked before the first frame.
+        if self.model().caret().block.is_empty()
+            && let Some(first) = state.body().id_at(0)
+        {
+            self.model_mut().set_caret(crate::word_processor::Caret {
+                block: first.to_owned(),
+                offset: 0,
+            });
+        }
+        self.mark_document_changed();
+    }
+
+    fn attach(&mut self, cx: SurfaceCx<Document>) {
+        // A capture keeps the images it stages to itself; every other view
+        // reads the store the app keeps them in.
+        let content = cx.content().unwrap_or_else(|| match cx.mode() {
+            RunMode::Capture => tilo_content::ContentStore::memory(),
+            RunMode::Live | RunMode::Past => crate::app_content_store(),
+        });
+        self.model_mut().set_content_store(content);
+        if let Some(path) = cx.launch_arguments().first() {
+            let path = std::path::PathBuf::from(path);
+            let format = crate::WpFormat::from_path(&path);
+            self.set_file(path, format);
+        }
+        self.attach_framework(cx.live(), cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -337,158 +367,5 @@ mod tests {
             .find(|action| action.id == "read-text")
             .expect("read-text is on the published document");
         assert_eq!(read.kind, tilo_actions::OperationKind::Effect);
-    }
-}
-
-impl Default for StateSource {
-    fn default() -> Self {
-        Self::Own(None)
-    }
-}
-
-impl StateSource {
-    /// Bring the state up to date with `doc`. Returns whether it changed.
-    pub(crate) fn sync(&mut self, doc: &mut AutoCommit) -> bool {
-        match self {
-            Self::Own(reader) => match reader {
-                Some(reader) => reader.sync(doc).unwrap_or_else(|error| {
-                    eprintln!("word-processor: document unreadable: {error}");
-                    false
-                }),
-                None => match Reader::open(doc) {
-                    Ok(opened) => {
-                        *reader = Some(opened);
-                        true
-                    }
-                    Err(_) => false,
-                },
-            },
-            Self::Hosted(live) => live.sync(doc).unwrap_or_else(|error| {
-                eprintln!("word-processor: document unreadable: {error}");
-                false
-            }),
-        }
-    }
-
-    /// Show the paragraphs `demand` names. Returns whether the state changed.
-    pub(crate) fn demand(&mut self, doc: &AutoCommit, demand: Demand) -> bool {
-        let result = match self {
-            Self::Own(Some(reader)) => reader.demand(doc, demand),
-            Self::Own(None) => Ok(false),
-            Self::Hosted(live) => live.demand(doc, demand),
-        };
-        result.unwrap_or_else(|error| {
-            eprintln!("word-processor: paragraphs unreadable: {error}");
-            false
-        })
-    }
-
-    /// Read the state, once there is one.
-    pub(crate) fn with<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        match self {
-            Self::Own(Some(reader)) => Some(read(reader.state())),
-            Self::Own(None) => None,
-            Self::Hosted(live) => Some(live.with(read)),
-        }
-    }
-
-    pub(crate) fn hosted(&self) -> bool {
-        matches!(self, Self::Hosted(_))
-    }
-}
-
-/// Where the editor's edits go.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    /// Standalone: the toolkit's local action host.
-    local: ui::ActionHost,
-    /// Hosted: the framework's dispatcher.
-    framework: Option<Dispatcher<Document>>,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Document>) {
-        self.framework = Some(dispatcher);
-    }
-
-    /// Whether this participant may only view the document.
-    pub(crate) fn read_only(&self) -> bool {
-        self.framework.as_ref().is_some_and(Dispatcher::read_only)
-    }
-
-    /// Apply one edit now. Hosted, the framework checks the participant's
-    /// permission, attributes the edit and groups typing into undo steps;
-    /// standalone it applies through the local executor.
-    pub(crate) fn dispatch(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &RichTextAction,
-        context: ActionContext,
-    ) -> Result<(), ActionError> {
-        match &self.framework {
-            Some(dispatcher) => dispatcher.apply_now_with(doc, action, context),
-            None => self.local.try_dispatch_with_context(
-                doc,
-                crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-                action,
-                context,
-            ),
-        }
-    }
-
-    /// The standalone undo boundary; hosted edits are bracketed by the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.local.last_dispatched()
-    }
-}
-
-impl ResourceSurface<Document> for WordProcessorWidget {
-    /// The editor reads the live state where it needs it; a new state only
-    /// asks for a redraw.
-    fn present(&mut self, state: &Rc<RichTextState>) {
-        // An editor that has not drawn yet still has a caret, at the start
-        // of the body, so edits bound to it (a table at the caret) can be
-        // invoked before the first frame.
-        if self.model().caret().block.is_empty()
-            && let Some(first) = state.body().id_at(0)
-        {
-            self.model_mut().set_caret(crate::word_processor::Caret {
-                block: first.to_owned(),
-                offset: 0,
-            });
-        }
-        self.mark_document_changed();
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Document>) {
-        // A capture keeps the images it stages to itself; every other view
-        // reads the store the app keeps them in.
-        let content = cx.content().unwrap_or_else(|| match cx.mode() {
-            RunMode::Capture => tilo_content::ContentStore::memory(),
-            RunMode::Live | RunMode::Past => crate::app_content_store(),
-        });
-        self.model_mut().set_content_store(content);
-        if let Some(path) = cx.launch_arguments().first() {
-            let path = std::path::PathBuf::from(path);
-            let format = crate::WpFormat::from_path(&path);
-            self.set_file(path, format);
-        }
-        self.attach_framework(cx.live(), cx.dispatcher());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
     }
 }

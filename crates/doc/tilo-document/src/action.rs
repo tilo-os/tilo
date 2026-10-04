@@ -1896,11 +1896,11 @@ fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) 
         dm.tombstone_block_in(Region::Body, id);
     }
     let mut inputs = tilo_content::ContentInputs::new();
-    if import_formatted(dm, format, bytes, &mut inputs).is_err() {
-        // The caller stages a successful import before this write. A replay
-        // that still fails keeps the cleared body rather than a half-written
-        // codec result mixed with the old one.
-    }
+    // The caller stages a successful import before this write. A replay
+    // that still fails keeps the cleared body rather than a half-written
+    // codec result mixed with the old one.
+    let _ = import_formatted(dm, format, bytes, &mut inputs);
+    keep_a_paragraph(dm);
 }
 
 fn import_formatted(
@@ -1963,6 +1963,34 @@ pub fn stage_import(
     ))
 }
 
+/// What `bytes` read as `format` hold, read from a scratch document without
+/// writing any other: a paste's paragraphs, a file compared with the
+/// document it was opened into.
+///
+/// # Errors
+///
+/// Returns why the bytes do not import as `format`.
+pub fn imported_snapshot(
+    format: ImportFormat,
+    bytes: &[u8],
+) -> Result<tilo_doc::DocSnapshot, String> {
+    let mut scratch = AutoCommit::new();
+    let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
+    let mut ids = tilo_doc::IdGen::new("imported-snapshot".into());
+    import_formatted(
+        &mut DocMut {
+            doc: &mut scratch,
+            c: &containers,
+            ids: &mut ids,
+        },
+        format,
+        bytes,
+        &mut tilo_content::ContentInputs::new(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(tilo_doc::model::materialize(&scratch, &containers))
+}
+
 fn import_plain_text(dm: &mut DocMut, bytes: &[u8]) -> Result<(), tilo_doc_codecs::CodecError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| tilo_doc_codecs::CodecError::Parse(error.to_string()))?;
@@ -1990,6 +2018,15 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
         dm,
         &mut tilo_content::ContentInputs::new(),
     );
+    keep_a_paragraph(dm);
+}
+
+/// A body replaced by nothing (an empty file, an empty template) still has
+/// a paragraph to write in, as a new document does.
+fn keep_a_paragraph(dm: &mut DocMut) {
+    if tilo_doc::model::blocks_in_order(dm.doc, dm.c).is_empty() {
+        dm.insert_block(None, "paragraph");
+    }
 }
 
 fn ordered_change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
