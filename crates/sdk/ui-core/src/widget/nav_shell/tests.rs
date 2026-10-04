@@ -281,6 +281,32 @@ fn the_sidebar_toggle_moves_and_the_choice_is_remembered_per_size_class() {
 }
 
 #[test]
+fn a_toolbar_in_a_header_behind_the_drawer_settles() {
+    // The headers under an open drawer are laid out hidden; a toolbar among
+    // their actions takes that placement instead of holding its own height
+    // against it, so the layout settles.
+    let toolbar = || -> Element {
+        Box::new(
+            crate::widget::Toolbar::new(crate::widget::toolbar::Orientation::Horizontal)
+                .push_icon(crate::icons::Icon::Search, "Search", || {})
+                .push_icon(crate::icons::Icon::Refresh, "Refresh", || {}),
+        )
+    };
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", Vec::new())
+        .overview_header("Inbox", vec![toolbar()])
+        .content_header("", vec![toolbar()]);
+    let mut h = harness(shell, 560, 860, Theme::dark());
+    settle(&mut h, 560, 860);
+    h.root_mut::<NavShell>().open_sidebar();
+    settle(&mut h, 560, 860);
+    assert!(h.root::<NavShell>().is_sidebar_open());
+}
+
+#[test]
 fn an_open_drawer_is_modal_and_floats_over_the_content() {
     let mut h = harness(mail_shell(), 800, 600, Theme::dark());
     settle(&mut h, 800, 600);
