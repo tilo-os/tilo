@@ -363,6 +363,11 @@ impl<R: Resource> SurfaceCx<R> {
         self.storage.follow(self.alive.clone())
     }
 
+    /// The device this window runs on, as [`ViewCx::device`](super::ViewCx::device).
+    pub fn device(&self) -> Option<&str> {
+        self.storage.device()
+    }
+
     /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)),
     /// as [`ViewCx::person`](super::ViewCx::person) opens it.
     pub fn person<P: tilo_resource::Resource>(&self) -> Option<super::PersonRecord<P>> {

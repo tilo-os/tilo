@@ -100,6 +100,9 @@ pub struct HostContext {
     /// Where the app keeps the person's own records on this device, when
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
+    /// The file areas the host gave it ([`Self::provide_files`]); the
+    /// person's own otherwise.
+    files: Option<crate::storage::AppFiles>,
     launch_arguments: Vec<String>,
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
@@ -324,6 +327,7 @@ impl HostContext {
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
             person: None,
+            files: None,
             launch_arguments: Vec::new(),
             handoff: None,
             launch_options: Vec::new(),
@@ -463,7 +467,9 @@ impl HostContext {
     /// per-user directories natively, the origin-private file system in a
     /// page. See [`crate::storage`] for what belongs where.
     pub fn files(&self) -> crate::storage::AppFiles {
-        crate::storage::AppFiles::for_app(&self.app_id)
+        self.files
+            .clone()
+            .unwrap_or_else(|| crate::storage::AppFiles::for_app(&self.app_id))
     }
     /// This app's typed settings of type `T`, in the settings document the
     /// host gave it ([`Self::provide_settings`]); `T` declares how far they
@@ -475,16 +481,27 @@ impl HostContext {
     /// views and surfaces receive them.
     pub fn storage(&self) -> crate::storage::AppStorage {
         crate::storage::AppStorage::new(&self.app_id, self.secrets(), self.settings.clone())
+            .with_files(self.files())
     }
     /// Give the component this settings document instead of the person's
     /// session document: a test or capture profile's own.
     pub fn provide_settings(&mut self, document: crate::storage::SettingsDocument) {
         self.settings = document;
     }
+    /// Give the component these file areas instead of the person's: a test
+    /// or capture profile's own, so nothing it writes lands in theirs.
+    pub fn provide_files(&mut self, files: crate::storage::AppFiles) {
+        self.files = Some(files);
+    }
     /// Give the component the person's own records of this app
     /// ([`crate::record::person`]), kept beside the record it shows.
     pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
         self.person = Some(records);
+    }
+    /// This device, as the host names it: stable across launches of the app
+    /// on it, distinct on each of the person's devices.
+    pub fn device_id(&self) -> &str {
+        &self.device_id
     }
     /// The person's own records of this app, when the host keeps them.
     pub fn person_records(&self) -> Option<&crate::record::person::PersonRecords> {
