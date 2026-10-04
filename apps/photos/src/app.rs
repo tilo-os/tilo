@@ -14103,6 +14103,11 @@ fn collection_page_access_node(hit: CollectionPageHit, bounds: Rect, enabled: bo
 /// formatting must never become the sort/group key: doing so would collapse
 /// every "Jun" from different years into one ambiguous bucket.
 fn capture_day(captured_at: &str) -> String {
+    // The library stores capture times as ISO (`2026-07-12T18:16`); its day
+    // is the date before the time.
+    if let Some(day) = crate::actions::timeline_day_from_capture(captured_at) {
+        return day;
+    }
     captured_at
         .split_whitespace()
         .next()
