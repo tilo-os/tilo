@@ -248,7 +248,7 @@ fn accessibility_names_accounts_and_the_sheet_owns_the_window() {
         assert!(named("TextInput", "Account name"));
         assert!(named("TextInput", "Secret key"));
         assert!(named("Button", "Cancel"));
-        assert!(named("Button", "Show"), "Advanced options");
+        assert!(named("Button", "Advanced options"));
         let tree = app.accessibility().expect("the root stays described");
         assert!(
             tree.state.hidden,

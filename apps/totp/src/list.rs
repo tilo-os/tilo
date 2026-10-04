@@ -160,10 +160,9 @@ impl Metrics {
         }
     }
 
-    /// Width of a code row's trailing column: ring, gap and code, inside the
-    /// row's inset.
-    fn code_column(&self) -> f64 {
-        self.pad + self.ring + self.gap + self.code_w
+    /// Width of a code row's trailing control: the code, a gap and the ring.
+    fn code_control(&self) -> f64 {
+        self.ring + self.gap + self.code_w
     }
 }
 
@@ -177,8 +176,11 @@ fn code_style(theme: &Theme) -> TextStyle {
 /// so they follow it as the list scrolls.
 #[derive(Clone, Debug, Default)]
 struct RowLayout {
-    /// What the [`ListRowFace`] paints: everything left of the trailing column.
+    /// What the [`ListRowFace`] paints: the whole row.
     face: Rect,
+    /// The width the face reserves at its trailing edge for the code and
+    /// ring, or for the "Set up" button and its caption.
+    trailing: f64,
     /// What a row without a key says about it, left of its button; empty when
     /// the row is too narrow to say it.
     caption: Rect,
@@ -390,21 +392,24 @@ impl AccountList {
             .map(|(i, account)| {
                 let has_secret = account.secret_is_valid();
                 let trailing = if has_secret {
-                    m.code_column()
+                    m.code_control()
                 } else if caption_fits {
-                    m.pad + set_up_w + m.gap + caption_w
+                    set_up_w + m.gap + caption_w
                 } else {
-                    m.pad + set_up_w
+                    set_up_w
                 };
-                let local = Rect::new(0.0, 0.0, width, m.row_h);
-                let face = Rect::new(0.0, 0.0, (width - trailing).max(0.0), m.row_h);
+                let face = Rect::new(0.0, 0.0, width, m.row_h);
                 let cy = m.row_h / 2.0;
+                let slot = ListRowFace::new("Ag")
+                    .trailing_width(trailing)
+                    .trailing_rect(face, text, theme)
+                    .unwrap_or_else(|| Rect::new(width - trailing, 0.0, width, m.row_h));
                 let pill = m.code_h.max(m.ring) + 2.0 * m.edge;
                 let code = if has_secret {
                     Rect::new(
-                        local.x1 - m.code_column() - m.edge,
+                        slot.x0 - m.edge,
                         cy - pill / 2.0,
-                        local.x1 - m.pad + m.edge,
+                        slot.x1 + m.edge,
                         cy + pill / 2.0,
                     )
                 } else {
@@ -414,9 +419,9 @@ impl AccountList {
                     Rect::ZERO
                 } else {
                     Rect::new(
-                        local.x1 - m.pad - set_up_w,
+                        slot.x1 - set_up_w,
                         cy - set_up_h / 2.0,
-                        local.x1 - m.pad,
+                        slot.x1,
                         cy + set_up_h / 2.0,
                     )
                 };
@@ -437,11 +442,13 @@ impl AccountList {
                     ..Interaction::default()
                 };
                 let actions = ListRowFace::new("Ag")
+                    .trailing_width(trailing)
                     .actions(&actions)
                     .interaction(hovered)
                     .action_rects(face, theme);
                 RowLayout {
                     face,
+                    trailing,
                     caption,
                     code,
                     set_up,
@@ -548,17 +555,6 @@ impl AccountList {
         let hovered = hovered_zone.is_some() && !self.bar.is_dragging();
         let has_secret = account.secret_is_valid();
 
-        // The selection lift stands behind the whole row, trailing column
-        // included; the face paints the same lift behind its own part.
-        paint_row_selection(
-            ctx.scene,
-            ctx.transform,
-            row,
-            SelectionState::new(selected, hovered, false),
-            ground,
-            theme,
-        );
-
         let commands = commands(i, self.accounts.len());
         let actions: Vec<RowAction<'_>> = commands.iter().map(|c| c.action()).collect();
         let hovered_action = match hovered_zone {
@@ -571,6 +567,7 @@ impl AccountList {
         let mut face = ListRowFace::new(account.title())
             .leading(RowLeading::Avatar(avatar))
             .selected(selected)
+            .trailing_width(layout.trailing)
             .actions(&actions)
             .hovered_action(hovered_action)
             .interaction(Interaction {
@@ -667,7 +664,7 @@ impl AccountList {
         let code = totp::group_code(&totp::code_at(account, now));
         let style = code_style(theme);
         let (width, height) = ctx.text.measure_style(&code, None, &style);
-        let ring_x1 = row.x1 - m.pad;
+        let ring_x1 = self.at(i, layout.code).x1 - m.edge;
         let ring = Rect::from_center_size(Point::new(ring_x1 - m.ring / 2.0, cy), (m.ring, m.ring));
         let code_right = ring.x0 - m.gap;
         ctx.text(
@@ -678,10 +675,11 @@ impl AccountList {
             None,
         );
         if hovered {
+            let side = f64::from(theme.tokens.metrics.icon_md);
             Icon::Copy.draw(
                 ctx.scene,
                 ctx.transform,
-                Rect::from_center_size(ring.center(), (m.ring, m.ring)),
+                Rect::from_center_size(ring.center(), (side, side)),
                 theme.text_primary,
             );
             return;
