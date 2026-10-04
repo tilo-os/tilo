@@ -29,6 +29,8 @@ pub mod live_permissions;
 pub mod live_rows;
 #[path = "model_contract.rs"]
 pub mod model_contract;
+#[path = "render_view.rs"]
+pub mod render_view;
 #[path = "scenarios.rs"]
 pub mod scenarios;
 #[path = "settings.rs"]

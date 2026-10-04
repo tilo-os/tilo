@@ -83,17 +83,25 @@ impl Store for TreeStore {
             .persist_path
             .as_ref()
             .ok_or("native owner state-file path removed")?;
-        tree.native_runtime
+        let sequence = tree.native_runtime.next_sequence();
+        let published = tree
+            .native_runtime
             .publish(
                 path,
                 &tree.native_authority,
                 &candidate.native_authority,
                 &bytes,
+                sequence,
             )
             .map_err(|e| e.to_string())?;
+        // The tree is held from the sequence through here, so no later
+        // snapshot of it can have reached the file first.
+        if published == store::Publication::Superseded {
+            return Err("native owner publication was superseded".into());
+        }
         match change {
             Change::Pending => {
-                persist::save_doc_for(&candidate, path, &bytes);
+                persist::save_doc_for(&candidate, path, &bytes, sequence);
                 install();
                 *tree = candidate;
             }
@@ -151,15 +159,20 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     )?;
     // Re-establish the publication barrier before exposing a reopened generation.
     let bytes = persist::encode_tree(&reopened).map_err(|e| e.to_string())?;
-    native
+    let sequence = native.native_runtime.next_sequence();
+    let published = native
         .native_runtime
         .publish(
             &path,
             &native.native_authority,
             &reopened.native_authority,
             &bytes,
+            sequence,
         )
         .map_err(|e| e.to_string())?;
+    if published == store::Publication::Superseded {
+        return Err("reopened native generation was superseded".into());
+    }
     *native = reopened;
     for room in owner.rooms() {
         owner.with_current(room, |view| {

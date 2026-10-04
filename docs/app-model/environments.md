@@ -92,7 +92,7 @@ the shelf in their synced files and trusted while that device is certified by
 their identity, rather than built again (see `ush.md`).
 
 Actions on it (`#[action]`): `add-tool`, `remove-tool`, `grant-dir`,
-`revoke-grant`, `set-runtime`, `rename`. History and undo come from the record
+`allow-host`, `revoke-grant`, `set-runtime`, `rename`. History and undo come from the record
 layer; there is no separate package manifest.
 
 ## The guest
@@ -111,8 +111,15 @@ layer; there is no separate package manifest.
 - The guest runs as **the real uid** (a single-uid user namespace mapping), so
   files written to granted directories belong to the user and tools behave as
   they do for a normal user.
-- Network: the launcher's `netgate` egress gate, with the record's `NetHost`
-  grants; package fetches during builds go through the same gate.
+- Network: a network namespace per guest, connected by `pasta` (passt,
+  unprivileged). The record's `NetHost` grants decide what it reaches, in the
+  kernel: the guest's resolver is a DNS stub that answers only granted names
+  (`example.com`, or `.example.com` for a domain and everything under it),
+  and nftables in the guest's namespace admit only the addresses the stub
+  answered, for the record's TTL (60 s to 4 h). An address literal, DNS to
+  any other server and every ungranted name fail. `*` is unrestricted; no
+  grants is no network. A session whose grants cannot be enforced does not
+  start. See [`ush`](ush.md#the-network) and `crates/runtime/egress`.
 - Seccomp and Landlock as today (`Profile::Ush`); `guard status` keeps testing
   enforcement.
 
@@ -129,7 +136,10 @@ Host target.
    returns an existing tool image id.
 3. On a miss it builds: a build sandbox whose `/usr` is the runtime image with
    a writable upper, running `dnf install` as uid 0 in its own user namespace
-   (scriptlets work, because the runtime is a complete system). The upper is
+   (scriptlets work, because the runtime is a complete system). Its network
+   is the same mechanism with an implicit allowlist: the hosts of the
+   runtime's own repositories (`baseurl`, `metalink` and `mirrorlist` in its
+   `/etc/yum.repos.d`, plus the mirrors a fetched metalink names). The upper is
    sealed into a `tool` tapp, signed by the device key, stored, and shelved
    in the user's synced files for their other devices.
 4. The record's `add-tool` action appends the `ToolRef`. Running sessions pick

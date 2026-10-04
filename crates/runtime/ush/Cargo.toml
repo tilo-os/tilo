@@ -21,6 +21,8 @@ runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
+# Atomic writes of the host-shell decisions.
+tilo-files = { path = "../../platform/tilo-files" }
 # Builds the tool images `pkg install` adds.
 env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
@@ -38,6 +40,11 @@ hex.workspace = true
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
+# The guest's own network namespace: a DNS stub that answers only the
+# record's NetHost grants, and nftables that admit only what it answered.
+tilo-egress = { path = "../egress" }
+# Installed legacy apps become commands in every guest (`LegacyLaunch`).
+legacy-vm = { path = "../legacy-vm" }
 
 anyhow.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }

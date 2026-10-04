@@ -123,6 +123,8 @@ jobs:
 
   tools:
     needs: [plan, builder]
+    # A skipped reusable-workflow job still reports success.
+    if: needs.plan.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -287,6 +289,11 @@ jobs:
           labels: org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
 
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+
       - name: Sign, verify and tag the catalog
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
@@ -297,7 +304,6 @@ jobs:
           set -euo pipefail
           command -v skopeo >/dev/null || sudo -n dnf install -y skopeo || {
             sudo -n apt-get update && sudo -n apt-get install -y --no-install-recommends skopeo; }
-          ./os/dev/install-cached-cosign.sh
           . os/dev/configure-cosign-kms.sh
           [[ $TAG =~ ^set-[0-9a-f]{64}-[0-9a-f]{16}$ && $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]
           ref="registry.tilo.so/tilo/env-tools@$DIGEST"

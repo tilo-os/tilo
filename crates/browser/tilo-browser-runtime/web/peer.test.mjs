@@ -290,6 +290,24 @@ test('a lost live session reconnects with a fresh grant', async () => {
   await peer.dispose();
 });
 
+test('late decryption cannot revive a departed or rejoined publisher', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  session.memberWatcher(OTHER, true);
+  const original = runtime.peer.openLive.bind(runtime.peer);
+  let release;
+  runtime.peer.openLive = (...args) => new Promise(resolve => { release = () => resolve(original(...args)); });
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer:[1,2]}),1);
+  session.memberWatcher(OTHER, false);
+  session.memberWatcher(OTHER, true);
+  release();
+  await settle();
+  assert.deepEqual(peer.live.remoteState(), [], 'the previous membership epoch is gone');
+});
+
 test('reauthentication forgets the certificate and certifies again', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
@@ -828,4 +846,36 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
   assert.equal(runtime.calls.status, undefined, 'never polled');
   assert.equal(runtime.peer.room, ROOM);
   await peer.dispose();
+});
+
+test('an old membership retry cannot replace a rejoined publishers presence subscription', async () => {
+  const runtime = fakeRuntime();
+  const carriers = fakeCarriers();
+  const timers = [];
+  const layer = createLiveLayer({
+    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    sealLive: async (_room, bytes) => bytes,
+    openLive: async (_room, bytes) => bytes.slice(1),
+  }, runtime, ROOM, {
+    endpoint: 'test', carriers,
+    setTimer: callback => { timers.push(callback); return timers.length; }, clearTimer() {},
+  });
+  try {
+    await until(() => carriers.connects[0]?.memberWatcher, 'the live member watcher');
+    const session = carriers.connects[0];
+    session.memberWatcher(OTHER, true);
+    session.presenceEnds[0]();
+    const oldRetry = timers.at(-1);
+    session.memberWatcher(OTHER, false);
+    session.memberWatcher(OTHER, true);
+    session.presenceEnds[1]();
+    const currentRetry = timers.at(-1);
+    oldRetry();
+    currentRetry();
+    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: [10, 20]}), 1);
+    await settle();
+    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer), [[10, 20]], 'the current membership must retain a working subscription');
+  } finally {
+    layer.stop();
+  }
 });
