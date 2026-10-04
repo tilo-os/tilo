@@ -318,6 +318,28 @@ pub struct SearchEntry {
     pub icon: Option<String>,
     pub boost: i32,
     pub body: Option<SearchBody>,
+    /// More short text the entry is found by, each ranked by its own
+    /// weight: a sender's address, a book's subject, a message's labels.
+    pub fields: Vec<(String, SearchWeight)>,
+}
+
+/// How much a match in one of a [`SearchEntry`]'s fields counts. The title
+/// ranks as [`Self::Title`], the subtitle as [`Self::Subtitle`] and the text
+/// as [`Self::Body`]; [`SearchEntry::field`] adds others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchWeight {
+    /// The name a person looks for.
+    Title,
+    /// A stable identity typed verbatim: an address, an id, a path.
+    Identity,
+    /// A secondary line: an author, a sender, a folder.
+    Subtitle,
+    /// Other short fields: labels, tags, a subject.
+    Metadata,
+    /// Long prose.
+    Body,
+    /// Found, but never reorders hits.
+    Unranked,
 }
 
 /// One run of a [`SearchText`] segment: styled text, say.
@@ -447,6 +469,16 @@ impl SearchEntry {
     #[must_use]
     pub fn boosted(mut self, boost: i32) -> Self {
         self.boost = boost;
+        self
+    }
+
+    /// Find the entry by `text` too, a match in it ranked as `weight`.
+    #[must_use]
+    pub fn field(mut self, text: impl Into<String>, weight: SearchWeight) -> Self {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.fields.push((text, weight));
+        }
         self
     }
 

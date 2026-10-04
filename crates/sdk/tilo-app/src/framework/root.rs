@@ -554,6 +554,10 @@ impl<R: Resource> ResourceRoot<R> {
     }
 }
 
+/// How many search entries are indexed away from the UI thread rather than
+/// in the frame that asks for them.
+const OFF_THREAD_ENTRIES: usize = 1024;
+
 /// The index of the resource's search entries and its surfaces', as of one
 /// revision of the resource and one set of surface entries.
 struct SearchCache {
@@ -613,13 +617,16 @@ impl IndexedEntries {
         // Entry titles are names a person half remembers: typos match too.
         let mut index = SearchIndex::new(Matching::LOOSE);
         index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
-            let document = Document::new(at as u64)
+            let mut document = Document::new(at as u64)
                 .field(entry.title.as_str(), FieldWeight::TITLE)
                 .field(entry.text.as_str(), FieldWeight::BODY)
                 .field(
                     entry.subtitle.as_deref().unwrap_or_default(),
-                    FieldWeight::BODY,
+                    FieldWeight::SUBTITLE,
                 );
+            for (text, weight) in &entry.fields {
+                document = document.field(text.as_str(), field_weight(*weight));
+            }
             match &entry.body {
                 Some(body) => document.body(Arc::new(BodyText(body.shared()))),
                 None => document,
@@ -633,6 +640,19 @@ impl IndexedEntries {
             index,
             generation,
         }
+    }
+}
+
+/// The index's weight for a field an entry ranks as `weight`.
+fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
+    use tilo_resource::SearchWeight;
+    match weight {
+        SearchWeight::Title => FieldWeight::TITLE,
+        SearchWeight::Identity => FieldWeight::IDENTITY,
+        SearchWeight::Subtitle => FieldWeight::SUBTITLE,
+        SearchWeight::Metadata => FieldWeight::METADATA,
+        SearchWeight::Body => FieldWeight::BODY,
+        SearchWeight::Unranked => FieldWeight::UNRANKED,
     }
 }
 
@@ -975,9 +995,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
 impl<R: Resource> ResourceRoot<R> {
     /// The index of the resource's entries at `revision` and the surfaces'
-    /// `shown` ones. Entries with prose bodies (whole books) are indexed
-    /// away from the UI thread: until that index arrives, search answers
-    /// from the one before it.
+    /// `shown` ones. A large set of entries (a browsing history, a store
+    /// catalogue) or one with prose bodies (whole books) is indexed away
+    /// from the UI thread: until that index arrives, search answers from the
+    /// one before it.
     fn current_search_index(&self, revision: u64, shown: Vec<SearchEntry>) -> Arc<IndexedEntries> {
         let mut cached = self.search.borrow_mut();
         if let Some(cache) = cached.as_mut()
@@ -1010,15 +1031,15 @@ impl<R: Resource> ResourceRoot<R> {
             .map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
         let mut entries = R::search(&self.live.get());
         entries.extend(shown.iter().cloned());
-        #[cfg(not(target_arch = "wasm32"))]
-        if entries.iter().any(|entry| entry.body.is_some()) {
+        if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
             let (send, arriving) = std::sync::mpsc::channel();
             let building = entries.clone();
-            let spawned = std::thread::Builder::new()
-                .name("resource-search-index".into())
-                .spawn(move || {
+            let spawned = ui_core::background::Background::current().spawn(
+                "resource-search-index",
+                move || {
                     let _ = send.send(IndexedEntries::built(building, generation));
-                });
+                },
+            );
             if spawned.is_ok() {
                 let cache = cached.get_or_insert_with(|| SearchCache {
                     revision,
@@ -1129,7 +1150,13 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
                 row = surface.live_row(id).map(super::LiveRow::into_resource);
             }
         });
-        row
+        // Last, what the content resolves by id beyond what it publishes (a
+        // place, a record past the published page), without a document
+        // action: those are the resource's own.
+        row.or_else(|| {
+            ui_core::resources::resource_for(self.content.as_ref(), None, doc, id)
+                .map(super::rows::resolved_outside_document)
+        })
     }
     fn document_action_result(
         &self,
@@ -1487,5 +1514,25 @@ mod tests {
             "the book itself is found by its title"
         );
         assert_eq!(body, body.clone(), "a body is the text it shares");
+    }
+
+    #[test]
+    fn a_field_ranks_by_its_own_weight() {
+        use tilo_resource::SearchWeight;
+        let search = ResourceSearch::over(
+            "Mail",
+            vec![
+                SearchEntry::new("Lunch plans", "")
+                    .field("ada@example.org", SearchWeight::Metadata),
+                SearchEntry::new("Quarterly report", "")
+                    .field("ada@example.org", SearchWeight::Identity),
+            ],
+        );
+        let hits = search.search("ada@example.org");
+        assert_eq!(hits.len(), 2, "both are found by the address");
+        assert_eq!(
+            hits[0].title, "Quarterly report",
+            "a match in an identity outranks one in metadata"
+        );
     }
 }
