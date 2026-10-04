@@ -43,6 +43,7 @@ use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
+mod builder;
 mod device;
 mod kernel;
 mod reach;
@@ -819,6 +820,14 @@ impl App {
             Some(Command::Control { slot, args }) => self.control(slot, &args),
             Some(Command::Flight(command)) => self.flight(command),
             Some(Command::Scenario(ScenarioCommand::Install(args))) => self.scenario_install(&args),
+            Some(Command::LayerPack {
+                component,
+                profile,
+                features,
+            }) => {
+                crate::builderlayer::pack(&component, &profile, &features)?;
+                Ok(Outcome::new("", json!({})))
+            }
             Some(Command::Image(ImageCommand::Build { disk, out })) => self.image_build(disk, &out),
             Some(Command::Image(ImageCommand::Disk { image })) => self.image_disk(&image),
             Some(Command::Gc {
@@ -3982,6 +3991,31 @@ impl App {
         component: &Component,
         builder: Option<Builder>,
     ) -> Result<String, CliError> {
+        let arch = remote.hello.arch.clone();
+        let rcargo = self.registry()?.rcargo.get(&arch).cloned();
+        let builder = match builder {
+            None if vm.entry.hypervisor == hypervisor::DEVICE && rcargo.is_some() => {
+                Some(Builder::Rcargo)
+            }
+            other => other,
+        };
+        if builder == Some(Builder::Rcargo) {
+            let config = match rcargo {
+                Some(config) => Some(config),
+                // rcargo's own default builder is this host's architecture.
+                None if arch == std::env::consts::ARCH => None,
+                None => {
+                    return Err(CliError::Config {
+                        path: self.registry_path.display().to_string(),
+                        detail: format!(
+                            "no rcargo builder for {arch} is configured; add `[rcargo]` with `{arch} = \"<the RCARGO_CONFIG of an {arch} builder>\"` (tilo-vm guide swapping)"
+                        ),
+                    });
+                }
+            };
+            self.receipt.set("builder", "rcargo");
+            return self.build_layer_rcargo(remote, vm, component, config.as_deref());
+        }
         let (chosen, note) = choose_builder(
             builder,
             &remote.hello.tools,
@@ -3995,6 +4029,7 @@ impl App {
         match chosen {
             Builder::Vm => self.build_layer_vm(vm, component),
             Builder::Host => self.build_layer(remote, vm, component),
+            Builder::Rcargo => self.build_layer_rcargo(remote, vm, component, None),
         }
     }
 
@@ -4287,6 +4322,12 @@ impl App {
                 }
             }
             Builder::Host => self.install_app_from_host(&mut remote, &worktree, slot, dir)?,
+            Builder::Rcargo => {
+                return Err(CliError::Unsupported {
+                    what: "installing an app with --builder rcargo".into(),
+                    alternative: "--builder vm, or --builder host on Linux".into(),
+                });
+            }
         };
         let what = match (&result.id, &result.version) {
             (Some(id), Some(version)) => format!("{id} {version}"),
@@ -5237,6 +5278,7 @@ pub fn choose_builder(
             Err(CliError::HostBuildUnsupported { os: os.to_owned() })
         }
         Some(Builder::Host) => Ok((Builder::Host, None)),
+        Some(Builder::Rcargo) => Ok((Builder::Rcargo, None)),
         Some(Builder::Vm) | None if tools.can_build() => Ok((Builder::Vm, None)),
         None if linux_host => Ok((
             Builder::Host,

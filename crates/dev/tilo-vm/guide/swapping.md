@@ -73,6 +73,33 @@ VM builder. Without `--builder`, a VM image that lacks cargo, rsync or
 python3 makes a Linux host build locally, with a warning before the build
 starts.
 
+`--builder rcargo` builds on an rcargo builder of the machine's architecture
+and streams the layer through this host into tilo-vmd's upload, so no binary
+is ever written to this host's disk:
+
+1. `rcargo --on-builder run -p tilo-vm -- layer-pack --component <name> ...`
+   syncs the worktree to the builder and runs tilo-vm's packer in its build
+   container: the same `cargo build` as above (its output streams here),
+   then `os/scripts/install-components.py`, then the layer tar on stdout as
+   framed base64 lines with its sha256;
+2. tilo-vm decodes those lines straight into the upload and checks the
+   sha256 and size before it imports. A plain `rcargo build` (or `--fetch`)
+   would mirror every binary into `target/` instead;
+3. the layer records `builder = "rcargo"`, and the target and rustc read
+   from the binary on the builder.
+
+Which builder serves which architecture is set once in `vms.toml`:
+
+```toml
+[rcargo]
+aarch64 = "/home/me/.config/rcargo/arm.toml"   # the RCARGO_CONFIG of an aarch64 builder
+```
+
+For a device whose architecture is listed there, `--builder rcargo` is the
+default. An architecture that is not listed uses rcargo's own default
+config when it matches this host's. Otherwise the swap fails and names the
+line to add.
+
 ## CI builds (`--from sha:` / `--from ci:`)
 
 `sha:<commit>` means `ci:main-<sha7>`. The component's manifest `files` are
