@@ -15,13 +15,14 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, draw_icon};
+use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::floating_surface::{self, PopoverSide};
+use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
 pub type MenuAction = Arc<dyn Fn() + Send + Sync>;
 
@@ -42,6 +43,12 @@ pub enum MenuItem {
         destructive: bool,
         /// Disabled rows remain visible and announced but cannot be invoked.
         enabled: bool,
+        /// The keyboard shortcut that runs the same command, shown at the
+        /// row's trailing edge in the platform's spelling.
+        shortcut: Option<Shortcut>,
+        /// `Some` makes the row open a nested menu (with a chevron) instead
+        /// of running `action`.
+        submenu: Option<Vec<MenuItem>>,
     },
     Separator,
 }
@@ -49,10 +56,11 @@ pub enum MenuItem {
 impl std::fmt::Debug for MenuItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MenuItem::Action { label, .. } => f
+            MenuItem::Action { label, submenu, .. } => f
                 .debug_struct("MenuItem::Action")
                 .field("label", label)
                 .field("action", &"<fn>")
+                .field("submenu", submenu)
                 .finish(),
             MenuItem::Separator => f.write_str("MenuItem::Separator"),
         }
@@ -60,18 +68,24 @@ impl std::fmt::Debug for MenuItem {
 }
 
 impl MenuItem {
-    pub fn action<F>(label: impl Into<String>, action: F) -> Self
-    where
-        F: Fn() + Send + Sync + 'static,
-    {
+    fn command(label: String, action: MenuAction) -> Self {
         MenuItem::Action {
-            label: label.into(),
-            action: Arc::new(action),
+            label,
+            action,
             icon: None,
             checked: None,
             destructive: false,
             enabled: true,
+            shortcut: None,
+            submenu: None,
         }
+    }
+
+    pub fn action<F>(label: impl Into<String>, action: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        Self::command(label.into(), Arc::new(action))
     }
 
     /// A command row with a themed leading icon. Menus containing icon rows
@@ -80,14 +94,7 @@ impl MenuItem {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        MenuItem::Action {
-            label: label.into(),
-            action: Arc::new(action),
-            icon: Some(icon),
-            checked: None,
-            destructive: false,
-            enabled: true,
-        }
+        Self::action(label, action).with_icon(icon)
     }
 
     pub fn selection(label: impl Into<String>) -> Self {
@@ -98,18 +105,25 @@ impl MenuItem {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        MenuItem::Action {
-            label: label.into(),
-            action: Arc::new(action),
-            icon: None,
-            checked: None,
-            destructive: true,
-            enabled: true,
+        let mut item = Self::action(label, action);
+        if let MenuItem::Action { destructive, .. } = &mut item {
+            *destructive = true;
         }
+        item
     }
 
     pub fn destructive_selection(label: impl Into<String>) -> Self {
         Self::destructive_action(label, || {})
+    }
+
+    /// A row that opens a nested menu of `items` beside it: on hover, a
+    /// click, Enter or the arrow towards it. Its chevron says so.
+    pub fn submenu(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
+        let mut item = Self::command(label.into(), Arc::new(|| {}));
+        if let MenuItem::Action { submenu, .. } = &mut item {
+            *submenu = Some(items);
+        }
+        item
     }
 
     #[must_use]
@@ -119,6 +133,20 @@ impl MenuItem {
         } = &mut self
         {
             *item_icon = Some(icon);
+        }
+        self
+    }
+
+    /// Show the keyboard shortcut that runs the same command at the row's
+    /// trailing edge (`Shortcut::command("S")`, `Shortcut::key("Delete")`).
+    #[must_use]
+    pub fn with_shortcut(mut self, shortcut: Shortcut) -> Self {
+        if let MenuItem::Action {
+            shortcut: item_shortcut,
+            ..
+        } = &mut self
+        {
+            *item_shortcut = Some(shortcut);
         }
         self
     }
@@ -172,6 +200,22 @@ impl MenuItem {
         }
     }
 
+    /// The shortcut shown on the row, if any.
+    pub fn shortcut(&self) -> Option<&Shortcut> {
+        match self {
+            MenuItem::Action { shortcut, .. } => shortcut.as_ref(),
+            MenuItem::Separator => None,
+        }
+    }
+
+    /// The nested menu's rows, for a row that opens one.
+    pub fn submenu_items(&self) -> Option<&[MenuItem]> {
+        match self {
+            MenuItem::Action { submenu, .. } => submenu.as_deref(),
+            MenuItem::Separator => None,
+        }
+    }
+
     fn is_destructive(&self) -> bool {
         matches!(
             self,
@@ -213,6 +257,21 @@ pub struct ContextMenu {
     viewport: Option<Rect>,
     /// The row the menu acts on, ringed while the menu is open.
     anchor_row: Option<Rect>,
+    /// Which edge of its anchor the menu lines up with.
+    align: PanelAlign,
+    /// Which side of its anchor the menu opens on: below a control, beside
+    /// the row of a parent menu.
+    side: PopoverSide,
+    /// The open nested menu and the row that opened it.
+    submenu: Option<(usize, Box<ContextMenu>)>,
+    /// A pick in a nested menu as `(row, nested row)`, drained by
+    /// [`ContextMenu::take_submenu_selection`].
+    submenu_selection: Option<(usize, usize)>,
+    /// Keyboard focus is in the nested menu.
+    submenu_focused: bool,
+    platform: PlatformConventions,
+    /// The trailing column (shortcuts, chevrons) from the last measure.
+    trailing_width: f64,
 }
 
 impl Default for ContextMenu {
@@ -239,7 +298,38 @@ impl ContextMenu {
             text_scale: 1.0,
             viewport: None,
             anchor_row: None,
+            align: PanelAlign::Leading,
+            side: PopoverSide::Below,
+            submenu: None,
+            submenu_selection: None,
+            submenu_focused: false,
+            platform: PlatformConventions::default(),
+            trailing_width: 0.0,
         }
+    }
+
+    /// A menu of `items`, closed.
+    pub fn with_items(items: Vec<MenuItem>) -> Self {
+        let mut menu = Self::new();
+        menu.items = items;
+        menu
+    }
+
+    /// Replace every row (closes an open nested menu).
+    pub fn set_items(&mut self, items: Vec<MenuItem>) {
+        self.items = items;
+        self.submenu = None;
+        if self.hovered.is_some_and(|i| i >= self.items.len()) {
+            self.hovered = None;
+        }
+        self.layout_at_position();
+    }
+
+    /// Line the menu up with its anchor's trailing edge (a menu from a
+    /// button at the end of a header row) instead of its leading edge.
+    pub fn set_align(&mut self, align: PanelAlign) {
+        self.align = align;
+        self.layout_at_position();
     }
 
     /// Mark the row (a message, a feed item, a file) this menu acts on, so
@@ -377,6 +467,7 @@ impl ContextMenu {
         let mut width: f64 = 0.0;
         let mut height: f64 = 0.0;
         let has_leading_gutter = self.has_leading_gutter();
+        let mut trailing: f64 = 0.0;
         for item in &self.items {
             if let Some(label) = item.label() {
                 let (w, h) = text.measure_style(label, None, &style);
@@ -388,10 +479,24 @@ impl ContextMenu {
                 width = width.max(f64::from(w) + check_width);
                 height = height.max(f64::from(h));
             }
+            if let Some(shortcut) = item.shortcut() {
+                let label = shortcut.label(self.platform);
+                let (w, _) = text.measure_style(&label, None, &style);
+                trailing = trailing.max(f64::from(w));
+            }
+            if item.submenu_items().is_some() {
+                trailing = trailing.max(f64::from(theme.tokens.metrics.icon_sm));
+            }
         }
+        // The shortcut column stands `s6` clear of the longest label.
+        self.trailing_width = if trailing > 0.0 {
+            trailing + f64::from(theme.tokens.spacing.s6)
+        } else {
+            0.0
+        };
         // The content's inset on both sides; the row is the menu row height,
         // grown with `s2` of air round the line at large text.
-        self.measured_width = width + 2.0 * label_inset(theme);
+        self.measured_width = width + self.trailing_width + 2.0 * label_inset(theme);
         self.row_height = (height + f64::from(theme.tokens.spacing.s2))
             .max(f64::from(theme.tokens.metrics.menu_row_height));
         self.layout_at_position();
@@ -491,6 +596,21 @@ impl ContextMenu {
     /// than a tree node) hit-test and draw the menu directly.
     pub fn layout_at_position(&mut self) {
         if let Some((anchor, viewport)) = self.bounds {
+            // Every anchored floating panel keeps the same air from the
+            // window's edges (`floating_surface::viewport_margin`, the `s2`
+            // step), popovers and menus alike. A window too small for the
+            // menu and its air gives up the air first, on that axis only.
+            let full = self.content_height() + PADDING * 2.0;
+            let margin_x = PADDING
+                .min((viewport.width() - self.measured_width) / 2.0)
+                .max(0.0);
+            let margin_y = PADDING.min((viewport.height() - full) / 2.0).max(0.0);
+            let viewport = Rect::new(
+                viewport.x0 + margin_x,
+                viewport.y0 + margin_y,
+                viewport.x1 - margin_x,
+                viewport.y1 - margin_y,
+            );
             let width = self.measured_width.min(viewport.width().max(0.0));
             // A pointer position opens the menu right at it; a control
             // opens it `s1` off its edge.
@@ -499,7 +619,23 @@ impl ContextMenu {
             } else {
                 0.0
             };
-            let full = self.content_height() + PADDING * 2.0;
+            if matches!(self.side, PopoverSide::Left | PopoverSide::Right) {
+                // A nested menu opens beside its row, its first row level
+                // with it: the panel starts one inset above the row.
+                let height = full.min(viewport.height().max(0.0));
+                let row = anchor.inflate(0.0, PADDING);
+                self.rect = floating_surface::place_aligned(
+                    row,
+                    (width, height),
+                    self.side,
+                    PanelAlign::Leading,
+                    0.0,
+                    viewport,
+                )
+                .0;
+                self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
+                return;
+            }
             let below = floating_surface::anchored_room(anchor, PopoverSide::Below, gap, viewport);
             let above = floating_surface::anchored_room(anchor, PopoverSide::Above, gap, viewport);
             // Taller than the room on its side, the menu takes the side with
@@ -513,10 +649,11 @@ impl ContextMenu {
             let one_row = (self.row_height + PADDING * 2.0).min(full);
             let rect = if room >= one_row {
                 let height = full.min(room).min(viewport.height().max(0.0));
-                floating_surface::place_anchored(
+                floating_surface::place_aligned(
                     anchor,
                     (width, height),
                     PopoverSide::Below,
+                    self.align,
                     gap,
                     viewport,
                 )
@@ -549,6 +686,8 @@ impl ContextMenu {
         self.open = false;
         self.active_touch = None;
         self.anchor_row = None;
+        self.submenu = None;
+        self.submenu_focused = false;
     }
 
     pub fn is_open(&self) -> bool {
@@ -593,6 +732,11 @@ impl ContextMenu {
         };
         match item {
             MenuItem::Action {
+                submenu: Some(_),
+                enabled: true,
+                ..
+            } => self.open_submenu(idx, false),
+            MenuItem::Action {
                 action,
                 enabled: true,
                 ..
@@ -600,9 +744,145 @@ impl ContextMenu {
                 let cb = action.clone();
                 cb();
                 self.selection = Some(idx);
-                self.open = false;
+                self.close();
             }
             MenuItem::Action { .. } | MenuItem::Separator => {}
+        }
+    }
+
+    /// Open the nested menu of row `idx` beside it. `keyboard` puts focus
+    /// on its first row.
+    pub fn open_submenu(&mut self, idx: usize, keyboard: bool) {
+        if self.submenu.as_ref().is_some_and(|(row, _)| *row == idx) {
+            if keyboard && let Some((_, menu)) = self.submenu.as_mut() {
+                menu.focus_first_action();
+                self.submenu_focused = true;
+            }
+            return;
+        }
+        let Some(items) = self.items.get(idx).and_then(MenuItem::submenu_items) else {
+            self.submenu = None;
+            return;
+        };
+        let Some(row) = self.item_rect(idx) else {
+            return;
+        };
+        let viewport = self
+            .bounds
+            .map(|(_, viewport)| viewport)
+            .or(self.viewport)
+            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        let mut menu = ContextMenu::with_items(items.to_vec());
+        menu.side = if self.side == PopoverSide::Left {
+            PopoverSide::Left
+        } else {
+            PopoverSide::Right
+        };
+        menu.platform = self.platform;
+        menu.text_scale = self.text_scale;
+        menu.row_height = self.row_height;
+        menu.open_anchored(
+            Rect::new(self.rect.x0, row.y0, self.rect.x1, row.y1),
+            viewport,
+        );
+        if keyboard {
+            menu.focus_first_action();
+        }
+        self.hovered = Some(idx);
+        self.submenu_focused = keyboard;
+        self.submenu = Some((idx, Box::new(menu)));
+    }
+
+    /// Close the nested menu, keeping this one open.
+    pub fn close_submenu(&mut self) {
+        self.submenu = None;
+        self.submenu_focused = false;
+    }
+
+    /// Whether a nested menu is open.
+    pub fn is_submenu_open(&self) -> bool {
+        self.submenu.is_some()
+    }
+
+    /// A pick in a nested menu as `(row, nested row)`, exactly once. The
+    /// nested row's action has already run.
+    pub fn take_submenu_selection(&mut self) -> Option<(usize, usize)> {
+        self.submenu_selection.take()
+    }
+
+    /// Give `event` to the open nested menu when it is the pointer's or the
+    /// keyboard's: the pointer while over it, keys while it has focus.
+    /// Returns whether it took the event.
+    fn route_to_submenu(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        if self.submenu.is_none() {
+            return false;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
+        let p = self.last_cursor;
+        let over = self
+            .submenu
+            .as_ref()
+            .is_some_and(|(_, menu)| menu.contains([p.x, p.y]));
+        let key = match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => Some(logical_key),
+            _ => None,
+        };
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        );
+        if let Some(key) = key {
+            if !self.submenu_focused {
+                return false;
+            }
+            // Left or Escape steps back out to this menu's row.
+            if matches!(key, Key::Named(NamedKey::ArrowLeft | NamedKey::Escape)) {
+                self.close_submenu();
+                *ctx.handled = true;
+                return true;
+            }
+        } else if !(pointer && over) {
+            return false;
+        }
+        if let Some((_, menu)) = self.submenu.as_mut() {
+            menu.handle_event(event, ctx);
+        }
+        if pointer {
+            self.submenu_focused = false;
+        }
+        self.drain_submenu();
+        *ctx.handled |= !matches!(event, WindowEvent::CursorMoved { .. });
+        true
+    }
+
+    /// Drain a pick the nested menu just made: the whole menu closes.
+    fn drain_submenu(&mut self) {
+        let Some((row, menu)) = self.submenu.as_mut() else {
+            return;
+        };
+        let row = *row;
+        if let Some(pick) = menu.take_selection() {
+            self.submenu_selection = Some((row, pick));
+            self.close();
+        } else if !menu.is_open() {
+            self.close_submenu();
         }
     }
 
@@ -765,6 +1045,10 @@ fn item_shown(items: &[MenuItem], index: usize) -> bool {
 }
 
 impl Widget for ContextMenu {
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        self.platform = conventions;
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -870,7 +1154,19 @@ impl Widget for ContextMenu {
         }
         // Panel role (HIG §9.1): the floating radius, the one floating
         // shadow, and the floating material with its derived edge.
-        floating_surface::paint(scene, transform, self.rect, theme);
+        // One row sits in a panel concentric with it, never a near-pill.
+        let single_row = self
+            .items
+            .iter()
+            .filter(|item| matches!(item, MenuItem::Action { .. }))
+            .count()
+            == 1;
+        let panel_radius = if single_row {
+            floating_surface::single_row_radius(theme)
+        } else {
+            floating_surface::radius(theme)
+        };
+        floating_surface::paint_rounded(scene, transform, self.rect, panel_radius, theme);
         let ground = crate::chrome::panel_ground(theme);
 
         // One style for measuring (`layout_within`) and painting, in both
@@ -901,6 +1197,8 @@ impl Widget for ContextMenu {
                     checked,
                     destructive,
                     enabled,
+                    shortcut,
+                    submenu,
                     ..
                 } => {
                     // The row Enter / a click would activate, painted as every
@@ -908,12 +1206,15 @@ impl Widget for ContextMenu {
                     // (`floating_surface::armed_row`). A one-step 10 % veneer
                     // measured only ΔL* ≈ 11 on the dark panel and read as
                     // "no highlight"; see `tests/menu_highlight_render.rs`.
-                    let armed = *enabled && self.hovered == Some(idx);
+                    // The row whose nested menu is open stays armed.
+                    let armed = *enabled
+                        && (self.hovered == Some(idx)
+                            || self.submenu.as_ref().is_some_and(|(row, _)| *row == idx));
                     // Concentric with the panel it is inset in, as in every
                     // menu.
                     let armed_ink = armed.then(|| {
                         let inset = floating_surface::menu_inset(theme);
-                        floating_surface::paint_armed_row(
+                        floating_surface::paint_armed_row_in(
                             scene,
                             transform,
                             Rect::new(
@@ -922,6 +1223,7 @@ impl Widget for ContextMenu {
                                 self.rect.x1 - inset,
                                 y + row_height,
                             ),
+                            panel_radius,
                             inset,
                             theme,
                         )
@@ -944,9 +1246,13 @@ impl Widget for ContextMenu {
                     };
                     let label_x = if has_leading_gutter {
                         let icon_size = f64::from(theme.tokens.metrics.icon_sm);
-                        if let Some(icon) =
-                            (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check))
-                        {
+                        // A state row shows its state, not its icon: the
+                        // check is what says a toggle is on.
+                        let glyph = match checked {
+                            Some(on) => on.then_some(Icon::Check),
+                            None => *icon,
+                        };
+                        if let Some(icon) = glyph {
                             draw_icon(
                                 scene,
                                 transform,
@@ -965,7 +1271,8 @@ impl Widget for ContextMenu {
                     };
                     let label = text_renderer.elide_to_width_style(
                         label,
-                        (self.rect.x1 - label_x - label_inset(theme)).max(1.0) as f32,
+                        (self.rect.x1 - label_x - label_inset(theme) - self.trailing_width).max(1.0)
+                            as f32,
                         &style,
                     );
                     let (_, label_height) = text_renderer.measure_style(&label, None, &style);
@@ -978,6 +1285,46 @@ impl Widget for ContextMenu {
                         None,
                         &style,
                     );
+                    // The trailing column: a nested menu's chevron, or the
+                    // shortcut in secondary ink.
+                    let trailing_x1 = self.rect.x1 - label_inset(theme);
+                    if submenu.is_some() {
+                        let size = f64::from(theme.tokens.metrics.icon_sm);
+                        draw_icon(
+                            scene,
+                            transform,
+                            Rect::from_origin_size(
+                                (trailing_x1 - size, y + (row_height - size) / 2.0),
+                                (size, size),
+                            ),
+                            Icon::ChevronRight,
+                            ink,
+                            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                        );
+                    } else if let Some(shortcut) = shortcut {
+                        let text = shortcut.label(self.platform);
+                        let (w, _) = text_renderer.measure_style(&text, None, &style);
+                        let dim = if armed {
+                            ink
+                        } else {
+                            theme
+                                .tokens
+                                .colors
+                                .on_surface_at(
+                                    ground,
+                                    crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                                )
+                                .ink_dim
+                        };
+                        text_renderer.draw_style(
+                            scene,
+                            &text,
+                            dim,
+                            transform.pre_translate(Vec2::new(trailing_x1 - f64::from(w), label_y)),
+                            None,
+                            &style,
+                        );
+                    }
                     y += row_height;
                 }
                 MenuItem::Separator if row_height <= 0.0 => {}
@@ -998,10 +1345,16 @@ impl Widget for ContextMenu {
         }
         scene.pop_layer();
         self.draw_scroll_affordance(scene, transform, theme);
+        if let Some((_, menu)) = self.submenu.as_mut() {
+            menu.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
+            return;
+        }
+        if self.route_to_submenu(event, ctx) {
             return;
         }
         match event {
@@ -1011,6 +1364,20 @@ impl Widget for ContextMenu {
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
+                // Hovering a row with a nested menu opens it; hovering
+                // another row closes it.
+                if let Some(row) = self.hovered {
+                    if self
+                        .items
+                        .get(row)
+                        .and_then(MenuItem::submenu_items)
+                        .is_some()
+                    {
+                        self.open_submenu(row, false);
+                    } else if self.submenu.is_some() {
+                        self.close_submenu();
+                    }
+                }
                 // Not marked handled (so cursor presence still flows) —
                 // only presses are.
             }
@@ -1048,8 +1415,16 @@ impl Widget for ContextMenu {
                     self.move_hover(-1);
                     *ctx.handled = true;
                 }
-                Key::Named(NamedKey::Enter) => {
-                    if let Some(idx) = self.hovered {
+                Key::Named(NamedKey::Enter | NamedKey::ArrowRight) => {
+                    let opens = self.hovered.filter(|&idx| {
+                        self.items
+                            .get(idx)
+                            .and_then(MenuItem::submenu_items)
+                            .is_some()
+                    });
+                    if let Some(idx) = opens {
+                        self.open_submenu(idx, true);
+                    } else if let (Key::Named(NamedKey::Enter), Some(idx)) = (key, self.hovered) {
                         self.click_item(idx);
                     }
                     *ctx.handled = true;
@@ -1160,27 +1535,38 @@ impl Widget for ContextMenu {
                     label,
                     checked,
                     enabled,
+                    shortcut,
+                    submenu,
                     ..
                 } = item
                 else {
                     return None;
                 };
                 action_position = action_position.saturating_add(1);
-                Some(
-                    AccessNode::new(Role::MenuItem)
-                        .with_name(label.clone())
-                        .with_action_target(format!("context-menu:item:{index}"))
-                        .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
-                        .with_position(action_position, action_count)
-                        .with_state(AccessState {
-                            focusable: *enabled,
-                            focused: self.open && self.hovered == Some(index),
-                            hidden: !self.open,
-                            checked: *checked,
-                            disabled: !*enabled,
-                            ..Default::default()
-                        }),
-                )
+                let open_here = self.submenu.as_ref().filter(|(row, _)| *row == index);
+                let mut node = AccessNode::new(Role::MenuItem)
+                    .with_name(label.clone())
+                    .with_action_target(format!("context-menu:item:{index}"))
+                    .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
+                    .with_position(action_position, action_count)
+                    .with_state(AccessState {
+                        focusable: *enabled,
+                        focused: self.open && self.hovered == Some(index) && !self.submenu_focused,
+                        hidden: !self.open,
+                        checked: *checked,
+                        disabled: !*enabled,
+                        expanded: submenu.as_ref().map(|_| open_here.is_some()),
+                        ..Default::default()
+                    });
+                if let Some(shortcut) = shortcut {
+                    node.description = Some(shortcut.label(self.platform));
+                }
+                if let Some((_, menu)) = open_here
+                    && let Some(nested) = Widget::accessibility(menu.as_ref())
+                {
+                    node.children.push(nested);
+                }
+                Some(node)
             })
             .collect();
         Some(
@@ -1215,6 +1601,232 @@ impl Widget for ContextMenu {
         }
         self.click_item(index);
         true
+    }
+}
+
+/// A button that opens a menu anchored to its own rect
+/// ([`crate::widget::Button::with_menu`]): a header's More button, a
+/// toolbar's sort menu. The menu opens under the button, lines up with
+/// whichever of its edges keeps it in the window, and flips above near the
+/// bottom; Enter, Space or a click opens it, and the button reads as
+/// expanded while it is open.
+pub struct MenuButton {
+    button: crate::widget::Button,
+    menu: ContextMenu,
+    /// Set by the button's click; the menu opens on the next turn.
+    request: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The window the top layer last painted over.
+    window: Option<Rect>,
+    align: PanelAlign,
+}
+
+impl crate::widget::Button {
+    /// Make this button open `items` as a menu anchored to its own rect.
+    #[must_use]
+    pub fn with_menu(self, items: Vec<MenuItem>) -> MenuButton {
+        let request = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::rc::Rc::clone(&request);
+        MenuButton {
+            button: self.on_click(move || flag.set(true)),
+            menu: ContextMenu::with_items(items),
+            request,
+            window: None,
+            align: PanelAlign::Leading,
+        }
+    }
+}
+
+impl MenuButton {
+    /// Line the menu up with the button's trailing edge (a button at the
+    /// end of a header row) instead of its leading edge.
+    #[must_use]
+    pub fn aligned(mut self, align: PanelAlign) -> Self {
+        self.align = align;
+        self.menu.set_align(align);
+        self
+    }
+
+    /// Replace the menu's rows (a state row's check, a disabled command).
+    pub fn set_items(&mut self, items: Vec<MenuItem>) {
+        self.menu.set_items(items);
+    }
+
+    /// The menu, for its selection channel
+    /// ([`ContextMenu::take_selection`]).
+    pub fn menu_mut(&mut self) -> &mut ContextMenu {
+        &mut self.menu
+    }
+
+    pub fn button(&self) -> &crate::widget::Button {
+        &self.button
+    }
+
+    pub fn button_mut(&mut self) -> &mut crate::widget::Button {
+        &mut self.button
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    /// Open the menu at the button (a stage hook, a shortcut).
+    pub fn open(&mut self, keyboard: bool) {
+        let anchor = Widget::get_rect(&self.button);
+        let viewport = self
+            .window
+            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        self.menu.set_align(self.align);
+        self.menu.open_anchored(anchor, viewport);
+        if keyboard {
+            self.menu.focus_first_action();
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.menu.close();
+    }
+
+    fn take_request(&mut self, keyboard: bool) {
+        if self.request.replace(false) {
+            if self.menu.is_open() {
+                self.menu.close();
+            } else {
+                self.open(keyboard);
+            }
+        }
+    }
+}
+
+impl crate::widget::Decorator for MenuButton {
+    type Inner = crate::widget::Button;
+
+    fn inner(&self) -> &crate::widget::Button {
+        &self.button
+    }
+
+    fn inner_mut(&mut self) -> &mut crate::widget::Button {
+        &mut self.button
+    }
+
+    fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
+        Widget::set_platform_conventions(&mut self.button, conventions);
+        Widget::set_platform_conventions(&mut self.menu, conventions);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.button, taffy, theme, node_map);
+        // Focus and keyboard activation reach the menu button, not the
+        // button inside it.
+        crate::widget::decorator::register_node(node_map, node, self);
+        node
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if self.menu.is_open() {
+            self.menu.handle_event(event, ctx);
+            // The press that closed the menu on the button itself must not
+            // open it again.
+            if !self.menu.is_open() {
+                self.request.set(false);
+            }
+            return;
+        }
+        Widget::handle_event(&mut self.button, event, ctx);
+        let keyboard = matches!(event, WindowEvent::KeyboardInput { .. });
+        self.take_request(keyboard);
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        root: &ModelPath,
+    ) -> bool {
+        if matches!(action, crate::a11y::Action::Activate) && Widget::is_enabled(&self.button) {
+            if self.menu.is_open() {
+                self.menu.close();
+            } else {
+                self.open(true);
+            }
+            return true;
+        }
+        Widget::perform_action(&mut self.button, action, state, root)
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        Widget::draw_overlay(
+            &mut self.button,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        );
+        if let Some(window) = presence.viewport.get() {
+            self.window = Some(window);
+        }
+        if self.menu.is_open()
+            && let Some(window) = self.window
+        {
+            self.menu.reanchor(Widget::get_rect(&self.button), window);
+        }
+        self.menu
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.menu.modal_capture()
+    }
+
+    fn traps_focus(&self) -> bool {
+        self.menu.is_open()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.menu.is_open() || Widget::wants_pointer_capture(&self.button)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.menu.is_open() || Widget::needs_redraw(&self.button)
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = Widget::accessibility(&self.button)?;
+        node.state.expanded = Some(self.menu.is_open());
+        if self.menu.is_open()
+            && let Some(menu) = Widget::accessibility(&self.menu)
+        {
+            node.children.push(menu);
+        }
+        Some(node)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        self.menu
+            .perform_semantic_action(target, action, state, path)
+            || Widget::perform_semantic_action(&mut self.button, target, action, state, path)
+    }
+
+    fn name(&self) -> &str {
+        "MenuButton"
     }
 }
 
@@ -2021,5 +2633,229 @@ mod bounded_tests {
         bounded_menu_measures_scales_and_clamps_at_all_edges();
         width_uses_shaping_and_legacy_open_resets_bounded_geometry();
         tiny_viewport_keeps_focused_rows_reachable();
+    }
+}
+
+#[cfg(test)]
+mod nested_and_anchored_tests {
+    use super::*;
+    use automerge::AutoCommit;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use winit::event::DeviceId;
+
+    const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+
+    fn synth_device() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: synth_device(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn key(named: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn dispatch(m: &mut ContextMenu, event: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.leaf_node(Style::default());
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        m.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        handled
+    }
+    fn paint(m: &mut ContextMenu) {
+        let presence = PresenceCtx::default();
+        let previous = presence.push_viewport(WINDOW);
+        let mut scene = Scene::new();
+        m.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &presence,
+        );
+        presence.pop_viewport(previous);
+    }
+
+    fn file_menu(fired: &Arc<AtomicU32>) -> ContextMenu {
+        let markdown = Arc::clone(fired);
+        ContextMenu::with_items(vec![
+            MenuItem::action("Open", || {}).with_shortcut(crate::platform::Shortcut::command("O")),
+            MenuItem::submenu(
+                "New file",
+                vec![
+                    MenuItem::action("Text file", || {}),
+                    MenuItem::action("Markdown file", move || {
+                        markdown.fetch_add(1, Ordering::SeqCst);
+                    }),
+                ],
+            ),
+            MenuItem::action("Delete", || {})
+                .with_shortcut(crate::platform::Shortcut::key("Delete")),
+        ])
+    }
+
+    #[test]
+    fn a_submenu_opens_beside_its_row_by_hover_and_by_keyboard() {
+        let fired = Arc::new(AtomicU32::new(0));
+        let mut m = file_menu(&fired);
+        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        paint(&mut m);
+        // Hovering the row opens it beside the row, level with it.
+        let row = m.item_rect(1).expect("the submenu row is shown");
+        dispatch(&mut m, &cursor_at(row.center()));
+        assert!(m.is_submenu_open(), "hover opens the nested menu");
+        paint(&mut m);
+        let nested = m.submenu.as_ref().map(|(_, menu)| menu.get_rect()).unwrap();
+        assert!(
+            nested.x0 >= m.get_rect().x1 - 0.5,
+            "beside the menu: {nested:?}"
+        );
+        // A pick in it runs the action, reports the nested pick and closes all.
+        let nested_row = m
+            .submenu
+            .as_ref()
+            .and_then(|(_, menu)| menu.item_rect(1))
+            .unwrap();
+        dispatch(&mut m, &cursor_at(nested_row.center()));
+        dispatch(&mut m, &left_press());
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(m.take_submenu_selection(), Some((1, 1)));
+        assert!(!m.is_open());
+
+        // The keyboard: Right opens it with focus, Left steps back out.
+        let mut m = file_menu(&fired);
+        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        paint(&mut m);
+        m.focus_item(1);
+        dispatch(&mut m, &key(NamedKey::ArrowRight));
+        assert!(m.is_submenu_open());
+        assert_eq!(
+            m.submenu.as_ref().and_then(|(_, menu)| menu.hovered()),
+            Some(0)
+        );
+        dispatch(&mut m, &key(NamedKey::ArrowLeft));
+        assert!(!m.is_submenu_open());
+        assert!(m.is_open(), "Left closes only the nested menu");
+        let node = Widget::accessibility(&m).unwrap();
+        assert_eq!(node.children[1].state.expanded, Some(false));
+        assert_eq!(node.children[0].description.as_deref(), Some("Ctrl+O"));
+    }
+
+    #[test]
+    fn shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier() {
+        let fired = Arc::new(AtomicU32::new(0));
+        let mut plain = ContextMenu::with_items(vec![MenuItem::action("Open", || {})]);
+        let mut with = file_menu(&fired);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        plain.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        with.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        plain.layout_within(&mut tr, &theme);
+        with.layout_within(&mut tr, &theme);
+        assert!(with.get_rect().width() > plain.get_rect().width());
+        let conventions = crate::platform::PlatformConventions::default();
+        assert_eq!(
+            crate::platform::Shortcut::key("Delete").label(conventions),
+            "Delete"
+        );
+    }
+
+    #[test]
+    fn a_trailing_menu_hangs_from_its_anchors_trailing_edge_inside_the_margin() {
+        let mut m = ContextMenu::with_items(vec![
+            MenuItem::action("Rename", || {}),
+            MenuItem::action("Duplicate", || {}),
+        ]);
+        m.set_align(PanelAlign::Trailing);
+        let anchor = Rect::new(700.0, 10.0, 740.0, 42.0);
+        m.open_anchored(anchor, WINDOW);
+        paint(&mut m);
+        assert!(
+            (m.get_rect().x1 - anchor.x1).abs() < 1e-6,
+            "{:?}",
+            m.get_rect()
+        );
+        // Near the window's edge the menu keeps the panel margin.
+        let mut edge = ContextMenu::with_items(vec![MenuItem::action("Rename", || {})]);
+        edge.open_anchored(Rect::new(790.0, 10.0, 800.0, 42.0), WINDOW);
+        paint(&mut edge);
+        let margin = crate::widget::floating_surface::viewport_margin(&Theme::dark());
+        assert!(
+            edge.get_rect().x1 <= WINDOW.x1 - margin + 1e-6,
+            "{:?}",
+            edge.get_rect()
+        );
+    }
+
+    #[test]
+    fn a_single_row_menu_is_concentric_with_its_row() {
+        let theme = Theme::dark();
+        let single = crate::widget::floating_surface::single_row_radius(&theme);
+        assert!(single < f64::from(theme.tokens.radii.panel));
+        assert!(
+            (single
+                - (f64::from(theme.tokens.radii.item)
+                    + crate::widget::floating_surface::menu_inset(&theme)))
+            .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn a_menu_button_opens_its_menu_at_its_own_rect() {
+        use crate::headless::Framed;
+        let fired = Arc::new(AtomicU32::new(0));
+        let f = Arc::clone(&fired);
+        let button =
+            crate::widget::Button::icon_only("more", crate::icons::Icon::MoreHorizontal, "More")
+                .with_menu(vec![MenuItem::action("Print", move || {
+                    f.fetch_add(1, Ordering::SeqCst);
+                })]);
+        let mut framed = Framed::new(crate::State::new(), button, (800, 600), Theme::dark());
+        let _ = Framed::harness_mut(&mut framed).poll_frame();
+        let rect = framed.button().get_rect();
+        Framed::harness_mut(&mut framed).click_at(rect.center().x, rect.center().y);
+        let _ = Framed::harness_mut(&mut framed).poll_frame();
+        assert!(framed.is_open(), "a click opens the menu");
+        let menu = framed.menu_mut().get_rect();
+        assert!(menu.y0 >= rect.y1, "under the button: {menu:?} vs {rect:?}");
+        let node = Widget::accessibility(&*framed).unwrap();
+        assert_eq!(node.state.expanded, Some(true));
     }
 }

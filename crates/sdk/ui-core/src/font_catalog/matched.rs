@@ -16,7 +16,8 @@
 //! - punctuation stays with the word it closes or opens; spaces, digits
 //!   and dashes between two faces are the primary face's;
 //! - every span gets the OpenType features its [`TextKind`] asks for that
-//!   its own face has.
+//!   its own face has; in prose, the links, email addresses and mentions
+//!   [`crate::text_detect`] finds are spans of their own kind.
 //!
 //! The split is a pure function of the text, the style and the faces, run on
 //! the one shaping path that both measurement and painting use, so the two
@@ -32,6 +33,7 @@ use unicode_properties::general_category::{GeneralCategory, UnicodeGeneralCatego
 use unicode_script::{Script, UnicodeScript};
 
 use super::faces::{FaceCaps, caps};
+use super::optical::Optical;
 use crate::text_render::TextKind;
 
 /// One face matched to the UI face for scripts it lacks.
@@ -88,20 +90,158 @@ enum Face {
 /// asked for, then the face's capabilities when the font system has it.
 type Resolved = Vec<Option<Option<Arc<FaceCaps>>>>;
 
-/// Split `spans` into spans of one face each, with features resolved for
-/// `kind`. `base` is the buffer's own metrics, used for spans that carry
-/// none.
+thread_local! {
+    /// The person's "Always distinguish similar letters" setting, and how
+    /// many security surfaces are being laid out or painted right now. Text
+    /// is shaped on the thread that owns the renderer, so both are per
+    /// thread; [`crate::text_render::TextRenderer`] sets them.
+    static DISTINGUISH: std::cell::Cell<(bool, u32)> = const { std::cell::Cell::new((false, 0)) };
+}
+
+/// Turn the "Always distinguish similar letters" setting on or off for text
+/// shaped on this thread. Returns whether it changed.
+pub(crate) fn set_distinguish_everywhere(on: bool) -> bool {
+    DISTINGUISH.with(|cell| {
+        let (was, depth) = cell.get();
+        cell.set((on, depth));
+        was != on
+    })
+}
+
+/// Enter (`true`) or leave (`false`) a security surface on this thread.
+pub(crate) fn security_surface(enter: bool) {
+    DISTINGUISH.with(|cell| {
+        let (on, depth) = cell.get();
+        let depth = if enter {
+            depth.saturating_add(1)
+        } else {
+            depth.saturating_sub(1)
+        };
+        cell.set((on, depth));
+    });
+}
+
+/// Whether text shaped on this thread now sets every look-alike apart: the
+/// setting is on, or a security surface is being drawn.
+pub(crate) fn distinguish_everywhere() -> bool {
+    DISTINGUISH.with(|cell| {
+        let (on, depth) = cell.get();
+        on || depth > 0
+    })
+}
+
+/// Split `spans` into spans of one face each, each in the optical cut of its
+/// family for the size it is set at ([`super::optical`]), with features
+/// resolved for `kind`. `base` is the buffer's own metrics, used for spans
+/// that carry none. `distinguish` sets every look-alike apart whatever the
+/// kind.
 pub(crate) fn plan<'t, 'a>(
     db: &fontdb::Database,
     spans: impl IntoIterator<Item = (&'t str, Attrs<'a>)>,
     base: Metrics,
     kind: TextKind,
+    optical: Optical,
+    distinguish: bool,
 ) -> Vec<(&'t str, Attrs<'a>)> {
+    plan_runs(
+        db,
+        spans.into_iter().map(|(text, attrs)| (text, attrs, None)),
+        base,
+        kind,
+        optical,
+        distinguish,
+    )
+}
+
+/// [`plan`] for runs that may say their own kind (a mention or a link in
+/// rich text). In `Prose`, the links, email addresses, mentions and room
+/// aliases [`crate::text_detect`] finds across the runs are set as what
+/// they are; a run with its own kind keeps it.
+pub(crate) fn plan_runs<'t, 'a>(
+    db: &fontdb::Database,
+    runs: impl IntoIterator<Item = (&'t str, Attrs<'a>, Option<TextKind>)>,
+    base: Metrics,
+    kind: TextKind,
+    optical: Optical,
+    distinguish: bool,
+) -> Vec<(&'t str, Attrs<'a>)> {
+    let runs: Vec<(&'t str, Attrs<'a>, Option<TextKind>)> = runs.into_iter().collect();
+    let detected = if kind == TextKind::Prose {
+        match runs.as_slice() {
+            [(text, _, None)] => crate::text_detect::identifier_kinds(text),
+            [_] => Vec::new(),
+            _ => crate::text_detect::identifier_kinds(
+                &runs.iter().map(|(text, _, _)| *text).collect::<String>(),
+            ),
+        }
+    } else {
+        Vec::new()
+    };
     let mut out = Vec::new();
-    for (text, attrs) in spans {
-        plan_span(db, text, &attrs, base, kind, &mut out);
+    let mut offset = 0;
+    for (text, attrs, own) in runs {
+        let attrs = in_optical_cut(db, attrs, base, optical);
+        let start = offset;
+        offset += text.len();
+        if let Some(own) = own {
+            plan_span(db, text, &attrs, base, own, distinguish, &mut out);
+            continue;
+        }
+        let mut at = 0;
+        for (range, found) in &detected {
+            let from = range.start.max(start).saturating_sub(start);
+            let to = range.end.min(offset).saturating_sub(start);
+            if from >= to {
+                continue;
+            }
+            if let Some(before) = text.get(at..from).filter(|s| !s.is_empty()) {
+                plan_span(db, before, &attrs, base, kind, distinguish, &mut out);
+            }
+            if let Some(span) = text.get(from..to) {
+                plan_span(db, span, &attrs, base, *found, distinguish, &mut out);
+            }
+            at = to;
+        }
+        if let Some(rest) = text.get(at..).filter(|s| at == 0 || !s.is_empty()) {
+            plan_span(db, rest, &attrs, base, kind, distinguish, &mut out);
+        }
     }
     out
+}
+
+/// `attrs` in the cut of its family for the size the span is set at, when
+/// its family (named, or the generic serif) is drawn in optical cuts.
+fn in_optical_cut<'a>(
+    db: &fontdb::Database,
+    attrs: Attrs<'a>,
+    base: Metrics,
+    optical: Optical,
+) -> Attrs<'a> {
+    let family = match attrs.family {
+        Family::Name(name) => name,
+        Family::Serif => db.family_name(&Family::Serif),
+        _ => return attrs,
+    };
+    let size = attrs.metrics_opt.map_or(base, Metrics::from).font_size;
+    let italic = attrs.style != Style::Normal;
+    let bold = attrs.weight.0 > 500;
+    // A cut this font system lacks in the run's style and weight (the
+    // standalone catalog's missing Regular, whose family still holds the
+    // shared Bold) is served by the next smaller cut.
+    let installed = |cut: &str| {
+        db.faces().any(|face| {
+            (face.style != fontdb::Style::Normal) == italic
+                && (face.weight.0 > 500) == bold
+                && face
+                    .families
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(cut))
+        })
+    };
+    match super::optical::cut_where(family, size, optical, italic, attrs.weight.0, installed) {
+        Some(cut) if cut != family => attrs.family(Family::Name(cut)),
+        _ => attrs,
+    }
 }
 
 fn query(db: &fontdb::Database, attrs: &Attrs<'_>) -> Option<fontdb::ID> {
@@ -119,10 +259,11 @@ fn plan_span<'t, 'a>(
     attrs: &Attrs<'a>,
     base: Metrics,
     kind: TextKind,
+    distinguish: bool,
     out: &mut Vec<(&'t str, Attrs<'a>)>,
 ) {
     // Most UI text: nothing to split and no features to choose.
-    if kind == TextKind::Prose && text.is_ascii() {
+    if kind == TextKind::Prose && !distinguish && text.is_ascii() {
         out.push((text, attrs.clone()));
         return;
     }
@@ -134,7 +275,7 @@ fn plan_span<'t, 'a>(
         out.push((text, attrs.clone()));
         return;
     };
-    let primary_attrs = with_features(attrs, &[], &primary.kind_features(kind), true);
+    let primary_attrs = with_features(attrs, &[], &primary.features_for(kind, distinguish), true);
     if primary.monospaced || text.is_ascii() {
         out.push((text, primary_attrs));
         return;
@@ -146,9 +287,15 @@ fn plan_span<'t, 'a>(
         Face::Matched(index) => {
             let fallback = resolved.get(index).cloned().flatten().flatten();
             match (fallback, MATCHED.get(index)) {
-                (Some(fallback), Some(entry)) => {
-                    fallback_attrs(attrs, entry, &primary, &fallback, metrics, kind)
-                }
+                (Some(fallback), Some(entry)) => fallback_attrs(
+                    attrs,
+                    entry,
+                    &primary,
+                    &fallback,
+                    metrics,
+                    kind,
+                    distinguish,
+                ),
                 _ => primary_attrs.clone(),
             }
         }
@@ -344,6 +491,7 @@ fn fallback_attrs<'a>(
     fallback: &FaceCaps,
     metrics: Metrics,
     kind: TextKind,
+    distinguish: bool,
 ) -> Attrs<'a> {
     let weight = f32::from(attrs.weight.0);
     let mapped = fallback.clamp_weight(entry.scale.mul_add(weight, entry.offset));
@@ -360,13 +508,18 @@ fn fallback_attrs<'a>(
         .copied()
         .filter(|tag| fallback.has_feature(*tag))
         .collect();
-    with_features(attrs, &own, &fallback.kind_features(kind), false)
-        .family(Family::Name(entry.family))
-        .weight(weight_of(mapped))
-        .metrics(Metrics::new(
-            metrics.font_size * factor,
-            metrics.line_height,
-        ))
+    with_features(
+        attrs,
+        &own,
+        &fallback.features_for(kind, distinguish),
+        false,
+    )
+    .family(Family::Name(entry.family))
+    .weight(weight_of(mapped))
+    .metrics(Metrics::new(
+        metrics.font_size * factor,
+        metrics.line_height,
+    ))
 }
 
 /// `attrs` with `own` and `kind` features ahead of its explicit ones, so an

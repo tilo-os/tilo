@@ -21,8 +21,8 @@ use ui::widget::{
 use crate::commands::{AuthField, Cmd, FormMode, FormTarget, Sink, Table};
 use crate::kv::{self, KvQueue};
 use crate::model::{Auth, BodyMode, HttpMethod, KeyValue, Request, RequestTab};
+use crate::swap::{Swap, SwapHandle};
 use crate::vars;
-use ui::widget::{Slot, SlotHandle};
 
 /// The document key the method picker's value lives at.
 pub(crate) const METHOD_PATH: &str = "sel_method";
@@ -68,7 +68,7 @@ impl BlankRows {
 pub(crate) struct Panel {
     pub(crate) element: Element,
     /// The slot inside the panel that its own mode switch replaces.
-    pub(crate) inner: Option<SlotHandle>,
+    pub(crate) inner: Option<SwapHandle>,
     /// The key/value table showing, and the queue its rows change through.
     pub(crate) table: Option<(Table, KvQueue)>,
 }
@@ -77,9 +77,9 @@ pub(crate) struct Panel {
 pub(crate) struct Built {
     pub(crate) element: Element,
     /// The slot the tab's panel sits in.
-    pub(crate) slot: SlotHandle,
+    pub(crate) slot: SwapHandle,
     /// The slot inside the first panel, and its table.
-    pub(crate) inner: Option<SlotHandle>,
+    pub(crate) inner: Option<SwapHandle>,
     pub(crate) table: Option<(Table, KvQueue)>,
 }
 
@@ -108,11 +108,6 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
     )
     .with_id("api.method")
     .with_accessible_name("Method");
-    // A dropdown asks for the whole row; the method picker holds a verb.
-    let method = Container::new()
-        .with_no_padding()
-        .with_width(Metrics::BASE.min_pointer_target * 4.0)
-        .with_child(Box::new(method));
     let url = TextInput::from_document_string("url")
         .with_kind(TextInputKind::Url)
         .with_id("api.url")
@@ -212,7 +207,7 @@ pub(crate) fn section(
         tab_sink.borrow_mut().push(Cmd::SetTab(i));
     });
     let first = panel(request, tab, blanks, sink);
-    let (slot, handle) = Slot::new(first.element);
+    let (slot, handle) = Swap::new(first.element);
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(tabs))
@@ -348,7 +343,7 @@ fn auth_panel(request: &Request, sink: &Sink) -> Panel {
     .on_view("api.auth-kind", move |i| {
         kind_sink.borrow_mut().push(Cmd::SetAuthKind(i));
     });
-    let (slot, handle) = Slot::new(auth_fields(&request.auth, sink));
+    let (slot, handle) = Swap::new(auth_fields(&request.auth, sink));
     let column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
@@ -412,7 +407,7 @@ fn body_panel(request: &Request, blanks: &BlankRows, sink: &Sink) -> Panel {
         mode_sink.borrow_mut().push(Cmd::SetBodyMode(i));
     });
     let (inner, table) = body_inner(request, blanks, sink);
-    let (slot, handle) = Slot::new(inner);
+    let (slot, handle) = Swap::new(inner);
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(modes))

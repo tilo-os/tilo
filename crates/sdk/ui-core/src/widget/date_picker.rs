@@ -12,8 +12,8 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
-use chrono::{Datelike, Local, NaiveDate};
-use std::collections::HashMap;
+use chrono::{Datelike, NaiveDate};
+use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -53,6 +53,11 @@ pub struct DatePicker {
     /// Whether the picker holds keyboard focus. Drives a focus ring around
     /// the whole calendar so the control reads as focused.
     is_focused: bool,
+    /// The sidebar presentation: no frame, as wide as its column, as tall
+    /// as that width needs.
+    navigator: bool,
+    /// Days that hold something (an event, a note): a dot under the number.
+    marked: HashSet<NaiveDate>,
 }
 
 impl DatePicker {
@@ -69,7 +74,44 @@ impl DatePicker {
             next_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             is_focused: false,
+            navigator: false,
+            marked: HashSet::new(),
         }
+    }
+
+    /// The sidebar presentation of a calendar app: a month that navigates
+    /// the main view. It stands on its region without a frame, takes its
+    /// column's width and is as tall as that width needs.
+    #[must_use]
+    pub fn navigator(mut self) -> Self {
+        self.navigator = true;
+        self
+    }
+
+    /// Mark `dates` (days with events) with a dot under the number.
+    #[must_use]
+    pub fn marked(mut self, dates: impl IntoIterator<Item = NaiveDate>) -> Self {
+        self.set_marked(dates);
+        self
+    }
+
+    /// Replace the marked days; see [`Self::marked`].
+    pub fn set_marked(&mut self, dates: impl IntoIterator<Item = NaiveDate>) {
+        self.marked = dates.into_iter().collect();
+    }
+
+    /// The height the picker needs `width` wide: the header, the weekday
+    /// row and six rows of cells as tall as they are wide (capped).
+    #[must_use]
+    pub fn intrinsic_height(&self, width: f64) -> f64 {
+        let cell = if self.navigator {
+            // The smallest cell a narrow sidebar gets is six spacing steps.
+            (width / grid_f64(GRID_COLS))
+                .clamp(f64::from(crate::tokens::Spacing::BASE.s6), CELL_SIZE)
+        } else {
+            CELL_SIZE
+        };
+        (HEADER_HEIGHT + WEEKDAY_HEIGHT + cell * grid_f64(GRID_ROWS)).ceil()
     }
 
     /// Create a date picker bound to typed process-local state.
@@ -314,7 +356,23 @@ impl Widget for DatePicker {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let width = CELL_SIZE * grid_f64(GRID_COLS);
-        let height = HEADER_HEIGHT + WEEKDAY_HEIGHT + CELL_SIZE * grid_f64(GRID_ROWS);
+        if self.navigator {
+            // As wide as its column; `measure` answers the height.
+            let node = taffy.leaf_node(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                max_size: Size {
+                    width: Dimension::length(px(width)),
+                    height: Dimension::auto(),
+                },
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
+        let height = self.intrinsic_height(width);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(px(width)),
@@ -326,6 +384,28 @@ impl Widget for DatePicker {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        _text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let full = CELL_SIZE * grid_f64(GRID_COLS);
+        let width = known.width.map_or_else(
+            || match available.width {
+                taffy::AvailableSpace::Definite(room) => f64::from(room).min(full),
+                _ => full,
+            },
+            f64::from,
+        );
+        Size {
+            width: px(width),
+            height: known
+                .height
+                .unwrap_or_else(|| px(self.intrinsic_height(width))),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -348,6 +428,14 @@ impl Widget for DatePicker {
     ) {
         let tokens = &theme.tokens;
 
+        if self.navigator {
+            // A navigator stands on its region: no face, no edge; focus is
+            // the ring round the selected day's cell.
+            self.draw_header(scene, transform, text_renderer, theme);
+            self.draw_weekday_labels(scene, transform, text_renderer, theme);
+            self.draw_day_grid(scene, transform, text_renderer, theme);
+            return;
+        }
         let radius = f64::from(tokens.radii.control);
         let fill = tokens.colors.surfaces.raised;
         scene.fill(
@@ -626,7 +714,7 @@ impl DatePicker {
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 
-        let today = Local::now().date_naive();
+        let today = crate::clock::today();
         let (vy, vm) = self.month_view;
 
         for (date, cell_rect) in &self.day_rects {
@@ -683,6 +771,27 @@ impl DatePicker {
             let (tw, th) = text_renderer.measure_style(&day_str, None, &text_style);
             let tx = cell_rect.center().x - f64::from(tw) / 2.0;
             let ty = centered_text_top(cell_rect.y0, cell_rect.height(), f64::from(th));
+            // A marked day carries a dot under its number, in its ink.
+            if self.marked.contains(date) {
+                let r = (cell_rect.height().min(cell_rect.width()) * 0.06).max(1.5);
+                let dot = vello::kurbo::Circle::new(
+                    Point::new(
+                        cell_rect.center().x,
+                        (ty + f64::from(th) + r + 1.0).min(cell_rect.y1 - r - 1.0),
+                    ),
+                    r,
+                );
+                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
+            }
+            if self.navigator && self.is_focused && is_selected {
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    transform,
+                    tokens.colors.border_focus,
+                    None,
+                    &crate::surface::edge_outline(*cell_rect, f64::from(tokens.radii.detail)),
+                );
+            }
             text_renderer.draw_style(
                 scene,
                 &day_str,
@@ -1017,5 +1126,22 @@ mod tests {
             .iter()
             .filter(|t| **t == DrawTag::COLOR)
             .count()
+    }
+    #[test]
+    fn a_navigator_fills_its_column_and_marks_busy_days() {
+        let day = NaiveDate::from_ymd_opt(2026, 9, 14).unwrap();
+        let picker = DatePicker::new(day)
+            .navigator()
+            .marked([day, day.succ_opt().unwrap()]);
+        assert_eq!(picker.marked.len(), 2);
+        let narrow = picker.intrinsic_height(168.0);
+        let wide = picker.intrinsic_height(224.0);
+        assert!(narrow < wide, "cells follow the column's width");
+        let app = crate::headless::Driver::new(
+            crate::State::new(),
+            Box::new(crate::column![picker.with_accessible_name("Month")]),
+            (200, 600),
+        );
+        let _ = app.targets();
     }
 }

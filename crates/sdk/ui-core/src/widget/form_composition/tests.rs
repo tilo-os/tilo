@@ -341,8 +341,8 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             );
         }
         assert!(
-            (controls[0][0] - controls[1][0]).abs() < 0.5,
-            "wide: sibling choosers share one column: {:?} {:?}",
+            (controls[0][0] + controls[0][2] - controls[1][0] - controls[1][2]).abs() < 0.5,
+            "wide: sibling choosers share one trailing edge: {:?} {:?}",
             controls[0],
             controls[1]
         );
@@ -350,7 +350,7 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         let narrow = FrameHarness::new_with_theme(
             crate::State::new(),
             trailing_fixture(),
-            (320, 600),
+            (240, 600),
             Theme::dark(),
         );
         let snapshot = narrow.inspection();
@@ -763,7 +763,7 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
     let narrow = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(Form::new().section(section())),
-        (300, 500),
+        (200, 500),
         Theme::dark().with_text_scale(2.0),
     );
     let root = narrow.inspection().root;
@@ -778,10 +778,14 @@ fn grouped_switches_end_on_the_trailing_edge_and_stack_full_width() {
     let format = named(&root, "format").rect;
     let mut sections = Vec::new();
     collect(&root, "FormSection", &mut sections);
+    // A stacked chooser leaves the trailing edge for its row's leading
+    // edge, under its label (as wide as the column lets an expandable
+    // control be; a dropdown sized to its options keeps that size).
     assert!(
-        (format[2] - sections[0].rect[2]).abs() < 0.5,
-        "a stacked chooser takes the full width: {format:?}"
+        (format[0] - sections[0].rect[0]).abs() < 0.5,
+        "a stacked chooser starts under its label: {format:?}"
     );
+    assert!(format[0] + format[2] <= sections[0].rect[0] + sections[0].rect[2] + 0.5);
 }
 
 #[test]

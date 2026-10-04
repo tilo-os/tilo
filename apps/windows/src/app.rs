@@ -1337,7 +1337,7 @@ impl WindowsApp {
             let mut row = ListRow::new("windows-pending-install", &pending.display_name)
                 .secondary(strings::t("windows-pending-secondary"))
                 .selected(self.page == Page::PendingInstall)
-                .on_activate(queue(&self.intents, Intent::SelectPending));
+                .on_view(queue(&self.intents, Intent::SelectPending));
             if pushed {
                 row = row.disclosure();
             }
@@ -1358,7 +1358,7 @@ impl WindowsApp {
                         .secondary(app.status.label())
                         .meta(app.route.label())
                         .selected(self.page == Page::App && index == self.selected)
-                        .on_activate(queue(&self.intents, Intent::SelectApp(index)));
+                        .on_view(queue(&self.intents, Intent::SelectApp(index)));
                     // Every app row carries a status dot, so the route
                     // beside it keeps one trailing edge down the list.
                     row = match app.status {
@@ -1382,7 +1382,7 @@ impl WindowsApp {
         let mut appliance = ListRow::new("windows-appliance", strings::t("windows-appliance-row"))
             .secondary(appliance_summary(status, self.appliance_owner.has_status()))
             .selected(self.page == Page::Appliance)
-            .on_activate(queue(&self.intents, Intent::SelectAppliance));
+            .on_view(queue(&self.intents, Intent::SelectAppliance));
         appliance = if status.power_state == AppliancePowerState::Running {
             appliance.active()
         } else {
@@ -1489,29 +1489,31 @@ impl WindowsApp {
             {
                 banner = banner.with_message(detail);
             }
-            page.head.push(Box::new(banner));
-            let mut recovery: Vec<Element> = Vec::new();
+            // The ways out of a failed setup are the banner's own actions.
             if app.can_retry_install {
-                recovery.push(Box::new(action_button(
+                banner = banner.with_action(action_button(
                     "windows-retry-install",
                     "windows-retry-install",
                     ButtonRole::Primary,
                     intents,
                     Intent::Retry,
-                )));
+                ));
             }
             if app.can_escalate_install_to_vm {
-                recovery.push(Box::new(action_button(
+                let escalate = action_button(
                     "windows-escalate-install-to-vm",
                     "windows-escalate-install-to-vm",
                     ButtonRole::Secondary,
                     intents,
                     Intent::Escalate,
-                )));
+                );
+                banner = if app.can_retry_install {
+                    banner.with_secondary_action(escalate)
+                } else {
+                    banner.with_action(escalate)
+                };
             }
-            if !recovery.is_empty() {
-                page.head.push(Box::new(row(recovery)));
-            }
+            page.head.push(Box::new(banner));
         }
 
         // The ways to open the app. A setup that failed has nothing to open.
@@ -1739,7 +1741,7 @@ impl WindowsApp {
                 .icon(icon)
                 .secondary(strings::t(detail))
                 .disclosure()
-                .on_activate(queue(intents, intent))
+                .on_effect(queue(intents, intent))
         };
         let mut capsule = destination(
             "windows-confirm-capsule-install",
@@ -1791,21 +1793,21 @@ impl WindowsApp {
             } else {
                 Banner::info(title)
             };
-            page.head.push(Box::new(
-                banner.with_message(strings::t("windows-appliance-not-installed-body")),
-            ));
-            let mut actions: Vec<Element> = vec![Box::new(
-                action_button(
-                    "windows-choose-windows-iso",
-                    "windows-appliance-set-up",
-                    ButtonRole::Primary,
-                    intents,
-                    Intent::ChooseIso,
-                )
-                .with_enabled(!busy),
-            )];
+            // Setting Windows up resolves the notice, so the banner holds it.
+            let mut banner = banner
+                .with_message(strings::t("windows-appliance-not-installed-body"))
+                .with_action(
+                    action_button(
+                        "windows-choose-windows-iso",
+                        "windows-appliance-set-up",
+                        ButtonRole::Primary,
+                        intents,
+                        Intent::ChooseIso,
+                    )
+                    .with_enabled(!busy),
+                );
             if status.detail.is_some() {
-                actions.push(Box::new(action_button(
+                banner = banner.with_secondary_action(action_button(
                     "windows-appliance-details",
                     if self.appliance_details {
                         "windows-hide-details"
@@ -1815,9 +1817,9 @@ impl WindowsApp {
                     ButtonRole::Plain,
                     intents,
                     Intent::ToggleApplianceDetails,
-                )));
+                ));
             }
-            page.head.push(Box::new(row(actions)));
+            page.head.push(Box::new(banner));
             if self.appliance_details
                 && let Some(detail) = &status.detail
             {

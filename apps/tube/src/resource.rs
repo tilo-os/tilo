@@ -93,6 +93,7 @@ impl Resource for Tube {
                 anchor: Some(format!("tube.queue:{video_id}")),
                 title: video_id.clone(),
                 text: "queue".into(),
+                ..Default::default()
             })
             .chain(
                 state
@@ -103,6 +104,7 @@ impl Resource for Tube {
                         anchor: Some(format!("tube.subscription:{channel_id}")),
                         title: channel_id.clone(),
                         text: "subscription".into(),
+                        ..Default::default()
                     }),
             )
             .collect()

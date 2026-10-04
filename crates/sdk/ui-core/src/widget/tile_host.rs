@@ -2563,13 +2563,11 @@ impl TileHost {
         crate::widget::Banner::paint(
             &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
             banner,
-            &crate::widget::BannerContent {
-                kind: crate::widget::BannerKind::Error,
-                icon: crate::icons::Icon::Ban,
-                title: "Document switch blocked",
-                message: Some(detail),
-                dismissible: false,
-            },
+            &crate::widget::BannerContent::new(
+                crate::widget::BannerKind::Error,
+                "Document switch blocked",
+            )
+            .with_message(Some(detail)),
             Point::ZERO,
         );
     }

@@ -70,7 +70,7 @@ pub(crate) fn rail(
     session: Option<ConnectionKind>,
 ) -> NavList {
     let mut items = vec![
-        NavItem::new(Destination::Connections.id(), "All").icon(Icon::List),
+        NavItem::new(Destination::Connections.id(), "Connections").icon(Icon::List),
         NavItem::new(Destination::Pinned.id(), "Pinned").icon(Icon::Pin),
     ];
     if let Some(kind) = session {

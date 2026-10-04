@@ -822,6 +822,9 @@ pub struct FloatingPlacement {
     /// parent, while desktop geometry can continue to identify the stable
     /// content region used by the native-surface protocol.
     attached_chrome: [f64; 4],
+    /// Bands of the app the surface keeps clear of while attached (the
+    /// window's header row), as `[left, top, right, bottom]`.
+    safe_insets: [f64; 4],
     /// Translation between the app's local widget space and the shell's
     /// desktop space while a native surface owns presentation.
     desktop_coordinate_offset: Vec2,
@@ -843,6 +846,7 @@ impl FloatingPlacement {
             drag: None,
             preferred_size,
             attached_chrome: [0.0; 4],
+            safe_insets: [0.0; 4],
             desktop_coordinate_offset: Vec2::ZERO,
             handoff_motion: None,
             handoff_progress_override: None,
@@ -878,6 +882,23 @@ impl FloatingPlacement {
     /// `[left, top, right, bottom]` logical pixels.
     pub fn set_attached_chrome(&mut self, chrome: [f64; 4]) {
         self.attached_chrome = chrome.map(|value| value.max(0.0));
+    }
+
+    /// Keep the attached surface clear of bands of the app as `[left, top,
+    /// right, bottom]` logical pixels: its home sits inside them and a drag
+    /// inside the app does not slide it under them. A host with a header
+    /// row passes `[0.0, header_height, 0.0, 0.0]`. Separate from
+    /// [`Self::set_attached_chrome`], which is the surface's own decoration.
+    pub fn set_safe_insets(&mut self, insets: [f64; 4]) {
+        self.safe_insets = insets.map(|value| value.max(0.0));
+    }
+
+    /// The part of `app` an attached surface may stand in.
+    fn safe_area(&self, app: Rect) -> Rect {
+        let [left, top, right, bottom] = self.safe_insets;
+        let x0 = (app.x0 + left).min(app.x1);
+        let y0 = (app.y0 + top).min(app.y1);
+        Rect::new(x0, y0, (app.x1 - right).max(x0), (app.y1 - bottom).max(y0))
     }
 
     /// Restore only app-local presentation; never restore desktop surface authority.
@@ -1112,6 +1133,7 @@ impl FloatingPlacement {
     }
 
     fn attached_home_rect(&self, app: Rect) -> Rect {
+        let app = self.safe_area(app);
         let [left, top, right, bottom] = self.attached_chrome;
         let w = self
             .preferred_size
@@ -1212,8 +1234,16 @@ impl FloatingPlacement {
             }
             Attachment::App { .. } => {
                 let home = self.attached_home_rect(app);
+                // Within the app, the surface never slides under the bands
+                // its host keeps clear (the header row).
+                let top = self.safe_area(app).y0 + self.attached_chrome[1];
+                let y0 = if self.safe_insets[1] > 0.0 {
+                    moved.y0.max(top)
+                } else {
+                    moved.y0
+                };
                 self.attachment = Attachment::App {
-                    offset: Vec2::new(moved.x0 - home.x0, moved.y0 - home.y0),
+                    offset: Vec2::new(moved.x0 - home.x0, y0 - home.y0),
                 };
                 Handoff::None
             }
@@ -1307,6 +1337,27 @@ mod tests {
             let b = p.rect(Rect::new(240.0, 120.0, 1040.0, 740.0), desk);
             assert_eq!(b.x0 - a.x0, 140.0);
             assert_eq!(b.y0 - a.y0, 40.0);
+        }
+
+        // Case `safe_insets_keep_the_home_and_a_drag_below_the_header_row`.
+        {
+            let app = Rect::new(100.0, 80.0, 900.0, 700.0);
+            let desk = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            let mut p = FloatingPlacement::attached(Size::new(320.0, 180.0));
+            let plain = p.rect(app, desk);
+            p.set_safe_insets([0.0, 56.0, 0.0, 0.0]);
+            let home = p.rect(app, desk);
+            assert!(
+                (home.y0 - (plain.y0 + 56.0)).abs() < 1e-9,
+                "home clears the header row"
+            );
+            p.begin_drag(home.center(), app, desk);
+            p.update_drag(home.center() - Vec2::new(0.0, 100.0), app, desk);
+            let dragged = p.rect(app, desk);
+            assert!(
+                dragged.y0 >= app.y0 + 56.0 - 1e-9,
+                "a drag stays below it: {dragged:?}"
+            );
         }
 
         // Case `attached_chrome_keeps_the_complete_surface_inside_its_app`.

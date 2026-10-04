@@ -317,6 +317,15 @@ fn kind_title(snapshot: &Snapshot) -> &'static str {
 
 // ---- sidebar ------------------------------------------------------------
 
+/// The dot a place shows when it needs the person; a healthy one shows none.
+fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
+    match health {
+        Health::Ok => None,
+        Health::Warning => Some(ui::widget::RowStatus::Warning),
+        Health::Error => Some(ui::widget::RowStatus::Error),
+    }
+}
+
 /// The places: every backup, each source, each destination, the policy.
 pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
     let all = NavItem::new(Page::All.nav_id(), "All backups")
@@ -329,7 +338,12 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         .map(|source| {
             let item = NavItem::new(Page::Source(source.id.clone()).nav_id(), &source.name)
                 .icon(source_icon(source.kind))
+                .secondary(schedule_label(source.schedule))
                 .without_actions();
+            let item = match health_status(source.health) {
+                Some(status) => item.status(status),
+                None => item,
+            };
             // Failed runs wait for the person; a plain count does not.
             let failed = catalog.failed(Filter::Source(&source.id));
             if failed > 0 {
@@ -343,9 +357,23 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         .destinations
         .iter()
         .map(|dest| {
-            NavItem::new(Page::Destination(dest.id.clone()).nav_id(), &dest.name)
+            let item = NavItem::new(Page::Destination(dest.id.clone()).nav_id(), &dest.name)
                 .icon(destination_icon(dest.kind))
-                .without_actions()
+                .meta(size(dest.used_bytes))
+                .without_actions();
+            // How full it is, where the provider says how big it is.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a share in 0..=1 drawn as a bar"
+            )]
+            let item = match dest.used_fraction() {
+                Some(fraction) => item.level(fraction as f32),
+                None => item,
+            };
+            match health_status(dest.health) {
+                Some(status) => item.status(status),
+                None => item,
+            }
         })
         .collect();
     let policy = NavItem::new(Page::Retention.nav_id(), "Retention")

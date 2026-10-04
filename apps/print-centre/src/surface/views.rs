@@ -1,21 +1,21 @@
 //! The pages of Print Centre, composed from the toolkit's semantic widgets.
 //!
-//! Every page is a `Page`: its groups on the readable column at the window's
-//! leading edge, scrolling with the bar on the window edge, and its actions
-//! pinned under it; the dashboard reflows across the whole column. Nothing here picks a colour, size, radius
+//! Every page is a column inside one vertical `Scrollable` that spans the
+//! window, so the scroll bar sits on the window edge; the column is bounded to
+//! the readable measure and centred. Nothing here picks a colour, size, radius
 //! or padding: text names its role, buttons their role, and the toolkit
 //! spaces what it composes.
 
 use std::sync::mpsc;
 
 use ui::icons::Icon;
-use ui::tokens::{Rhythm, TextRole};
+use ui::tokens::{Spacing, SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Banner, BarGauge, Button, ButtonRole, Card, CardGrid, CardWidth, ChipStyle,
-    Column, Container, Dropdown, Field, Form, FormSection, GaugeThresholds, Image, ImageCropEditor,
-    ListRow, NumberInput, Page, ProgressBar, Property, PropertyList, Row, Section, SectionHeader,
-    Text, Toggle, ToggleGroup, Tone,
+    Column, Container, Divider, Dropdown, Field, Form, FormSection, GaugeThresholds, Image,
+    ImageCropEditor, ListRow, NumberInput, ProgressBar, Property, PropertyList, Row, Scrollable,
+    Section, SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
 };
 
 use super::{
@@ -96,20 +96,38 @@ fn titled_section(title: &str, items: Vec<El>) -> El {
     Box::new(Section::titled(title, items))
 }
 
-/// A subpage: the way back and the title over the groups of the page, on
-/// the readable column, a group apart.
-fn subpage(title: &str, tx: &mpsc::Sender<UiCommand>, items: Vec<El>) -> Page {
-    items
-        .into_iter()
-        .fold(Page::new().head(subpage_header(title, tx)), Page::section)
+/// Space that, with the column's own gap on each side, separates two groups of
+/// a page by the group rhythm.
+fn group_break() -> El {
+    Box::new(Spacer::token(SpacingStep::S0))
 }
 
-/// A column whose children belong together, one related step apart.
-fn related_stack() -> Column {
-    Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_rhythm(Rhythm::Related)
+/// The groups of a page, one group rhythm apart.
+fn groups(items: Vec<El>) -> Column {
+    stack_of(column(), items)
+}
+
+/// A page of a subpage's kind: the way back and the title, then the groups of
+/// the page. The first group sits one sibling step under the title on every
+/// page; later groups are a group rhythm apart.
+fn subpage(title: &str, tx: &mpsc::Sender<UiCommand>, items: Vec<El>) -> Column {
+    stack_of(column().push(subpage_header(title, tx)), items)
+}
+
+/// `items` appended to `body`, a group rhythm between neighbours.
+fn stack_of(mut body: Column, items: Vec<El>) -> Column {
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            body = body.push(group_break());
+        }
+        body = body.push(item);
+    }
+    body
+}
+
+/// A page column: the toolkit's gutter and gap, as tall as its content.
+fn column() -> Column {
+    Column::new().with_intrinsic_height()
 }
 
 /// Content with no gutter of its own, for a card body or a group.
@@ -117,23 +135,51 @@ fn bare_column() -> Column {
     Column::new().with_no_padding().with_intrinsic_height()
 }
 
-/// The dashboard: groups of printers and tools across the whole column, a
-/// group apart, so the cards reflow with the window.
-fn dashboard(items: Vec<El>) -> El {
+/// Content bounded to the readable measure of every page, so it starts at the
+/// same edge on each one.
+fn centred(content: El) -> El {
     Box::new(
-        items
-            .into_iter()
-            .fold(Page::new().full_width(), Page::section),
+        Container::new()
+            .with_no_padding()
+            .with_centered_max_width(1120.0)
+            .with_child(content),
     )
 }
 
-/// A page whose actions stay pinned under the scrolling content, on its
-/// measure.
-fn page_with_footer(page: Page, footer: Option<Actions>) -> El {
-    Box::new(match footer {
-        Some(footer) => page.with_pinned_actions(footer),
-        None => page,
-    })
+/// A scrolling page: the scroll view spans the window, the column inside it
+/// holds the readable measure.
+fn page(body: Column) -> El {
+    Box::new(Scrollable::new_vertical().with_child(centred(Box::new(body))))
+}
+
+/// A page whose trailing actions stay below the scrolling content.
+fn page_with_footer(body: Column, footer: Option<Actions>) -> El {
+    let mut root = Column::new()
+        .with_no_padding()
+        .with_fill_remaining_height()
+        .push(Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(centred(Box::new(body))),
+        ));
+    if let Some(footer) = footer {
+        // The scroll view keeps a lane for its bar that the footer does not
+        // have. An empty trailing item leaves one row gap, the same width,
+        // so the footer and the content share a right edge.
+        let aligned = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_child(centred(Box::new(column().push(Box::new(footer))))),
+            ))
+            .push(Box::new(Spacer::token(SpacingStep::S0)));
+        root = root
+            .push(Box::new(Divider::horizontal()))
+            .push(Box::new(aligned));
+    }
+    Box::new(root)
 }
 
 fn notice_banner(notice: &OperationNotice) -> El {
@@ -169,10 +215,12 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -
         "Print Centre couldn't get {} right now. Your saved devices and documents have not been removed.",
         join_areas(areas)
     );
+    // Trying again is what resolves it, so the banner holds that action.
     Some(Box::new(
-        related_stack()
-            .push(Box::new(Banner::error(subject).with_message(detail)))
-            .push(Box::new(
+        Banner::error(subject)
+            .with_message(detail)
+            .with_id("print-centre.service")
+            .with_action(
                 command_button(
                     "print-centre.service.retry",
                     "Try again",
@@ -180,7 +228,7 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -
                     UiCommand::Refresh,
                 )
                 .with_icon(Icon::Refresh),
-            )),
+            ),
     ))
 }
 
@@ -197,7 +245,7 @@ fn subpage_header(title: &str, tx: &mpsc::Sender<UiCommand>) -> El {
 }
 
 pub(super) fn loading_view() -> El {
-    Box::new(Page::new().section(section(vec![
+    page(column().push(section(vec![
         copy("Looking for printers, scanners and unfinished documents."),
         Box::new(ProgressBar::indeterminate().with_label("Loading Print Centre")),
     ])))
@@ -479,7 +527,7 @@ pub(super) fn live_view(
         UiCommand::Diagnostics,
     ));
     items.push(titled_section("Tools", tools));
-    dashboard(items)
+    page(groups(items))
 }
 
 fn history_status(job: &os_actions::printing::PrintJob) -> &'static str {
@@ -552,7 +600,7 @@ pub(super) fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) ->
             )],
         ));
     }
-    Box::new(subpage("Print history", tx, items))
+    page(subpage("Print history", tx, items))
 }
 
 fn device_summary(
@@ -623,7 +671,7 @@ pub(super) fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>
         items.push(printer_check(queue, tx));
     }
     items.push(scanner_check(scanners.is_empty(), tx));
-    Box::new(subpage("Device help", tx, items))
+    page(subpage("Device help", tx, items))
 }
 
 /// What one printer answered to the status check, in plain words.
@@ -793,7 +841,7 @@ pub(super) fn queue_view(
             )],
         ));
     }
-    Box::new(subpage("Print queue", tx, items))
+    page(subpage("Print queue", tx, items))
 }
 
 pub(super) fn device_view(
@@ -851,7 +899,7 @@ pub(super) fn device_view(
             "Available to your apps"
         },
     );
-    Box::new(subpage(
+    page(subpage(
         &display_name(&queue.name),
         tx,
         vec![
@@ -924,7 +972,7 @@ pub(super) fn discovery_view(
             )),
         ]),
     };
-    Box::new(subpage("Add a printer", tx, vec![body]))
+    page(subpage("Add a printer", tx, vec![body]))
 }
 
 fn printer_picker(
@@ -1081,7 +1129,7 @@ fn setting(label: &str, control: ToggleGroup) -> El {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_rhythm(Rhythm::Tight)
+            .with_gap(Spacing::BASE.s1)
             .push(text(label, TextRole::Label))
             .push(Box::new(control)),
     )

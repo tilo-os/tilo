@@ -32,7 +32,7 @@ use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonRole, ContextMenu, ControlSize, Dropdown, Element, MenuItem, NavItem, NavList,
-    NavPane, NavSection, NavShell, Row, TaffyTreeExt, Widget,
+    NavPane, NavSection, NavShell, TaffyTreeExt, Widget,
 };
 
 use crate::doc::ContactsDoc;
@@ -42,9 +42,7 @@ use crate::model::{
     sample_contacts,
 };
 use crate::vcard::VCardVersion;
-use crate::view::{
-    Bridge, Compact, ContactList, EmptyPane, ListEntry, Overview, Request, Shared, queue,
-};
+use crate::view::{Bridge, Compact, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
 
 mod dialogs;
 mod files;
@@ -402,8 +400,8 @@ fn sort_value(sort: SortKey) -> &'static str {
         .map_or("name", |(value, ..)| value)
 }
 
-/// The overview column: the list's order above the people in it.
-fn overview(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
+/// The list's order, which the shell stands under the overview's header.
+fn sort_control(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
     let labels: Vec<String> = SORTS
         .iter()
         .map(|(_, label, _)| (*label).to_owned())
@@ -423,12 +421,7 @@ fn overview(shared: &Shared, sort_choice: &LocalState<String>) -> Element {
             .map(|(value, label, _)| ((*value).to_owned(), (*label).to_owned()))
             .collect(),
     );
-    Box::new(Overview::new(
-        Row::new()
-            .no_wrap()
-            .push(Box::new(Compact::new(sort, labels, ControlSize::Small))),
-        ContactList::new(std::rc::Rc::clone(shared)),
-    ))
+    Box::new(Compact::new(sort, labels, ControlSize::Small))
 }
 
 /// The first widget in `root`'s tree with `id`, depth first.
@@ -470,7 +463,8 @@ impl ContactsApp {
         let shell = NavShell::new()
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
-            .overview(overview(&shared, &sort_choice))
+            .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
+            .overview_controls(sort_control(&shared, &sort_choice))
             .content(Box::new(EmptyPane::new(
                 std::rc::Rc::clone(&shared),
                 "No contact selected",
@@ -1653,8 +1647,7 @@ impl ContactsApp {
         let header = self.header_key();
         if self.header_shown != Some(header) {
             let (title, actions) = self.content_header(header);
-            let shell = std::mem::take(&mut self.shell);
-            self.shell = shell.content_header(title, actions);
+            self.shell.set_content_header(title, actions);
             self.header_shown = Some(header);
             self.structure_dirty = true;
         }

@@ -16,8 +16,8 @@ use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState,
     ListRow, ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyList, Row,
-    Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile, Text, ToggleGroup,
-    Tone, Widget,
+    Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile, StatusLine, Text,
+    ToggleGroup, Tone, Widget,
 };
 
 use crate::doc::{DetailTab, Section as Place};
@@ -114,7 +114,7 @@ pub(crate) fn section_list(
         if counted { item.count(count(n)) } else { item }
     };
     let items = vec![
-        item(Place::Containers, Icon::Archive, engine.containers.len()),
+        item(Place::Containers, Icon::Box, engine.containers.len()),
         item(Place::Images, Icon::Layers, engine.images.len()),
         item(Place::Volumes, Icon::HardDrive, engine.volumes.len()),
         item(Place::Distrobox, Icon::Terminal, engine.distroboxes.len()),
@@ -134,14 +134,11 @@ pub(crate) fn sidebar(
     connected: bool,
     intents: &Intents,
 ) -> Element {
-    let (label, tone) = if connected {
-        ("Connected", Tone::Success)
+    let status = if connected {
+        StatusLine::active("Connected")
     } else {
-        ("Not connected", Tone::Warning)
+        StatusLine::warning("Not connected")
     };
-    let status = Row::new()
-        .no_wrap()
-        .push(Box::new(Badge::text(label).style(ChipStyle::Tinted(tone))));
     let footer = Column::new()
         .with_intrinsic_height()
         .push(Box::new(status))
@@ -301,14 +298,21 @@ pub(crate) fn container_list(
             Box::new(row) as Element
         })
         .collect();
-    Box::new(Section::new(rows))
+    list_column(Box::new(Section::new(rows)))
+}
+
+/// A list in the list column: its rows' text on the column's content edge
+/// (the shell's `s3` inset, where the column's title starts), their lift
+/// bleeding into the inset.
+fn list_column(list: Element) -> Element {
+    Box::new(Stack::new(SpacingStep::S0, vec![list]).inset(SpacingStep::S3, SpacingStep::S0))
 }
 
 fn containers_empty(live: bool, intents: &Intents) -> Element {
     if live {
         Box::new(ActOnEmpty::new(
             EmptyState::new("No containers")
-                .with_icon(Icon::Archive)
+                .with_icon(Icon::Box)
                 .with_message("Create a container from an image to run it here.")
                 .with_action("New container"),
             Intent::NewContainer,
@@ -323,7 +327,7 @@ fn containers_empty(live: bool, intents: &Intents) -> Element {
 pub(crate) fn engine_missing(intents: &Intents) -> Element {
     Box::new(ActOnEmpty::new(
         EmptyState::new("Podman isn't available")
-            .with_icon(Icon::Archive)
+            .with_icon(Icon::Box)
             .with_message("Install Podman or start its user service to manage containers here.")
             .with_action("Try again"),
         Intent::Reconnect,
@@ -335,7 +339,7 @@ pub(crate) fn engine_missing(intents: &Intents) -> Element {
 pub(crate) fn nothing_selected() -> Element {
     Box::new(
         EmptyState::new("No container selected")
-            .with_icon(Icon::Archive)
+            .with_icon(Icon::Box)
             .with_message("Choose a container to see its logs, usage and settings."),
     )
 }
@@ -809,25 +813,17 @@ fn used_by(n: u32) -> String {
     }
 }
 
-/// One page of a section: a sentence about the whole, then its list.
-///
-/// The list runs edge to edge like the containers list, so its rows' text
-/// lines up with the column's title; the sentence takes the same edge.
+/// One page of a section: a sentence about the whole, then its list, both
+/// on the column's content edge.
 fn page(summary: Option<String>, rows: Vec<Element>) -> Element {
     let mut children: Vec<Element> = Vec::new();
     if let Some(summary) = summary {
         children.push(Box::new(
-            Stack::new(
-                SpacingStep::S0,
-                vec![Box::new(
-                    Text::new(&summary).with_role(TextRole::Body).dimmed(),
-                )],
-            )
-            .inset(SpacingStep::S3, SpacingStep::S3),
+            Text::new(&summary).with_role(TextRole::Body).dimmed(),
         ));
     }
     children.push(Box::new(Section::new(rows)));
-    Box::new(Stack::new(SpacingStep::S0, children))
+    Box::new(Stack::new(SpacingStep::S3, children).inset(SpacingStep::S3, SpacingStep::S3))
 }
 
 pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {

@@ -1735,6 +1735,15 @@ impl BooksApp {
                     ..Settings::default()
                 });
             }
+            // `face-<name>`: the reader in one of the reading faces a reader
+            // can choose (`face-literata` reads in `reading-literata`).
+            other if other.starts_with("face-") => {
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings {
+                    font_id: format!("reading-{}", other.trim_start_matches("face-")),
+                    ..Settings::default()
+                });
+            }
             "light" => {
                 self.view = View::Reader;
                 self.shot_settings = Some(Settings {
@@ -8581,7 +8590,7 @@ impl BooksApp {
                         );
                         ctx.fill_rect(bar, ReaderPalette::highlight_swatch(a.color));
                         let gx = content_x + f64::from(content_w) + 6.0;
-                        paint::note(
+                        Icon::MessageSquare.draw_with_stroke(
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0, gx + 20.0, by0 + 20.0),
@@ -8591,13 +8600,11 @@ impl BooksApp {
                     }
                     AnnoKind::Bookmark => {
                         let gx = content_x + f64::from(content_w) + 6.0;
-                        paint::bookmark(
+                        Icon::Bookmark.draw_filled(
                             ctx.scene,
                             ctx.transform,
                             Rect::new(gx, by0 - 2.0, gx + 20.0, by0 + 22.0),
                             palette.accent,
-                            1.6,
-                            true,
                         );
                     }
                 }
@@ -9018,7 +9025,6 @@ impl BooksApp {
         anchor: Option<(f64, f64)>,
     ) {
         let theme = ctx.theme;
-        let c = &theme.tokens.colors;
         let (paper_x, paper_w) = (geom.paper_x, geom.paper_w);
         let (body_y0, body_y1) = (geom.body_y0, geom.body_y1);
         // Hide the picker while a note is being composed (the composer takes
@@ -9030,20 +9036,8 @@ impl BooksApp {
         // The shared reader HUD owns look/spacing/hover; this reader keeps the
         // page palette's accent and maps emitted actions to its own commands.
         let del_group = self.selection_highlight_group();
-        // The HUD is app chrome, so it follows the OS theme end to end: the
-        // Panel material and border (HIG §9.5), and the OS accent for the
-        // chosen swatch ring — the reading palette stays on the page.
-        let ground = ui::chrome::panel_ground(theme);
-        let style = ui::ReaderHudStyle {
-            surface: ground,
-            border: ui::chrome::panel_border(theme),
-            elevation: theme.tokens.elevation.floating,
-            text: c.text_primary,
-            hover: c.lift_on(ground, 0.5),
-            pill: c.surfaces.raised,
-            ring: c.intent.you,
-            danger: c.semantic.danger,
-        };
+        // The HUD is app chrome: it reads the window's theme end to end and
+        // the reading palette stays on the page.
         let swatches: Vec<ui::HudSwatch> = HiColor::ALL
             .iter()
             .map(|&col| {
@@ -9051,6 +9045,7 @@ impl BooksApp {
                     [col.rgb().0, col.rgb().1, col.rgb().2],
                     self.hi_color == col,
                 )
+                .named(col.name())
             })
             .collect();
         // Anchor above the selection; fall back to the page centre near the top.
@@ -9064,18 +9059,16 @@ impl BooksApp {
             ctx.scene,
             ctx.transform,
             ctx.text,
-            &style,
+            theme,
             &ui::HudControls {
                 swatches: &swatches,
                 show_note: true,
                 show_delete: del_group.is_some(),
             },
-            ui::HudPlacement {
-                anchor: anchor_pt,
-                bounds,
-            },
+            ui::HudPlacement::new(anchor_pt, bounds),
             self.cursor,
         );
+
         // Swallow taps on the bar body, and route each control to a command.
         self.push_hit(hud.rect(), Action::Swallow);
         for &(rect, action) in hud.buttons() {
@@ -9267,14 +9260,12 @@ impl BooksApp {
         } else {
             theme.text_dim
         };
-        paint::bookmark(
-            ctx.scene,
-            ctx.transform,
-            Rect::from_center_size(rect.center(), (glyph, glyph)),
-            ink,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            bookmarked,
-        );
+        let glyph = Rect::from_center_size(rect.center(), (glyph, glyph));
+        if bookmarked {
+            Icon::Bookmark.draw_filled(ctx.scene, ctx.transform, glyph, ink);
+        } else {
+            Icon::Bookmark.draw(ctx.scene, ctx.transform, glyph, ink);
+        }
     }
 
     /// A header's title in `Heading` with a secondary detail (an author, a
@@ -10340,7 +10331,8 @@ impl BooksApp {
         let spacing = &theme.tokens.spacing;
         let kind = match &f.kind {
             FontKind::Default => "Default face".to_string(),
-            FontKind::Serif => "Serif book face".to_string(),
+            FontKind::Serif => "System reading face".to_string(),
+            FontKind::Reading(_) => "Reading face".to_string(),
             FontKind::Mono => "Monospace".to_string(),
             FontKind::Named(_) => "System font".to_string(),
         };

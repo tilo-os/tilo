@@ -7,7 +7,7 @@
 //! The app composes the toolkit's widgets and paints nothing of its own. Its
 //! controls tell the app what happened by pushing a [`Cmd`] onto a queue; the
 //! app applies the queue where it has the shared document, keeps the model,
-//! and replaces the parts of the view that depend on it ([`Slot`] slots), so
+//! and replaces the parts of the view that depend on it ([`Swap`] slots), so
 //! the controls around them keep their focus.
 //!
 //! The method, the URL and the body of the request are collaborative text in
@@ -21,10 +21,10 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use automerge::{AutoCommit, ObjId};
 use ui::LocalState;
-use ui::tokens::Rhythm;
+use ui::tokens::Spacing;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
-    AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Stack, Widget,
+    AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Spacer, Stack, Widget,
 };
 use winit::event::WindowEvent;
 
@@ -41,8 +41,8 @@ use crate::model::{
 use crate::request::{self, BlankRows, METHOD_PATH};
 use crate::response;
 use crate::sidebar::{self, SidebarView};
+use crate::swap::{Swap, SwapHandle};
 use crate::vars;
-use ui::widget::{Slot, SlotHandle};
 
 /// What the picker reads when no environment is chosen.
 const NO_ENV: &str = "No environment";
@@ -57,17 +57,22 @@ const ENVIRONMENT_COMMANDS: [(&str, FormMode); 5] = [
     ("Delete environment\u{2026}", FormMode::DeleteEnvironment),
 ];
 
-/// A pane of the split: `slot` with a sibling step between it and the
-/// divider's hairline.
-fn pane(slot: Slot) -> Column {
-    Column::new()
-        .with_padding_rhythm(None, Rhythm::Sibling)
-        .push(Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_fill_remaining_height()
-                .push(Box::new(slot)),
-        ))
+/// A pane of the split: `slot` with room between it and the divider, which
+/// is painted over the edge of both panes.
+fn pane(slot: Swap, below_divider: bool) -> Column {
+    let gap = Spacing::BASE.s3;
+    let column = Column::new().with_no_padding();
+    let column = if below_divider {
+        column.with_extra_top_padding(gap)
+    } else {
+        column.with_extra_bottom_padding(gap)
+    };
+    column.push(Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_fill_remaining_height()
+            .push(Box::new(slot)),
+    ))
 }
 
 /// Something the document keeps by id.
@@ -117,10 +122,9 @@ fn in_known_order<T: Keyed>(known: &[T], mut fresh: Vec<T>) -> Vec<T> {
     fresh
 }
 
-/// What stands where a sheet goes while none is open: nothing, taking no
-/// room.
+/// What stands where a sheet goes while none is open.
 fn no_dialog() -> Element {
-    ui::widget::optional(None)
+    Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
 }
 
 /// The send action of the request being composed.
@@ -164,14 +168,14 @@ struct Stale {
 
 /// The slots of the view the app replaces in place.
 struct Slots {
-    sidebar: SlotHandle,
-    request: SlotHandle,
-    tab_panel: Option<SlotHandle>,
-    panel_inner: Option<SlotHandle>,
-    response: SlotHandle,
-    response_body: Option<SlotHandle>,
-    environments: SlotHandle,
-    dialog: SlotHandle,
+    sidebar: sidebar::NavHandle,
+    request: SwapHandle,
+    tab_panel: Option<SwapHandle>,
+    panel_inner: Option<SwapHandle>,
+    response: SwapHandle,
+    response_body: Option<SwapHandle>,
+    environments: SwapHandle,
+    dialog: SwapHandle,
 }
 
 /// A state of the shell that exists only once the window has been laid out.
@@ -286,32 +290,33 @@ impl ApiTesterApp {
         let selected = demo.then_some((0, 0));
 
         let builtin = request::section(&model.request, RequestTab::Params, &blanks, &sink);
-        let (request_slot, request) = Slot::new(builtin.element);
+        let (request_slot, request) = Swap::new(builtin.element);
         let (response_slot, response_handle, response_body) =
             Self::response_slot(response.as_ref(), &sink);
-        let (dialog_slot, dialog) = Slot::new(no_dialog());
+        let (dialog_slot, dialog) = Swap::new(no_dialog());
         let env_state = LocalState::new(
             Self::environment_name(&model.environments, model.active_env).to_owned(),
         );
-        let (env_slot, environments) = Slot::new(Self::environment_picker(
+        let (env_slot, environments) = Swap::new(Self::environment_picker(
             &model.environments,
             model.active_env,
             &env_state,
             &sink,
         ));
-        let (lists_slot, sidebar_lists) = Slot::new(sidebar::lists(
+        let (lists_slot, sidebar_lists) = sidebar::lists(
             &SidebarView {
                 collections: &model.collections,
                 history: &model.history,
                 selected,
             },
             &sink,
-        ));
+        );
 
         let content = Self::content(request_slot, response_slot, dialog_slot, &env_vars, &sink);
         let nav = NavShell::new()
             .with_id("api.shell")
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
+            .sidebar_header("", vec![sidebar::new_collection(&sink)])
             .content(content)
             .content_header(
                 model.request.name.clone(),
@@ -373,15 +378,20 @@ impl ApiTesterApp {
     /// The content column: the URL bar over the request and the response,
     /// which a divider splits, with the sheet's slot above them.
     fn content(
-        request: Slot,
-        response: Slot,
-        dialog: Slot,
+        request: Swap,
+        response: Swap,
+        dialog: Swap,
         env_vars: &Rc<RefCell<HashMap<String, String>>>,
         sink: &Sink,
     ) -> Element {
-        let split = ResizableSplit::new(pane(request), pane(response), SplitOrientation::Vertical)
-            .with_split_position(0.5)
-            .with_divider_label("Resize the request and the response");
+        // The split relays out its panes as its divider moves.
+        let split = ResizableSplit::new(
+            pane(request, false),
+            pane(response, true),
+            SplitOrientation::Vertical,
+        )
+        .with_split_position(0.5)
+        .with_divider_label("Resize the request and the response");
         Box::new(
             Stack::new()
                 .push(Box::new(
@@ -403,13 +413,13 @@ impl ApiTesterApp {
     fn response_slot(
         response: Option<&ResponseData>,
         sink: &Sink,
-    ) -> (Slot, SlotHandle, Option<SlotHandle>) {
+    ) -> (Swap, SwapHandle, Option<SwapHandle>) {
         if let Some(data) = response {
             let built = response::response(data, ResponseView::Pretty, sink);
-            let (slot, handle) = Slot::new(built.element);
+            let (slot, handle) = Swap::new(built.element);
             (slot, handle, Some(built.body))
         } else {
-            let (slot, handle) = Slot::new(response::empty());
+            let (slot, handle) = Swap::new(response::empty());
             (slot, handle, None)
         }
     }
@@ -608,14 +618,11 @@ impl ApiTesterApp {
     /// Replace the parts of the view whose model changed.
     fn refresh_views(&mut self) {
         if std::mem::take(&mut self.stale.sidebar) {
-            self.slots.sidebar.set(sidebar::lists(
-                &SidebarView {
-                    collections: &self.collections,
-                    history: &self.history,
-                    selected: self.selected,
-                },
-                &self.sink,
-            ));
+            self.slots.sidebar.set(&SidebarView {
+                collections: &self.collections,
+                history: &self.history,
+                selected: self.selected,
+            });
         }
         if std::mem::take(&mut self.stale.header) {
             self.nav.set_content_title(self.request.name.clone());

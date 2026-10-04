@@ -92,7 +92,7 @@ impl ChatSearchProvider {
             .with_subtitle(subtitle)
             .with_icon(match channel.kind {
                 crate::model::ChannelKind::Voice => Icon::Volume2,
-                crate::model::ChannelKind::Text => Icon::List,
+                crate::model::ChannelKind::Text => Icon::Hash,
             });
             self.upsert(
                 format!("chat.channel:{}", channel.id),

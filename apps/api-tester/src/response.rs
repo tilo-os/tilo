@@ -14,12 +14,12 @@ use ui::widget::{
 use crate::commands::{Cmd, Sink};
 use crate::model::{KeyValue, ResponseData, ResponseView, human_duration};
 use crate::palette::status_tone;
-use ui::widget::{Slot, SlotHandle};
+use crate::swap::{Swap, SwapHandle};
 
 /// A built response pane and the slot its body view can be replaced in.
 pub(crate) struct Built {
     pub(crate) element: Element,
-    pub(crate) body: SlotHandle,
+    pub(crate) body: SwapHandle,
 }
 
 /// No request has been sent yet.
@@ -101,7 +101,7 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
         .push(caption(&size))
         .push(Box::new(Spacer::new()))
         .push(Box::new(switch));
-    let (slot, handle) = Slot::new(body(data, view));
+    let (slot, handle) = Swap::new(body(data, view));
     let column = Column::new()
         .with_no_padding()
         .push(Box::new(summary))

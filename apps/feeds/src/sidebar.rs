@@ -7,13 +7,11 @@
 //! feed's actions open from its row's More button or a right click, in a
 //! menu that marks the row it acts on.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::icons::Icon;
 use ui::widget::{AppModel, ModelPath, NavAction, NavItem, NavList, NavSection, Widget};
-use vello::kurbo::{Affine, Point};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::kurbo::Point;
 
 use crate::app::{Core, Request, Requests, Shared};
 use crate::model::{FeedKind, Filter, Id, TagKey};
@@ -69,7 +67,7 @@ fn feed_icon(kind: FeedKind) -> Icon {
     match kind {
         // A Gemini capsule is a page of gemtext.
         FeedKind::Gemini => Icon::FileText,
-        _ => Icon::Globe,
+        _ => Icon::Rss,
     }
 }
 
@@ -135,6 +133,7 @@ impl Core {
             .map(|tag| {
                 let key = crate::model::tag_key(&tag);
                 NavItem::new(nav_id(Filter::Tag(key)), tag)
+                    .icon(Icon::Tag)
                     .counted(store.count_for(Filter::Tag(key)))
                     .without_actions()
             })
@@ -146,29 +145,12 @@ impl Core {
     }
 }
 
-/// How far a list row's lift sits inside the row in `theme`.
-fn lift_inset(theme: &ui::theme::Theme) -> (f64, f64) {
-    (
-        f64::from(theme.tokens.spacing.s2),
-        f64::from(theme.tokens.metrics.chrome_rule_px),
-    )
-}
-
 /// The sidebar widget: the shared [`NavList`], kept in step with the library.
 pub(crate) struct SidebarNav {
     list: NavList,
     core: Shared,
-    requests: Requests,
     sections: Vec<NavSection>,
     selected: Option<String>,
-    /// Feeds whose More button was pressed this event.
-    more: Rc<RefCell<Vec<String>>>,
-    pointer: Point,
-    /// How far a row's lift sits inside its row: the list's inset across,
-    /// a hairline down.
-    lift_inset: (f64, f64),
-    /// The list has had its first layout, so it knows its row metrics.
-    laid_out: bool,
 }
 
 impl SidebarNav {
@@ -177,44 +159,49 @@ impl SidebarNav {
             let core = core.borrow();
             (core.nav_sections(), nav_id(core.filter))
         };
-        let more: Rc<RefCell<Vec<String>>> = Rc::default();
         let list = {
-            let requests = Rc::clone(requests);
-            let more = Rc::clone(&more);
+            let show = Rc::clone(requests);
+            let menu = Rc::clone(requests);
+            let fold = Rc::clone(requests);
             NavList::new(sections.clone())
                 .with_id("feeds.sidebar")
                 .with_accessible_name("Subscriptions")
                 .selected(&selected)
                 .on_select(move |id| {
                     if let Some(filter) = filter_of(&id) {
-                        requests.borrow_mut().push(Request::Show(filter));
+                        show.borrow_mut().push(Request::Show(filter));
                     }
                 })
                 .item_actions(
-                    vec![NavAction::new("more", Icon::MoreHorizontal, "More")],
-                    move |id, _| more.borrow_mut().push(id.to_string()),
+                    vec![NavAction::new("more", Icon::MoreHorizontal, "More").opens_context_menu()],
+                    |_, _| {},
                 )
+                // A feed's actions open from its More button, a right click,
+                // a long press or the Menu key, in a menu that marks its row.
+                .on_context_menu(move |id, lift, at| {
+                    if let Some(Filter::Feed(feed)) = filter_of(id) {
+                        menu.borrow_mut()
+                            .push(Request::FeedMenu(feed, lift, Some(at)));
+                    }
+                })
+                // What the person folds stays folded, on every device.
+                .on_expand(move |id, open| {
+                    if let Some(Filter::Folder(folder)) = filter_of(id) {
+                        fold.borrow_mut()
+                            .push(Request::SetFolderCollapsed(folder, !open));
+                    }
+                })
         };
         Self {
             list,
             core: Rc::clone(core),
-            requests: Rc::clone(requests),
             sections,
             selected: Some(selected),
-            more,
-            pointer: Point::ZERO,
-            lift_inset: (0.0, 0.0),
-            laid_out: false,
         }
     }
 
-    /// Follow the library and the chosen place. New sections wait for the
-    /// list's first layout: rows it rebuilds before it has seen the theme
-    /// keep the stock tree row height instead of the navigation row's.
+    /// Follow the library and the chosen place.
     fn refresh(&mut self) {
-        if !self.laid_out {
-            return;
-        }
         let Ok(core) = self.core.try_borrow() else {
             return;
         };
@@ -232,36 +219,7 @@ impl SidebarNav {
         }
     }
 
-    /// The lift of `id`'s row: where the list paints its hover and
-    /// selection, so a menu marks the row with the same edges.
-    fn lift_rect(&self, id: &str) -> Option<vello::kurbo::Rect> {
-        let (across, down) = self.lift_inset;
-        self.list
-            .row_rect(id)
-            .map(|row| row.inset((-across, -down)))
-    }
-
-    /// Open the menu of the feed whose row holds `id`: under the row, or at
-    /// `at` for a right click.
-    fn open_menu(&self, id: &str, at: Option<Point>) {
-        let (Some(Filter::Feed(feed)), Some(row)) = (filter_of(id), self.lift_rect(id)) else {
-            return;
-        };
-        self.requests
-            .borrow_mut()
-            .push(Request::FeedMenu(feed, row, at));
-    }
-
-    /// The feed row under the pointer.
-    fn feed_at(&self, p: Point) -> Option<String> {
-        let core = self.core.try_borrow().ok()?;
-        core.store
-            .feeds
-            .iter()
-            .map(|f| nav_id(Filter::Feed(f.id)))
-            .find(|key| self.list.row_rect(key).is_some_and(|row| row.contains(p)))
-    }
-
+    /// Note where the first feed's row is, for the context-menu capture.
     fn record_first_feed_row(&self) {
         let Ok(mut core) = self.core.try_borrow_mut() else {
             return;
@@ -272,7 +230,8 @@ impl SidebarNav {
             .first()
             .map(|f| f.id)
             .and_then(|id| {
-                self.lift_rect(&nav_id(Filter::Feed(id)))
+                self.list
+                    .row_lift_rect(&nav_id(Filter::Feed(id)))
                     .map(|row| (id, row))
             });
     }
@@ -301,63 +260,6 @@ impl ui::widget::Decorator for SidebarNav {
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         Widget::apply_layout(&mut self.list, taffy, node, origin);
-        self.laid_out = true;
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Right,
-            ..
-        } = event
-            && let Some(id) = self.feed_at(self.pointer)
-        {
-            self.open_menu(&id, Some(self.pointer));
-            *ctx.handled = true;
-            return;
-        }
-        Widget::handle_event(&mut self.list, event, ctx);
-        let more = std::mem::take(&mut *self.more.borrow_mut());
-        for id in more {
-            self.open_menu(&id, None);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.lift_inset = lift_inset(theme);
-        Widget::draw(&mut self.list, scene, transform, text, theme, presence);
-        self.record_first_feed_row();
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-        permissions: &ui::permissions::PermissionContext,
-    ) {
-        self.lift_inset = lift_inset(theme);
-        Widget::draw_with_presence(
-            &mut self.list,
-            scene,
-            transform,
-            text,
-            theme,
-            presence,
-            permissions,
-        );
         self.record_first_feed_row();
     }
 

@@ -195,7 +195,7 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
     ));
     player.set_setting(PlayerSetting::toggle(
         "loop",
-        Icon::Refresh,
+        Icon::Repeat1,
         "Repeat current video",
         0,
         loop_enabled,
@@ -207,7 +207,7 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
         .unwrap_or(3);
     player.set_setting(PlayerSetting::choice(
         "playback-rate",
-        Icon::Timer,
+        Icon::Gauge,
         "Playback speed",
         0,
         PLAYBACK_RATES
@@ -541,7 +541,7 @@ impl PlayerApp {
                 .unwrap_or(0);
             self.player.set_setting(PlayerSetting::choice(
                 "audio-track",
-                Icon::Volume2,
+                Icon::Headphones,
                 "Audio track",
                 0,
                 audio_tracks
@@ -562,7 +562,7 @@ impl PlayerApp {
             options.extend(subtitle_tracks.iter().map(|track| track.label.clone()));
             self.player.set_setting(PlayerSetting::choice(
                 "subtitle-track",
-                Icon::FileText,
+                Icon::MessageSquare,
                 "Subtitles",
                 0,
                 options,
@@ -647,10 +647,7 @@ impl PlayerApp {
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
-            drawer: SidebarDrawer::new()
-                .right()
-                .closed()
-                .breakpoint(f64::INFINITY),
+            drawer: SidebarDrawer::new().right().closed().overlay_only(),
             library_scroll: 0.0,
             library_max_scroll: 0.0,
             library_list_rect: Rect::ZERO,

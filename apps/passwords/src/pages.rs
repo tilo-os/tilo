@@ -8,13 +8,13 @@ use accounts::{SecretItem, SecretItemKind};
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
-use ui::tokens::Rhythm;
+use ui::tokens::SpacingStep;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Avatar, AvatarSize, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState,
-    Field, Form, FormPage, FormSection, LabelPlacement, ListRow, ModalDialog, Property,
-    PropertyList, Row, Scrollable, Section, SectionHeader, Stack, StatGroup, StatTile, Text,
-    TextInput, TextInputKind, ToggleGroup, Tone,
+    Actions, Banner, Button, ButtonRole, Checkbox, Column, Element, EmptyState, Field, Form,
+    FormSection, LabelPlacement, ListRow, ModalDialog, ObjectHeader, Property, PropertyList, Row,
+    Scrollable, Section, SectionHeader, Spacer, Stack, StatGroup, StatTile, Text, TextInput,
+    TextInputKind, ToggleGroup, Tone,
 };
 
 use crate::vault::{
@@ -63,24 +63,19 @@ fn page(children: Vec<Element>) -> Element {
     Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
 }
 
-/// A tool page: its title, an optional sentence under it, then `groups`
-/// a group apart.
+/// A tool page: its title, an optional sentence under it, then `groups`.
+/// Groups stand a group gap apart: an empty spacer between two of them
+/// takes the column's gap twice.
 fn titled_page(title: &str, lead: Option<&str>, groups: Vec<Element>) -> Element {
-    let mut head = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(text(title, TextRole::Title));
+    let mut children = vec![text(title, TextRole::Title)];
     if let Some(lead) = lead {
-        head = head.push(text(lead, TextRole::Body));
+        children.push(text(lead, TextRole::Body));
     }
-    let column = groups.into_iter().fold(
-        Column::new()
-            .with_intrinsic_height()
-            .with_rhythm(Rhythm::Group)
-            .push(Box::new(head)),
-        Column::push,
-    );
-    Box::new(Scrollable::new_vertical().with_child(Box::new(column)))
+    for group in groups {
+        children.push(Box::new(Spacer::token(SpacingStep::S0)));
+        children.push(group);
+    }
+    page(children)
 }
 
 /// The content column: the page for the current screen, and the dialog
@@ -143,23 +138,10 @@ fn detail_header(item: &SecretItem, requests: &Requests) -> Vec<Element> {
                 .push(Request::ToggleFavorite(id.clone()));
         })
     };
-    let name = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(text(&item.title, TextRole::Title))
-        .push(Box::new(
-            Text::new(kind_label(item.kind))
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ));
-    let title = Row::new()
-        .no_wrap()
-        .push(Box::new(
-            Avatar::person(&item.title, &item.id.0)
-                .square()
-                .size(AvatarSize::Large),
-        ))
-        .push(Box::new(name));
+    let title = ObjectHeader::new(&item.title)
+        .avatar(&item.title, &item.id.0)
+        .square()
+        .caption(kind_label(item.kind));
     let actions = Row::new()
         .push(Box::new(button(
             "passwords.copy",
@@ -199,15 +181,20 @@ fn properties(core: &Core, item: &SecretItem, requests: &Requests) -> Vec<Proper
     }
     let label = secret_label(item.kind);
     let revealed = core.revealed_value(&item.id);
+    let shown = revealed.is_some();
     let (value, action) = match revealed {
         Some(value) => (value, format!("Hide {}", secret_noun(item.kind))),
         None => (MASK, format!("Show {}", secret_noun(item.kind))),
     };
-    rows.push(
-        Property::new(label, value)
-            .with_kind(TextKind::Secret)
-            .action(Icon::Eye, action, ask(requests, Request::RevealSecret)),
-    );
+    let secret = Property::new(label, value)
+        .with_kind(TextKind::Secret)
+        .action(Icon::Eye, action, ask(requests, Request::RevealSecret));
+    // A masked value reads as hidden, not as a row of dots.
+    rows.push(if shown {
+        secret
+    } else {
+        secret.with_accessible_value("Hidden")
+    });
     if matches!(item.kind, SecretItemKind::Login | SecretItemKind::ApiKey)
         && !item.origins.is_empty()
     {
@@ -259,10 +246,10 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
             .with_kind(TextInputKind::Url)
             .with_placeholder("https://example.com"),
         DraftField::Password => input.with_secret(true),
-        DraftField::Notes => input.multiline(true).with_placeholder("Add a note"),
+        DraftField::Notes => input.with_min_lines(4).with_placeholder("Add a note"),
         DraftField::Tags => input.with_placeholder("Separate tags with commas"),
         DraftField::CustomFields => input
-            .multiline(true)
+            .with_min_lines(3)
             .with_placeholder("One per line, such as PIN = 1234"),
     };
     input
@@ -381,14 +368,14 @@ fn editor(core: &Core, shared: &Shared, requests: &Requests) -> Element {
     let form = Form::new()
         .with_label_placement(Some(LabelPlacement::Above))
         .section(details)
-        .section(more);
+        .section(more)
+        .with_actions(actions);
     let title = if core.editing.is_some() {
         "Edit item"
     } else {
         "New item"
     };
-    // Save and Cancel stay in reach however long the item gets.
-    Box::new(FormPage::new(title, form).with_pinned_actions(actions))
+    titled_page(title, None, vec![Box::new(form)])
 }
 
 // --- password review ----------------------------------------------------

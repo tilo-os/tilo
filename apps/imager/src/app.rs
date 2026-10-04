@@ -88,6 +88,8 @@ pub(crate) enum Command {
     Target(usize),
     Rescan,
     Back,
+    /// Go back to the step at this station of the stepper.
+    Station(usize),
     Next,
     StartWrite,
     CancelWrite,
@@ -586,8 +588,24 @@ impl ImagerApp {
         };
         let notice = (self.status_is_error && !self.status.is_empty())
             .then(|| Box::new(Banner::error(self.status.clone())) as Box<dyn Widget>);
+        // Before the write, a done step's station takes the person back to
+        // it; once writing, the stepper only says where it is.
+        let mut stepper = ui::widget::Stepper::new(
+            stepper_labels()
+                .iter()
+                .map(|step| (*step).to_string())
+                .collect(),
+        )
+        .with_id("imager.stepper")
+        .current(self.stepper_current());
+        if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
+            let sink = Rc::clone(&self.commands);
+            stepper = stepper.on_station(move |index| {
+                sink.borrow_mut().push(Command::Station(index));
+            });
+        }
         Frame::new(body)
-            .stepper(&stepper_labels(), self.stepper_current())
+            .stepper_widget(stepper)
             .offset(Rc::clone(&self.scroll))
             .notice(notice)
             .actions(self.footer())
@@ -722,7 +740,7 @@ impl ImagerApp {
                 "Selected image",
                 vec![Box::new(
                     ListRow::new("imager.selected", &source.name)
-                        .icon(Icon::File)
+                        .icon(Icon::Disc3)
                         .secondary(self.source_secondary(source))
                         .meta(fmt_size(source.size))
                         .selected(true),
@@ -746,7 +764,7 @@ impl ImagerApp {
                     let sink = Rc::clone(&self.commands);
                     Some(Box::new(
                         ListRow::new(format!("imager.recent.{index}"), &source.name)
-                            .icon(Icon::File)
+                            .icon(Icon::Disc3)
                             .secondary(self.source_secondary(source))
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
@@ -792,7 +810,7 @@ impl ImagerApp {
         .icon(if release.local_path.is_empty() {
             Icon::CloudDownload
         } else {
-            Icon::File
+            Icon::Disc3
         })
         .secondary(secondary)
         .meta(fmt_size(release.size))
@@ -838,7 +856,7 @@ impl ImagerApp {
                 let sink = Rc::clone(&self.commands);
                 Box::new(
                     ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
-                        .icon(Icon::HardDrive)
+                        .icon(drive.icon())
                         .secondary(format!(
                             "{}, {}",
                             drive.dev_path(),
@@ -1357,6 +1375,21 @@ impl ImagerApp {
         }
     }
 
+    /// Go back to the step at `index` of the stepper: only to a step that
+    /// is done, before the write, and never to a Customize the drive skips.
+    fn go_to_station(&mut self, state: &mut AutoCommit, index: usize) {
+        let Some(&target) = Step::all().get(index) else {
+            return;
+        };
+        if !matches!(self.step, Step::Drive | Step::Customize | Step::Confirm)
+            || target.index() >= self.step.index()
+            || (target == Step::Customize && !self.customizable())
+        {
+            return;
+        }
+        self.goto(state, target);
+    }
+
     fn start_write(&mut self, state: &mut AutoCommit) {
         let operation = crate::actions::ImagerOperation::Write {
             device: self.target().map(TargetDrive::dev_path).unwrap_or_default(),
@@ -1702,6 +1735,7 @@ impl ImagerApp {
                 self.do_rescan(state);
             }
             Command::Back => self.back(state),
+            Command::Station(index) => self.go_to_station(state, index),
             Command::Next => self.advance(state),
             Command::StartWrite => self.start_write(state),
             Command::CancelWrite => {

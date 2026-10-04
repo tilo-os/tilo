@@ -12,8 +12,8 @@ use ui::tilo_actions::ActionBinding;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Banner, Button, ButtonRole, Column, Container, Decorator, Element, ListRow, ProgressRing,
-    ProgressRingSize, Property, PropertyList, Row, Scrollable, Section, SectionHeader, StatGroup,
-    StatTile, Stepper, Text, Widget,
+    ProgressRingSize, Property, PropertyList, Row, Scrollable, Section, StatGroup, StatTile,
+    Stepper, Text, Widget,
 };
 
 use crate::model::{DialReading, Model, Phase, Quality, age_label, data_label, qualities};
@@ -179,8 +179,11 @@ fn results_column(model: &Model, theme: &Theme) -> Column {
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_gap(spacing.rhythm.section)
-        .push(block(theme, "Results", Box::new(tiles), 0.0))
-        .push(block(theme, "Connection", Box::new(facts), spacing.s2));
+        .push(Box::new(Section::titled("Results", vec![Box::new(tiles)])))
+        .push(Box::new(Section::titled(
+            "Connection",
+            vec![Box::new(facts)],
+        )));
 
     if let Some(latest) = model.latest() {
         let rows: Vec<Element> = qualities(latest)
@@ -194,12 +197,7 @@ fn results_column(model: &Model, theme: &Theme) -> Column {
                 })
             })
             .collect();
-        column = column.push(block(
-            theme,
-            "Connection quality",
-            Box::new(Section::new(rows)),
-            spacing.s3,
-        ));
+        column = column.push(Box::new(Section::titled("Connection quality", rows)));
     }
 
     if !model.history.is_empty() {
@@ -222,42 +220,9 @@ fn results_column(model: &Model, theme: &Theme) -> Column {
                 )
             })
             .collect();
-        column = column.push(block(
-            theme,
-            "Recent tests",
-            Box::new(Section::new(rows)),
-            spacing.s3,
-        ));
+        column = column.push(Box::new(Section::titled("Recent tests", rows)));
     }
     column
-}
-
-/// A titled block of the results column. The heading, the tiles and the text
-/// of the rows all start on one edge: each composite insets its own content
-/// by `own_inset`, so the block pads the rest.
-fn block(theme: &Theme, title: &str, body: Element, own_inset: f32) -> Element {
-    let edge = theme.tokens.spacing.s3;
-    let indented = |child: Element, inset: f32| -> Element {
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_horizontal_padding(inset, inset)
-                .with_vertical_padding(0.0)
-                .push(child),
-        )
-    };
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(indented(
-                Box::new(Section::new(Vec::new()).with_header(SectionHeader::heading(title))),
-                edge,
-            ))
-            .push(indented(body, (edge - own_inset).max(0.0))),
-    )
 }
 
 /// One result: its number once measured, a dash until then.
