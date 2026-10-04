@@ -22,7 +22,6 @@
 "apps/api-tester/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
 "apps/calendar/src/resource.rs" = 1
-"apps/camera/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
 "apps/clocks/src/resource.rs" = 1
 "apps/code-editor/src/resource.rs" = 2
@@ -43,7 +42,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
-"apps/speed-test/src/resource.rs" = 1
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
 "apps/tube/src/app.rs" = 2
@@ -57,8 +55,6 @@
 "apps/api-tester/src/lib.rs" = 2
 "apps/api-tester/src/main.rs" = 2
 "apps/calendar/src/main.rs" = 1
-"apps/camera/src/lib.rs" = 2
-"apps/camera/src/main.rs" = 1
 "apps/chat/src/main.rs" = 1
 "apps/clocks/src/lib.rs" = 2
 "apps/clocks/src/main.rs" = 2
@@ -82,8 +78,6 @@
 "apps/settings/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
-"apps/speed-test/src/lib.rs" = 2
-"apps/speed-test/src/main.rs" = 2
 "apps/themes/src/lib.rs" = 2
 "apps/themes/src/main.rs" = 2
 "apps/tube/src/lib.rs" = 2
@@ -102,13 +96,11 @@
 "apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
-"apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
 "apps/browser/src/browser_widget.rs" = 1
 "apps/calendar/src/store.rs" = 1
-"apps/camera/src/search.rs" = 2
 "apps/contacts/src/framework_history.rs" = 1
 "apps/diffmerge/src/framework_history.rs" = 1
 "apps/music/src/doc.rs" = 1
