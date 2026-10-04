@@ -47,8 +47,6 @@ use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
 const MAX_INLINE_SVG: usize = 48 * 1024;
-/// The longest gap between the clicks of a double click.
-const DOUBLE_CLICK: ui::time::Duration = ui::time::Duration::from_millis(450);
 /// How big a shape made by a click without a drag is, in screen pixels.
 const CLICKED_SHAPE: f64 = 100.0; // the size of a mark in the artwork, not on-screen spacing
 /// The text size a new text starts at, in screen pixels.
@@ -590,7 +588,7 @@ impl CanvasSurface {
         let now = ui::time::now();
         let double = self.last_press.is_some_and(|(at, then)| {
             at.distance(screen) <= self.click_slop() * 2.0
-                && now.duration_since(then) <= DOUBLE_CLICK
+                && now.duration_since(then) <= ui::gesture::multi_click_interval()
         });
         self.last_press = if double { None } else { Some((screen, now)) };
         double
