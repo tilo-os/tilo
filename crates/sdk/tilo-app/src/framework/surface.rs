@@ -328,6 +328,24 @@ impl<R: Resource> SurfaceCx<R> {
         super::launch::flag(&self.run.launched.options, name)
     }
 
+    /// Whether the window is private, as
+    /// [`ViewCx::is_private`](super::ViewCx::is_private).
+    pub fn is_private(&self) -> bool {
+        self.run.private
+    }
+
+    /// The file whose history History shows beside the resource's, for an
+    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY):
+    /// set its target to the file the surface shows (the selected one) and
+    /// open it from the surface's own History command. `None` for any other
+    /// app, and in a past version.
+    pub fn file_history(&self) -> Option<ui_core::history_mode::checked_files::FileHistorySource> {
+        self.run
+            .file_history
+            .as_ref()
+            .map(|(source, _)| source.clone())
+    }
+
     /// The id of the app the surface is part of, which its presence keys
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {
@@ -343,6 +361,11 @@ impl<R: Resource> SurfaceCx<R> {
         S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
     {
         self.storage.follow(self.alive.clone())
+    }
+
+    /// The device this window runs on, as [`ViewCx::device`](super::ViewCx::device).
+    pub fn device(&self) -> Option<&str> {
+        self.storage.device()
     }
 
     /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)),

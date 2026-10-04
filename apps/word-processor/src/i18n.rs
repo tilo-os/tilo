@@ -91,10 +91,7 @@ mod tests {
             set_locale("en-US");
             assert_eq!(t("toolbar-body"), "Body");
             assert_eq!(t("template-report"), "Report");
-            assert_eq!(
-                t("recovery-banner"),
-                "Recovered unsaved changes from a previous session."
-            );
+            assert_eq!(t("toast-saved"), "Document saved");
         }
 
         // Phase: de_returns_german_string.

@@ -176,3 +176,11 @@ fn a_reopened_window_shows_the_book_it_had_open() {
     let frame = app.harness().inspection_json().unwrap();
     assert!(frame.contains("Open: Emma"), "{frame}");
 }
+
+#[test]
+fn a_test_reaches_the_surface_its_view_hosts() {
+    let mut app = TestApp::<ShelfApp>::new().unwrap();
+    app.invoke(Shelf::ADD.with("Dune".into())).unwrap();
+    let open = app.surface(|book: &mut OpenBook| book.open.get()).unwrap();
+    assert_eq!(open, "Dune");
+}

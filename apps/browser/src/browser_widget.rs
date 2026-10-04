@@ -770,6 +770,8 @@ pub struct BrowserWidget {
     /// [`BrowserAction`]s submitted through it. `None` until a host attaches
     /// one; a bare widget changes no document.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Browser>>,
+    /// The origins tracker protection is off for, as the document holds them.
+    site_exceptions: std::collections::BTreeSet<String>,
     initial_url: String,
     session_url: String,
     session_first_commit: bool,
@@ -829,9 +831,13 @@ pub struct BrowserWidget {
     /// the browser (rather than the shared document) because it describes
     /// this profile's disk, not collaborative state.
     history_clear_error: Option<String>,
-    /// Tiny persistence seam: resource completion must mean the durable
-    /// history write succeeded, and tests need to prove the failure path.
-    history_save: fn(&History) -> std::io::Result<()>,
+    /// The person's browsing history, which this window records its visits
+    /// in; `None` keeps them nowhere (a private window, a screenshot).
+    person_history: Option<ui::framework::PersonRecord<crate::history::BrowsingHistory>>,
+    /// The person's address book, which new tabs fill forms from too.
+    address_book: Option<ui::framework::PersonRecord<crate::autofill::AddressBook>>,
+    /// The record's revision [`Self::history`] shows.
+    history_revision: Option<u64>,
     history: History,
     bookmarks: Bookmarks,
     downloads: Downloads,
@@ -1138,13 +1144,50 @@ impl BrowserWidget {
         crate::capabilities::Capabilities::cancel_all(&self.engine);
     }
     pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
+        self.dispatch.clone_from(&other.dispatch);
+        self.person_history.clone_from(&other.person_history);
+        if let Some(book) = other.address_book.clone() {
+            self.attach_address_book(book);
+        }
+        self.bookmarks = other.bookmarks.clone();
+        self.apply_preferences(other.settings.clone());
         self.window_scale = other.window_scale;
         self.capabilities.share_downloads(&other.capabilities);
-        self.site.share_runtime_state(&other.site);
+        self.site
+            .present_exceptions(&self.engine, &other.site_exceptions, false);
+        self.site_exceptions.clone_from(&other.site_exceptions);
     }
-    pub(crate) fn refresh_shared_history(&mut self) {
-        if !self.headless && self.browsing_mode.persists_personal_state() {
-            self.history = History::load();
+    /// Keep this window's visits in the person's browsing history, and show
+    /// it.
+    pub(crate) fn attach_history(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+    ) {
+        self.person_history = Some(record);
+        self.history_revision = None;
+    }
+
+    /// Fill forms from, and edit, the person's address book.
+    pub(crate) fn attach_address_book(
+        &mut self,
+        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        self.address_book = Some(book.clone());
+        self.credentials.attach_address_book(book);
+    }
+
+    /// Show the person's browsing history again when it changed: a visit
+    /// in another tab, window or device, a clear.
+    fn follow_history(&mut self) {
+        let Some(record) = &self.person_history else {
+            return;
+        };
+        let revision = record.revision();
+        if self.history_revision != Some(revision) {
+            self.history_revision = Some(revision);
+            self.history = (*record.get()).clone();
+            self.search_index.invalidate();
+            self.structure_dirty = true;
         }
     }
 
@@ -1166,11 +1209,7 @@ impl BrowserWidget {
         // Preferences and bookmarks are the document's, presented later.
         let persistent = !headless && browsing_mode.persists_personal_state();
         let settings = Settings::default();
-        let history = if persistent {
-            History::load()
-        } else {
-            History::default()
-        };
+        let history = History::default();
         let bookmarks = Bookmarks::default();
         let downloads = if headless {
             Downloads::default()
@@ -1193,6 +1232,7 @@ impl BrowserWidget {
             bootstrap_done: false,
             headless,
             dispatch: None,
+            site_exceptions: std::collections::BTreeSet::new(),
             address: ui::LocalState::new(initial_url.clone()),
             address_navigation_value: None,
             daily: crate::daily_controls::DailyControls::default(),
@@ -1237,7 +1277,9 @@ impl BrowserWidget {
             history_paused: std::sync::Arc::default(),
             observed_history_paused: false,
             history_clear_error: None,
-            history_save: History::save,
+            person_history: None,
+            address_book: None,
+            history_revision: None,
             history,
             bookmarks,
             downloads,
@@ -1326,6 +1368,9 @@ impl BrowserWidget {
             self.structure_dirty = true;
         }
         self.apply_preferences(state.preferences.clone());
+        self.site_exceptions.clone_from(&state.site_exceptions);
+        self.site
+            .present_exceptions(&self.engine, &state.site_exceptions, self.bootstrap_done);
     }
 
     /// Add the current page, unless it is already bookmarked. Removal stays
@@ -1375,6 +1420,35 @@ impl BrowserWidget {
                 })
             },
         )]
+    }
+
+    /// Stage the window for a screenshot scenario: the chrome state each one
+    /// shows, as the engine, the network and the person would leave it.
+    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("pip-active") => self.debug_show_active_pip(),
+            Some("pip-empty") => self.debug_show_empty_pip_feedback(),
+            Some("settings") => self.debug_show_settings(),
+            Some("history-paused") => self.debug_show_history_paused(),
+            Some("loading") => self.debug_show_loading(),
+            Some("error") => self.debug_show_load_error(),
+            Some("suggestions") => {
+                self.debug_force_suggestions(crate::history::sample_entries());
+                self.suggestions.move_selection(1);
+            }
+            Some("library-history") => self.debug_show_library("history"),
+            Some("library-bookmarks") => self.debug_show_library("bookmarks"),
+            Some("library-extensions") => self.debug_show_library("extensions"),
+            Some("library-filtered") => {
+                self.debug_show_library("history");
+                self.debug_set_library_filter("rust");
+            }
+            Some(downloads) if downloads.starts_with("downloads-") => {
+                self.debug_show_downloads(downloads.trim_start_matches("downloads-"));
+            }
+            _ => {}
+        }
+        self.structure_dirty = true;
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
@@ -2029,17 +2103,12 @@ impl BrowserWidget {
             .ok_or_else(|| "download destination is unavailable".into())
     }
 
-    /// Clear the in-memory corpus only when its new empty state is durable.
-    /// A failed write restores the prior entries so actions/history never
-    /// report local data as cleared when it will reappear on restart.
+    /// Clear the history only when the person's record took the clear, so
+    /// actions never report history as cleared when it will reappear.
     fn clear_history_durably(&mut self) -> Result<(), String> {
-        let previous = self.history.clone();
-        self.history.clear();
-        if !self.headless
-            && self.browsing_mode.persists_personal_state()
-            && let Err(error) = (self.history_save)(&self.history)
+        if let Some(record) = &self.person_history
+            && let Err(error) = record.apply(&crate::history::HistoryAction::Clear)
         {
-            self.history = previous;
             let message =
                 "Couldn’t clear history because Browser could not save the change. Previous history was kept."
                     .to_string();
@@ -2048,6 +2117,7 @@ impl BrowserWidget {
             self.structure_dirty = true;
             return Err(message);
         }
+        self.history.clear();
         self.suggestions.clear();
         self.last_query = None;
         self.history_clear_error = None;
@@ -3964,14 +4034,20 @@ impl BrowserWidget {
                     }
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
-                    if !self.headless
-                        && self.browsing_mode.persists_personal_state()
+                    if self.browsing_mode.persists_personal_state()
                         && !self.history_paused()
                         && self.current_uri.starts_with("http")
+                        && let Some(record) = &self.person_history
                     {
-                        self.history = History::load();
-                        self.history.record(&self.current_uri, &self.title);
-                        let _ = self.history.save();
+                        let visit = crate::history::HistoryAction::Visit {
+                            url: self.current_uri.clone(),
+                            title: self.title.clone(),
+                            at: tilo_clock::unix_now(),
+                        };
+                        if let Err(error) = record.apply(&visit) {
+                            tracing::warn!(%error, "browser visit was not recorded");
+                        }
+                        self.follow_history();
                     }
                     if let Some(invocation) = self.resource_navigation_invocation.take() {
                         self.resource_navigation_deadline = None;
@@ -4910,10 +4986,7 @@ impl Widget for BrowserWidget {
             self.structure_dirty = true;
         }
         if !self.bootstrap_done {
-            self.site.initialize(
-                &self.engine,
-                !self.headless && self.browsing_mode.persists_personal_state(),
-            );
+            self.site.initialize(&self.engine);
             if !self.headless {
                 self.engine
                     .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
@@ -4946,6 +5019,9 @@ impl Widget for BrowserWidget {
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
+        for (origin, enabled) in self.site.take_decisions() {
+            self.submit(&BrowserAction::SetSiteProtection { origin, enabled });
+        }
         if self.site.open && !site_was_open {
             self.deactivate_credentials();
         }
@@ -4954,6 +5030,7 @@ impl Widget for BrowserWidget {
             self.site.close();
         }
         self.tick_back_hold(ui::time::now());
+        self.follow_history();
         self.apply_engine_events();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
@@ -7792,13 +7869,6 @@ mod tests {
         }
     }
 
-    fn history_save_fails(_: &History) -> std::io::Result<()> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "test history directory is not writable",
-        ))
-    }
-
     pub(super) fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
         layout_with_theme(widget, width, height, &Theme::dark());
     }
@@ -7937,57 +8007,65 @@ mod tests {
         }
     }
 
+    /// The person's browsing history, as a capture's profile keeps it.
+    fn person_history() -> (
+        ui::framework::testing::TestApp<crate::BrowserShell>,
+        ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+    ) {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
+        let record = app
+            .person::<crate::history::BrowsingHistory>()
+            .expect("a test profile keeps person records");
+        (app, record)
+    }
+
     #[test]
-    fn history_clear_on_exit_belongs_to_workspace_lifetime() {
-        const CHILD: &str = "TILO_TEST_HISTORY_EXIT_CHILD";
-        if let Some(root) = std::env::var_os(CHILD) {
-            let path = crate::history::history_path().unwrap();
-            assert!(
-                path.starts_with(std::path::PathBuf::from(root)),
-                "isolated history path"
-            );
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            w.headless = false;
-            w.settings.clear_on_exit = true;
-            w.history.record_at("https://retained.test", "Retained", 1);
-            w.history.save().unwrap();
-            drop(w);
-            assert!(
-                !History::load().is_empty(),
-                "closing one page must retain shared history"
-            );
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
-            w.headless = false;
-            w.settings.clear_on_exit = true;
-            drop(crate::BrowserTabs::new(w));
-            assert!(
-                History::load().is_empty(),
-                "workspace exit clears persisted history"
-            );
-            return;
-        }
-        let root = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "browser_widget::tests::history_clear_on_exit_belongs_to_workspace_lifetime",
-                "--nocapture",
-            ])
-            .env(CHILD, root.path())
-            .env("HOME", root.path())
-            .env("XDG_DATA_HOME", root.path())
-            .output()
-            .unwrap();
+    fn visits_are_the_persons_history_and_workspace_exit_clears_it() {
+        let (_app, record) = person_history();
+        let engine = TestEngine::new();
+        let mut w = BrowserWidget::with_engine(engine.clone(), true);
+        w.attach_history(record.clone());
+        let (mut doc, root) = synced(&mut w);
+        engine.send(WebViewCommand::Navigate("https://visited.test/".into()));
+        w.sync(&mut doc, &root);
         assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
+            record.with(|history| {
+                history
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.url.starts_with("https://visited.test"))
+            }),
+            "a finished page is a visit in the person's history"
         );
-        // libtest exits 0 when `--exact` selects nothing; require the child ran.
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
-            "the child ran no test: {}",
-            String::from_utf8_lossy(&output.stdout)
+            !w.history.is_empty(),
+            "the window shows the history it records"
+        );
+
+        let mut paused = BrowserWidget::with_engine(engine.clone(), true);
+        paused.attach_history(record.clone());
+        paused.share_history_pause(&w);
+        w.history_paused
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let before = record.with(crate::history::History::len);
+        engine.send(WebViewCommand::Navigate("https://paused.test/".into()));
+        paused.sync(&mut doc, &root);
+        assert_eq!(record.with(crate::history::History::len), before);
+
+        w.settings.clear_on_exit = true;
+        drop(w);
+        assert!(
+            !record.with(crate::history::History::is_empty),
+            "closing one page keeps the history"
+        );
+        let mut last = BrowserWidget::with_engine(TestEngine::new(), true);
+        last.attach_history(record.clone());
+        last.settings.clear_on_exit = true;
+        drop(crate::BrowserTabs::new(last));
+        assert!(
+            record.with(crate::history::History::is_empty),
+            "leaving the workspace clears the history"
         );
     }
 
@@ -8216,7 +8294,7 @@ mod tests {
                     title: "Learn Rust".into(),
                     tags: vec!["bookmark:rust".into()],
                 }]),
-                preferences: Settings::default(),
+                ..crate::resource::BrowserState::default()
             });
             narrow.debug_set_viewport_width(390);
             layout_at(&mut narrow, 390.0, 844.0);
@@ -8410,11 +8488,9 @@ mod tests {
     fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
         // Phase `address_editor_opens_and_requires_opt_in_through_narrow_settings`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("addresses.json");
+            let (_app, book) = crate::autofill::tests::address_book();
             let mut widget = BrowserWidget::new_headless();
-            widget.credentials =
-                crate::credentials::Credentials::with_address_path(false, Some(path.clone()));
+            widget.attach_address_book(book.clone());
             let (mut doc, root) = synced(&mut widget);
             widget.show_settings = true;
             widget.structure_dirty = true;
@@ -8446,7 +8522,14 @@ mod tests {
                 widget.structure_dirty = true;
                 layout_at(&mut widget, 390.0, 700.0);
                 if id == "browser.address.open" {
-                    assert!(!path.exists(), "opening does not opt in or write");
+                    assert!(
+                        !crate::autofill::AutofillStore::open(
+                            BrowsingMode::Normal,
+                            Some(book.clone())
+                        )
+                        .enabled(),
+                        "opening does not opt in"
+                    );
                 }
                 if id == "browser.address.new" {
                     let theme = Theme::dark();
@@ -8467,7 +8550,7 @@ mod tests {
                 }
             }
             assert!(!widget.credentials.open);
-            let store = crate::autofill::AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            let store = crate::autofill::AutofillStore::open(BrowsingMode::Normal, Some(book));
             assert!(store.enabled());
             assert!(
                 store.profiles().is_empty(),
@@ -9912,56 +9995,6 @@ mod tests {
                     .any(|result| result.title == "Sensitive")
             );
         }
-
-        // Phase `ui_history_clear_preserves_entries_and_surfaces_a_persistence_failure`.
-        {
-            let mut w = BrowserWidget::with_engine(TestEngine::new(), false);
-            w.history_save = history_save_fails;
-            let (mut doc, root) = synced(&mut w);
-            w.history = History::new();
-            w.history
-                .record_at("https://durable.example", "Durable entry", 1);
-            w.show_settings = true;
-
-            // This is the settings-pane click-flag route, not a direct model
-            // mutation: it must produce the same truthful outcome as the
-            // canonical resource action.
-            assert!(w.clear_history_durably().is_err());
-
-            assert_eq!(w.history.len(), 1, "failed writes restore the old corpus");
-            assert!(w.history_clear_error.as_deref().is_some_and(|message| {
-                message.contains("could not save the change")
-                    && message.contains("Previous history was kept")
-            }));
-
-            let resources = [w.published()];
-            let history = resources[0]
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == "browser.history")
-                .unwrap();
-            let clear = history
-                .actions
-                .iter()
-                .find(|action| action.id == "clear")
-                .unwrap();
-            let error = w
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        clear.kind,
-                        clear.operation_type.as_deref().unwrap(),
-                        &browser_operation_payload(&BrowserOperation::ClearHistory)
-                            .to_string()
-                            .into_bytes(),
-                    ),
-                    &mut doc,
-                    &root,
-                )
-                .expect_err("resource history clear must not complete without durable storage");
-            assert!(error.contains("Previous history was kept"));
-            assert_eq!(w.history.len(), 1);
-        }
     }
 
     /// Bookmark removal and row control identities.
@@ -9994,7 +10027,7 @@ mod tests {
                         })
                         .collect(),
                 ),
-                preferences: Settings::default(),
+                ..crate::resource::BrowserState::default()
             });
             let (mut doc, root) = synced(&mut w);
             let mut tree = TaffyTree::<()>::new();
@@ -10294,15 +10327,12 @@ mod tests {
 }
 
 impl BrowserWidget {
-    pub(crate) fn clear_history_on_workspace_exit(&mut self) {
-        if !self.headless
-            && self.browsing_mode.persists_personal_state()
-            && self.settings.clear_on_exit
+    pub(crate) fn clear_history_on_workspace_exit(&self) {
+        if self.settings.clear_on_exit
+            && let Some(record) = &self.person_history
+            && let Err(error) = record.apply(&crate::history::HistoryAction::Clear)
         {
-            self.history.clear();
-            if let Err(error) = self.history.save() {
-                tracing::error!(%error,"Could not clear browser history on exit");
-            }
+            tracing::error!(%error, "Could not clear browser history on exit");
         }
     }
 }

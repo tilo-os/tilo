@@ -5,9 +5,8 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Quick Browser library root. The binary is a thin shim over the
-//! `BrowserWidget` exported here so the `--shots` mode can construct
-//! the whole chrome without booting an event loop.
+//! Browser library root: the [`BrowserShell`] framework app, whose surface
+//! is the tabbed [`BrowserTabs`] workspace of [`BrowserWidget`] pages.
 //!
 //! The browser is deliberately small: it is chrome (address bar,
 //! navigation, progress, filter loading) around the `ui` toolkit's
@@ -72,12 +71,8 @@ pub use browser_tabs::BrowserTabs;
 pub use browser_widget::BrowserWidget;
 
 mod capabilities;
-/// Production Browser root used by the normal launcher, headless tooling,
-/// and certification. Launch-specific URI handling remains in the binary;
-/// this deliberately creates the same safe default profile a user gets when
-/// opening Browser without a target.
-#[must_use]
-pub fn app_root() -> BrowserWidget {
-    BrowserWidget::new()
-}
-pub use resource::{Browser, BrowserShell, launch_spec as framework_launch_spec};
+mod live_capture;
+
+pub use resource::{Browser, BrowserShell};
+
+ui::dev_reload_entry!(BrowserShell);

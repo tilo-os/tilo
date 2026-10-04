@@ -6904,18 +6904,26 @@ impl FrameHarness {
     /// This is how a screenshot scenario stages view state (a selection, an
     /// open dialog) in the widget that owns it, instead of reaching around it.
     pub fn with_widget_mut<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
+        self.pump_component_wakes();
+        let output = visit(self.widget_mut::<T>()?);
+        self.relayout();
+        self.host_tick();
+        self.relayout();
+        Some(output)
+    }
+
+    /// The first retained widget of type `T`, found as
+    /// [`with_widget_mut`](Self::with_widget_mut) finds it, without running
+    /// a frame: for a test reading or poking a widget between the events it
+    /// sends. `None` when no widget of that type opts in to `as_any_mut`.
+    pub fn widget_mut<T: 'static>(&mut self) -> Option<&mut T> {
         fn find<T: 'static>(widget: &mut dyn Widget) -> Option<&mut T> {
             if widget.as_any_mut().is_some_and(|any| any.is::<T>()) {
                 return widget.as_any_mut()?.downcast_mut::<T>();
             }
             widget.children_mut().into_iter().find_map(find::<T>)
         }
-        self.pump_component_wakes();
-        let output = visit(find::<T>(self.root.as_mut())?);
-        self.relayout();
-        self.host_tick();
-        self.relayout();
-        Some(output)
+        find::<T>(self.root.as_mut())
     }
 
     /// Deliver an out-of-band payload the way the live host delivers a

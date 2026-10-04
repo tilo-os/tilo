@@ -19,31 +19,18 @@
 # for every table is empty.
 
 [ratchets.app_action_host]
-"apps/chat/src/resource.rs" = 2
-"apps/file-explorer/src/resource.rs" = 2
-"apps/notes/src/resource.rs" = 1
-"apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
-"apps/slides/src/app.rs" = 1
 
 [ratchets.standalone_launch]
-"apps/chat/src/main.rs" = 1
-"apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
 
 [ratchets.direct_document_api]
-"apps/word-processor/src/actions/editing.rs" = 1
-"apps/word-processor/src/lib.rs" = 3
-"apps/word-processor/src/word_processor.rs" = 2
 
 [ratchets.empty_action_vocabulary]
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
-"apps/notes/src/search_provider.rs" = 1
-"apps/notes/src/storage.rs" = 2
-"apps/photos/src/framework_history.rs" = 2
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
 "apps/settings/src/panes/audio.rs" = 2
@@ -55,14 +42,40 @@
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/video-editor/src/project_file.rs" = 2
-"apps/word-processor/src/actions/editing.rs" = 1
 "apps/word-processor/src/actions.rs" = 1
 
 # Surfaces whose own PublishesResources still offers document actions beside
 # the resource's publication (`ResourceSurface::publishes_document_actions`).
 # The framework drops such actions from every other surface.
+# Widgets still answering raw resource operations instead of a typed effect
+# vocabulary. Each count may only go down; the target is an empty table.
+[ratchets.raw_operation_handler]
+"apps/api-tester/src/app.rs" = 3
+"apps/browser/src/browser_tabs.rs" = 1
+"apps/browser/src/browser_widget.rs" = 3
+"apps/calculator/src/app.rs" = 2
+"apps/calendar/src/app.rs" = 2
+"apps/camera/src/app.rs" = 3
+"apps/canvas/src/surface.rs" = 3
+"apps/contacts/src/app.rs" = 3
+"apps/diffmerge/src/app.rs" = 2
+"apps/ebook/src/app.rs" = 3
+"apps/feeds/src/app.rs" = 2
+"apps/file-explorer/src/files_app.rs" = 3
+"apps/hex-editor/src/view.rs" = 2
+"apps/mail/src/app.rs" = 3
+"apps/music/src/app/render.rs" = 3
+"apps/notes/src/app.rs" = 3
+"apps/pdf-viewer/src/app.rs" = 3
+"apps/photos/src/app.rs" = 3
+"apps/settings/src/settings_app.rs" = 3
+"apps/sheets/src/app.rs" = 3
+"apps/slides/src/app.rs" = 3
+"apps/terminal/src/main_body.rs" = 2
+"apps/video-editor/src/app.rs" = 3
+"apps/word-processor/src/widget.rs" = 3
+
 [ratchets.surface_document_actions]
 "apps/settings/src/resource.rs" = 1
 "apps/slides/src/resource.rs" = 1
-"apps/video-editor/src/app.rs" = 1
 "apps/word-processor/src/framework.rs" = 1

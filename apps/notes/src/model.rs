@@ -63,12 +63,15 @@ pub struct WorkspaceData {
 }
 
 /// Convenience wrapper around [`WorkspaceData`] with the runtime ops
-/// the UI / storage layer needs. Pure logic — no IO, no rendering.
+/// the UI needs. Pure logic — no IO, no rendering.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub data: WorkspaceData,
     /// What every note says, when the workspace was read from a notebook.
     pub bodies: std::sync::Arc<crate::actions::Bodies>,
+    /// Each note's body as the rich text it is, published as the note's
+    /// body resource.
+    pub body_states: std::rc::Rc<std::collections::HashMap<PageId, tilo_document::RichTextState>>,
 }
 
 impl Workspace {
@@ -227,48 +230,6 @@ impl Workspace {
         }
     }
 
-    /// Remove the page (and recursively every descendant). Returns
-    /// the set of removed ids so callers (the storage layer) can
-    /// delete the corresponding `.md` files. Renumbers the surviving
-    /// siblings on each affected parent so `order` stays contiguous.
-    pub fn delete_page(&mut self, id: PageId) -> Vec<PageId> {
-        // Collect every descendant of `id` (inclusive) into a flat
-        // removal set.
-        let mut to_remove: Vec<PageId> = Vec::new();
-        let mut stack = vec![id];
-        while let Some(cur) = stack.pop() {
-            to_remove.push(cur);
-            for child in self.children_of(Some(cur)) {
-                stack.push(child.id);
-            }
-        }
-        let removed_set: std::collections::HashSet<PageId> = to_remove.iter().copied().collect();
-
-        // Record affected parents (so we know which sibling lists to
-        // re-densify after the removal).
-        let mut affected_parents: std::collections::HashSet<Option<PageId>> =
-            std::collections::HashSet::new();
-        for p in &self.data.pages {
-            if removed_set.contains(&p.id) {
-                affected_parents.insert(p.parent);
-            }
-        }
-
-        self.data.pages.retain(|p| !removed_set.contains(&p.id));
-        self.data
-            .tag_assignments
-            .retain(|edge| !removed_set.contains(&edge.page));
-        if self.data.selected.is_some_and(|s| removed_set.contains(&s)) {
-            self.data.selected = None;
-        }
-
-        for parent in affected_parents {
-            self.renumber_siblings(parent);
-        }
-
-        to_remove
-    }
-
     /// Move `id` up (`delta < 0`) or down (`delta > 0`) among its
     /// siblings by swapping `order` with the adjacent sibling in that
     /// direction, then re-densifying. Returns `true` if the page moved
@@ -390,73 +351,6 @@ impl Workspace {
         true
     }
 
-    /// Deep-copy `id` and its entire subtree, inserting the copy as the
-    /// next sibling right after `id`. Every copied page gets a fresh
-    /// `PageId`; the subtree's internal parent links are rewired to the
-    /// copies so the duplicate is fully independent.
-    ///
-    /// Returns `(new_root, mapping)` where `mapping` pairs each source
-    /// page id with its fresh copy id — the storage layer walks it to
-    /// duplicate the `{uuid}.md` body files. `None` when `id` is unknown
-    /// (or, defensively, if the tree changes out from under the walk).
-    pub fn duplicate_page(&mut self, id: PageId) -> Option<(PageId, Vec<(PageId, PageId)>)> {
-        let src = self.get(id)?.clone();
-        // Visit the subtree parents-before-children so a child's rewired
-        // parent id already exists in the map.
-        let mut order_list: Vec<PageId> = Vec::new();
-        let mut stack = vec![id];
-        while let Some(cur) = stack.pop() {
-            order_list.push(cur);
-            for child in self.children_of(Some(cur)) {
-                stack.push(child.id);
-            }
-        }
-        let mut map: HashMap<PageId, PageId> = HashMap::new();
-        let mut mapping: Vec<(PageId, PageId)> = Vec::with_capacity(order_list.len());
-        for old in &order_list {
-            let new = Uuid::new_v4();
-            map.insert(*old, new);
-            mapping.push((*old, new));
-        }
-        let &new_root = map.get(&id)?;
-        // The sibling `id` currently sits before in its group — insert the
-        // copy right after it (before the sibling that follows `id`).
-        let after_sibling = {
-            let group: Vec<PageId> = self.children_of(src.parent).iter().map(|p| p.id).collect();
-            group
-                .iter()
-                .position(|s| *s == id)
-                .and_then(|pos| group.get(pos + 1).copied())
-        };
-        // Materialise every cloned meta, then append them in one pass.
-        let mut new_metas: Vec<PageMeta> = Vec::with_capacity(order_list.len());
-        for old in &order_list {
-            let meta = self.get(*old)?;
-            let &new_id = map.get(old)?;
-            let new_parent = if *old == id {
-                src.parent
-            } else {
-                meta.parent.map(|p| map.get(&p).copied().unwrap_or(p))
-            };
-            let title = if *old == id {
-                format!("{} copy", meta.title)
-            } else {
-                meta.title.clone()
-            };
-            new_metas.push(PageMeta {
-                id: new_id,
-                title,
-                parent: new_parent,
-                order: meta.order,
-            });
-        }
-        self.data.pages.extend(new_metas);
-        // Position the copy immediately after the source among its
-        // siblings (move_to also re-densifies the group's order).
-        self.move_to(new_root, src.parent, after_sibling);
-        Some((new_root, mapping))
-    }
-
     /// Re-densify `order` on the children of `parent`. Stable: keeps
     /// the existing relative order, just rewrites the values as 0, 1,
     /// 2, ... so the contract "siblings have contiguous order from 0"
@@ -486,8 +380,7 @@ impl Workspace {
 
     /// True when every page's `parent` points at a real page (or is
     /// None) and every sibling group has contiguous `order` starting
-    /// from 0. Used by tests + the storage layer post-load to detect
-    /// corruption.
+    /// from 0.
     ///
     /// # Errors
     ///
@@ -591,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn pages_create_rename_and_delete_with_contiguous_order_and_valid_invariants() {
+    fn pages_create_and_rename_with_contiguous_order_and_valid_invariants() {
         let mut w = Workspace::new();
         let a = w.create_page(None);
         let b = w.create_page(None);
@@ -609,30 +502,7 @@ mod tests {
         // Unknown id is a no-op.
         assert!(!w.rename(Uuid::new_v4(), "nope"));
 
-        // Deleting renumbers the surviving siblings.
-        w.delete_page(b);
-        assert_eq!(w.get(a).unwrap().order, 0);
-        assert_eq!(w.get(c).unwrap().order, 1);
         w.check_invariants().unwrap();
-
-        // Deleting removes descendants recursively.
-        let mut w = Workspace::new();
-        let root = w.create_page(None);
-        let mid = w.create_page(Some(root));
-        let leaf = w.create_page(Some(mid));
-        let removed = w.delete_page(root);
-        assert_eq!(removed.len(), 3);
-        assert!(removed.contains(&root));
-        assert!(removed.contains(&mid));
-        assert!(removed.contains(&leaf));
-        assert!(w.pages().is_empty());
-
-        // The selection clears when its page is deleted.
-        let mut w = Workspace::new();
-        let id = w.create_page(None);
-        w.set_selected(Some(id));
-        w.delete_page(id);
-        assert!(w.selected().is_none());
 
         // An orphan is an invariant violation.
         let mut w = Workspace::new();
@@ -705,38 +575,6 @@ mod tests {
         assert!(!w.move_to(root, Some(child), None));
         assert!(!w.move_to(root, Some(root), None));
         assert_eq!(w.get(root).unwrap().parent, None);
-        w.check_invariants().unwrap();
-    }
-
-    #[test]
-    fn duplicate_page_deep_copies_subtree_after_source() {
-        let mut w = Workspace::new();
-        let a = w.create_page(None);
-        w.rename(a, "Projects");
-        let child = w.create_page(Some(a));
-        w.rename(child, "Launch");
-        let grand = w.create_page(Some(child));
-        w.rename(grand, "Tasks");
-        let sib = w.create_page(None);
-        w.rename(sib, "Inbox");
-
-        let (new_root, mapping) = w.duplicate_page(a).expect("duplicate");
-        // Fresh ids for every node in the subtree (root + child + grand).
-        assert_eq!(mapping.len(), 3);
-        assert!(mapping.iter().all(|(old, new)| old != new));
-        // The copy sits right after the source among root siblings.
-        let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(roots, vec![a, new_root, sib], "copy lands after the source");
-        // Copy carries a " copy" title and an independent subtree.
-        assert_eq!(w.get(new_root).unwrap().title, "Projects copy");
-        let copy_children = w.children_of(Some(new_root));
-        assert_eq!(copy_children.len(), 1);
-        assert_eq!(copy_children[0].title, "Launch");
-        let copy_grand = w.children_of(Some(copy_children[0].id));
-        assert_eq!(copy_grand.len(), 1);
-        assert_eq!(copy_grand[0].title, "Tasks");
-        // Original subtree is untouched (still 3 originals + 3 copies + sib).
-        assert_eq!(w.children_of(Some(a)).len(), 1);
         w.check_invariants().unwrap();
     }
 

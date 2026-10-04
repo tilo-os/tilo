@@ -385,6 +385,30 @@ impl HistoryHost {
             .find(|source| source.scope() == key)
             .expect("validated scope")
     }
+    /// The checked-file scope whose content asked to show a file's history
+    /// while another scope is shown: opening a file's history from the app
+    /// (its History command on a selected file) moves to that file's scope.
+    fn file_scope_asking_to_open(&self) -> Option<usize> {
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
+            return None;
+        }
+        self.registration
+            .definition
+            .scopes
+            .iter()
+            .position(|scope| {
+                self.registration.sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        HistorySourceRegistration::CheckedFiles { scope: key, source }
+                            if *key == scope.key && source.wants_open()
+                    )
+                })
+            })
+    }
     pub(crate) fn validate(&self) -> Result<(), HistoryRegistrationError> {
         if self.invalid_owner {
             return Err(HistoryRegistrationError::UnsupportedOwner);
@@ -961,6 +985,9 @@ impl HistoryHost {
         if self.assets.has_results() {
             return true;
         }
+        if self.file_scope_asking_to_open().is_some() {
+            return true;
+        }
         if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
             && (source.target().map(|target| target.binding) != self.observed_file_binding
                 || source.wants_open()
@@ -1037,6 +1064,9 @@ impl HistoryHost {
             changed = true;
         }
         let requested = self.requested_entry.take().filter(|_| self.open);
+        if let Some(scope) = self.file_scope_asking_to_open() {
+            self.commands.borrow_mut().push_back(Command::Scope(scope));
+        }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.

@@ -1,6 +1,5 @@
 //! Exact-origin site protection and information, owned by browser chrome.
 use std::collections::BTreeSet;
-use std::path::Path;
 
 pub(crate) fn origin(input: &str) -> Option<String> {
     if input.len() > 8192 {
@@ -8,42 +7,6 @@ pub(crate) fn origin(input: &str) -> Option<String> {
     }
     let url = url::Url::parse(input).ok()?;
     matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
-}
-#[derive(Default, Debug, PartialEq)]
-pub(crate) struct Exceptions(BTreeSet<String>);
-impl Exceptions {
-    fn set(&mut self, url: &str, disabled: bool) {
-        if let Some(origin) = origin(url) {
-            if disabled {
-                if self.0.len() < 1024 {
-                    self.0.insert(origin);
-                }
-            } else {
-                self.0.remove(&origin);
-            }
-        }
-    }
-    #[cfg(test)]
-    fn contains(&self, url: &str) -> bool {
-        origin(url).is_some_and(|o| self.0.contains(&o))
-    }
-    fn save(&self, path: &Path) -> std::io::Result<()> {
-        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
-    }
-    fn load(path: &Path) -> Self {
-        if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {
-            return Self::default();
-        }
-        let values: Vec<String> = std::fs::read(path)
-            .ok()
-            .and_then(|v| serde_json::from_slice(&v).ok())
-            .unwrap_or_default();
-        let mut rules = Self::default();
-        for value in values.into_iter().take(1024) {
-            rules.set(&value, true);
-        }
-        rules
-    }
 }
 use ui::time::{Duration, Instant};
 use ui::{
@@ -84,8 +47,12 @@ pub(crate) struct SiteControls {
     next_poll: Instant,
     notice: String,
     filters: crate::native_blocker::Status,
-    persistent: bool,
-    runtime_exceptions: std::sync::Arc<std::sync::Mutex<Exceptions>>,
+    /// The origins protection is off for, as the browser document holds
+    /// them; the engine follows them.
+    exceptions: BTreeSet<String>,
+    /// Protection changes the engine accepted for an origin, which the
+    /// browser records in its document.
+    decisions: Vec<(String, bool)>,
 }
 impl Default for SiteControls {
     fn default() -> Self {
@@ -103,35 +70,47 @@ impl Default for SiteControls {
             next_poll: ui::time::now(),
             notice: String::new(),
             filters: crate::native_blocker::status(),
-            persistent: false,
-            runtime_exceptions: std::sync::Arc::default(),
+            exceptions: BTreeSet::new(),
+            decisions: Vec::new(),
         }
     }
 }
 impl SiteControls {
-    pub fn share_runtime_state(&mut self, other: &Self) {
-        self.runtime_exceptions = other.runtime_exceptions.clone();
-    }
-
-    pub fn initialize(&mut self, engine: &SharedEngine, persistent: bool) {
-        self.persistent = persistent;
-        if engine.supports_native_filtering() {
-            if persistent {
-                let exceptions = crate::storage::config_dir()
-                    .map(|p| Exceptions::load(&p.join("site-exceptions.json")))
-                    .unwrap_or_default();
-                if let Ok(mut runtime) = self.runtime_exceptions.lock() {
-                    *runtime = exceptions;
-                }
-            }
-            let exceptions = self
-                .runtime_exceptions
-                .lock()
-                .map(|rules| rules.0.iter().cloned().collect())
-                .unwrap_or_default();
-            engine.send(WebViewCommand::SetSiteExceptions(exceptions));
+    /// Follow the site exceptions the document holds. A started engine is
+    /// told when they change; a new one takes them in [`Self::initialize`].
+    pub fn present_exceptions(
+        &mut self,
+        engine: &SharedEngine,
+        exceptions: &BTreeSet<String>,
+        started: bool,
+    ) {
+        if &self.exceptions == exceptions {
+            return;
+        }
+        self.exceptions.clone_from(exceptions);
+        if started {
+            self.send_exceptions(engine);
         }
     }
+
+    pub fn initialize(&self, engine: &SharedEngine) {
+        self.send_exceptions(engine);
+    }
+
+    fn send_exceptions(&self, engine: &SharedEngine) {
+        if engine.supports_native_filtering() {
+            engine.send(WebViewCommand::SetSiteExceptions(
+                self.exceptions.iter().cloned().collect(),
+            ));
+        }
+    }
+
+    /// The protection changes accepted since the last call: `(origin,
+    /// enabled)`, for the document.
+    pub fn take_decisions(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.decisions)
+    }
+
     pub fn navigation(&mut self, url: &str) {
         self.committed = origin(url);
         self.open = false;
@@ -197,17 +176,13 @@ impl SiteControls {
                     self.notice = message;
                 }
                 if success && matches!(action.as_str(), "enable" | "disable") {
-                    if let Ok(mut exceptions) = self.runtime_exceptions.lock() {
-                        exceptions.set(&origin, action == "disable");
-                        if self.persistent
-                            && let Some(path) =
-                                crate::storage::config_dir().map(|p| p.join("site-exceptions.json"))
-                            && exceptions.save(&path).is_err()
-                        {
-                            self.notice =
-                                "Changed for this session; could not save the preference".into();
-                        }
+                    let enabled = action == "enable";
+                    if enabled {
+                        self.exceptions.remove(&origin);
+                    } else {
+                        self.exceptions.insert(origin.clone());
                     }
+                    self.decisions.push((origin.clone(), enabled));
                     // This belongs to the accepted action, not the popover's
                     // replaceable button-intent slot. Dismissal must not lose it.
                     self.pending_reload = Some((origin, generation));
@@ -596,44 +571,21 @@ mod tests {
             }
         }
 
-        // Phase `exceptions_roundtrip_exact_origins_and_reenable`.
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("sites.json");
-            let mut rules = Exceptions::default();
-            rules.set("https://EXAMPLE.com:443/path", true);
-            rules.save(&path).unwrap();
-            let mut loaded = Exceptions::load(&path);
-            assert!(loaded.contains("https://example.com/other"));
-            assert!(!loaded.contains("http://example.com/"));
-            assert!(!loaded.contains("https://example.com:444/"));
-            loaded.set("https://example.com/", false);
-            assert!(!loaded.contains("https://example.com/"));
-        }
-
-        // Phase `private_tabs_share_runtime_exceptions_without_disk_persistence`.
+        // Phase `an_accepted_change_is_a_decision_and_the_engine_follows_the_document`.
         {
             let recorder = ui::webview::test_engine::TestEngine::new();
             let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
-            let normal = tempfile::tempdir().unwrap();
-            let normal_file = normal.path().join("site-exceptions.json");
-            let mut normal_exceptions = Exceptions::default();
-            normal_exceptions.set("https://normal.test", true);
-            normal_exceptions.save(&normal_file).unwrap();
-            let normal_before = std::fs::read(&normal_file).unwrap();
-            let mut first = SiteControls::default();
-            let mut second = SiteControls::default();
-            first.initialize(&engine, false);
-            second.share_runtime_state(&first);
-            first.committed = Some("https://private.test".into());
-            first.action = Some((
+            let mut controls = SiteControls::default();
+            controls.initialize(&engine);
+            controls.committed = Some("https://private.test".into());
+            controls.action = Some((
                 7,
                 "https://private.test".into(),
                 3,
                 "disable".into(),
                 ui::time::now(),
             ));
-            assert!(first.apply(WebViewEvent::SiteResult {
+            assert!(controls.apply(WebViewEvent::SiteResult {
                 request_id: 7,
                 origin: "https://private.test".into(),
                 generation: 3,
@@ -641,18 +593,18 @@ mod tests {
                 success: true,
                 message: "disabled".into(),
             }));
-            assert!(
-                second
-                    .runtime_exceptions
-                    .lock()
-                    .unwrap()
-                    .contains("https://private.test/child")
+            assert_eq!(
+                controls.take_decisions(),
+                vec![("https://private.test".to_string(), false)]
             );
-            second.initialize(&engine, false);
+            assert!(controls.take_decisions().is_empty());
+
+            let mut second = SiteControls::default();
+            let held = BTreeSet::from(["https://private.test".to_string()]);
+            second.present_exceptions(&engine, &held, true);
             assert!(recorder.commands().iter().any(|command| {
                 matches!(command, WebViewCommand::SetSiteExceptions(origins) if origins == &["https://private.test".to_string()])
             }));
-            assert_eq!(std::fs::read(normal_file).unwrap(), normal_before);
         }
 
         // Phase `certificate_dates_and_protocol_versions_are_human_readable`.
@@ -881,12 +833,8 @@ mod tests {
                     let mut controls = protection_toggle(kind);
                     assert!(controls.apply(toggle_reply(kind, true)));
                     assert_eq!(
-                        controls
-                            .runtime_exceptions
-                            .lock()
-                            .unwrap()
-                            .contains("https://one.test"),
-                        kind == "disable"
+                        controls.take_decisions(),
+                        vec![("https://one.test".to_string(), kind == "enable")]
                     );
                     assert!(
                         !controls.apply(toggle_reply(kind, true)),

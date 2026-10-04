@@ -410,3 +410,76 @@ fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
     let mut plain = TestApp::<PlayerApp>::new().unwrap();
     assert!(shown(&mut plain).contains("nothing to play"));
 }
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.gallery.effects")]
+pub enum GalleryEffect {
+    /// Show a picture.
+    #[effect(permission = "read")]
+    Show { picture: String },
+}
+
+thread_local! {
+    /// The pictures shown, in order.
+    static SHOWN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The gallery's dispatcher, as its view was built.
+    static GALLERY: std::cell::RefCell<Option<Dispatcher<Sketch>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Shows the picture a launch names, an effect rather than an edit.
+struct GalleryApp;
+
+impl ResourceApp for GalleryApp {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-gallery";
+    const TITLE: &'static str = "Gallery";
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        cx.effects(|effect: GalleryEffect, _| {
+            let GalleryEffect::Show { picture } = effect;
+            SHOWN.with(|shown| shown.borrow_mut().push(picture));
+            Ok(tilo_app::framework::Effected::done())
+        });
+        GALLERY.with(|gallery| *gallery.borrow_mut() = Some(cx.dispatcher()));
+        Box::new(cx.text(|sketch| sketch.source.clone()))
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Sketch>> {
+        input
+            .argument()
+            .map(|picture| {
+                Invoke::effect(&GalleryEffect::Show {
+                    picture: picture.to_owned(),
+                })
+            })
+            .into_iter()
+            .collect()
+    }
+}
+
+#[test]
+fn a_launch_invokes_an_effect_which_changes_no_document_and_a_viewer_reaches() {
+    let mut app = TestApp::<GalleryApp>::launched(&["harbour.png"]).unwrap();
+    app.harness().relayout();
+    assert_eq!(SHOWN.with(|shown| shown.borrow().clone()), ["harbour.png"]);
+    assert_eq!(app.state().source, "", "the launch edited nothing");
+    assert!(!app.undo(), "nothing to take back");
+
+    // A viewer may not edit, but an effect declared for readers reaches its
+    // handler through the same door.
+    let mut viewer = TestApp::<GalleryApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let dispatcher = GALLERY
+        .with(|gallery| gallery.borrow_mut().take())
+        .expect("the viewer's view was built");
+    dispatcher.invoke(Invoke::effect(&GalleryEffect::Show {
+        picture: "meadow.png".into(),
+    }));
+    viewer.settle();
+    assert_eq!(
+        SHOWN.with(|shown| shown.borrow().clone()),
+        ["harbour.png", "meadow.png"]
+    );
+    assert!(dispatcher.refused().get().is_none(), "nothing was refused");
+}

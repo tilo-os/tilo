@@ -164,9 +164,21 @@ MODEL_RATCHETS = {
         "app-owned document; the framework owns the resource document",
     ),
 }
+# Counted over every line of a workspace app's sources but its test files: a
+# hook a widget implements anywhere in a file is the widget's.
+WORKSPACE_RATCHETS = {
+    "raw_operation_handler": (
+        re.compile(
+            r"\bfn\s+(?:start_operation|poll_resource_operation|local_resource_operation_handlers)\s*\("
+        ),
+        "raw resource-operation hook; answer a typed #[derive(Effect)] vocabulary in "
+        "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
+    ),
+}
 RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
 }
 TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
@@ -286,6 +298,11 @@ def audit_ratchets(
             rules += [
                 (rule, pattern, reason, production)
                 for rule, (pattern, reason) in MODEL_RATCHETS.items()
+            ]
+            shipped = "" if is_test_source(relative) else code
+            rules += [
+                (rule, pattern, reason, shipped)
+                for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
             ]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))

@@ -39,16 +39,30 @@ enum Profile {
     DataDir(PathBuf),
 }
 
-/// A component prepared on a private or explicit profile keeps its settings
-/// in that profile too, never in the person's session document.
-pub(crate) fn with_settings_file(
+/// A component prepared on a private or explicit profile at `root` keeps
+/// its settings and its files in that profile too, never in the person's
+/// session document or file areas.
+pub(crate) fn in_profile(
     mut prepared: PreparedComponentInputs,
-    file: std::path::PathBuf,
+    root: &std::path::Path,
+    app_id: &str,
 ) -> PreparedComponentInputs {
     prepared
         .context
-        .provide_settings(ui_core::storage::SettingsDocument::File(file));
+        .provide_settings(ui_core::storage::SettingsDocument::File(
+            root.join("settings.json"),
+        ));
     prepared
+        .context
+        .provide_files(ui_core::storage::AppFiles::at(
+            ui_core::storage::AppPaths::under(root.join("files"), app_id),
+        ));
+    prepared
+}
+
+/// The root of a `--data-dir` profile.
+pub(crate) fn data_dir_root(directory: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf())
 }
 
 /// The content store of a `--data-dir` profile.
@@ -58,20 +72,18 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
     )
 }
 
-/// The settings document of a `--data-dir` profile.
-pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
-    std::path::absolute(directory)
-        .unwrap_or_else(|_| directory.to_path_buf())
-        .join("settings.json")
-}
-
 impl Profile {
     /// The profile's settings document, which the app's typed settings use
     /// instead of the person's.
     fn settings(&self) -> PathBuf {
+        self.root().join("settings.json")
+    }
+
+    /// The directory the profile keeps everything in.
+    fn root(&self) -> PathBuf {
         match self {
-            Self::Temporary(directory) => directory.path().join("settings.json"),
-            Self::DataDir(directory) => data_dir_settings(directory),
+            Self::Temporary(directory) => directory.path().to_path_buf(),
+            Self::DataDir(directory) => data_dir_root(directory),
         }
     }
 
@@ -355,7 +367,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None => A::shot_viewport(None),
         };
         prepared.context.provide_content(profile.content());
-        let prepared = with_settings_file(prepared, profile.settings());
+        let prepared = in_profile(prepared, &profile.root(), A::ID);
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
         let mut harness =
@@ -373,6 +385,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
             permissions,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// The app's file areas in this profile, which the running app writes
+    /// instead of the person's.
+    pub fn files(&self) -> ui_core::storage::AppFiles {
+        ui_core::storage::AppFiles::at(ui_core::storage::AppPaths::under(
+            self.profile.root().join("files"),
+            A::ID,
+        ))
     }
 
     /// The app's typed settings in this profile's settings document, which
@@ -439,6 +460,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
             harness.close_components();
         }
         Ok(())
+    }
+
+    /// The custom surface of type `S` the view hosts, without running a
+    /// frame: for a test reading it, or setting it up, between the events it
+    /// sends.
+    ///
+    /// # Panics
+    /// Panics when the view hosts no surface of type `S`.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test naming a surface its app does not host is wrong"
+    )]
+    pub fn surface_mut<S: 'static>(&mut self) -> &mut S {
+        surface_in::<A, S>(self.harness()).expect("the view hosts this surface")
     }
 
     /// The headless frame harness, for input-level tests (`click_named`,
@@ -934,6 +969,55 @@ impl<A: ResourceApp> HeadlessApp<A> {
         harness.relayout();
         redone
     }
+}
+
+/// Run `visit` on the custom surface of type `S` that `A`'s view hosts in
+/// `harness` (what [`ViewCx::surface`](super::ViewCx::surface) mounted), then
+/// the frames that follow; `None` when the view hosts no such surface at its
+/// root. For a test that drives a component mounted another way than
+/// [`HeadlessApp`] (two windows over one record).
+pub fn with_surface<A: ResourceApp, S: 'static, T>(
+    harness: &mut FrameHarness,
+    visit: impl FnOnce(&mut S) -> T,
+) -> Option<T> {
+    harness
+        .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| surface_of::<A, S>(root).map(visit))
+        .flatten()
+}
+
+/// The custom surface of type `S` that `A`'s view hosts in `harness`,
+/// without running a frame (see [`with_surface`]).
+pub fn surface_in<A: ResourceApp, S: 'static>(harness: &mut FrameHarness) -> Option<&mut S> {
+    surface_of::<A, S>(harness.widget_mut::<ResourceRoot<A::Resource>>()?)
+}
+
+fn surface_of<A: ResourceApp, S: 'static>(root: &mut ResourceRoot<A::Resource>) -> Option<&mut S> {
+    root.content_mut()
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<S>())
+}
+
+/// A dispatcher outside any host, for a unit test of a surface (or of the
+/// model behind it) that edits through one: each immediate action
+/// ([`Dispatcher::apply_now`]) applies to the document handed to it,
+/// attributed to `author`, through the same executor as a hosted one, so
+/// the test exercises the surface's real write path. Queued invocations
+/// ([`Dispatcher::apply`]) are not taken by anyone: drive those through
+/// [`TestApp`].
+pub fn detached_dispatcher<R: Resource>(author: &str) -> super::Dispatcher<R> {
+    super::Dispatcher::new("test", R::KIND, false, Some(author))
+}
+
+/// The live state of `doc`, for a surface a unit test attaches outside any
+/// host (see [`detached_dispatcher`]); the surface keeps it current from the
+/// document its `sync` receives, as in a host.
+///
+/// # Errors
+/// Returns why `doc` does not read as `R`.
+pub fn detached_live<R: Resource>(
+    doc: &mut tilo_resource::Doc,
+) -> Result<super::Live<R>, tilo_resource::ModelError> {
+    Ok(super::Live::new(tilo_resource::Reader::open(doc)?))
 }
 
 /// Inspect the window `A`'s live launch opens: the same definition and

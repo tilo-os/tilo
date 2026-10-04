@@ -238,7 +238,12 @@ impl BrowserTabs {
     ///
     /// # Errors
     /// Returns an error if session loading, restoration or startup persistence fails.
-    pub fn with_session(mut self, store: crate::session::SessionStore) -> Result<Self, String> {
+    /// Keep the open tabs in `store`, restoring what it saved (or offering
+    /// to, after a crash).
+    ///
+    /// # Errors
+    /// Returns an error when the saved session cannot be restored or saved.
+    pub fn attach_session(&mut self, store: crate::session::SessionStore) -> Result<(), String> {
         let saved = match store.load() {
             Ok(saved) => saved,
             Err(error) => {
@@ -265,7 +270,7 @@ impl BrowserTabs {
             }
         }
         self.session_initialized = true;
-        Ok(self)
+        Ok(())
     }
     fn make_recovery_panel(&self) -> Box<dyn Widget> {
         use ui::widget::{Button, Column, Container, Row, Text};
@@ -554,6 +559,91 @@ impl BrowserTabs {
     pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
         self.active().content_rect_handle()
     }
+    /// Present the document's bookmarks and preferences to every tab.
+    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
+        for tab in &mut self.tabs {
+            tab.widget.present_state(state);
+        }
+    }
+
+    /// Submit every tab's bookmark and preference edits through `dispatcher`.
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: &ui::framework::Dispatcher<crate::resource::Browser>,
+    ) {
+        for tab in &mut self.tabs {
+            tab.widget.attach_dispatcher(dispatcher.clone());
+        }
+    }
+
+    /// Keep every tab's visits in the person's browsing history.
+    pub(crate) fn attach_history(
+        &mut self,
+        record: &ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+    ) {
+        for tab in &mut self.tabs {
+            tab.widget.attach_history(record.clone());
+        }
+    }
+
+    /// Fill every tab's forms from the person's address book.
+    pub(crate) fn attach_address_book(
+        &mut self,
+        book: &ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        for tab in &mut self.tabs {
+            tab.widget.attach_address_book(book.clone());
+        }
+    }
+
+    /// The page the person is looking at.
+    pub(crate) fn active_page(&self) -> &BrowserWidget {
+        self.active()
+    }
+
+    /// Stage a screenshot scenario: the tab strip's, or the active page's.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        if scenario == Some("tabs") {
+            self.stage_tab_strip();
+        } else {
+            self.active_mut().stage(scenario);
+        }
+        self.dirty = true;
+    }
+
+    /// A full strip: 32 tabs with long titles, two pinned, the last active,
+    /// with a favicon, a muted tab and playing media.
+    fn stage_tab_strip(&mut self) {
+        let width = self.rect.width();
+        let descriptors = (1..=32)
+            .map(|id| {
+                TabDescriptor::new(
+                    id,
+                    format!("Fixture tab {id} with a deliberately long title"),
+                )
+            })
+            .collect();
+        let mut bar = BrowserTabStrip::new(descriptors, 32);
+        bar.set_pinned(1, true);
+        bar.set_pinned(2, true);
+        bar.set_active(32);
+        bar.set_viewport_width(width);
+        bar.set_motion_reduced(true);
+        let favicon = vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![
+                20, 110, 230, 255, 255, 190, 20, 255, 255, 80, 80, 255, 30, 190, 100, 255,
+            ])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        };
+        bar.set_fixture_visual(1, Some(favicon), false, false, false);
+        bar.set_fixture_visual(2, None, true, false, false);
+        bar.set_fixture_visual(30, None, false, true, false);
+        bar.set_fixture_visual(32, None, false, true, true);
+        *self.bar = bar;
+    }
     fn active(&self) -> &BrowserWidget {
         // A workspace always contains its active tab, including after last close.
         #[allow(clippy::unwrap_used, reason = "workspace retains an active tab")]
@@ -626,7 +716,6 @@ impl BrowserTabs {
             .set_window_fullscreen_active(window_fullscreen_active);
         self.observed_active_content_fullscreen = false;
         self.clear_fullscreen_hint();
-        self.active_mut().refresh_shared_history();
         self.active_mut().activate_session_uri();
         self.dirty = true;
     }
@@ -1999,7 +2088,8 @@ mod tests {
                 .unwrap()
                 .unwrap();
             store.save(&dirty).unwrap();
-            let mut tabs = workspace().with_session(store).unwrap();
+            let mut tabs = workspace();
+            tabs.attach_session(store).unwrap();
             tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
             assert!(tabs.recovery.is_some());
             drop(tabs);
@@ -2007,7 +2097,8 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(store.load().unwrap(), Some(dirty));
-            let mut tabs = workspace().with_session(store).unwrap();
+            let mut tabs = workspace();
+            tabs.attach_session(store).unwrap();
             // Exercise the exact action-bound button operation used by the host.
             let result = tabs
                 .start_operation(
@@ -2184,7 +2275,8 @@ mod tests {
                 .unwrap()
                 .unwrap();
             store.save(&saved).unwrap();
-            let mut tabs = workspace().with_session(store).unwrap();
+            let mut tabs = workspace();
+            tabs.attach_session(store).unwrap();
             assert_eq!(tabs.session_snapshot(true), saved);
             assert_eq!(tabs.tabs.len(), 3);
             tabs.active_mut()
@@ -2218,7 +2310,9 @@ mod tests {
                 clean_exit: false,
             })
             .unwrap();
-        (dir, workspace().with_session(store).unwrap())
+        let mut tabs = workspace();
+        tabs.attach_session(store).unwrap();
+        (dir, tabs)
     }
 
     fn recovery_layout(
