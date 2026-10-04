@@ -16,7 +16,7 @@ use ui::Widget;
 use crate::actions;
 use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
-    MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
+    MenuAction, MenuTarget, RowSwipe,
 };
 use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
@@ -443,7 +443,7 @@ impl ChatApp {
                 .get(sw.channel_index)
                 .map(|c| c.id.clone());
             if let Some(id) = channel {
-                if sw.dx() >= SWIPE_COMMIT_DX {
+                if sw.dx() >= self.chrome.swipe_commit {
                     // Swipe-left commits the channel's primary action,
                     // which is exactly the context menu's first item.
                     self.apply_channel_action(&id, MenuAction::channel_swipe_left(), doc);
@@ -2074,11 +2074,8 @@ mod tests {
                 &mouse(ElementState::Pressed, MouseButton::Left),
             );
             assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
-            feed(
-                &mut app,
-                &mut doc,
-                &cursor(row.center().x - (SWIPE_COMMIT_DX + 20.0), cy),
-            );
+            let past_commit = row.center().x - (app.chrome.swipe_commit + 20.0);
+            feed(&mut app, &mut doc, &cursor(past_commit, cy));
             feed(
                 &mut app,
                 &mut doc,

@@ -1285,14 +1285,19 @@ impl ChatApp {
         let groups = catalogue.groups();
         self.emoji_group = self.emoji_group.min(groups.len().saturating_sub(1));
         let tabs_y = search.y1 + pad;
-        let tab_w = (w - 2.0 * pad) / groups.len().max(1) as f64;
-        let tab_rects: Vec<Rect> = (0..groups.len())
-            .map(|i| {
-                let x = panel.x0 + pad + i as f64 * tab_w;
-                Rect::new(x, tabs_y, x + tab_w, tabs_y + tabs_h)
-            })
-            .collect();
         let icons: Vec<&str> = groups.iter().map(emoji::Group::icon).collect();
+        let segments: Vec<ui::widget::Segment> = icons
+            .iter()
+            .map(|icon| ui::widget::Segment::new(*icon))
+            .collect();
+        let tab_rects = SegmentedFace::partition_segments(
+            Rect::new(panel.x0 + pad, tabs_y, panel.x1 - pad, tabs_y + tabs_h),
+            &segments,
+            SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            tr,
+            &local,
+        );
         let selected = if query.is_empty() {
             self.emoji_group
         } else {
