@@ -29,7 +29,9 @@ pub fn person_room(user_public_key: &[u8; 32]) -> uuid::Uuid {
         .chain_update(user_public_key)
         .finalize();
     let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    for (byte, digested) in bytes.iter_mut().zip(digest) {
+        *byte = digested;
+    }
     uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
