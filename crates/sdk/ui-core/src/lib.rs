@@ -433,7 +433,7 @@ pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
 // CRDT-bound widget.
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use status_bubble::StatusBubble;
+pub use status_bubble::{SaveAction, SaveState, SaveStatusSurface, StatusBubble};
 pub use text_edit::{Edit, EditCore, Motion};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,

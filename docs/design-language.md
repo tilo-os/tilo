@@ -75,7 +75,9 @@ every app window in that workspace.
 - A primary action is an *inverted* control: primary ink as its fill and the
   content surface as its label.
 - A selected row, tab or segment is a *lift* (HIG §9.3): one surface step plus
-  primary ink, with no hue.
+  primary ink, with no hue. The armed row of a menu is the same lift, one
+  and a half steps off its floating panel so it reads at a glance and stays
+  quiet.
 - A switch that is on uses the inverted fill.
 - Links are primary ink with an underline.
 
@@ -84,14 +86,17 @@ caret and text-selection tint, the same colour their cursor has for
 collaborators. Their presence carries it to every collaborator's machine;
 until they choose one, it derives from their stable identity, so every
 machine shows the same colour. Each collaborator's and agent's colour marks their presence,
-cursor, selection and attribution.
+cursor, selection and attribution. Unread counts, mentions and anything
+else that wants the person's attention are filled in their colour too,
+the same mark in a sidebar and on a badge.
 
 **Presence palette.** Twelve hues at equal OKLCH lightness and chroma (dark
 L 0.74 C 0.14; light L 0.58 C 0.15) that differ in hue only, so no participant
 looks more important than another.
 
 **Status.** Danger, warning and success exist only for status. They are muted
-(C ≤ 0.13) and never used as decoration. A destructive button uses danger ink
+(C ≤ 0.13) and never used as decoration. Danger red means an error or a
+failure, never unread, new or live. A destructive button uses danger ink
 on a neutral control and is filled only inside the confirmation step.
 
 ## Shape

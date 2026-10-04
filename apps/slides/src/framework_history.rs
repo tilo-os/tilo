@@ -15,10 +15,10 @@ use ui::history_mode::{
     HistoryPresentation, HistoryPreview, HistoryScopeDefinition, PreviewAccessibility,
     PreviewInput, PreviewNavigation, PreviewView,
 };
-use ui::{TextRenderer, Theme};
+use ui::{TextRenderer, TextRole, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
 
@@ -327,7 +327,7 @@ impl DeckPreview {
     }
     fn notes(&self) -> String {
         self.selected()
-            .map_or_else(String::new, |s| format!("Speaker notes\n{}", s.notes))
+            .map_or_else(String::new, |s| s.notes.clone())
     }
     fn clamp(&mut self) {
         let width = (self.bounds.width() - 32.).max(1.) * self.view.zoom;
@@ -350,13 +350,19 @@ impl DeckPreview {
     }
 }
 impl HistoryPreview for DeckPreview {
-    fn layout(&mut self, bounds: Rect, tr: &mut TextRenderer, _: &Theme) -> Result<(), String> {
+    fn layout(&mut self, bounds: Rect, tr: &mut TextRenderer, theme: &Theme) -> Result<(), String> {
         self.bounds = bounds;
         self.notes_width = (bounds.width() - 32.).max(1.);
-        self.notes_height = f64::from(
-            tr.measure(&self.notes(), 16., Some(self.notes_width as f32))
+        let label = f64::from(theme.text(TextRole::Subheading).line_height_px());
+        self.notes_height = label
+            + f64::from(
+                tr.measure_style(
+                    &self.notes(),
+                    Some(self.notes_width as f32),
+                    &theme.text(TextRole::Body),
+                )
                 .1,
-        );
+            );
         self.clamp();
         Ok(())
     }
@@ -379,26 +385,41 @@ impl HistoryPreview for DeckPreview {
                 self.slide_rect,
                 8.,
             );
-            tr.draw_text(
-                scene,
-                &self.notes(),
-                16.,
+            let notes = self.notes();
+            let x = self.bounds.x0 + 16.;
+            let y = self.slide_rect.y1 + 24.;
+            let mut ctx = ui::paint::PaintCtx::new(scene, transform, tr, theme);
+            ctx.text_role(
+                &crate::strings::tr("slides-speaker-notes"),
+                TextRole::Subheading,
                 theme.text_primary,
-                transform * Affine::translate((self.bounds.x0 + 16., self.slide_rect.y1 + 24.)),
+                Point::new(x, y),
+                None,
+            );
+            let label = ctx.line_box(TextRole::Subheading);
+            let (notes, ink) = if notes.is_empty() {
+                (crate::strings::tr("slides-no-notes"), theme.text_dim)
+            } else {
+                (notes, theme.text_primary)
+            };
+            ctx.text_role(
+                &notes,
+                TextRole::Body,
+                ink,
+                Point::new(x, y + label),
                 Some(self.notes_width as f32),
             );
         } else {
             let message = if self.deck.is_some() {
-                "Empty presentation — no slides in this version."
+                crate::strings::tr("slides-history-no-slides")
             } else {
-                "No deck recorded in this version. Restore is unavailable."
+                crate::strings::tr("slides-history-no-deck")
             };
-            tr.draw_text(
-                scene,
-                message,
-                16.,
+            ui::paint::PaintCtx::new(scene, transform, tr, theme).text_role(
+                &message,
+                TextRole::Body,
                 theme.text_dim,
-                transform * Affine::translate((self.bounds.x0 + 16., self.bounds.y0 + 16.)),
+                Point::new(self.bounds.x0 + 16., self.bounds.y0 + 16.),
                 Some((self.bounds.width() - 32.).max(1.) as f32),
             );
         }
