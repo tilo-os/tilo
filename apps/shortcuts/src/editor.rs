@@ -23,7 +23,7 @@ use crate::model::Draft;
 /// checker and the save effect see it.
 #[must_use]
 pub fn candidate(draft: &Draft, catalog: &ActionCatalog) -> Shortcut {
-    let permissions = grant::least_privilege(&draft.program.0.steps, catalog);
+    let permissions = grant::least_privilege(&draft.program().steps, catalog);
     draft.shortcut(grant::rules(&permissions))
 }
 
