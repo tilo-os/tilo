@@ -5,7 +5,7 @@ use crate::toolbar::{OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
 use ui::chrome::{SelectionState, selection_floor_ramp};
 use ui::text_render::TextWeight;
-use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead};
+use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace};
 use ui::{
     TextRenderer, TextRole, TextStyle, Theme,
     icons::{self, Icon},
@@ -713,11 +713,10 @@ fn draw_toolbar_item(
 fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, top: bool, hovered: bool) {
     let gap = f64::from(ctx.theme.tokens.spacing.s2);
     let height = ChipFace::height(ctx.theme);
-    // As wide as the word needs, centred in its slot, so the label never
-    // sits against one end of an evenly split band.
+    // The whole slot is the chip; its word centres in it, so the band reads
+    // as even keys whatever each word's length.
     let room = (rect.width() - 2.0 * gap).max(0.0);
-    let natural = ChipFace::intrinsic_width(word, ChipLead::None, false, ctx.text, ctx.theme);
-    let chip = Rect::from_center_size(rect.center(), (natural.min(room), height));
+    let chip = Rect::from_center_size(rect.center(), (room, height));
     // The auto pick is the chip in the lifted tier, like a selected segment:
     // an emphasis that carries no colour.
     ChipFace::new(chip, word)

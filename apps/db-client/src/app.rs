@@ -191,9 +191,7 @@ impl DbClientApp {
         let shell = NavShell::new()
             .with_id("db-client")
             .sidebar(Box::new(Navigator::new(&link)))
-            .with_filter(Box::new(
-                ui::widget::SearchField::filter().with_placeholder("Filter tables"),
-            ))
+            .with_filter(ui::widget::SearchField::filter().with_placeholder("Filter tables"))
             .content(Box::new(Workspace::new(&link)))
             .content_header("", actions);
         let mut app = Self {

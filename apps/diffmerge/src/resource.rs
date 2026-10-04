@@ -99,7 +99,8 @@ impl ResourceApp for DiffmergeShell {
         Box::new(
             NavShell::new()
                 .content(cx.surface(comparison))
-                .content_header("", chrome.actions()),
+                .content_header("", chrome.actions())
+                .content_header_leading(chrome.mode_switch()),
         )
     }
 

@@ -203,9 +203,11 @@ impl<'a> StatTileFace<'a> {
         if self.hero { &m.hero } else { &m.value }
     }
 
+    /// How far the text stands in from the content edge: past the ticker.
+    /// A pressable tile's lift bleeds past the edge instead, so its label
+    /// starts where a plain tile's does (HIG §9.3, one content edge).
     fn inset(&self, m: &TileMetrics) -> f64 {
-        let pad = if self.pressable { m.pad } else { 0.0 };
-        pad + if self.tone.is_some() {
+        if self.tone.is_some() {
             m.ticker + m.ticker_gap
         } else {
             0.0
@@ -257,12 +259,12 @@ impl<'a> StatTileFace<'a> {
                     ctx.transform,
                     fill,
                     None,
-                    &RoundedRect::from_rect(rect, m.radius),
+                    &RoundedRect::from_rect(rect.inflate(m.pad, 0.0), m.radius),
                 );
             }
         }
         let content = if self.pressable {
-            rect.inset(-m.pad)
+            rect.inset((0.0, -m.pad))
         } else {
             rect
         };
@@ -283,7 +285,7 @@ impl<'a> StatTileFace<'a> {
             );
         }
         let x = rect.x0 + self.inset(&m);
-        let width = (rect.x1 - x - if self.pressable { m.pad } else { 0.0 }).max(0.0);
+        let width = (rect.x1 - x).max(0.0);
         let mut y = content.y0;
 
         let label =
@@ -380,7 +382,13 @@ impl<'a> StatTileFace<'a> {
         }
 
         if self.pressable && self.interaction.focused && !self.interaction.disabled {
-            crate::widget::paint_focus_ring(ctx.scene, ctx.transform, rect, m.radius, theme);
+            crate::widget::paint_focus_ring(
+                ctx.scene,
+                ctx.transform,
+                rect.inflate(m.pad, 0.0),
+                m.radius,
+                theme,
+            );
         }
     }
 

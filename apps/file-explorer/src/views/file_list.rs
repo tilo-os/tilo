@@ -17,7 +17,6 @@
 //! [`ListSlot::sync`].
 
 use std::cell::{Cell, RefCell};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -267,6 +266,7 @@ fn build_table(
 fn paint_name_cell(
     row: &ListRow,
     scene: &mut Scene,
+    transform: Affine,
     theme: &Theme,
     tr: &mut TextRenderer,
     cell: Rect,
@@ -290,23 +290,8 @@ fn paint_name_cell(
         glyph_px: icon_px,
         glyph_color: ink,
     };
-    paint_file_visual(
-        scene,
-        Affine::IDENTITY,
-        tr,
-        theme,
-        &visual,
-        icon_rect,
-        &row.entry,
-    );
-    paint_entry_emblem(
-        scene,
-        Affine::IDENTITY,
-        icon_rect,
-        &row.entry,
-        cx.scale,
-        theme,
-    );
+    paint_file_visual(scene, transform, tr, theme, &visual, icon_rect, &row.entry);
+    paint_entry_emblem(scene, transform, icon_rect, &row.entry, cx.scale, theme);
 
     let name_x = lead_x + icon_px + geo.icon_label_gap;
     if row.renaming {
@@ -331,7 +316,7 @@ fn paint_name_cell(
         scene,
         &label,
         tokens.colors.text_primary,
-        Affine::translate((name_x, text_y)),
+        transform * Affine::translate((name_x, text_y)),
         None,
         &body,
     );
@@ -342,7 +327,7 @@ fn paint_name_cell(
             let y = cell.y0 + (cell.height() - side) / 2.0;
             draw_icon(
                 scene,
-                Affine::IDENTITY,
+                transform,
                 Rect::new(x, y, x + side, y + side),
                 Icon::TriangleAlert,
                 tokens.colors.semantic.warning,
@@ -404,13 +389,8 @@ impl ListSlot {
         table.set_rows(rows);
         table.set_selection(inputs.selection.clone());
         // The app hands over entries already in the order it sorted them; the
-        // table's comparator keeps that order and only names the column that
-        // carries the indicator.
-        table.sort_by_with(
-            |_: &ListRow, _: &ListRow| Ordering::Equal,
-            key_of(inputs.sort_by),
-            ascending,
-        );
+        // table shows which column that is by.
+        table.set_sort_indicator(key_of(inputs.sort_by), ascending);
         if reset {
             table.set_scroll_y(0.0);
         }
@@ -526,15 +506,7 @@ impl ListSlot {
         let Some(table) = state.table.as_mut() else {
             return;
         };
-        if transform == Affine::IDENTITY {
-            table.draw(scene, transform, tr, theme, presence);
-        } else {
-            // The table's cell painters draw in layout coordinates: compose
-            // the window transform onto the finished scene instead.
-            let mut inner = Scene::new();
-            table.draw(&mut inner, Affine::IDENTITY, tr, theme, presence);
-            scene.append(&inner, Some(transform));
-        }
+        table.draw(scene, transform, tr, theme, presence);
     }
 
     /// Forward `event` to the table and report what its callbacks recorded.

@@ -192,8 +192,8 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 }],
             )
             .unwrap();
-            // The managed host opens History from its own bar, which the window
-            // draws only for an app without a History button of its own.
+            // The editor's bar is the window's header row: it holds the
+            // window's History control, and the managed host draws no bar.
             drop(root);
             let managed: Box<dyn ui::widget::Widget> = Box::new(crate::app::TypstApp::new());
             let mut driver = ui::headless::Driver::from_managed_root(
@@ -202,7 +202,7 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 (900, 700),
             )
             .unwrap();
-            driver.click_named("history-open").unwrap();
+            driver.click_named(ui::widget::HISTORY_CONTROL_ID).unwrap();
             select_version(&mut driver, selected);
             driver.click_named("history-restore").unwrap();
             driver.key("Enter");

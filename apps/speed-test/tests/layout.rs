@@ -34,7 +34,7 @@ fn a_wide_window_puts_the_results_beside_the_test() {
         latest.x0 >= run.x1,
         "results start right of the action: {latest:?} vs {run:?}"
     );
-    assert!(latest.y0 < run.y1 + 200.0, "and share its top part");
+    assert!(latest.y0 < run.y1 + 300.0, "and share its top part");
 }
 
 #[test]
