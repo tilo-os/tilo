@@ -169,7 +169,9 @@ impl ResourceApp for App {
     type Resource = Notebook;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1000, 640);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1000, 640)
+    }
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         install_catalog();

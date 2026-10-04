@@ -159,6 +159,16 @@ pub struct CollaborationLaunchpad {
     hint_line_h: f64,
     /// What this widget painted last differs from what it would paint now.
     dirty: bool,
+    copy: LaunchpadCopy,
+}
+
+/// Words a host puts in place of the launchpad's own: a desktop in the
+/// browser welcomes a new member and names its own keyboard chords.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LaunchpadCopy {
+    pub title: Option<String>,
+    pub subtitle: Option<String>,
+    pub keyboard_hint: Option<String>,
 }
 
 /// Top of the keyboard hint, from the bottom of the last card.
@@ -189,7 +199,37 @@ impl CollaborationLaunchpad {
                     .line_height_px(),
             ),
             dirty: true,
+            copy: LaunchpadCopy::default(),
         }
+    }
+
+    /// Show `copy` where it names text, the launchpad's own words elsewhere.
+    #[must_use]
+    pub fn with_copy(mut self, copy: LaunchpadCopy) -> Self {
+        self.copy = copy;
+        self.dirty = true;
+        self
+    }
+
+    fn title(&self) -> String {
+        self.copy
+            .title
+            .clone()
+            .unwrap_or_else(|| t("launchpad-title"))
+    }
+
+    fn subtitle(&self) -> String {
+        self.copy
+            .subtitle
+            .clone()
+            .unwrap_or_else(|| t("launchpad-subtitle"))
+    }
+
+    fn keyboard_hint(&self) -> String {
+        self.copy
+            .keyboard_hint
+            .clone()
+            .unwrap_or_else(|| t("launchpad-keyboard-hint"))
     }
 
     /// Centre on `display` (with the rail's clearance when `beside_rail`)
@@ -509,7 +549,7 @@ impl Widget for CollaborationLaunchpad {
             (f64::from(button_w) + 32.0).max(160.0),
             (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
         );
-        let keyboard_hint = t("launchpad-keyboard-hint");
+        let keyboard_hint = self.keyboard_hint();
         let (_, hint_h) = text.measure(&keyboard_hint, caption, None);
         self.hint_line_h = f64::from(hint_h);
         self.card_rects = self.cards();
@@ -527,7 +567,7 @@ impl Widget for CollaborationLaunchpad {
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
         let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - HEADING_BAND;
         let panel_width = cards[5].x1 - content_left;
-        let title = text.elide_to_width(&t("launchpad-title"), heading, panel_width as f32);
+        let title = text.elide_to_width(&self.title(), heading, panel_width as f32);
         text.draw_text(
             scene,
             &title,
@@ -537,11 +577,7 @@ impl Widget for CollaborationLaunchpad {
             None,
         );
         let (_, title_h) = text.measure(&title, heading, None);
-        let subtitle = text.elide_to_width(
-            &crate::i18n::t("launchpad-subtitle"),
-            small,
-            panel_width as f32,
-        );
+        let subtitle = text.elide_to_width(&self.subtitle(), small, panel_width as f32);
         let (_, subtitle_h) = text.measure(&subtitle, small, None);
         if f64::from(title_h + subtitle_h) + 9.0 <= HEADING_BAND {
             // On the bare wallpaper, like the hint under the cards: the dim
@@ -711,7 +747,7 @@ impl Widget for CollaborationLaunchpad {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Group)
-                .with_name(t("launchpad-title"))
+                .with_name(self.title())
                 .with_bounds(self.content_bounds())
                 .with_description(t("launchpad-description"))
                 .with_children(
@@ -799,6 +835,38 @@ mod tests {
     /// A host rail as wide as the shell's on a laptop display.
     fn test_rail(_height: f64) -> f64 {
         140.0
+    }
+
+    fn pointer_at(point: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+        }
+    }
+
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn named_key(key: NamedKey) -> WindowEvent {
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = Key::Named(key);
+        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
     }
 
     #[test]
@@ -998,5 +1066,57 @@ mod tests {
         every_card_has_a_unique_semantic_route();
         collaboration_cards_target_the_apps_that_own_those_features();
         assistive_activation_publishes_the_same_action_as_a_card_click();
+    }
+
+    #[test]
+    fn a_card_publishes_its_own_action_by_click_or_keyboard() {
+        fn a_clicked_card_publishes_its_own_action_not_the_launcher() {
+            let mut pad = CollaborationLaunchpad::new(test_rail);
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.cards();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let notes = pad.card_rects[1].center();
+            let mut handled = false;
+            for event in [pointer_at(notes), left_press()] {
+                pad.handle_launchpad_event(&event, 1.0, false, &mut doc, &root, &mut handled);
+            }
+            assert!(handled);
+            assert_eq!(
+                LaunchpadAction::take(&mut doc, &root),
+                Some(LaunchpadAction::Notes)
+            );
+            assert!(
+                !take_open_app(&mut doc, &root),
+                "a card names its action; only the button opens the launcher"
+            );
+        }
+
+        fn arrow_keys_move_and_enter_opens_the_selected_card() {
+            let mut pad = CollaborationLaunchpad::new(test_rail);
+            pad.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            pad.card_rects = pad.cards();
+            pad.set_focus(true);
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut handled = false;
+            for key in [NamedKey::ArrowRight, NamedKey::Enter] {
+                pad.handle_launchpad_event(
+                    &named_key(key),
+                    1.0,
+                    false,
+                    &mut doc,
+                    &root,
+                    &mut handled,
+                );
+            }
+            assert_eq!(
+                LaunchpadAction::take(&mut doc, &root),
+                Some(LaunchpadAction::Notes)
+            );
+        }
+
+        a_clicked_card_publishes_its_own_action_not_the_launcher();
+        arrow_keys_move_and_enter_opens_the_selected_card();
     }
 }

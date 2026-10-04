@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 80543744
+bytes = 83427328
 
 [bundles.desktop.rebaseline]
-run = 57939
-measured = 79719115
-reason = "feature growth: canvas and wet-media on the shared desktop web bundle (#2166)"
+run = 61359
+measured = 82551833
+reason = "feature growth: snippets runs on the framework, with its body as a text child (#2417)"

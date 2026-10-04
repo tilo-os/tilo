@@ -916,26 +916,35 @@ impl Core {
     }
 
     /// Merge OPML `text` into the store (folders as needed, de-duplicated by
-    /// address) and persist it. Returns the newly subscribed feeds.
+    /// address) and subscribe to what it added as one action. Returns the
+    /// newly subscribed feeds.
     pub(crate) fn apply_opml_import(&mut self, text: &str, doc: &mut AutoCommit) -> Vec<Id> {
         let parsed = opml::parse(text);
-        let before: std::collections::HashSet<Id> = self.store.feeds.iter().map(|f| f.id).collect();
+        let had_feeds: std::collections::HashSet<Id> =
+            self.store.feeds.iter().map(|f| f.id).collect();
+        let had_folders: std::collections::HashSet<Id> =
+            self.store.folders.iter().map(|f| f.id).collect();
         opml::import_into(&mut self.store, &parsed);
-        let folders = self.store.folders.clone();
-        for f in &folders {
-            FeedsDoc::upsert_folder(doc, f);
-        }
-        let feeds = self.store.feeds.clone();
-        for f in &feeds {
-            FeedsDoc::upsert_feed(doc, f);
-        }
-        doc.commit();
-        self.store
+        let feeds: Vec<Feed> = self
+            .store
             .feeds
             .iter()
-            .filter(|f| !before.contains(&f.id))
-            .map(|f| f.id)
-            .collect()
+            .filter(|f| !had_feeds.contains(&f.id))
+            .cloned()
+            .collect();
+        if feeds.is_empty() {
+            return Vec::new();
+        }
+        let folders = self
+            .store
+            .folders
+            .iter()
+            .filter(|f| !had_folders.contains(&f.id))
+            .cloned()
+            .collect();
+        let added = feeds.iter().map(|f| f.id).collect();
+        self.perform_action(doc, &FeedsAction::ImportSubscriptions { folders, feeds });
+        added
     }
 
     // --- menus --------------------------------------------------------------
@@ -1350,15 +1359,11 @@ impl Core {
                     self.select_featured();
                 }
             }
+            // Adopt the persisted (and possibly collaborator-updated)
+            // preferences; until someone changes one, the defaults stand
+            // without being written.
             if FeedsDoc::has_settings(doc) {
                 self.settings = FeedsDoc::read_settings(doc);
-            } else {
-                self.perform_action(
-                    doc,
-                    &FeedsAction::SetReadSettings {
-                        settings: self.settings,
-                    },
-                );
             }
             self.synced = true;
             self.store_heads = doc.get_heads();

@@ -1,35 +1,54 @@
 //! What the app publishes to search, the palette and agents: the engine's
-//! containers, images, volumes and distroboxes as resources with their
-//! operations, and the handler that answers those operations.
+//! containers, images, volumes and distroboxes as live rows with their view
+//! and effect operations, and the handler that answers those operations.
 
-use automerge::{AutoCommit, ObjId};
-use ui::tilo_actions::{ActionSpec, OperationKind, PermissionRequirement, Resource, RetryPolicy};
+use ui::framework::LiveRow;
+use ui::tilo_actions::{ActionSpec, OperationKind, PermissionRequirement, RetryPolicy};
 
-use crate::app::{ContainersApp, ContinuationRuntimeIdentity};
-use crate::doc::{DetailTab, Section};
+use crate::app::ContainersApp;
+use crate::model::{DetailTab, Section};
 use crate::podman::{self, Action};
 
+/// How many rows the published tree carries; the rest resolve by id.
 pub(crate) const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
-pub(crate) fn container_resource(
-    container: &crate::model::Container,
-    engine_live: bool,
-    continuation: Option<&ContinuationRuntimeIdentity>,
-) -> Resource {
-    let mut resource = Resource::new(
+/// A view or effect operation on a row, its payload the verb and target.
+fn row_operation(
+    id: &str,
+    label: impl Into<String>,
+    kind: OperationKind,
+    type_id: &str,
+    payload: &[&str],
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, kind, type_id, &payload).ok()
+}
+
+/// An engine effect: needs an administrator, and the engine.
+fn engine_effect(spec: ActionSpec, engine_live: bool, offline: &str) -> ActionSpec {
+    let spec = spec.requiring(PermissionRequirement::Admin).privileged();
+    if engine_live {
+        spec
+    } else {
+        spec.unavailable("engine_offline", offline)
+    }
+}
+
+const ENGINE_OFFLINE: &str = "Podman isn't available. Start its user service to manage containers.";
+
+fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
+    let mut row = LiveRow::new(
         format!("container:{}", container.id),
         "containers.container",
         container.name.clone(),
     );
-    let selection = vec!["select".to_string(), container.id.clone()];
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "select",
         format!("Open {}", container.name),
         OperationKind::View,
         "containers.container",
-        &selection,
+        &["select", &container.id],
     ) {
-        resource.actions.push(spec);
+        row = row.operation(spec);
     }
     let verbs: &[(&str, &str)] = match container.status {
         crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => &[
@@ -47,261 +66,218 @@ pub(crate) fn container_resource(
         _ => &[("start", "Start"), ("remove", "Remove")],
     };
     for (verb, label) in verbs {
-        let payload = vec![(*verb).to_string(), container.id.clone()];
-        if let Ok(spec) = ActionSpec::operation(
-            *verb,
+        if let Some(spec) = row_operation(
+            verb,
             *label,
             OperationKind::Effect,
             "containers.container",
-            &payload,
+            &[verb, &container.id],
         ) {
-            let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
-            if *verb == "restart"
-                && let Some(identity) = continuation
-                && identity.target_id == container.id
-            {
-                spec = with_restart_continuation(spec, identity.clone());
-            }
+            let mut spec = engine_effect(spec, engine_live, ENGINE_OFFLINE);
             if *verb == "remove" {
                 spec = spec.destructive();
             } else if *verb != "restart" && *verb != "shell" {
                 spec = spec.retry_policy(RetryPolicy::Idempotent);
             }
-            if !engine_live {
-                spec = spec.unavailable(
-                    "engine_offline",
-                    "Podman isn't available. Start its user service to manage containers.",
-                );
-            }
-            resource.actions.push(spec);
+            row = row.operation(spec);
         }
     }
-    let mut logs = Resource::new(
+    row.row(logs_row(container))
+}
+
+/// The container as the window's verb buttons bind to it: its published
+/// row with its operations.
+pub(crate) fn container_resource(
+    container: &crate::model::Container,
+    engine_live: bool,
+) -> ui::tilo_actions::Resource {
+    container_row(container, engine_live).into_resource()
+}
+
+fn logs_row(container: &crate::model::Container) -> LiveRow {
+    let mut logs = LiveRow::new(
         format!("container:{}:logs", container.id),
         "containers.logs",
         format!("{} logs", container.name),
     );
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "open",
         "Open logs",
         OperationKind::View,
         "containers.logs",
-        &["logs", container.id.as_str()],
+        &["logs", &container.id],
     ) {
-        logs.actions.push(spec);
+        logs = logs.operation(spec);
     }
-    resource.children.push(logs);
-    resource
+    logs
 }
 
-/// Declare the controlled-runtime continuation identity of a `restart` spec.
-fn with_restart_continuation(
-    spec: ActionSpec,
-    identity: ContinuationRuntimeIdentity,
-) -> ActionSpec {
-    spec.with_continuation_identity(move |query| {
-        let target = ui::tilo_actions::ContinuationKey::new(
-            "containers.controlled.target",
-            [
-                identity.runtime_epoch.to_be_bytes().to_vec(),
-                identity.target_epoch.to_be_bytes().to_vec(),
-                identity.target_id.as_bytes().to_vec(),
-            ],
-        );
-        let handler = ui::tilo_actions::ContinuationKey::new(
-            "containers.controlled.handler",
-            [b"restart-v1".to_vec()],
-        );
-        Some(match query {
-            ui::tilo_actions::ContinuationQuery::Exact(_) => {
-                ui::tilo_actions::ContinuationEvidence::Exact { target, handler }
-            }
-            ui::tilo_actions::ContinuationQuery::Draft => {
-                ui::tilo_actions::ContinuationEvidence::Draft {
-                    resolution_domain: target,
-                    handler,
-                }
-            }
-        })
-    })
-}
-
-fn image_resource(image: &crate::model::Image, engine_live: bool) -> Resource {
+fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
     let reference = image.reference();
-    let mut resource = Resource::new(
+    let mut row = LiveRow::new(
         format!("image:{reference}"),
         "containers.image",
         reference.clone(),
     );
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "open",
         "Show image",
         OperationKind::View,
         "containers.image",
-        &["open", reference.as_str()],
+        &["open", &reference],
     ) {
-        resource.actions.push(spec);
+        row = row.operation(spec);
     }
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "remove",
         "Remove image",
         OperationKind::Effect,
         "containers.image",
-        &["remove", reference.as_str()],
+        &["remove", &reference],
     ) {
-        let mut spec = spec
-            .requiring(PermissionRequirement::Admin)
-            .privileged()
-            .destructive();
-        if !engine_live {
-            spec = spec.unavailable(
-                "engine_offline",
-                "Podman isn't available. Start its user service to manage containers.",
-            );
-        }
-        resource.actions.push(spec);
+        row = row.operation(engine_effect(spec, engine_live, ENGINE_OFFLINE).destructive());
     }
-    resource
+    row
 }
 
-fn volume_resource(volume: &crate::model::Volume, engine_live: bool) -> Resource {
-    let mut resource = Resource::new(
+fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
+    let mut row = LiveRow::new(
         format!("volume:{}", volume.name),
         "containers.volume",
         volume.name.clone(),
     );
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "open",
         "Show volume",
         OperationKind::View,
         "containers.volume",
-        &["open", volume.name.as_str()],
+        &["open", &volume.name],
     ) {
-        resource.actions.push(spec);
+        row = row.operation(spec);
     }
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "remove",
         "Remove volume",
         OperationKind::Effect,
         "containers.volume",
-        &["remove", volume.name.as_str()],
+        &["remove", &volume.name],
     ) {
-        let mut spec = spec
-            .requiring(PermissionRequirement::Admin)
-            .privileged()
-            .destructive();
-        if !engine_live {
-            spec = spec.unavailable(
-                "engine_offline",
-                "Podman isn't available. Start its user service to manage containers.",
-            );
-        }
-        resource.actions.push(spec);
+        row = row.operation(engine_effect(spec, engine_live, ENGINE_OFFLINE).destructive());
     }
-    resource
+    row
 }
 
-fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) -> Resource {
-    let mut resource = Resource::new(
+fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
+    let mut row = LiveRow::new(
         format!("distrobox:{}", distrobox.name),
         "containers.distrobox",
         distrobox.name.clone(),
     );
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "open",
         "Show distrobox",
         OperationKind::View,
         "containers.distrobox",
-        &["open", distrobox.name.as_str()],
+        &["open", &distrobox.name],
     ) {
-        resource.actions.push(spec);
+        row = row.operation(spec);
     }
-    if let Ok(spec) = ActionSpec::operation(
+    if let Some(spec) = row_operation(
         "enter",
         "Enter distrobox",
         OperationKind::Effect,
         "containers.distrobox",
-        &["enter", distrobox.name.as_str()],
+        &["enter", &distrobox.name],
     ) {
-        let mut spec = spec.requiring(PermissionRequirement::Admin).privileged();
-        if !engine_live {
-            spec = spec.unavailable(
-                "engine_offline",
-                "Podman isn't available. Start its user service to enter boxes.",
-            );
-        }
-        resource.actions.push(spec);
+        row = row.operation(engine_effect(
+            spec,
+            engine_live,
+            "Podman isn't available. Start its user service to enter boxes.",
+        ));
     }
-    resource
+    row
 }
 
 impl ContainersApp {
-    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
-    /// with live engine children overlaid.
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        use ui::tilo_resource::Resource as _;
-        let state = crate::resource::Containers::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Containers>(
-            "containers",
-            "Containers",
-            &state,
-        );
-        if let Some(create) = root.actions.iter_mut().find(|action| action.id == "create")
-            && !self.engine.live
-        {
-            *create = create.clone().unavailable(
-                "engine_offline",
-                "Podman isn't available. Start its user service to create containers.",
-            );
-        }
-        root.children = self.engine_child_resources();
-        vec![root]
-    }
-
-    /// Live engine rows (and an in-flight pull) without a `containers.engine` root.
-    pub(crate) fn live_engine_extras(&self) -> Vec<Resource> {
-        let mut extras = self.engine_child_resources();
+    /// The live rows of the engine, a bounded page of them, and an
+    /// in-flight pull.
+    pub(crate) fn engine_rows(&self) -> Vec<LiveRow> {
+        let live = self.engine.live;
+        let mut rows: Vec<LiveRow> = self
+            .engine
+            .containers
+            .iter()
+            .map(|container| container_row(container, live))
+            .chain(
+                self.engine
+                    .images
+                    .iter()
+                    .map(|image| image_row(image, live)),
+            )
+            .chain(
+                self.engine
+                    .volumes
+                    .iter()
+                    .map(|volume| volume_row(volume, live)),
+            )
+            .chain(
+                self.engine
+                    .distroboxes
+                    .iter()
+                    .map(|distrobox| distrobox_row(distrobox, live)),
+            )
+            .take(RESOURCE_SNAPSHOT_LIMIT)
+            .collect();
         if let Some(pull) = &self.pull {
-            extras.push(Resource::new(
+            rows.push(LiveRow::new(
                 "containers.pull-job",
                 "containers.job",
                 format!("Pulling {}", pull.reference),
             ));
         }
-        extras
+        rows
     }
 
-    fn engine_child_resources(&self) -> Vec<Resource> {
-        let mut children = Vec::new();
-        for container in &self.engine.containers {
-            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            children.push(container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            ));
+    /// The live row `id`, wherever it is in the engine.
+    pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
+        let live = self.engine.live;
+        if let Some(container_id) = id
+            .strip_prefix("container:")
+            .and_then(|rest| rest.strip_suffix(":logs"))
+        {
+            return self.engine.find(container_id).map(logs_row);
         }
-        for image in &self.engine.images {
-            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            children.push(image_resource(image, self.engine.live));
+        if let Some(container_id) = id.strip_prefix("container:") {
+            return self
+                .engine
+                .find(container_id)
+                .map(|container| container_row(container, live));
         }
-        for volume in &self.engine.volumes {
-            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            children.push(volume_resource(volume, self.engine.live));
+        if let Some(reference) = id.strip_prefix("image:") {
+            return self
+                .engine
+                .images
+                .iter()
+                .find(|item| item.reference() == reference)
+                .map(|item| image_row(item, live));
         }
-        for distrobox in &self.engine.distroboxes {
-            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            children.push(distrobox_resource(distrobox, self.engine.live));
+        if let Some(name) = id.strip_prefix("volume:") {
+            return self
+                .engine
+                .volumes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| volume_row(item, live));
         }
-        children
+        if let Some(name) = id.strip_prefix("distrobox:") {
+            return self
+                .engine
+                .distroboxes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| distrobox_row(item, live));
+        }
+        None
     }
 }
 
@@ -311,30 +287,23 @@ impl ContainersApp {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
     ) -> Result<bool, String> {
         let args: Vec<String> = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let Some(verb) = args.first().map(String::as_str) else {
             return Err("missing operation".into());
         };
         let target = args.get(1).map(String::as_str).unwrap_or_default();
-        if kind == OperationKind::View && type_id == "containers.engine" && verb == "create" {
-            self.set_create_open(true);
-            return Ok(true);
-        }
         if kind == OperationKind::View && type_id == "containers.container" && verb == "select" {
-            self.pending_resource_selection = Some(target.to_string());
+            self.select_container(Some(target.to_string()));
             return Ok(true);
         }
         if kind == OperationKind::View && type_id == "containers.logs" && verb == "logs" {
-            self.pending_resource_selection = Some(target.to_string());
-            self.pending_resource_section = Some(Section::Containers);
-            self.pending_resource_tab = Some(DetailTab::Logs);
+            self.select_container(Some(target.to_string()));
+            self.show_tab(DetailTab::Logs);
             return Ok(true);
         }
         if kind == OperationKind::View && verb == "open" {
-            self.pending_resource_section = Some(match type_id {
+            self.show_section(match type_id {
                 "containers.image" => Section::Images,
                 "containers.volume" => Section::Volumes,
                 "containers.distrobox" => Section::Distrobox,
@@ -431,96 +400,5 @@ impl ContainersApp {
         self.engine
             .find(id)
             .map_or_else(|| id.to_string(), |c| c.name.clone())
-    }
-}
-
-impl ui::resources::PublishesResources for ContainersApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the engine door — keep only live engine rows and pull jobs.
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if self.is_hosted() && id == "containers" {
-            return None;
-        }
-        if let Some(found) = find(&self.publish_resources(doc), id) {
-            return Some(found);
-        }
-        if let Some(found) = find(&self.resources(doc), id) {
-            return Some(found);
-        }
-        if let Some(container_id) = id
-            .strip_prefix("container:")
-            .and_then(|rest| rest.strip_suffix(":logs"))
-        {
-            let container = self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)?;
-            return container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            )
-            .children
-            .into_iter()
-            .find(|child| child.id.0 == id);
-        }
-        if let Some(container_id) = id.strip_prefix("container:") {
-            return self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)
-                .map(|item| {
-                    container_resource(
-                        item,
-                        self.engine.live,
-                        self.continuation_runtime_identity.as_ref(),
-                    )
-                });
-        }
-        if let Some(reference) = id.strip_prefix("image:") {
-            return self
-                .engine
-                .images
-                .iter()
-                .find(|item| item.reference() == reference)
-                .map(|item| image_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("volume:") {
-            return self
-                .engine
-                .volumes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| volume_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("distrobox:") {
-            return self
-                .engine
-                .distroboxes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| distrobox_resource(item, self.engine.live));
-        }
-        None
     }
 }

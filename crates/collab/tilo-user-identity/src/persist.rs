@@ -1054,11 +1054,69 @@ pub fn provision_joined_device(
     Ok(cert)
 }
 
-/// Whether `paths` already holds a setup-machine enrollment and no human root.
+/// Install a root-signed certificate for this device's existing key, as a
+/// device that joined without the root: the user public key and the
+/// certificate (default and per-user). The root never comes here. Refuses a
+/// certificate for another key, one that does not verify at `now_ns`, one
+/// that admits devices, and a second identity once one is installed; the
+/// same identity may install a renewed certificate.
+///
+/// # Errors
+///
+/// [`PersistError::Io`] with `InvalidData` for a certificate this device
+/// must not take, `AlreadyExists` for another identity, or a write failure.
+pub fn install_device_cert(
+    paths: &IdentityPaths,
+    cert: &DeviceCert,
+    now_ns: u64,
+) -> Result<(), PersistError> {
+    let refused = |kind, message: String| PersistError::Io(io::Error::new(kind, message));
+    if paths.user_privkey.exists() {
+        return Err(refused(
+            io::ErrorKind::AlreadyExists,
+            "this device holds a user root".into(),
+        ));
+    }
+    let device = read_device_key(&paths.device_privkey)?;
+    if cert.device_public_key != device.verifying_key().to_bytes() {
+        return Err(refused(
+            io::ErrorKind::InvalidData,
+            "the certificate is for another device key".into(),
+        ));
+    }
+    verify_device_cert_at(cert, now_ns).map_err(|error| {
+        refused(
+            io::ErrorKind::InvalidData,
+            format!("the certificate did not verify: {error}"),
+        )
+    })?;
+    if cert.capabilities.can_admit_devices {
+        return Err(refused(
+            io::ErrorKind::InvalidData,
+            "a device without the root does not admit devices".into(),
+        ));
+    }
+    if paths.user_pubkey.is_file() && read_public_key(&paths.user_pubkey)? != cert.user_public_key {
+        return Err(refused(
+            io::ErrorKind::AlreadyExists,
+            "this device already belongs to another identity".into(),
+        ));
+    }
+    if let Some(parent) = paths.user_pubkey.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
+    write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), cert)?;
+    write_device_cert(&paths.device_cert, cert)?;
+    Ok(())
+}
+
+/// Whether `paths` already holds a device enrollment and no human root: one
+/// made by a setup machine, or a nearby pairing approved from another device.
 ///
 /// Missing files are `Ok(false)`, so ordinary first boot still creates an
-/// identity. Present but inconsistent files are an error: first boot must not
-/// replace them with a new person.
+/// identity. Present but inconsistent or unreadable files are an error: first
+/// boot must not replace them with a new person.
 ///
 /// # Errors
 ///
@@ -1068,11 +1126,21 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
     if paths.user_privkey.exists() {
         return Ok(false);
     }
-    let present = paths.user_pubkey.is_file()
-        && paths.device_privkey.is_file()
-        && paths.device_cert.is_file();
-    if !present {
+    if !(paths.user_pubkey.is_file() && paths.device_cert.is_file()) {
         return Ok(false);
+    }
+    match fs::metadata(&paths.device_privkey) {
+        Ok(metadata) if metadata.is_file() => {}
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            return Err(PersistError::Io(io::Error::new(
+                error.kind(),
+                format!(
+                    "enrolled device key at {} is not accessible: {error}",
+                    paths.device_privkey.display()
+                ),
+            )));
+        }
+        _ => return Ok(false),
     }
     let pubkey = read_public_key(&paths.user_pubkey)?;
     let device = read_device_key(&paths.device_privkey)?;
@@ -1084,20 +1152,14 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
         ))
     })?;
     // A primary device can admit further devices. That is an ordinary
-    // machine, not an imager enrollment, even when its root secret lives in
-    // the identity record rather than user-identity/privkey.bin.
+    // machine, not one the imager already enrolled, even when its root
+    // secret lives in the identity record rather than
+    // user-identity/privkey.bin, so first-boot provisioning must still run
+    // for each OS user.
     if cert.capabilities.can_admit_devices {
         return Ok(false);
     }
-    // A primary device can admit further devices. That is an ordinary
-    // machine, not one the imager already enrolled, so first-boot
-    // provisioning must still run for each OS user.
-    if cert.capabilities.can_admit_devices {
-        return Ok(false);
-    }
-    if cert.user_public_key != pubkey
-        || cert.device_public_key != device.verifying_key().to_bytes()
-        || !cert.capabilities.can_read_all_workspaces
+    if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
     {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1175,6 +1237,144 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("already has a device identity")
+        );
+    }
+
+    /// A device whose key was made first takes the certificate a root
+    /// signed for it elsewhere, and is then a ready joined device.
+    #[test]
+    fn a_certificate_signed_elsewhere_installs_for_the_existing_key() {
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        let (device, _) = load_or_create_device_key(&paths).unwrap();
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let cert = |root: &SigningKey, device: [u8; 32], capabilities| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device,
+                device_label: "node".into(),
+                capabilities,
+                issued_at_ns: 1_000,
+                expires_at_ns: Some(10_000),
+                signature: [0; 64],
+            };
+            crate::sign_device_cert(&mut cert, root).unwrap();
+            cert
+        };
+        let own = device.verifying_key().to_bytes();
+        let node = crate::cloud_enrollment::host_capabilities;
+        let refused = |result: Result<(), PersistError>| result.unwrap_err().to_string();
+
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&root, [9; 32], node()),
+                2_000
+            ))
+            .contains("another device key")
+        );
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&root, own, node()),
+                20_000
+            ))
+            .contains("did not verify")
+        );
+        let primary = DeviceCapabilities::primary();
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&root, own, primary),
+                2_000
+            ))
+            .contains("does not admit")
+        );
+        assert!(!joined_device_is_ready(&paths, 2_000).unwrap());
+
+        let installed = cert(&root, own, node());
+        install_device_cert(&paths, &installed, 2_000).unwrap();
+        assert!(joined_device_is_ready(&paths, 2_000).unwrap());
+        assert_eq!(read_device_cert(&paths.device_cert).unwrap(), installed);
+        assert_eq!(
+            read_device_cert(&paths.device_cert_for_user(&installed.user_public_key)).unwrap(),
+            installed
+        );
+        // A renewal from the same root replaces it; another root does not.
+        install_device_cert(&paths, &cert(&root, own, node()), 3_000).unwrap();
+        let stranger = SigningKey::from_bytes(&[4; 32]);
+        assert!(
+            refused(install_device_cert(
+                &paths,
+                &cert(&stranger, own, node()),
+                2_000
+            ))
+            .contains("another identity")
+        );
+    }
+
+    /// A device paired from a nearby device holds an ordinary member
+    /// certificate: it does not read every workspace, and is still a ready
+    /// joined device rather than one that needs a human root.
+    #[test]
+    fn a_nearby_paired_member_is_a_ready_joined_device() {
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        let (device, _) = load_or_create_device_key(&paths).unwrap();
+        let root = SigningKey::from_bytes(&[5; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: Some(10_000),
+            signature: [0; 64],
+        };
+        crate::sign_device_cert(&mut cert, &root).unwrap();
+        install_device_cert(&paths, &cert, 2_000).unwrap();
+
+        assert!(joined_device_is_ready(&paths, 2_000).unwrap());
+    }
+
+    /// An enrollment whose device key the session cannot reach is reported,
+    /// not mistaken for a machine without one.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreachable_device_key_is_an_error_not_a_fresh_machine() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // SAFETY: geteuid takes no arguments and has no failure mode.
+        if unsafe { libc::geteuid() } == 0 {
+            // Root reaches the key whatever its directory's mode.
+            return;
+        }
+        let dir = identity_tempdir();
+        let paths = IdentityPaths::under(dir.path());
+        let (device, _) = load_or_create_device_key(&paths).unwrap();
+        let root = SigningKey::from_bytes(&[6; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: Some(10_000),
+            signature: [0; 64],
+        };
+        crate::sign_device_cert(&mut cert, &root).unwrap();
+        install_device_cert(&paths, &cert, 2_000).unwrap();
+        let key_dir = paths.device_privkey.parent().unwrap().to_path_buf();
+        fs::set_permissions(&key_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = joined_device_is_ready(&paths, 2_000);
+        fs::set_permissions(&key_dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("is not accessible")
         );
     }
 

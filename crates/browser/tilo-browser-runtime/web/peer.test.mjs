@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -78,6 +78,24 @@ function fakeRuntime({phase = 'ready'} = {}) {
       calls.certify.push({post, user, label, custody});
       onPairingCode('123456');
       return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
+    },
+    async certifyWithRoot(post, root, custody, label) {
+      calls.certify.push({post, root, custody, label});
+      return JSON.stringify({cert: {device: calls.certify.length, expires_at_ns: calls.expiresAtNs ?? (Date.now() + 30 * 86_400_000) * 1e6}, hostCert: {host: true}});
+    },
+    async inspectInvitation(post, invitation) {
+      calls.inspected = [...invitation];
+      return JSON.stringify({kind: 'invitation', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
+        inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+    },
+    async askToJoin(post, invitation, root, custody, requestId, name, label, token) {
+      calls.asked = {invitation: [...invitation], root, requestId, name, label, token: token && new TextDecoder().decode(token)};
+      if (token) return JSON.stringify({reply: {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
+      return JSON.stringify({reply: {kind: 'waiting'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
+    },
+    async joinStatus(post, requestId, device) {
+      calls.status = [...(calls.status ?? []), {requestId, device}];
+      return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
     encodeLivePresence: json => new TextEncoder().encode(json),
     decodeLiveFrame: bytes => {
@@ -180,6 +198,28 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(runtime.peer.disposed, true);
 });
 
+test('a page holding the root certifies itself, with no pairing code, and renews a certificate about to expire', async () => {
+  const runtime = fakeRuntime();
+  const store = memoryStore();
+  const codes = [];
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xbb), userPublicKey: 'bb'.repeat(32), sign: async () => new Uint8Array(64)};
+  const peer = await connect(options(runtime, store, {userPublicKey: undefined, identity, onPairingCode: code => codes.push(code)}));
+  assert.deepEqual(codes, []);
+  assert.equal(runtime.calls.certify.length, 1);
+  assert.equal(runtime.calls.certify[0].root, identity);
+  assert.equal(runtime.peer.config.cert.device, 1);
+  await peer.dispose();
+
+  const again = await connect(options(runtime, store, {identity}));
+  assert.equal(runtime.calls.certify.length, 1, 'a current certificate is reused');
+  await again.dispose();
+  await store.put('certificate', JSON.stringify({cert: {device: 9, expires_at_ns: (Date.now() + 3_600_000) * 1e6}, hostCert: {}}));
+  const renewed = await connect(options(runtime, store, {identity}));
+  assert.equal(runtime.calls.certify.length, 2, 'one about to expire is issued anew');
+  await renewed.dispose();
+  await assert.rejects(connect(options(runtime, store, {userPublicKey: 'cc'.repeat(32), identity})), TypeError);
+});
+
 test('the live layer joins over the carrier with the session grant and interpolates members', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
@@ -248,6 +288,24 @@ test('a lost live session reconnects with a fresh grant', async () => {
   assert.equal(liveCarriers.connects.length, 2);
   assert.equal(runtime.calls.grants, 2);
   await peer.dispose();
+});
+
+test('late decryption cannot revive a departed or rejoined publisher', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  session.memberWatcher(OTHER, true);
+  const original = runtime.peer.openLive.bind(runtime.peer);
+  let release;
+  runtime.peer.openLive = (...args) => new Promise(resolve => { release = () => resolve(original(...args)); });
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer:[1,2]}),1);
+  session.memberWatcher(OTHER, false);
+  session.memberWatcher(OTHER, true);
+  release();
+  await settle();
+  assert.deepEqual(peer.live.remoteState(), [], 'the previous membership epoch is gone');
 });
 
 test('reauthentication forgets the certificate and certifies again', async () => {
@@ -721,4 +779,103 @@ test('raw record watches bind the member namespace and stop retrying after unwat
   for (const callback of timers.splice(1)) callback(); // omit the grant-renewal timer
   assert.equal(opened, 1, 'an ended subscription has no consumers left to retry for');
   layer.stop();
+});
+
+test('joining with an invitation waits for the owner, then connects with the root-certified device', async () => {
+  const runtime = fakeRuntime();
+  const store = memoryStore();
+  const rows = new Map();
+  const storage = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const offer = await inspectInvitation('https://host.example:8443', 'AQID', {runtime});
+  assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
+  assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: ROOM, workspaceId: '7', expiresAtNs: '9',
+    inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+
+  const progress = [];
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Bob',
+    runtime, custody, store, storage, pollMs: 1, onProgress: event => progress.push(event.phase),
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.deepEqual(progress, ['asking', 'waiting', 'waiting', 'admitted']);
+  assert.equal(runtime.calls.asked.root, identity);
+  assert.equal(runtime.calls.asked.name, 'Bob');
+  assert.equal(runtime.calls.status[0].device, 'dd'.repeat(32));
+  assert.equal(runtime.calls.status[0].requestId, runtime.calls.asked.requestId);
+  assert.equal(runtime.calls.certify.length, 0, 'no certification at the host');
+  assert.deepEqual(runtime.peer.config.cert, {guest: true, device_public_key: Array(32).fill(0xdd)});
+  assert.equal(runtime.peer.room, ROOM);
+  assert.equal(rows.get('tilo-join-requests'), '{}', 'the answered request is forgotten');
+  await peer.dispose();
+});
+
+test('a device key opened for a peer is let go when it is disposed, aborted or fails to connect', async () => {
+  const custody = () => ({closed: 0, close() { this.closed += 1; }});
+  const disposed = custody();
+  let inner = 0;
+  const peer = await withCustody(disposed, async () => ({dispose: async () => { inner += 1; }}));
+  assert.equal(disposed.closed, 0);
+  await peer.dispose();
+  assert.equal(inner, 1);
+  assert.equal(disposed.closed, 1);
+
+  const failed = custody();
+  await assert.rejects(withCustody(failed, async () => { throw new Error('host unreachable'); }), /host unreachable/);
+  assert.equal(failed.closed, 1);
+
+  const aborted = custody();
+  const controller = new AbortController();
+  await withCustody(aborted, async () => ({dispose: async () => {}}), controller.signal);
+  controller.abort();
+  assert.equal(aborted.closed, 1);
+});
+
+test('a pre-admitted person joins without waiting for the owner', async () => {
+  const runtime = fakeRuntime();
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const progress = [];
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Cy',
+    admissionToken: 'one-time-token', runtime, custody, store: memoryStore(), storage: null,
+    onProgress: event => progress.push(event.phase),
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.deepEqual(progress, ['asking', 'admitted']);
+  assert.equal(runtime.calls.asked.token, 'one-time-token');
+  assert.equal(runtime.calls.status, undefined, 'never polled');
+  assert.equal(runtime.peer.room, ROOM);
+  await peer.dispose();
+});
+
+test('an old membership retry cannot replace a rejoined publishers presence subscription', async () => {
+  const runtime = fakeRuntime();
+  const carriers = fakeCarriers();
+  const timers = [];
+  const layer = createLiveLayer({
+    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    sealLive: async (_room, bytes) => bytes,
+    openLive: async (_room, bytes) => bytes.slice(1),
+  }, runtime, ROOM, {
+    endpoint: 'test', carriers,
+    setTimer: callback => { timers.push(callback); return timers.length; }, clearTimer() {},
+  });
+  try {
+    await until(() => carriers.connects[0]?.memberWatcher, 'the live member watcher');
+    const session = carriers.connects[0];
+    session.memberWatcher(OTHER, true);
+    session.presenceEnds[0]();
+    const oldRetry = timers.at(-1);
+    session.memberWatcher(OTHER, false);
+    session.memberWatcher(OTHER, true);
+    session.presenceEnds[1]();
+    const currentRetry = timers.at(-1);
+    oldRetry();
+    currentRetry();
+    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: [10, 20]}), 1);
+    await settle();
+    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer), [[10, 20]], 'the current membership must retain a working subscription');
+  } finally {
+    layer.stop();
+  }
 });

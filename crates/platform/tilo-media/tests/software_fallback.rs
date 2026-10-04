@@ -21,7 +21,7 @@ mod real {
     #[test]
     fn software_only_decodes_the_same_clip_through_a_cpu_decoder() {
         let _registry = registry_policy_lock();
-        let mut e = MediaEngine::with_config(EngineConfig::default().software_only().silent());
+        let mut e = MediaEngine::with_config(EngineConfig::default().software_only().frames_only());
         assert!(e.is_real_decode(), "this test needs the real pipeline");
         e.open(fixture_source());
 
@@ -65,7 +65,7 @@ mod real {
         let _registry = registry_policy_lock();
         // Accurate seeking is a property of the seek flags, not of the
         // decoder, and must hold on the fallback too.
-        let mut e = MediaEngine::with_config(EngineConfig::default().software_only().silent());
+        let mut e = MediaEngine::with_config(EngineConfig::default().software_only().frames_only());
         e.open(fixture_source());
         // The fixture's video track starts at a non-zero PTS; measure that base
         // from the clip rather than assuming zero, so a genuine drift still fails.

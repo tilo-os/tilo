@@ -111,6 +111,8 @@ pub mod a11y_tree;
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 pub mod action_host;
+mod action_locus;
+pub use action_locus::ActionUiRoute;
 pub mod action_palette;
 pub mod animation;
 #[cfg(test)]
@@ -197,6 +199,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
+pub mod pen;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
@@ -283,7 +286,7 @@ pub use vello::{kurbo, peniko};
 pub use winit;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use app::{ActionUiRoute, App, local_surface_id};
+pub use app::{App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
@@ -436,11 +439,11 @@ pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlig
 pub use status_bubble::{SaveAction, SaveState, SaveStatusSurface, StatusBubble};
 pub use text_edit::{Edit, EditCore, Motion};
 pub use text_render::{
-    FontChoice, FontVariation, Fragmentation, HangingPunctuation, Hyphenation, NumericStyle,
-    OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout, TextFlowRegion,
-    TextFlowRegionError, TextKind, TextLayoutConstraints, TextLayoutEngine, TextRenderer,
-    TextScaling, TextStyle, TextWeight, TextWrapMode, UI_HYPERLEGIBLE_FAMILY, UI_MONOSPACE_FAMILY,
-    UI_SANS_FAMILY, UI_SERIF_FAMILY, configured_font_system,
+    FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
+    NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
+    TextFlowRegion, TextFlowRegionError, TextKind, TextLayoutConstraints, TextLayoutEngine,
+    TextRenderer, TextScaling, TextStyle, TextWeight, TextWrapMode, UI_HYPERLEGIBLE_FAMILY,
+    UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY, configured_font_system,
 };
 pub use text_selection::{
     Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,

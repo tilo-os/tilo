@@ -7,8 +7,8 @@
 //! clipboard. The library is a CRDT object (see [`doc`]) so it syncs across
 //! devices and collaborators converge on one shared set of snippets.
 //!
-//! The app runs through the framework ([`launch_spec`]): the live window,
-//! `--shots` and its scenarios share one root.
+//! The app is [`SnippetsShell`], a framework app over the [`Snippets`]
+//! resource: every host mounts it through [`definition`].
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -48,43 +48,26 @@ pub mod highlight;
 mod list_pane;
 pub mod model;
 pub mod resource;
-pub mod search_provider;
 pub mod seed;
 
 pub use app::SnippetsApp;
 pub use model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
+pub use resource::{LOCALES, Snippets, SnippetsShell};
 
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SnippetsApp::new())
-}
-
-/// Snippets' Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[
-    ("en-US", include_str!("../locales/en-US.ftl")),
-    ("de-DE", include_str!("../locales/de-DE.ftl")),
-];
-
-/// The app as every host mounts it: the live root and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.snippets", app_root)
-        .history(&framework_history::HISTORY)
-        .component_actions(actions::register)
-        .component_locales(LOCALES)
-        .as_definition("Snippets")
+    ui::framework::definition::<SnippetsShell>()
 }
 
 /// The catalogs, loaded on first use on each thread: a host's manager gets
 /// them added, a thread without one starts in the person's locale.
 #[cfg(not(test))]
-static CATALOG: ui::i18n::EmbeddedCatalog =
+pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
     ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library").with_system_locale();
 
 /// Tests read the source copy on every machine.
 #[cfg(test)]
-static CATALOG: ui::i18n::EmbeddedCatalog =
+pub(crate) static CATALOG: ui::i18n::EmbeddedCatalog =
     ui::i18n::EmbeddedCatalog::new("en-US", LOCALES, "snippets-library")
         .with_pinned_locale("en-US");
 
@@ -106,10 +89,3 @@ pub(crate) fn tr_with(key: &str, args: &[(&str, &str)]) -> String {
 pub(crate) fn tr_count(key: &str, count: usize) -> String {
     CATALOG.t_args(key, &[("count", ui::i18n::ArgValue::Number(count as f64))])
 }
-
-pub use resource::{Snippets, SnippetsShell, launch_spec};
-
-pub mod framework_history;
-
-#[cfg(test)]
-mod framework_history_tests;

@@ -47,6 +47,8 @@ suites = [
   "os/kernel/tests/test-signing-identity.py",
   "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/board_session.sh",
+  "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
@@ -54,6 +56,7 @@ suites = [
   "os/tests/disk_image_user_labels.sh",
   "os/tests/rockchip_boot_gap.sh",
   "os/tests/rockchip_loader_test.py",
+  "os/tests/disk_sectors_test.py",
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
@@ -117,6 +120,7 @@ suites = [
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_offline_target.py",
   "os/tests/test_installer_dev_target_uki.py",
+  "os/tests/test_installer_code_refresh.py",
   "os/tests/test_installer_overlay.py",
   "os/tests/test_kernel_checkpoint_restore.py",
   "os/tests/test_kernel_config_values.py",
@@ -191,6 +195,21 @@ inputs = [
   "crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
+
+[[group]]
+name = "no-cisco-openh264"
+# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
+# finished-rootfs gate, and the CI/developer environments that alone may carry it.
+inputs = ["os/", ".forgejo/workflows/build-rpms.yml", "dist/ci/install-build-deps.sh"]
+suites = ["os/tests/test_no_cisco_openh264.py"]
+
+[[group]]
+name = "mount-source-cache-keys"
+# A RUN that bind-mounts a pulled image's alias stage (the frozen RPM snapshot,
+# the kernel, a toolchain) keys its layer on that image's reference, so a local
+# Buildah build never reuses a layer installed from a previous snapshot.
+inputs = ["os/"]
+suites = ["os/tests/test_mount_source_cache_keys.py"]
 
 [[group]]
 name = "dev-feature-targets"
@@ -302,10 +321,12 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
+  "dist/rpm/test-app-collection.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
   "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
+  "dist/rpm/test-rpmbuild-route.sh",
 ]
 
 [[group]]
@@ -317,6 +338,11 @@ suites = [
   "scripts/browser/test_package.py",
   "scripts/browser/test_scroll_presentation.py",
 ]
+
+[[group]]
+name = "vm-acceptance"
+inputs = ["scripts/vm-acceptance/"]
+suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
 
 [[group]]
 name = "perf-tools"
@@ -398,7 +424,10 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/membership.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
@@ -504,8 +533,13 @@ readers = ["crates/dev/tilo-vm-protocol/src/manifest.rs"]
 
 [[cargo]]
 package = "tilo-vmd"
-inputs = ["os/components.toml", "os/scripts/install-components.py"]
-readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
+# The device session's names are checked against the board layer that installs it.
+inputs = [
+  "os/components.toml", "os/scripts/install-components.py",
+  "os/dev/install-board-layer.sh", "os/usr/lib/systemd/system/tilo-board-headless-session@.service",
+  "os/usr/libexec/tilo-seat-session",
+]
+readers = ["crates/dev/tilo-vmd/tests/jobs.rs", "crates/dev/tilo-vmd/src/systemd.rs"]
 
 [[cargo]]
 package = "tilo-app-cli"
@@ -560,6 +594,11 @@ readers = ["crates/system/system-extension/src/bin/tilo-system-extension-manager
 package = "compat-service"
 inputs = ["os/usr/share/tilo/windows/fex-emulator.json", "os/usr/share/tilo/windows/fex-graphics-provider.json"]
 readers = ["crates/windows/compat-service/src/plan.rs"]
+
+[[cargo]]
+package = "legacy-vm"
+inputs = ["os/legacy-guest-snapshot.env"]
+readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
 package = "installer"
@@ -663,11 +702,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "calculator"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/calculator/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "contacts"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/contacts/src/framework_history_tests.rs"]
@@ -688,11 +722,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/slides/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "typst-editor"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/typst-editor/src/framework_history_tests.rs"]
@@ -706,11 +735,6 @@ readers = ["apps/weather/src/framework_history_tests.rs"]
 package = "chat"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/chat/src/component_tests.rs"]
-
-[[cargo]]
-package = "containers"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/containers/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "vpn"
@@ -757,10 +781,6 @@ by = "os/tests/imager_release_invariants.sh"
 [[covered]]
 suite = "os/containers/tilo-relay/test-base-retry.sh"
 by = "os/containers/tilo-relay/test-contract.sh"
-
-[[covered]]
-suite = "os/tests/codec-pack-e2e.sh"
-by = "tools/tests/test_codec_pack_e2e.py"
 
 [[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
@@ -871,6 +891,11 @@ reason = "boots VMs (KVM) from a built installer image"
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-joined-device-startup.sh"
+reason = "boots the installed OS image in a VM and signs in"
 workflow = "build-image.yml"
 
 [[unrequired]]
@@ -1069,6 +1094,11 @@ suite = "os/tests/recovery-boot-check.sh"
 reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
+suite = "os/tests/shared_disk_esp.sh"
+reason = "runs inside a booted guest, as root, and repartitions its disk"
+workflow = "dev-disk-boot-diagnostic.yml"
+
+[[unrequired]]
 suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 workflow = "build-release-tools.yml"
@@ -1089,6 +1119,11 @@ reason = "needs FEX sources and a guest rootfs container"
 suite = "os/tests/secureboot_vm_probe.sh"
 reason = "needs a compiled kernel, OVMF and QEMU"
 workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/session-context-check.sh"
+reason = "runs inside a booted guest after a greetd login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"
@@ -1210,3 +1245,7 @@ reason = "its fake persistence workers need Node 24's worker messaging; the ci-f
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "os/tests/probe_installer_code_refresh_mounts.py"
+reason = "explicit root private-mount-namespace integration entrypoint; run with unshare -m on the development host, failing if privileges or isolation are absent; hermetic transaction and protocol cases run in test_installer_code_refresh.py"

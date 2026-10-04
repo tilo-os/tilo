@@ -3,4 +3,3 @@
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/canvas/src/render.rs literal_color 4
 apps/canvas/src/render.rs white_or_black 1
-apps/canvas/src/surface.rs literal_color 1

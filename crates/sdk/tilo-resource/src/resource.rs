@@ -95,7 +95,18 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
-    /// Write the initial content of a brand-new record.
+    /// Write the initial content of a brand-new record: its genesis.
+    ///
+    /// The genesis is made under an actor derived from the record's identity,
+    /// at time zero, so it is the same change byte for byte on every device:
+    /// two people who each create the same record before they sync (a room's
+    /// default record, the record of one file) converge on one record rather
+    /// than two competing roots. It must therefore depend on nothing but the
+    /// resource type — not on who creates it, the device, the clock or a
+    /// file. Content that does depend on those (the creator as owner, a
+    /// first-run import of settings that already exist) is the app's seed,
+    /// applied as actions right after the genesis (`ResourceApp::seed` in
+    /// `tilo-app`).
     ///
     /// # Errors
     /// Returns the document's write error.
@@ -105,7 +116,13 @@ pub trait Resource: Sized + 'static {
 
     /// Whether `next`, applied right after `previous` by the same person,
     /// continues it as one undo step — the characters of a word typed one
-    /// keystroke at a time. The default keeps every action its own step.
+    /// keystroke at a time, the values a slider passes through in one drag.
+    /// The default keeps every action its own step.
+    ///
+    /// Only edits applied immediately (`Dispatcher::apply_now` in
+    /// `tilo-app`) continue one another, and a surface ends the gesture
+    /// (`Dispatcher::settle`) when the pointer is let go, so the next drag
+    /// of the same slider is a step of its own.
     fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
         let _ = (previous, next);
         false
@@ -125,10 +142,24 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
-    /// Document actions whose payload is bound from `state` at publish time
-    /// (clear-all that names the current rows). Prefer [`declarations`] when
-    /// the payload does not need the live state. Published on the same
-    /// resource as [`declarations`].
+    /// Mutations whose arguments are bound from `state` at publish time
+    /// (clear-all that names the current rows): typed builders of
+    /// [`Action`](Self::Action), published beside
+    /// [`declarations`](Self::declarations) and checked, confirmed and undone
+    /// the same way. Prefer [`declarations`](Self::declarations) when the
+    /// action does not need the state. An action bound to where a person is
+    /// rather than to the document (the selection, the current folder) is
+    /// bound by the view or surface that knows it.
+    fn bound_declarations(_state: &Self::State) -> Vec<ActionDecl<Self>> {
+        Vec::new()
+    }
+
+    /// View and effect operations that depend on `state` (start or stop,
+    /// carrying the current on/off), published on the same resource as
+    /// [`declarations`](Self::declarations). Static ones stay on
+    /// [`local_operations`](Self::local_operations); a mutation bound from
+    /// the state is a [`bound_declarations`](Self::bound_declarations) entry,
+    /// never a hand-built document spec here.
     fn bound_actions(_state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
     }
@@ -151,6 +182,16 @@ pub trait Resource: Sized + 'static {
     /// agents and scripts — the same door as the root, not a second tree.
     fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
         Vec::new()
+    }
+
+    /// The nested resource `id`, when [`children`](Self::children) leaves it
+    /// out. A resource with more children than a published tree should carry
+    /// (a book of contacts, a long history) publishes a bounded page from
+    /// `children` and resolves the rest here, so an action addressed to any
+    /// of them still reaches it through the same door. The default resolves
+    /// nothing beyond `children`.
+    fn child(_state: &Self::State, _id: &str) -> Option<tilo_actions::Resource> {
+        None
     }
 
     /// View and effect operations on this resource: local presentation and
@@ -251,12 +292,56 @@ pub fn scope_contains(scope: &str, anchor: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-/// A search index entry. `anchor` addresses what a hit opens (an item id).
+/// The edits of a resource whose document holds nothing. An app whose data
+/// lives entirely outside any document — credentials in this device's
+/// encrypted vault, a device's hardware — publishes that data as live rows
+/// and effects, and its resource is only the door they are published on.
+/// No value exists, so nothing is ever applied, undone or synced.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub enum NoAction {}
+
+impl tilo_actions::Action for NoAction {
+    // No value exists to apply.
+    fn apply(&self, _doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        Ok(())
+    }
+}
+
+/// A search index entry. `anchor` addresses what a hit opens (an item id);
+/// `action`, when set, is the published action a hit invokes, so choosing it
+/// goes through the same door, permissions and history as the palette.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchEntry {
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
+    pub action: Option<tilo_actions::ActionAddress>,
+}
+
+impl SearchEntry {
+    /// An entry titled `title` whose body text is `text`.
+    pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            anchor: None,
+            title: title.into(),
+            text: text.into(),
+            action: None,
+        }
+    }
+
+    /// The item a hit opens.
+    #[must_use]
+    pub fn anchored(mut self, anchor: impl Into<String>) -> Self {
+        self.anchor = Some(anchor.into());
+        self
+    }
+
+    /// The published action a hit invokes.
+    #[must_use]
+    pub fn invoking(mut self, action: tilo_actions::ActionAddress) -> Self {
+        self.action = Some(action);
+        self
+    }
 }
 
 /// Builds a resource's action from arguments already bound against the
@@ -342,6 +427,92 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
     EncodedAction::encode(R::ACTION_TYPE, action)
 }
 
+/// What history calls one action value of `R`: the label of the declared
+/// action it names (a `remove-marks` value is "Remove marks"), else its
+/// variant name in words, or `None` when it names neither.
+///
+/// The generic [`APPLY`] and a [`GROUP`](crate::GROUP) of one kind of edit
+/// are recorded under this name, so a person's history says what each edit
+/// did rather than that an edit was applied.
+pub fn action_label<R: Resource>(action: &R::Action) -> Option<String> {
+    serde_json::to_value(action)
+        .ok()
+        .and_then(|value| value_label::<R>(&value))
+}
+
+fn value_label<R: Resource>(value: &serde_json::Value) -> Option<String> {
+    let declarations = R::declarations();
+    let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
+    if let Some((id, _)) = crate::schema::declared_invocation(value, &ids) {
+        return declarations
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .map(|decl| decl.label);
+    }
+    let value = value.get("op").unwrap_or(value);
+    let variant = match value {
+        serde_json::Value::String(variant) => variant.as_str(),
+        serde_json::Value::Object(fields) => match fields.get("action") {
+            Some(serde_json::Value::String(variant)) => variant.as_str(),
+            _ if fields.len() == 1 => fields.keys().next()?.as_str(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let words = in_words(variant);
+    (!words.is_empty()).then_some(words)
+}
+
+/// `remove-marks`, `remove_marks` and `RemoveMarks` as "Remove marks".
+fn in_words(identifier: &str) -> String {
+    let mut words = String::with_capacity(identifier.len().saturating_add(4));
+    let mut previous_lowercase_or_digit = false;
+    for character in identifier.chars() {
+        if matches!(character, '-' | '_' | ' ') {
+            if !words.is_empty() && !words.ends_with(' ') {
+                words.push(' ');
+            }
+            previous_lowercase_or_digit = false;
+            continue;
+        }
+        if character.is_uppercase() && previous_lowercase_or_digit {
+            words.push(' ');
+        }
+        previous_lowercase_or_digit = character.is_lowercase() || character.is_ascii_digit();
+        if words.is_empty() {
+            words.extend(character.to_uppercase());
+        } else {
+            words.extend(character.to_lowercase());
+        }
+    }
+    words.trim_end().to_owned()
+}
+
+/// The history name of an encoded [`APPLY`]: its action's
+/// [`action_label`].
+pub(crate) fn apply_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
+    if encoded.type_id != R::ACTION_TYPE {
+        return None;
+    }
+    let value = serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()?;
+    value_label::<R>(&value)
+}
+
+/// The history name of an encoded [`GROUP`](crate::GROUP) whose members are
+/// all one kind of edit (a selection's moves are "Edit marks"); a mixed group
+/// keeps the group's own label.
+pub(crate) fn group_label<R: Resource>(encoded: &EncodedAction) -> Option<String> {
+    if encoded.type_id != crate::group::group_type::<R>() {
+        return None;
+    }
+    let members = serde_json::from_slice::<Vec<serde_json::Value>>(&encoded.payload).ok()?;
+    let mut labels = members.iter().map(value_label::<R>);
+    let first = labels.next()??;
+    labels
+        .all(|label| label.as_deref() == Some(first.as_str()))
+        .then_some(first)
+}
+
 /// The encoded form of a builder's result: the action, or a refusal that
 /// carries the builder's reason.
 pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
@@ -361,7 +532,9 @@ fn refused<R: Resource>(reason: &str) -> EncodedAction {
     }
 }
 
-fn spec_from<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
+/// The published spec of one declared or bound mutation: what the palette,
+/// agents and scripts invoke, building `R::Action` from their arguments.
+pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
     let mut spec = ActionSpec::typed(
         decl.id,
@@ -490,9 +663,14 @@ fn apply_spec<R: Resource>() -> ActionSpec {
             }
         },
     )
+    .with_description(
+        "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+    )
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
     .programmatic()
+    // History names each value after what it did, not after `apply`.
+    .with_history_label(apply_label::<R>)
     // Each value is classified: deleting is destructive, trimming is not, so
     // a destructive value gets the confirmation a declared one would.
     .with_risk(|args| {
@@ -519,8 +697,13 @@ fn group_spec<R: Resource>() -> ActionSpec {
             Err(reason) => refused::<R>(&reason),
         },
     )
+    .with_description(
+        "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}].",
+    )
     // One group is one undo step, like any other document action.
     .reversible()
+    // A group of one kind of edit is named after it.
+    .with_history_label(group_label::<R>)
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
     .programmatic()
@@ -533,9 +716,9 @@ fn group_spec<R: Resource>() -> ActionSpec {
     })
 }
 
-/// The resource tree published for one open resource: every declared action,
-/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, the named
-/// [`Resource::views`], and the nested resources.
+/// The resource tree published for one open resource: every declared and
+/// state-bound action, the generic [`APPLY`] and [`GROUP`](crate::GROUP)
+/// actions, the named [`Resource::views`], and the nested resources.
 ///
 /// This is the only bridge from a [`Resource`] type to the
 /// [`tilo_actions::Resource`] tree the palette, agents, scripts and the shell
@@ -545,7 +728,18 @@ fn group_spec<R: Resource>() -> ActionSpec {
 /// stays published on the record, with its id parameter, for scripts and
 /// agents; a person picks it on the item, so it is not a palette row here.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
-    let children = R::children(state);
+    publish_parts::<R>(id, label, Some(state))
+}
+
+/// [`publish`], or without a state only what does not depend on one: the
+/// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
+/// operations.
+pub(crate) fn publish_parts<R: Resource>(
+    id: &str,
+    label: &str,
+    state: Option<&R::State>,
+) -> tilo_actions::Resource {
+    let children = state.map(R::children).unwrap_or_default();
     let on_items: std::collections::HashSet<&str> = children
         .iter()
         .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
@@ -553,19 +747,29 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
         .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
-        let spec = spec_from(&decl);
+        let spec = declaration_spec(&decl);
         resource = resource.with_action(if on_items.contains(decl.id) {
             spec.programmatic()
         } else {
             spec
         });
     }
-    for spec in R::bound_actions(state) {
+    for decl in state.map(R::bound_declarations).unwrap_or_default() {
+        if resource
+            .actions
+            .iter()
+            .any(|existing| existing.id == decl.id)
+        {
+            continue;
+        }
+        resource = resource.with_action(declaration_spec(&decl));
+    }
+    for spec in state.map(R::bound_actions).unwrap_or_default() {
         // Document actions and state-dependent views or effects. Static views
         // and effects stay on `local_operations`.
         resource = resource.with_action(spec);
     }
-    for view in R::views(state) {
+    for view in state.map(R::views).unwrap_or_default() {
         resource = resource.with_view(view);
     }
     for spec in R::local_operations() {

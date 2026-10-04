@@ -42,6 +42,48 @@ pub struct ScanResult {
     pub error: Option<String>,
 }
 
+impl ScanResult {
+    /// A finished scan of a made-up home folder: what a screenshot shows in
+    /// place of scanning the machine it is taken on.
+    pub fn sample() -> Self {
+        let path = PathBuf::from("/home/you");
+        let entries: Vec<Entry> = [
+            ("Projects", 84_200_000_000, 48_310),
+            ("Videos", 48_600_000_000, 1_204),
+            ("Photos", 31_800_000_000, 9_870),
+            ("Downloads", 19_400_000_000, 2_615),
+            ("Documents", 8_700_000_000, 4_132),
+            ("Music", 5_100_000_000, 1_086),
+            (".cache", 3_900_000_000, 12_408),
+            (".local", 3_400_000_000, 6_121),
+            ("Desktop", 2_600_000_000, 214),
+            ("Applications", 2_100_000_000, 3_870),
+            (".config", 1_900_000_000, 1_950),
+            ("Public", 900_000_000, 18),
+            ("Templates", 400_000_000, 9),
+        ]
+        .into_iter()
+        .map(|(name, bytes, files)| Entry {
+            path: path.join(name.to_lowercase()),
+            name: name.into(),
+            bytes,
+            files,
+            unreadable: 0,
+        })
+        .collect();
+        let total = entries.iter().map(|entry| entry.bytes).sum();
+        let files = entries.iter().map(|entry| entry.files).sum();
+        Self {
+            path,
+            entries,
+            total,
+            files,
+            unreadable: 3,
+            error: None,
+        }
+    }
+}
+
 fn measure(path: &Path, cancellation: &ScanCancellation) -> (u64, u64, u64) {
     if cancellation.is_cancelled() {
         return (0, 0, 0);

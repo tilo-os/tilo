@@ -1,7 +1,4 @@
-use super::{
-    AutoCommit, Key, MapInfo, MapsApp, NamedKey, NodeId, Panel, Style, TaffyTree, Widget,
-    WindowEvent,
-};
+use super::{AutoCommit, Key, MapInfo, MapsApp, NamedKey, Panel, WindowEvent};
 
 impl MapsApp {
     /// Route a keystroke into the focused endpoint field. Enter runs its
@@ -13,9 +10,10 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) -> bool {
         if self.endpoints.is_focused() {
-            if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers) {
+            if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers, doc) {
                 self.apply_endpoint_effect(effect);
             }
             return true;
@@ -23,35 +21,17 @@ impl MapsApp {
         false
     }
 
-    /// Drive one raw event into the ⋯ overflow [`ContextMenu`] (hand-laid, so a
-    /// throwaway leaf + doc satisfy `Widget::handle_event`; the menu hit-tests
-    /// against its own `open_at` rect). Poll `take_selection` afterwards.
+    /// Drive one raw event into the ⋯ overflow [`ContextMenu`] (hand-laid: the
+    /// menu hit-tests against its own `open_at` rect). Poll `take_selection`
+    /// afterwards.
     pub(super) fn drive_overflow(
         &mut self,
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
-        let mut doc = AutoCommit::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let Ok(node) = taffy.new_leaf(Style::default()) else {
-            return;
-        };
-        let mut handled = false;
-        let mut focus_target: Option<NodeId> = None;
-        self.overflow.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: scale,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        crate::hand_laid::drive(&mut self.overflow, event, scale, modifiers, doc);
     }
 
     /// Map an overflow-menu row selection to app state.
@@ -71,16 +51,12 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
-        self.endpoints.forward_pointer(event, scale, modifiers);
+        self.endpoints.forward_pointer(event, scale, modifiers, doc);
     }
 
-    pub(super) fn handle_key(
-        &mut self,
-        key: &Key,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-    ) -> bool {
+    pub(super) fn handle_key(&mut self, key: &Key, modifiers: winit::event::Modifiers) -> bool {
         // A focused Directions field (From / To) owns typed characters
         // through `route_field_key`; `handle_key` runs only when no field has
         // keyboard focus, so it dispatches the map-level shortcuts. `/` and
@@ -100,7 +76,7 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("t") => {
-                self.enter_transit(doc);
+                self.enter_transit();
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("f") => {
@@ -110,7 +86,7 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
-                self.toggle_save_selected(doc);
+                self.toggle_save_selected();
                 true
             }
             Key::Character(s) if s.as_str() == "1" => {

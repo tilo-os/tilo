@@ -17,6 +17,44 @@ use super::{ops, remedies, scripts};
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
+#[cfg(windows)]
+#[test]
+fn final_boot_geometry_snapshot_executes_without_shrink_probe() {
+    let fixture = Fixture::oem(512);
+    let json = fixture.snapshot_json("GPT", json!("NVMe"), json!(2));
+    let mocks = format!(
+        r#"$fixture = '{}' | ConvertFrom-Json
+$script:shrinkCalls = 0
+function Get-Partition {{
+ param($DriveLetter, $DiskNumber)
+ if ($DriveLetter) {{ $p = $fixture.Partitions[2]; $p | Add-Member -NotePropertyName DiskNumber -NotePropertyValue 0; return $p }}
+ return $fixture.Partitions
+}}
+function Get-Disk {{ param($Number) return $fixture.Disk }}
+function Get-PartitionSupportedSize {{ $script:shrinkCalls++; return $fixture.System }}
+function New-Object {{ throw 'COM intentionally unavailable in fixture' }}
+"#,
+        json.to_string().replace('\'', "''")
+    );
+    let drive = scripts::DriveLetter::new('c').unwrap();
+    for (program, calls) in [
+        (scripts::geometry_snapshot(drive), 0),
+        (scripts::snapshot(drive), 1),
+    ] {
+        let program = format!(
+            "{mocks}{program}\nif ($script:shrinkCalls -ne {calls}) {{ throw 'unexpected shrink probe' }}\n"
+        );
+        let output = super::sys::powershell(&program, std::time::Duration::from_secs(20)).unwrap();
+        let value = serde_json::from_slice(&output).unwrap();
+        let snapshot = storage::parse_snapshot(&value).unwrap();
+        storage::cross_check(&fixture.layout_disk(), &snapshot).unwrap();
+        if calls == 0 {
+            assert_eq!(snapshot.system.size_min, None);
+            assert_eq!(snapshot.system.size_max, None);
+        }
+    }
+}
+
 const MSR_TYPE: &str = "e3c9e316-0b5c-4db8-817d-f92df00215ae";
 const BASIC_DATA_TYPE: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
 const WINRE_TYPE: &str = "de94bba4-06d1-4d40-a16a-bfd50179d6ac";
@@ -945,6 +983,24 @@ fn windows_scripts_carry_only_validated_encoded_values() {
         assert!(
             scripts::snapshot(scripts::DriveLetter::new('d').unwrap()).contains("-DriveLetter D\n")
         );
+        let drive = scripts::DriveLetter::new('c').unwrap();
+        let full = scripts::snapshot(drive);
+        let geometry = scripts::geometry_snapshot(drive);
+        assert!(full.contains("Get-PartitionSupportedSize"));
+        assert!(!geometry.contains("Get-PartitionSupportedSize"));
+        for retained in [
+            "Get-Disk",
+            "Get-Partition -DiskNumber",
+            "Guid =",
+            "LogicalSectorSize",
+            "SizeMin = $min",
+            "BitLockerProtection",
+        ] {
+            assert!(
+                geometry.contains(retained),
+                "missing geometry check: {retained}"
+            );
+        }
         assert_eq!(
             scripts::DriveLetter::of_path(r"C:\Windows")
                 .unwrap()

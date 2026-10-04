@@ -13,6 +13,12 @@ pub fn compare(left: &str, right: &str) -> Ordering {
     }
 }
 
+/// Whether `version` is a pre-release, which only the development channel
+/// installs. Versions that are not `SemVer` count as releases.
+pub fn is_prerelease(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|version| !version.pre.is_empty())
+}
+
 fn numeric_key(version: &str) -> Option<Vec<u64>> {
     if let Ok(version) = semver::Version::parse(version) {
         return Some(vec![version.major, version.minor, version.patch]);

@@ -12,6 +12,7 @@
 
 use store::StoreApp;
 use ui::headless::Framed;
+use ui::tilo_resource::Resource as _;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 use winit::dpi::PhysicalPosition;
@@ -27,8 +28,8 @@ fn lay_out(app: StoreApp) -> Framed<StoreApp> {
 }
 
 fn staged(scenario: &str) -> StoreApp {
-    let mut app = StoreApp::new();
-    store::shots::stage(&mut app, Some(scenario));
+    let mut app = store::fixture::seeded_app();
+    app.stage_scene(Some(scenario));
     app
 }
 
@@ -75,8 +76,9 @@ fn a_remote_rows_action_invokes_the_remotes_own_remove_action() {
     click(&mut app, action);
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("the row action queued an invocation");
-    assert_eq!(invocation.address.resource, "remote:flathub");
-    assert_eq!(invocation.address.action, "remove");
+    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.action, "remove-remote");
+    assert_eq!(invocation.arguments["name"], "flathub");
 }
 
 /// While a query narrows the catalogue the page offers one way back, bound to the browse action.
@@ -87,13 +89,10 @@ fn a_narrowed_catalogue_offers_to_clear_its_filters() {
     click(&mut app, clear.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)
         .expect("clearing filters is an exported action");
-    assert_eq!(
-        invocation.address.resource,
-        store::browse_actions::BROWSE_RESOURCE_ID
-    );
-    assert_eq!(invocation.address.action, "clear");
+    assert_eq!(invocation.address.resource, store::Store::KIND);
+    assert_eq!(invocation.address.action, "clear-filters");
 
-    let plain = lay_out(store::shots::seeded_app());
+    let plain = lay_out(store::fixture::seeded_app());
     assert!(
         !has_test_id(&*plain, "store.filters.clear"),
         "an unfiltered catalogue has nothing to clear"
@@ -103,7 +102,7 @@ fn a_narrowed_catalogue_offers_to_clear_its_filters() {
 /// The magnifier opens the platform search for this app instead of a field of the Store's own.
 #[test]
 fn the_catalogue_searches_through_the_platform_launcher() {
-    let mut app = lay_out(store::shots::seeded_app());
+    let mut app = lay_out(store::fixture::seeded_app());
     let search = rect_of(&*app, "search-open");
     click(&mut app, search.center());
     let invocation = ui::widget::controls::take_control_invocation(&mut *app)

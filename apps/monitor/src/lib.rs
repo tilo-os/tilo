@@ -8,18 +8,18 @@
 //! snapshot drives `--shots` so a capture is fully populated offline.
 //!
 //! Layers:
-//! - [`model`]   — pure data: rolling histories, process rows, formatting.
-//! - [`sampler`] — live `sysinfo` readings folded into the model.
-//! - [`tree`]    — pure parent→child process tree + subtree-sum roll-ups.
-//! - [`doc`]     — collaborative view preferences (tab, sort, filter,
-//!   selection) stored in Automerge.
-//! - [`prefs`]   — per-window device observation preferences, deliberately
-//!   outside Automerge and collaborative history.
-//! - [`view`]    — the panes and the inspector the window shell shows.
-//! - [`app`]     — the root [`app::MonitorApp`] widget.
-//!
-//! `app_root` is the single integration point used by both the live event
-//! loop and the headless `--shots` renderer in `main.rs`.
+//! - [`model`]    — pure data: rolling histories, process rows, formatting.
+//! - [`sampler`]  — live `sysinfo` readings folded into the model.
+//! - [`tree`]     — pure parent→child process tree + subtree-sum roll-ups.
+//! - [`doc`]      — the shared table layout (sort, tree mode) stored in
+//!   Automerge.
+//! - [`prefs`]    — the person's cadence and kernel-thread preferences (a
+//!   personal settings section, outside Automerge and collaborative
+//!   history) and the window's sampling switch.
+//! - [`view`]     — the panes and the inspector the window shell shows.
+//! - [`app`]      — the root [`app::MonitorApp`] widget.
+//! - [`resource`] — the [`Monitor`] resource, its effects and the
+//!   [`MonitorShell`] app every launch (window, `--shots`) runs.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -48,9 +48,6 @@
 
 pub mod app;
 pub mod doc;
-pub mod framework_history;
-#[cfg(test)]
-mod framework_history_tests;
 pub mod model;
 pub mod prefs;
 pub mod resource;
@@ -59,11 +56,4 @@ pub mod tree;
 pub mod view;
 
 pub use app::MonitorApp;
-
-/// Build and return the app's root widget tree for the live window. Uses the
-/// live constructor so the first frame samples real `sysinfo` data instead of
-/// the deterministic sample snapshot (which is reserved for `--shots`/tests).
-pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(MonitorApp::new_live())
-}
-pub use resource::{Monitor, MonitorShell};
+pub use resource::{Monitor, MonitorEffect, MonitorShell};

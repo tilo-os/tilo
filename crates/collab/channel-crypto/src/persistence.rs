@@ -106,12 +106,28 @@ impl ChannelGroup {
     ///
     /// Returns an explicit serialization, encryption, lock, or I/O error.
     pub fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
+        let sealed = self.seal(key)?;
+        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
+    }
+
+    /// This group's state sealed under `key`, as [`Self::save_sealed`]
+    /// writes it, for a store that is not a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit serialization or encryption error.
+    pub fn seal(&self, key: &VaultKey) -> Result<Vec<u8>> {
         let mut state = self.snapshot()?;
         let encoded = postcard::to_allocvec(&state);
         state.zeroize_secret_material();
         let plaintext =
             Zeroizing::new(encoded.map_err(|error| Error::Serialization(error.to_string()))?);
-        write_sealed(path, key, STATE_RECORD, &plaintext)
+        tilo_seal::envelope::seal(
+            &key.0,
+            Context::new(Label::ChannelMlsState, STATE_RECORD),
+            &plaintext,
+        )
+        .map_err(|_| Error::StateCrypto("state encryption failed"))
     }
 
     fn snapshot(&self) -> Result<StateV2> {
@@ -156,11 +172,23 @@ impl ChannelGroup {
         if metadata.len() > MAX_SEALED_STATE {
             return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
         }
-        let bytes = fs::read(path)?;
+        Self::open_sealed(&fs::read(path)?, key)
+    }
+
+    /// Restore a group from what [`Self::seal`] produced, with the checks of
+    /// [`Self::load_sealed`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load_sealed`].
+    pub fn open_sealed(sealed: &[u8], key: &VaultKey) -> Result<Self> {
+        if u64::try_from(sealed.len()).unwrap_or(u64::MAX) > MAX_SEALED_STATE {
+            return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
+        }
         let plaintext = tilo_seal::envelope::open(
             &key.0,
             Context::new(Label::ChannelMlsState, STATE_RECORD),
-            &bytes,
+            sealed,
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
         let state: StateV2 = postcard::from_bytes(&plaintext)
@@ -396,14 +424,4 @@ impl MemberRecord {
             MemberRecordWire::Removed => Ok(Self::Removed),
         }
     }
-}
-
-fn write_sealed(path: &Path, key: &VaultKey, record: &[u8], plaintext: &[u8]) -> Result<()> {
-    let sealed = tilo_seal::envelope::seal(
-        &key.0,
-        Context::new(Label::ChannelMlsState, record),
-        plaintext,
-    )
-    .map_err(|_| Error::StateCrypto("state encryption failed"))?;
-    tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
 }

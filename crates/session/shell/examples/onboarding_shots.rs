@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 use automerge::{ScalarValue, transaction::Transactable};
 use shell::onboarding::MintedIdentity;
 use shell::onboarding_view::{
-    KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CONNECT, KEY_CREATE,
-    KEY_IMPORT, KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView,
-    OnboardingVisualState,
+    KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CHOOSE_NEARBY,
+    KEY_CHOOSE_RESTORE, KEY_CREATE, KEY_EXISTING, KEY_IMPORT, KEY_TOUR_NEXT, KEY_TOUR_START,
+    KEY_UNDERSTOOD, OnboardingView, OnboardingVisualState,
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
@@ -219,14 +219,14 @@ fn main() -> Result<(), String> {
         shoot_host(
             &Theme::dark(),
             &dir.join(format!("host-2-connect-{size}.png")),
-            &[KEY_CONNECT],
+            &[KEY_EXISTING, KEY_CHOOSE_RESTORE],
             width,
             height,
         )?;
         shoot_host(
             &Theme::dark(),
             &dir.join(format!("host-2-connect-error-{size}.png")),
-            &[KEY_CONNECT, KEY_IMPORT],
+            &[KEY_EXISTING, KEY_CHOOSE_RESTORE, KEY_IMPORT],
             width,
             height,
         )?;
@@ -303,7 +303,7 @@ fn main() -> Result<(), String> {
 
     let accessibility_states: &[(&str, &[&str])] = &[
         ("choose", &[]),
-        ("connect", &[KEY_CONNECT]),
+        ("connect", &[KEY_EXISTING, KEY_CHOOSE_RESTORE]),
         ("protect", &[KEY_BEGIN]),
         ("protect-acknowledged", &[KEY_BEGIN, KEY_UNDERSTOOD]),
         ("backup", &[KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE]),
@@ -387,8 +387,22 @@ fn main() -> Result<(), String> {
         )?;
         shoot(
             &theme,
+            &dir.join(format!("2-existing-{suffix}.png")),
+            &[KEY_EXISTING],
+            WIDTH,
+            HEIGHT,
+        )?;
+        shoot(
+            &theme,
+            &dir.join(format!("2-nearby-{suffix}.png")),
+            &[KEY_EXISTING, KEY_CHOOSE_NEARBY],
+            WIDTH,
+            HEIGHT,
+        )?;
+        shoot(
+            &theme,
             &dir.join(format!("2-connect-{suffix}.png")),
-            &[KEY_CONNECT],
+            &[KEY_EXISTING, KEY_CHOOSE_RESTORE],
             WIDTH,
             HEIGHT,
         )?;
@@ -487,7 +501,7 @@ fn main() -> Result<(), String> {
             .with_ui_scale(1.25)
             .with_reduce_motion(true),
         &dir.join("12-connect-scaled-high-contrast.png"),
-        &[KEY_CONNECT],
+        &[KEY_EXISTING, KEY_CHOOSE_RESTORE],
         800,
         640,
     )?;

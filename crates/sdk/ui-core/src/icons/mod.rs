@@ -151,6 +151,55 @@ pub enum Icon {
     /// Show or hide the inspector: the mirror of [`Icon::PanelLeft`].
     /// Lucide `panel-right`.
     PanelRight,
+    // --- Drawing set ---
+    /// A paint brush. Lucide `brush`.
+    Brush,
+    /// A circle, for an ellipse tool. Lucide `circle`.
+    Circle,
+    /// A diagonal line. Lucide `slash`.
+    Slash,
+    /// A text tool. Lucide `type`.
+    Type,
+    /// An eyedropper that picks a colour. Lucide `pipette`.
+    Pipette,
+    /// An eraser. Lucide `eraser`.
+    Eraser,
+    /// Hidden. Lucide `eye-off`.
+    EyeOff,
+    /// Locked. Lucide `lock`.
+    Lock,
+    /// Unlocked. Lucide `lock-open`.
+    LockOpen,
+    /// An agent. Lucide `bot`.
+    Bot,
+    /// A person. Lucide `user`.
+    User,
+    /// A named point, a checkpoint. Lucide `flag`.
+    Flag,
+    /// A paint drop. Lucide `droplet`.
+    Droplet,
+    /// A painter's palette. Lucide `palette`.
+    Palette,
+    /// A rectangle of an area being selected. Lucide `square-dashed`.
+    SquareDashed,
+    /// An ellipse of an area being selected. Lucide `circle-dashed`.
+    CircleDashed,
+    /// A freehand selection. Lucide `lasso`.
+    Lasso,
+    /// Selecting by colour, a magic wand. Lucide `wand-sparkles`.
+    WandSparkles,
+    /// Filling an area with colour. Lucide `paint-bucket`.
+    PaintBucket,
+    /// Half light, half dark: inverting. Lucide `contrast`.
+    Contrast,
+    /// Shapes united into one. Lucide `squares-unite`.
+    SquaresUnite,
+    /// One shape taken out of another. Lucide `squares-subtract`.
+    SquaresSubtract,
+    /// Only where shapes overlap. Lucide `squares-intersect`.
+    SquaresIntersect,
+    /// Where either shape is, but not both. Lucide `squares-exclude`.
+    SquaresExclude,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -734,6 +783,179 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
             path_from_d("M15 3v18"),
         ],
+        Icon::Brush => vec![
+            path_from_d("m11 10 3 3"),
+            path_from_d("M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z"),
+            path_from_d("M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031"),
+        ],
+        Icon::Circle => vec![circle_path(12.0, 12.0, 10.0)],
+        Icon::Slash => vec![path_from_d("M22 2 2 22")],
+        Icon::Type => vec![
+            path_from_d("M12 4v16"),
+            path_from_d("M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"),
+            path_from_d("M9 20h6"),
+        ],
+        Icon::Pipette => vec![
+            path_from_d(
+                "m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12",
+            ),
+            path_from_d(
+                "m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z",
+            ),
+            path_from_d("m2 22 .414-.414"),
+        ],
+        Icon::Eraser => vec![
+            path_from_d(
+                "M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21",
+            ),
+            path_from_d("m5.082 11.09 8.828 8.828"),
+        ],
+        Icon::EyeOff => vec![
+            path_from_d(
+                "M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49",
+            ),
+            path_from_d("M14.084 14.158a3 3 0 0 1-4.242-4.242"),
+            path_from_d(
+                "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143",
+            ),
+            path_from_d("m2 2 20 20"),
+        ],
+        Icon::Lock => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 10 0v4"),
+        ],
+        Icon::LockOpen => vec![
+            rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
+            path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
+        ],
+        Icon::Bot => vec![
+            path_from_d("M12 8V4H8"),
+            rect_path(4.0, 8.0, 16.0, 12.0, 2.0),
+            path_from_d("M2 14h2"),
+            path_from_d("M20 14h2"),
+            path_from_d("M15 13v2"),
+            path_from_d("M9 13v2"),
+        ],
+        Icon::User => vec![
+            path_from_d("M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"),
+            circle_path(12.0, 7.0, 4.0),
+        ],
+        Icon::Flag => vec![path_from_d(
+            "M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528",
+        )],
+        Icon::Droplet => vec![path_from_d(
+            "M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z",
+        )],
+        Icon::Palette => vec![
+            path_from_d(
+                "M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z",
+            ),
+            circle_path(13.5, 6.5, 0.5),
+            circle_path(17.5, 10.5, 0.5),
+            circle_path(6.5, 12.5, 0.5),
+            circle_path(8.5, 7.5, 0.5),
+        ],
+        Icon::SquareDashed => [
+            "M5 3a2 2 0 0 0-2 2",
+            "M19 3a2 2 0 0 1 2 2",
+            "M21 19a2 2 0 0 1-2 2",
+            "M5 21a2 2 0 0 1-2-2",
+            "M9 3h1",
+            "M9 21h1",
+            "M14 3h1",
+            "M14 21h1",
+            "M3 9v1",
+            "M21 9v1",
+            "M3 14v1",
+            "M21 14v1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::CircleDashed => [
+            "M10.1 2.182a10 10 0 0 1 3.8 0",
+            "M13.9 21.818a10 10 0 0 1-3.8 0",
+            "M17.609 3.721a10 10 0 0 1 2.69 2.7",
+            "M2.182 13.9a10 10 0 0 1 0-3.8",
+            "M20.279 17.609a10 10 0 0 1-2.7 2.69",
+            "M21.818 10.1a10 10 0 0 1 0 3.8",
+            "M3.721 6.391a10 10 0 0 1 2.7-2.69",
+            "M6.391 20.279a10 10 0 0 1-2.69-2.7",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Lasso => vec![
+            path_from_d("M7 22a5 5 0 0 1-2-4"),
+            path_from_d("M7 16.93c.96.43 1.96.74 2.99.91"),
+            path_from_d(
+                "M3.34 14A6.8 6.8 0 0 1 2 10c0-4.42 4.48-8 10-8s10 3.58 10 8-4.48 8-10 8a12 12 0 0 1-1.57-.1",
+            ),
+            circle_path(5.0, 16.0, 2.0),
+        ],
+        Icon::WandSparkles => [
+            "m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72",
+            "m14 7 3 3",
+            "M5 6v4",
+            "M19 14v4",
+            "M10 2v2",
+            "M7 8H3",
+            "M21 16h-4",
+            "M11 3H9",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::PaintBucket => [
+            "m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z",
+            "m5 2 5 5",
+            "M2 13h15",
+            "M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Contrast => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M12 18a6 6 0 0 0 0-12v12z"),
+        ],
+        Icon::SquaresUnite => vec![path_from_d(
+            "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 0 1 1h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2v-3a1 1 0 0 0-1-1z",
+        )],
+        Icon::SquaresSubtract => [
+            "M10 22a2 2 0 0 1-2-2",
+            "M16 22h-2",
+            "M16 4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3a1 1 0 0 0 1-1v-5a2 2 0 0 1 2-2h5a1 1 0 0 0 1-1z",
+            "M20 8a2 2 0 0 1 2 2",
+            "M22 14v2",
+            "M22 20a2 2 0 0 1-2 2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::SquaresIntersect => [
+            "M10 22a2 2 0 0 1-2-2",
+            "M14 2a2 2 0 0 1 2 2",
+            "M16 22h-2",
+            "M2 10V8",
+            "M2 4a2 2 0 0 1 2-2",
+            "M20 8a2 2 0 0 1 2 2",
+            "M22 14v2",
+            "M22 20a2 2 0 0 1-2 2",
+            "M4 16a2 2 0 0 1-2-2",
+            "M8 10a2 2 0 0 1 2-2h5a1 1 0 0 1 1 1v5a2 2 0 0 1-2 2H9a1 1 0 0 1-1-1z",
+            "M8 2h2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::SquaresExclude => [
+            "M16 12v2a2 2 0 0 1-2 2H9a1 1 0 0 0-1 1v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2h0",
+            "M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3a1 1 0 0 1-1 1h-5a2 2 0 0 0-2 2v2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
     }
 }
 
@@ -1299,6 +1521,31 @@ mod tests {
                 Icon::Undo2,
                 Icon::Redo2,
                 Icon::TriangleAlert,
+                Icon::Brush,
+                Icon::Circle,
+                Icon::Slash,
+                Icon::Type,
+                Icon::Pipette,
+                Icon::Eraser,
+                Icon::EyeOff,
+                Icon::Lock,
+                Icon::LockOpen,
+                Icon::Bot,
+                Icon::User,
+                Icon::Flag,
+                Icon::Droplet,
+                Icon::Palette,
+                Icon::PanelRight,
+                Icon::SquareDashed,
+                Icon::CircleDashed,
+                Icon::Lasso,
+                Icon::WandSparkles,
+                Icon::PaintBucket,
+                Icon::Contrast,
+                Icon::SquaresUnite,
+                Icon::SquaresSubtract,
+                Icon::SquaresIntersect,
+                Icon::SquaresExclude,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

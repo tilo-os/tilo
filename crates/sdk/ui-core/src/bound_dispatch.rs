@@ -1600,6 +1600,7 @@ fn execute_document(
     context: tilo_actions::ActionContext,
 ) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
     let before = typed_action_before(doc);
+    let step = action.change_kind().is_step() && context.change.is_step();
     // An agent principal names one writer; a person may write from several
     // devices at once.
     let writer = if crate::history_source::authors::agent_principal_name(actor).is_some() {
@@ -1632,7 +1633,7 @@ fn execute_document(
         };
     if let Some(before) = before {
         let after = doc.get_heads();
-        report_typed_action(doc, before, after);
+        report_typed_action(doc, before, after, step);
     }
     Ok(dispatched)
 }
@@ -1681,20 +1682,26 @@ pub(crate) fn execute_resource_operation(
     let started = if spec.kind == tilo_actions::OperationKind::Document {
         let action = registry
             .decode(&encoded)
-            .map_err(|_| tilo_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
+            .map_err(tilo_actions::DoorError::decoding)?;
         if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
             return Err(tilo_actions::DoorError::Failed(
                 "Deferred action locus differs from its declaration".into(),
             ));
         }
+        // Named after the edit it carries, when the spec carries several.
         let mut context = tilo_actions::ActionContext::for_resource(
-            &spec.label,
+            spec.history_label(&encoded),
             resource.id.as_str(),
             &resource.kind,
             &resource.label,
         );
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
+        }
+        // The admitted caller is who the action is by, local or delivered:
+        // pinned with it, so its `apply` reads the same author everywhere.
+        if context.invoker.is_none() && !actor.is_empty() {
+            context = context.with_invoker(tilo_actions::ActionInvoker::actor(actor));
         }
         let context = context.with_args_from_payload(&encoded.payload);
         // Before apply, so a delete can still read the row it removes. Undo
@@ -2320,10 +2327,16 @@ pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash
 
 /// A successful executor reports owned exact heads, never a borrowed root or
 /// registry. No-op and failed/submitted-without-change dispatches add nothing.
+///
+/// `step` is whether the change is an undo step of its author's
+/// ([`tilo_actions::ChangeKind::is_step`]). One that is not (fetched rows, a
+/// process's output) closes the step open before it and is left out of every
+/// step, so no undo takes it back with someone's edit.
 pub(crate) fn report_typed_action(
     doc: &mut AutoCommit,
     before: Vec<ChangeHash>,
     after: Vec<ChangeHash>,
+    step: bool,
 ) {
     if before == after {
         return;
@@ -2335,6 +2348,10 @@ pub(crate) fn report_typed_action(
     let Some(frame) = owned.as_mut() else {
         return;
     };
+    if !step {
+        frame.pass_over(before, after, doc);
+        return;
+    }
     let Some(operation) = frame.operations.last() else {
         return;
     };
@@ -2498,6 +2515,37 @@ impl PendingRecordAction {
 }
 
 impl ActionFrame {
+    /// Leave the change from `before` to `after` out of every undo step: the
+    /// step open before it is finished at `before`, and the next one starts
+    /// at `after`.
+    fn pass_over(&mut self, before: Vec<ChangeHash>, after: Vec<ChangeHash>, doc: &mut AutoCommit) {
+        let boundary = self
+            .operations
+            .iter()
+            .find_map(|scope| scope.cursor.as_ref())
+            .cloned()
+            .unwrap_or_else(|| before.clone());
+        self.finish_pending_at(boundary, doc);
+        for operation in &mut self.operations {
+            operation.violation |= operation.effect
+                && operation
+                    .cursor
+                    .as_ref()
+                    .is_some_and(|cursor| cursor != &before);
+            operation.cursor = Some(after.clone());
+        }
+        let binding = self
+            .operations
+            .last()
+            .map(|operation| operation.binding.clone())
+            .or_else(|| self.mutation.as_ref().map(|active| active.binding.clone()));
+        match binding {
+            Some(binding) => self.reset_operation_baseline(&binding, after),
+            None => self.state.pending = None,
+        }
+        self.state.generation = self.state.generation.and_then(|value| value.checked_add(1));
+    }
+
     fn reset_operation_baseline(&mut self, binding: &CallbackBinding, after: Vec<ChangeHash>) {
         self.state.pending = Some(PendingRecordAction::new(binding, after.clone()));
         if let Some(active) = self.mutation.as_mut() {

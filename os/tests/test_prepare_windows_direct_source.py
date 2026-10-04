@@ -28,6 +28,52 @@ fixture = load("windows_direct_copy_fixture", Path(__file__).with_name(
 
 
 class SourceTemplateTests(unittest.TestCase):
+    def test_finalize_realized_windows_numbers_move_only_source_winre_slot(self):
+        plan, _, final, disk_size = fixture.direct_fixture()
+        # Windows' offset-ordered target numbers collide with retained WinRE4.
+        for number, row in zip((4, 5, 6), plan['target_partitions'], strict=True):
+            row['number'] = number
+        original_plan = json.loads(json.dumps(plan))
+        with tempfile.TemporaryDirectory() as tmp:
+            raw = Path(tmp) / 'source.raw'
+            plan_path = Path(tmp) / 'plan.json'
+            plan_path.write_text(json.dumps(plan))
+            with patch.object(prep.direct, 'GIB', fixture.MIB):
+                prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
+                # The VM allocated GPT slots5/6/7, retaining synthetic WinRE4.
+                self.guided_vm_install(raw, plan, final)
+                before = raw.read_bytes()
+                with raw.open('rb') as stream:
+                    original_guid, _ = prep.direct.read_gpt(stream, disk_size)
+                prep.finalize_source(SimpleNamespace(plan=plan_path, source_raw=raw))
+            after = raw.read_bytes()
+            with raw.open('rb') as stream:
+                guid, actual = prep.direct.read_gpt(stream, disk_size)
+            self.assertEqual(guid, original_guid)
+            by_id = {row['partuuid']: row for row in actual}
+            winre = plan['preserve_partitions'][-1]
+            self.assertEqual(by_id[winre['partuuid']], {**winre, 'number': 7})
+            for row in plan['preserve_partitions'][:-1] + plan['target_partitions']:
+                self.assertEqual(by_id[row['partuuid']], prep.direct.normalized([row])[0])
+            for row in plan['preserve_partitions'] + plan['target_partitions']:
+                start, size = row['offset_bytes'], row['size_bytes']
+                self.assertEqual(after[start:start + size], before[start:start + size])
+            # GPT occupies only the leading/trailing sectors. Every other byte
+            # is unchanged, including unused extents between partitions.
+            self.assertEqual(after[34 * 512:-33 * 512], before[34 * 512:-33 * 512])
+            self.assertEqual(plan, original_plan)
+            self.assertTrue(prep.direct.same_gpt_content(actual,
+                plan['preserve_partitions'] + plan['target_partitions']))
+
+    def test_plan_rows_refuses_other_preserved_partition_collisions(self):
+        plan, _, _, _ = fixture.direct_fixture()
+        plan['target_partitions'][0]['number'] = 3
+        with self.assertRaisesRegex(ValueError, 'only preserved WinRE'):
+            prep.plan_rows(plan)
+        plan['target_partitions'][0]['number'] = 6
+        with self.assertRaisesRegex(ValueError, 'duplicate slots'):
+            prep.plan_rows(plan)
+
     def test_reset_reuses_payload_and_refuses_changed_identity(self):
         plan, _, final, disk_size = fixture.direct_fixture()
         with tempfile.TemporaryDirectory() as tmp:

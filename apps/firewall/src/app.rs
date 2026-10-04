@@ -8,16 +8,16 @@
 //! configuration to firewalld.
 //!
 //! The configuration lives in the shared Automerge document (`doc.rs`): every
-//! mutation is a [`FirewallAction`] that addresses a native scalar, text, or
-//! stable record, and `sync` adopts remote edits so two instances pointed at
-//! one collab socket edit the same ruleset. Which zone is open, the tab and
-//! the draft are this window's presentation and never enter the document.
+//! edit is a [`FirewallAction`] submitted through the framework dispatcher,
+//! and the framework presents the stored configuration back (see
+//! [`crate::resource`]), so two instances on one record edit the same
+//! ruleset. Which zone is open, the tab and the draft are this window's
+//! presentation and never enter the document.
 
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -33,13 +33,14 @@ use ui::time::{Duration, Instant};
 use ui::widget::toast::{ToastKind, ToastStack};
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 
+use ui::framework::{Dispatcher, Setting};
+
 use crate::actions::FirewallAction;
-use crate::backend::{Backend, Mode};
-use crate::doc::FirewallDoc;
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Zone, ZoneKind, validate_port,
     validate_source,
 };
+use crate::resource::{AppliedConfig, ApplyOutcome, Firewall, FirewallEffect};
 use crate::view::{self, Draft, Intent, Intents, PageModel, SwitchKey, Switches, Tab};
 
 /// How long a result toast stays before it hides itself.
@@ -71,19 +72,6 @@ pub(crate) struct Notice {
     pub tone: Tone,
 }
 
-#[derive(Clone, Copy)]
-enum FirewallEffect {
-    Apply,
-    SetEnabled(bool),
-    SetPanic(bool),
-    Retry,
-}
-
-struct PendingFirewallEffect {
-    invocation: tilo_actions::InvocationId,
-    effect: FirewallEffect,
-}
-
 /// What the shell currently shows, so it is rebuilt only when it changes.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(
@@ -109,7 +97,7 @@ struct ViewKey {
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent flags: availability, the shell's build, seeding, and a pending sync"
+    reason = "independent flags: availability, the shell's build, the add-rule dialog, and a pending sync"
 )]
 pub struct FirewallApp {
     shell: NavShell,
@@ -127,7 +115,6 @@ pub struct FirewallApp {
     selected_rule: Option<RuleId>,
     tab: Tab,
     draft: Draft,
-    backend: Backend,
     notice: Option<Notice>,
     /// The result toast, and when it was last advanced.
     toasts: ToastStack,
@@ -137,8 +124,8 @@ pub struct FirewallApp {
     wide: bool,
     wide_from: f64,
 
-    /// Whether the displayed config reflects a real, readable firewall.
-    /// `false` means firewalld is absent/stopped and we show an honest
+    /// Whether there is a configuration to show. `false` means no device
+    /// could read firewalld into the record yet, and we show an honest
     /// unavailable state instead of any fabricated ruleset.
     available: bool,
     /// The rule the person asked to delete; the dialog confirms it.
@@ -146,18 +133,15 @@ pub struct FirewallApp {
     /// The add-rule dialog is open.
     adding: bool,
 
-    /// JSON last written to / read from the doc. Guards against re-adopting
-    /// our own writes and lets `sync` detect genuine remote edits.
-    last_json: Option<String>,
-    seeded: bool,
-
-    /// Framework-owned action dispatch: every on-screen affordance routes its
-    /// [`FirewallAction`] through here so it brackets exactly **one** undo
-    /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
-    /// and replays byte-identically on peers — the same path Ctrl+K takes.
-    actions: crate::resource::ActionSink,
-    pending_effect: Option<PendingFirewallEffect>,
-    completed_effect: Option<tilo_actions::InvocationUpdate>,
+    /// Where every on-screen affordance submits its [`FirewallAction`]: one
+    /// undo step each, replayed byte-identically on peers — the same door
+    /// Ctrl+K takes. `None` only for a widget no resource hosts.
+    dispatcher: Option<Dispatcher<Firewall>>,
+    /// What this device last applied to its firewalld.
+    applied: Option<Setting<AppliedConfig>>,
+    /// A failed apply of the stored configuration on this device, until the
+    /// window reports it.
+    outcome: ApplyOutcome,
 
     built: Option<ViewKey>,
     /// The zone list's (config revision, selected zone) when it was built.
@@ -191,29 +175,17 @@ fn shell_for(
 }
 
 impl FirewallApp {
-    /// The live app: read the **real** current firewall from the host. If
-    /// firewalld is absent or stopped, start on an honest unavailable state —
-    /// never a fabricated ruleset.
+    /// The surface before the resource presents its configuration: an
+    /// honest unavailable state, never a fabricated ruleset.
     pub fn new() -> Self {
-        match crate::backend::import() {
-            Some(config) => Self::from_parts(config, true),
-            None => Self::from_parts(FirewallConfig::empty(), false),
-        }
-    }
-
-    /// The hermetic `--shots` / demo build: seeded with a realistic sample
-    /// ruleset so the headless screenshot is fully populated offline. This
-    /// is the ONLY place the sample config is used — the live app never
-    /// fabricates a firewall.
-    pub fn new_demo() -> Self {
-        Self::from_parts(crate::sample::sample_config(), true)
-    }
-
-    /// A window that never reads the host: it shows whatever configuration
-    /// the shared document holds (a capture's example ruleset), and the
-    /// unavailable state until it holds one.
-    pub fn offline() -> Self {
         Self::from_parts(FirewallConfig::empty(), false)
+    }
+
+    /// The bare widget showing the sample ruleset, for tests of its layout
+    /// and input.
+    #[cfg(test)]
+    pub(crate) fn new_demo() -> Self {
+        Self::from_parts(crate::sample::sample_config(), true)
     }
 
     fn from_parts(config: FirewallConfig, available: bool) -> Self {
@@ -233,7 +205,6 @@ impl FirewallApp {
             selected_rule: None,
             tab: Tab::Rules,
             draft: Draft::new(),
-            backend: Backend::detect(),
             notice: None,
             toasts: ToastStack::new().with_max(1).with_default_ttl(TOAST_TTL),
             toasts_ticked: ui::time::now(),
@@ -242,11 +213,9 @@ impl FirewallApp {
             available,
             pending_delete: None,
             adding: false,
-            last_json: None,
-            seeded: false,
-            actions: crate::resource::ActionSink::default(),
-            pending_effect: None,
-            completed_effect: None,
+            dispatcher: None,
+            applied: None,
+            outcome: ApplyOutcome::default(),
             built: None,
             listed: None,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
@@ -254,10 +223,10 @@ impl FirewallApp {
         }
     }
 
-    /// Deterministic, presentation-only screenshot states. These never run in
-    /// the live constructor and never touch the host firewall; they let visual
-    /// review cover empty, invalid, confirmation, and changed states.
-    pub fn pose_fixture(&mut self, name: &str) {
+    /// Presentation-only screenshot states, staged once the scenario's
+    /// configuration is shown: empty, invalid, confirmation and changed
+    /// states for visual review.
+    pub(crate) fn pose_fixture(&mut self, name: &str) {
         match name {
             "empty" => self.selected_zone = ZoneKind::Drop,
             "add-rule" => self.adding = true,
@@ -276,15 +245,9 @@ impl FirewallApp {
             }
             "active-change" => {
                 self.selected_zone = ZoneKind::Home;
-                self.set_config(FirewallConfig {
-                    default_zone: ZoneKind::Home,
-                    ..self.config.clone()
-                });
                 self.report("Home is now the active zone", Tone::Success);
             }
             "service-error" => {
-                self.set_config(FirewallConfig::empty());
-                self.available = false;
                 self.report(
                     "Permission to read firewalld was denied. Ask an administrator for access, then try again.",
                     Tone::Error,
@@ -299,10 +262,6 @@ impl FirewallApp {
                     .and_then(|zone| zone.rules.get(1))
                     .map(|rule| rule.id);
             }
-            "panic" => self.set_config(FirewallConfig {
-                panic_mode: true,
-                ..self.config.clone()
-            }),
             "drawer" => self.shell.open_sidebar(),
             _ => {}
         }
@@ -348,36 +307,43 @@ impl FirewallApp {
         self.changed = true;
     }
 
-    /// Dispatch one [`FirewallAction`] — the single CRDT-mutation path shared
-    /// with the Ctrl+K palette. The action is applied through the Tilo action
-    /// executor (a pinned actor + committed change, so it replays byte-identically
-    /// on peers), exactly as the palette does. The host records **one** undo
-    /// boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
-    /// The action mutates its addressed shared document field; we then adopt
-    /// the result back into the in-memory view so the next frame paints it, and
-    /// remember the JSON so `sync` doesn't re-adopt our own write as a remote
-    /// edit.
+    /// Submit one [`FirewallAction`] — the single write path shared with the
+    /// Ctrl+K palette. The framework applies it after the event and presents
+    /// the stored configuration back, which the next frame shows.
     ///
-    /// This is *only* the CRDT mutation. Pushing the ruleset to the kernel
-    /// (`firewall-cmd`/`nft`, see [`Self::apply`]) is a separate side effect
-    /// driven by the resulting document state — never part of an action.
-    fn perform_action(&mut self, state: &mut AutoCommit, action: &FirewallAction) {
-        self.actions.dispatch_with_context(
-            state,
-            crate::actions::FIREWALL_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.firewall", "Firewall", action),
-        );
-        if let Some(cfg) = FirewallDoc::load(state) {
-            self.last_json = Some(cfg.to_json());
-            self.set_config(cfg);
+    /// This is *only* the document edit. Pushing the ruleset to the kernel
+    /// (`firewall-cmd`/`nft`) follows from the stored configuration on each
+    /// device — never part of an action.
+    fn dispatch(&self, action: &FirewallAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
         }
     }
 
-    /// Show a shared configuration the framework resource already holds.
-    /// An empty projection does not wipe a config just read from the host.
-    pub(crate) fn adopt_resource_state(&mut self, state: &FirewallConfig) {
-        if state.zones.is_empty() || state.validate().is_err() {
+    /// Invoke one of the firewall's effects through the same door as the
+    /// palette.
+    fn invoke(&self, effect: &FirewallEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(effect);
+        }
+    }
+
+    /// Show the stored configuration. An invalid one is not shown, so no
+    /// control acts on it.
+    pub(crate) fn show_config(&mut self, state: &FirewallConfig) {
+        if state.zones.is_empty() {
+            self.set_config(state.clone());
+            if self.available {
+                self.available = false;
+                self.changed = true;
+            }
+            return;
+        }
+        if state.validate().is_err() {
+            self.report(
+                "A shared change to the configuration was invalid and was ignored",
+                Tone::Error,
+            );
             return;
         }
         self.set_config(state.clone());
@@ -385,43 +351,38 @@ impl FirewallApp {
             self.available = true;
             self.changed = true;
         }
+        if let Some(rule) = self.pending_delete
+            && !self
+                .config
+                .zones
+                .iter()
+                .any(|zone| zone.rules.iter().any(|r| r.id == rule))
+        {
+            self.pending_delete = None;
+            self.changed = true;
+        }
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`](ui::framework::ResourceSurface).
+    /// Take part in the resource: edits go through `dispatcher`, and
+    /// `applied` remembers what this device's firewalld holds.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Firewall>,
+        dispatcher: Dispatcher<Firewall>,
+        applied: Setting<AppliedConfig>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatcher = Some(dispatcher);
+        self.applied = Some(applied);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// Where the projection reports how the latest apply on this device
+    /// ended.
+    pub(crate) fn apply_outcome(&self) -> ApplyOutcome {
+        Rc::clone(&self.outcome)
     }
 
-    /// Test-only: mark hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// The last action dispatched, for the `affordance == ActionSpec` covenant
-    /// test.
-    #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    /// The configuration Ctrl+K builds its resource tree from, or `None` when the
-    /// firewall is unavailable / has no zones (nothing to act on). Exposed to
-    /// [`crate::actions`], which can't read the app's private fields directly.
-    pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
-        if !self.available || self.config.zones.is_empty() {
-            None
-        } else {
-            Some(self.config.clone())
-        }
+    /// Whether there is a configuration to edit and apply.
+    pub(crate) fn is_available(&self) -> bool {
+        self.available
     }
 
     // ---- the shell's content ------------------------------------------
@@ -514,37 +475,38 @@ impl FirewallApp {
     }
 
     /// Apply what the window's controls asked for.
-    fn drain(&mut self, state: &mut AutoCommit) {
+    fn drain(&mut self) {
         let intents = self.intents.take();
         let flipped = self.switches.flipped();
         if !intents.is_empty() || !flipped.is_empty() {
             self.changed = true;
         }
         for intent in intents {
-            self.apply_intent(&intent, state);
+            self.apply_intent(&intent);
         }
         for (key, on) in flipped {
             match key {
-                SwitchKey::Rule(id) => self.set_rule_enabled(id, on, state),
-                SwitchKey::Service(id) => self.set_service(id, on, state),
+                SwitchKey::Rule(id) => self.set_rule_enabled(id, on),
+                SwitchKey::Service(id) => self.set_service(id, on),
             }
         }
+        // A header switch the person turned asks for the edit once; the
+        // switch follows the stored configuration again when it is
+        // presented back, so a refused edit is not asked for every frame.
         if self.available {
             let enabled = self.enabled_switch.with(|on| *on);
             if enabled != self.config.enabled {
-                let _ = self.set_enabled_and_apply(state, enabled);
+                self.dispatch(&crate::actions::set_enabled_action(enabled));
             }
             let panic = self.panic_switch.with(|on| *on);
             if panic != self.config.panic_mode {
-                let _ = self.set_panic_and_apply(state, panic);
+                self.dispatch(&crate::actions::set_panic_action(panic));
             }
         }
-        // A refused change leaves the switches showing the configuration,
-        // so it is asked for once, not on every frame.
         self.sync_switches();
     }
 
-    fn apply_intent(&mut self, intent: &Intent, state: &mut AutoCommit) {
+    fn apply_intent(&mut self, intent: &Intent) {
         match *intent {
             Intent::SelectZone(zone) => self.select_zone(zone),
             Intent::SelectRule(id) => self.selected_rule = Some(id),
@@ -561,19 +523,17 @@ impl FirewallApp {
                 self.draft.source_error = None;
             }
             Intent::CancelAddRule => self.adding = false,
-            Intent::AddRule => self.add_rule_from_draft(state),
+            Intent::AddRule => self.add_rule_from_draft(),
             Intent::AskDelete(id) => self.pending_delete = Some(id),
             Intent::ConfirmDelete => {
                 if let Some(id) = self.pending_delete {
-                    self.delete_rule(id, state);
+                    self.delete_rule(id);
                 }
             }
             Intent::CancelDelete => self.pending_delete = None,
-            Intent::MakeActive => self.set_active_zone(state),
-            Intent::Apply => {
-                let _ = self.apply();
-            }
-            Intent::Retry => self.retry_connect(state),
+            Intent::MakeActive => self.set_active_zone(),
+            Intent::Apply => self.invoke(&FirewallEffect::ApplyConfig),
+            Intent::Retry => self.invoke(&FirewallEffect::Retry),
         }
     }
 
@@ -588,34 +548,30 @@ impl FirewallApp {
         }
     }
 
-    /// Re-query the host after the user has started firewalld or fixed an
-    /// authorization problem. This is intentionally read-only until a valid
-    /// live configuration is found; recovery never seeds demo data.
-    fn retry_connect(&mut self, state: &mut AutoCommit) {
-        self.recover_from_probe(crate::backend::import(), state);
-    }
-
-    /// Apply the result of the read-only firewalld probe. Every retry route
-    /// shares this fail-closed behaviour; a failed probe never mutates rules.
-    fn recover_from_probe(&mut self, probe: Option<FirewallConfig>, state: &mut AutoCommit) {
-        match probe {
-            Some(config) if config.validate().is_ok() => {
+    /// Show how reading firewalld ended, answering with the configuration to
+    /// import. Every retry route shares this fail-closed behaviour; a failed
+    /// read never changes the configuration.
+    pub(crate) fn finish_retry(
+        &mut self,
+        read: Result<FirewallConfig, String>,
+    ) -> Result<FirewallConfig, String> {
+        match read {
+            Ok(config) => {
                 self.selected_zone = config.default_zone;
-                self.available = true;
                 self.pending_delete = None;
-                let json = FirewallDoc::reconcile_probe(state, &config);
-                self.last_json = Some(json);
-                self.set_config(config);
+                // What this device's firewalld reported it already holds.
+                if let Some(applied) = &self.applied
+                    && self.config.zones.is_empty()
+                {
+                    crate::resource::remember_applied(applied, &config.canonical());
+                }
                 self.report("Connected to firewalld", Tone::Success);
+                Ok(config)
             }
-            Some(_) => self.report(
-                "Firewalld returned rules this app cannot show safely. Nothing was changed.",
-                Tone::Error,
-            ),
-            None => self.report(
-                "Firewalld is still not reachable. Start the service, then try again.",
-                Tone::Error,
-            ),
+            Err(message) => {
+                self.report(message.clone(), Tone::Error);
+                Err(message)
+            }
         }
     }
 
@@ -642,7 +598,7 @@ impl FirewallApp {
         Some(Rule::new(matcher, draft.action, source))
     }
 
-    fn add_rule_from_draft(&mut self, state: &mut AutoCommit) {
+    fn add_rule_from_draft(&mut self) {
         if self.config.zone(self.selected_zone).is_none() {
             return;
         }
@@ -651,10 +607,7 @@ impl FirewallApp {
         };
         let id = rule.id;
         let title = rule.matcher.title();
-        self.perform_action(
-            state,
-            &crate::actions::add_rule_action(self.selected_zone, rule),
-        );
+        self.dispatch(&crate::actions::add_rule_action(self.selected_zone, rule));
         self.selected_rule = Some(id);
         self.tab = Tab::Rules;
         self.adding = false;
@@ -663,11 +616,8 @@ impl FirewallApp {
         self.report(format!("Added a rule for {title}"), Tone::Success);
     }
 
-    fn delete_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
-        self.perform_action(
-            state,
-            &crate::actions::delete_rule_action(self.selected_zone, id),
-        );
+    fn delete_rule(&mut self, id: RuleId) {
+        self.dispatch(&crate::actions::delete_rule_action(self.selected_zone, id));
         if self.selected_rule == Some(id) {
             self.selected_rule = None;
         }
@@ -675,166 +625,59 @@ impl FirewallApp {
         self.report("Rule deleted", Tone::Info);
     }
 
-    fn set_rule_enabled(&mut self, id: RuleId, on: bool, state: &mut AutoCommit) {
+    fn set_rule_enabled(&self, id: RuleId, on: bool) {
         let exists = self
             .selected_zone_ref()
             .is_some_and(|zone| zone.rules.iter().any(|rule| rule.id == id));
         if exists {
-            self.perform_action(
-                state,
-                &crate::actions::set_rule_enabled_action(self.selected_zone, id, on),
-            );
+            self.dispatch(&crate::actions::set_rule_enabled_action(
+                self.selected_zone,
+                id,
+                on,
+            ));
         }
     }
 
-    fn set_service(&mut self, id: &str, on: bool, state: &mut AutoCommit) {
+    fn set_service(&self, id: &str, on: bool) {
         // Resolved at authoring time so the action is order-free on replay.
-        self.perform_action(
-            state,
-            &crate::actions::set_service_action(self.selected_zone, id, on),
-        );
+        self.dispatch(&crate::actions::set_service_action(
+            self.selected_zone,
+            id,
+            on,
+        ));
     }
 
-    fn set_active_zone(&mut self, state: &mut AutoCommit) {
-        self.perform_action(
-            state,
-            &crate::actions::set_default_zone_action(self.selected_zone),
-        );
+    fn set_active_zone(&mut self) {
+        self.dispatch(&crate::actions::set_default_zone_action(self.selected_zone));
         self.report(
             format!("{} is now the active zone", self.selected_zone.title()),
             Tone::Success,
         );
     }
 
-    fn set_panic_and_apply(&mut self, state: &mut AutoCommit, on: bool) -> Result<(), String> {
-        self.perform_action(state, &crate::actions::set_panic_action(on));
-        self.apply()
-    }
-
-    fn set_enabled_and_apply(&mut self, state: &mut AutoCommit, on: bool) -> Result<(), String> {
-        self.perform_action(state, &crate::actions::set_enabled_action(on));
-        self.apply()
-    }
-
-    fn apply(&mut self) -> Result<(), String> {
-        match self.backend.apply(&self.config) {
-            Ok(()) => {
-                let n = self.backend.last_plan().len();
-                let changes = if n == 1 { "change" } else { "changes" };
-                match self.backend.mode() {
-                    Mode::Live => self.report(format!("Applied {n} {changes}"), Tone::Success),
-                    Mode::DryRun => self.report(
-                        format!("{n} {changes} checked. This device does not allow applying them."),
-                        Tone::Info,
-                    ),
-                }
-                Ok(())
-            }
-            Err(e) => {
-                self.report(
-                    format!("Could not apply the configuration: {e}"),
-                    Tone::Error,
-                );
-                Err(e)
-            }
+    /// Show how an apply of `config` ended, and remember a successful one
+    /// as what this device's firewalld holds.
+    pub(crate) fn finish_apply(
+        &mut self,
+        config: &FirewallConfig,
+        result: &crate::resource::Applied,
+    ) {
+        let notice = crate::resource::applied_status(result);
+        self.report(notice.text, notice.tone);
+        if result.is_ok()
+            && let Some(applied) = &self.applied
+        {
+            crate::resource::remember_applied(applied, config);
         }
     }
 
-    /// Fold the shared document into the app: seed it once, run a requested
-    /// effect, and adopt remote edits.
-    fn reconcile(&mut self, state: &mut AutoCommit) {
-        if !self.seeded {
-            self.seed(state);
-            return;
-        }
-        if let Some(effect) = self.pending_effect.take() {
-            let result = match effect.effect {
-                FirewallEffect::Apply => self.apply(),
-                FirewallEffect::SetEnabled(on) => self.set_enabled_and_apply(state, on),
-                FirewallEffect::SetPanic(on) => self.set_panic_and_apply(state, on),
-                FirewallEffect::Retry => {
-                    self.retry_connect(state);
-                    if self.available {
-                        Ok(())
-                    } else {
-                        Err(self
-                            .notice
-                            .as_ref()
-                            .map(|n| n.text.clone())
-                            .unwrap_or_default())
-                    }
-                }
-            };
-            self.completed_effect = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: effect.invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation: effect.invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "firewall.apply_failed".into(),
-                        message,
-                        details: None,
-                        retryable: true,
-                    },
-                },
-            });
-        }
-        // Adopt genuine remote edits (collab).
-        if let Some(cfg) = FirewallDoc::load(state) {
-            let json = cfg.to_json();
-            if self.last_json.as_deref() == Some(json.as_str()) {
-                return;
-            }
-            if cfg.validate().is_ok() {
-                self.last_json = Some(json);
-                self.set_config(cfg);
-            } else {
-                self.report(
-                    "A shared change to the configuration was invalid and was ignored",
-                    Tone::Error,
-                );
-            }
-        }
-    }
-
-    /// Adopt an existing shared config, or publish the one we read from the
-    /// host. We only ever publish REAL data: a config we imported from
-    /// firewalld or (in the demo build) the sample. An unavailable firewall
-    /// has no zones, so nothing fabricated is ever written into the shared
-    /// document.
-    fn seed(&mut self, state: &mut AutoCommit) {
-        self.seeded = true;
-        if let Some(cfg) = FirewallDoc::load(state) {
-            if cfg.validate().is_err() {
-                self.report(
-                    "The shared configuration was invalid and was not loaded",
-                    Tone::Error,
-                );
-                return;
-            }
-            self.available = true;
-            self.set_config(cfg);
-            // A legacy JSON document is accepted once, then promoted to
-            // native maps before any visible control can dispatch.
-            if FirewallDoc::has_native(state) {
-                self.last_json = Some(self.config.to_json());
-            } else {
-                self.perform_action(
-                    state,
-                    &FirewallAction::PublishImported {
-                        config: self.config.clone(),
-                    },
-                );
-            }
-        } else if !self.config.zones.is_empty() {
-            self.perform_action(
-                state,
-                &FirewallAction::PublishImported {
-                    config: self.config.clone(),
-                },
-            );
+    /// Report a failed apply of the projection on this device. It runs
+    /// after every change, so a success stays quiet and the person keeps
+    /// the confirmation of what they did.
+    fn take_outcome(&mut self) {
+        let failure = self.outcome.borrow_mut().take();
+        if let Some(notice) = failure {
+            self.report(notice.text, notice.tone);
         }
     }
 
@@ -861,35 +704,6 @@ impl FirewallApp {
             .min()
             .map(|left| self.toasts_ticked + left)
     }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        if self.pending_effect.is_some() {
-            return Err("another firewall operation is still running".into());
-        }
-        let effect = match type_id {
-            "firewall.retry" => FirewallEffect::Retry,
-            _ if !self.available => return Err("Firewall service is unavailable".into()),
-            "firewall.apply" => FirewallEffect::Apply,
-            "firewall.set-enabled" => FirewallEffect::SetEnabled(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            "firewall.set-panic" => FirewallEffect::SetPanic(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            _ => return Ok(None),
-        };
-        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
 }
 
 impl ui::widget::Decorator for FirewallApp {
@@ -903,106 +717,26 @@ impl ui::widget::Decorator for FirewallApp {
         &mut self.shell
     }
 
-    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-            return;
-        }
-        if request.wants::<dyn ui::undo::CommittedActions>() {
-            request.provide::<dyn ui::undo::CommittedActions>(self);
-            return;
-        }
-        self.shell.provide(request);
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
-            return;
-        }
-        if request.wants::<dyn ui::undo::CommittedActions>() {
-            request.provide::<dyn ui::undo::CommittedActions>(self);
-            return;
-        }
-        self.shell.provide_mut(request);
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "firewall.apply",
-            "firewall.set-enabled",
-            "firewall.set-panic",
-            "firewall.retry",
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(&mut self.shell, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(&mut self.shell, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-        )
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_effect
-                .as_ref()
-                .is_some_and(|pending| pending.invocation == invocation)
-        {
-            self.pending_effect = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("cancelled before firewall changes were applied".into()),
-            });
-        }
-        if self
-            .completed_effect
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.completed_effect.take();
-        }
-        None
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            self.reconcile(doc);
-            self.drain(doc);
-        }
+        self.take_outcome();
+        self.drain();
         self.changed = false;
         self.refresh_view();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            self.drain(doc);
-        }
+        self.drain();
         let shell = self.shell.update(state, path);
-        shell || self.changed || self.pending_effect.is_some()
+        shell || self.changed || self.outcome.borrow().is_some()
     }
 
     fn build_layout(
@@ -1031,7 +765,7 @@ impl ui::widget::Decorator for FirewallApp {
             return;
         }
         self.shell.handle_event(event, ctx);
-        self.drain(ctx.state);
+        self.drain();
         if !*ctx.handled
             && let WindowEvent::KeyboardInput {
                 event:
@@ -1099,83 +833,6 @@ impl ui::widget::Decorator for FirewallApp {
             );
         }
         Some(root)
-    }
-}
-
-impl ui::resources::PublishesResources for FirewallApp {
-    /// Publish the open configuration so the host's Ctrl+K palette scopes to
-    /// it. When the framework hosts the surface, that door already owns the
-    /// config — only service-recovery stays here.
-    #[allow(
-        clippy::expect_used,
-        reason = "the empty string operation payload is always serializable"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if !self.available {
-            return vec![
-                tilo_actions::Resource::new(
-                    "firewall.recovery",
-                    "firewall.recovery",
-                    "Firewall service recovery",
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "retry",
-                        "Retry firewalld connection",
-                        tilo_actions::OperationKind::Effect,
-                        "firewall.retry",
-                        &"",
-                    )
-                    .expect("firewall retry payload is serializable")
-                    .with_contract(tilo_actions::ActionContract {
-                        retry: tilo_actions::RetryPolicy::Idempotent,
-                        discovery: tilo_actions::DiscoveryScope::Launchable,
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
-                        ..tilo_actions::ActionContract::default()
-                    }),
-                ),
-            ];
-        }
-        // The framework root publishes the config document (including apply).
-        // When hosted and available, return nothing — recovery above stays as
-        // the only live extra (it is not in Resource::children).
-        if self.actions.is_hosted() {
-            return Vec::new();
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "firewall.config" {
-            return None;
-        }
-        find_resource_tree(&self.publish_resources(doc), id)
-    }
-}
-
-fn find_resource_tree(
-    resources: &[tilo_actions::Resource],
-    id: &str,
-) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource_tree(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-impl ui::undo::CommittedActions for FirewallApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its firewall action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 

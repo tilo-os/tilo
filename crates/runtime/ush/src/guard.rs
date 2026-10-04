@@ -4,11 +4,13 @@
 //!
 //! - `guard status` — the enforcement in place right now, read back
 //!   from the kernel and the session, not the configuration that asked for
-//!   it. A Landlock ruleset that only partially applied says so.
-//! - `scan <path>` — everything establishable about a path (base side, rpm
-//!   ownership and match, executable/setuid/setgid, trusted-dir membership)
-//!   with no verdict and no claim that clean means safe.
-//! - `quarantine` — move a file into the layer's quarantine with its
+//!   it. A Landlock ruleset that only partially applied says so; the network
+//!   line comes from connecting to an address nothing granted, and to a
+//!   granted host ([`network_report`]).
+//! - `scan <path>` — everything establishable about a path (which image it
+//!   comes from, executable/setuid/setgid, granted-dir membership) with no
+//!   verdict and no claim that clean means safe.
+//! - `quarantine` — move a file into the environment's quarantine with its
 //!   executable bits cleared, list it, restore it; nothing is quarantined
 //!   automatically, because nothing here is entitled to that judgement.
 //!
@@ -16,15 +18,103 @@
 //! the absence of a matching condition.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use landlock::{ABI, Access, AccessFs, BitFlags, CompatLevel};
 pub use sandbox_core::landlock::LandlockOutcome;
 use sandbox_core::landlock::{FsRule, RulesetSpec, outcome_from_status};
 use tilo_clock::unix_now;
 
-/// Where quarantined files go, inside the layer.
-pub const QUARANTINE_DIR: &str = "/usr/lib/ush/quarantine";
+/// An address no grant names, for the network test: a public resolver's,
+/// so where egress were not enforced the connection would succeed rather
+/// than merely time out.
+pub const UNLISTED_PROBE: &str = "1.1.1.1:443";
+
+/// How long a network test may take.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The network lines of `guard status`: what the session says it enforces,
+/// then what connecting from in here shows.
+pub fn network_report(status: &crate::broker::NetworkStatus) -> Vec<String> {
+    use crate::broker::NetworkStatus;
+    let mut lines = Vec::new();
+    let hosts = match status {
+        NetworkStatus::Unrestricted => {
+            lines.push("network     : unrestricted (a * grant), from its own namespace".into());
+            return lines;
+        }
+        NetworkStatus::Offline => {
+            lines.push(
+                "network     : none (nothing is granted; `perm allow-host HOST` adds a host)"
+                    .into(),
+            );
+            Vec::new()
+        }
+        NetworkStatus::Filtered { hosts } if hosts.is_empty() => {
+            lines.push(
+                "network     : none granted (`perm allow-host HOST` adds a host); \
+                 enforced by nftables"
+                    .into(),
+            );
+            Vec::new()
+        }
+        NetworkStatus::Filtered { hosts } => {
+            lines.push(format!(
+                "network     : only {} (named by the session's resolver, enforced by nftables)",
+                hosts.join(", ")
+            ));
+            hosts.clone()
+        }
+    };
+    lines.push(format!("  tested    : {}", probe_unlisted()));
+    match hosts.iter().find(|h| !h.starts_with('.')) {
+        Some(host) => lines.push(format!("  tested    : {}", probe_granted(host))),
+        None if !hosts.is_empty() => {
+            lines.push("  tested    : no exact host to try (only domain grants)".into());
+        }
+        None => {}
+    }
+    lines
+}
+
+fn probe_unlisted() -> String {
+    let Ok(addr) = UNLISTED_PROBE.parse::<std::net::SocketAddr>() else {
+        return "no address to try".into();
+    };
+    match std::net::TcpStream::connect_timeout(&addr, PROBE_TIMEOUT) {
+        Ok(_) => format!("{UNLISTED_PROBE} (not granted) CONNECTED: egress is NOT enforced"),
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::ConnectionRefused => {
+                format!("{UNLISTED_PROBE} (not granted) refused")
+            }
+            std::io::ErrorKind::NetworkUnreachable => {
+                format!("{UNLISTED_PROBE} (not granted) unreachable: no route out")
+            }
+            _ => format!("{UNLISTED_PROBE} (not granted) failed: {e}"),
+        },
+    }
+}
+
+fn probe_granted(host: &str) -> String {
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<std::net::SocketAddr> = match (host, 443).to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(e) => return format!("{host} (granted) did not resolve: {e}"),
+    };
+    let Some(first) = addrs.first() else {
+        return format!("{host} (granted) resolved to nothing");
+    };
+    match std::net::TcpStream::connect_timeout(first, PROBE_TIMEOUT) {
+        Ok(_) => format!("{host}:443 (granted, {}) reached", first.ip()),
+        Err(e) => format!(
+            "{host} (granted) resolved to {}, but port 443 did not connect: {e}",
+            first.ip()
+        ),
+    }
+}
+
+/// Where quarantined files go: the environment's own `/var/lib`, which
+/// outlives the session and is nowhere on the host's paths.
+pub const QUARANTINE_DIR: &str = "/var/lib/ush/quarantine";
 
 /// What Landlock actually did, as opposed to what was asked for — worded for
 /// `guard status`, which reports to the person at the shell rather than to a
@@ -136,19 +226,18 @@ pub struct ScanReport {
     pub executable: bool,
     pub setuid: bool,
     pub setgid: bool,
-    /// The rpm package that owns this path, if any.
-    pub owned_by: Option<String>,
-    /// `rpm -V` disagreed with the installed package about this file.
-    pub modified_since_install: bool,
+    /// The image this path comes from, if one does — see [`provenance`].
+    pub image: Option<String>,
     /// The path is under a directory the user trusted.
     pub in_trusted_dir: bool,
     /// Human-readable notes, including what was *not* checked.
     pub notes: Vec<String>,
 }
 
-/// Scan one path. `trusted` is the policy's list, so the report can say
-/// whether writing here would reach the host.
-pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
+/// Scan one path. `trusted` is the environment's writable grants, so the
+/// report can say whether writing here would reach the host; `image` is the
+/// broker's answer to [`provenance`].
+pub fn scan(path: &Path, trusted: &[PathBuf], image: Option<String>) -> ScanReport {
     use std::os::unix::fs::PermissionsExt;
 
     let mut report = ScanReport {
@@ -159,8 +248,7 @@ pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
         executable: false,
         setuid: false,
         setgid: false,
-        owned_by: None,
-        modified_since_install: false,
+        image,
         in_trusted_dir: trusted.iter().any(|t| path.starts_with(t)),
         notes: Vec::new(),
     };
@@ -178,11 +266,6 @@ pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
     report.setuid = mode & 0o4000 != 0;
     report.setgid = mode & 0o2000 != 0;
 
-    if let Some(owner) = rpm_owner(path) {
-        report.modified_since_install = rpm_verify_failed(&owner, path);
-        report.owned_by = Some(owner);
-    }
-
     if report.setuid || report.setgid {
         report.notes.push(
             "setuid/setgid bits are set. Inside a guest they escalate only to \
@@ -191,17 +274,18 @@ pub fn scan(path: &Path, trusted: &[PathBuf]) -> ScanReport {
                 .into(),
         );
     }
-    if report.owned_by.is_none() && report.executable {
+    if report.image.is_some() {
         report.notes.push(
-            "an executable no package owns: it was written into your layer \
+            "it comes from a read-only image, verified by its content address when \
+             it was materialised; nothing in the guest can change it."
+                .into(),
+        );
+    } else if report.executable {
+        report.notes.push(
+            "an executable no image provides: it was written in this environment \
              rather than installed."
                 .into(),
         );
-    }
-    if report.modified_since_install {
-        report
-            .notes
-            .push("rpm says this file no longer matches what its package installed.".into());
     }
     if report.in_trusted_dir {
         report
@@ -219,33 +303,26 @@ pub const NO_DATABASE: &str = "no signature or reputation check was performed: \
      this runtime ships no such database. A clean report means nothing above \
      was true, not that the file is safe.";
 
-fn rpm_owner(path: &Path) -> Option<String> {
-    let args = [std::ffi::OsStr::new("-qf"), path.as_os_str()];
-    let out =
-        bounded_command::run_os("rpm", &args, None, 64 * 1024, Duration::from_secs(10)).ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty() && !s.contains("not owned"))
+/// Which image a guest path comes from: the topmost of `images` (label,
+/// root; topmost first, as they stack) that has the path. `None` for a path
+/// outside `/usr` and `/etc` — home, `/var`, scratch, a grant — which no
+/// image provides.
+pub fn provenance(path: &Path, images: &[(String, PathBuf)]) -> Option<String> {
+    let relative = path.strip_prefix("/").ok()?;
+    let subtree = relative.components().next()?.as_os_str();
+    if !crate::guest::IMAGE_SUBTREES
+        .iter()
+        .any(|s| std::ffi::OsStr::new(s) == subtree)
+    {
+        return None;
+    }
+    images
+        .iter()
+        .find(|(_, root)| root.join(relative).symlink_metadata().is_ok())
+        .map(|(label, _)| label.clone())
 }
 
-fn rpm_verify_failed(package: &str, path: &Path) -> bool {
-    let Ok(out) = bounded_command::run(
-        "rpm",
-        &["-V", package],
-        None,
-        1024 * 1024,
-        Duration::from_secs(15),
-    ) else {
-        return false;
-    };
-    let needle = path.to_string_lossy();
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .any(|line| line.ends_with(needle.as_ref()) && !line.starts_with("......."))
-}
-
-/// Move a file into the layer's quarantine, clearing its executable bits.
+/// Move a file into the quarantine, clearing its executable bits.
 /// The original path stops resolving, so nothing can find it to run —
 /// that's the whole mechanism.
 ///
@@ -333,7 +410,7 @@ mod tests {
         // phase: scanning_an_absent_path_says_so_rather_than_guessing
         {
             let dir = tempfile::tempdir().unwrap();
-            let report = scan(&dir.path().join("nothing"), &[]);
+            let report = scan(&dir.path().join("nothing"), &[], None);
             assert!(!report.exists);
             assert!(report.notes.iter().any(|n| n.contains("not present")));
         }
@@ -344,7 +421,7 @@ mod tests {
             let file = dir.path().join("thing");
             std::fs::write(&file, b"data").unwrap();
             for path in [file, dir.path().join("absent")] {
-                let report = scan(&path, &[]);
+                let report = scan(&path, &[], None);
                 assert!(
                     report
                         .notes
@@ -361,7 +438,7 @@ mod tests {
             std::fs::write(&file, b"#!/bin/sh\n").unwrap();
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o4755)).unwrap();
 
-            let report = scan(&file, &[dir.path().to_path_buf()]);
+            let report = scan(&file, &[dir.path().to_path_buf()], None);
             assert!(report.exists && report.executable && report.setuid);
             assert!(report.in_trusted_dir);
             assert!(report.notes.iter().any(|n| n.contains("setuid")));
@@ -376,12 +453,36 @@ mod tests {
             std::fs::create_dir_all(&other).unwrap();
             let file = other.join("f");
             std::fs::write(&file, b"x").unwrap();
-            assert!(!scan(&file, &[trusted]).in_trusted_dir);
+            assert!(!scan(&file, &[trusted], None).in_trusted_dir);
+        }
+        // phase: provenance_names_the_topmost_image_with_the_path
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let tool = dir.path().join("tool");
+            let runtime = dir.path().join("runtime");
+            std::fs::create_dir_all(tool.join("usr/bin")).unwrap();
+            std::fs::create_dir_all(runtime.join("usr/bin")).unwrap();
+            std::fs::write(tool.join("usr/bin/pandoc"), b"").unwrap();
+            std::fs::write(tool.join("usr/bin/sh"), b"").unwrap();
+            std::fs::write(runtime.join("usr/bin/sh"), b"").unwrap();
+            let images = vec![("tool".to_string(), tool), ("runtime".to_string(), runtime)];
+            assert_eq!(
+                provenance(Path::new("/usr/bin/pandoc"), &images).as_deref(),
+                Some("tool")
+            );
+            assert_eq!(
+                provenance(Path::new("/usr/bin/sh"), &images).as_deref(),
+                Some("tool"),
+                "the topmost image shadows the ones below"
+            );
+            assert_eq!(provenance(Path::new("/usr/bin/absent"), &images), None);
+            assert_eq!(provenance(Path::new("/home/you/usr/bin/sh"), &images), None);
+            assert_eq!(provenance(Path::new("relative"), &images), None);
         }
     }
 
     #[test]
-    fn quarantine_moves_files_into_the_layer_and_restores_them() {
+    fn quarantine_moves_files_aside_and_restores_them() {
         // phase: quarantine_moves_the_file_and_clears_its_executable_bits
         {
             let dir = tempfile::tempdir().unwrap();
@@ -417,11 +518,11 @@ mod tests {
             std::fs::create_dir_all(dir.path().join("q")).unwrap();
             assert!(quarantine_list(&dir.path().join("q")).is_empty());
         }
-        // phase: the_quarantine_lives_inside_the_layer
+        // phase: the_quarantine_lives_in_the_environments_own_state
         {
             assert!(
-                QUARANTINE_DIR.starts_with("/usr/"),
-                "quarantining must land in the layer, not on the host"
+                QUARANTINE_DIR.starts_with("/var/lib/"),
+                "quarantining must land in the environment's /var/lib, not on the host"
             );
         }
     }

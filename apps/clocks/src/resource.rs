@@ -56,7 +56,11 @@ impl ResourceApp for ClocksShell {
     const ID: &'static str = "so.tilo.clocks";
     const TITLE: &'static str = "Clocks";
     const ICON: Option<&'static str> = Some("clocks");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| name.ends_with("-narrow").then_some((520, 820)))
+            .unwrap_or((1280, 800))
+    }
 
     fn view(cx: &mut ViewCx<Clocks>) -> Element {
         cx.surface(ClocksApp::new())
@@ -84,10 +88,6 @@ impl ResourceApp for ClocksShell {
             "new-alarm-narrow",
             "new-timer-narrow",
         ]
-    }
-
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        name.ends_with("-narrow").then_some((520, 820))
     }
 }
 

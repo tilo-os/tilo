@@ -758,6 +758,13 @@ workspace-settings-rename-admin-only = Only a workspace administrator can rename
 workspace-settings-invite-hint = Choose a person and role; Tilo signs a one-hour invite.
 workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
 workspace-settings-invite-create = Create
+workspace-settings-devices-title = Your devices
+workspace-settings-device-here = { $device } (this device)
+workspace-settings-device-shown = Shown
+workspace-settings-device-hidden = Kept off
+workspace-settings-move-earlier = Move up
+workspace-settings-move-later = Move down
+workspace-settings-delete = Delete workspace
 workspace-settings-invite-title = Invite people
 workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
 workspace-settings-glance-title = At a glance
@@ -908,3 +915,26 @@ overview-presence-you-and-many = You and { $count } others are here
 overview-presence-one = { $name } is here
 overview-presence-many = { $count } people are here
 overview-collaborators-here = { $count } collaborators are here
+
+# The launchpad in the browser: a new member's first look at the desktop
+browser-welcome-title = Welcome to Tilo
+browser-welcome-subtitle = Your team's shared computer. Everything you make is saved as you go and end-to-end encrypted.
+browser-welcome-hint = Arrow keys move  ·  Enter opens  ·  Ctrl+K finds any app
+browser-welcome-hint-mac = Arrow keys move  ·  Enter opens  ·  ⌘K finds any app
+
+# The overview panel a host without its own overview draws
+overview-panel-title = Overview
+overview-panel-you-are-here = You are here
+overview-panel-windows = Windows here
+overview-panel-no-windows = No windows yet
+overview-panel-more-windows = { $count ->
+    [one] and 1 more window
+   *[other] and { $count } more windows
+}
+overview-panel-window-count = { $count ->
+    [one] 1 window
+   *[other] { $count } windows
+}
+overview-panel-go-to = Go to
+overview-panel-new-workspace = New workspace
+browser-new-workspace-name = Workspace { $number }

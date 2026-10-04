@@ -409,7 +409,7 @@ impl Core {
                     && inside
                     && row_at(&self.list, self.pointer) == Some(id)
                 {
-                    self.apply(Action::OpenSnippet(id), ctx.state);
+                    self.apply(Action::OpenSnippet(id));
                     return true;
                 }
                 released || pressed.is_some()

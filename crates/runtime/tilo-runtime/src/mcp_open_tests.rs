@@ -336,6 +336,13 @@ impl ActionHost for Writer {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let invocation = request.invocation;
+        let known = self
+            .rows(&request.target.provider)
+            .iter()
+            .any(|row| row.resource.id == request.target.address.resource);
+        if !known {
+            return Pending::ready(Err(ActionHostError::UnknownAction));
+        }
         if request.target.provider == WORKSPACE {
             if !matches!(&request.argument, InvokeArgument::Json(map) if map.is_empty()) {
                 return Pending::ready(Err(ActionHostError::Refused {
@@ -996,6 +1003,21 @@ fn a_found_resource_lists_every_action_across_the_hosts_pages() {
         ] {
             assert!(actions.contains(action), "{action}: {page}");
         }
+        let capped = call(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id": 1, "needle": "save", "max_results": 1}),
+        )
+        .await
+        .unwrap();
+        let actions = resource(&capped, "word_processor.document")["actions"]
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            actions.keys().collect::<Vec<_>>(),
+            ["save-as"],
+            "max_results caps the rows: {capped}"
+        );
     });
 }
 
@@ -1140,7 +1162,8 @@ fn calls_run_in_order_and_stop_at_the_first_failure() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|step| step["update"]["state"] == "succeeded")
+            .all(|step| step.get("update").is_none() && step.get("error").is_none()),
+        "a step that succeeded is its output alone: {saved}"
     );
 
     let before = host.invoked().len();
@@ -1164,6 +1187,24 @@ fn calls_run_in_order_and_stop_at_the_first_failure() {
         "the save after a failure does not run: {:?}",
         host.invoked()
     );
+
+    let kept = run(call(
+        &mut server,
+        "tilo_invoke",
+        json!({"peer_id": 1, "calls": [
+            {"resource": doc, "action": "paste", "arguments": {"markdown": "# Again {#b0}\n"}},
+            {"resource": doc, "action": "select-block", "arguments": {"block": "r-no-such"}}
+        ]}),
+    ))
+    .unwrap();
+    assert_eq!(kept["stopped"], 1, "{kept}");
+    assert!(
+        kept["kept"]
+            .as_str()
+            .is_some_and(|note| note.contains("0..1")),
+        "a batch stopped after a step that ran says that step stayed: {kept}"
+    );
+    assert!(stopped.get("kept").is_none(), "{stopped}");
 
     let both = run(call(
         &mut server,
@@ -1281,4 +1322,83 @@ fn a_batch_invocation_id_is_stable_per_step() {
     );
     assert!(batch_invocation(None, 2).unwrap().is_none());
     assert!(batch_invocation(Some("not-a-uuid"), 0).is_err());
+}
+
+#[test]
+fn an_app_and_its_resources_are_named_as_an_agent_sees_them() {
+    let host = Writer::new(Some("open"));
+    *host.running.lock().unwrap() = true;
+    // A fresh connection: no query has issued a handle yet.
+    let mut server = McpServer::new(host.clone(), "room".into(), "owner".into());
+    run(async {
+        let by_kind = json!({"app_id": "word-processor", "resource": "word_processor.document", "action": "save-as", "arguments": {"path": "/data/out/a.docx"}});
+        call(&mut server, "tilo_invoke", by_kind).await.unwrap();
+
+        let resolved = call(
+            &mut server,
+            "tilo_resolve",
+            json!({"app_id": APP, "resource": "word_processor.document", "action": "read-text"}),
+        )
+        .await
+        .unwrap();
+        let param = &resolved["row"]["descriptor"]["params"][0];
+        assert_eq!(param["schema"]["type"], "integer", "{resolved}");
+        assert!(
+            resolved["row"].get("visibility_action").is_none(),
+            "nothing is said to be null: {resolved}"
+        );
+        assert!(
+            param.get("ty").is_none() && param.get("nullable").is_none(),
+            "the schema says the type once: {resolved}"
+        );
+
+        let unknown_app = call(&mut server, "tilo_query", json!({"app_id": "sheets"}))
+            .await
+            .unwrap_err();
+        assert!(
+            unknown_app.contains("running: so.tilo.word-processor"),
+            "{unknown_app}"
+        );
+
+        let ambiguous = call(
+            &mut server,
+            "tilo_invoke",
+            json!({"app_id": APP, "resource": "document", "action": "save-as"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(ambiguous.contains("names 2 resources"), "{ambiguous}");
+
+        let stale = call(
+            &mut server,
+            "tilo_invoke",
+            json!({"app_id": APP, "resource": "r7", "action": "save-as"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            stale.contains("no handle of this connection")
+                && stale.contains("Document (word_processor.document)"),
+            "{stale}"
+        );
+
+        let no_action = call(
+            &mut server,
+            "tilo_resolve",
+            json!({"app_id": APP, "resource": "word_processor.document", "action": "print"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            no_action.contains("has no action print") && no_action.contains("save-as"),
+            "{no_action}"
+        );
+    });
+    let saves = host
+        .invoked()
+        .into_iter()
+        .filter(|call| call.2 == "save-as")
+        .collect::<Vec<_>>();
+    assert_eq!(saves.len(), 1, "{saves:?}");
+    assert_eq!(saves[0].1, DOC, "the kind named the document");
 }

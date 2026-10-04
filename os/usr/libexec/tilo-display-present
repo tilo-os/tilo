@@ -1,0 +1,24 @@
+#!/bin/sh
+# Exit 0 when a display sink is connected, 1 when DRM connectors exist and
+# none of them is.
+#
+# A connector is a card*-* directory under /sys/class/drm whose status reads
+# "connected". Writeback connectors always read connected and are not sinks,
+# so a card with only those has no display.
+# A system with no connector directory at all (a VM or container that hides
+# the class) counts as having a display: there is nothing to prove otherwise.
+set -eu
+
+root=${TILO_DRM_SYSFS:-/sys/class/drm}
+any=0
+for dir in "$root"/card*-*; do
+  [ -d "$dir" ] || continue
+  any=1
+  case "${dir##*/}" in
+    *Writeback*) continue ;;
+  esac
+  if [ "$(tr -d '[:space:]' <"$dir/status" 2>/dev/null || true)" = connected ]; then
+    exit 0
+  fi
+done
+[ "$any" -eq 0 ]

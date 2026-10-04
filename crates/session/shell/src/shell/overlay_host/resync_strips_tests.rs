@@ -685,7 +685,7 @@ fn resync_follows_document_revisions_for_groups_and_tabs() {
         assert_eq!(first.active_tab_id(), 1);
 
         // The result has to be durable, not just a live widget permutation.
-        chrome.borrow().tree().flush_to_disk();
+        chrome.borrow().tree().queue_save();
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("reordered layout survives a process restart");
         let strip = restarted.desktop.workspaces[0]
@@ -977,7 +977,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
-        tree.flush_to_disk();
+        tree.queue_save();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         assert!(host.focus_window_on_strip(strip_id, second_group, second_tab));
@@ -1008,7 +1008,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
-        tree.flush_to_disk();
+        tree.queue_save();
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let mut taffy = TaffyTree::new();
         let mut nodes = StdHashMap::new();
@@ -1096,7 +1096,7 @@ fn focus_changes_are_flushed_before_restart_and_never_resurrect_removed_tabs() {
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
         tree.seed_doc_from_cache();
-        tree.flush_to_disk();
+        tree.queue_save();
 
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(first_group, Some(1)));

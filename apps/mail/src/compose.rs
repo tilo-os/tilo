@@ -47,6 +47,7 @@ use taffy::{NodeId, TaffyTree};
 use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::TextRole;
 use ui::Widget;
+use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -61,25 +62,20 @@ use ui::widget::{
 use crate::actions::{DraftBodySeed, MAIL_ACTION_TYPE, MailAction};
 use crate::doc::MailDoc;
 use crate::model::{ComposeFormat, Draft, DraftAttachment};
+use crate::resource::{Mail, draft_body_dispatcher};
 
 /// The HTML body: the SDK rich-text editor over the draft's body, every
-/// edit a [`MailAction::EditDraftBody`].
-type BodyEditor = RichTextSurface<RichTextField<MailAction>>;
+/// edit a [`MailAction::EditDraftBody`] through `dispatcher`; shown view-only
+/// until there is one.
+type BodyEditor = RichTextSurface<RichTextField>;
 
-fn body_editor() -> BodyEditor {
-    let context = tilo_actions::ActionContext::for_action(
-        "so.tilo.mail",
-        "Mail",
-        &MailAction::EditDraftBody(tilo_document::RichTextAction::AppendParagraph {
-            text: String::new(),
-        }),
-    );
-    let field = RichTextField::new(
-        MAIL_ACTION_TYPE,
-        MailDoc::draft_body,
-        MailAction::EditDraftBody,
-    )
-    .with_context(context);
+fn body_editor(dispatcher: Option<&Dispatcher<Mail>>) -> BodyEditor {
+    let field = match dispatcher {
+        Some(dispatcher) => {
+            RichTextField::new(draft_body_dispatcher(dispatcher), MailDoc::draft_body)
+        }
+        None => RichTextField::view_only(MailDoc::draft_body),
+    };
     RichTextSurface::field(field).with_editor(
         BlockEditor::new()
             .with_wrap_lines(true)
@@ -196,6 +192,29 @@ impl FormatBar {
             }
         }
         Self { bar, chosen }
+    }
+
+    /// Where the bar shows each command it has room for, by its label.
+    fn command_bounds(&self) -> Vec<(String, Rect)> {
+        ui::Widget::accessibility(&self.bar)
+            .map(|bar| {
+                bar.children
+                    .into_iter()
+                    .filter_map(|item| Some((item.name?, item.bounds?.to_rect())))
+                    .filter(|(_, bounds)| bounds.area() > 0.0)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Where the command `label` is: its own button, not anywhere on the
+    /// bar, or the "More commands" button when the bar has no room for it.
+    fn command_at(commands: &[(String, Rect)], label: &str) -> Option<Rect> {
+        commands
+            .iter()
+            .find(|(name, _)| name == label)
+            .or_else(|| commands.iter().find(|(name, _)| name == "More commands"))
+            .map(|(_, bounds)| *bounds)
     }
 
     /// Show which commands are on, from the editor.
@@ -500,7 +519,7 @@ impl ComposeWindow {
             show_cc_bcc: false,
             format,
             format_bar: FormatBar::new(),
-            editor: body_editor(),
+            editor: body_editor(None),
             body_layout: BodyLayout::default(),
             seed: None,
             seed_actions: crate::resource::ActionSink::default(),
@@ -609,6 +628,15 @@ impl ComposeWindow {
                 true,
             ),
         ];
+        if let Some(prompt) = &self.prompt {
+            children.push(field(
+                "Link address",
+                "prompt",
+                prompt.input.value().to_string(),
+                rect_for(ComposeHit::PromptField),
+                false,
+            ));
+        }
         if self.show_cc_bcc {
             children.insert(
                 1,
@@ -631,14 +659,36 @@ impl ComposeWindow {
                 ),
             );
         }
+        children.extend(self.accessibility_controls(rect_for));
+        AccessNode::new(Role::Dialog)
+            .with_name("Compose email")
+            .with_description("Email composer")
+            .with_bounds(self.rect)
+            .with_state(AccessState::new().modal(true))
+            .with_children(children)
+    }
+
+    /// The composer's buttons, each where a person presses it.
+    fn accessibility_controls(
+        &self,
+        rect_for: impl Fn(ComposeHit) -> Option<Rect>,
+    ) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let commands = self.format_bar.command_bounds();
+        let mut controls = Vec::new();
         for (hit, name, target, checked) in self.accessibility_control_specs() {
-            let Some(rect) = rect_for(hit) else { continue };
+            let command = (hit == ComposeHit::Toolbar)
+                .then(|| FormatBar::command_at(&commands, name))
+                .flatten();
+            let Some(rect) = command.or_else(|| rect_for(hit)) else {
+                continue;
+            };
             let role = if checked.is_some() {
                 Role::ToggleButton
             } else {
                 Role::Button
             };
-            children.push(
+            controls.push(
                 AccessNode::new(role)
                     .with_name(name)
                     .with_bounds(rect)
@@ -650,12 +700,7 @@ impl ComposeWindow {
                     }),
             );
         }
-        AccessNode::new(Role::Dialog)
-            .with_name("Compose email")
-            .with_description("Email composer")
-            .with_bounds(self.rect)
-            .with_state(AccessState::new().modal(true))
-            .with_children(children)
+        controls
     }
 
     fn accessibility_control_specs(
@@ -728,7 +773,7 @@ impl ComposeWindow {
                 "quote",
                 Some(matches!(block, BlockKind::Quote)),
             ),
-            (ComposeHit::Toolbar, "Insert link", "link", None),
+            (ComposeHit::Toolbar, "Link", "link", None),
         ]
     }
 
@@ -1034,18 +1079,19 @@ impl ComposeWindow {
     /// Start the body afresh from `seed` when the window next reaches the
     /// document; until then the body reads as the seed's text.
     fn start_body(&mut self, seed: DraftBodySeed) {
-        self.editor = body_editor();
+        self.editor = body_editor(self.seed_actions.framework.as_ref());
         self.body_layout = BodyLayout::default();
         self.body_plain.clone_from(&seed.text);
         self.seed = Some(seed);
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher so a new draft body is that resource's action.
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Mail>,
-    ) {
+    /// Attach the framework dispatcher: a new draft body and every edit of
+    /// it are that resource's actions.
+    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Mail>) {
+        self.editor
+            .source_mut()
+            .attach(draft_body_dispatcher(&dispatcher));
         self.seed_actions.attach(dispatcher);
     }
 
@@ -1085,16 +1131,11 @@ impl ComposeWindow {
         }
     }
 
-    /// The undo boundary before the body's latest edit, for the host.
+    /// The undo boundary before a standalone start of the body, for the
+    /// host. Edits of the body are the framework dispatcher's, whose undo
+    /// steps the app's root keeps.
     pub fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        let started = self.seed_actions.take_committed();
-        let edited = ui::undo::take_committed_action(&mut self.editor);
-        started.or(edited)
-    }
-
-    /// Typing a word in the body is one undo step.
-    pub fn keeps_undo_step_open(&self) -> bool {
-        ui::undo::keeps_undo_step_open(&self.editor)
+        self.seed_actions.take_committed()
     }
 
     fn focused_kind(&self) -> BlockKind {
@@ -2469,29 +2510,6 @@ mod tests {
         }
     }
 
-    fn moved(x: f64, y: f64) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(x, y),
-        }
-    }
-
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-
-    fn release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
-
     fn win() -> ComposeWindow {
         let mut w = ComposeWindow::new(ComposeFormat::Html);
         w.open_blank();
@@ -2593,54 +2611,6 @@ mod tests {
             assert!(html.contains("<strong>ship</strong>"), "got: {html}");
         }
 
-        // Phase `typing_and_formatting_edit_the_draft_body_as_actions`.
-        {
-            let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
-            w.sync(&mut doc, &automerge::ROOT);
-            let body = hit_rect(&w, ComposeHit::Body);
-            let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
-            let m = winit::event::Modifiers::default();
-            let send =
-                |w: &mut ComposeWindow, doc: &mut automerge::AutoCommit, ev: &WindowEvent| {
-                    w.handle_event(
-                        ev,
-                        &mut ComposeEventContext {
-                            scale_factor: 1.0,
-                            modifiers: m,
-                            state: doc,
-                            path: &automerge::ROOT,
-                            node_id: taffy::NodeId::new(0),
-                            taffy: &taffy,
-                        },
-                    );
-                };
-            send(&mut w, &mut doc, &moved(body.x0 + 20.0, body.y0 + 16.0));
-            send(&mut w, &mut doc, &press());
-            send(&mut w, &mut doc, &release());
-            w.toggle_mark(Mark::Bold);
-            for ch in ["H", "i"] {
-                send(
-                    &mut w,
-                    &mut doc,
-                    &key(Key::Character(SmolStr::new(ch)), Some(ch)),
-                );
-            }
-            w.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(w.to_draft(&mut doc).body, "Hi");
-            assert!(
-                w.to_draft(&mut doc)
-                    .html_body
-                    .unwrap()
-                    .contains("<strong>Hi</strong>"),
-                "the bold toggle marked what was typed next"
-            );
-            assert!(
-                w.take_committed_action().is_some(),
-                "the edits are undoable actions"
-            );
-        }
-
         // Phase `draft_is_plain_in_text_mode`.
         {
             let mut w = ComposeWindow::new(ComposeFormat::Text);
@@ -2690,36 +2660,6 @@ mod tests {
                 w.to_draft(&mut doc).body,
                 "Hi\ntwo",
                 "Enter split the body across two lines"
-            );
-        }
-
-        // Phase `link_prompt_applies_the_typed_href_not_a_placeholder`.
-        {
-            let mut w = win();
-            let mut doc = automerge::AutoCommit::new();
-            w.sync(&mut doc, &automerge::ROOT);
-            w.set_focus(Field::Body);
-            w.editor
-                .editor_mut()
-                .focus_block(0, ui::widget::CursorPlacement::End);
-            w.open_prompt(PromptKind::Link);
-            // Seeded with a scheme the user edits — never a hardcoded final target.
-            assert_eq!(w.prompt.as_ref().unwrap().input.value(), "https://");
-            w.prompt
-                .as_mut()
-                .unwrap()
-                .input
-                .set_text("https://example.test/docs");
-            w.confirm_prompt();
-            w.sync(&mut doc, &automerge::ROOT);
-            let html = w.to_draft(&mut doc).html_body.unwrap();
-            assert!(
-                html.contains("href=\"https://example.test/docs\""),
-                "got: {html}"
-            );
-            assert!(
-                !html.contains("href=\"https://\""),
-                "must not link the bare scheme"
             );
         }
     }

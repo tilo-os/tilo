@@ -1,6 +1,7 @@
 use super::*;
 use accounts::{SecretId, SecretItem};
 use taffy::{Style, TaffyTree};
+use ui::automerge::{self, AutoCommit};
 use zeroize::Zeroizing;
 
 use crate::vault::{Dialog, DraftField, Request};
@@ -37,9 +38,9 @@ fn send(app: &mut PasswordsSurface, doc: &mut AutoCommit, event: &WindowEvent) {
     );
 }
 
-fn request(app: &mut PasswordsSurface, doc: &mut AutoCommit, request: Request) {
+fn request(app: &mut PasswordsSurface, request: Request) {
     app.requests.borrow_mut().push(request);
-    app.settle(doc);
+    app.settle();
 }
 
 /// Every text a tree shows or reads out, flattened.
@@ -104,18 +105,17 @@ fn clipboard_fixture(accepts: bool) -> ui::host::HostScope {
 
 #[test]
 fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
-    let mut doc = AutoCommit::new();
     let mut app = PasswordsSurface::demo();
     assert!(app.shell().has_sidebar());
     assert!(app.shell().has_overview(), "the vault shows its item list");
 
     // A tool page is the sidebar and the content: no item list beside it.
-    request(&mut app, &mut doc, Request::Navigate("review".into()));
+    request(&mut app, Request::Navigate("review".into()));
     assert_eq!(app.core().screen, Screen::Review);
     assert!(!app.shell().has_overview());
 
     // Choosing a place of the vault brings the list back, filtered.
-    request(&mut app, &mut doc, Request::Navigate("filter:wifi".into()));
+    request(&mut app, Request::Navigate("filter:wifi".into()));
     assert!(app.shell().has_overview());
     let core = app.core();
     assert_eq!(core.filter, VaultFilter::Kind(SecretItemKind::Wifi));
@@ -126,7 +126,6 @@ fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
         "the first item of the place opens"
     );
     drop(core);
-    assert_eq!(crate::doc::ViewDoc::filter(&doc), "wifi");
 
     // The sidebar names every place in sentence case with its count.
     let sections = app.core().nav_sections();
@@ -153,26 +152,21 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
         &mut doc,
         &automerge::ROOT,
     ));
-    app.settle(&mut doc);
+    app.settle();
     assert_eq!(
         app.core().selected.as_ref().map(|id| id.0.as_str()),
-        Some("demo-mail")
-    );
-    assert_eq!(
-        crate::doc::ViewDoc::selected_id(&doc).as_deref(),
         Some("demo-mail")
     );
 
     let before = app.core().count(VaultFilter::Favorites);
     request(
         &mut app,
-        &mut doc,
         Request::ToggleFavorite(SecretId("demo-mail".into())),
     );
     assert_eq!(app.core().count(VaultFilter::Favorites), before + 1);
 
     // The arrow keys step through the list.
-    app.core_mut().step(&mut doc, true);
+    app.core_mut().step(true);
     assert_eq!(
         app.core().selected.as_ref().map(|id| id.0.as_str()),
         Some("demo-recovery")
@@ -181,11 +175,15 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
 
 #[test]
 fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
-    let mut doc = AutoCommit::new();
     let app = PasswordsSurface::demo();
     let secrets = ["Harbor-Lights-2019", "harbourlights", "4821-7730", "tv1234"];
 
-    let resources = public_text(&app.publish_resources(&doc));
+    let rows: Vec<_> = app
+        .item_rows()
+        .into_iter()
+        .map(ui::framework::LiveRow::into_resource)
+        .collect();
+    let resources = public_text(&rows);
     let providers = ui::search::capability::search_providers(&app);
     let hits = format!("{:?}", providers[0].search(""));
     for secret in secrets {
@@ -212,7 +210,6 @@ fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
             assert!(!tree.contains(secret), "{screen:?} reads out {secret}");
         }
     }
-    let _ = &mut doc;
 }
 
 #[test]
@@ -263,10 +260,9 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let mut item = SecretItem::login("Account", "ada", "private-value");
         item.add_origin("https://example.invalid").unwrap();
         model.save_item(&mut item).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(model);
+        let mut app = PasswordsSurface::new(model);
 
-        request(&mut app, &mut doc, Request::CopySecret);
+        request(&mut app, Request::CopySecret);
         assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
         assert!(
             app.core().revealed.is_none(),
@@ -279,7 +275,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
                 .is_some_and(|(message, _)| message.starts_with("Copied password"))
         );
 
-        request(&mut app, &mut doc, Request::RevealSecret);
+        request(&mut app, Request::RevealSecret);
         assert_eq!(
             app.core()
                 .revealed
@@ -287,7 +283,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
                 .map(|(_, value, _)| value.to_string()),
             Some("private-value".into())
         );
-        request(&mut app, &mut doc, Request::RevealSecret);
+        request(&mut app, Request::RevealSecret);
         assert!(app.core().revealed.is_none(), "the same action hides it");
         let _ = std::fs::remove_dir_all(root);
     }
@@ -300,15 +296,14 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let mut item = SecretItem::login("Account", "ada", "private-value");
         item.add_origin("https://example.invalid").unwrap();
         model.save_item(&mut item).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(model);
+        let mut app = PasswordsSurface::new(model);
         for copy in [
             Request::CopySecret,
             Request::CopyIdentity,
             Request::CopyOrigins,
         ] {
             app.core_mut().toast = None;
-            request(&mut app, &mut doc, copy);
+            request(&mut app, copy);
             assert_eq!(
                 app.core()
                     .toast
@@ -330,19 +325,14 @@ fn filters_favorites_and_confirmed_deletes_are_real_vault_state() {
     let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
     model.save_item(&mut kept).unwrap();
     model.save_item(&mut gone).unwrap();
-    let mut doc = AutoCommit::new();
-    let mut app = PasswordsSurface::with_model(model);
+    let mut app = PasswordsSurface::new(model);
 
-    request(&mut app, &mut doc, Request::Open(gone.id.clone()));
-    request(&mut app, &mut doc, Request::ToggleFavorite(gone.id.clone()));
-    request(
-        &mut app,
-        &mut doc,
-        Request::Navigate("filter:favorites".into()),
-    );
+    request(&mut app, Request::Open(gone.id.clone()));
+    request(&mut app, Request::ToggleFavorite(gone.id.clone()));
+    request(&mut app, Request::Navigate("filter:favorites".into()));
     assert_eq!(app.core().visible().len(), 1);
 
-    request(&mut app, &mut doc, Request::Delete);
+    request(&mut app, Request::Delete);
     assert!(matches!(
         app.core().dialog,
         Some(Dialog::DeleteConfirm { ref title, .. }) if title == "Removed"
@@ -352,12 +342,12 @@ fn filters_favorites_and_confirmed_deletes_are_real_vault_state() {
         2,
         "nothing is deleted before the person confirms"
     );
-    request(&mut app, &mut doc, Request::CloseDialog);
+    request(&mut app, Request::CloseDialog);
     assert!(app.core().dialog.is_none());
     assert_eq!(app.core().model.as_ref().unwrap().items().len(), 2);
 
-    request(&mut app, &mut doc, Request::Delete);
-    request(&mut app, &mut doc, Request::ConfirmDelete);
+    request(&mut app, Request::Delete);
+    request(&mut app, Request::ConfirmDelete);
     let remaining = app.core().model.as_ref().unwrap().items();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].title, "Kept");
@@ -372,9 +362,8 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     {
         let _clipboard = clipboard_fixture(true);
         let root = temp_root("editor");
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(crate::PasswordsModel::open_in(&root));
-        request(&mut app, &mut doc, Request::NewItem);
+        let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+        request(&mut app, Request::NewItem);
         assert_eq!(app.core().screen, Screen::Editor);
         {
             let mut core = app.core_mut();
@@ -387,7 +376,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             core.set_draft(DraftField::Password, "correct horse battery staple");
             core.set_draft(DraftField::Notes, "recovery details");
         }
-        request(&mut app, &mut doc, Request::Save);
+        request(&mut app, Request::Save);
         {
             let core = app.core();
             assert_eq!(core.screen, Screen::Vault);
@@ -402,7 +391,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             );
         }
 
-        request(&mut app, &mut doc, Request::Edit);
+        request(&mut app, Request::Edit);
         assert!(
             app.core()
                 .draft_origin
@@ -410,11 +399,11 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         );
         app.core_mut()
             .set_draft(DraftField::Name, "Renamed account");
-        request(&mut app, &mut doc, Request::Save);
+        request(&mut app, Request::Save);
         let stored = app.core().model.as_ref().unwrap().items();
         assert_eq!(stored[0].title, "Renamed account");
         assert_eq!(stored[0].password, "correct horse battery staple");
-        request(&mut app, &mut doc, Request::CopyOrigins);
+        request(&mut app, Request::CopyOrigins);
         let copied = ui::clipboard_paste().unwrap();
         assert!(copied.contains("https://example.com"));
         assert!(copied.contains("https://login.example.com"));
@@ -423,36 +412,34 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 
     eprintln!("phase a draft names what is missing next to the field");
     {
-        let mut doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
-        request(&mut app, &mut doc, Request::NewItem);
-        request(&mut app, &mut doc, Request::Save);
+        request(&mut app, Request::NewItem);
+        request(&mut app, Request::Save);
         assert!(matches!(
             app.core().draft_error,
             Some((DraftField::Name, _))
         ));
         app.core_mut().set_draft(DraftField::Name, "Router");
-        request(&mut app, &mut doc, Request::SetKind(SecretItemKind::Wifi));
-        request(&mut app, &mut doc, Request::Save);
+        request(&mut app, Request::SetKind(SecretItemKind::Wifi));
+        request(&mut app, Request::Save);
         assert!(matches!(
             app.core().draft_error,
             Some((DraftField::Password, ref message)) if message == "Add the password"
         ));
-        request(&mut app, &mut doc, Request::Generate);
+        request(&mut app, Request::Generate);
         assert!(app.core().draft_password.len() >= 20);
         assert!(app.core().draft_error.is_none());
     }
 
     eprintln!("phase cancelling discards the sensitive draft");
     {
-        let mut doc = AutoCommit::new();
         let mut app = PasswordsSurface::demo();
-        request(&mut app, &mut doc, Request::NewItem);
+        request(&mut app, Request::NewItem);
         app.core_mut()
             .set_draft(DraftField::Password, "unsaved password");
         app.core_mut()
             .set_draft(DraftField::Notes, "unsaved private note");
-        request(&mut app, &mut doc, Request::CancelEdit);
+        request(&mut app, Request::CancelEdit);
         let core = app.core();
         assert_eq!(core.screen, Screen::Vault);
         assert!(core.draft_password.is_empty());
@@ -470,9 +457,8 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         item.tags.extend(["favorite".into(), "work".into()]);
         let id = model.save_item(&mut item).unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(model);
-        request(&mut app, &mut doc, Request::Edit);
+        let mut app = PasswordsSurface::new(model);
+        request(&mut app, Request::Edit);
         assert!(
             app.core()
                 .draft_custom_fields
@@ -488,7 +474,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
             );
             core.set_draft(DraftField::Tags, "work, infrastructure");
         }
-        request(&mut app, &mut doc, Request::Save);
+        request(&mut app, Request::Save);
 
         let stored = crate::PasswordsModel::open_in(&root)
             .items()
@@ -543,8 +529,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
             )
             .unwrap();
         drop(selected);
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(crate::PasswordsModel::open_in(&root));
+        let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
         let (services, recorder) = ui::host::HostServices::recording();
         for expected_conflicts in [0, 1] {
             recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
@@ -553,7 +538,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
                     "passwords.csv",
                 ),
             ));
-            ui::host::scoped(&services, || request(&mut app, &mut doc, Request::Import));
+            ui::host::scoped(&services, || request(&mut app, Request::Import));
             let deadline = ui::time::now() + HANG_BOUND;
             while ui::time::now() < deadline && app.core().dialog.is_none() {
                 app.core_mut().poll_transfers();
@@ -565,7 +550,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
                     if rows.len() == 1
                         && skipped.iter().filter(|skip| **skip).count() == expected_conflicts
             ));
-            request(&mut app, &mut doc, Request::ConfirmImport);
+            request(&mut app, Request::ConfirmImport);
             assert_eq!(app.core().model.as_ref().unwrap().items().len(), 1);
         }
         assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
@@ -586,20 +571,19 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
                 Some("https://example.com"),
             )
             .unwrap();
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(model);
-        request(&mut app, &mut doc, Request::Export);
-        request(&mut app, &mut doc, Request::ConfirmExport);
+        let mut app = PasswordsSurface::new(model);
+        request(&mut app, Request::Export);
+        request(&mut app, Request::ConfirmExport);
         assert!(app.core().export_portal.is_none());
         assert!(matches!(
             app.core().dialog,
             Some(Dialog::ExportPlaintext { reminded: true, .. })
         ));
-        request(&mut app, &mut doc, Request::Acknowledge(true));
+        request(&mut app, Request::Acknowledge(true));
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.clone()));
         ui::host::scoped(&services, || {
-            request(&mut app, &mut doc, Request::ConfirmExport);
+            request(&mut app, Request::ConfirmExport);
         });
         assert_eq!(
             recorder.pick_requests()[0].title(),
@@ -626,12 +610,11 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         item.tags.extend(["work".into(), "favorite".into()]);
         source.save_item(&mut item).unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = PasswordsSurface::with_model(source);
-        request(&mut app, &mut doc, Request::Backup);
+        let mut app = PasswordsSurface::new(source);
+        request(&mut app, Request::Backup);
         app.core_mut().backup_password = Zeroizing::new("a memorable backup password".into());
         app.core_mut().backup_confirmation = Zeroizing::new("a different password!".into());
-        request(&mut app, &mut doc, Request::ConfirmBackup);
+        request(&mut app, Request::ConfirmBackup);
         assert!(matches!(
             app.core().dialog,
             Some(Dialog::Backup { error: Some(_) })
@@ -640,7 +623,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
         ui::host::scoped(&services, || {
-            request(&mut app, &mut doc, Request::ConfirmBackup);
+            request(&mut app, Request::ConfirmBackup);
         });
         assert_eq!(
             recorder.pick_requests()[0].title(),
@@ -664,7 +647,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         assert!(app.core().backup_password.is_empty());
 
         let mut restored =
-            PasswordsSurface::with_model(crate::PasswordsModel::open_in(&base.join("restored")));
+            PasswordsSurface::new(crate::PasswordsModel::open_in(&base.join("restored")));
         recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
             ui::portal::OpenedFile::new(
                 std::fs::File::open(&backup_path).unwrap(),
@@ -672,7 +655,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
             ),
         ));
         ui::host::scoped(&services, || {
-            request(&mut restored, &mut doc, Request::Restore);
+            request(&mut restored, Request::Restore);
         });
         assert_eq!(
             recorder.pick_requests()[1].title(),
@@ -684,7 +667,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
             Some(Dialog::Restore { .. })
         ));
         restored.core_mut().backup_password = Zeroizing::new("a memorable backup password".into());
-        request(&mut restored, &mut doc, Request::ConfirmRestore);
+        request(&mut restored, Request::ConfirmRestore);
         let items = restored.core().model.as_ref().unwrap().items();
         assert_eq!(items.len(), 1);
         assert_eq!(
@@ -700,14 +683,14 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
 #[test]
 fn every_capture_scenario_stages_on_the_fixture_vault() {
     for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
-        let mut app = PasswordsSurface::live();
+        let root = temp_root("capture");
+        let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
         app.stage_scenario(scenario);
         let core = app.core();
         assert!(
             core.model.is_none(),
-            "{scenario:?} never opens a real vault"
+            "{scenario:?} never shows a real vault"
         );
-        assert!(!core.open_on_sync);
         let expected = match scenario {
             Some("editor" | "new-item" | "delete") => Screen::Editor,
             Some("review") => Screen::Review,
@@ -716,5 +699,7 @@ fn every_capture_scenario_stages_on_the_fixture_vault() {
             _ => Screen::Vault,
         };
         assert_eq!(core.screen, expected, "{scenario:?}");
+        drop(core);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -227,7 +227,7 @@ pub enum CalTarget {
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
 /// The notes of the selected event or task, edited as calendar actions.
-type NotesEditor = RichTextSurface<RichTextField<crate::actions::CalendarAction>>;
+type NotesEditor = RichTextSurface<RichTextField>;
 
 type SyncWorkerResult = (
     caldav::SyncResult,
@@ -606,7 +606,7 @@ impl CalendarApp {
             selection,
             detail_open,
             accounts,
-            notes_editor: Self::new_notes_editor(None),
+            notes_editor: Self::new_notes_editor(None, None),
             bound: None,
             seeded: false,
             title_input: TextInput::local()
@@ -696,6 +696,8 @@ impl CalendarApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Calendar>,
     ) {
         self.actions.attach(dispatcher);
+        self.notes_editor = Self::new_notes_editor(self.bound, self.actions.framework());
+        self.dirty = true;
     }
 
     // --- shots-only configuration (no effect on live runtime behaviour) --
@@ -1337,36 +1339,29 @@ impl CalendarApp {
 
     /// The notes editor, bound to `owner`'s notes: every edit is the
     /// calendar's own [`EditNotes`](crate::actions::CalendarAction::EditNotes)
-    /// action on that event or task.
-    fn new_notes_editor(owner: Option<Sel>) -> NotesEditor {
+    /// action on that event or task, through the notes' child of the
+    /// calendar's dispatcher. Until the calendar is hosted there is none, and
+    /// the notes are shown, not edited.
+    fn new_notes_editor(
+        owner: Option<Sel>,
+        calendar: Option<&ui::framework::Dispatcher<crate::resource::Calendar>>,
+    ) -> NotesEditor {
         let (event, id) = match owner {
             Some(Sel::Event(id)) => (true, Some(id)),
             Some(Sel::Task(id)) => (false, Some(id)),
             None => (true, None),
         };
-        let note_owner = {
-            let id = id.map(|id| id.to_string()).unwrap_or_default();
-            if event {
+        let mut field =
+            RichTextField::view_only(move |doc| id.and_then(|id| CalDoc::notes(doc, event, id)));
+        if let (Some(calendar), Some(id)) = (calendar, id) {
+            let id = id.to_string();
+            let owner = if event {
                 crate::actions::NoteOwner::Event { id }
             } else {
                 crate::actions::NoteOwner::Task { id }
-            }
-        };
-        let context = crate::actions::history_context(&crate::actions::CalendarAction::EditNotes {
-            owner: note_owner.clone(),
-            edit: tilo_document::RichTextAction::AppendParagraph {
-                text: String::new(),
-            },
-        });
-        let field = RichTextField::new(
-            crate::actions::CALENDAR_ACTION_TYPE,
-            move |doc| id.and_then(|id| CalDoc::notes(doc, event, id)),
-            move |edit| crate::actions::CalendarAction::EditNotes {
-                owner: note_owner.clone(),
-                edit,
-            },
-        )
-        .with_context(context);
+            };
+            field.attach(crate::resource::notes_dispatcher(calendar, &owner));
+        }
         RichTextSurface::field(field).with_placeholder(NOTES_PLACEHOLDER)
     }
 
@@ -1483,12 +1478,12 @@ impl CalendarApp {
         }
     }
 
-    fn ensure_bound(&mut self, doc: &mut AutoCommit) {
+    fn ensure_bound(&mut self, doc: &AutoCommit) {
         let sel = match self.selection {
             Some(s) if self.detail_open => s,
             _ => {
                 if self.bound.is_some() {
-                    self.notes_editor = Self::new_notes_editor(None);
+                    self.notes_editor = Self::new_notes_editor(None, self.actions.framework());
                     self.bound = None;
                 }
                 return;
@@ -1497,12 +1492,13 @@ impl CalendarApp {
         if self.bound == Some(sel) {
             return;
         }
+        // Every action that creates an event or a task starts its notes.
         let exists = match sel {
-            Sel::Event(id) => CalDoc::ensure_notes(doc, true, id),
-            Sel::Task(id) => CalDoc::ensure_notes(doc, false, id),
+            Sel::Event(id) => CalDoc::notes(doc, true, id),
+            Sel::Task(id) => CalDoc::notes(doc, false, id),
         };
         if exists.is_some() {
-            self.notes_editor = Self::new_notes_editor(Some(sel));
+            self.notes_editor = Self::new_notes_editor(Some(sel), self.actions.framework());
             self.bound = Some(sel);
             self.dirty = true;
         }
@@ -5026,15 +5022,7 @@ impl ui::undo::CommittedActions for CalendarApp {
     /// its calendar action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A notes edit dispatches through the editor's field; everything else
-        // through the calendar's own host. One event does one or the other.
-        let notes = ui::undo::CommittedActions::take_committed_action(&mut self.notes_editor);
-        let calendar = self.actions.take_committed();
-        notes.or(calendar)
-    }
-    /// Typing a word in the notes is one undo step.
-    fn keeps_undo_step_open(&self) -> bool {
-        ui::undo::CommittedActions::keeps_undo_step_open(&self.notes_editor)
+        self.actions.take_committed()
     }
 }
 

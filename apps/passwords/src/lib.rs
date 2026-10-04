@@ -8,11 +8,9 @@ use accounts::{
     CredentialGrant, GeneratedPasswordPolicy, SecretCustody, SecretId, SecretItem, SecretStore,
 };
 use std::collections::HashMap;
-use ui::widget::Widget;
 
-mod actions;
+pub mod actions;
 mod demo;
-mod doc;
 mod list_pane;
 mod pages;
 pub mod resource;
@@ -21,6 +19,8 @@ mod transfer;
 mod vault;
 mod window;
 pub use crate::vault::Screen;
+pub use actions::PasswordsEffect;
+pub use resource::{Passwords, PasswordsShell};
 pub use window::PasswordsSurface;
 
 pub struct PasswordsModel {
@@ -251,15 +251,10 @@ impl PasswordsModel {
     }
 }
 
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(PasswordsSurface::live())
-}
-
-/// The app as every host mounts it: the live root.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.passwords", app_root).as_definition("Passwords")
+    ui::framework::definition::<PasswordsShell>()
 }
-pub use resource::{Passwords, PasswordsShell, launch_spec};
 
 #[cfg(test)]
 mod tests {

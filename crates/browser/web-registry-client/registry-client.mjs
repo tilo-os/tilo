@@ -11,8 +11,12 @@
  * that snapshot, each payload blob against its BLAKE3.
  *
  * Network, per page load:
- *   GET /entries                   always, `cache: 'no-cache'`: the browser
- *                                  revalidates with the ETag, 304 when unchanged
+ *   GET /entries?format=compact    always, `cache: 'no-cache'`: the browser
+ *                                  revalidates with the ETag, 304 when unchanged.
+ *                                  Per entry only the newest versions of each
+ *                                  target; a registry without the compact form
+ *                                  answers with the full snapshot, which
+ *                                  verifies the same way.
  *   GET /thin/<package root>.tapp  for every package not yet cached, concurrently
  *   GET /blobs/<blake3>            for every missing module/asset blob of the
  *                                  whole batch, concurrently
@@ -105,7 +109,7 @@ export function createRegistryClient({
   }
 
   async function loadSnapshot() {
-    const response = await fetchOk(`${base}/entries`, {cache: 'no-cache'});
+    const response = await fetchOk(`${base}/entries?format=compact`, {cache: 'no-cache'});
     const bytes = new Uint8Array(await response.arrayBuffer());
     const checkpoint = await readCheckpoint();
     let verified;

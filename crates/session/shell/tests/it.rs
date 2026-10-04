@@ -59,6 +59,8 @@ mod continuity_suggestion_flow;
 mod control_socket_test;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
+#[path = "cpu_raster_parity.rs"]
+mod cpu_raster_parity;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
 #[path = "cursor_protocol.rs"]
@@ -131,6 +133,8 @@ mod interaction_test;
 mod keyboard_focus_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
+#[path = "legacy_window_between_devices.rs"]
+mod legacy_window_between_devices;
 #[path = "lock_screen_visual.rs"]
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
@@ -221,6 +225,8 @@ mod transient_sheets;
 mod two_netns_share;
 #[path = "wayland_test.rs"]
 mod wayland_test;
+#[path = "wheel_scroll_wire.rs"]
+mod wheel_scroll_wire;
 #[path = "window_previews.rs"]
 mod window_previews;
 #[path = "window_switcher.rs"]

@@ -36,7 +36,7 @@ fn main() {
         println!("  {:<24} {:<10} rank {}", d.name, d.kind.as_str(), d.rank);
     }
 
-    let mut config = tilo_media::EngineConfig::default().silent();
+    let mut config = tilo_media::EngineConfig::default().frames_only();
     if native {
         config.acceptance = tilo_media::FrameAcceptance::Native;
     }
@@ -58,13 +58,16 @@ fn main() {
     engine.open(tilo_media::Source::LocalFile(path.into()));
 
     let started = std::time::Instant::now();
-    let ok = engine.seek_and_wait(seek_ms, std::time::Duration::from_secs(15));
+    let landed = engine.seek_and_wait(seek_ms, std::time::Duration::from_secs(15));
     let elapsed = started.elapsed();
 
     println!("\n--- result ---");
     println!(
         "  seek to {seek_ms}ms: {} in {:?}",
-        if ok { "frame" } else { "NO FRAME" },
+        match &landed {
+            Ok(()) => "frame".to_string(),
+            Err(error) => format!("NO FRAME ({error})"),
+        },
         elapsed
     );
     println!("  decoder: {}", engine.hw_report().describe());
@@ -81,7 +84,7 @@ fn main() {
         }
         None => println!("  frame: none"),
     }
-    if !ok {
+    if landed.is_err() {
         std::process::exit(1);
     }
 }

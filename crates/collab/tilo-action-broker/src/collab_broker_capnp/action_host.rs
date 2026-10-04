@@ -1298,6 +1298,7 @@ impl CapnpBrokerState {
             root.peer_id,
             (surface, offered),
             InvocationInputs {
+                execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument,
                 actor: &actor,
                 confirmation_token: token.as_deref(),
@@ -1379,6 +1380,7 @@ impl CapnpBrokerState {
             &address.resource,
             &address.action,
             InvocationInputs {
+                execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument: argument.as_deref(),
                 actor: &actor,
                 confirmation_token: token.as_deref(),
@@ -2208,6 +2210,10 @@ fn bridge_error(error: ActionDirectoryBridgeError) -> ActionHostError {
     match error {
         ActionDirectoryBridgeError::InvalidRequest => ActionHostError::InvalidRequest {
             reason: "the directory request is malformed".into(),
+        },
+        ActionDirectoryBridgeError::TimedOut => ActionHostError::Unavailable {
+            reason: "the app has not answered its action directory for a long time: it is hung"
+                .into(),
         },
         other => ActionHostError::Unavailable {
             reason: format!("the action directory is {other:?}"),

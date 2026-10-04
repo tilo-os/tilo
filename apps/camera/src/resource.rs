@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ROOT};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Command, Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
@@ -97,18 +97,16 @@ impl Resource for Camera {
     fn search(state: &CameraState) -> Vec<SearchEntry> {
         let mut entries = Vec::new();
         if let Some(recent) = &state.recent {
-            entries.push(SearchEntry {
-                anchor: Some(format!("camera.capture:{}", recent.id)),
-                title: recent.label.clone(),
-                text: "recent capture".into(),
-            });
+            entries.push(
+                SearchEntry::new(recent.label.clone(), "recent capture")
+                    .anchored(format!("camera.capture:{}", recent.id)),
+            );
         }
         for scan in &state.scans {
-            entries.push(SearchEntry {
-                anchor: Some(format!("camera.scan:{}", scan.ts)),
-                title: scan.raw.clone(),
-                text: "scan".into(),
-            });
+            entries.push(
+                SearchEntry::new(scan.raw.clone(), "scan")
+                    .anchored(format!("camera.scan:{}", scan.ts)),
+            );
         }
         entries
     }
@@ -127,11 +125,42 @@ impl ResourceApp for CameraShell {
     const ID: &'static str = "so.tilo.camera";
     const TITLE: &'static str = "Camera";
     const ICON: Option<&'static str> = Some("camera");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Camera>) -> Element {
         cx.surface(CameraApp::disk())
     }
+
+    fn commands() -> &'static [Command] {
+        &[Command {
+            option: "--emit-photos",
+            run: emit_photos,
+        }]
+    }
+}
+
+/// `--emit-photos DIR`: write procedural photos and a lossless QR poster
+/// into `DIR`, the library a headless test drives the camera against.
+fn emit_photos(dir: &str) -> Result<(), String> {
+    use crate::model::PhotoFormat;
+    let dir = std::path::Path::new(dir);
+    for seed in 0..5u8 {
+        let frame = crate::frame::thumbnail(seed, 960, 640);
+        crate::library::write_photo(dir, &frame, PhotoFormat::Jpeg)
+            .map_err(|error| error.to_string())?;
+        let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(4));
+    }
+    let (qr, _) = crate::frame::scanner_frame(
+        4,
+        900,
+        640,
+        "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;",
+    );
+    crate::library::write_photo(dir, &qr, PhotoFormat::Png).map_err(|error| error.to_string())?;
+    println!("camera: wrote sample photos to {}", dir.display());
+    Ok(())
 }
 
 impl ResourceSurface<Camera> for CameraApp {
@@ -234,7 +263,7 @@ pub fn standalone_launch() -> bool {
             | "--crop"
             | "--timer-running"
             | "--emit-photos" => return true,
-            "--screen" | "--mode" | "--dir" | "--hover" | "--width" | "--height"
+            "--screen" | "--mode" | "--dir" | "--scroll" | "--hover" | "--width" | "--height"
             | "--camera-state" => {
                 let _ = args.next();
                 return true;

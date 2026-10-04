@@ -110,9 +110,9 @@ pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
 /// Every invocation path uses this one decision: the visible connection row,
 /// the accessibility tree, Ctrl+K/agent resources, and the effect handler. A
 /// malformed profile therefore never reaches an I/O constructor merely because
-/// one surface forgot a preflight check. Cached `Presence::Offline` is not an
-/// availability gate: it is stale by design, so a deliberate reconnect is
-/// required to discover that a machine recovered.
+/// one surface forgot a preflight check. Whether this device last saw the
+/// machine offline is not an availability gate: it is stale by design, so a
+/// deliberate reconnect is required to discover that a machine recovered.
 pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     let transport = transport_readiness(connection.kind);
     if !transport.can_connect() {
@@ -159,7 +159,6 @@ impl SessionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Presence;
     use uuid::Uuid;
 
     fn connection(kind: ConnectionKind) -> Connection {
@@ -175,8 +174,7 @@ mod tests {
             } else {
                 crate::model::AuthMethod::Password
             },
-            last_used: None,
-            presence: Presence::Unknown,
+            last_used_ms: None,
             group: String::new(),
             favorite: false,
         }
@@ -224,10 +222,6 @@ mod tests {
                 connection_readiness(&tilo),
                 TransportReadiness::InvalidProfile
             );
-
-            let mut offline = connection(ConnectionKind::Tilo);
-            offline.presence = crate::model::Presence::Offline;
-            assert_eq!(connection_readiness(&offline), TransportReadiness::Ready);
         }
     }
 }

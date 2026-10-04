@@ -33,7 +33,7 @@ class DevCITests(unittest.TestCase):
         digest = "sha256:" + hashlib.sha256(manifest_bytes).hexdigest()
         args = SimpleNamespace(image=dev.REPOSITORY + "@" + digest, ci_run_id="17", profile=profile,
                                manifest=manifest_path, config=config_path)
-        run = {"id": 17, "workflow_id": "os-dev.yml", "prettyref": "main",
+        run = {"id": 17, "workflow_id": "os-dev-arm.yml", "prettyref": "main",
                "is_fork_pull_request": False, "commit_sha": "a" * 40,
                "status": "failure", "index_in_repo": 100}
         jobs = [{"id": 1, "name": "build-and-push (aarch64, runner-large-arm64)",

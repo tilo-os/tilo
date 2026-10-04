@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 const INVITATION_VERSION: u32 = 1;
+/// An invitation that also names who sent it.
+const INVITATION_WITH_INVITER_VERSION: u32 = 2;
+/// Longest inviter name an invitation carries, in characters.
+pub const MAX_INVITER_NAME_CHARS: usize = 80;
 const JOIN_VERSION: u32 = 1;
 const INVITATION_DOMAIN: &[u8] = b"tilo/workspace-invitation/v1\0";
 const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
@@ -98,10 +102,28 @@ struct DelegationView<'a> {
     expires_at_ns: Option<u64>,
 }
 
+/// The person who sent an invitation, as the issuer recorded them under its
+/// signature: the user root of the device that asked for it and the name
+/// they gave.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Inviter {
+    pub user_public_key: [u8; 32],
+    pub name: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SignedInvitation {
     version: u32,
     grant: InviteGrant,
+    #[serde(with = "bytes64")]
+    signature: [u8; 64],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SignedInvitationWithInviter {
+    version: u32,
+    grant: InviteGrant,
+    inviter: Inviter,
     #[serde(with = "bytes64")]
     signature: [u8; 64],
 }
@@ -112,10 +134,18 @@ struct InvitationView<'a> {
     grant: &'a InviteGrant,
 }
 
+#[derive(Serialize)]
+struct InvitationWithInviterView<'a> {
+    version: u32,
+    grant: &'a InviteGrant,
+    inviter: &'a Inviter,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedJoin {
     invite_id: [u8; 32],
     grant: InviteGrant,
+    inviter: Option<Inviter>,
     signed_invitation: Vec<u8>,
 }
 
@@ -126,6 +156,11 @@ impl VerifiedJoin {
 
     pub fn grant(&self) -> &InviteGrant {
         &self.grant
+    }
+
+    /// Who sent the invitation, when its issuer recorded them.
+    pub fn inviter(&self) -> Option<&Inviter> {
+        self.inviter.as_ref()
     }
 
     pub fn signed_invitation(&self) -> &[u8] {
@@ -512,6 +547,51 @@ pub fn issue_invitation(
     postcard::to_stdvec(&signed).map_err(|error| error.to_string())
 }
 
+/// [`issue_invitation`] that also names `inviter`, under the same signature.
+///
+/// # Errors
+///
+/// Returns an error if the grant or the inviter is malformed, or the signer
+/// is not the declared issuer.
+pub fn issue_invitation_from(
+    grant: InviteGrant,
+    inviter: Inviter,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Vec<u8>, String> {
+    validate_grant(&grant, 0, false)?;
+    validate_inviter(&inviter)?;
+    if key.verifying_key().to_bytes() != grant.issuer.device_public_key {
+        return Err("invitation signer is not the declared issuer device".into());
+    }
+    let digest = tagged_digest(
+        INVITATION_DOMAIN,
+        &InvitationWithInviterView {
+            version: INVITATION_WITH_INVITER_VERSION,
+            grant: &grant,
+            inviter: &inviter,
+        },
+    )?;
+    let signed = SignedInvitationWithInviter {
+        version: INVITATION_WITH_INVITER_VERSION,
+        grant,
+        inviter,
+        signature: key.sign(&digest).to_bytes(),
+    };
+    postcard::to_stdvec(&signed).map_err(|error| error.to_string())
+}
+
+fn validate_inviter(inviter: &Inviter) -> Result<(), String> {
+    let name = inviter.name.trim();
+    if name.is_empty()
+        || name != inviter.name
+        || name.chars().count() > MAX_INVITER_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err("invalid inviter name".into());
+    }
+    Ok(())
+}
+
 /// Sign an opaque transport hint as `host`.
 ///
 /// # Errors
@@ -617,43 +697,61 @@ pub fn decode_and_verify_invitation(
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<VerifiedJoin, String> {
-    let signed: SignedInvitation = postcard::from_bytes(signed_invitation)
-        .map_err(|_| "invalid signed invitation".to_string())?;
-    if signed.version != INVITATION_VERSION {
-        return Err("unsupported invitation version".into());
-    }
-    validate_grant(&signed.grant, now_ns, true)?;
-    validate_certificate(&signed.grant.authority, revocations, now_ns)?;
-    validate_certificate(&signed.grant.issuer, revocations, now_ns)?;
-    validate_invitation_delegation(&signed.grant, revocations, now_ns)?;
-    for hint in &signed.grant.transport {
+    let malformed = |_| "invalid signed invitation".to_string();
+    let (version, _) = postcard::take_from_bytes::<u32>(signed_invitation).map_err(malformed)?;
+    let (grant, inviter, signature) = match version {
+        INVITATION_VERSION => {
+            let signed: SignedInvitation =
+                postcard::from_bytes(signed_invitation).map_err(malformed)?;
+            (signed.grant, None, signed.signature)
+        }
+        INVITATION_WITH_INVITER_VERSION => {
+            let signed: SignedInvitationWithInviter =
+                postcard::from_bytes(signed_invitation).map_err(malformed)?;
+            validate_inviter(&signed.inviter)?;
+            (signed.grant, Some(signed.inviter), signed.signature)
+        }
+        _ => return Err("unsupported invitation version".into()),
+    };
+    validate_grant(&grant, now_ns, true)?;
+    validate_certificate(&grant.authority, revocations, now_ns)?;
+    validate_certificate(&grant.issuer, revocations, now_ns)?;
+    validate_invitation_delegation(&grant, revocations, now_ns)?;
+    for hint in &grant.transport {
         verify_transport_hint_at(hint, revocations, now_ns)?;
     }
     if let Some(expected) = recipient_user_public_key
-        && signed
-            .grant
+        && grant
             .recipient_user_public_key
             .is_some_and(|recipient| recipient != expected)
     {
         return Err("invitation recipient mismatch".into());
     }
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&signed.grant.issuer.device_public_key)
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&grant.issuer.device_public_key)
         .map_err(|_| "invalid invitation issuer device key".to_string())?;
-    let digest = tagged_digest(
-        INVITATION_DOMAIN,
-        &InvitationView {
-            version: signed.version,
-            grant: &signed.grant,
-        },
-    )?;
-    key.verify(
-        &digest,
-        &ed25519_dalek::Signature::from_bytes(&signed.signature),
-    )
-    .map_err(|_| "invitation signature did not verify".to_string())?;
+    let digest = match &inviter {
+        None => tagged_digest(
+            INVITATION_DOMAIN,
+            &InvitationView {
+                version,
+                grant: &grant,
+            },
+        )?,
+        Some(inviter) => tagged_digest(
+            INVITATION_DOMAIN,
+            &InvitationWithInviterView {
+                version,
+                grant: &grant,
+                inviter,
+            },
+        )?,
+    };
+    key.verify(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
+        .map_err(|_| "invitation signature did not verify".to_string())?;
     Ok(VerifiedJoin {
         invite_id: *blake3::hash(signed_invitation).as_bytes(),
-        grant: signed.grant,
+        grant,
+        inviter,
         signed_invitation: signed_invitation.to_vec(),
     })
 }

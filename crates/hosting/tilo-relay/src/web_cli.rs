@@ -69,6 +69,26 @@ pub struct WebArgs {
     /// uses the HTTPS stream fallback).
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
+    /// Without a device certificate yet, create the device key, print its
+    /// public half and serve only `/peer/v1/install` on `--web` until a
+    /// root-signed host certificate for it arrives with the token in this
+    /// file; then start as usual.
+    #[arg(long = "install-token-file", value_name = "PATH", requires = "web")]
+    pub install_token_file: Option<PathBuf>,
+    /// The device key (hex) of the session beside this node, the shell that
+    /// runs the person's apps: pages learn it on `/node` to open apps there.
+    /// While the node waits for its certificate, its root certifies the
+    /// session with it, as one of the person's devices, and the certificate
+    /// is written to `--session-cert-out`.
+    #[arg(long = "session-device", value_name = "HEX", requires = "web")]
+    pub session_device: Option<String>,
+    /// Where the session's certificate is written (canonical encoding).
+    #[arg(
+        long = "session-cert-out",
+        value_name = "PATH",
+        requires_all = ["session_device", "install_token_file"]
+    )]
+    pub session_cert_out: Option<PathBuf>,
     #[cfg(feature = "agents")]
     #[command(flatten)]
     pub agents: AgentArgs,
@@ -224,6 +244,72 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
 ///
 /// # Errors
 /// The listener cannot bind or load its certificate.
+/// Before the relay starts: when `--install-token-file` is given and the
+/// identity under `identity_root` has no certificate yet, wait for one on
+/// the browser listener. Prints `{"event": "awaiting_certificate",
+/// "devicePublicKey": …}` while waiting.
+///
+/// # Errors
+///
+/// The token or device key cannot be read, or the listener fails.
+pub async fn await_certificate(
+    identity_root: &Path,
+    args: &WebArgs,
+    state_root: &Path,
+) -> anyhow::Result<()> {
+    let (Some(token_file), Some(listen)) = (&args.install_token_file, args.web) else {
+        return Ok(());
+    };
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    if paths.device_cert.is_file() {
+        return Ok(());
+    }
+    let token = std::fs::read_to_string(token_file)
+        .with_context(|| format!("read {}", token_file.display()))?;
+    let (device, _) =
+        tilo_user_identity::load_or_create_device_key(&paths).context("create the device key")?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "awaiting_certificate",
+            "devicePublicKey": hex::encode(device.verifying_key().to_bytes()),
+        })
+    );
+    let session = match (session_device(args)?, &args.session_cert_out) {
+        (Some(public_key), Some(cert_out)) => Some(tilo_relay::web::install::SessionDevice {
+            public_key,
+            cert_out: cert_out.clone(),
+        }),
+        _ => None,
+    };
+    let cert = tilo_relay::web::install::await_certificate(
+        &web_config(args, listen, state_root),
+        paths,
+        &token,
+        session,
+    )
+    .await
+    .context("wait for the device certificate")?;
+    tracing::info!(
+        user = %hex::encode(cert.user_public_key),
+        "device certificate installed"
+    );
+    Ok(())
+}
+
+/// `--session-device`, decoded.
+fn session_device(args: &WebArgs) -> anyhow::Result<Option<[u8; 32]>> {
+    args.session_device
+        .as_deref()
+        .map(|device| {
+            hex::decode(device.trim())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .context("--session-device must be a 32-byte hex public key")
+        })
+        .transpose()
+}
+
 pub async fn serve(
     relay: &Relay,
     args: &WebArgs,
@@ -232,6 +318,9 @@ pub async fn serve(
     let Some(listen) = args.web else {
         return Ok(None);
     };
+    if let Some(device) = session_device(args)? {
+        relay.set_node_session(device);
+    }
     let web = relay
         .serve_web(web_config(args, listen, state_root))
         .await

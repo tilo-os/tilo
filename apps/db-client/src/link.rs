@@ -12,6 +12,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ui::framework::Dispatcher;
+use ui::tilo_resource::PlainText;
 use uuid::Uuid;
 
 use crate::model::{
@@ -131,6 +133,9 @@ struct Inner {
     /// The editor's text, mirrored by the workspace so the controller can run
     /// the statement a shortcut was pressed over.
     sql: String,
+    /// Where the editor submits its edits of the shared SQL, once the
+    /// framework dispatcher is attached.
+    sql_edits: Option<Dispatcher<PlainText>>,
 }
 
 /// A shared handle on the model and the intent queue.
@@ -173,5 +178,15 @@ impl Link {
 
     pub fn sql(&self) -> String {
         self.inner.borrow().sql.clone()
+    }
+
+    /// Hand the editor the dispatcher its edits of the SQL go through.
+    pub fn attach_sql_edits(&self, dispatcher: Dispatcher<PlainText>) {
+        self.inner.borrow_mut().sql_edits = Some(dispatcher);
+    }
+
+    /// The dispatcher the editor's edits go through, once attached.
+    pub fn sql_edits(&self) -> Option<Dispatcher<PlainText>> {
+        self.inner.borrow().sql_edits.clone()
     }
 }

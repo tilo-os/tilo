@@ -40,6 +40,7 @@ pub mod colour;
 pub mod composite;
 pub mod engine;
 pub mod field;
+pub mod form;
 mod grid;
 pub mod ground;
 mod mask;
@@ -51,9 +52,11 @@ pub mod watercolour;
 pub use brush::StrokePoint;
 pub use colour::{Paint, Pigment, Rgb, parse_paint};
 pub use engine::{
-    Blend, Canvas, Engines, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Preset, Settings, Stroke,
+    Blend, Canvas, Engines, Erase, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Preset, Settings,
+    Stroke,
 };
 pub use field::{ColourField, FieldKind};
+pub use form::Form;
 pub use ground::{Heightfield, Texture};
 pub use painter::{LayerPainter, Painted};
 

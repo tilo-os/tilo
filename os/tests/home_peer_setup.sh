@@ -67,6 +67,7 @@ for daemon in "$relay_unit" "$replica_unit"; do
   grep -Fqx 'After=tilo-relay-state-migrate.service' "$daemon"
 done
 grep -q 'BindsTo=tilo-relay.service' "$replica_unit"
+grep -Fqx 'RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK' "$relay_unit"
 for sandboxed_daemon in "$relay_unit" "$replica_unit"; do
  for identity in 'User=tilo-relay' 'Group=tilo-relay' 'SupplementaryGroups=tilo-identity'; do
    grep -Fqx "$identity" "$sandboxed_daemon"

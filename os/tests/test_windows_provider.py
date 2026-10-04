@@ -183,7 +183,13 @@ class ProviderTests(unittest.TestCase):
             self.assertTrue({"wine", "wine-dxvk"} <= roots["x86_64"])
             self.assertFalse({"wine", "wine-dxvk"} & roots["aarch64"])
             self.assertTrue({"libstdc++", "libwayland-client", "edk2-aarch64"} <= roots["aarch64"])
-            self.assertFalse({name for name in roots["aarch64"] if name.startswith("qt6")})
+            # The production image's ARM roots carry no Qt for the Windows guest; the dev
+            # image's acceptance apps (os/Containerfile.dev) may.
+            derive = importlib.util.spec_from_file_location("rpm_package_set", script)
+            module = importlib.util.module_from_spec(derive)
+            derive.loader.exec_module(module)
+            production = set(module.packages(DEV.parent / "Containerfile", "aarch64"))
+            self.assertFalse({name for name in production if name.startswith("qt6")})
 
     def test_fex_patching(self):
         with self.subTest(phase="nonportable_fex_is_rejected"):

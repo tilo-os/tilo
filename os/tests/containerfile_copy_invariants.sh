@@ -24,7 +24,7 @@ containerfile="$repo/os/Containerfile"
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs),
 # the xdg-desktop-portal preference that selects the Tilo backend,
-# and the opt-in codec-pack helper overlay (helper, units, keys, polkit rule,
+# and the opt-in extension helper overlay (helper, units, polkit rule,
 # and the NetworkManager dispatcher hook that starts a deferred install).
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
@@ -76,6 +76,8 @@ containerfile="$repo/os/Containerfile"
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
 # The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# /usr/bin/bootc from bootc-builder, the base's release patched to find this
+# system's ESP on a disk it shares, and its licence notice are deliberate.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -83,7 +85,13 @@ containerfile="$repo/os/Containerfile"
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
-expected_contract=5daebbf50ef1a9303201d305885e8e5c0ca54e088860ecc82a1ab0bb9aee8765
+# The extension overlay replaces the codec-specific resolver: no repository
+# definitions or upstream keys ship, only the generic helper and its units.
+# The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
+# The extension-manifest public key ships beside the helper.
+# The release gate's greetd session-context check ships beside the other
+# booted-guest checks in /usr/libexec/tilo.
+expected_contract=c3175072d78ebd8d6064309461374ef3a636cf8185a9aad34cbc55229df01d7d
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -114,7 +122,7 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Recording whether the Windows provider is included adds an ARG and a LABEL.
 # Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
 # that includes it.
-# The opt-in codec-pack overlay adds one COPY of its scratch stage.
+# The opt-in extension overlay adds one COPY of its scratch stage.
 # The echo-cancel PipeWire config adds one COPY; folding the three
 # /usr/lib/systemd/user units into one COPY removes two.
 # A build-only resolver placeholder and a final COPY restore the runtime
@@ -125,8 +133,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # The ARM virtual graphics CPU shim adds one COPY, bringing this to 152.
 # Redeclaring KERNEL_RPMS_REF before the kernel-swap RUN so Buildah hashes the
 # kernel image identity into that layer's cache key adds one ARG (153).
-[ "$instructions" -le 153 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 153)" >&2
+# Redeclaring RPMS_REF before the first snapshot install, for the same reason,
+# adds one more (154).
+[ "$instructions" -le 154 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
   exit 1
 }
 
@@ -138,7 +148,7 @@ if containerfile_instructions "$containerfile" |
   exit 1
 fi
 
-for overlay in desktop-binaries remote-capture-files rollback-files recovery-files codec-pack-files; do
+for overlay in desktop-binaries remote-capture-files rollback-files recovery-files extension-files; do
   [ "$(containerfile_copy_contract "$containerfile" rootfs |
        awk -F '\t' -v s="$overlay" '$1==s && $2=="/" && $3=="/"{n++} END{print n+0}')" -eq 1 ] \
     || { echo "$overlay is not applied to rootfs exactly once" >&2; exit 1; }
@@ -165,8 +175,8 @@ for path in \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
   os/usr/libexec/tilo-security-audit \
-  os/usr/libexec/tilo-codec-pack \
-  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack; do
+  os/usr/libexec/tilo-extension \
+  os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
       $1 == "COPY" {

@@ -34,9 +34,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use registry_server::{
-    AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
-    PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    inspect_bytes, run_server,
+    AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
+    PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
+    default_data_dir, inspect_bytes, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -186,6 +186,11 @@ enum Cmd {
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
     },
+    /// Delete staged packages, thin packages and payload blobs that no
+    /// published, quarantined or pending entry references any more, and keep
+    /// remaining staged packages as their thin form and shared blobs.
+    /// Promotion does this after every publish.
+    PruneStorage,
     /// Refresh the current catalogue expiry with the networkless delegated
     /// channel key. Refuses to overtake staged promotion work.
     SignDelegatedSnapshot {
@@ -310,6 +315,7 @@ fn main() -> anyhow::Result<()> {
     tilo_rt::daemon("tilo-registry").run(serve_cli())?
 }
 
+#[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -393,6 +399,7 @@ async fn serve_cli() -> anyhow::Result<()> {
             &reason,
             valid_for_seconds,
         ),
+        Cmd::PruneStorage => cmd_prune_storage(&storage),
         Cmd::SignDelegatedSnapshot {
             channel_key_file,
             valid_for_seconds,
@@ -780,6 +787,13 @@ fn cmd_sign_delegated_snapshot(
         candidate.issued_at_unix,
     )?;
     writer.publish(&candidate)?;
+    publish_compact(
+        &writer,
+        &candidate,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&candidate)?);
     Ok(())
@@ -810,7 +824,10 @@ fn cmd_publish_staged_first_party(
         )?;
         let moderation = ModerationService::new(storage.clone());
         moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+        let pruned = writer.prune_unreferenced()?;
+        let history = writer.compact_history()?;
         drop(writer);
+        let pruned = compact_after_prune(storage, pruned)?;
         println!(
             "{}",
             serde_json::json!({
@@ -818,6 +835,8 @@ fn cmd_publish_staged_first_party(
                 "promoted": journal.submissions.len(),
                 "sequence": journal.candidate_snapshot.sequence,
                 "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+                "pruned": pruned,
+                "history": history,
             })
         );
         return Ok(());
@@ -963,8 +982,17 @@ fn cmd_publish_staged_first_party(
         &allowlist,
     )?;
     writer.publish(&journal.candidate_snapshot)?;
+    publish_compact(
+        &writer,
+        &journal.candidate_snapshot,
+        &channel_key,
+        &identity.owner_pubkey_hex,
+    )?;
     moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
     drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
     println!(
         "{}",
         serde_json::json!({
@@ -972,7 +1000,37 @@ fn cmd_publish_staged_first_party(
             "promoted": reviews.len(),
             "sequence": journal.candidate_snapshot.sequence,
             "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+            "pruned": pruned,
+            "history": history,
         })
+    );
+    Ok(())
+}
+
+/// After pruning what no entry references any more, such as the versions a
+/// full entry just let go, compact staged packages one lock at a time.
+fn compact_after_prune(
+    storage: &Storage,
+    pruned: PruneReport,
+) -> anyhow::Result<serde_json::Value> {
+    let compacted = storage.compact_staged_artifacts()?;
+    Ok(serde_json::json!({
+        "staged_artifacts": pruned.staged_artifacts,
+        "thin_packages": pruned.thin_packages,
+        "payload_blobs": pruned.payload_blobs,
+        "compacted_staged_artifacts": compacted,
+    }))
+}
+
+fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
+    let writer = storage.lock_snapshot()?;
+    let pruned = writer.prune_unreferenced()?;
+    let history = writer.compact_history()?;
+    drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
+    println!(
+        "{}",
+        serde_json::json!({"status": "pruned", "pruned": pruned, "history": history})
     );
     Ok(())
 }
@@ -1141,6 +1199,8 @@ fn cmd_sign_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
@@ -1160,9 +1220,19 @@ fn cmd_rollback_snapshot(
     let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
     recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
     refuse_active_promotion(storage)?;
-    let target = writer
-        .sequence(to_sequence)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
+    let target =
+        writer
+            .sequence(to_sequence)?
+            .ok_or_else(|| match storage.history_compaction() {
+                Ok(Some(compaction)) if to_sequence <= compaction.through_sequence => {
+                    anyhow::anyhow!(
+                        "snapshot sequence {to_sequence} was compacted (history is pruned through \
+                 {}); restore it from a backup",
+                        compaction.through_sequence
+                    )
+                }
+                _ => anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"),
+            })?;
     let current = writer
         .current()?
         .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
@@ -1211,8 +1281,25 @@ fn cmd_rollback_snapshot(
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
     writer.publish(&snapshot)?;
+    publish_compact(&writer, &snapshot, &key, &identity.owner_pubkey_hex)?;
+    writer.compact_history()?;
     drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+/// Sign and publish the compact form of the snapshot just published, with
+/// the key that signed it.
+fn publish_compact(
+    writer: &registry_server::storage::SnapshotLock<'_>,
+    snapshot: &SignedRegistrySnapshot,
+    key: &ed25519_dalek::SigningKey,
+    owner_pubkey_hex: &str,
+) -> anyhow::Result<()> {
+    let (mut compact, indexes) = registry_types::compact_snapshot(snapshot)?;
+    registry_types::sign_compact_snapshot(&mut compact, key)?;
+    registry_types::verify_compact_snapshot(&compact, owner_pubkey_hex, compact.issued_at_unix)?;
+    writer.publish_compact(&compact, &indexes)?;
     Ok(())
 }
 

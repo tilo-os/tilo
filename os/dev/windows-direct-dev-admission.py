@@ -31,6 +31,61 @@ HEX = re.compile(r'[0-9a-f]{64}\Z')
 COMPOSEFS = re.compile(r'[0-9a-f]{128}\Z')
 
 
+# Narrow compatibility exception for the reviewed runtime-profile packaging fix.
+# CI authority still supplies each immutable assembly revision and disk hash;
+# this contract cannot admit arbitrary helper edits or refreshed VM media.
+PROFILE_FIX_PAIR = ('917f492b8af11622edf9d08a389cd88697c3f503', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf')
+PROFILE_FIX_BLOBS = {'os/dev/build-custom-installer.sh': {'917f492b8af11622edf9d08a389cd88697c3f503': '3c14b70cd639d19400fb9230defafe25eb1c7dda7ea4c966945337aa2cfe23b0', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': '7d8c0d1191885dab2f53fdfd717846c64c27e537cf1f4c616d293c8892bf72e5'}, 'os/usr/libexec/tilo-installer-dev-target-uki.py': {'917f492b8af11622edf9d08a389cd88697c3f503': '50ee428a3ded60ea6fdd971b4922af88dcdef95813e64208ab419ceead42f979', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': '6f4dbc9cd609c1f67d4e42c0af471efde783475a5407b448848456966e1ecfc4'}, 'os/dev/hardware_profile.py': {'917f492b8af11622edf9d08a389cd88697c3f503': 'c0f0a6aa1d073e023e04faa315cda0a2b146959c8be6ff2d02d2bf81d4b02d85', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': '736eafdc50f894572df009ba124a62dd8fb5a9c53b841e2856ac45f176740ad3'}, 'os/dev/uki-hardware-profile.py': {'917f492b8af11622edf9d08a389cd88697c3f503': '86dde70c2464e62adfe985f2a157c23ec601e489788d606b9b820128840a269a', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': 'adec487d384194f4a19cfd4c99026d038095b65875cc75339660ea31fe51a0d6'}}
+PROFILE_FIX_CHANGED = {
+    'os/dev/README.md', 'os/dev/copy-windows-direct-final-install.py',
+    'os/tests/test_copy_windows_direct_final_install.py',
+    'os/tests/test_installer_dev_target_uki.py',
+    'apps/imager/src/setup/staging/final_bootnext.rs', *PROFILE_FIX_BLOBS,
+}
+
+
+# Exact follow-up: preserve the sealed CI UKI with the packaged editor.
+SEALED_FIX_PAIR = ('917f492b8af11622edf9d08a389cd88697c3f503', '917d3cf6fca7a1866f90f6007b9b10e2fd38af2a')
+SEALED_FIX_BLOBS = {'os/dev/build-custom-installer.sh': {'917f492b8af11622edf9d08a389cd88697c3f503': '3c14b70cd639d19400fb9230defafe25eb1c7dda7ea4c966945337aa2cfe23b0', '917d3cf6fca7a1866f90f6007b9b10e2fd38af2a': '7d8c0d1191885dab2f53fdfd717846c64c27e537cf1f4c616d293c8892bf72e5'}, 'os/usr/libexec/tilo-installer-dev-target-uki.py': {'917f492b8af11622edf9d08a389cd88697c3f503': '50ee428a3ded60ea6fdd971b4922af88dcdef95813e64208ab419ceead42f979', '917d3cf6fca7a1866f90f6007b9b10e2fd38af2a': 'd3c16c0acc5c2447f4a1a51cc49b5071359ce2bae50444a259745381648dd41f'}, 'os/dev/hardware_profile.py': {'917f492b8af11622edf9d08a389cd88697c3f503': 'c0f0a6aa1d073e023e04faa315cda0a2b146959c8be6ff2d02d2bf81d4b02d85', '917d3cf6fca7a1866f90f6007b9b10e2fd38af2a': '736eafdc50f894572df009ba124a62dd8fb5a9c53b841e2856ac45f176740ad3'}, 'os/dev/uki-hardware-profile.py': {'917f492b8af11622edf9d08a389cd88697c3f503': '86dde70c2464e62adfe985f2a157c23ec601e489788d606b9b820128840a269a', '917d3cf6fca7a1866f90f6007b9b10e2fd38af2a': 'adec487d384194f4a19cfd4c99026d038095b65875cc75339660ea31fe51a0d6'}}
+SEALED_FIX_DIFFS = {'apps/imager/src/setup/staging/final_bootnext.rs': 'bc3021e3585d4459808f3a1760590ad63fa812983f3295bf36caacbdf16e280f', 'os/dev/README.md': 'd1c2a3ab147032a329b3c7bb517786f4fa94888f8347006a7774e46281899e1b', 'os/dev/build-custom-installer.sh': 'cc7e0d70c23511d5dee1a90ab691339b4175ff69969d4d7592feb99f36e990cc', 'os/dev/copy-windows-direct-final-install.py': '21ecd6e97b79e10d724a4107877ec9716b039c6298400e10f3dd09d110f12250', 'os/dev/hardware_profile.py': '8c55c3eeed07297ccb85912bb12c33f18c982fcb659c6e0d159449bfbdd90677', 'os/dev/uki-hardware-profile.py': '459299277afa4b59aced8f18c297e4331a95dc58471293d19b848ffe4aabf6a1', 'os/tests/test_copy_windows_direct_final_install.py': '91a3eba7110286f149f9cb7350ec53da3f03ea635a5bfefc6eaadc2f89620266', 'os/tests/test_installer_dev_target_uki.py': 'f86d9778c2706479768d58bb73e41313af89f4606a03d855955aca656584d03f', 'os/usr/libexec/tilo-installer-dev-target-uki.py': 'cc43cfde6f8775efe530477942fd95801948d0bcf17eb6f30ff9f0dd9df87f6f'}
+
+def assembly_compatibility(generic_revision, board_revision):
+    require(all(type(value) is str and re.fullmatch(r'[0-9a-f]{40}', value)
+                for value in (generic_revision, board_revision)), 'invalid CI assembly identities')
+    if generic_revision == board_revision:
+        return {'schema': 'tilo.installer-assembly-compatibility.v1',
+                'kind': 'identical', 'generic': generic_revision, 'board': board_revision}
+    pair = (generic_revision, board_revision)
+    require(pair in (PROFILE_FIX_PAIR, SEALED_FIX_PAIR),
+            'development installer pair has unreviewed assembly identities')
+    pins = SEALED_FIX_BLOBS if pair == SEALED_FIX_PAIR else PROFILE_FIX_BLOBS
+    repository = Path(__file__).resolve().parents[2]
+    def git(*arguments):
+        return subprocess.run(['git', '-C', str(repository), *arguments],
+                              capture_output=True, check=True, timeout=60).stdout
+    for revision in pair:
+        require(git('rev-parse', '--verify', revision + '^{commit}').decode().strip() == revision,
+                'reviewed CI assembly object is unavailable')
+    changed = set(git('diff', '--name-only', generic_revision, board_revision, '--').decode().splitlines())
+    require(changed == PROFILE_FIX_CHANGED, 'reviewed installer input closure differs')
+    records = {}
+    for path, revisions in pins.items():
+        records[path] = {}
+        for revision, expected in revisions.items():
+            actual = hashlib.sha256(git('show', revision + ':' + path)).hexdigest()
+            require(actual == expected, 'reviewed runtime profile helper bytes differ')
+            records[path][revision] = actual
+    diff_hashes = {path: hashlib.sha256(git('diff', '--binary', generic_revision,
+                    board_revision, '--', path)).hexdigest() for path in sorted(changed)}
+    if pair == SEALED_FIX_PAIR:
+        require(diff_hashes == SEALED_FIX_DIFFS, 'reviewed sealed UKI assembly diffs differ')
+    return {'schema': 'tilo.installer-assembly-compatibility.v1',
+            'kind': ('sealed-ci-uki-projection-fix' if pair == SEALED_FIX_PAIR
+                     else 'runtime-profile-packaging-fix'), 'generic': generic_revision,
+            'board': board_revision, 'changed_paths': sorted(changed),
+            'file_diff_sha256': diff_hashes, 'runtime_file_sha256': records}
+
+
 def file_hash(path):
     require(path.is_file() and not path.is_symlink(), 'development input is redirected or missing')
     value = hashlib.sha256()
@@ -104,6 +159,18 @@ def checked_proof(path, board_ci=None):
     require(type(doc) is dict and type(doc.get('guest_proof')) is dict
             and type(doc.get('source_check')) is dict, 'incomplete development VM proof')
     guest, source = doc['guest_proof'], doc['source_check']
+    runtime = doc.get('installer_code_runtime')
+    require(type(runtime) is dict and runtime.get('schema') == 'tilo.installer-code-runtime.v1'
+            and type(runtime.get('channel')) is dict
+            and set(runtime['channel']) == {'schema', 'enabled', 'port', 'source'}
+            and runtime['channel'].get('schema') == 'tilo.installer-code-runtime.v1'
+            and runtime['channel'].get('enabled') is False
+            and runtime['channel'].get('port') is None and runtime['channel'].get('source') is None
+            and runtime.get('history') == [],
+            'physical install requires fresh host evidence without a local installer code channel')
+    require(guest.get('installer_code_override_sha256') is None
+            and doc.get('installer_code_override_sha256') is None,
+            'local installer code refresh cannot authorize a physical install')
     require(guest.get('architecture') == 'arm64'
             and ci.SHA.fullmatch(guest.get('booted_image_digest', ''))
             and ci.SHA.fullmatch(guest.get('installed_image_digest', ''))
@@ -195,8 +262,8 @@ def verify(args):
         require(medium['source'].get('base_image') == generic_ci['image']
                 and medium['source'].get('base_source') == generic_ci['source_revision'],
                 'CI installer base differs from the verified development cohort')
-    require(board_medium['assembly_source'] == generic_medium['assembly_source']
-            and board_medium['source'].get('target_image') == board_ci['image']
+    compatibility = assembly_compatibility(generic_medium['assembly_source'], board_medium['assembly_source'])
+    require(board_medium['source'].get('target_image') == board_ci['image']
             and board_medium['source'].get('target_ci_run_id') == board_ci['invocation_id']
             and board_medium['source'].get('target_update_origin') == board_ci['update_origin']
             and not generic_medium['source'].get('target_image'),
@@ -210,6 +277,7 @@ def verify(args):
     evidence = {'schema': 'tilo.windows-direct-ci-dev-admission.v1',
                 'board_ci': board_ci, 'generic_ci': generic_ci,
                 'board_medium': board_medium, 'generic_medium': generic_medium,
+                'assembly_compatibility': compatibility,
                 'board_profile': board_profile, 'generic_profile': generic_profile,
                 'generic_vm_proof_sha256': file_hash(args.generic_vm_proof_checked)}
     provenance = {**board_ci, 'key_sha256': None, 'generation': None,

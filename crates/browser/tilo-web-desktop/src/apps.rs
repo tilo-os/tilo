@@ -16,7 +16,6 @@ pub(crate) fn register() {
         ebook::definition(),
         feeds::definition(),
         hex_editor::definition(),
-        image_editor::definition(),
         maps::definition(),
         music::definition(),
         notes::definition(),

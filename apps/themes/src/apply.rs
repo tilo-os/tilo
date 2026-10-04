@@ -86,7 +86,7 @@ pub fn ensure_legible(document: &ThemeDocument) -> Result<(), String> {
 /// An illegible document, or a settings document that cannot be written.
 pub fn apply(document: &ThemeDocument) -> Result<(), String> {
     ensure_legible(document)?;
-    let appearance = ui::storage::Settings::section("appearance");
+    let appearance = ui::storage::SettingsSection::named("appearance");
     let values = appearance_values(document, &appearance.load());
     appearance.update(values).map_err(|error| error.to_string())
 }

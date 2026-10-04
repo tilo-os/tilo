@@ -15,10 +15,10 @@ use rayon::prelude::*;
 
 use crate::brush::smooth;
 use crate::colour::{encode8, from_linear};
-use crate::engine::{Blend, Canvas, LayerSim, Mark, MediumEngine, ParamSpec, Settings};
+use crate::engine::{Blend, Canvas, Erase, LayerSim, Mark, MediumEngine, ParamSpec, Settings};
 use crate::grid::{Area, at, box_blur, cell, extract, float, smoothstep, store};
 use crate::ground::fbm;
-use crate::mask::{Coverage, brush_footprint, fill};
+use crate::mask::{Coverage, brush_footprint, erase_coverage, fill, lift};
 
 /// The watercolour engine.
 pub struct Watercolour {
@@ -148,9 +148,19 @@ impl WaterLayer {
         match mark {
             Mark::Stroke(stroke) => {
                 let samples = smooth(&stroke.points, 0.75);
-                brush_footprint(&samples, size, 0.8, (width, height), margin)
+                let mut footprint = brush_footprint(&samples, size, 0.8, (width, height), margin);
+                if !stroke.clip.is_empty() {
+                    let clip = fill(&stroke.clip, width, height, 1.0, false);
+                    let area = footprint.area;
+                    for (local, value) in footprint.values.iter_mut().enumerate() {
+                        let (x, y) = area.position(local);
+                        *value *= clip.get(x, y);
+                    }
+                }
+                footprint
             }
             Mark::Fill(region) => fill(&region.contours, width, height, margin, false),
+            Mark::Erase(erase) => erase_coverage(erase, (width, height)),
         }
     }
 
@@ -222,13 +232,17 @@ impl WaterLayer {
 impl LayerSim for WaterLayer {
     fn apply(&mut self, mark: &Mark, seed: u64) {
         let settings = self.settings.with(mark.params());
-        if !mark.wet() {
-            self.dry();
-        }
         let (paint, opacity, size) = match mark {
             Mark::Stroke(stroke) => (stroke.paint, stroke.opacity, stroke.size.max(0.5)),
             Mark::Fill(region) => (region.paint, region.opacity, region.brush.max(4.0)),
+            Mark::Erase(erase) => {
+                self.erase(erase);
+                return;
+            }
         };
+        if !mark.wet() {
+            self.dry();
+        }
         let water = settings.get("water");
         let flow = settings.get("flow");
         let roughness = settings.get("roughness");
@@ -363,6 +377,22 @@ impl LayerSim for WaterLayer {
 }
 
 impl WaterLayer {
+    /// Lift pigment off along an eraser, as a damp sponge does: what is
+    /// fixed to the paper, what still floats and the water it floats in all
+    /// thin under it, so a full-strength eraser leaves clean paper. A wet
+    /// wash is not dried first; what is left of it still bleeds.
+    fn erase(&mut self, erase: &Erase) {
+        let width = self.width();
+        let coverage = erase_coverage(erase, (width, self.canvas.height));
+        if coverage.is_empty() {
+            return;
+        }
+        for channel in self.deposit.iter_mut().chain(self.suspended.iter_mut()) {
+            lift(channel, width, &coverage);
+        }
+        lift(&mut self.water, width, &coverage);
+    }
+
     fn suspended_channel(&self, channel: usize) -> &[f32] {
         self.suspended.get(channel).map_or(&[], Vec::as_slice)
     }

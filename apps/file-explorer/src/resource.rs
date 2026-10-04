@@ -245,7 +245,9 @@ impl ResourceApp for FileExplorerShell {
     const ID: &'static str = "so.tilo.file-explorer";
     const TITLE: &'static str = "Files";
     const ICON: Option<&'static str> = Some("file-explorer");
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1200, 720)
+    }
 
     fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
         cx.surface(FileExplorerWidget::new())

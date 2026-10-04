@@ -1,0 +1,47 @@
+name: Build / OS dev (aarch64)
+
+# Main's aarch64 dev image and its boards: Build / OS dev's build
+# (build-image.yml) for the other architecture. An ARM build outlasts the
+# time between main pushes, so main builds it one commit at a time, newest
+# first: a run that waited behind the one before skips its build when main
+# has moved past its commit, and the newer commit's run builds instead.
+# tilo-ci:main-<sha7>-aarch64 exists for the commits that built; the moving
+# tags follow the newest (os/dev/move-tag-forward.sh).
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: os-dev-aarch64-main
+  cancel-in-progress: false
+
+jobs:
+  newest:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+    outputs:
+      build: ${{ steps.newest.outputs.build }}
+    steps:
+      - id: newest
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head="$(curl -fsS -H "Authorization: token $TOKEN" \
+            "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/branches/main" | jq -er .commit.id)"
+          if [[ $head == "$GITHUB_SHA" ]]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main has moved on to $head; its run builds aarch64"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  image:
+    needs: newest
+    if: needs.newest.outputs.build == 'true'
+    uses: ./.forgejo/workflows/build-image.yml
+    with:
+      arches: '["aarch64"]'
+    secrets: inherit

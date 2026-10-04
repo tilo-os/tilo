@@ -20,6 +20,7 @@
 //! periodic work is the 50 ms live permission observation and the session
 //! janitor, both on tokio intervals.
 
+pub mod install;
 mod legacy;
 mod live;
 mod sessions;
@@ -50,7 +51,7 @@ use tilo_relay_protocol::live::{LiveKind, SealedLiveFrame};
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
     API_PREFIX, AgentLiveGrantRequest, EventsRequest, HostInfo, MAX_AGENT_ID_BYTES, MAX_POLL_MS,
-    MAX_REQUEST_BYTES, SESSION_HEADER, SessionFinish, live_room,
+    MAX_REQUEST_BYTES, NodeInfo, SESSION_HEADER, SessionFinish, live_room,
 };
 use tilo_user_identity::CertificationRequest;
 
@@ -670,12 +671,19 @@ fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
     hex::decode(value).ok()?.try_into().ok()
 }
 
-fn cors(web: &Web, origin: Option<&header::HeaderValue>, response: &mut Response<Body>) {
+/// Headers a page may send to the browser routes.
+const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session";
+
+fn cors(
+    allowed_origins: &[String],
+    allowed_headers: &str,
+    origin: Option<&header::HeaderValue>,
+    response: &mut Response<Body>,
+) {
     let Some(origin) = origin.and_then(|value| value.to_str().ok()) else {
         return;
     };
-    if !web
-        .allowed_origins
+    if !allowed_origins
         .iter()
         .any(|allowed| allowed == origin || allowed == "*")
     {
@@ -690,10 +698,9 @@ fn cors(web: &Web, origin: Option<&header::HeaderValue>, response: &mut Response
         header::ACCESS_CONTROL_ALLOW_METHODS,
         header::HeaderValue::from_static("POST, OPTIONS"),
     );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        header::HeaderValue::from_static("content-type, x-tilo-session, x-tilo-live-session"),
-    );
+    if let Ok(allowed) = header::HeaderValue::from_str(allowed_headers) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, allowed);
+    }
     headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         header::HeaderValue::from_static("x-tilo-live-session"),
@@ -711,7 +718,12 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .await
             .unwrap_or_else(|response| response)
     };
-    cors(web, origin.as_ref(), &mut response);
+    cors(
+        &web.allowed_origins,
+        ALLOWED_HEADERS,
+        origin.as_ref(),
+        &mut response,
+    );
     response
 }
 
@@ -775,6 +787,12 @@ async fn route(
     };
     match route {
         "/host" => Ok(encoded(&web.host_info)),
+        "/node" => {
+            authed()?;
+            Ok(encoded(&NodeInfo {
+                session: sessions.context().node_session.get().copied(),
+            }))
+        }
         "/certify" => {
             let request: CertificationRequest = decode(&bytes)?;
             Ok(encoded(
@@ -867,12 +885,6 @@ async fn route(
             let request: InputRequest = decode(&bytes)?;
             if !request.valid() {
                 return Err(status(StatusCode::BAD_REQUEST, "input out of bounds"));
-            }
-            if !request.supported() {
-                return Err(status(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "the native peer has no wheel or clipboard input endpoint",
-                ));
             }
             legacy_input(web, &session.peer, request).await
         }

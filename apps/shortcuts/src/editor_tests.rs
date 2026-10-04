@@ -1,6 +1,5 @@
 use serde_json::json;
 use tilo_automation::{Binding, Step};
-use ui::prelude::Json;
 use ui::tilo_actions::{ActionParam, ParamType};
 
 use super::*;
@@ -11,20 +10,26 @@ fn step(value: serde_json::Value) -> Step {
 }
 
 fn draft(steps: Vec<Step>) -> Draft {
-    Draft {
-        name: "Digest".into(),
-        shortcut_id: "digest".into(),
-        program: Json(Program {
-            inputs: vec![
-                ActionParam::required("who", ParamType::Text, "Who"),
-                ActionParam::required("count", ParamType::Integer, "How many"),
-            ],
-            steps,
-            output: None,
-            ..Program::default()
-        }),
-        replaces_saved: false,
-    }
+    let program = Program {
+        inputs: vec![
+            ActionParam::required("who", ParamType::Text, "Who"),
+            ActionParam::required("count", ParamType::Integer, "How many"),
+        ],
+        steps,
+        output: None,
+        ..Program::default()
+    };
+    let mut minted = 0_u32;
+    Draft::new(
+        "Digest".into(),
+        "digest".into(),
+        &program,
+        false,
+        &mut || {
+            minted += 1;
+            ui::prelude::Id::from_raw(format!("item{minted}"))
+        },
+    )
 }
 
 fn list() -> Step {

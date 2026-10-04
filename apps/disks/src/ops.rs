@@ -3,11 +3,9 @@
 //!
 //! Mount / unmount / format / eject / benchmark are privileged, per-machine
 //! effects against real block devices (via udisks2 / polkit, or the CLI
-//! fallback). They change the running system, never the shared Automerge
-//! document, so by the Tilo action-model recipe (`docs/action-model-recipe.md`)
-//! **none of them is an `Action`** — none crosses the CRDT executor. The
-//! resource + action-model finding is recorded in [`crate::actions`], and the
-//! functions here deliberately take no `AutoCommit`: they cannot touch the doc.
+//! fallback). They change the running system, never the document, so they
+//! are effects ([`crate::resource::DisksEffect`]), not actions: the functions
+//! here take no document and cannot touch it.
 //!
 //! Everything is *planned* as plain data first (a [`UdisksCall`] or an ordered
 //! list of [`CommandSpec`] fallbacks) so the construction is unit-testable
@@ -22,9 +20,8 @@
 //! Benchmark performs a genuine sequential-read + random-seek measurement on
 //! the block device.
 //!
-//! None of the executing functions run unless the caller opts in at runtime
-//! (`DISKS_LIVE`), so hermetic builds/tests and `--shots` stay inert — they
-//! only ever build the plans.
+//! Only a live window over this machine runs them; a screenshot or the sample
+//! machine in tests only ever builds the plans.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

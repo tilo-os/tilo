@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::path::Path;
 
+use libvirt_domain::Connection;
+pub use libvirt_domain::DomainState;
 use thiserror::Error;
 
 use crate::{
@@ -8,7 +10,7 @@ use crate::{
     CommandRunner, ConfigError, CpuMode, FirmwareConfig, GraphicsAssignment,
 };
 
-const LIBVIRT_URI: &str = "qemu:///system";
+const LIBVIRT_URI: &str = Connection::System.uri();
 const METADATA_MARKER: &str = "<tilo:windows-appliance xmlns:tilo='https://tilo.sh/vm/1'/>";
 const METADATA_ELEMENT: &str = "<tilo:windows-appliance";
 const INSTALL_MEDIA: &str = "/var/lib/tilo/windows/install-media.iso";
@@ -22,19 +24,6 @@ const VIRTIO_DRIVERS_MEDIA: &str = "/usr/share/virtio-win/virtio-win.iso";
 const EGRESS_MAC: &str = "52:54:00:71:4f:51";
 const EGRESS_NETWORK: &str = "tilo-windows-egress";
 const MAX_EGRESS_SECONDS: u64 = 30 * 60;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DomainState {
-    Absent,
-    ShutOff,
-    Running,
-    Paused,
-    Suspended,
-    Starting,
-    ShuttingDown,
-    Crashed,
-    Other,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EgressPurpose {
@@ -286,21 +275,13 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
         config.validate()?;
         let domains = self.successful(["list", "--all", "--name"])?;
         let names = String::from_utf8(domains.stdout)?;
-        if !names.lines().any(|name| name.trim() == config.domain_name) {
+        if !DomainState::listed(&names, &config.domain_name) {
             return Ok(DomainState::Absent);
         }
         let state = self.successful(["domstate", APPLIANCE_DOMAIN_NAME])?;
-        let state = String::from_utf8(state.stdout)?.trim().to_ascii_lowercase();
-        Ok(match state.as_str() {
-            "running" | "idle" => DomainState::Running,
-            "in shutdown" | "shutting down" => DomainState::ShuttingDown,
-            "starting" => DomainState::Starting,
-            "shut off" => DomainState::ShutOff,
-            "crashed" => DomainState::Crashed,
-            "paused" => DomainState::Paused,
-            "pmsuspended" => DomainState::Suspended,
-            _ => DomainState::Other,
-        })
+        Ok(DomainState::from_domstate(&String::from_utf8(
+            state.stdout,
+        )?))
     }
 
     fn start(&self, config: &ApplianceConfig) -> Result<(), VmBackendError> {
@@ -540,6 +521,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
     };
     // Keep the appliance within Windows client socket limits. Without an
     // explicit topology, libvirt can expose each allocated vCPU as a socket.
+    let vsock = libvirt_domain::vsock_device_xml(Some(config.guest_cid));
     let cpu = format!(
         "<cpu {cpu_attributes}><topology sockets='1' cores='{}' threads='1'/></cpu>",
         config.performance.vcpus,
@@ -571,7 +553,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <interface type='network'><mac address='52:54:00:71:4f:53'/><source network='{network}'/><model type='virtio'/></interface>\
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
 <channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>\
-<vsock model='virtio'><cid auto='no' address='{}'/></vsock>\
+{vsock}\
 <tpm model='{tpm}'><backend type='emulator' version='2.0'/></tpm>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
 <!-- Windows virtio-gpu is a paravirtual 2D fallback; do not infer a Linux virgl 3D path. -->\
@@ -588,7 +570,6 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         config.performance.memory_mib,
         config.performance.vcpus,
         config.performance.io_threads,
-        config.guest_cid,
     ))
 }
 

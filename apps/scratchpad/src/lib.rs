@@ -38,7 +38,9 @@ impl ResourceApp for Scratchpad {
     type Resource = Note;
     const ID: &'static str = "so.tilo.scratchpad";
     const TITLE: &'static str = "Scratchpad";
-    const SHOT_VIEWPORT: (u32, u32) = (800, 600);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (800, 600)
+    }
 
     fn scenarios() -> &'static [&'static str] {
         &["note", "long-note"]

@@ -101,6 +101,28 @@ sudo bootc upgrade && sudo systemctl reboot
 sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo systemctl reboot
 ```
 
+A board dev image carries tilo-vmd, sshd and the toolchain, so the machine is a
+`tilo-vm` target like a dev VM: register it once, then swap, roll back, take
+pictures and move it between images with the same commands (`tilo-vm guide
+devices`). Components never go onto it by hand (no `bootc usr-overlay` and
+copies into `/usr`): nothing could roll that back.
+
+```sh
+tilo-vm vm add yoga --ssh <you>@<address> --key <your key>   # checks SSH, root through sudo, tilo-vmd, toolchain, bootc
+tilo-vm vm use yoga
+tilo-vm slot create --headless && tilo-vm swap shell         # your build in your slot; tilo-vm rollback undoes it
+tilo-vm shot -o target/yoga.png                              # tilo-vm seat claim puts it on the built-in display
+tilo-vm vm upgrade --from sha:<commit>                       # that commit's image for this board, then a reboot
+```
+
+The board job checks the Lenovo image's audio stack (topology, DSP firmware,
+UCM profile: `os/tests/board_audio_contract.sh --root`), but only the laptop
+proves the sound. After booting a build that changes it, `wpctl status` lists a
+speaker sink and a microphone source for Built-in Audio, and
+`journalctl -b -k | grep -i -e q6apm -e wsa884x` shows no errors. The four
+speakers run without DSP speaker protection, as upstream ships them: test them
+at low volume.
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
@@ -462,8 +484,8 @@ Testing needs `adb` and an `x86_64` emulator image or a device.
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture. The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Photos,
+Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
 Client, Git Client and Feeds have been built and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
@@ -680,20 +702,6 @@ drive letters are preserved. Windows imports remain local unless an absolute
 The installer does not provide that workspace service. Books captures accept an
 EPUB positional argument and wait for its import to finish.
 
-Image Editor is installed as **Image Editor** (`image-editor.exe`). It opens
-PNG, JPEG and WebP through the shared Windows file picker or `--open PATH`.
-Adjustments remain editable in the persisted project; Export writes
-`<source-name>-edited.png` beside the source without changing the original.
-The native verification opens a Unicode path, invokes semantic rotate,
-monochrome and export actions, checks the exported dimensions and verifies
-that the project survives a new process. Its offscreen scenarios support
-`TILO_SHOTS_THEME=dark|light|high-contrast`.
-
-```powershell
-cargo test --locked -p image-editor --all-targets
-./tools/windows/install-apps.ps1 -Apps image-editor
-```
-
 Photos uses the native file picker and keeps imported image bytes in the shared
 filesystem blob store. On Windows the default is `%LOCALAPPDATA%/tilo/blobs`,
 with `USERPROFILE/AppData/Local` as the native fallback; `TILO_BLOB_STORE` and
@@ -904,7 +912,7 @@ Its import libraries link directly; no `.lib` conversion is required. Configure
 the current PowerShell process for your installation:
 
 ```powershell
-$gstPrefix = 'C:/Users/xaver/msys64/clangarm64' # Replace with your installation.
+$gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"
@@ -1314,9 +1322,12 @@ dist/rpm/build-rpm.sh
 ```
 
 Builds `shell`, `tilo-launcher` and `tilo-unlock-helper` in release, stages them
-with the session entries and PAM stack, and runs `rpmbuild` (in the build
-container, since an image-based host has no `rpm-build`). Two packages land in
-`dist/rpm/build/RPMS/x86_64/`:
+with the session entries and PAM stack, and runs `rpmbuild`. Compiling always
+goes through the `cargo` on your `PATH`; on an image-based host without
+`rpm-build`, only `rpmbuild` runs in the container named by `.build-container`
+(see "If you build in a container"), found from any worktree of the checkout.
+Without either, the script stops before compiling and says what to set up. Two
+packages land in `dist/rpm/build/RPMS/x86_64/`:
 
 ```console
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
@@ -1362,6 +1373,11 @@ dist/rpm/host-update.sh               # build HEAD and stage it for the next boo
 dist/rpm/host-update.sh --apply-live  # also make it the running /usr; just log out
 dist/rpm/host-update.sh --no-cargo    # repackage binaries already in target/release
 ```
+
+Each step reruns on its own: after a failure, rerun the same command. The app
+collection (`dist/rpm/build/app-release`) is kept while it was built from the
+same commit and uncommitted changes, and rebuilt otherwise, `--no-cargo`
+included.
 
 `--apply-live` refuses while a Tilo session is running on the machine. Builds go
 through the `cargo` on your `PATH`, so any cargo drop-in on it is used.

@@ -456,6 +456,24 @@ impl ViewportState {
         self.clamp_scroll();
     }
 
+    /// Zoom so `area` (content units) fills the viewport, honouring
+    /// padding, and centre it as far as the scroll range allows: the "zoom to
+    /// selection" path. A degenerate area keeps the zoom and only centres.
+    pub fn zoom_to_rect(&mut self, area: Rect) {
+        let avail_w = self.rect.width() - 2.0 * self.pad;
+        let avail_h = self.rect.height() - 2.0 * self.pad;
+        if area.width() > 0.0 && area.height() > 0.0 && avail_w > 0.0 && avail_h > 0.0 {
+            self.zoom = (avail_w / area.width())
+                .min(avail_h / area.height())
+                .clamp(self.min_zoom, self.max_zoom);
+        }
+        let centre = area.center();
+        let view = self.rect.center();
+        self.scroll_x = self.rect.x0 + self.pad + centre.x * self.zoom - view.x;
+        self.scroll_y = self.rect.y0 + self.pad + centre.y * self.zoom - view.y;
+        self.clamp_scroll();
+    }
+
     // ---- pan --------------------------------------------------------
 
     /// Pan by a screen-space delta (positive `dx`/`dy` reveal content to the
@@ -1623,5 +1641,20 @@ mod tests {
         press_track_pages_toward_click();
         press_in_content_area_is_not_a_bar();
         horizontal_thumb_drag_scrolls_x();
+    }
+
+    /// Zooming to an area fills the viewport with it and centres it.
+    #[test]
+    fn zoom_to_rect_fills_and_centres_the_area() {
+        let mut v = kernel();
+        let area = Rect::new(400.0, 600.0, 600.0, 750.0);
+        v.zoom_to_rect(area);
+        let fit = ((800.0 - 2.0 * v.pad) / 200.0).min((600.0 - 2.0 * v.pad) / 150.0);
+        assert!((v.zoom() - fit).abs() < 1e-9, "{}", v.zoom());
+        let centre = v.content_point_to_screen(area.center());
+        assert!(
+            centre.distance(Point::new(400.0, 300.0)) < 1e-6,
+            "{centre:?}"
+        );
     }
 }

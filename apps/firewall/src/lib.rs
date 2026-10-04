@@ -8,6 +8,10 @@
 //! rules and services without clobbering each other. The live app reads/applies via
 //! `firewall-cmd` (gated, see [`backend`]); `--shots` bundles a realistic
 //! sample ruleset so the headless screenshot is fully populated offline.
+//!
+//! Each device running the app applies the stored configuration to its own
+//! firewalld after every change (see [`resource`]); a screenshot shows a
+//! bundled sample ruleset and never touches the host.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -43,5 +47,9 @@ pub mod sample;
 mod view;
 
 pub use app::FirewallApp;
+pub use resource::{Firewall, FirewallShell};
 
-pub use resource::{Firewall, FirewallShell, launch_spec};
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<FirewallShell>()
+}

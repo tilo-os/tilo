@@ -466,25 +466,9 @@ pub(crate) fn unconfined_launch_is_live(package_id: &str) -> bool {
     !live_unconfined_launch_pids(package_id).is_empty()
 }
 
-/// Same unit name `tilo-launcher` uses for `app-tilo-<id>-<pid>.scope`.
-#[cfg(any(test, target_os = "linux"))]
-fn host_scope_unit(desktop_id: &str, pid: u32) -> Option<String> {
-    use std::fmt::Write as _;
-    let mut escaped = String::with_capacity(desktop_id.len());
-    for byte in desktop_id.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'.') {
-            escaped.push(char::from(byte));
-        } else {
-            let _ = write!(escaped, "\\x{byte:02x}");
-        }
-    }
-    let unit = format!("app-tilo-{escaped}-{pid}.scope");
-    (!escaped.is_empty() && unit.len() <= 255).then_some(unit)
-}
-
 #[cfg(all(target_os = "linux", not(test)))]
 fn request_stop_host_scope(desktop_id: &str, pid: u32) {
-    let Some(unit) = host_scope_unit(desktop_id, pid) else {
+    let Some(unit) = launcher::scope::unit_name(desktop_id, pid) else {
         return;
     };
     let _ = Command::new("/usr/bin/busctl")
@@ -5488,18 +5472,6 @@ mod tests {
         // A killed child we have not `wait`ed is a zombie: it has already
         // exited. A07's cmdline scan skips empty zombie cmdlines.
         !rest.starts_with('Z')
-    }
-
-    #[test]
-    fn host_scope_unit_matches_the_launcher_scope_name() {
-        assert_eq!(
-            host_scope_unit("wine-winefile", 42).as_deref(),
-            Some("app-tilo-wine\\x2dwinefile-42.scope")
-        );
-        assert_eq!(
-            host_scope_unit("wine-winefile.desktop", 9).as_deref(),
-            Some("app-tilo-wine\\x2dwinefile.desktop-9.scope")
-        );
     }
 
     #[test]

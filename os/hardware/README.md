@@ -33,6 +33,13 @@ system-firmware list. `firmware` maps local input basenames
 to unique paths under `/usr/lib/firmware/`; an empty mapping needs no local
 firmware manifest. Paths cannot be absolute, traverse directories, or contain
 shell metacharacters. Unknown fields and unsupported architectures fail.
+The optional `always_on` (version 2, default `false`) marks a board that is
+an always-on host rather than a personal computer; see the Orange Pi below.
+The optional `kernel_args` (version 2) lists kernel arguments the board
+needs, one unquoted token each. The preparer writes them to
+`/usr/lib/bootc/kargs.d/10-hardware-profile.toml`, after the image's own
+drop-ins, so they are sealed into the UKI command line and a console named
+there is the last `console=`, which the kernel makes `/dev/console`.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -41,12 +48,22 @@ path and hash. Adding a board does not add a new branch to the UKI builder.
 
 The first registered profile, `lenovo-83ed`, describes the Lenovo Yoga Slim 7x.
 Its kernel must supply `dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb`.
-The retained 7.2.5 RPM's MSM module contains the Adreno 740 firmware selection
-`a740_sqe.fw` (the inspected compressed module SHA-256 is
-`4d500d42033b9fa3df293dd3f8b71a50067bbb5ad9e9c2ffda16497a45f03267`).
-The profile therefore requires the distro-provided `qcom/a740_sqe.fw` and
-includes it in the initramfs so GPU initialization does not depend on the
-encrypted root already being mounted.
+Older MSM kernels request `a740_sqe.fw`; the installed 7.2.7 kernel requests
+`gen70500_sqe.fw`, `gen70500_gmu.bin`, and the X1E80100-specific
+`gen70500_zap.mbn`. The profile includes both generations' distro firmware
+in the initramfs. A physical first boot showed that checking only the older
+filename allowed the newer GPU's firmware request to fail before the encrypted
+root was available. Firmware presence must follow the actual kernel requests.
+
+The 83ED firmware publishes a TPM event log for its Qualcomm firmware TPM,
+which Linux has no driver for. `systemd-tpm2-generator` reads that as "a TPM
+whose driver has not loaded yet" and makes `sysinit.target` wait for
+`/dev/tpm0` and `/dev/tpmrm0` until the 45 second device timeout, once in the
+initrd and again after switch-root. On a physical first boot that held the
+splash for a minute and a half after the disk was unlocked. The profile's
+`systemd.tpm2_wait=0` turns that wait off for this board only. Boards whose
+TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
+everywhere else.
 
 ## Local firmware input
 
@@ -174,10 +191,43 @@ the chosen kernel and image packages.
 
 `orangepi-3b-v2-1` is the Xunlong Orange Pi 3B hardware revision v2.1
 (RK3566). The profile embeds `rockchip/rk3566-orangepi-3b-v2.1.dtb` and names
-the SD-card drivers the UKI needs before the root is mounted. It has no
-private firmware blob: Ethernet and the SD controller come from the device
-tree, and Wi-Fi firmware is the distro `linux-firmware` package when that
-package carries the AP6256 NVRAM for this board.
+the SD-card drivers the UKI needs before the root is mounted. The Wi-Fi
+driver (`mmc_core`, `cfg80211`, `brcmutil`, `brcmfmac`) is there too: the
+SDIO radio is enumerated by that same controller before the root is mounted,
+and nothing binds it later. So are the HDMI modules (`rockchipdrm`, `dw-hdmi`,
+`phy-rockchip-inno-hdmi`, `display-connector`); mainline U-Boot for this board
+has no video driver, so the monitor stays dark until Linux drives it.
+
+Fedora's `linux-firmware` does not ship the AP6256 files `brcmfmac` loads.
+`os/dev/fetch-orangepi-wifi-firmware.sh` stages Armbian's published
+`brcmfmac43456-sdio.{bin,clm_blob,txt}`, pinned by SHA-256 in
+`os/external-assets/github-assets.tsv`, into
+`os/hardware/firmware/orangepi-3b-v2-1/` with their manifest; the aarch64 dev
+lane runs it before building the board image. The SDIO node has no
+`brcm,board-type`, so the driver first asks for names carrying the machine's
+compatible string, `brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.*`; the
+profile installs both sets. The NVRAM text names Broadcom's sample MAC
+`00:90:4c:c5:12:38`; the image installs it without that line, so boards do
+not share one address. NetworkManager keeps the permanent MAC for `brcmfmac`
+(`os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf`): the driver drops the
+link when the address is changed. The onboard Ethernet PHY drops the cable
+after idle while Energy Efficient Ethernet is on, so a NetworkManager
+dispatcher (`os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee`)
+turns EEE off whenever `end0` comes up.
+
+The profile is `"always_on": true`. `os/dev/install-board-layer.sh` gives such
+a board image a session instead of a greeter:
+`tilo-board-headless-session@<account>.service`, enabled by the disk step for
+the account it creates, runs the person's Tilo session headless, and on the
+display while a sink is connected (`tilo-seat-session`). greetd and sleep are
+masked, chrony accepts the first NTS certificate before the clock can be
+checked against it (the board has no battery-backed clock), and
+`tilo-boot-health` judges the boot by that session.
+
+The board's debug UART is `ttyS2` at 1500000 baud (the device tree's
+`stdout-path`). The image's generic `console=` arguments override that
+path, so the profile names it in `kernel_args` as `console=ttyS2,1500000n8`,
+with `earlycon` so output starts before the UART driver binds.
 
 The disk puts a 15 MiB unformatted hole at the 1 MiB alignment so the ESP starts at LBA 32768. `idbloader.img` sits in the unpartitioned sectors before that hole, and `u-boot.itb` sits inside the hole. `os/dev/build-orangepi-uboot.sh`
 builds mainline U-Boot for `orangepi-3b-rk3566` and

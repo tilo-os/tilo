@@ -37,7 +37,6 @@ snippets-empty-place = Hier gibt es keine Snippets
 snippets-none-selected = Kein Snippet ausgewählt
 snippets-language = Sprache
 snippets-language-plain-text = Nur Text
-snippets-facet-tag = Tag
 snippets-language-of = Sprache: { $language }
 snippets-set-language = Sprache auf { $language } setzen
 snippets-copy = Kopieren
@@ -63,14 +62,3 @@ snippets-expand-title = Variablen ausfüllen
 snippets-expand-value = Wert
 snippets-expand-preview = Vorschau
 snippets-cancel = Abbrechen
-
-## History
-
-snippets-fact-language = Sprache
-snippets-fact-folder = Ordner
-snippets-fact-tags = Tags
-snippets-fact-favorite = Favorit
-snippets-fact-copied = Kopiert
-snippets-yes = Ja
-snippets-no = Nein
-snippets-history-empty = Keine Snippets in dieser Version

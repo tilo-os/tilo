@@ -21,6 +21,7 @@ fn stroke(colour: &str) -> NewStroke {
         opacity: None,
         wet: None,
         params: None,
+        ..NewStroke::default()
     }
 }
 
@@ -171,7 +172,7 @@ fn render_shows_the_whole_app_through_the_host_door() {
             .is_some_and(|revision| !revision.is_empty())
     );
     // The app's own content: the window less the framework's history bar.
-    let (width, height) = <App as ui::prelude::ResourceApp>::SHOT_VIEWPORT;
+    let (width, height) = <App as ui::prelude::ResourceApp>::shot_viewport(None);
     assert_eq!(value["width"].as_u64(), Some(width.into()));
     assert!(
         value["height"]
@@ -209,13 +210,11 @@ fn dragging_a_selection_handle_resizes_about_the_opposite_corner() {
     )))
     .expect("draw");
     let targets = app.harness().targets();
-    let tool = targets
-        .get("Tool")
-        .copied()
-        .expect("the tool rail is addressable");
-    // The rail's first of four segments is the select tool.
+    // V picks the select tool on the focused canvas.
     app.harness()
-        .click_at(tool.x0 + tool.width() / 8.0, tool.center().y);
+        .perform_named("canvas", &ui::a11y::Action::Focus)
+        .expect("the canvas takes focus");
+    app.harness().key("v");
     let canvas = targets
         .get("canvas")
         .copied()
@@ -261,4 +260,41 @@ fn the_native_app_contract_is_certified() {
         .filter(|issue| issue.control != "nav-shell-history")
         .count();
     assert!(audit.accessibility.is_clean() && own == 0, "{audit:#?}");
+}
+
+/// The history panel lists each step; choosing an earlier one shows it, and
+/// restoring it brings the artwork back to it as a new step.
+#[test]
+fn an_earlier_version_chosen_in_the_history_is_restored() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("#204080")])))
+        .expect("paint");
+    let second = NewStroke {
+        id: Some("second".into()),
+        ..stroke("#802040")
+    };
+    app.invoke(ArtworkResource::PAINT.with((None, vec![second])))
+        .expect("paint");
+    assert_eq!(app.state().marks.len(), 2);
+
+    let dock = app.harness().targets()["canvas-dock"];
+    app.harness()
+        .click_at(dock.x0 + dock.width() * 0.75, dock.center().y);
+    let mut versions: Vec<(String, ui::vello::kurbo::Rect)> = app
+        .harness()
+        .targets()
+        .into_iter()
+        .filter(|(name, _)| name.starts_with("canvas-version-"))
+        .collect();
+    versions.sort_by(|a, b| a.1.y0.total_cmp(&b.1.y0));
+    assert!(versions.len() >= 2, "{versions:?}");
+    // Newest first: the second row is the first stroke.
+    let row = versions[1].1;
+    app.harness().click_at(row.center().x, row.center().y);
+    let restore = app.harness().targets()["restore"];
+    app.harness()
+        .click_at(restore.center().x, restore.center().y);
+    let art = app.state();
+    assert_eq!(art.marks.len(), 1, "back to the first stroke");
+    assert_eq!(art.marks[0].id, "first");
 }

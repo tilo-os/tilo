@@ -302,6 +302,7 @@ enum Command {
         InputCompletion,
     ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
+    Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     Refresh,
@@ -309,6 +310,24 @@ enum Command {
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// What sealing a live frame came to.
+enum Sealing {
+    Sealed(Vec<u8>),
+    /// This device holds no keys for the record yet.
+    NoKeys(tilo_relay_protocol::live::LiveRecord),
+    /// Names no record, or does not seal: never sent.
+    Dropped,
+}
+
+/// What opening a sealed live frame came to.
+enum Opening {
+    Opened(Vec<u8>),
+    /// This device holds no keys for the channel yet.
+    NoKeys([u8; 16]),
+    /// Malformed, or does not open.
+    Dropped,
+}
 /// Called once with the outcome of a [`PeerHandle::barrier_then`].
 pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with a live grant, see [`PeerHandle::live_grant_then`].
@@ -321,6 +340,9 @@ pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
 /// Called once with whether the host took a legacy window's input, see
 /// [`PeerHandle::legacy_input_then`].
 pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
+/// Called once with the session device the node runs beside the host (or
+/// `None`), see [`PeerHandle::node_session_then`].
+pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
@@ -432,6 +454,7 @@ impl PeerHandle {
             config.cert.user_public_key,
             store.channel_vault().unwrap_or_else(rand::random),
         );
+        channels.govern_by_host(&config.host_cert);
         let saved = store
             .load_channels()
             .and_then(|bytes| SavedPeerChannels::decode(&bytes))
@@ -455,6 +478,7 @@ impl PeerHandle {
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
+            held_live: crate::held_live::HeldLive::new(),
             held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
             positions: BTreeMap::new(),
@@ -758,6 +782,17 @@ impl PeerHandle {
         self.send(Command::Rooms(request, done))
     }
 
+    /// Ask the host which device runs the person's apps beside it (a
+    /// node's session), over the current HTTPS session; `done` receives it,
+    /// or `None` from a host that runs none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn node_session_then(&self, done: NodeCompletion) -> Result<(), String> {
+        self.send(Command::Node(done))
+    }
+
     /// Drop the connection and reconnect now, also after a failure.
     ///
     /// # Errors
@@ -954,6 +989,8 @@ struct Task {
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
     held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
+    /// Live frames waiting for their record's keys.
+    held_live: crate::held_live::HeldLive,
     /// Frames published on an encrypted route before this device held its
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
@@ -1512,7 +1549,8 @@ impl Task {
                 true
             }
             Command::InstallCipher(route, cipher) => {
-                self.ciphers.insert(route, cipher);
+                self.ciphers.insert(route.clone(), cipher);
+                self.release_live(&route, client);
                 true
             }
             Command::OpenRoute(route) => {
@@ -1552,6 +1590,10 @@ impl Task {
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
             Command::Rooms(request, done) => {
                 Self::request_rooms(request, done, client);
+                true
+            }
+            Command::Node(done) => {
+                Self::request_node(done, client);
                 true
             }
             // Handled by the caller's loop.
@@ -1702,67 +1744,211 @@ impl Task {
         }
     }
 
-    /// Send, seal or open one live frame. Live state is lossy: nothing here
-    /// is queued, and nothing leaves unsealed.
+    fn request_node(done: NodeCompletion, client: Option<&Link>) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    // A host that answers no `/node` runs nothing beside it.
+                    let info = crate::carrier::node(http.as_ref(), &session).await;
+                    done(Ok(info.ok().and_then(|info| info.session)));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Ok(None)),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    /// Send, seal or open one live frame. Nothing leaves unsealed: a frame
+    /// whose record's keys are not here yet waits for them (bounded), and a
+    /// frame that names no record is dropped. Nothing is sent while
+    /// disconnected.
     fn apply_live(&mut self, command: Command, client: Option<&Link>) {
-        match command {
-            Command::Live(workspace_id, frame) => {
-                if let Some(client) = client
-                    && let Some(frame) = self.seal_live(workspace_id, &frame)
-                {
-                    let _ = client.send(Envelope::Live {
-                        workspace_id,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        frame,
-                    });
+        use crate::held_live::Waiting;
+        let waiting = match command {
+            Command::Live(workspace_id, frame) if client.is_some() => Waiting::Send {
+                workspace_id,
+                frame,
+            },
+            Command::SealLive(workspace_id, frame, done) => Waiting::Seal {
+                workspace_id,
+                frame,
+                done,
+            },
+            Command::OpenLive(workspace_id, frame, done) => Waiting::Open {
+                workspace_id,
+                frame,
+                done,
+            },
+            _ => return,
+        };
+        self.live_frame(waiting, client, true);
+    }
+
+    /// Seal or open one live frame and deliver it; with `hold`, keep a
+    /// frame whose keys are missing until they arrive.
+    fn live_frame(
+        &mut self,
+        waiting: crate::held_live::Waiting,
+        client: Option<&Link>,
+        hold: bool,
+    ) {
+        use crate::held_live::Waiting;
+        match waiting {
+            Waiting::Send {
+                workspace_id,
+                frame,
+            } => match self.seal_live(workspace_id, &frame) {
+                Sealing::Sealed(sealed) => {
+                    if let Some(client) = client {
+                        let _ = client.send(Envelope::Live {
+                            workspace_id,
+                            from_device_public_key: self.config.cert.device_public_key,
+                            frame: sealed,
+                        });
+                    }
                 }
-            }
-            Command::SealLive(workspace_id, frame, done) => {
-                done(self.seal_live(workspace_id, &frame));
-            }
-            Command::OpenLive(workspace_id, frame, done) => {
-                done(self.open_live(workspace_id, &frame));
-            }
-            _ => {}
+                Sealing::NoKeys(record) if hold => self.held_live.hold_outbound(
+                    workspace_id,
+                    record,
+                    Waiting::Send {
+                        workspace_id,
+                        frame,
+                    },
+                ),
+                Sealing::NoKeys(_) | Sealing::Dropped => {}
+            },
+            Waiting::Seal {
+                workspace_id,
+                frame,
+                done,
+            } => match self.seal_live(workspace_id, &frame) {
+                Sealing::Sealed(sealed) => done(Some(sealed)),
+                Sealing::NoKeys(record) if hold => self.held_live.hold_outbound(
+                    workspace_id,
+                    record,
+                    Waiting::Seal {
+                        workspace_id,
+                        frame,
+                        done,
+                    },
+                ),
+                Sealing::NoKeys(_) | Sealing::Dropped => done(None),
+            },
+            Waiting::Receive {
+                workspace_id,
+                from,
+                frame,
+            } => match self.open_live(workspace_id, &frame) {
+                Opening::Opened(opened) => self.emit(&PeerEvent::Live {
+                    workspace_id,
+                    from,
+                    frame: opened,
+                }),
+                Opening::NoKeys(channel) if hold => self.held_live.hold_inbound(
+                    channel,
+                    Waiting::Receive {
+                        workspace_id,
+                        from,
+                        frame,
+                    },
+                ),
+                Opening::NoKeys(_) | Opening::Dropped => {}
+            },
+            Waiting::Open {
+                workspace_id,
+                frame,
+                done,
+            } => match self.open_live(workspace_id, &frame) {
+                Opening::Opened(opened) => done(Some(opened)),
+                Opening::NoKeys(channel) if hold => self.held_live.hold_inbound(
+                    channel,
+                    Waiting::Open {
+                        workspace_id,
+                        frame,
+                        done,
+                    },
+                ),
+                Opening::NoKeys(_) | Opening::Dropped => done(None),
+            },
+        }
+    }
+
+    /// `route`'s keys arrived: seal, send and open the live frames that
+    /// waited for them.
+    fn release_live(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+        let Ok(workspace_id) = route.workspace_id() else {
+            return;
+        };
+        let record = tilo_relay_protocol::live::LiveRecord {
+            app: route.app_id.clone(),
+            record: route.record.clone(),
+        };
+        let channel = crate::channels::Channels::channel(route).0.into_bytes();
+        let released: Vec<_> = self
+            .held_live
+            .release(workspace_id, record, channel)
+            .collect();
+        for waiting in released {
+            self.live_frame(waiting, client, false);
         }
     }
 
     /// Seal canonical live `frame` of `workspace_id` with the content cipher
-    /// of the record it names, or `None`: a frame naming no record, or one
-    /// whose record this device holds no keys for, is never sent.
-    fn seal_live(&mut self, workspace_id: u64, frame: &[u8]) -> Option<Vec<u8>> {
-        let frame = tilo_relay_protocol::live::LiveFrame::decode(frame).ok()?;
-        let (_, _, record) = frame.seal_tags()?;
+    /// of the record it names. A frame naming no record is never sent.
+    fn seal_live(&mut self, workspace_id: u64, frame: &[u8]) -> Sealing {
+        let Some(frame) = tilo_relay_protocol::live::LiveFrame::decode(frame).ok() else {
+            return Sealing::Dropped;
+        };
+        let Some((_, _, record)) = frame.seal_tags() else {
+            return Sealing::Dropped;
+        };
         let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
             let names = tilo_relay_protocol::live::LiveRecord {
                 app: route.app_id.clone(),
                 record: route.record.clone(),
             };
             (names == *record && route.workspace_id().ok() == Some(workspace_id)).then_some(cipher)
-        })?;
+        });
+        let Some(cipher) = cipher else {
+            return Sealing::NoKeys(record.clone());
+        };
         tilo_relay_protocol::live::SealedLiveFrame::seal(
             &frame,
             |artifact, retention, cleartext| cipher.seal(artifact, retention, cleartext),
         )
-        .ok()
+        .map_or(Sealing::Dropped, Sealing::Sealed)
     }
 
     /// Open sealed live `frame` of `workspace_id` with the content cipher of
-    /// its channel, returning the canonical frame, or `None` when it does not
-    /// open with keys this device holds.
-    fn open_live(&mut self, workspace_id: u64, frame: &[u8]) -> Option<Vec<u8>> {
-        let sealed = tilo_relay_protocol::live::SealedLiveFrame::decode(frame).ok()?;
+    /// its channel into the canonical frame.
+    fn open_live(&mut self, workspace_id: u64, frame: &[u8]) -> Opening {
+        let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
+            return Opening::Dropped;
+        };
         let channel = sealed.channel_id();
-        let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+        let bound = self.ciphers.iter_mut().find_map(|(route, cipher)| {
             (crate::channels::Channels::channel(route) == channel
                 && route.workspace_id().ok() == Some(workspace_id))
-            .then_some(cipher)
-        })?;
+            .then_some((route, cipher))
+        });
+        let Some((route, cipher)) = bound else {
+            return Opening::NoKeys(sealed.channel);
+        };
         sealed
-            .open(|artifact, metadata, payload| cipher.open(artifact, metadata, payload))
-            .ok()?
-            .encode()
+            .open_in_record(
+                &route.cluster_id,
+                &tilo_relay_protocol::live::LiveRecord {
+                    app: route.app_id.clone(),
+                    record: route.record.clone(),
+                },
+                |artifact, metadata, payload| cipher.open(artifact, metadata, payload),
+            )
             .ok()
+            .and_then(|frame| frame.encode().ok())
+            .map_or(Opening::Dropped, Opening::Opened)
     }
 
     async fn publish(
@@ -1908,15 +2094,15 @@ impl Task {
                 workspace_id,
                 from_device_public_key,
                 frame,
-            } => {
-                if let Some(frame) = self.open_live(workspace_id, &frame) {
-                    self.emit(&PeerEvent::Live {
-                        workspace_id,
-                        from: from_device_public_key,
-                        frame,
-                    });
-                }
-            }
+            } => self.live_frame(
+                crate::held_live::Waiting::Receive {
+                    workspace_id,
+                    from: from_device_public_key,
+                    frame,
+                },
+                None,
+                true,
+            ),
             Envelope::RemoteAction {
                 workspace_id,
                 from_device_public_key,
@@ -1984,7 +2170,12 @@ impl Task {
                 }
                 let changes = self.channels.open(&route, now);
                 self.absorb(changes);
-                if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
+                let awaiting_keys = envelope.encryption.is_some_and(|metadata| {
+                    self.ciphers
+                        .get(&route)
+                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
+                });
+                if awaiting_keys {
                     let held = self.held_inbound.entry(route.clone()).or_default();
                     if held.len() >= MAX_HELD_DOCUMENTS {
                         held.pop_front();
@@ -2106,6 +2297,7 @@ impl Task {
             for (route, keys) in changes.keys {
                 self.ciphers
                     .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
+                self.release_live(&route, client);
                 for (body, author) in self.held_inbound.remove(&route).unwrap_or_default() {
                     self.open_document(&body, author);
                 }

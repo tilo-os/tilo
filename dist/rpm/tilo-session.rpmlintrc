@@ -5,3 +5,9 @@
 # compatibility symbol; no Tilo package script or executable calls mktemp.
 addFilter(r"tilo-session-apps.*invalid-soname /usr/lib/tilo-runtime/2026\.07/lib/libruntime_dylib\.so libruntime_dylib\.so")
 addFilter(r"tilo-session-apps.*call-to-mktemp /usr/lib/tilo-runtime/2026\.07/lib/lib64/libc\.so\.6")
+
+# The env-runtime environment image is a signed, read-only userland that
+# environments stack under their own /usr and /etc. Its files keep exactly the
+# bytes, links and execute bits its signature records, so the distribution
+# packaging checks of the RPMs it was built from do not apply to it again.
+addFilter(r"tilo-session-apps.* /usr/lib/tilo-apps/pkgs/[0-9a-f]{64}/(usr|etc)/")

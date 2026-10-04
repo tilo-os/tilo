@@ -4,10 +4,11 @@
 //! The window is one [`NavShell`]. The content header holds the tabs, the
 //! sampling cadence, Refresh and History. The content is the active tab
 //! ([`crate::view::ProcessesPane`] or [`crate::view::ResourcesPane`]); the
-//! selected process is the inspector. Shared view preferences (tab, sort,
-//! tree mode, filter, selection) live on [`crate::resource::Monitor`] via
-//! [`tilo_resource::publish`]; the live process snapshot and
-//! device-observation preferences ([`crate::prefs::Prefs`]) stay host-local.
+//! selected process is the inspector. The shared table layout (sort, tree
+//! mode) lives on [`crate::resource::Monitor`]; the tab, filter and
+//! selection are this window's own; the live process snapshot never leaves
+//! this machine, and the person's preferences
+//! ([`crate::prefs::MonitorPreferences`]) are a personal settings section.
 
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
@@ -16,22 +17,19 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::framework::{Dispatcher, LiveRow, Setting};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionAddress, ActionBinding, ActionContract, ActionSpec, ConfirmationPolicy,
-    ControlInvocation, OperationKind, PermissionRequirement, Resource, RetryPolicy, RiskLevel,
-};
+use ui::tilo_actions::{ActionAddress, Resource};
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -42,7 +40,8 @@ use ui::widget::{
 };
 
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
-use crate::prefs::Prefs;
+use crate::prefs::{MonitorPreferences, Prefs};
+use crate::resource::{Monitor, MonitorAction, MonitorEffect, MonitorState};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use crate::view::{
@@ -50,59 +49,6 @@ use crate::view::{
     ResourcesPane, Shared,
 };
 use ui::charts::RollingSeries;
-
-/// Canonical wire operation for every system effect Monitor exposes through
-/// its resource tree. Keeping the pid and signal shape typed avoids a palette
-/// or agent inventing positional string arguments that disagree with the
-/// visible Stop/Kill affordances.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum MonitorOperation {
-    /// Select one exact process lifetime in the Monitor view. This is a safe
-    /// view operation used by global search; it never sends an OS signal.
-    Inspect {
-        pid: u32,
-        started_at: u64,
-    },
-    Refresh,
-    /// Copy a process's PID through the platform clipboard bridge. Although
-    /// safe, this is still an OS-facing effect and must use the same stable
-    /// process generation check as signal actions.
-    CopyPid {
-        pid: u32,
-        started_at: u64,
-    },
-    Signal {
-        pid: u32,
-        /// Kernel start-time tick captured with the resource. It binds the
-        /// operation to one PID lifetime, preventing delayed actions from
-        /// targeting a process that reused the same PID.
-        started_at: u64,
-        signal: MonitorSignal,
-    },
-}
-
-/// The two process signals Monitor deliberately supports. This is distinct
-/// from [`StopKind`], which is the sampler's platform-facing representation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum MonitorSignal {
-    Stop,
-    Kill,
-}
-
-impl MonitorSignal {
-    const fn stop_kind(self) -> StopKind {
-        match self {
-            Self::Stop => StopKind::Term,
-            Self::Kill => StopKind::Kill,
-        }
-    }
-}
-
-pub(crate) const MONITOR_OPERATION_TYPE: &str = "monitor.operation";
-
-/// The resource id of the process catalogue's root.
-const PROCESSES_RESOURCE_ID: &str = "processes";
 
 /// A process is only the same action resource for the lifetime identified by
 /// its kernel start-time tick.  In particular, do not use a bare PID here:
@@ -115,7 +61,7 @@ fn process_resource_id(pid: u32, started_at: u64) -> String {
 /// Decode the canonical, wire-safe process resource id. Keep parsing
 /// deliberately strict so a malformed target can never silently fall back to
 /// a PID-only action.
-fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
+pub(crate) fn parse_process_resource_id(id: &str) -> Option<(u32, u64)> {
     let (pid, started_at) = id.strip_prefix("process:")?.split_once(":started:")?;
     Some((pid.parse().ok()?, started_at.parse().ok()?))
 }
@@ -133,20 +79,6 @@ impl Tab {
         match self {
             Self::Processes => "Processes",
             Self::Resources => "Resources",
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Processes => "processes",
-            Self::Resources => "resources",
-        }
-    }
-
-    pub(crate) fn parse(s: &str) -> Self {
-        match s {
-            "resources" => Self::Resources,
-            _ => Self::Processes,
         }
     }
 }
@@ -227,105 +159,30 @@ fn process_resource_label(process: &ProcessInfo) -> String {
     format!("{} ({})", label, process.pid)
 }
 
-/// Refresh is a palette Effect with no document delta. It rides
-/// [`tilo_resource::publish`] through [`crate::resource::Monitor::local_operations`].
-pub(crate) fn refresh_effect() -> Option<ActionSpec> {
-    ActionSpec::operation(
-        "refresh",
-        "Refresh processes",
-        OperationKind::Effect,
-        MONITOR_OPERATION_TYPE,
-        &MonitorOperation::Refresh,
-    )
-    .ok()
-    .map(|refresh| {
-        refresh.with_contract(ActionContract {
-            permission: PermissionRequirement::Read,
-            retry: RetryPolicy::Idempotent,
-            ..ActionContract::default()
-        })
-    })
-}
-
-/// The process catalogue's door with the Refresh effect the header binds to.
-fn processes_door() -> Resource {
-    refresh_effect().into_iter().fold(
-        Resource::new(PROCESSES_RESOURCE_ID, "monitor.processes", "Processes"),
-        Resource::with_action,
-    )
-}
-
-/// One exact, PID-generation-bound process resource. This is shared by the
+/// One exact, PID-generation-bound process row. This is shared by the
 /// bounded contextual catalogue and lazy direct resolution, keeping every
 /// visible, searched, and agent-invoked action contract identical.
-fn monitor_process_resource(process: &ProcessInfo) -> Resource {
-    let mut resource = Resource::new(
-        process_resource_id(process.pid, process.started_at),
+pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
+    let id = process_resource_id(process.pid, process.started_at);
+    let row = LiveRow::new(
+        id.clone(),
         "monitor.process",
         process_resource_label(process),
     );
-    if let Ok(inspect) = ActionSpec::operation(
-        "inspect",
-        "Show process details",
-        OperationKind::View,
-        MONITOR_OPERATION_TYPE,
-        &MonitorOperation::Inspect {
-            pid: process.pid,
-            started_at: process.started_at,
+    [
+        MonitorEffect::Inspect {
+            process: id.clone(),
         },
-    ) {
-        resource
-            .actions
-            .push(inspect.with_contract(ActionContract::view()));
-    }
-    if let Ok(copy) = ActionSpec::operation(
-        "copy-pid",
-        "Copy PID",
-        OperationKind::Effect,
-        MONITOR_OPERATION_TYPE,
-        &MonitorOperation::CopyPid {
-            pid: process.pid,
-            started_at: process.started_at,
+        MonitorEffect::CopyPid {
+            process: id.clone(),
         },
-    ) {
-        resource.actions.push(copy.with_contract(ActionContract {
-            permission: PermissionRequirement::Read,
-            retry: RetryPolicy::Idempotent,
-            ..ActionContract::default()
-        }));
-    }
-    for (verb, label, signal) in [
-        ("stop", "Stop process", MonitorSignal::Stop),
-        ("kill", "Kill process", MonitorSignal::Kill),
-    ] {
-        if let Ok(spec) = ActionSpec::operation(
-            verb,
-            label,
-            OperationKind::Effect,
-            MONITOR_OPERATION_TYPE,
-            &MonitorOperation::Signal {
-                pid: process.pid,
-                started_at: process.started_at,
-                signal,
-            },
-        ) {
-            resource.actions.push(spec.with_contract(ActionContract {
-                permission: PermissionRequirement::Admin,
-                risk: if signal == MonitorSignal::Kill {
-                    RiskLevel::Destructive
-                } else {
-                    RiskLevel::Privileged
-                },
-                // Signalling another process is consequential either way; the
-                // protocol (and the broker) refuse a privileged action that
-                // skips confirmation.
-                confirmation: ConfirmationPolicy::Confirm,
-                retry: RetryPolicy::AtMostOnce,
-                ..ActionContract::default()
-            }));
-        }
-    }
-    resource
+        MonitorEffect::Stop {
+            process: id.clone(),
+        },
+        MonitorEffect::Kill { process: id },
+    ]
+    .iter()
+    .fold(row, LiveRow::effect)
 }
 
 /// Retained, bounded-search index over the current live process snapshot.
@@ -403,7 +260,7 @@ impl CatalogSearchProvider for MonitorProcessSearchProvider {
                     .read()
                     .ok()?
                     .get(&address.resource)
-                    .map(monitor_process_resource)
+                    .map(|process| process_row(process).into_resource())
             })
             .flatten()
     }
@@ -613,8 +470,11 @@ pub struct MonitorApp {
     /// PID-generation ids as every resource action and update only per sample.
     process_search: MonitorProcessSearchProvider,
     prefs: Prefs,
+    /// The person's Monitor preferences when hosted, and the value last
+    /// stored, which tells a change made here from one made elsewhere.
+    preferences: Option<(Setting<MonitorPreferences>, MonitorPreferences)>,
 
-    // ---- the shared view ----
+    // ---- the view ----
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
@@ -635,9 +495,6 @@ pub struct MonitorApp {
     context: ContextMenu,
     context_pid: Option<u32>,
     context_choices: Vec<Option<MenuChoice>>,
-    /// Visible process controls emit inert resource addresses; the host
-    /// resolves the latest action contract before any OS signal is sent.
-    pending_control_invocation: Option<ControlInvocation>,
     /// The pid most recently copied, for the transient toast.
     copied_pid: Option<u32>,
     copied_at: Option<Instant>,
@@ -677,9 +534,14 @@ pub struct MonitorApp {
     /// Open the cadence menu once laid out (`interval` captures).
     cadence_menu_seed: bool,
     layout_dirty: bool,
-    /// Document actions: local host for standalone / `--shots` / unit tests;
-    /// framework dispatcher when [`crate::resource::Monitor`] hosts the surface.
-    actions: crate::resource::ActionSink,
+    /// The door edits and effects go through once the framework hosts the
+    /// surface: the table layout as Monitor's actions, and every control
+    /// that reaches a process as a [`MonitorEffect`], so the host checks its
+    /// permission and confirmation as it does for the palette and agents.
+    dispatcher: Option<Dispatcher<Monitor>>,
+    /// The effects the controls asked for, as a test reads them.
+    #[cfg(test)]
+    requested: Vec<MonitorEffect>,
 }
 
 impl Default for MonitorApp {
@@ -694,7 +556,13 @@ impl MonitorApp {
     /// sampler, so the seeded sample is what appears — hermetic and
     /// reproducible offline. The live window uses [`Self::new_live`] instead.
     pub fn new() -> Self {
-        let mut app = Self::build(MonitorModel::sample(), ui::time::now(), Sampler::inert());
+        Self::sample(MonitorModel::sample())
+    }
+
+    /// Construct over `model`, a deterministic snapshot that is never
+    /// sampled again: what a screenshot shows.
+    pub fn sample(model: MonitorModel) -> Self {
+        let mut app = Self::build(model, ui::time::now(), Sampler::inert());
         app.sample_only = true;
         // Select a row from the default (collapsed) tree rather than the
         // globally busiest process, which may be a hidden descendant: the
@@ -702,6 +570,15 @@ impl MonitorApp {
         // cannot see in the table.
         app.selected_pid = app.busiest_visible_pid();
         app.seed_selected_spark();
+        app.publish();
+        app
+    }
+
+    /// Construct for a past version of the table layout: no processes, and
+    /// nothing that reads this machine.
+    pub fn past() -> Self {
+        let mut app = Self::build(MonitorModel::empty(), ui::time::now(), Sampler::inert());
+        app.sample_only = true;
         app.publish();
         app
     }
@@ -731,6 +608,7 @@ impl MonitorApp {
             sampler,
             process_search,
             prefs,
+            preferences: None,
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
             sort_desc: true,
@@ -743,7 +621,6 @@ impl MonitorApp {
             context: ContextMenu::new(),
             context_pid: None,
             context_choices: Vec::new(),
-            pending_control_invocation: None,
             copied_pid: None,
             copied_at: None,
             last_refresh,
@@ -766,21 +643,10 @@ impl MonitorApp {
             layouts: 0,
             cadence_menu_seed: false,
             layout_dirty: true,
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
+            #[cfg(test)]
+            requested: Vec::new(),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn controlled_for_test(signal_probe: crate::sampler::SignalProbe) -> Self {
-        let mut app = Self::build(
-            MonitorModel::sample(),
-            ui::time::now(),
-            Sampler::controlled(signal_probe),
-        );
-        app.prefs.auto_refresh = false;
-        app.selected_pid = app.busiest_visible_pid();
-        app.publish();
-        app
     }
 
     // ---- sampling ---------------------------------------------------------
@@ -959,14 +825,15 @@ impl MonitorApp {
 
     /// A filter or a collapse is a view boundary: never leave an actionable
     /// inspector for a process that is no longer listed.
+    /// The listed rows changed, so the views must hear of it.
     fn clear_selection_if_filtered_out(&mut self) {
+        self.stale = true;
         let Some(pid) = self.selected_pid else {
             return;
         };
         if !self.visible_rows().iter().any(|row| row.pid == pid) {
             self.selected_pid = None;
         }
-        self.stale = true;
     }
 
     fn row_has_children(&self, pid: u32) -> bool {
@@ -1022,132 +889,157 @@ impl MonitorApp {
 
     // ---- framework hosting ------------------------------------------------
 
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Monitor>,
-    ) {
-        self.actions.attach(dispatcher);
+    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Monitor>) {
+        self.dispatcher = Some(dispatcher);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// Follow the person's Monitor preferences: this window starts from
+    /// them, stores what it changes, and takes what another window or device
+    /// changed.
+    pub(crate) fn follow_preferences(&mut self, setting: Setting<MonitorPreferences>) {
+        let stored = setting.get();
+        self.adopt_preferences(&stored);
+        self.preferences = Some((setting, stored));
     }
 
-    /// Test-only: mark the surface hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+    fn adopt_preferences(&mut self, personal: &MonitorPreferences) {
+        if self.prefs.personal() == *personal {
+            return;
+        }
+        self.prefs.adopt(personal);
+        self.clear_selection_if_filtered_out();
     }
 
-    /// Adopt collaborative view prefs; never clear the local process catalogue.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::MonitorState) {
-        self.tab = Tab::parse(&state.tab);
-        self.sort_key = SortKey::parse(&state.sort_key);
-        self.sort_desc = state.sort_desc;
+    /// Whether the stored preferences moved since this window last looked:
+    /// another window or device changed them, or this one did.
+    fn preferences_changed(&self) -> bool {
+        self.preferences
+            .as_ref()
+            .is_some_and(|(setting, last)| setting.get() != *last || self.prefs.personal() != *last)
+    }
+
+    fn sync_preferences(&mut self) {
+        let Some((setting, last)) = &self.preferences else {
+            return;
+        };
+        let stored = setting.get();
+        if stored != *last {
+            self.adopt_preferences(&stored);
+            if let Some((_, last)) = &mut self.preferences {
+                *last = stored;
+            }
+            return;
+        }
+        let here = self.prefs.personal();
+        if here == *last {
+            return;
+        }
+        match setting.set(here.clone()) {
+            Ok(()) => {
+                if let Some((_, last)) = &mut self.preferences {
+                    *last = here;
+                }
+            }
+            Err(error) => tracing::warn!(%error, "could not keep the Monitor preferences"),
+        }
+    }
+
+    /// Adopt the shared table layout; never touch the process catalogue.
+    pub(crate) fn adopt_resource_state(&mut self, state: &MonitorState) {
+        let (sort_key, sort_desc) = (SortKey::parse(&state.sort_key), state.sort_desc);
+        if (self.sort_key, self.sort_desc, self.tree_mode) == (sort_key, sort_desc, state.tree_mode)
+        {
+            return;
+        }
+        self.sort_key = sort_key;
+        self.sort_desc = sort_desc;
         self.tree_mode = state.tree_mode;
-        self.filter.clone_from(&state.search);
-        self.selected_pid = state.selected_pid;
-        self.stale = true;
+        self.clear_selection_if_filtered_out();
     }
 
-    pub(crate) fn commit_view(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &crate::resource::MonitorAction,
-    ) {
-        self.actions.dispatch(doc, action);
+    /// Submit an edit of the shared table layout.
+    fn commit_layout(&self, action: &MonitorAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
     }
 
-    #[cfg(test)]
-    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
+    /// Ask the host to run `effect` through the same door as the palette
+    /// and agents: its permission and confirmation are checked before the
+    /// surface answers it.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            clippy::needless_pass_by_value,
+            reason = "a test also keeps what was asked for"
+        )
+    )]
+    fn request(&mut self, effect: MonitorEffect) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&effect);
+        }
+        #[cfg(test)]
+        self.requested.push(effect);
     }
 
-    #[cfg(test)]
-    pub(crate) fn model_process_count(&self) -> usize {
-        self.model.processes.len()
-    }
-
-    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
-    /// with live process children overlaid.
-    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        use ui::tilo_resource::Resource as _;
-        let state = crate::resource::Monitor::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Monitor>(
-            PROCESSES_RESOURCE_ID,
-            "Processes",
-            &state,
-        );
-        root.children = self.live_process_extras();
-        vec![root]
-    }
-
-    /// Live process rows without a `monitor.processes` root.
-    pub(crate) fn live_process_extras(&self) -> Vec<Resource> {
+    /// The bounded contextual page of live process rows; any other process
+    /// resolves by id ([`Self::live_process_row`]).
+    pub(crate) fn live_process_rows(&self) -> Vec<LiveRow> {
         self.model
             .processes
             .iter()
             .take(MAX_CONTEXT_PROCESS_RESOURCES)
-            .map(monitor_process_resource)
+            .map(process_row)
             .collect()
+    }
+
+    /// The live row of the exact process generation `id` names.
+    pub(crate) fn live_process_row(&self, id: &str) -> Option<LiveRow> {
+        let (pid, started_at) = parse_process_resource_id(id)?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .map(process_row)
     }
 
     // ---- view changes -----------------------------------------------------
 
-    fn commit_tab(&mut self, doc: &mut AutoCommit, tab: Tab) {
+    fn commit_tab(&mut self, tab: Tab) {
         if self.tab == tab {
             return;
         }
         self.tab = tab;
         self.stale = true;
-        self.commit_view(
-            doc,
-            &crate::resource::MonitorAction::SetTab {
-                tab: tab.as_str().into(),
-            },
-        );
     }
 
-    fn commit_tree_mode(&mut self, doc: &mut AutoCommit, tree: bool) {
+    fn commit_tree_mode(&mut self, tree: bool) {
         if self.tree_mode == tree {
             return;
         }
         self.tree_mode = tree;
         self.stale = true;
-        self.commit_view(doc, &crate::resource::MonitorAction::SetTreeMode { tree });
+        self.commit_layout(&MonitorAction::SetTreeMode { tree });
     }
 
-    fn commit_selected(&mut self, doc: &mut AutoCommit, pid: Option<u32>) {
+    fn commit_selected(&mut self, pid: Option<u32>) {
         if self.selected_pid == pid {
             return;
         }
         self.selected_pid = pid;
         self.stale = true;
-        self.commit_view(
-            doc,
-            &crate::resource::MonitorAction::SetSelected {
-                pid: pid.map(u64::from),
-            },
-        );
     }
 
-    fn commit_filter(&mut self, doc: &mut AutoCommit, query: String) {
+    fn commit_filter(&mut self, query: String) {
         if self.filter == query {
             return;
         }
         self.filter = query;
         self.clear_selection_if_filtered_out();
-        let query = self.filter.clone();
-        self.commit_view(doc, &crate::resource::MonitorAction::SetSearch { query });
-        self.commit_view(
-            doc,
-            &crate::resource::MonitorAction::SetSelected {
-                pid: self.selected_pid.map(u64::from),
-            },
-        );
     }
 
-    fn set_sort(&mut self, doc: &mut AutoCommit, key: SortKey) {
+    fn set_sort(&mut self, key: SortKey) {
         if self.sort_key == key {
             self.sort_desc = !self.sort_desc;
         } else {
@@ -1155,13 +1047,10 @@ impl MonitorApp {
             self.sort_desc = key.default_desc();
         }
         self.stale = true;
-        self.commit_view(
-            doc,
-            &crate::resource::MonitorAction::SetSort {
-                key: key.as_str().into(),
-                desc: self.sort_desc,
-            },
-        );
+        self.commit_layout(&MonitorAction::SetSort {
+            key: key.as_str().into(),
+            desc: self.sort_desc,
+        });
     }
 
     fn set_cadence(&mut self, cadence: Cadence) {
@@ -1188,88 +1077,77 @@ impl MonitorApp {
         }
     }
 
-    /// Queue the exact resource address every visible process control uses.
-    /// The host re-resolves it against a fresh catalogue and enforces the
-    /// published permission, confirmation, and retry contract before calling
-    /// [`Self::answer_resource_operation`].
-    fn request_process_control(&mut self, pid: u32, action: &'static str) {
+    /// Ask for the effect `control` builds on the current lifetime of `pid`,
+    /// the same address the palette and agents reach it at.
+    fn request_process_control(&mut self, pid: u32, control: fn(String) -> MonitorEffect) {
         if let Some(process) = self
             .model
             .processes
             .iter()
             .find(|process| process.pid == pid)
         {
-            self.pending_control_invocation = Some(ControlInvocation {
-                address: ActionAddress::new(process_resource_id(pid, process.started_at), action),
-                arguments: serde_json::Map::new(),
-            });
+            let effect = control(process_resource_id(pid, process.started_at));
+            self.request(effect);
         }
     }
 
-    /// Queue a root-level Monitor action through the shared action broker.
-    fn request_monitor_control(&mut self, action: &'static str) {
-        self.pending_control_invocation = Some(ControlInvocation {
-            address: ActionAddress::new(PROCESSES_RESOURCE_ID, action),
-            arguments: serde_json::Map::new(),
-        });
+    /// The live process `id` names, if it still runs.
+    fn current_process(&self, id: &str) -> Result<ProcessInfo, String> {
+        let (pid, started_at) =
+            parse_process_resource_id(id).ok_or_else(|| format!("`{id}` names no process"))?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .cloned()
+            .ok_or_else(|| "process is no longer running".into())
     }
 
-    /// Execute the typed operation emitted by the resource catalogue, after
-    /// the host has enforced its contract (permission and confirmation).
-    fn perform_operation(&mut self, operation: &MonitorOperation) -> Result<(), String> {
-        match operation {
-            MonitorOperation::Inspect { pid, started_at } => {
-                let current = self
-                    .model
-                    .processes
-                    .iter()
-                    .any(|process| process.pid == *pid && process.started_at == *started_at);
-                if !current {
-                    return Err("process is no longer running".into());
-                }
-                self.selected_pid = Some(*pid);
-                self.tab = Tab::Processes;
-                self.stale = true;
-                self.reveal_inspector();
-                Ok(())
-            }
-            MonitorOperation::Refresh => {
+    /// Answer `effect`, however it was invoked: a control here, the
+    /// palette, an agent. The host has already checked its permission and
+    /// had a destructive one confirmed.
+    pub(crate) fn answer(&mut self, effect: MonitorEffect) -> Result<(), String> {
+        match effect {
+            MonitorEffect::Refresh => {
                 self.refresh_live_snapshot();
                 Ok(())
             }
-            MonitorOperation::CopyPid { pid, started_at } => {
-                let Some(process) = self
-                    .model
-                    .processes
-                    .iter()
-                    .find(|process| process.pid == *pid && process.started_at == *started_at)
-                else {
-                    return Err("process is no longer running".into());
+            MonitorEffect::ShowTab { tab } => {
+                let tab = match tab.as_str() {
+                    "processes" => Tab::Processes,
+                    "resources" => Tab::Resources,
+                    other => return Err(format!("there is no `{other}` tab")),
                 };
-                let pid = process.pid;
-                self.copy_pid(pid);
+                self.commit_tab(tab);
                 Ok(())
             }
-            MonitorOperation::Signal {
-                pid,
-                started_at,
-                signal,
-            } => {
-                let Some(process) = self
-                    .model
-                    .processes
-                    .iter()
-                    .find(|process| process.pid == *pid && process.started_at == *started_at)
-                else {
-                    return Err("process is no longer running".into());
-                };
-                let (pid, started_at) = (process.pid, process.started_at);
-                if self.do_stop(pid, started_at, signal.stop_kind()) {
-                    Ok(())
-                } else {
-                    Err("the operating system refused the process signal".into())
-                }
+            MonitorEffect::Filter { query } => {
+                self.commit_filter(query.unwrap_or_default());
+                Ok(())
             }
+            MonitorEffect::Inspect { process } => {
+                let process = self.current_process(&process)?;
+                self.commit_selected(Some(process.pid));
+                self.commit_tab(Tab::Processes);
+                self.reveal_inspector();
+                Ok(())
+            }
+            MonitorEffect::CopyPid { process } => {
+                let process = self.current_process(&process)?;
+                self.copy_pid(process.pid);
+                Ok(())
+            }
+            MonitorEffect::Stop { process } => self.signal(&process, StopKind::Term),
+            MonitorEffect::Kill { process } => self.signal(&process, StopKind::Kill),
+        }
+    }
+
+    fn signal(&mut self, id: &str, kind: StopKind) -> Result<(), String> {
+        let process = self.current_process(id)?;
+        if self.do_stop(process.pid, process.started_at, kind) {
+            Ok(())
+        } else {
+            Err("the operating system refused the process signal".into())
         }
     }
 
@@ -1376,7 +1254,7 @@ impl MonitorApp {
         self.context_pid = Some(pid);
     }
 
-    fn apply_menu_choice(&mut self, doc: &mut AutoCommit, index: usize) {
+    fn apply_menu_choice(&mut self, index: usize) {
         let (Some(pid), Some(Some(choice))) =
             (self.context_pid, self.context_choices.get(index).copied())
         else {
@@ -1384,13 +1262,19 @@ impl MonitorApp {
         };
         match choice {
             MenuChoice::ShowDetails => {
-                self.commit_selected(doc, Some(pid));
+                self.commit_selected(Some(pid));
                 self.reveal_inspector();
             }
             MenuChoice::Expand(open) => self.set_expanded(pid, open),
-            MenuChoice::Copy => self.request_process_control(pid, "copy-pid"),
-            MenuChoice::Stop => self.request_process_control(pid, "stop"),
-            MenuChoice::Kill => self.request_process_control(pid, "kill"),
+            MenuChoice::Copy => {
+                self.request_process_control(pid, |process| MonitorEffect::CopyPid { process });
+            }
+            MenuChoice::Stop => {
+                self.request_process_control(pid, |process| MonitorEffect::Stop { process });
+            }
+            MenuChoice::Kill => {
+                self.request_process_control(pid, |process| MonitorEffect::Kill { process });
+            }
         }
         self.context_pid = None;
     }
@@ -1527,11 +1411,11 @@ impl MonitorApp {
             };
             button.on_view(move || requests.borrow_mut().push(Request::ChooseCadence))
         };
-        let door = processes_door();
-        let mut refresh = Button::icon_only("monitor.refresh", Icon::Refresh, "Refresh");
-        if let Ok(binding) = ActionBinding::unit_for(&door, "refresh") {
-            refresh = refresh.on_action(binding);
-        }
+        let refresh = {
+            let requests = Rc::clone(&self.shared);
+            Button::icon_only("monitor.refresh", Icon::Refresh, "Refresh")
+                .on_view(move || requests.borrow_mut().push(Request::Refresh))
+        };
         let actions: Vec<Element> = vec![Box::new(tabs), Box::new(cadence), Box::new(refresh)];
         // The content is this machine's activity, so the column is titled
         // with the machine's name; the window's History control follows the
@@ -1616,7 +1500,7 @@ impl MonitorApp {
             cpu_history: history,
             with_children,
             inset: self.detail_inset,
-            resource: monitor_process_resource(&process),
+            requests: Rc::clone(&self.shared),
         };
         self.shell
             .set_inspector(Some(crate::view::process_detail(Some(&detail))));
@@ -1634,32 +1518,32 @@ impl MonitorApp {
         }
     }
 
-    /// Turn the views' requests into view changes and document actions.
+    /// Turn the views' requests into view changes, layout edits and effects.
     /// The views hear of them in the next `sync` or layout: telling them
     /// rebuilds the inspector and the header, which must never happen while
     /// the host is routing an event through the tree it holds.
-    fn apply_requests(&mut self, doc: &mut AutoCommit) {
+    fn apply_requests(&mut self) {
         let requests = self.shared.borrow_mut().take_requests();
         for request in requests {
             match request {
-                Request::Tab(tab) => self.commit_tab(doc, tab),
-                Request::Sort(key) => self.set_sort(doc, key),
-                Request::Filter(query) => self.commit_filter(doc, query),
+                Request::Tab(tab) => self.commit_tab(tab),
+                Request::Sort(key) => self.set_sort(key),
+                Request::Filter(query) => self.commit_filter(query),
                 Request::Select(pid) => {
-                    self.commit_selected(doc, Some(pid));
+                    self.commit_selected(Some(pid));
                     self.reveal_inspector();
                 }
                 Request::Activate(pid) => {
                     if self.tree_mode && self.row_has_children(pid) {
                         self.toggle_expand(pid);
                     } else {
-                        self.commit_selected(doc, Some(pid));
+                        self.commit_selected(Some(pid));
                         self.reveal_inspector();
                     }
                 }
                 Request::ToggleExpand(pid) => self.toggle_expand(pid),
                 Request::SetExpanded(pid, open) => self.set_expanded(pid, open),
-                Request::TreeMode(tree) => self.commit_tree_mode(doc, tree),
+                Request::TreeMode(tree) => self.commit_tree_mode(tree),
                 Request::SumChildren(sum) => {
                     self.sum_mode = if sum {
                         SumMode::SumSubtree
@@ -1674,59 +1558,41 @@ impl MonitorApp {
                 }
                 Request::ChooseCadence => self.open_cadence_menu(),
                 Request::ShowStat(stat) => {
-                    self.commit_tab(doc, Tab::Resources);
+                    self.commit_tab(Tab::Resources);
                     self.shared.borrow_mut().reveal = Some(stat);
                     self.stale = true;
                 }
                 Request::ContextMenu { pid, at, row } => {
-                    self.commit_selected(doc, Some(pid));
+                    self.commit_selected(Some(pid));
                     self.open_context_menu(pid, at, row);
                 }
-                Request::Retry => self.request_monitor_control("refresh"),
+                Request::Refresh => self.request(MonitorEffect::Refresh),
+                Request::Stop(pid) => {
+                    self.request_process_control(pid, |process| MonitorEffect::Stop { process });
+                }
+                Request::Kill(pid) => {
+                    self.request_process_control(pid, |process| MonitorEffect::Kill { process });
+                }
             }
         }
     }
 
     // ---- captures ---------------------------------------------------------
 
-    /// Seed a deterministic state for a capture. Recognised scenarios:
-    /// `detail`, `resources`, `resources-many`, `empty`, `process-loading`,
-    /// `process-permission-error`, `no-results`, `flat`, `tree-expanded`,
-    /// `per-process`, `kernel-threads`, `context-menu`, `interval`.
-    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+    /// Stage the view state of screenshot `scenario` over the sample
+    /// machine its fixture provides ([`MonitorModel::scenario`]) and the
+    /// table layout its actions set ([`crate::resource::MonitorShell`]): a
+    /// scene a single captured frame cannot reach through live input (an
+    /// open menu, the inspector drawer, an expanded tree). Unknown names
+    /// leave the default frame.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
             "detail" => self.reveal_detail = true,
-            "resources" => self.tab = Tab::Resources,
-            "resources-many" => {
-                self.tab = Tab::Resources;
-                self.model.metrics.cores = (0..24)
-                    .map(|i| {
-                        let t = i as f32;
-                        (30.0 + 55.0 * (t * 0.7).sin() + 20.0 * (t * 0.3).cos()).clamp(2.0, 99.0)
-                    })
-                    .collect();
-                self.metrics_changed();
-            }
-            "empty" => {
-                self.model.processes.clear();
-                self.model.process_status = ProcessDataStatus::Empty;
-                self.selected_pid = None;
-            }
-            "process-loading" => {
-                self.model.processes.clear();
-                self.model.process_status = ProcessDataStatus::Loading;
-                self.selected_pid = None;
-            }
-            "process-permission-error" => {
-                self.model.processes.clear();
-                self.model.process_status = ProcessDataStatus::PermissionDenied;
-                self.selected_pid = None;
-            }
+            "resources" | "resources-many" => self.tab = Tab::Resources,
             "no-results" => {
                 self.filter = "printer queue".into();
                 self.clear_selection_if_filtered_out();
             }
-            "flat" => self.tree_mode = false,
             "tree-expanded" => {
                 self.expand_by_name(&["shell", "browser", "code", "cargo", "systemd"]);
             }
@@ -1735,7 +1601,6 @@ impl MonitorApp {
                 self.expand_by_name(&["shell", "browser", "code", "cargo", "systemd"]);
             }
             "kernel-threads" => {
-                self.tree_mode = false;
                 self.prefs.show_kernel_threads = true;
                 self.filter = "k".into();
                 self.selected_pid = self.busiest_pid_named("kworker/u32:3");
@@ -1761,42 +1626,6 @@ impl MonitorApp {
 }
 
 impl MonitorApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != MONITOR_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: MonitorOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let expected_kind = match &operation {
-            MonitorOperation::Inspect { .. } => OperationKind::View,
-            MonitorOperation::Refresh
-            | MonitorOperation::CopyPid { .. }
-            | MonitorOperation::Signal { .. } => OperationKind::Effect,
-        };
-        if kind != expected_kind {
-            return Err("Monitor operation kind does not match its payload".into());
-        }
-        self.perform_operation(&operation)?;
-        if let MonitorOperation::Inspect { pid, .. } | MonitorOperation::CopyPid { pid, .. } =
-            &operation
-        {
-            self.commit_view(
-                doc,
-                &crate::resource::MonitorAction::SetSelected {
-                    pid: Some(u64::from(*pid)),
-                },
-            );
-        }
-        Ok(true)
-    }
-
     /// Keyboard commands of the window: Ctrl+R refreshes, Ctrl+1 and Ctrl+2
     /// switch tabs, Delete kills the selected process (through its confirmed
     /// action). Returns whether the key was consumed.
@@ -1808,22 +1637,21 @@ impl MonitorApp {
             return false;
         }
         let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-        let (doc, _) = ui::doc::document(ctx.state, ctx.path);
         match &key.logical_key {
             Key::Character(c) if command && c.eq_ignore_ascii_case("r") => {
-                self.request_monitor_control("refresh");
+                self.request(MonitorEffect::Refresh);
             }
             Key::Character(c) if command && c.as_str() == "1" => {
-                self.commit_tab(doc, Tab::Processes);
+                self.commit_tab(Tab::Processes);
             }
             Key::Character(c) if command && c.as_str() == "2" => {
-                self.commit_tab(doc, Tab::Resources);
+                self.commit_tab(Tab::Resources);
             }
             Key::Named(NamedKey::Delete) if self.tab == Tab::Processes => {
                 let Some(pid) = self.selected_pid else {
                     return false;
                 };
-                self.request_process_control(pid, "kill");
+                self.request_process_control(pid, |process| MonitorEffect::Kill { process });
             }
             _ => return false,
         }
@@ -1833,45 +1661,15 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
-    ui::provides!(
-        dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[MONITOR_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
+    ui::provides!(dyn ui::search::capability::SearchSource);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        {
-            let (doc, _) = ui::doc::document(state, path);
-            self.maybe_refresh();
-            self.apply_requests(doc);
-            self.publish();
-        }
+        // The preferences follow the person's settings, never the shared
+        // document.
+        self.sync_preferences();
+        self.maybe_refresh();
+        self.apply_requests();
+        self.publish();
         self.shell.sync(state, path);
     }
 
@@ -2017,8 +1815,7 @@ impl Widget for MonitorApp {
         if self.context.is_open() {
             self.context.handle_event(event, ctx);
             if let Some(index) = self.context.take_selection() {
-                let (doc, _) = ui::doc::document(ctx.state, ctx.path);
-                self.apply_menu_choice(doc, index);
+                self.apply_menu_choice(index);
             }
             if *ctx.handled || !matches!(event, WindowEvent::CursorMoved { .. }) {
                 *ctx.handled = true;
@@ -2032,8 +1829,7 @@ impl Widget for MonitorApp {
         if !*ctx.handled {
             self.handle_shortcut(event, ctx);
         }
-        let (doc, _) = ui::doc::document(ctx.state, ctx.path);
-        self.apply_requests(doc);
+        self.apply_requests();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2069,7 +1865,10 @@ impl Widget for MonitorApp {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.layout_dirty || self.stale || self.shell.is_layout_dirty()
+        self.layout_dirty
+            || self.stale
+            || self.preferences_changed()
+            || self.shell.is_layout_dirty()
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -2079,8 +1878,10 @@ impl Widget for MonitorApp {
     fn take_structure_dirty(&mut self) -> bool {
         // What changed since the last frame reaches the views with the next
         // tree; the shell reports its own changes.
-        let stale = self.stale;
-        self.shell.take_structure_dirty() || stale
+        // A sync that rebuilt the header or the inspector (`layout_dirty`)
+        // and preferences another window or device changed count too.
+        let pending = self.stale || self.layout_dirty || self.preferences_changed();
+        self.shell.take_structure_dirty() || pending
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2130,82 +1931,6 @@ impl ui::search::capability::SearchSource for MonitorApp {
     }
 }
 
-impl ui::resources::PublishesResources for MonitorApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the processes door — keep only live process rows.
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // One compact root exposes the safe contextual sample. Individual
-        // process ids are resolved lazily below, avoiding an all-process
-        // materialization in the broker's cursor-based directory.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        fn find(resources: &[Resource], id: &str) -> Option<Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        if id == PROCESSES_RESOURCE_ID {
-            if self.is_hosted() {
-                return None;
-            }
-            return self.publish_resources(doc).into_iter().next();
-        }
-        if let Some(found) = find(&self.resources(doc), id) {
-            return Some(found);
-        }
-        let (pid, started_at) = parse_process_resource_id(id)?;
-        self.model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid && process.started_at == started_at)
-            .map(monitor_process_resource)
-    }
-}
-
-impl ui::widget::controls::ActionControls for MonitorApp {
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation
-            .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(&mut self.shell))
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for MonitorApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
 /// The descendant of `widget` whose test id is `id`.
 fn find_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
     if widget.test_id() == Some(id) {
@@ -2221,11 +1946,16 @@ fn find_widget<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
 mod tests {
     use super::*;
     use crate::view::Stat;
+    use automerge::AutoCommit;
     use ui::headless::FrameHarness;
-    use ui::tilo_resource::Resource as _;
 
     fn app() -> MonitorApp {
         MonitorApp::new()
+    }
+
+    /// The effect the app's controls last asked the host for.
+    fn taken(a: &mut MonitorApp) -> Option<MonitorEffect> {
+        a.requested.pop()
     }
 
     fn pid_named(a: &MonitorApp, name: &str) -> u32 {
@@ -2357,9 +2087,8 @@ mod tests {
         // Phase `flat_list_sorts_by_the_chosen_column`.
         {
             let mut a = app();
-            let mut doc = AutoCommit::new();
-            a.commit_tree_mode(&mut doc, false);
-            a.set_sort(&mut doc, SortKey::Name);
+            a.commit_tree_mode(false);
+            a.set_sort(SortKey::Name);
             let rows = a.visible_rows();
             assert!(!a.sort_desc, "text sorts ascending first");
             assert!(
@@ -2383,8 +2112,7 @@ mod tests {
         let selected = a.selected_pid.expect("the sample selects a process");
         assert!(a.visible_rows().iter().any(|row| row.pid == selected));
 
-        let mut doc = AutoCommit::new();
-        a.commit_filter(&mut doc, "printer queue".into());
+        a.commit_filter("printer queue".into());
         assert!(a.selected_pid.is_none(), "filtered away");
         a.publish();
         assert_eq!(a.shared.borrow().placeholder, Some(Placeholder::NoMatches));
@@ -2407,36 +2135,30 @@ mod tests {
         );
     }
 
-    /// What the panes ask for becomes view state and shared document actions.
+    /// What the panes ask for becomes view state, layout edits and effects.
     #[test]
     fn requests_from_the_panes_change_the_view() {
         let mut a = app();
-        let mut doc = AutoCommit::new();
         let shell = pid_named(&a, "shell");
         let push = |a: &MonitorApp, request: Request| a.shared.borrow_mut().push(request);
 
         push(&a, Request::Sort(SortKey::Mem));
         push(&a, Request::ToggleExpand(shell));
         push(&a, Request::KernelThreads(true));
-        a.apply_requests(&mut doc);
+        a.apply_requests();
         assert_eq!(a.sort_key, SortKey::Mem);
         assert!(a.sort_desc);
         assert!(a.expanded.contains(&shell));
         assert!(a.prefs.show_kernel_threads);
-        assert_eq!(
-            a.last_document_action()
-                .map(|action| action.type_id.as_str()),
-            Some(crate::resource::Monitor::ACTION_TYPE)
-        );
 
         push(&a, Request::SumChildren(false));
         push(&a, Request::TreeMode(false));
-        a.apply_requests(&mut doc);
+        a.apply_requests();
         assert_eq!(a.sum_mode, SumMode::PerProcess);
         assert!(!a.tree_mode);
 
         push(&a, Request::ShowStat(Stat::Network));
-        a.apply_requests(&mut doc);
+        a.apply_requests();
         a.publish();
         assert_eq!(a.tab, Tab::Resources);
         assert_eq!(a.shared.borrow().reveal, Some(Stat::Network));
@@ -2447,7 +2169,7 @@ mod tests {
 
         push(&a, Request::Tab(Tab::Processes));
         push(&a, Request::Filter("pipe".into()));
-        a.apply_requests(&mut doc);
+        a.apply_requests();
         a.publish();
         assert_eq!(a.tab, Tab::Processes);
         assert_eq!(a.filter, "pipe");
@@ -2459,20 +2181,27 @@ mod tests {
         assert!(a.prefs.auto_refresh);
         assert_eq!(a.prefs.interval_ms, 3000);
 
-        push(&a, Request::Retry);
-        a.apply_requests(&mut doc);
+        push(&a, Request::Refresh);
+        a.apply_requests();
+        assert_eq!(taken(&mut a), Some(MonitorEffect::Refresh));
+
+        let busiest = a.busiest_visible_pid().expect("a listed process");
+        push(&a, Request::Stop(busiest));
+        a.apply_requests();
         assert_eq!(
-            ui::widget::controls::take_control_invocation(&mut a).map(|i| i.address),
-            Some(ActionAddress::new(PROCESSES_RESOURCE_ID, "refresh"))
+            taken(&mut a),
+            Some(MonitorEffect::Stop {
+                process: resource_id_for(&a, busiest)
+            }),
+            "the inspector's Stop asks the host, which confirms it"
         );
     }
 
-    /// The row menu offers the process's actions and queues their canonical
-    /// addresses; it never signals by itself.
+    /// The row menu offers the process's actions and asks for their
+    /// effects; it never signals by itself.
     #[test]
-    fn row_menu_queues_canonical_process_actions() {
+    fn row_menu_asks_for_the_process_effects() {
         let mut a = app();
-        let mut doc = AutoCommit::new();
         let shell = pid_named(&a, "shell");
         a.open_context_menu(
             shell,
@@ -2497,69 +2226,48 @@ mod tests {
             .position(|choice| *choice == Some(MenuChoice::Kill))
             .unwrap();
         let before = a.model.processes.len();
-        a.apply_menu_choice(&mut doc, kill);
+        a.apply_menu_choice(kill);
         assert_eq!(
             a.model.processes.len(),
             before,
-            "no signal without the contract"
+            "no signal without the host's confirmation"
         );
         assert_eq!(
-            ui::widget::controls::take_control_invocation(&mut a).map(|i| i.address),
-            Some(ActionAddress::new(resource_id_for(&a, shell), "kill"))
+            taken(&mut a),
+            Some(MonitorEffect::Kill {
+                process: resource_id_for(&a, shell)
+            })
         );
     }
 
-    /// Process resources are generation-exact, bounded and contract-confirmed.
+    /// Process rows are generation-exact, bounded and contract-confirmed.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn process_resources_are_bounded_generation_exact_and_local() {
-        // Phase `kill_is_contract_confirmed_and_executes_through_the_operation`.
+    fn process_rows_are_bounded_generation_exact_and_local() {
+        // Phase `kill_is_contract_confirmed_and_executes_through_the_effect`.
         {
             let mut a = app();
             let pid = a.selected_pid.expect("sample selects a process");
-            let resources = ui::resources::resources(&a, &AutoCommit::new());
-            let process = resources[0]
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == resource_id_for(&a, pid))
-                .expect("selected process is a stable resource");
+            let process = a
+                .live_process_row(&resource_id_for(&a, pid))
+                .expect("selected process is a stable row")
+                .into_resource();
             let kill = process
                 .actions
                 .iter()
                 .find(|action| action.id == "kill")
                 .expect("kill is exported");
-            assert_eq!(kill.contract.confirmation, ConfirmationPolicy::Confirm);
-            let started_at = a
-                .model
-                .processes
-                .iter()
-                .find(|p| p.pid == pid)
-                .unwrap()
-                .started_at;
-            let payload = serde_json::to_vec(&MonitorOperation::Signal {
-                pid,
-                started_at,
-                signal: MonitorSignal::Kill,
-            })
-            .unwrap();
-            assert!(
-                Widget::start_operation(
-                    &mut a,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        MONITOR_OPERATION_TYPE,
-                        &payload
-                    ),
-                    &mut AutoCommit::new(),
-                    &automerge::ROOT
-                )
-                .unwrap()
-                .is_some()
+            assert_eq!(
+                kill.contract.confirmation,
+                ui::tilo_actions::ConfirmationPolicy::Confirm
             );
+            a.answer(MonitorEffect::Kill {
+                process: resource_id_for(&a, pid),
+            })
+            .expect("the confirmed kill executes");
             assert!(a.model.processes.iter().all(|process| process.pid != pid));
             assert!(a.selected_pid.is_none());
         }
@@ -2576,16 +2284,18 @@ mod tests {
                 a.model.processes.push(process);
             }
             let target = a.model.processes.last().unwrap().clone();
-            let resources = ui::resources::resources(&a, &AutoCommit::new());
-            assert_eq!(resources[0].children.len(), MAX_CONTEXT_PROCESS_RESOURCES);
+            let rows = a.live_process_rows();
+            assert_eq!(rows.len(), MAX_CONTEXT_PROCESS_RESOURCES);
             let target_id = process_resource_id(target.pid, target.started_at);
-            let resolved = ui::resources::resource(&a, &AutoCommit::new(), &target_id)
-                .expect("an omitted exact PID generation stays resolvable");
+            assert!(
+                !rows.iter().any(|row| row.id() == target_id),
+                "a tail process is left off the eager page"
+            );
+            let resolved = a
+                .live_process_row(&target_id)
+                .expect("an omitted exact PID generation stays resolvable")
+                .into_resource();
             assert!(resolved.actions.iter().any(|action| action.id == "kill"));
-            let page =
-                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
-                    .unwrap();
-            assert!(page.resources.is_empty(), "max_results is a hard ceiling");
         }
 
         // Phase `tail_processes_are_searchable_by_their_generation`.
@@ -2623,10 +2333,8 @@ mod tests {
         {
             let mut a = app();
             let process = a.model.processes[0].clone();
-            let result = a.perform_operation(&MonitorOperation::Signal {
-                pid: process.pid,
-                started_at: process.started_at + 1,
-                signal: MonitorSignal::Kill,
+            let result = a.answer(MonitorEffect::Kill {
+                process: process_resource_id(process.pid, process.started_at + 1),
             });
             assert!(result.is_err());
             assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
@@ -2636,15 +2344,33 @@ mod tests {
         {
             let mut a = app();
             let process = a.model.processes[3].clone();
-            a.perform_operation(&MonitorOperation::CopyPid {
-                pid: process.pid,
-                started_at: process.started_at,
+            a.answer(MonitorEffect::CopyPid {
+                process: process_resource_id(process.pid, process.started_at),
             })
             .unwrap();
             assert_eq!(a.copied_pid, Some(process.pid));
             assert!(a.copy_toast_active());
             a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
             assert!(!a.copy_toast_active());
+        }
+
+        // Phase `inspect_selects_the_process_and_an_unknown_tab_is_refused`.
+        {
+            let mut a = app();
+            a.commit_tab(Tab::Resources);
+            let process = a.model.processes[3].clone();
+            a.answer(MonitorEffect::Inspect {
+                process: process_resource_id(process.pid, process.started_at),
+            })
+            .unwrap();
+            assert_eq!(a.selected_pid, Some(process.pid));
+            assert_eq!(a.tab, Tab::Processes);
+            assert!(
+                a.answer(MonitorEffect::ShowTab {
+                    tab: "graphs".into()
+                })
+                .is_err()
+            );
         }
 
         // Phase `device_preferences_and_unshared_view_stay_out_of_the_document`.
@@ -2655,9 +2381,16 @@ mod tests {
             let heads = doc.get_heads();
             first.set_cadence(Cadence::Paused);
             first.prefs.show_kernel_threads = true;
+            first.commit_filter("shell".into());
+            first.set_sort(SortKey::Name);
+            first.sync(&mut doc, &automerge::ROOT);
             second.sync(&mut doc, &automerge::ROOT);
             assert_eq!(second.prefs, Prefs::default());
-            assert_eq!(doc.get_heads(), heads, "device preferences never sync");
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "nothing unhosted reaches the document"
+            );
         }
     }
 
@@ -2667,7 +2400,8 @@ mod tests {
     fn window_lays_out_at_every_size() {
         for (viewport, placement) in [
             ((1280, 800), InspectorPlacement::Docked),
-            ((800, 600), InspectorPlacement::Docked),
+            ((960, 640), InspectorPlacement::Docked),
+            ((800, 600), InspectorPlacement::Drawer),
             ((480, 820), InspectorPlacement::Drawer),
         ] {
             let harness = window(app(), viewport);
@@ -2732,10 +2466,13 @@ mod tests {
         };
         harness.click_at(copy.center().x, copy.center().y);
         harness.relayout();
+        let copy_pid = MonitorEffect::CopyPid {
+            process: resource_id_for(harness.root::<MonitorApp>(), tilo_fs),
+        };
         assert_eq!(
-            harness.root::<MonitorApp>().copied_pid,
-            Some(tilo_fs),
-            "the window ran the copy through the process's action"
+            harness.root::<MonitorApp>().requested.last(),
+            Some(&copy_pid),
+            "the window asks for the copy through the process's effect"
         );
 
         // ← and → fold the selected parent while the table has focus (the

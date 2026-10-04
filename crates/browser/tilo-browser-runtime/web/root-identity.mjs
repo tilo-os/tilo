@@ -16,6 +16,8 @@
  *
  * Unlocking unwraps the root into a non-extractable WebCrypto key that lives
  * in this page's memory only; `lock()` drops it. Requires WebCrypto Ed25519.
+ * The identity created or unlocked last is this page's current one: the
+ * calls below that take an `identity` default to it.
  */
 
 const VERSION = 1;
@@ -24,6 +26,12 @@ const PKCS8_PREFIX = Uint8Array.from([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 
 const RECOVERY_BYTES = 20;
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const PROBE = new TextEncoder().encode('tilo root envelope probe');
+let current;
+
+/** The identity this page created or unlocked last, unless locked. */
+export function currentIdentity() {
+  return current?.locked ? undefined : current;
+}
 
 export class IdentityError extends Error {
   constructor(code, message) {
@@ -48,6 +56,11 @@ export function unbase64url(text) {
   const binary = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - text.length % 4) % 4));
   return Uint8Array.from(binary, char => char.charCodeAt(0));
 }
+
+/** Bytes from bytes, a buffer or base64url (a copy). */
+const bytesOf = value => (typeof value === 'string' ? unbase64url(value)
+  : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
+    : new Uint8Array(value).slice());
 
 /** The recovery key as the person writes it down: `XXXX-XXXX-…` (8 groups). */
 export function formatRecoveryKey(bytes) {
@@ -178,7 +191,7 @@ async function assertPasskey(env, wraps, rpId) {
 }
 
 /** Create a passkey and read its PRF output for `salt`. */
-async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, displayName}, salt) {
+async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, displayName}, salt, exclude = []) {
   if (!env.credentials?.create) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
   if (!rpId || !userName || !userId) throw new TypeError('rpId, userName and userId are required');
   const credential = await env.credentials.create({
@@ -188,6 +201,9 @@ async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, disp
       challenge: env.random(32),
       pubKeyCredParams: [{type: 'public-key', alg: -8}, {type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
       authenticatorSelection: {residentKey: 'required', userVerification: 'required'},
+      // An authenticator that already holds one of this identity's passkeys
+      // declines, rather than replacing it (same user handle).
+      excludeCredentials: exclude.map(id => ({type: 'public-key', id: unbase64url(id)})),
       extensions: {prf: {eval: {first: salt}}},
     },
   });
@@ -203,9 +219,10 @@ async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, disp
   return {credentialId, output};
 }
 
-async function passkeyWrap(env, root, rootPublicKey, options) {
-  const salt = env.random(32);
-  const {credentialId, output} = await createPasskey(env, options, salt);
+async function passkeyWrap(env, root, rootPublicKey, options, exclude) {
+  const salt = options.prfSalt === undefined ? env.random(32) : bytesOf(options.prfSalt);
+  if (salt.length !== 32) throw new TypeError('prfSalt must be 32 bytes');
+  const {credentialId, output} = await createPasskey(env, options, salt, exclude);
   const sealed = await seal(env, root, output, salt, associatedData('passkey', rootPublicKey, credentialId));
   output.fill(0);
   return {kind: 'passkey', credential_id: base64url(credentialId), rp_id: options.rpId, prf_salt: base64url(salt), ...sealed};
@@ -217,7 +234,7 @@ async function passkeyWrap(env, root, rootPublicKey, options) {
  * a signer. `extractable` is the root as unwrapped (it is used once, to keep
  * a copy re-wrappable under a page-only key, and then dropped).
  */
-async function unlocked(env, extractable, rootPublicKey) {
+async function unlocked(env, extractable, rootPublicKey, account) {
   const session = await env.subtle.generateKey({name: 'AES-GCM', length: 256}, false, ['wrapKey', 'unwrapKey']);
   const sessionNonce = env.random(12);
   const kept = await env.subtle.wrapKey('pkcs8', extractable, session, {name: 'AES-GCM', iv: sessionNonce});
@@ -232,20 +249,36 @@ async function unlocked(env, extractable, rootPublicKey) {
       live();
       return new Uint8Array(await env.subtle.sign({name: 'Ed25519'}, signer, message));
     },
-    /** `envelope` with one more passkey wrap (a new passkey is created). */
-    async addPasskey(envelope, options) {
+    /** `envelope` with one more passkey wrap: a new passkey, created on an
+     * authenticator that holds none of the envelope's. `rpId` defaults to
+     * the envelope's passkeys', `userName`/`userId` to the account the
+     * identity was created with. */
+    async addPasskey(envelope, options = {}) {
       live();
+      const first = envelope?.wraps?.find(wrap => wrap.kind === 'passkey');
+      options = {
+        // One PRF input for all of an identity's passkeys, so a login can
+        // evaluate it without knowing which passkey answers.
+        rpId: first?.rp_id,
+        prfSalt: first?.prf_salt,
+        ...account,
+        ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)),
+      };
       if (hex(rootPublicKeyOf(envelope)) !== identity.userPublicKey) {
         throw new IdentityError('wrong-identity', 'This envelope belongs to another identity');
       }
       const root = await env.subtle.unwrapKey('pkcs8', kept, session, {name: 'AES-GCM', iv: sessionNonce}, {name: 'Ed25519'}, true, ['sign']);
-      const wrap = await passkeyWrap(env, root, rootPublicKey, options);
+      const exclude = envelope.wraps
+        .filter(wrap => wrap.kind === 'passkey' && wrap.rp_id === options.rpId)
+        .map(wrap => wrap.credential_id);
+      const wrap = await passkeyWrap(env, root, rootPublicKey, options, exclude);
       return {...envelope, wraps: [...envelope.wraps, wrap]};
     },
     /** Forget the root: this object signs nothing more. */
-    lock() { locked = true; signer = undefined; },
+    lock() { locked = true; signer = undefined; if (current === identity) current = undefined; },
     get locked() { return locked; },
   };
+  current = identity;
   return identity;
 }
 
@@ -259,6 +292,9 @@ async function unlocked(env, extractable, rootPublicKey) {
  *   relying party and user handle (`userId` ≤ 64 bytes)
  * @param options.displayName, options.rpName  shown by the authenticator
  * @param options.passkey  `false`: recovery key only
+ * @param options.prfSalt  the PRF input (32 bytes or base64url), default
+ *   random; later passkeys reuse it, so a login can evaluate the PRF with
+ *   one known input (`extensions.prf.eval`) whichever passkey answers
  */
 export async function createIdentity(options = {}) {
   const env = environment(options);
@@ -273,12 +309,17 @@ export async function createIdentity(options = {}) {
   const recoveryKey = formatRecoveryKey(recovery);
   recovery.fill(0);
   const envelope = {version: VERSION, root_public_key: hex(rootPublicKey), wraps};
-  return {envelope, recoveryKey, identity: await unlocked(env, root.privateKey, rootPublicKey)};
+  const account = options.userName && options.userId
+    ? {userName: options.userName, userId: options.userId, displayName: options.displayName, rpName: options.rpName}
+    : undefined;
+  return {envelope, recoveryKey, identity: await unlocked(env, root.privateKey, rootPublicKey, account)};
 }
 
 /**
  * Unlock `envelope` with a passkey (`{passkey: true, rpId?}`: one assertion
- * over every passkey wrap of `rpId`, default the first wrap's) or with
+ * over every passkey wrap of `rpId`, default the first wrap's), with the PRF
+ * output of an assertion the page ran itself (`{prfOutput, credentialId}`,
+ * bytes or base64url; evaluated with the wrap's `prf_salt`), or with
  * `{recoveryKey}`. Resolves to the unlocked identity.
  */
 export async function unlockIdentity(envelope, how = {passkey: true}) {
@@ -295,6 +336,16 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
     }
     recovery.fill(0);
     if (!root) throw new IdentityError('rejected', 'This recovery key does not open the identity');
+  } else if (how.prfOutput !== undefined) {
+    const credentialId = bytesOf(how.credentialId ?? []);
+    const output = bytesOf(how.prfOutput);
+    const wrap = envelope.wraps.find(candidate => candidate.kind === 'passkey' && candidate.credential_id === base64url(credentialId));
+    if (!wrap) throw new IdentityError('no-wrap', 'That passkey does not belong to this identity');
+    try {
+      root = await unseal(env, wrap, output, unbase64url(wrap.prf_salt), associatedData('passkey', rootPublicKey, credentialId), true);
+    } finally {
+      output.fill(0);
+    }
   } else if (how.passkey) {
     const passkeys = envelope.wraps.filter(wrap => wrap.kind === 'passkey');
     const rpId = how.rpId ?? passkeys[0]?.rp_id;
@@ -309,7 +360,7 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
       output.fill(0);
     }
   } else {
-    throw new TypeError('unlock with {passkey: true} or {recoveryKey}');
+    throw new TypeError('unlock with {passkey: true}, {prfOutput, credentialId} or {recoveryKey}');
   }
   if (!await provesRoot(env.subtle, root, rootPublicKey)) {
     throw new IdentityError('wrong-root', 'The envelope holds another key than its root');
@@ -317,8 +368,127 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
   return unlocked(env, root, rootPublicKey);
 }
 
-/** `envelope` with a new passkey wrap, from an unlocked `options.identity`. */
-export function addPasskey(envelope, {identity, ...options}) {
-  if (!identity?.addPasskey) throw new TypeError('addPasskey needs an unlocked identity');
+/** `envelope` with a new passkey wrap, from `options.identity` (default the
+ * current identity); see `RootIdentity.addPasskey` for the defaults. */
+export async function addPasskey(envelope, {identity = currentIdentity(), ...options} = {}) {
+  if (!identity?.addPasskey) throw new IdentityError('locked', 'addPasskey needs an unlocked identity');
   return identity.addPasskey(envelope, options);
+}
+
+/** The wasm runtime, loaded through the page host. */
+async function pageRuntime() {
+  return (await import('./host.mjs')).loadRuntime();
+}
+
+/**
+ * Certify another device with the unlocked root. `role` `node` (default): a
+ * native node that hosts and governs the person's workspaces (relays, pins,
+ * reads and owns them; admits no devices; one year). `browser`: a member
+ * for 30 days. `session`: the session beside a node that runs the person's
+ * apps and agents, a member for a year. `devicePublicKey` is the device's Ed25519 key (hex or
+ * bytes), delivered out of band; never the root's own. Takes the key alone
+ * or `{devicePublicKey, identity?, runtime?, label?, role?, encoding?}`;
+ * `identity` defaults to the current one, `runtime` to the page host's.
+ * Resolves to the certificate's canonical encoding as base64 (what a native
+ * device keeps on disk), or with `encoding: 'json'` to its JSON.
+ */
+export async function certifyDevice(options) {
+  if (typeof options === 'string' || ArrayBuffer.isView(options)) options = {devicePublicKey: options};
+  const {identity = currentIdentity(), devicePublicKey, label = 'Tilo node', role = 'node', encoding = 'canonical'} = options ?? {};
+  if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
+  const runtime = options.runtime ?? await pageRuntime();
+  if (!runtime?.issueDeviceCert) throw new TypeError('certifyDevice needs the wasm runtime');
+  const key = typeof devicePublicKey === 'string' ? devicePublicKey.toLowerCase() : hex(devicePublicKey ?? []);
+  if (unhex(key).length !== 32) throw new IdentityError('malformed', 'A device public key is 32 bytes');
+  const json = await runtime.issueDeviceCert(identity, key, label, role);
+  if (encoding === 'json') return json;
+  let binary = '';
+  for (const byte of runtime.deviceCertCanonical(json)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/**
+ * Hand a node waiting for its certificate (`tilo-relay run
+ * --install-token-file`) the certificate `certifyDevice` issued for it, at
+ * its HTTPS `origin`, with the install token it was provisioned with, and
+ * with it `sessionCertificate`, the one issued for the session beside it
+ * (see `nodeInstallInfo`). Resolves to `{device_public_key,
+ * user_public_key}`; the node then starts serving as a host of this
+ * identity on the same origin.
+ */
+export async function installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+  if (!origin || !certificate || !installToken) throw new TypeError('origin, certificate and installToken are required');
+  let body, json;
+  if (sessionCertificate) {
+    // Both in their canonical encoding, base64 (what certifyDevice returns).
+    if (![certificate, sessionCertificate].every(canonicalBase64)) throw new TypeError('with a session, both certificates go as certifyDevice returns them (canonical, base64)');
+    body = JSON.stringify({certificate, session_certificate: sessionCertificate});
+    json = true;
+  } else {
+    // JSON, or the canonical encoding as base64 (what certifyDevice returns).
+    json = typeof certificate !== 'string' || certificate.trimStart().startsWith('{');
+    body = json
+      ? (typeof certificate === 'string' ? certificate : JSON.stringify(certificate))
+      : unbase64url(certificate.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+  }
+  const response = await fetcher(new URL('/peer/v1/install', origin).href, {
+    method: 'POST',
+    headers: {'content-type': json ? 'application/json' : 'application/octet-stream', 'x-tilo-install-token': installToken},
+    body,
+    credentials: 'omit',
+  });
+  const text = await response.text();
+  if (response.status !== 200) {
+    throw new IdentityError(response.status === 403 ? 'install-token-refused' : 'install-refused', text || `node answered ${response.status}`);
+  }
+  return JSON.parse(text);
+}
+
+const canonicalBase64 = certificate => typeof certificate === 'string' && /^[A-Za-z0-9+/]+=*$/.test(certificate);
+
+/**
+ * Ask a node waiting for its certificate at `origin`, with its install
+ * token, what it runs: resolves to `{sessionPublicKey}`, the device key of
+ * the session beside it that runs the person's apps and agents (or `null`
+ * when it runs none). The node vouches for that key with its own, which
+ * must be `devicePublicKey` (hex), the key the page got out of band; the
+ * answer is refused otherwise.
+ */
+export async function nodeInstallInfo({origin, devicePublicKey, installToken, crypto, fetch: fetcher = (...args) => globalThis.fetch(...args)}) {
+  if (!origin || !devicePublicKey || !installToken) throw new TypeError('origin, devicePublicKey and installToken are required');
+  const env = environment({crypto});
+  const response = await fetcher(new URL('/peer/v1/install', origin).href, {
+    method: 'GET',
+    headers: {'x-tilo-install-token': installToken},
+    credentials: 'omit',
+  });
+  const text = await response.text();
+  if (response.status !== 200) {
+    throw new IdentityError(response.status === 403 ? 'install-token-refused' : 'install-refused', text || `node answered ${response.status}`);
+  }
+  const info = JSON.parse(text);
+  const node = devicePublicKey.toLowerCase();
+  if (info?.device_public_key !== node) throw new IdentityError('install-refused', 'the node at this origin has another key');
+  if (!info.session) return {sessionPublicKey: null};
+  const session = unhex(info.session.device_public_key);
+  const message = new Uint8Array([...new TextEncoder().encode('tilo node session v1\0'), ...unhex(node), ...session]);
+  const key = await env.subtle.importKey('raw', unhex(node), {name: 'Ed25519'}, false, ['verify']);
+  if (session.length !== 32 || !await env.subtle.verify({name: 'Ed25519'}, key, unhex(info.session.signature), message)) {
+    throw new IdentityError('install-refused', 'the node did not vouch for its session');
+  }
+  return {sessionPublicKey: hex(session)};
+}
+
+/**
+ * Certify the node waiting at `origin` (its key `devicePublicKey`, got out
+ * of band) and the session beside it, and install both with the node's
+ * `installToken`. Takes `identity`, `label` and `runtime` as `certifyDevice`
+ * does. Resolves as `installNodeCertificate`.
+ */
+export async function installNode({origin, devicePublicKey, installToken, identity, label = 'Tilo node', runtime, fetch}) {
+  const {sessionPublicKey} = await nodeInstallInfo({origin, devicePublicKey, installToken, fetch});
+  const certify = (key, role, name) => certifyDevice({devicePublicKey: key, identity, runtime, label: name, role});
+  const certificate = await certify(devicePublicKey, 'node', label);
+  const sessionCertificate = sessionPublicKey ? await certify(sessionPublicKey, 'session', `Apps on ${label}`) : undefined;
+  return installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch});
 }

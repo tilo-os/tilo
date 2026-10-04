@@ -39,7 +39,9 @@ impl ResourceApp for Document {
     type Resource = RichText;
     const ID: &'static str = "so.tilo.rich-text-latency";
     const TITLE: &'static str = "Rich text";
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1200, 800)
+    }
 
     fn view(cx: &mut ViewCx<RichText>) -> Element {
         cx.rich_text()
@@ -104,7 +106,9 @@ impl ResourceApp for DirectApp {
     type Resource = Blocks;
     const ID: &'static str = "so.tilo.block-editor-latency";
     const TITLE: &'static str = "Blocks";
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1200, 800)
+    }
 
     fn view(_cx: &mut ViewCx<Blocks>) -> Element {
         let seed = SEED.lock().map(|seed| seed.clone()).unwrap_or_default();

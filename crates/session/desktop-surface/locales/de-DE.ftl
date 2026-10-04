@@ -782,6 +782,13 @@ workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs k
 workspace-settings-invite-hint = Wähle eine Person und eine Rolle; Tilo signiert eine Einladung, die eine Stunde gilt.
 workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
 workspace-settings-invite-create = Erstellen
+workspace-settings-devices-title = Deine Geräte
+workspace-settings-device-here = { $device } (dieses Gerät)
+workspace-settings-device-shown = Angezeigt
+workspace-settings-device-hidden = Ausgeblendet
+workspace-settings-move-earlier = Nach oben
+workspace-settings-move-later = Nach unten
+workspace-settings-delete = Workspace löschen
 workspace-settings-invite-title = Personen einladen
 workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
 workspace-settings-glance-title = Auf einen Blick
@@ -932,3 +939,26 @@ overview-presence-you-and-many = Du und { $count } weitere seid hier
 overview-presence-one = { $name } ist hier
 overview-presence-many = { $count } Personen sind hier
 overview-collaborators-here = { $count } Mitwirkende sind hier
+
+# The launchpad in the browser: a new member's first look at the desktop
+browser-welcome-title = Willkommen bei Tilo
+browser-welcome-subtitle = Der gemeinsame Computer deines Teams. Alles, was du machst, wird laufend gespeichert und Ende-zu-Ende-verschlüsselt.
+browser-welcome-hint = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  Strg+K findet jede App
+browser-welcome-hint-mac = Pfeiltasten bewegen  ·  Eingabe öffnet  ·  ⌘K findet jede App
+
+# The overview panel a host without its own overview draws
+overview-panel-title = Übersicht
+overview-panel-you-are-here = Du bist hier
+overview-panel-windows = Fenster hier
+overview-panel-no-windows = Noch keine Fenster
+overview-panel-more-windows = { $count ->
+    [one] und 1 weiteres Fenster
+   *[other] und { $count } weitere Fenster
+}
+overview-panel-window-count = { $count ->
+    [one] 1 Fenster
+   *[other] { $count } Fenster
+}
+overview-panel-go-to = Wechseln zu
+overview-panel-new-workspace = Neuer Arbeitsbereich
+browser-new-workspace-name = Arbeitsbereich { $number }

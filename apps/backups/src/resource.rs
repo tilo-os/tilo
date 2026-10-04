@@ -81,7 +81,12 @@ impl ResourceApp for BackupsShell {
     const ID: &'static str = "so.tilo.backups";
     const TITLE: &'static str = "Backups";
     const ICON: Option<&'static str> = Some("backups");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    /// The sidebar becomes a drawer only where the content would be squeezed.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| (name == "drawer").then_some((640, 800)))
+            .unwrap_or((1280, 800))
+    }
 
     fn view(cx: &mut ViewCx<Backups>) -> Element {
         cx.surface(BackupsApp::new())
@@ -105,11 +110,6 @@ impl ResourceApp for BackupsShell {
             "schedules",
             "drawer",
         ]
-    }
-
-    /// The sidebar becomes a drawer only where the content would be squeezed.
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        (name == "drawer").then_some((640, 800))
     }
 }
 

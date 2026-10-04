@@ -27,7 +27,6 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionBinding, Resource};
 use ui::widget::card::{CardGrid, CardWidth};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toolbar::Orientation;
@@ -162,7 +161,12 @@ pub(crate) enum Request {
         /// The row the menu acts on, marked while the menu is open.
         row: Rect,
     },
-    Retry,
+    /// Sample the machine now: Refresh, or a retry of an unreadable list.
+    Refresh,
+    /// The inspector's Stop process.
+    Stop(u32),
+    /// The inspector's Kill process.
+    Kill(u32),
 }
 
 /// What the process list shows in place of rows.
@@ -1238,7 +1242,7 @@ impl Widget for ProcessesPane {
             if empty.take_action() {
                 let request = match kind {
                     Placeholder::NoMatches => Request::Filter(String::new()),
-                    _ => Request::Retry,
+                    _ => Request::Refresh,
                 };
                 self.shared.borrow_mut().push(request);
             }
@@ -1814,9 +1818,9 @@ pub(crate) struct ProcessDetail<'a> {
     /// The inset of the property list's rows, so the tiles and buttons above
     /// and below it start where its labels do.
     pub inset: f32,
-    /// The process's published resource; its Stop and Kill actions are what
-    /// the buttons invoke.
-    pub resource: Resource,
+    /// Where the Stop and Kill buttons ask for the process's effects, which
+    /// the host confirms like the palette's and an agent's.
+    pub requests: Shared,
 }
 
 /// `child` inset by `inset` on both sides.
@@ -1881,24 +1885,25 @@ pub(crate) fn process_detail(detail: Option<&ProcessDetail<'_>>) -> Element {
     ]);
 
     let mut actions = Row::new().no_wrap();
-    for (id, label, action, role) in [
+    let pid = process.pid;
+    for (id, label, request, role) in [
         (
             "monitor.stop",
             "Stop process",
-            "stop",
+            Request::Stop(pid),
             ButtonRole::Secondary,
         ),
         (
             "monitor.kill",
             "Kill process",
-            "kill",
+            Request::Kill(pid),
             ButtonRole::Destructive,
         ),
     ] {
-        let mut button = Button::new(id, label, None).role(role);
-        if let Ok(binding) = ActionBinding::unit_for(&detail.resource, action) {
-            button = button.on_action(binding);
-        }
+        let requests = Rc::clone(&detail.requests);
+        let button = Button::new(id, label, None)
+            .role(role)
+            .on_view(move || requests.borrow_mut().push(request.clone()));
         actions = actions.push(Box::new(button));
     }
 

@@ -22,7 +22,8 @@
 //! stored here.** This document is intentionally secret-free when replicated,
 //! inspected, indexed and retained in history. It still contains potentially
 //! private account identities, so normal collaboration access controls apply.
-//! The encrypted local vault owns the base32 key material.
+//! Each device keeps the base32 key material in its secret store
+//! (`crate::secrets`).
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -72,11 +73,6 @@ impl AuthDoc {
         let obj = Self::ensure_account(doc, acc.id);
         let _ = doc.put(&obj, "issuer", acc.issuer.clone());
         let _ = doc.put(&obj, "label", acc.label.clone());
-        // A pre-privacy version stored `secret` in the shared document. Remove
-        // it during every metadata sync so opening an older vault performs a
-        // one-way, idempotent migration instead of preserving a credential in
-        // collaboration/history snapshots.
-        let _ = doc.delete(&obj, "secret");
         let _ = doc.put(&obj, "algorithm", acc.algorithm.as_str().to_string());
         let _ = doc.put(&obj, "digits", i64::from(acc.digits));
         let _ = doc.put(&obj, "period", i64::from(acc.period));
@@ -154,6 +150,20 @@ impl AuthDoc {
     }
 
     /// Rewrite one account's list position. No-op if absent.
+    pub fn set_params(
+        doc: &mut AutoCommit,
+        id: AccountId,
+        algorithm: Algorithm,
+        digits: u8,
+        period: u32,
+    ) {
+        if let Some(obj) = Self::existing_account(doc, id) {
+            let _ = doc.put(&obj, "algorithm", algorithm.as_str().to_string());
+            let _ = doc.put(&obj, "digits", i64::from(digits));
+            let _ = doc.put(&obj, "period", i64::from(period));
+        }
+    }
+
     pub fn set_order(doc: &mut AutoCommit, id: AccountId, order: u32) {
         if let Some(obj) = Self::existing_account(doc, id) {
             let _ = doc.put(&obj, "order", i64::from(order));
@@ -209,16 +219,6 @@ impl AuthDoc {
         out.sort_by_key(|a| a.order);
         out
     }
-
-    /// Mirror local *metadata* into the document. It only upserts; deleting a
-    /// remote account because this device has not stored its secret would be a
-    /// destructive collaboration bug. Explicit deletion goes through the
-    /// tombstoning action above.
-    pub fn sync_vault(doc: &mut AutoCommit, accounts: &[Account]) {
-        for a in accounts {
-            Self::upsert_account(doc, a);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -227,14 +227,16 @@ mod tests {
     use crate::model::demo_accounts;
     use tilo_automerge::ApplyIncoming;
 
-    /// The vault document round-trips metadata without secrets, never deletes missing accounts, lets tombstones win, and merges.
+    /// The vault document round-trips metadata without secrets, lets tombstones win, and merges.
     #[test]
     fn vault_doc_merges_metadata_without_secrets_or_resurrection() {
         // Case `round_trips_metadata_without_a_secret`.
         {
             let mut doc = AutoCommit::new();
             let accounts = demo_accounts();
-            AuthDoc::sync_vault(&mut doc, &accounts);
+            for account in &accounts {
+                AuthDoc::upsert_account(&mut doc, account);
+            }
             let read = AuthDoc::list_accounts(&doc);
             assert_eq!(read.len(), accounts.len());
             // Order preserved.
@@ -243,18 +245,6 @@ mod tests {
                 read.iter().all(|account| account.secret.is_empty()),
                 "the collaborative document contains metadata only"
             );
-        }
-
-        // Case `sync_vault_never_deletes_an_account_missing_from_this_device`.
-        {
-            let mut doc = AutoCommit::new();
-            let mut accounts = demo_accounts();
-            AuthDoc::sync_vault(&mut doc, &accounts);
-            let retained_remote = accounts.remove(0);
-            AuthDoc::sync_vault(&mut doc, &accounts);
-            let read = AuthDoc::list_accounts(&doc);
-            assert_eq!(read.len(), accounts.len() + 1);
-            assert!(read.iter().any(|a| a.id == retained_remote.id));
         }
 
         // Case `tombstone_wins_over_a_concurrent_metadata_update`.

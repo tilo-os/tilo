@@ -96,6 +96,7 @@ struct JournalState {
 /// Append-only repository journal. Each successful mutation atomically and
 /// durably replaces one file containing the frame, every target, ack state,
 /// and the irreversible plaintext gate.
+#[derive(Clone)]
 pub struct GovernanceJournal {
     /// `None` for a journal kept only in memory.
     path: Option<PathBuf>,
@@ -123,8 +124,25 @@ impl GovernanceJournal {
                 "governance journal exceeds 256 MiB".into(),
             ));
         }
-        let state: JournalState = postcard::from_bytes(&fs::read(&path)?)
-            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let mut journal = Self::from_bytes(&fs::read(&path)?)?;
+        journal.path = Some(path);
+        Ok(journal)
+    }
+
+    /// A journal kept in memory, decoded and integrity-checked from what
+    /// [`Self::to_bytes`] produced. Its owner stores every change itself.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_JOURNAL_BYTES {
+            return Err(Error::InvalidState(
+                "governance journal exceeds 256 MiB".into(),
+            ));
+        }
+        let state: JournalState =
+            postcard::from_bytes(bytes).map_err(|error| Error::Serialization(error.to_string()))?;
         if state.version != JOURNAL_VERSION {
             return Err(Error::InvalidState(
                 "unsupported governance journal version".into(),
@@ -153,10 +171,16 @@ impl GovernanceJournal {
                 ));
             }
         }
-        Ok(Self {
-            path: Some(path),
-            state,
-        })
+        Ok(Self { path: None, state })
+    }
+
+    /// The journal as [`Self::open`] and [`Self::from_bytes`] read it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be encoded.
+    pub fn to_bytes(&self) -> Result<Vec<u8>> {
+        postcard::to_allocvec(&self.state).map_err(|error| Error::Serialization(error.to_string()))
     }
 
     /// An empty journal that is never written to disk, for a device with

@@ -143,12 +143,6 @@ pub(super) const APPS: &[CatalogApp] = &[
         platforms: &["linux", "macos"],
     },
     CatalogApp {
-        id: "so.tilo.image-editor",
-        name: "Image Editor",
-        category: "Multimedia",
-        platforms: &["linux", "macos", "web"],
-    },
-    CatalogApp {
         id: "so.tilo.imager",
         name: "Disk Imager",
         category: "System",

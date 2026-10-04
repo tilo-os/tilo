@@ -20,6 +20,8 @@
 //!   row actions. Finding a connection is the platform search.
 //! * **Form** — add or edit a connection: protocol, the Tilo devices
 //!   nearby, host, port, user, group and authentication, checked on Save.
+//!   A password or key passphrase is kept in this device's secret store,
+//!   never in the shared document.
 //! * **Session** — the live surface. SSH opens an embedded terminal grid;
 //!   VNC and Tilo devices open the remote desktop, which can fit the window
 //!   or fill it. A session that shows no surface (connecting, failed,
@@ -80,12 +82,4 @@ mod view;
 pub mod vnc;
 pub mod vt;
 
-use ui::widget::Widget;
-
-/// Build the live app: it starts empty and shows only the user's real saved
-/// connections. It never fabricates a machine list.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(app::RemoteApp::new())
-}
-
-pub use resource::{Remote, RemoteShell, launch_spec};
+pub use resource::{Remote, RemoteShell};

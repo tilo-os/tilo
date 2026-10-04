@@ -1,15 +1,17 @@
-//! The Authenticator's content: the account list, its status surfaces and the
-//! add sheet.
+//! The Authenticator's surface over the [`Totp`] resource: the account list,
+//! its status surfaces and the add sheet.
 //!
-//! Owns the encrypted device-local [`Vault`] (including base32 secrets) and
-//! mirrors only account metadata into the shared Automerge document, so names,
-//! order and lifecycle collaborate without credentials entering history. The
-//! window's header row, with its search and add buttons, belongs to the
-//! framework's navigation shell around this widget (see [`crate::resource`]);
-//! this widget paints what stands under it:
+//! The document holds account metadata (names, order and lifecycle
+//! collaborate without credentials entering history); this device's secret
+//! store holds each account's seed ([`Seeds`]). The surface joins the two into
+//! the accounts it shows and submits every metadata change as a [`TotpAction`]
+//! through the framework's dispatcher. The window's header row, with its
+//! search and add buttons, belongs to the framework's navigation shell around
+//! this widget (see [`crate::resource`]); this widget paints what stands under
+//! it:
 //!
-//!  * the [`AccountList`] (main screen), with a banner above it when the
-//!    vault could not be saved,
+//!  * the [`AccountList`] (main screen), with a banner above it when a
+//!    secret could not be saved on this device,
 //!  * a toast for what just happened,
 //!  * the [`AddAccountPanel`] sheet (second screen), in the window's top layer.
 //!
@@ -18,10 +20,10 @@
 //! faces of the toolkit's list row, ring and button.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -29,13 +31,14 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::framework::Dispatcher;
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
+use ui::secrets::SecretStore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::OperationKind;
 use ui::tokens::TextRole;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
@@ -43,11 +46,12 @@ use ui::widget::{
     Widget,
 };
 
+use crate::actions::TotpAction;
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
-use crate::doc::AuthDoc;
 use crate::list::{AccountList, ListEvent};
-use crate::model::{AccountId, Vault, demo_accounts};
-use crate::storage;
+use crate::model::{Account, AccountId, Vault};
+use crate::resource::{Totp, TotpEffect};
+use crate::secrets::Seeds;
 use crate::totp;
 
 /// Seconds into a thirty-second period at which a capture shows its codes: the
@@ -74,28 +78,20 @@ fn qr_image_request() -> PickRequest {
         .all_files()
 }
 
-/// How the initial vault is populated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SeedMode {
-    /// Live session: load the user's persisted vault, persist changes, and
-    /// never fabricate sample data.
-    Live,
-    /// A capture or demo: seed a deterministic sample vault, ignore on-disk
-    /// storage, and never write.
-    Demo,
-    /// A capture of the empty state: start with no accounts, ignore storage.
-    Empty,
-}
-
-/// The banner's wording when the vault could not be saved: the headline, and
-/// what the person can do about it.
+/// The banner's wording when a secret could not be saved on this device: the
+/// headline, and what the person can do about it.
 const UNSAVED_TITLE: &str = "Changes aren\u{2019}t saved";
 const UNSAVED_DETAIL: &str = "Restore keyring or storage access on this device, then retry.";
 
 #[allow(clippy::struct_excessive_bools, reason = "independent UI/frame flags")]
 pub struct AuthenticatorApp {
+    /// The accounts as the document holds them: metadata, no secrets.
+    accounts: Rc<Vec<Account>>,
+    /// Each account's seed on this device.
+    seeds: Seeds,
+    /// The accounts joined with this device's seeds: what the list shows and
+    /// codes are computed from.
     vault: Vault,
-    search_provider: crate::search_provider::TotpSearchProvider,
     list: AccountList,
     add_panel: AddAccountPanel,
     /// An in-flight XDG-portal file-open for QR-image import. When the user
@@ -123,36 +119,21 @@ pub struct AuthenticatorApp {
     /// action. Lets callers (and tests) observe what was copied without
     /// round-tripping the system clipboard, which is unavailable headless.
     last_copied: Option<String>,
-    seeded: bool,
-    /// How the initial vault is populated and whether changes persist. The
-    /// live app loads/saves the real vault; a capture uses fixed data and
-    /// never touches storage.
-    seed_mode: SeedMode,
-    /// Local account metadata changed and must be mirrored into the CRDT
-    /// document. Secrets are explicitly omitted by [`AuthDoc`].
-    /// Gates the per-frame doc write so idle frames (and pointer moves) do
-    /// no CRDT work.
-    doc_dirty: bool,
+    /// An account this view asked to delete, confirmed once it leaves the
+    /// document.
+    pending_delete: Option<AccountId>,
     /// The visible (ordered) list must be recomputed — set when the vault
     /// changes.
     list_dirty: bool,
     /// Effective host motion preference. Normal mode uses a smooth countdown;
     /// reduced motion sleeps between whole-second updates.
     reduce_motion: bool,
-    /// A local encrypted-vault write failed. We retain the in-memory vault but
-    /// never retry in a frame loop; the user/agent explicitly invokes retry.
-    persistence_pending: bool,
-    vault_recovery_required: bool,
-    /// Non-secret, human-readable durability detail shown in the dedicated
-    /// persistence banner. This replaces a competing transient error toast.
+    /// A secret this device's store refused or could not read: shown as a
+    /// banner until a retry the user asks for succeeds, never retried in a
+    /// frame loop.
     persistence_message: Option<String>,
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`TotpAction`](crate::actions::TotpAction) through this: the host brackets
-    /// the undo boundary, applies the action through the executor (so it replays
-    /// byte-identically on peers, exactly as the Ctrl+K palette does), and records
-    /// the last one so a test can prove a button and its
-    /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
-    actions: crate::resource::ActionSink,
+    /// Where account metadata changes go.
+    dispatch: Option<Dispatcher<Totp>>,
     /// Whether the list has accounts, for the window's header row to follow.
     has_accounts: Option<ui::LocalState<bool>>,
     /// A capture's clock was moved to its scenario's step already.
@@ -166,57 +147,14 @@ impl Default for AuthenticatorApp {
 }
 
 impl AuthenticatorApp {
-    /// The live app: loads the persisted vault, no sample data.
+    /// The surface before the framework attaches it to its resource and this
+    /// device's secret store.
     pub fn new() -> Self {
-        Self::with_mode(SeedMode::Live)
-    }
-
-    /// The demo app: seeds a deterministic sample vault and never touches
-    /// on-disk storage.
-    pub fn demo() -> Self {
-        Self::with_mode(SeedMode::Demo)
-    }
-
-    /// The empty-state app: no accounts, ignores storage.
-    pub fn empty() -> Self {
-        Self::with_mode(SeedMode::Empty)
-    }
-
-    pub fn demo_provision() -> Self {
-        let mut app = Self::with_mode(SeedMode::Demo);
-        app.seed();
-        app.seeded = true;
-        if let Some(account) = app.vault.accounts.first_mut() {
-            account.secret.clear();
-        }
-        app.seed_open_selected_setup();
-        app
-    }
-
-    pub fn demo_persistence_error() -> Self {
-        let mut app = Self::demo();
-        app.seed();
-        app.seeded = true;
-        app.persistence_pending = true;
-        app.persistence_message = Some(UNSAVED_DETAIL.into());
-        app
-    }
-
-    pub fn demo_missing_secret() -> Self {
-        let mut app = Self::demo();
-        app.seed();
-        app.seeded = true;
-        if let Some(account) = app.vault.accounts.first_mut() {
-            account.secret.clear();
-        }
-        app
-    }
-
-    fn with_mode(seed_mode: SeedMode) -> Self {
         crate::i18n::ensure();
         Self {
+            accounts: Rc::default(),
+            seeds: Seeds::new(SecretStore::memory("so.tilo.totp"), false),
             vault: Vault::new(),
-            search_provider: crate::search_provider::TotpSearchProvider::new(&Vault::new()),
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
@@ -231,15 +169,11 @@ impl AuthenticatorApp {
             selected: None,
             toast: None,
             last_copied: None,
-            seeded: false,
-            seed_mode,
-            doc_dirty: false,
+            pending_delete: None,
             list_dirty: false,
             reduce_motion: false,
-            persistence_pending: false,
-            vault_recovery_required: false,
             persistence_message: None,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
             has_accounts: None,
             clock_staged: false,
         }
@@ -253,144 +187,80 @@ impl AuthenticatorApp {
         self
     }
 
-    /// Populate the initial vault. The live app loads the user's persisted
-    /// vault (empty on a fresh install, which shows the empty state). A demo or
-    /// a capture uses a fixed sample set and ignores on-disk storage entirely,
-    /// so captures are reproducible and never leak the real vault.
-    fn seed(&mut self) {
-        // A capture pins the wall clock; it never reads or writes a real vault.
-        if self.seed_mode == SeedMode::Live && ui::time::wall_frozen() {
-            self.seed_mode = SeedMode::Demo;
-        }
-        let mut vault = match self.seed_mode {
-            SeedMode::Live => match storage::load_checked() {
-                Ok(vault) => vault,
-                Err(error) => {
-                    tracing::warn!(%error, "authenticator: existing vault could not be loaded");
-                    self.vault_recovery_required = true;
-                    self.describe_persistence_failure(
-                        "The vault could not be loaded. Restore key or storage access, then restart Authenticator before saving.",
-                    );
-                    Vault::new()
-                }
-            },
-            SeedMode::Demo => {
-                let mut v = Vault::new();
-                v.accounts = demo_accounts();
-                v
-            }
-            SeedMode::Empty => Vault::new(),
-        };
-        vault.renumber();
-        self.selected = vault.ordered().first().map(|a| a.id);
-        self.search_provider.update(&self.vault, &vault);
-        self.vault = vault;
-        self.doc_dirty = true;
-        self.list_dirty = true;
-    }
-
-    /// Dispatch one [`TotpAction`](crate::actions::TotpAction) — the single
-    /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
-    /// through the Tilo action executor (a pinned actor + committed change, so it
-    /// replays byte-identically on peers), exactly as the palette does. The
-    /// document heads captured just before the first action of the event are
-    /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). Callers reload the in-memory vault
-    /// from the document afterward for immediate feedback; `sync` reconciles it
-    /// again each frame (so a palette dispatch shows up the same way). This app
-    /// supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::TotpAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::TOTP_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.totp", "Authenticator", action),
-        );
-    }
-
-    /// Show shared account metadata, keeping secrets that exist only on this device.
-    /// Accounts not yet in the document stay in the vault so the next sync can publish them.
-    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Account]) {
-        if state.is_empty() {
-            return;
-        }
-        let mut next_accounts: Vec<_> = state
-            .iter()
-            .cloned()
-            .map(|mut shared| {
-                if let Some(local) = self.vault.get(shared.id) {
-                    shared.secret.clone_from(&local.secret);
-                }
-                shared
-            })
-            .collect();
-        for local in self.vault.ordered() {
-            if state.iter().all(|shared| shared.id != local.id) {
-                next_accounts.push(local);
-            }
-        }
-        let next = crate::model::Vault {
-            accounts: next_accounts,
-        };
-        if next.ordered() == self.vault.ordered() {
-            return;
-        }
-        self.search_provider.update(&self.vault, &next);
-        self.vault = next;
-        self.list_dirty = true;
-    }
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Edit through `dispatch`, with the seeds in `store`. A view that is not
+    /// `live` (a past version, a screenshot) never writes or forgets one.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Totp>,
+        dispatch: Dispatcher<Totp>,
+        store: SecretStore,
+        live: bool,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatch = Some(dispatch);
+        self.seeds = Seeds::new(store, live);
     }
 
-    /// Merge shared metadata with this device's secret-bearing vault. A remote
-    /// account can appear here without a secret (the row stays deliberately
-    /// unavailable for copying until it is set up on this device); the document
-    /// never has authority to replace or reveal local key material.
-    fn reload_from_doc(&mut self, doc: &AutoCommit) -> bool {
-        let metadata = AuthDoc::list_accounts(doc); // sorted by order, no secrets
-        let next_accounts: Vec<_> = metadata
-            .into_iter()
-            .map(|mut shared| {
-                if let Some(local) = self.vault.get(shared.id) {
-                    shared.secret.clone_from(&local.secret);
+    /// Submit one account change through the framework: checked, applied,
+    /// undoable and replicated like the same action from the palette.
+    fn apply(&self, action: &TotpAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
+        }
+    }
+
+    /// Show the accounts the document holds now, with this device's seeds.
+    pub(crate) fn present_accounts(&mut self, state: &Rc<Vec<Account>>) {
+        self.accounts = Rc::clone(state);
+        let ids: Vec<AccountId> = state.iter().map(|account| account.id).collect();
+        self.seeds.follow(&ids);
+        if self.persistence_message.is_none() {
+            if self.seeds.unreadable() {
+                self.describe_persistence_failure(
+                    "This device\u{2019}s keys couldn\u{2019}t be read. Unlock the keyring or restore access, then retry.",
+                );
+            } else if self.seeds.pending() {
+                self.describe_persistence_failure(UNSAVED_DETAIL);
+            }
+        }
+        self.join_seeds();
+        if let Some(id) = self.pending_delete
+            && !ids.contains(&id)
+        {
+            self.pending_delete = None;
+            self.toast("Account removed", ToastKind::Success);
+        }
+        if self.selected.is_none_or(|id| !ids.contains(&id)) {
+            self.selected = self.vault.ordered().first().map(|account| account.id);
+        }
+    }
+
+    /// Join the document's accounts with this device's seeds.
+    fn join_seeds(&mut self) {
+        let accounts = self
+            .accounts
+            .iter()
+            .cloned()
+            .map(|mut account| {
+                if let Some(seed) = self.seeds.get(account.id) {
+                    seed.clone_into(&mut account.secret);
                 }
-                shared
+                account
             })
             .collect();
-        let next = Vault {
-            accounts: next_accounts,
-        };
-        if next.ordered() == self.vault.ordered() {
-            return true; // nothing changed
-        }
-        self.search_provider.update(&self.vault, &next);
-        self.vault = next;
+        self.vault = Vault { accounts };
         self.list_dirty = true;
-        self.persist_vault()
     }
 
-    fn persist_vault(&mut self) -> bool {
-        if self.vault_recovery_required {
-            return false;
-        }
-        let persisted = self.seed_mode != SeedMode::Live || storage::save(&self.vault);
-        self.persistence_pending = !persisted;
-        if persisted {
-            self.persistence_message = None;
-        } else if self.persistence_message.is_none() {
-            self.persistence_message = Some(UNSAVED_DETAIL.into());
-        }
-        persisted
+    /// The accounts as the document holds them, without secrets.
+    pub(crate) fn accounts(&self) -> &[Account] {
+        &self.accounts
+    }
+
+    /// Whether a secret change is not saved on this device.
+    pub(crate) fn persistence_pending(&self) -> bool {
+        self.persistence_message.is_some()
     }
 
     fn describe_persistence_failure(&mut self, message: impl Into<String>) {
-        self.persistence_pending = true;
         self.persistence_message = Some(message.into());
         // A durable, actionable banner supersedes the transient toast. Keeping
         // both is noisy and obscures the account list, especially on narrow
@@ -398,32 +268,31 @@ impl AuthenticatorApp {
         self.toast = None;
     }
 
+    /// Try this device's secret store again, as the person asked.
     fn retry_persist(&mut self) -> bool {
-        if self.vault_recovery_required {
-            return false;
-        }
-        if !self.persistence_pending {
+        if !self.persistence_pending() {
             return true;
         }
-        let persisted = self.persist_vault();
-        if persisted {
-            self.toast("Vault saved", ToastKind::Success);
+        let ids: Vec<AccountId> = self.accounts.iter().map(|account| account.id).collect();
+        if self.seeds.retry(&ids) {
+            self.persistence_message = None;
+            self.join_seeds();
+            self.toast("Keys saved on this device", ToastKind::Success);
+            true
         } else {
             self.describe_persistence_failure(UNSAVED_DETAIL);
+            false
         }
-        persisted
     }
 
-    /// Live vault-save retry is not in [`crate::resource::Totp`]'s children —
-    /// publish it beside the framework tree when hosted.
-    fn persistence_retry_resource(&self) -> Option<tilo_actions::Resource> {
-        if !self.persistence_pending {
-            return None;
+    /// Keep `seed` as the secret of `id` on this device, reporting a store
+    /// that refused it with `failure`.
+    fn keep_seed(&mut self, id: AccountId, seed: &str, failure: &str) -> bool {
+        let saved = self.seeds.put(id, seed);
+        if !saved {
+            self.describe_persistence_failure(failure);
         }
-        Some(
-            tilo_actions::Resource::new("totp.persistence", "totp.persistence", "Local vault save")
-                .with_action(crate::actions::retry_persist_operation()),
-        )
+        saved
     }
 
     /// Recompute the ordered visible set and push it to the list.
@@ -540,11 +409,10 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Apply one list interaction. Reorder and delete are document mutations, so
-    /// they dispatch a [`TotpAction`](crate::actions::TotpAction) through
-    /// [`Self::perform_action`] (the same action the Ctrl+K palette dispatches);
-    /// copy and select are presentation and never touch the document.
-    fn apply_list_event(&mut self, ev: ListEvent, state: &mut AutoCommit) {
+    /// Apply one list interaction. Reorder and delete are document mutations,
+    /// submitted as the same [`TotpAction`] the published account actions
+    /// build; copy and select are presentation and never touch the document.
+    fn apply_list_event(&mut self, ev: ListEvent) {
         match ev {
             ListEvent::Copy(id) => {
                 self.selected = Some(id);
@@ -559,104 +427,89 @@ impl AuthenticatorApp {
                 self.open_for(id);
             }
             ListEvent::Add => self.open_add(),
-            ListEvent::MoveUp(id) => {
-                self.perform_action(state, &crate::actions::move_up_action(id));
-                self.reload_from_doc(state);
-            }
-            ListEvent::MoveDown(id) => {
-                self.perform_action(state, &crate::actions::move_down_action(id));
-                self.reload_from_doc(state);
-            }
+            ListEvent::MoveUp(id) => self.apply(&crate::actions::move_up_action(id)),
+            ListEvent::MoveDown(id) => self.apply(&crate::actions::move_down_action(id)),
             ListEvent::Delete(id) => {
-                self.perform_action(state, &crate::actions::delete_account_action(id));
-                let persisted = self.reload_from_doc(state);
-                if self.selected == Some(id) {
-                    self.selected = self.vault.ordered().first().map(|a| a.id);
-                }
-                if persisted {
-                    self.toast("Account removed", ToastKind::Success);
-                } else {
-                    self.describe_persistence_failure(
-                        "The account was removed, but this device\u{2019}s vault wasn\u{2019}t updated. Restore access, then retry.",
-                    );
-                }
+                // Deleting asks first; the account (and with it this device's
+                // key) goes once the document drops it.
+                self.pending_delete = Some(id);
+                self.apply(&crate::actions::delete_account_action(id));
             }
         }
     }
 
-    /// Act on one outcome drained from the add sheet. A save is a
-    /// document mutation dispatched as an [`TotpAction::AddAccount`]
-    /// (`crate::actions::TotpAction`); the colour slot and list order are pinned at
-    /// authoring time so replay is deterministic.
-    fn apply_add_panel_event(&mut self, ev: AddPanelEvent, state: &mut AutoCommit) {
+    /// Act on one outcome drained from the add sheet. The key goes to this
+    /// device's store; only metadata goes to the document, with the colour
+    /// slot and list order pinned at authoring time so replay is
+    /// deterministic.
+    fn apply_add_panel_event(&mut self, ev: AddPanelEvent) {
         self.structure_dirty = true;
         match ev {
             AddPanelEvent::Cancel => {}
             AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
             AddPanelEvent::Save(mut acc) => {
-                // Give the new account a distinct colour slot + end-of-list order,
-                // baked into the action so peers replay the identical row.
                 acc.color = (self.vault.len() % 7) as u8;
                 let order = self.vault.next_order();
-                let id = acc.id;
-                // The secret enters the encrypted local vault before the
-                // metadata-only action is broadcast. It is never part of the
-                // action envelope or shared document.
                 acc.order = order;
-                self.vault.upsert(acc.clone());
-                let persisted = self.persist_vault();
-                self.perform_action(state, &crate::actions::add_account_action(&acc, order));
-                self.reload_from_doc(state);
+                let id = acc.id;
+                let saved = self.keep_seed(
+                    id,
+                    &acc.secret,
+                    "The account was added, but its key isn\u{2019}t saved. Keep this window open, restore access, then retry.",
+                );
+                self.apply(&crate::actions::add_account_action(&acc, order));
                 self.selected = Some(id);
-                if persisted {
+                if saved {
                     self.toast("Account added", ToastKind::Success);
-                } else {
-                    self.describe_persistence_failure(
-                        "The account was added, but its key isn\u{2019}t saved. Keep this window open, restore access, then retry.",
-                    );
                 }
             }
             AddPanelEvent::Edit(mut acc) => {
-                let order = self
-                    .vault
-                    .get(acc.id)
-                    .map_or(acc.order, |existing| existing.order);
-                acc.order = order;
-                self.vault.upsert(acc.clone());
-                let persisted = self.persist_vault();
-                self.perform_action(state, &crate::actions::add_account_action(&acc, order));
-                self.reload_from_doc(state);
-                self.selected = Some(acc.id);
-                if persisted {
-                    self.toast("Account updated", ToastKind::Success);
-                } else {
-                    self.describe_persistence_failure(
-                        "The account changed, but this device\u{2019}s vault isn\u{2019}t saved. Restore access, then retry.",
-                    );
-                }
-            }
-            AddPanelEvent::Provision(mut acc) => {
-                let Some(existing) = self.vault.get(acc.id).cloned() else {
+                let Some(before) = self.vault.get(acc.id).cloned() else {
                     self.toast("That account is no longer available", ToastKind::Error);
                     self.list_dirty = true;
                     return;
                 };
-                // Keep shared identity/order/color immutable during key setup;
-                // only the local secret is installed; TOTP parameters were
-                // validated against the immutable shared metadata in the form.
-                acc.issuer = existing.issuer;
-                acc.label = existing.label;
-                acc.color = existing.color;
-                acc.order = existing.order;
-                self.vault.upsert(acc);
-                let persisted = self.persist_vault();
-                self.list_dirty = true;
-                if persisted {
-                    self.toast("Key set up on this device", ToastKind::Success);
-                } else {
-                    self.describe_persistence_failure(
-                        "The key works for this session, but this device\u{2019}s vault isn\u{2019}t saved. Restore access, then retry.",
+                // The form edits identity, key and code parameters; the list
+                // owns colour and order.
+                acc.color = before.color;
+                acc.order = before.order;
+                let saved = acc.secret == before.secret
+                    || self.keep_seed(
+                        acc.id,
+                        &acc.secret,
+                        "The account changed, but its new key isn\u{2019}t saved on this device. Restore access, then retry.",
                     );
+                let edits = crate::actions::edit_actions(&before, &acc);
+                if let Some(dispatch) = &self.dispatch {
+                    dispatch.group(|| {
+                        for edit in &edits {
+                            dispatch.apply(edit);
+                        }
+                    });
+                }
+                self.join_seeds();
+                self.selected = Some(acc.id);
+                if saved {
+                    self.toast("Account updated", ToastKind::Success);
+                }
+            }
+            AddPanelEvent::Provision(acc) => {
+                if self.vault.get(acc.id).is_none() {
+                    self.toast("That account is no longer available", ToastKind::Error);
+                    self.list_dirty = true;
+                    return;
+                }
+                // Only the local key is installed; the shared identity, order
+                // and colour stay as the document has them, and the form
+                // checked the code parameters against them.
+                let saved = self.keep_seed(
+                    acc.id,
+                    &acc.secret,
+                    "The key works for this session, but it isn\u{2019}t saved on this device. Restore access, then retry.",
+                );
+                self.join_seeds();
+                if saved {
+                    self.toast("Key set up on this device", ToastKind::Success);
                 }
             }
         }
@@ -666,12 +519,7 @@ impl AuthenticatorApp {
     /// Resolve a published canvas target to the existing list/app action.
     /// Keeping this beside `apply_list_event` ensures assistive activation
     /// cannot acquire a separate mutation path from pointer input.
-    fn perform_a11y_target(
-        &mut self,
-        target: &str,
-        action: &A11yAction,
-        state: &mut AutoCommit,
-    ) -> bool {
+    fn perform_a11y_target(&mut self, target: &str, action: &A11yAction) -> bool {
         let Some((verb, raw_id)) = target.rsplit_once(':') else {
             return false;
         };
@@ -683,7 +531,7 @@ impl AuthenticatorApp {
         }
         if matches!(action, A11yAction::Focus) {
             if verb == "totp.select" {
-                self.apply_list_event(ListEvent::Select(id), state);
+                self.apply_list_event(ListEvent::Select(id));
                 self.list.set_selected(self.selected);
                 return true;
             }
@@ -710,7 +558,7 @@ impl AuthenticatorApp {
             "totp.delete" => ListEvent::Delete(id),
             _ => return false,
         };
-        self.apply_list_event(event, state);
+        self.apply_list_event(event);
         self.list.set_selected(self.selected);
         true
     }
@@ -881,34 +729,18 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Stage a capture scenario: a deterministic demo vault, in the state the
-    /// scenario shows. Never called in a live window.
+    /// Stage the view state a capture scenario shows. The scenario's accounts
+    /// reached the document through its actions, and the capture's own store
+    /// holds their keys (all but the first for "provision" and
+    /// "missing-secret"). Never called in a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.seed_mode = if scenario == Some("empty") {
-            SeedMode::Empty
-        } else {
-            SeedMode::Demo
-        };
-        self.seed();
-        self.seeded = true;
-        self.vault_recovery_required = false;
-        self.persistence_pending = false;
-        self.persistence_message = None;
         self.toast = None;
         self.stage_clock(scenario);
-        if matches!(scenario, Some("missing-secret" | "provision"))
-            && let Some(account) = self.vault.accounts.first_mut()
-        {
-            account.secret.clear();
-        }
         match scenario {
             Some("add") => self.seed_open_add(),
             Some("add-advanced") => self.seed_open_add_advanced(),
             Some("provision") => self.seed_open_selected_setup(),
-            Some("persistence-error") => {
-                self.persistence_pending = true;
-                self.persistence_message = Some(UNSAVED_DETAIL.into());
-            }
+            Some("persistence-error") => self.describe_persistence_failure(UNSAVED_DETAIL),
             _ => {}
         }
         self.refresh_list();
@@ -933,6 +765,53 @@ impl AuthenticatorApp {
         }
     }
 
+    /// Answer an effect invoked by a control, the palette, an agent or a
+    /// script.
+    pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
+        match effect {
+            TotpEffect::AddAccount => self.open_add(),
+            TotpEffect::Open { account } => {
+                let id = self.known_account(&account)?;
+                self.reveal(id);
+            }
+            TotpEffect::CopyCode { account } => {
+                let id = self.known_account(&account)?;
+                self.reveal(id);
+                if !self.has_local_secret(id) {
+                    return Err("Set up this account on this device before copying a code".into());
+                }
+                self.copy_account(id);
+            }
+            TotpEffect::SetUpLocal { account } => {
+                let id = self.known_account(&account)?;
+                self.open_for(id);
+            }
+            TotpEffect::RetrySave => {
+                if !self.retry_persist() {
+                    return Err(self.persistence_message.clone().unwrap_or_default());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn known_account(&self, raw: &str) -> Result<AccountId, String> {
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid authenticator account id".to_string())?;
+        if self.vault.get(id).is_none() {
+            return Err("Authenticator account is no longer available".into());
+        }
+        Ok(id)
+    }
+
+    /// Select `id` and scroll its row into view.
+    fn reveal(&mut self, id: AccountId) {
+        self.selected = Some(id);
+        self.list.reveal(id);
+        self.list_dirty = true;
+    }
+
     // ---- painting --------------------------------------------------------
 
     /// The readable strip the banner and rows stand in: the window less its
@@ -954,7 +833,7 @@ impl AuthenticatorApp {
         let mut top = self.rect.y0;
         self.banner_rect = Rect::ZERO;
         self.retry_rect = Rect::ZERO;
-        if self.persistence_pending {
+        if self.persistence_pending() {
             let metrics = &theme.tokens.metrics;
             let pad = f64::from(spacing.s4);
             let gap = f64::from(spacing.s3);
@@ -1013,7 +892,7 @@ impl AuthenticatorApp {
     }
 
     fn paint_banner(&self, ctx: &mut PaintCtx<'_>) {
-        if !self.persistence_pending {
+        if !self.persistence_pending() {
             return;
         }
         Banner::paint(
@@ -1072,77 +951,11 @@ impl AuthenticatorApp {
 const RETRY_LABEL: &str = "Retry";
 
 impl AuthenticatorApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let (raw, expected_kind) = match operation {
-            crate::actions::TotpOperation::OpenAddAccount => {
-                if kind != OperationKind::View {
-                    return Err("Authenticator add screen requires a view broker route".into());
-                }
-                self.open_add();
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::SetUpLocal { id } => {
-                if kind != OperationKind::View {
-                    return Err("Authenticator setup requires a view broker route".into());
-                }
-                let account_id = id
-                    .parse()
-                    .map_err(|_| "Invalid authenticator account id".to_string())?;
-                if self.vault.get(account_id).is_none() {
-                    return Err("Authenticator account is no longer available".into());
-                }
-                self.open_for(account_id);
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::RetryPersist => {
-                if kind != OperationKind::Effect {
-                    return Err("Authenticator retry requires an effect broker route".into());
-                }
-                self.retry_persist();
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
-            crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
-        };
-        if kind != expected_kind {
-            return Err(format!(
-                "Authenticator operation requires a {} broker route",
-                expected_kind.as_str()
-            ));
-        }
-        let id = raw
-            .parse()
-            .map_err(|_| "Invalid authenticator account id".to_string())?;
-        if self.vault.get(id).is_none() {
-            return Err("Authenticator account is no longer available".into());
-        }
-        self.selected = Some(id);
-        self.list.reveal(id);
-        self.list_dirty = true;
-        if expected_kind == OperationKind::Effect {
-            self.copy_account(id);
-        }
-        Ok(true)
-    }
-
     /// Hand the sheet's outcome, if any, to the app.
-    fn drain_add_panel(&mut self, state: &mut AutoCommit) {
+    fn drain_add_panel(&mut self) {
         self.add_panel.pump();
         while let Some(event) = self.add_panel.take_event() {
-            self.apply_add_panel_event(event, state);
+            self.apply_add_panel_event(event);
         }
         if !self.add_panel.is_open() && self.add_panel.widget().is_some() {
             self.add_panel.close();
@@ -1152,58 +965,15 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::TOTP_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
-
-        // A capture stages its own vault ([`Self::stage_scenario`]); it never
-        // seeds one first, so what the scenario shows is all the document holds.
-        let capturing = self.seed_mode == SeedMode::Live && ui::time::wall_frozen();
-        if !self.seeded && !capturing {
-            self.seed();
-            self.seeded = true;
-        }
-        // Publish the freshly-loaded vault once, on the seed frame. Each new
-        // account is an `AddAccount`, hosted or standalone, so the first mirror
-        // is the same replayable write as a later add. Accounts already in the
-        // document are left alone: deleting one this device has not stored
-        // would be a destructive collaboration bug.
-        if self.doc_dirty {
-            let existing: std::collections::HashSet<_> = AuthDoc::list_accounts(state)
-                .into_iter()
-                .map(|account| account.id)
-                .collect();
-            for account in self.vault.ordered() {
-                if existing.contains(&account.id) {
-                    continue;
-                }
-                self.perform_action(
-                    state,
-                    &crate::actions::add_account_action(&account, account.order),
-                );
-            }
-            self.doc_dirty = false;
-        }
-        // Re-project the vault from the document so palette dispatches and remote
-        // edits appear (a cheap no-op when nothing changed).
-        self.reload_from_doc(state);
         // Sheets that left the tree last frame can go now.
         if self.add_panel.reap() {
             self.structure_dirty = true;
         }
-        self.drain_add_panel(state);
+        self.drain_add_panel();
         if let Some(sheet) = self.add_panel.widget_mut() {
             sheet.sync(state, path);
         }
@@ -1324,7 +1094,7 @@ impl Widget for AuthenticatorApp {
             {
                 *ctx.focus_target = Some(*node);
             }
-            self.drain_add_panel(ctx.state);
+            self.drain_add_panel();
             *ctx.handled = true;
             return;
         }
@@ -1352,7 +1122,7 @@ impl Widget for AuthenticatorApp {
             .handle_event(event, ctx.scale_factor, &mut *ctx.handled);
         let events = self.list.take_events();
         for ev in events {
-            self.apply_list_event(ev, ctx.state);
+            self.apply_list_event(ev);
         }
         // Keep the list's selection mirror current.
         self.list.set_selected(self.selected);
@@ -1360,27 +1130,6 @@ impl Widget for AuthenticatorApp {
             self.refresh_list();
             self.list_dirty = false;
         }
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
     }
 
     fn name(&self) -> &'static str {
@@ -1431,17 +1180,17 @@ impl Widget for AuthenticatorApp {
         let visible = self.vault.ordered();
         let total = visible.len();
         let mut children = Vec::new();
-        if self.persistence_pending {
+        if self.persistence_pending() {
             children.push(
                 AccessNode::new(Role::Toolbar)
-                    .with_name("Vault status")
+                    .with_name("Key status")
                     .with_children(vec![
                         AccessNode::new(Role::Button)
-                            .with_name("Retry saving local vault")
+                            .with_name("Retry saving keys")
                             .with_description(
                                 self.persistence_message
                                     .as_deref()
-                                    .unwrap_or("Retry the failed encrypted local-vault save"),
+                                    .unwrap_or("Retry saving this device\u{2019}s keys"),
                             )
                             .with_state(AccessState::new().focusable(true))
                             .with_bounds(self.retry_rect)
@@ -1554,14 +1303,13 @@ impl Widget for AuthenticatorApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
         if target == "totp.retry-persist" {
             return matches!(action, A11yAction::Activate) && self.retry_persist();
         }
-        self.perform_a11y_target(target, action, state)
+        self.perform_a11y_target(target, action)
     }
 
     /// Smooth countdown rings tick every frame. Reduced motion is driven by a
@@ -1585,144 +1333,6 @@ impl Widget for AuthenticatorApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
-    }
-}
-
-impl ui::search::capability::SearchSource for AuthenticatorApp {
-    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
-    /// the retained
-    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
-    /// makes every account findable there by issuer or account name alongside
-    /// the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
-impl ui::resources::PublishesResources for AuthenticatorApp {
-    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
-    /// to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes the vault and its accounts. Keep only
-        // the live persistence retry when hosted — it is not in the resource.
-        if self.actions.is_hosted() {
-            return self.persistence_retry_resource().into_iter().collect();
-        }
-        let accounts =
-            <crate::resource::Totp as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Totp>(
-            "totp.vault",
-            "Accounts",
-            &accounts,
-        );
-        let ordered = self.vault.ordered();
-        for child in &mut root.children {
-            if child.kind != "totp.account" {
-                continue;
-            }
-            let Some(raw) = child.id.as_str().strip_prefix("totp.account:") else {
-                continue;
-            };
-            let ready = raw.parse::<crate::model::AccountId>().is_ok_and(|id| {
-                ordered
-                    .iter()
-                    .find(|account| account.id == id)
-                    .is_some_and(crate::model::Account::secret_is_valid)
-            });
-            crate::actions::overlay_local_secret(child, ready);
-        }
-        let published: std::collections::HashSet<String> = root
-            .children
-            .iter()
-            .map(|child| child.id.as_str().to_owned())
-            .collect();
-        let count = ordered.len();
-        for (index, account) in ordered.iter().enumerate() {
-            let id = crate::actions::account_resource_id(account.id);
-            if published.contains(id.as_str()) {
-                continue;
-            }
-            root.children.push(crate::actions::provide_account_resource(
-                account,
-                index,
-                count,
-                account.secret_is_valid(),
-            ));
-        }
-        if self.persistence_pending {
-            root = root.with_action(crate::actions::retry_persist_operation());
-        }
-        vec![root]
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "totp.persistence" {
-            return self.persistence_retry_resource();
-        }
-        if id == "totp.vault" {
-            // When hosted the framework root owns totp.vault; this surface
-            // only adds the persistence retry beside it.
-            if self.actions.is_hosted() {
-                return None;
-            }
-            return self.resources(doc).pop();
-        }
-        let raw_id = id.strip_prefix("totp.account:")?;
-        if self.actions.is_hosted() {
-            let accounts = <crate::resource::Totp as ui::tilo_resource::Resource>::read(doc)
-                .unwrap_or_default();
-            let root = ui::tilo_resource::publish::<crate::resource::Totp>(
-                "totp.vault",
-                "Accounts",
-                &accounts,
-            );
-            if let Some(mut child) = root
-                .children
-                .into_iter()
-                .find(|child| child.id.as_str() == id)
-            {
-                let ready = raw_id
-                    .parse::<crate::model::AccountId>()
-                    .is_ok_and(|account_id| {
-                        self.vault
-                            .ordered()
-                            .iter()
-                            .find(|account| account.id == account_id)
-                            .is_some_and(crate::model::Account::secret_is_valid)
-                    });
-                crate::actions::overlay_local_secret(&mut child, ready);
-                return Some(child);
-            }
-        } else if let Some(found) = self.resources(doc).into_iter().find_map(|root| {
-            root.children
-                .into_iter()
-                .find(|child| child.id.as_str() == id)
-        }) {
-            return Some(found);
-        }
-        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
-        let ordered = self.vault.ordered();
-        let index = ordered
-            .iter()
-            .position(|account| account.id == account_id)?;
-        ordered.get(index).map(|account| {
-            crate::actions::provide_account_resource(
-                account,
-                index,
-                ordered.len(),
-                account.secret_is_valid(),
-            )
-        })
-    }
-}
-
-impl ui::undo::CommittedActions for AuthenticatorApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its account action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 

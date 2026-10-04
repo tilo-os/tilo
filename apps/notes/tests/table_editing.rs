@@ -171,9 +171,10 @@ impl Bound {
     /// Bring the editor up to date with `state`, recording what the editor
     /// wrote as one undo step.
     fn sync(&mut self, state: &mut ui::State) {
-        let surface = self.panel.body_editor_mut();
-        surface.sync(&mut state.doc, &automerge::ROOT);
-        if let Some(before) = ui::undo::take_committed_action(surface) {
+        self.panel
+            .body_editor_mut()
+            .sync(&mut state.doc, &automerge::ROOT);
+        if let Some(before) = ui::undo::take_committed_action(&mut self.panel) {
             state.record_committed_action(before, None, None);
         }
         self.paint();

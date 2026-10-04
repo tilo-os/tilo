@@ -23,7 +23,7 @@ use crate::model::{Draft, step_at};
 /// checker and the save effect see it.
 #[must_use]
 pub fn candidate(draft: &Draft, catalog: &ActionCatalog) -> Shortcut {
-    let permissions = grant::least_privilege(&draft.program.0.steps, catalog);
+    let permissions = grant::least_privilege(&draft.program().steps, catalog);
     draft.shortcut(grant::rules(&permissions))
 }
 
@@ -169,7 +169,7 @@ pub fn choices(
     binding_options(&shortcut, catalog, &step_path(path), param)
         .into_iter()
         .map(|BindingOption { binding, .. }| Choice {
-            label: describe(&binding, &draft.program.0.steps),
+            label: describe(&binding, &draft.program().steps),
             binding,
         })
         .collect()

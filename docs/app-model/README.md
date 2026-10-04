@@ -71,7 +71,7 @@ You give Tilo a manifest and a payload. In return:
 - **Shipping a CLI?** Read [`cli-apps.md`](./cli-apps.md).
 - **Wondering how a terminal has a shell at all,** when no app is granted an
   executable directory? Read [`ush.md`](./ush.md) — the runtime that hosts one,
-  and the `dsh` profile that trades its isolation for nested containers.
+  in a guest built from an [environment](./environments.md) record.
 - **Shipping a codec?** Read [`formats.md`](./formats.md).
 - **Distributing?** Read [`installation.md`](./installation.md) and
   [`cross-target.md`](./cross-target.md).

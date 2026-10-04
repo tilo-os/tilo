@@ -29,7 +29,7 @@ mod real {
         let summary = registry_summary();
         println!("registry: {summary}");
 
-        let mut engine = MediaEngine::with_config(EngineConfig::gpu().silent());
+        let mut engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
         assert!(
             engine.is_real_decode(),
             "the decode feature is compiled but the GStreamer backend did not \
@@ -84,7 +84,7 @@ mod real {
     #[test]
     fn a_gpu_native_consumer_is_not_handed_forced_rgba() {
         let _registry = registry_policy_lock();
-        let mut engine = MediaEngine::with_config(EngineConfig::gpu().silent());
+        let mut engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
         engine.open(fixture_source());
         let frame = decode_frame_at(&mut engine, 2_000, "native negotiation");
 
@@ -134,7 +134,7 @@ mod real {
     /// The engine must never claim hardware decode before it has evidence.
     #[test]
     fn no_hardware_claim_is_made_before_a_decoder_has_been_plugged() {
-        let engine = MediaEngine::with_config(EngineConfig::gpu().silent());
+        let engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
         let report = engine.hw_report();
         assert!(
             report.decoder_element.is_none(),
@@ -181,7 +181,7 @@ mod real {
 
         let mut e = MediaEngine::with_config(
             EngineConfig::gpu()
-                .silent()
+                .frames_only()
                 .with_hw_policy(HwPolicy::Force(DecoderKind::Va)),
         );
         e.open(fixture_source());

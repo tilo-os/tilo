@@ -9,7 +9,6 @@
 use ui::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -230,9 +229,16 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) -> Option<EndpointEffect> {
         let endpoint = self.focused?;
-        drive(&mut self.field_mut(endpoint).input, event, scale, modifiers);
+        drive(
+            &mut self.field_mut(endpoint).input,
+            event,
+            scale,
+            modifiers,
+            doc,
+        );
         self.reconcile(endpoint).or(Some(EndpointEffect::Handled))
     }
 
@@ -242,12 +248,13 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / scale, position.y / scale);
         }
-        drive(&mut self.origin.input, event, scale, modifiers);
-        drive(&mut self.destination.input, event, scale, modifiers);
+        drive(&mut self.origin.input, event, scale, modifiers, doc);
+        drive(&mut self.destination.input, event, scale, modifiers, doc);
     }
 
     /// A press: the swap button, a field taking focus, or the field being
@@ -259,6 +266,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
     ) -> Option<EndpointEffect> {
         if self.swap_rect.is_some_and(|rect| rect.contains(point)) {
             self.dismiss();
@@ -267,7 +275,7 @@ impl EndpointEditor {
         if let Some(endpoint) = self.focused {
             let picked = {
                 let field = self.field_mut(endpoint);
-                drive(&mut field.input, event, scale, modifiers);
+                drive(&mut field.input, event, scale, modifiers, doc);
                 field.input.take_outcome()
             };
             match picked {
@@ -291,7 +299,13 @@ impl EndpointEditor {
                 .is_some_and(|rect| rect.contains(point))
             {
                 self.focus(endpoint);
-                drive(&mut self.field_mut(endpoint).input, event, scale, modifiers);
+                drive(
+                    &mut self.field_mut(endpoint).input,
+                    event,
+                    scale,
+                    modifiers,
+                    doc,
+                );
                 return Some(EndpointEffect::Changed {
                     endpoint,
                     text: String::new(),
@@ -486,6 +500,7 @@ fn drive(
     event: &WindowEvent,
     scale: f64,
     modifiers: winit::event::Modifiers,
+    doc: &mut AutoCommit,
 ) {
     if let WindowEvent::MouseInput {
         state: ElementState::Pressed,
@@ -496,26 +511,7 @@ fn drive(
     {
         return;
     }
-    let mut doc = AutoCommit::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
-    };
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    input.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: scale,
-            modifiers: &modifiers,
-            state: &mut doc,
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
+    crate::hand_laid::drive(input, event, scale, modifiers, doc);
 }
 
 #[cfg(test)]

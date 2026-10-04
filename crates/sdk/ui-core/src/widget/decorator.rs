@@ -402,6 +402,10 @@ pub trait Decorator {
         self.inner().accessibility_child_path(child_index)
     }
 
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        self.inner().accessibility_represents_child(child_index)
+    }
+
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
@@ -963,6 +967,10 @@ impl<T: Decorator> Widget for T {
 
     fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
         Decorator::accessibility_child_path(self, child_index)
+    }
+
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        Decorator::accessibility_represents_child(self, child_index)
     }
 
     fn perform_action(

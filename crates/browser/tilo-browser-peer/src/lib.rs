@@ -40,6 +40,7 @@ mod clock;
 pub mod custody;
 pub mod document;
 pub mod health;
+mod held_live;
 pub mod invite;
 pub mod live;
 #[cfg(feature = "net")]
@@ -50,15 +51,18 @@ pub mod transport;
 pub mod voice;
 
 pub use carrier::{HttpClient, HttpFuture, HttpsLink, LinkError};
-pub use custody::{CertifyError, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify};
+pub use custody::{
+    CertifyError, IssuedRole, MemoryPeerStore, OutboxEntry, PeerRecord, PeerStore, certify,
+    certify_with_root, issue_device_cert,
+};
 pub use document::{ContentCipher, DocumentRoute, OpenedDocument, coalesce};
 pub use health::{PeerSnapshot, SessionHealth};
 pub use live::{LiveChange, LiveState, RemoteMember};
 #[cfg(feature = "net")]
 pub use net::NetHttp;
 pub use session::{
-    Failure, FailureSubject, Host, LocalState, PAGE_FAILURE_CODES, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
+    Failure, FailureSubject, Host, LocalState, NodeCompletion, PAGE_FAILURE_CODES, PeerConfig,
+    PeerEvent, PeerEvents, PeerHandle, PeerStatus, RoomsCompletion, TransportPhase,
 };
 pub use tilo_relay_client::{DeviceSigner, SignError, SignFuture};
 pub use voice::VoiceEvent;

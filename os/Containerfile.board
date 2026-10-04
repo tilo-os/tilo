@@ -4,7 +4,10 @@
 # the same commit (BASE_IMAGE, a tilo-vm image built by os/Containerfile.dev).
 # The firmware comes from the board's pinned firmware artifact, imported into
 # os/hardware/firmware/<profile>/ before the build
-# (os/dev/hardware-firmware-artifact.py import).
+# (os/dev/hardware-firmware-artifact.py import, or for the Orange Pi
+# os/dev/fetch-orangepi-wifi-firmware.sh). os/dev/install-board-layer.sh adds
+# the board's system configuration, and for an always-on board the session
+# that runs without a greeter.
 #
 # Unlike the generic dev image, a board image is sealed: bootc takes a device
 # tree only from a UKI's .dtb section, never from ordinary boot entries, so the
@@ -39,6 +42,12 @@ ARG TILO_HARDWARE_PROFILE
 COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
 COPY os/scripts/build-initramfs.sh /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
+COPY os/dev/install-board-layer.sh /tilo/os/dev/
+COPY os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf /tilo/os/usr/lib/systemd/system/sshd.service.d/
+COPY os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf /tilo/os/etc/NetworkManager/conf.d/
+COPY os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee /tilo/os/usr/lib/NetworkManager/dispatcher.d/
+COPY os/usr/lib/systemd/system/tilo-board-headless-session@.service /tilo/os/usr/lib/systemd/system/
+COPY os/usr/libexec/tilo-board-session-prepare os/usr/libexec/tilo-seat-session os/usr/libexec/tilo-display-present /tilo/os/usr/libexec/
 COPY --from=board-firmware / /tilo/os/hardware/firmware/${TILO_HARDWARE_PROFILE}/
 
 FROM ${BASE_IMAGE} AS board-root
@@ -46,6 +55,8 @@ ARG TILO_HARDWARE_PROFILE
 # The update origin the board image records; a board dev image itself is
 # replaced with `bootc switch` to the next one.
 ARG TILO_TARGET_IMGREF
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 # tilo-rpm-snapshot-package[aarch64]: qcom-firmware
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=board-inputs,source=/tilo,target=/run/tilo-board \
@@ -59,6 +70,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         --profiles-dir /run/tilo-board/os/hardware/profiles \
         --firmware-dir "/run/tilo-board/os/hardware/firmware/$TILO_HARDWARE_PROFILE" \
         --target-update-ref "$TILO_TARGET_IMGREF" \
+    && bash /run/tilo-board/os/dev/install-board-layer.sh /run/tilo-board \
     && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
     && rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-* \
     && dnf clean all \
@@ -70,6 +82,8 @@ FROM board-root AS split
 RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
 
 FROM ${BASE_IMAGE} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
         systemd-boot-unsigned \
@@ -91,6 +105,8 @@ RUN --mount=type=tmpfs,target=/tmp \
 # registry_auth secret (a containers auth file) for a private registry.
 FROM uki-tools AS cfs-digest
 ARG TILO_CFS_SOURCE
+# Buildah leaves the bootc-helper mount out of the layer cache key; this ARG keys it on BOOTC_HELPER_IMAGE.
+ARG BOOTC_HELPER_IMAGE
 # The composefs repository it unpacks the layers into stays in a cache mount
 # (bootc patch 0003), so only layers it has not seen are fetched: the other
 # board's and the previous commit's are already there. Emptied past 40 GiB.

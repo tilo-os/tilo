@@ -192,6 +192,11 @@ impl Link {
     }
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "the sheet's text fields are UI widgets; each test awaits this on its own \
+    current-thread runtime and never sends it"
+)]
 async fn sheet_up(controller: &mut PortalDialogController) -> serde_json::Value {
     let deadline = std::time::Instant::now()
         .checked_add(HANG_BOUND)
@@ -214,8 +219,13 @@ fn type_text(controller: &mut PortalDialogController, text: &str) {
         } else {
             Key::Character(ch.to_string().into())
         };
-        assert!(controller.edit_secret(&key));
+        assert!(edit(controller, key));
     }
+}
+
+fn edit(controller: &mut PortalDialogController, key: Key) -> bool {
+    let event = crate::shell::test_support::typed_key_event(key);
+    crate::shell::test_support::with_scratch_event_ctx(|ctx| controller.edit_secret(&event, ctx))
 }
 
 fn string_of(
@@ -404,7 +414,7 @@ async fn an_8021x_sign_in_returns_identity_and_password_in_the_8021x_setting() {
     type_text(&mut controller, "tr0ub4dor&3");
     // Untick "Remember": Tab to its row, Space.
     assert!(controller.select_next(false));
-    assert!(controller.edit_secret(&Key::Named(NamedKey::Space)));
+    assert!(edit(&mut controller, Key::Named(NamedKey::Space)));
     assert_eq!(controller.state_json()["remember"], false);
     assert!(controller.confirm());
 
@@ -464,7 +474,7 @@ async fn networkmanager_cancelling_takes_the_sheet_down() {
     );
     assert!(controller.pump(), "the withdrawn sheet is let go");
     assert!(controller.state_json().is_null());
-    assert!(controller.secret_field_displays().is_empty());
+    assert!(controller.secret_fields().is_empty());
 }
 
 #[tokio::test]

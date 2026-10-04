@@ -5,6 +5,9 @@
 //! - `GET  /registry`             → `RegistryHandshake` JSON
 //! - `GET  /health`               → `{ "ok": true }`
 //! - `GET  /entries`              → owner-signed `SignedRegistrySnapshot`
+//! - `GET  /entries?format=compact` → its `CompactRegistrySnapshot`, or the
+//!   full snapshot while no current compact form exists
+//! - `GET  /indexes/<blake3>.json` → a version index a compact snapshot names
 //! - `GET  /entries/<pkg-id>`     → the same signed snapshot, or 404
 //! - `POST /entries`              → queue an `EntryChangeRequest`, 202 on
 //!   success, 403 if the publisher isn't allowlisted or the signature
@@ -18,7 +21,8 @@
 //!   package root.
 //! - `GET  /artifacts/<blake3>.tapp` → an operator-imported full package.
 //!
-//! The last three are content addressed and served as immutable. `/entries`
+//! The last three, and `/indexes/`, are content addressed and served as
+//! immutable. `/entries`
 //! carries the snapshot hash as its `ETag`, so a client revalidating an
 //! unchanged catalogue receives an empty `304`.
 //!
@@ -40,8 +44,8 @@ use hyper::{Method, Request, Response, StatusCode, header};
 use tracing::warn;
 
 use registry_types::{
-    EntryAction, EntryChangeRequest, RegistryEntry, RegistryHandshake, SignedModerationMutation,
-    VerifyError, verify_change_request,
+    ChannelAuthorization, EntryAction, EntryChangeRequest, RegistryEntry, RegistryHandshake,
+    SignedModerationMutation, VerifyError, verify_change_request,
 };
 
 use crate::applications::{
@@ -178,10 +182,15 @@ pub async fn handle(
         )),
         (Method::GET, "/registry") => handle_get_registry(&state),
         (Method::GET, "/entries") => {
+            let format = SnapshotFormat::requested(req.uri().query());
             read_file(&state, move |state| {
-                handle_get_entries(state, if_none_match.as_deref())
+                handle_get_entries(state, format, if_none_match.as_deref())
             })
             .await
+        }
+        (Method::GET, p) if p.starts_with("/indexes/") => {
+            let name = p.trim_start_matches("/indexes/").to_owned();
+            read_file(&state, move |state| handle_get_version_index(state, &name)).await
         }
         (Method::GET, p) if p.starts_with("/entries/") && p.ends_with("/pending") => {
             let id = p
@@ -522,8 +531,44 @@ fn handle_get_registry(state: &AppState) -> Result<Response<Full<Bytes>>, Handle
     Ok(json_response(StatusCode::OK, &hs))
 }
 
+fn handle_get_version_index(
+    state: &AppState,
+    name: &str,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
+    let Some(digest) = name.strip_suffix(".json") else {
+        return Ok(text_response(StatusCode::NOT_FOUND, "not found"));
+    };
+    match state
+        .inner
+        .storage
+        .load_version_index(digest)
+        .map_err(HandlerError::Storage)?
+    {
+        Some(bytes) => Ok(immutable_response_as(bytes, "application/json")),
+        None => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
+    }
+}
+
+/// Which form of the snapshot a client asked for. Clients that do not ask get
+/// the full snapshot, which every released client understands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotFormat {
+    Full,
+    Compact,
+}
+
+impl SnapshotFormat {
+    /// The form named by a `format=` query parameter; anything else is full.
+    pub fn requested(query: Option<&str>) -> Self {
+        let compact =
+            query.is_some_and(|query| query.split('&').any(|pair| pair == "format=compact"));
+        if compact { Self::Compact } else { Self::Full }
+    }
+}
+
 fn handle_get_entries(
     state: &AppState,
+    format: SnapshotFormat,
     if_none_match: Option<&str>,
 ) -> Result<Response<Full<Bytes>>, HandlerError> {
     let snapshot = state
@@ -531,34 +576,24 @@ fn handle_get_entries(
         .storage
         .load_snapshot()
         .map_err(HandlerError::Storage)?;
+    if format == SnapshotFormat::Compact
+        && let Some(full) = &snapshot
+        && let Some(compact) = state
+            .inner
+            .storage
+            .load_compact_snapshot()
+            .map_err(HandlerError::Storage)?
+        && compact_is_current(state, &compact, full)
+    {
+        let etag = registry_types::compact_snapshot_hash(&compact).ok();
+        return Ok(revalidated_json(&compact, etag, if_none_match));
+    }
     match snapshot {
         Some(snapshot) if snapshot_is_current(state, &snapshot) => {
             // Clients revalidate on every visit; the snapshot hash names the
             // exact signed bytes, so an unchanged catalogue costs a 304.
-            let etag = registry_types::snapshot_hash(&snapshot)
-                .ok()
-                .and_then(|hash| header::HeaderValue::from_str(&format!("\"{hash}\"")).ok());
-            let fresh = etag.as_ref().is_some_and(|etag| {
-                if_none_match.is_some_and(|candidates| {
-                    candidates
-                        .split(',')
-                        .any(|candidate| candidate.trim().as_bytes() == etag.as_bytes())
-                })
-            });
-            let mut response = if fresh {
-                empty_response(StatusCode::NOT_MODIFIED)
-            } else {
-                json_response(StatusCode::OK, &snapshot)
-            };
-            let headers = response.headers_mut();
-            headers.insert(
-                header::CACHE_CONTROL,
-                header::HeaderValue::from_static("no-cache"),
-            );
-            if let Some(etag) = etag {
-                headers.insert(header::ETAG, etag);
-            }
-            Ok(response)
+            let etag = registry_types::snapshot_hash(&snapshot).ok();
+            Ok(revalidated_json(&snapshot, etag, if_none_match))
         }
         Some(_) => Ok(text_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -569,6 +604,55 @@ fn handle_get_entries(
             "no owner-signed snapshot has been published",
         )),
     }
+}
+
+/// `body` as JSON with `ETag: "<hash>"`, or an empty `304` when the client
+/// already holds it.
+fn revalidated_json<T: serde::Serialize>(
+    body: &T,
+    hash: Option<String>,
+    if_none_match: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let etag = hash.and_then(|hash| header::HeaderValue::from_str(&format!("\"{hash}\"")).ok());
+    let fresh = etag.as_ref().is_some_and(|etag| {
+        if_none_match.is_some_and(|candidates| {
+            candidates
+                .split(',')
+                .any(|candidate| candidate.trim().as_bytes() == etag.as_bytes())
+        })
+    });
+    let mut response = if fresh {
+        empty_response(StatusCode::NOT_MODIFIED)
+    } else {
+        json_response(StatusCode::OK, body)
+    };
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-cache"),
+    );
+    if let Some(etag) = etag {
+        headers.insert(header::ETAG, etag);
+    }
+    response
+}
+
+/// A compact snapshot is served only while it verifies and is the form of
+/// the current full snapshot; otherwise the full one is served instead.
+fn compact_is_current(
+    state: &AppState,
+    compact: &registry_types::CompactRegistrySnapshot,
+    full: &registry_types::SignedRegistrySnapshot,
+) -> bool {
+    let now = tilo_clock::unix_now();
+    if registry_types::verify_compact_snapshot(compact, &state.identity().owner_pubkey_hex, now)
+        .is_err()
+        || registry_types::snapshot_hash(full).ok().as_deref()
+            != Some(compact.snapshot_hash_hex.as_str())
+    {
+        return false;
+    }
+    channel_is_active(state, compact.channel_authorization.as_ref())
 }
 
 fn handle_get_entry(
@@ -679,7 +763,11 @@ fn snapshot_is_current(
     if registry_types::verify_snapshot(snapshot, &state.identity().owner_pubkey_hex, now).is_err() {
         return false;
     }
-    match &snapshot.channel_authorization {
+    channel_is_active(state, snapshot.channel_authorization.as_ref())
+}
+
+fn channel_is_active(state: &AppState, authorization: Option<&ChannelAuthorization>) -> bool {
+    match authorization {
         Some(authorization) => state
             .inner
             .storage

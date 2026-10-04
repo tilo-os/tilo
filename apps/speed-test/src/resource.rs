@@ -57,7 +57,15 @@ impl ResourceApp for SpeedTestShell {
     const ID: &'static str = "so.tilo.speed-test";
     const TITLE: &'static str = "Speed Test";
     const ICON: Option<&'static str> = Some("speed-test");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        scenario
+            .and_then(|name| match name {
+                "complete-narrow" => Some((520, 820)),
+                "complete-short" => Some((960, 560)),
+                _ => None,
+            })
+            .unwrap_or((1280, 800))
+    }
 
     fn view(cx: &mut ViewCx<SpeedTest>) -> Element {
         cx.surface(SpeedTestApp::new().with_actions(cx.actions()))
@@ -73,14 +81,6 @@ impl ResourceApp for SpeedTestShell {
             "complete-narrow",
             "complete-short",
         ]
-    }
-
-    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
-        match name {
-            "complete-narrow" => Some((520, 820)),
-            "complete-short" => Some((960, 560)),
-            _ => None,
-        }
     }
 }
 

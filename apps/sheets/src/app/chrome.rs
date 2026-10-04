@@ -1,5 +1,5 @@
 //! The window chrome around the grid: the command bar, the formula bar and the
-//! sheet tabs, plus the transient status bubble and the loading state.
+//! sheet tabs, plus the transient status bubble.
 //!
 //! Everything is laid out from measured role line boxes and spacing tokens, and
 //! painted through the toolkit's faces (`ButtonFace`, `SegmentedFace`,
@@ -425,13 +425,10 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // While the workbook is still being read there is no selection, no
-        // formula and no sheet to name: the bars keep their places, empty.
-        let loading = self.is_loading();
         self.draw_command_bar(scene, transform, tr, theme);
-        self.draw_name_box(scene, transform, tr, theme, loading);
-        self.draw_formula_field(scene, transform, tr, theme, loading);
-        self.draw_sheet_tabs_strip(scene, transform, tr, theme, loading);
+        self.draw_name_box(scene, transform, tr, theme);
+        self.draw_formula_field(scene, transform, tr, theme);
+        self.draw_sheet_tabs_strip(scene, transform, tr, theme);
     }
 
     /// Whether the command at `item` is a toggle that is on right now.
@@ -500,7 +497,6 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        loading: bool,
     ) {
         let colors = &theme.tokens.colors;
         let name_box = self.name_box_rect;
@@ -525,11 +521,7 @@ impl SheetsApp {
             input.draw(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
             let style = theme.text(TextRole::Body);
-            let label = if loading {
-                String::new()
-            } else {
-                self.grid.selection_label()
-            };
+            let label = self.grid.selection_label();
             let (_, line_h) = tr.measure_style(&label, None, &style);
             tr.draw_style(
                 scene,
@@ -556,18 +548,13 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        loading: bool,
     ) {
         self.draw_formula_fx_label(scene, transform, tr, theme);
-        let editing = !loading && self.grid.is_editing();
+        let editing = self.grid.is_editing();
         let field = self.formula_field_rect;
         Self::paint_field(scene, transform, theme, field, editing);
 
-        let content = if loading {
-            String::new()
-        } else {
-            self.grid.active_display_raw()
-        };
+        let content = self.grid.active_display_raw();
         let style = theme.text(TextRole::Body);
         let text_x0 = field.x0 + self.metrics.s3;
         // Rebuild the per-character x boundaries for click/caret mapping. This
@@ -645,7 +632,6 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        loading: bool,
     ) {
         let colors = &theme.tokens.colors;
         let m = &self.metrics;
@@ -660,9 +646,6 @@ impl SheetsApp {
             0.0,
             colors.surfaces.content,
         );
-        if loading {
-            return;
-        }
         if !self.tab_rects.is_empty() {
             let rects: Vec<Rect> = self.tab_rects.iter().map(|(rect, _)| *rect).collect();
             let labels: Vec<&str> = self
@@ -706,41 +689,6 @@ impl SheetsApp {
         Button::paint(scene, transform, tr, theme, &face);
     }
 
-    /// Whether the workbook is still being read from disk.
-    pub(super) fn is_loading(&self) -> bool {
-        (self.run.persists() && self.persistence_started && !self.pending.seeded)
-            || self.shots_loading
-    }
-
-    /// While a persistent workbook is decoded on the capacity-one worker the
-    /// chrome stays, but the grid is not shown: one line says what is
-    /// happening. It is drawn from state rather than a timer, so reduced
-    /// motion and a slow disk behave identically.
-    pub(super) fn draw_loading(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let style = theme.text(TextRole::Body);
-        let label = "Opening workbook";
-        let (width, height) = tr.measure_style(label, None, &style);
-        let centre = self.grid_rect.center();
-        tr.draw_style(
-            scene,
-            label,
-            theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((
-                    centre.x - f64::from(width) / 2.0,
-                    centre.y - f64::from(height) / 2.0,
-                )),
-            None,
-            &style,
-        );
-    }
-
     /// The area the status bubble floats in: the grid body, clear of the
     /// scroll bar gutters and the sheet tabs.
     pub(super) fn status_area(&self) -> Rect {
@@ -773,7 +721,7 @@ impl SheetsApp {
             .rect_in(area, tr, theme)
             .inflate(gutter, gutter);
         let over = !self.status_bubble.text().is_empty()
-            && (self.shots_status || zone.contains(self.last_mouse));
+            && (self.staged_status || zone.contains(self.last_mouse));
         self.status_bubble.set_hover(over, now);
         self.status_bubble
             .paint(scene, transform, tr, theme, area, now);

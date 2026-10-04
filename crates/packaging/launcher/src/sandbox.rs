@@ -43,6 +43,17 @@ pub struct DBusBindPlan {
     pub host_socket: PathBuf,
     /// In-sandbox path, read via `DBUS_SESSION_BUS_ADDRESS=unix:path=<sandbox_path>`.
     pub sandbox_path: PathBuf,
+    /// The filtered AT-SPI bus proxy, for a graphical app whose session runs
+    /// an accessibility bus.
+    pub atspi: Option<AtspiBindPlan>,
+}
+
+/// Where the filtered AT-SPI proxy listens, and where the app finds it
+/// (`AT_SPI_BUS_ADDRESS=unix:path=<sandbox_path>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtspiBindPlan {
+    pub host_socket: PathBuf,
+    pub sandbox_path: PathBuf,
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
@@ -567,6 +578,18 @@ pub fn build_bwrap_argv_for_entry(
         argv.push("--setenv".to_string());
         argv.push("DBUS_SESSION_BUS_ADDRESS".to_string());
         argv.push(format!("unix:path={}", bind.sandbox_path.display()));
+        // Accessibility: the filtered AT-SPI proxy, never the raw bus.
+        if let Some(atspi) = &bind.atspi {
+            push_bind(
+                &mut argv,
+                "--ro-bind",
+                &atspi.host_socket,
+                &atspi.sandbox_path,
+            );
+            argv.push("--setenv".to_string());
+            argv.push("AT_SPI_BUS_ADDRESS".to_string());
+            argv.push(format!("unix:path={}", atspi.sandbox_path.display()));
+        }
     }
 
     // Participation: tell the app which shape it is in. Information, not
@@ -1440,6 +1463,40 @@ mod tests {
     }
 
     #[test]
+    fn a_graphical_app_finds_the_filtered_atspi_bus() {
+        let m = mk_manifest("off");
+        let plan = DBusBindPlan {
+            host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
+            sandbox_path: PathBuf::from("/run/user/1234/bus"),
+            atspi: Some(AtspiBindPlan {
+                host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"),
+                sandbox_path: PathBuf::from("/run/user/1234/at-spi/bus"),
+            }),
+        };
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            Some(&plan),
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"
+                && w[2] == "/run/user/1234/at-spi/bus"),
+            "AT-SPI proxy ro-bind missing from argv: {argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "AT_SPI_BUS_ADDRESS"
+                && w[2] == "unix:path=/run/user/1234/at-spi/bus"),
+            "AT_SPI_BUS_ADDRESS missing from argv: {argv:?}"
+        );
+    }
+
+    #[test]
     fn session_bus_reaches_the_sandbox_only_through_a_proxy_plan() {
         // Phase `parse_unix_path_bus_address_extracts_path`.
         {
@@ -1468,6 +1525,7 @@ mod tests {
             let plan = DBusBindPlan {
                 host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
                 sandbox_path: PathBuf::from("/run/user/1234/bus"),
+                atspi: None,
             };
             let argv = build_bwrap_argv(
                 &m,
@@ -1492,6 +1550,10 @@ mod tests {
                     && w[1] == "DBUS_SESSION_BUS_ADDRESS"
                     && w[2] == "unix:path=/run/user/1234/bus"),
                 "dbus setenv missing from argv: {argv:?}"
+            );
+            assert!(
+                !argv.iter().any(|a| a == "AT_SPI_BUS_ADDRESS"),
+                "no accessibility bus without its proxy: {argv:?}"
             );
         }
         // Phase `argv_does_not_bind_dbus_without_plan`.
