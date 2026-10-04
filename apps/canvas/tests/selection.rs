@@ -410,7 +410,8 @@ fn a_mask_shows_and_hides_its_layer() {
     let shown = pixels(&art.state().unwrap());
     assert!(alpha(&shown, 300, 150) < 5);
 
-    // A mask is not painted in a medium, and a mask has no mask.
+    // A mask is not painted in a medium; naming the mask to mask or clear
+    // works on the layer it is part of.
     let error = apply(
         &mut art,
         CanvasAction::EditLayer(EditLayer {
@@ -421,16 +422,20 @@ fn a_mask_shows_and_hides_its_layer() {
     )
     .unwrap_err();
     assert!(error.contains("greys"), "{error}");
-    let error = apply(
+    apply(
         &mut art,
         CanvasAction::UseSelection(UseSelection {
-            what: "mask".into(),
+            what: "clear".into(),
             layer: Some("layer-1-mask".into()),
             ..UseSelection::default()
         }),
     )
-    .unwrap_err();
-    assert!(error.contains("is the mask of"), "{error}");
+    .unwrap();
+    let state = art.state().unwrap();
+    assert!(
+        state.mask_of("layer-1-mask").is_none() && state.layers.len() == 2,
+        "no mask of the mask is made"
+    );
 
     // The layer goes with its mask.
     apply(

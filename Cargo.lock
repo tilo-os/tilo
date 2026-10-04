@@ -14788,6 +14788,7 @@ dependencies = [
  "fluent-syntax",
  "hex",
  "image",
+ "launcher",
  "libc",
  "notify",
  "proc-macro2",

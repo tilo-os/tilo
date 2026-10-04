@@ -335,16 +335,16 @@ impl UseSelection {
     }
 }
 
-/// The ordinary layer `id` names: masks have no mask of their own.
+/// The ordinary layer `id` names, or the one it masks when it names a
+/// mask: a mask is part of its layer, as the layers panel shows it.
 fn owner_of<'a>(art: &'a Artwork, id: &str) -> Result<&'a Layer, ActionError> {
     let layer = art
         .layer(id)
         .ok_or_else(|| refuse(format!("there is no layer {id:?}")))?;
     if layer.is_mask() {
-        return Err(refuse(format!(
-            "{id:?} is the mask of {:?}; name that layer",
-            layer.mask_of
-        )));
+        return art
+            .layer(&layer.mask_of)
+            .ok_or_else(|| refuse(format!("{id:?} masks {:?}, which is gone", layer.mask_of)));
     }
     Ok(layer)
 }
