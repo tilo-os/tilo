@@ -568,9 +568,6 @@ struct Hit {
     summary_cells: Vec<Rect>,
     /// Back affordance returning from the pushed detail to the table (narrow).
     detail_back: Rect,
-    /// The "Confirm kills" preference toggle pill in the toolbar — the only UI
-    /// that reaches the local `confirm_kill` preference.
-    confirm_toggle: Rect,
     /// The process table's vertical row scrollbar (present when rows overflow).
     v_scrollbar: Option<ScrollBarHit>,
     /// The process table's horizontal column scrollbar (present on overflow).
@@ -600,7 +597,6 @@ impl Hit {
             menu_items: Vec::new(),
             summary_cells: Vec::new(),
             detail_back: Rect::ZERO,
-            confirm_toggle: Rect::ZERO,
             v_scrollbar: None,
             h_scrollbar: None,
             page_scrollbar: None,
@@ -3210,9 +3206,6 @@ impl MonitorApp {
             "≣ Flat"
         };
         w += TOOLBAR_PILL_GAP + f64::from(tr.measure(tree_text, fs, None).0) + 24.0;
-        // Confirm-kills pill (reserved so the toolbar stacks before the pill
-        // cluster crowds the search box; dropped only at extreme-narrow widths).
-        w += TOOLBAR_PILL_GAP + f64::from(tr.measure("Confirm kills", fs, None).0) + 24.0;
         w
     }
 
@@ -3255,17 +3248,6 @@ impl MonitorApp {
         ) + 44.0
     }
 
-    fn confirm_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        f64::from(
-            tr.measure(
-                "Confirm kills",
-                ts(tr, theme.tokens.typography.scale.sm),
-                None,
-            )
-            .0,
-        ) + 24.0
-    }
-
     /// On very narrow windows a search row plus a single filters row is not
     /// enough: the labelled tree, aggregation and preferences would run out
     /// of the toolbar. Give the two preferences a third row instead of
@@ -3275,8 +3257,7 @@ impl MonitorApp {
             && avail_w
                 < self.primary_filter_row_width(tr, theme)
                     + Self::kernel_filter_width(tr, theme)
-                    + Self::confirm_filter_width(tr, theme)
-                    + 2.0 * TOOLBAR_PILL_GAP
+                    + TOOLBAR_PILL_GAP
     }
 
     /// Height the toolbar occupies at `avail_w`: one row when the search box
@@ -3292,7 +3273,7 @@ impl MonitorApp {
     }
 
     /// Draw one centered-label toggle pill: filled/stroked capsule, accent
-    /// tinted when `on`. Shared by the sum/tree/confirm-kills toolbar pills —
+    /// tinted when `on`. Shared by the sum/tree toolbar pills —
     /// the kernel-threads toggle has its own switch-knob visual and isn't
     /// drawn through this.
     fn draw_toggle_pill(
@@ -3446,7 +3427,7 @@ impl MonitorApp {
     }
 
     /// Draw the Tree/Flat view pill, left of the sum pill. Returns its rect
-    /// (the confirm-kills pill's right edge).
+    /// (the left edge of the pill cluster).
     fn draw_tree_flat_pill(
         &mut self,
         scene: &mut Scene,
@@ -3472,43 +3453,6 @@ impl MonitorApp {
         Self::draw_toggle_pill(scene, t, tr, theme, tree_r, tree_text, self.tree_mode);
         self.hit.tree_toggle = tree_r;
         tree_r
-    }
-
-    /// Draw the "Confirm kills" preference pill, left of the tree pill — the
-    /// only affordance that reaches the local `confirm_kill` preference.
-    /// Drawn whenever it fits within the pills row; at extreme-narrow widths
-    /// (where the toolbar is already stacked) it's dropped rather than
-    /// clipped off the left edge. Returns the left edge of the pill cluster,
-    /// so the search box stops before it and the two can never overlap
-    /// however narrow the window.
-    fn draw_confirm_kills_pill(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pills_row: Rect,
-        tree_r: Rect,
-    ) -> f64 {
-        let fs = ts(tr, theme.tokens.typography.scale.sm);
-        let confirm_text = "Confirm kills";
-        let cfw = f64::from(tr.measure(confirm_text, fs, None).0) + 24.0;
-        let confirm_x1 = tree_r.x0 - TOOLBAR_PILL_GAP;
-        let confirm_x0 = confirm_x1 - cfw;
-        if confirm_x0 < pills_row.x0 {
-            self.hit.confirm_toggle = Rect::ZERO;
-            return tree_r.x0;
-        }
-        let confirm_r = Rect::new(
-            confirm_x0,
-            pills_row.y0 + 2.0,
-            confirm_x1,
-            pills_row.y1 - 2.0,
-        );
-        let ck = self.prefs.confirm_kill;
-        Self::draw_toggle_pill(scene, t, tr, theme, confirm_r, confirm_text, ck);
-        self.hit.confirm_toggle = confirm_r;
-        confirm_r.x0
     }
 
     /// Draw the search box in `search_row`. Stacked: full width on its own
@@ -3644,8 +3588,7 @@ impl MonitorApp {
             // both device-local preferences remain directly reachable below.
             let next_x1 = self.draw_sum_mode_pill(scene, t, tr, theme, view_row, view_row.x1);
             self.draw_tree_flat_pill(scene, t, tr, theme, view_row, next_x1);
-            let kernel = self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
-            self.draw_confirm_kills_pill(scene, t, tr, theme, kernel_row, kernel);
+            self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
             self.draw_toolbar_search_box(scene, t, tr, theme, search_row, true, search_row.x1);
             return;
         }
@@ -3665,7 +3608,7 @@ impl MonitorApp {
         let next_x1 =
             self.draw_sum_mode_pill(scene, t, tr, theme, pills_row, kt_r.x0 - TOOLBAR_PILL_GAP);
         let tree_r = self.draw_tree_flat_pill(scene, t, tr, theme, pills_row, next_x1);
-        let cluster_left = self.draw_confirm_kills_pill(scene, t, tr, theme, pills_row, tree_r);
+        let cluster_left = tree_r.x0;
 
         // ---- search box in `search_row` -----------------------------------
         let search_r =
@@ -4751,11 +4694,6 @@ impl MonitorApp {
             self.clamp_scroll();
             return true;
         }
-        // Confirm-kills preference toggle (local to this window/device).
-        if self.hit.confirm_toggle.contains(p) {
-            self.prefs.confirm_kill = !self.prefs.confirm_kill;
-            return true;
-        }
         // Tree/Flat view toggle.
         if self.hit.tree_toggle.contains(p) {
             self.commit_tree_mode(!self.tree_mode);
@@ -5153,20 +5091,6 @@ impl MonitorApp {
                 ));
             }
         }
-        if self.hit.confirm_toggle.area() > 0.0 {
-            targets.push((
-                "monitor.confirm-kills".to_string(),
-                self.hit.confirm_toggle,
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Confirm force kills")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.prefs.confirm_kill),
-                    )
-                    .with_bounds(self.hit.confirm_toggle),
-            ));
-        }
         if self.hit.search.area() > 0.0 {
             let search = self
                 .search_input
@@ -5537,9 +5461,6 @@ impl Widget for MonitorApp {
             }
             "monitor.sum-mode" if activated && self.tree_mode => {
                 self.sum_mode = self.sum_mode.toggled();
-            }
-            "monitor.confirm-kills" if activated => {
-                self.prefs.confirm_kill = !self.prefs.confirm_kill;
             }
             _ => {
                 if let Some(index) = target.strip_prefix("monitor.summary.") {
@@ -6597,12 +6518,10 @@ mod tests {
             );
         }
 
-        // Phase `force_kill_contract_does_not_follow_local_dialog_preference`.
+        // Phase `force_kill_contract_is_always_confirmed`.
         {
-            let mut a = app();
+            let a = app();
             let pid = a.selected_pid.unwrap();
-            a.prefs.confirm_kill = true;
-            a.prefs.confirm_kill = false;
             let process = a
                 .live_process_row(&resource_id_for(&a, pid))
                 .expect("process row")
@@ -6664,7 +6583,6 @@ mod tests {
         // action rather than sending a process signal from the paint surface.
         {
             let mut a = app();
-            a.prefs.confirm_kill = true;
             let pid = a.selected_pid.unwrap();
             a.hit.kill_btn = Rect::new(0.0, 0.0, 96.0, 32.0);
             let mut h = false;
@@ -6954,7 +6872,6 @@ mod tests {
                     ("tree", a.hit.tree_toggle),
                     ("sum", a.hit.sum_toggle),
                     ("kernel", a.hit.kernel_toggle),
-                    ("confirm", a.hit.confirm_toggle),
                 ] {
                     if pill == Rect::ZERO {
                         continue; // sum pill is absent in flat mode; confirm is dropped at extreme narrow
@@ -7014,16 +6931,11 @@ mod tests {
                 let mut a = app();
                 draw_at(&mut a, w, 720.0);
                 let content = Rect::new(OUTER_PAD, 0.0, w - OUTER_PAD, 720.0);
-                assert!(
-                    a.hit.confirm_toggle != Rect::ZERO,
-                    "w={w}: the persisted Confirm kills preference must stay reachable"
-                );
                 let controls = [
                     ("search", a.hit.search),
                     ("tree", a.hit.tree_toggle),
                     ("sum", a.hit.sum_toggle),
                     ("kernel", a.hit.kernel_toggle),
-                    ("confirm", a.hit.confirm_toggle),
                 ];
                 for (name, r) in controls {
                     if r == Rect::ZERO {
@@ -7121,27 +7033,6 @@ mod tests {
             assert!(
                 (a.hit.summary_cells[0].width() - wide_card_w).abs() < 1.0,
                 "card width returns to its wide value after resize round-trip"
-            );
-        }
-
-        // Phase `confirm_pill_is_laid_out_on_wide_toolbar`.
-        // The confirm pill is actually laid out on the real draw path at a normal
-        // width (not just a hand-seated rect).
-        {
-            let mut a = app();
-            draw_at(&mut a, 1280.0, 720.0);
-            assert_ne!(
-                a.hit.confirm_toggle,
-                Rect::ZERO,
-                "confirm pill drawn at a normal width"
-            );
-            assert!(
-                !overlaps(a.hit.confirm_toggle, a.hit.search),
-                "confirm pill clears the search box"
-            );
-            assert!(
-                !overlaps(a.hit.confirm_toggle, a.hit.tree_toggle),
-                "confirm pill clears the tree pill"
             );
         }
     }
@@ -7423,7 +7314,6 @@ mod tests {
         {
             let mut a = app();
             a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            a.prefs.confirm_kill = true;
             let pid = a.model.processes[5].pid;
             a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
             let mut h = false;
@@ -7950,23 +7840,9 @@ mod tests {
             assert_eq!(disk_scroll, a.resources_scroll_for_stat(3, bw, vh));
         }
 
-        // Phase `confirm_kills_pill_is_local_and_does_not_ungate_resource_kill`.
-        // The Confirm-kills pill changes only this window's preference; the
-        // published force-kill action remains host-confirmed regardless.
+        // Phase `force_kill_always_enters_the_host_confirmed_contract`.
         {
             let mut a = app();
-            assert!(a.prefs.confirm_kill, "confirm defaults on");
-            a.hit.confirm_toggle = Rect::new(0.0, 0.0, 140.0, 30.0);
-            let mut doc = AutoCommit::new();
-            let mut h = false;
-            a.on_click(Point::new(10.0, 10.0), &mut h);
-            assert!(h);
-            assert!(!a.prefs.confirm_kill, "pill toggled the pref off");
-            assert!(
-                doc.get_heads().is_empty(),
-                "local safety preference is not shared"
-            );
-            // All visible force-kill routes still enter the host-owned contract.
             let pid = a.visible_rows()[0].pid;
             a.request_process_control(pid, |process| MonitorEffect::Kill { process });
             assert_eq!(
@@ -8426,13 +8302,6 @@ mod tests {
                 &mut doc,
                 &root,
             ));
-            assert!(Widget::perform_semantic_action(
-                &mut first,
-                "monitor.confirm-kills",
-                &ui::a11y::Action::ToggleCheck,
-                &mut doc,
-                &root,
-            ));
             // Window state (and device prefs) must not enter the shared
             // document via sync. The table layout only moves through
             // MonitorAction / present().
@@ -8564,15 +8433,6 @@ mod tests {
                 })
             );
             assert!(a.model.processes.iter().any(|process| process.pid == pid));
-
-            assert!(Widget::perform_semantic_action(
-                &mut a,
-                "monitor.confirm-kills",
-                &ui::a11y::Action::ToggleCheck,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert!(!a.prefs.confirm_kill, "semantic preference toggle persists");
         }
 
         // Phase `process_source_permission_state_has_an_accessible_shared_retry`.
