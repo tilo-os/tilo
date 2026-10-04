@@ -61,7 +61,7 @@ use crate::resource::{Imager, ImagerEffect, ImagerState};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::WriteSetupPanel;
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow,
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LiveRow, RunMode,
 };
 use ui::tilo_resource::Effect as _;
 
@@ -584,6 +584,11 @@ pub struct ImagerApp {
     /// install profile is an [`ImagerAction`](crate::actions::ImagerAction)
     /// submitted here, checked, recorded as an undo step and replicated.
     dispatcher: Option<Dispatcher<Imager>>,
+    /// A window someone uses: drives are probed and may be written.
+    live: bool,
+    /// Whether a live window reaches this machine's drives; the sample
+    /// wizard tests drive never does.
+    reaches_machine: bool,
 }
 
 impl Default for ImagerApp {
@@ -639,6 +644,8 @@ impl ImagerApp {
             customize: CustomizePanel::new(),
             write_setup: WriteSetupPanel::new(),
             dispatcher: None,
+            live: false,
+            reaches_machine: true,
         };
         app.estimate_bands();
         app
@@ -653,6 +660,7 @@ impl ImagerApp {
         app.releases = crate::model::sample_releases();
         app.startup_write_state_reconciled = true;
         app.seeded = true;
+        app.reaches_machine = false;
         app
     }
 
@@ -711,8 +719,8 @@ impl ImagerApp {
         self.selected.and_then(|i| self.targets.get(i))
     }
 
-    /// The releases the document actually knows about — empty on the live
-    /// path, seeded content under `--demo` / `--shots`.
+    /// The releases offered on this machine: the bundled catalogue in a
+    /// live window, staged content in screenshot scenarios.
     fn releases(&self) -> &[TiloRelease] {
         &self.releases
     }
@@ -736,7 +744,7 @@ impl ImagerApp {
 
     /// Can the flow move forward from `from`? (Also gates the step-indicator.)
     fn can_advance(&self, from: Step) -> bool {
-        self.can_advance_with_writer(from, crate::write::write_available())
+        self.can_advance_with_writer(from, self.writer().is_available())
     }
 
     /// Pure half of the advance gate, split so the live-helper capability is
@@ -827,9 +835,17 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    /// The door edits go through, from the framework that hosts the wizard.
-    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Imager>) {
+    /// The door edits go through, from the framework that hosts the wizard,
+    /// and what it is built for: only a window someone uses probes drives
+    /// and may write them.
+    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Imager>, mode: RunMode) {
         self.dispatcher = Some(dispatcher);
+        self.live = self.reaches_machine && mode.is_live();
+    }
+
+    /// The raw-media writer this window may use.
+    fn writer(&self) -> crate::write::WriteBackend {
+        crate::write::WriteBackend::for_window(self.live)
     }
 
     /// Submit `action` to the imager resource.
@@ -839,22 +855,10 @@ impl ImagerApp {
         }
     }
 
-    /// Stage the peer-local confirmation for a deterministic offscreen frame.
-    #[doc(hidden)]
-    pub fn seed_confirmation_for_shot(&mut self, value: &str) {
-        self.confirm_input.set_text(value);
-        self.shot_confirmation_ready = true;
-    }
-
-    /// Headless-shot only: expose the long, searchable time-zone chooser so
-    /// its overlay placement is part of visual review.
-    pub fn shot_open_customize_timezone(&mut self) {
-        self.customize.open_timezone_for_shot();
-    }
-
-    /// Prime local-only state for deterministic offscreen review. None of this
-    /// device/job presentation data is written into the collaborative doc.
-    pub fn seed_local_shot_state(&mut self, scenario: &str) {
+    /// Pose this machine's side of a screenshot scenario: the drives, the
+    /// releases, the station and the job. None of it is document state; the
+    /// scenario's actions staged the reviewed image.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         self.targets = if scenario == "drive-empty" || scenario == "source-empty" {
             Vec::new()
         } else {
@@ -925,15 +929,22 @@ impl ImagerApp {
             }
             _ => {}
         }
+        match scenario {
+            // The destructive action looks armed, without enabling (or
+            // bypassing) the real write backend.
+            "confirm" => {
+                self.confirm_input.set_text("sdb");
+                self.shot_confirmation_ready = true;
+            }
+            "export" => self.export_after_sync = true,
+            // The long, searchable time-zone chooser, so its overlay
+            // placement is part of visual review.
+            "customize-timezone-open" => self.customize.open_timezone_for_shot(),
+            _ => {}
+        }
         // The unmeasured bands still describe this posed state (the review
         // rows, the failure copy) until the renderer measures them.
         self.estimate_bands();
-    }
-
-    /// Local demo inventory/catalogue used by `--demo`; the collaborative
-    /// document still carries only the reviewed source/profile records.
-    pub fn seed_local_demo_state(&mut self) {
-        self.seed_local_shot_state("source");
     }
 
     fn confirm_matches(&self) -> bool {
@@ -1524,13 +1535,6 @@ impl ImagerApp {
             .with_name("Start Media Creator")
             .with_children(children)
     }
-}
-
-/// Whether this process should enumerate real block devices. The live binary
-/// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
-/// document's seeded/posed state is authoritative and no `lsblk` runs.
-fn live_probe_enabled() -> bool {
-    std::env::var("IMAGER_LIVE").is_ok()
 }
 
 // ---- theme-derived colour helpers --------------------------------------
@@ -2424,7 +2428,7 @@ impl ImagerApp {
     /// The note under the confirmation field. Shot mode poses the field as
     /// ready for documentation, but never enables the backend.
     fn confirm_note(&self) -> &'static str {
-        if crate::write::write_available() || self.shot_confirmation_ready {
+        if self.writer().is_available() || self.shot_confirmation_ready {
             "Ready to write. Check the selected device before continuing."
         } else {
             "Writing is disabled in this preview."
@@ -4495,7 +4499,7 @@ impl ImagerApp {
         if self.job_rx.is_some() {
             return Err("An image write is already in progress".into());
         }
-        if !crate::write::write_available() {
+        if !self.writer().is_available() {
             return Err(
                 "Raw-device writing is disabled; enable the privileged Imager backend first".into(),
             );
@@ -4568,7 +4572,7 @@ impl ImagerApp {
             profile: self.profile.clone(),
             handoff_stage: handoff_stage.clone(),
         };
-        let (start, rx, control) = spawn_job(req, confirmation);
+        let (start, rx, control) = spawn_job(req, confirmation, self.writer());
         let refuse = |message: String| -> Result<(), String> {
             if let Some(stage) = handoff_stage.as_ref() {
                 let _ = std::fs::remove_dir_all(stage);
@@ -4778,10 +4782,6 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    pub(crate) fn seed_export_for_shot(&mut self) {
-        self.export_after_sync = true;
-    }
-
     /// Replace the last probe snapshot without carrying destructive consent
     /// across an unplug/replug substitution. Device names such as `disk4`,
     /// `sdb`, and `PhysicalDrive2` are reusable slots, not hardware identity.
@@ -4816,7 +4816,7 @@ impl ImagerApp {
     }
 
     fn do_rescan(&mut self) -> bool {
-        if live_probe_enabled() {
+        if self.live {
             // Re-read the live block-device inventory. `probe()` returns `None`
             // only when the platform probe is unavailable or malformed, so in
             // that case we keep the last-known list rather than blanking it.
@@ -4907,21 +4907,21 @@ impl Widget for ImagerApp {
             // fills the drive list; if it finds nothing (or is unavailable)
             // the list stays empty and the Drive step shows its honest
             // "insert a drive" state — the imager never invents drives.
-            if live_probe_enabled() {
+            if self.live {
                 self.targets = crate::probe::probe().unwrap_or_default();
             }
-            if live_probe_enabled() {
+            if self.live {
                 self.reconcile_persisted_write_state();
             } else {
-                // Demo/tests/shots intentionally pose worker-less progress
-                // frames. They still complete startup so operations cannot be
-                // held unavailable forever outside the live binary.
+                // Screenshots and tests pose worker-less progress frames.
+                // They still complete startup so operations cannot be held
+                // unavailable forever outside a live window.
                 self.startup_write_state_reconciled = true;
             }
             self.seeded = true;
         }
 
-        if live_probe_enabled() && self.releases.is_empty() {
+        if self.live && self.releases.is_empty() {
             match crate::release::bundled_releases() {
                 Ok(releases) => self.releases = releases,
                 Err(error) => self.status = error,
@@ -5499,7 +5499,7 @@ impl ImagerApp {
         let mut statuses = Vec::new();
         let device = self.target().map(TargetDrive::dev_path).unwrap_or_default();
         if let Err(reason) = self.write_refusal(&device) {
-            let code = if !crate::write::write_available() {
+            let code = if !self.writer().is_available() {
                 "write_backend_disabled"
             } else if self.job_rx.is_some() {
                 "write_in_progress"
@@ -5821,7 +5821,7 @@ mod tests {
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
-        // Tilo image + recent history) — the same content `--shots`/`--demo` use.
+        // Tilo image + recent history) — the same content the screenshot scenarios stage.
         let mut app = ImagerApp::new();
         app.targets = crate::model::sample_targets();
         app.releases = crate::model::sample_releases();
@@ -5936,7 +5936,7 @@ mod tests {
         // A release row is a *write source for erasing a drive*, so the live app
         // must offer none of its own invention: the list comes from the document,
         // and a live (unseeded) document has nothing in it. Sample releases are
-        // opt-in via `--demo` / `--shots` like every other sample surface here.
+        // staged only by screenshot scenarios, like every other sample surface here.
         {
             let mut app = ImagerApp::new();
             let doc = AutoCommit::new();

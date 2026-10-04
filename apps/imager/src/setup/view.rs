@@ -3290,14 +3290,6 @@ pub(crate) fn mount(
     })
 }
 
-/// Build the live guided-setup root.
-#[must_use]
-pub fn app_root() -> Box<dyn Widget> {
-    let mut app = SetupApp::new();
-    app.start_live();
-    Box::new(app)
-}
-
 // View fixtures depend on the Unix installer and cache worker test adapters.
 #[cfg(all(test, unix))]
 mod tests {
