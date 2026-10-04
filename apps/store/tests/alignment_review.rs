@@ -97,32 +97,28 @@ fn catalogue_toolbar_and_sections_share_one_column() {
     let summary = first_named(&*app, "6 apps from 2 sources");
     let search = by_test_id(&*app, "search-open");
     let refresh = by_test_id(&*app, "store.refresh");
-    close(
-        summary.center().y,
-        search.center().y,
-        "the summary sits on the centre line of the actions",
-    );
+    // The actions stand in the window's header row, beside History.
     close(
         search.center().y,
         refresh.center().y,
         "the actions share a centre line",
     );
+    assert!(
+        refresh.y1 <= summary.y0,
+        "the actions sit in the header row above the catalogue"
+    );
 
-    // Every section starts on the toolbar's leading edge and ends where the
-    // toolbar's trailing action ends.
+    // Every section starts on the summary's leading edge.
     let sections = by_widget_name(&*app, "Section");
     assert!(!sections.is_empty(), "the catalogue shows its groups");
+    let trailing = sections[0].x1;
     for section in &sections {
         close(
             section.x0,
             summary.x0,
-            "sections start on the toolbar's leading edge",
+            "sections start on the summary's leading edge",
         );
-        close(
-            section.x1,
-            refresh.x1,
-            "sections end on the toolbar's trailing edge",
-        );
+        close(section.x1, trailing, "sections end on one trailing edge");
     }
     // The scroll bar's gutter stays free: no card reaches the window edge.
     let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
@@ -224,7 +220,8 @@ fn details_page_aligns_identity_and_facts() {
 #[test]
 fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
     for width in [800.0, 1200.0] {
-        let catalogue = lay_out(store::fixture::seeded_app(), (width, 800.0));
+        // As tall as the pages, so neither scrolls and reserves a bar's gutter.
+        let catalogue = lay_out(store::fixture::seeded_app(), (width, 1400.0));
         let edge = first_named(&*catalogue, "6 apps from 2 sources").x0;
         for scenario in ["detail", "remotes", "moderation"] {
             let page = lay_out(staged(scenario), (width, 1400.0));
