@@ -15,7 +15,7 @@ use ui::{PresenceCtx, TextRenderer, Theme};
 
 use super::caption;
 use crate::actions::{CanvasAction, NewArtwork};
-use crate::document::{self, Recent, SIZES, STARTS};
+use crate::document::{self, RecentArtworks, SIZES, STARTS};
 use crate::model::{Artwork, Ground};
 use crate::render::{Options, Renderer};
 use crate::resource::ArtworkResource;
@@ -644,7 +644,8 @@ const WELCOME: f32 = 420.0; // a readable measure for its lines: a layout width,
 /// The artworks worked on lately, each opened by a click.
 fn recent_list(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let files = tools.files.clone();
-    cx.switch(&tools.recents, move |_, recents: &Vec<Recent>| {
+    cx.switch(&tools.recents, move |_, recents: &RecentArtworks| {
+        let recents = &recents.artworks;
         if recents.is_empty() {
             return Box::new(Spacer::fixed(0.0)) as Element;
         }

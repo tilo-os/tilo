@@ -382,59 +382,29 @@ pub struct Recent {
 /// How many recent artworks are remembered.
 pub const RECENTS_KEPT: usize = 8;
 
-/// The recent artworks, newest first, as kept in the app's own state.
-pub mod recents {
-    use super::{RECENTS_KEPT, Recent};
-    use tilo_files::{Dir, VPath, blocking};
+/// The artworks opened or saved lately, newest first. Their paths name
+/// files on this device, so the list is a device-local setting.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecentArtworks {
+    pub artworks: Vec<Recent>,
+}
 
-    fn place() -> Option<(Dir, VPath)> {
-        let dir = Dir::open(tilo_paths::AppPaths::for_app(crate::APP_ID).state()).ok()?;
-        Some((dir, VPath::new("recent-artworks.json").ok()?))
-    }
+impl ui::storage::SettingsSchema for RecentArtworks {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
 
-    /// The recent artworks, newest first; none where the app keeps no
-    /// state.
-    pub fn read() -> Vec<Recent> {
-        let Some((dir, path)) = place() else {
-            return Vec::new();
-        };
-        blocking::read(&dir, &path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
+impl RecentArtworks {
     /// `recent` first, then the others it was not, at most
     /// [`RECENTS_KEPT`].
-    pub fn with(mut list: Vec<Recent>, recent: Recent) -> Vec<Recent> {
-        list.retain(|kept| kept.path != recent.path);
-        list.insert(0, recent);
-        list.truncate(RECENTS_KEPT);
-        list
-    }
-
-    /// Remember `recent`. Best effort: a machine that keeps no state for
-    /// the app simply shows no recent artworks.
-    pub fn remember(recent: Recent) -> Vec<Recent> {
-        let list = with(read(), recent);
-        if let Some((dir, path)) = place()
-            && let Ok(bytes) = serde_json::to_vec_pretty(&list)
-        {
-            let _ = blocking::write_atomic(&dir, &path, &bytes);
-        }
-        list
+    pub fn remember(&mut self, recent: Recent) {
+        self.artworks.retain(|kept| kept.path != recent.path);
+        self.artworks.insert(0, recent);
+        self.artworks.truncate(RECENTS_KEPT);
     }
 
     /// Forget the artwork at `path` (it moved or was removed).
-    pub fn forget(path: &str) -> Vec<Recent> {
-        let mut list = read();
-        list.retain(|kept| kept.path != path);
-        if let Some((dir, file)) = place()
-            && let Ok(bytes) = serde_json::to_vec_pretty(&list)
-        {
-            let _ = blocking::write_atomic(&dir, &file, &bytes);
-        }
-        list
+    pub fn forget(&mut self, path: &str) {
+        self.artworks.retain(|kept| kept.path != path);
     }
 }
 
