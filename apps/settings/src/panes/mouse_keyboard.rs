@@ -41,7 +41,8 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, caption, card, choice_row, choice_row_described, rows, setting_row, setting_row_described,
+    El, caption, card, choice_row, choice_row_described, error_caption, rows, setting_row,
+    setting_row_described,
 };
 
 /// Bind a control to a Settings effect where it is built.
@@ -1138,6 +1139,9 @@ const DEVICE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 /// and the attached devices as the compositor last reported them.
 pub struct InputArea {
     catalog: Vec<CatalogEntry>,
+    /// Why the device's layout list could not be read; `catalog` is then a
+    /// short built-in list and says so.
+    catalog_error: Option<String>,
     live: bool,
     devices: RefCell<(Option<ui::time::Instant>, Option<InputHardwareSnapshot>)>,
 }
@@ -1153,6 +1157,9 @@ impl InputArea {
             } else {
                 sample_catalog()
             },
+            catalog_error: live
+                .then(crate::input_sources::layout_catalog_error)
+                .flatten(),
             live,
             devices: RefCell::new((None, None)),
         }
@@ -1221,6 +1228,9 @@ pub struct MouseKeyboardPane {
     /// The input section as shown: normalised.
     last: InputPrefs,
     catalog: Vec<CatalogEntry>,
+    /// Why the device's layout list could not be read; `catalog` is then a
+    /// short built-in list and says so.
+    catalog_error: Option<String>,
     /// Which sections the attached devices call for.
     sections: InputSections,
     /// Attached drawing tablets and pads, one card each.
@@ -1244,6 +1254,7 @@ impl MouseKeyboardPane {
             text,
             last,
             catalog: area.catalog().to_vec(),
+            catalog_error: area.catalog_error.clone(),
             sections: InputSections::for_devices(None),
             tablets: Vec::new(),
             pads: Vec::new(),
@@ -1264,10 +1275,12 @@ impl MouseKeyboardPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        // The keyboard layout comes first: it is what most people open this
+        // pane to change.
         let mut cards = vec![
+            self.input_sources_card(),
             self.keyboard_card(),
             self.spell_checker_card(),
-            self.input_sources_card(),
         ];
         if self.sections.touchpad {
             cards.push(self.touchpad_card());
@@ -1806,6 +1819,12 @@ impl MouseKeyboardPane {
                 .push(Box::new(remove_button));
             source_rows.push(Box::new(row) as Box<dyn Widget>);
         }
+        if let Some(error) = &self.catalog_error {
+            source_rows.push(error_caption(&t_args(
+                "input-catalog-error",
+                &[("error", error.as_str().into())],
+            )));
+        }
         let available: Vec<String> = self
             .catalog
             .iter()
@@ -2159,6 +2178,7 @@ mod tests {
         cx.settings::<InputPrefs>().set(input).unwrap();
         let area = InputArea {
             catalog,
+            catalog_error: None,
             live: false,
             devices: RefCell::new((None, None)),
         };

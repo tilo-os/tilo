@@ -21,7 +21,7 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card_with_action, error_caption, rows, setting_row, value_row};
 
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
@@ -382,6 +382,10 @@ impl BluetoothArea {
     /// One row per device, offering what can be done to it now.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
+        if model.read_error.is_some() {
+            // The last devices read say nothing about the adapter now.
+            return Vec::new();
+        }
         model
             .devices
             .iter()
@@ -424,6 +428,9 @@ pub struct BluetoothModel {
     devices: Vec<DeviceInfo>,
     powered: bool,
     scanning: bool,
+    /// Why the adapter could not be read. While set, the power switch, the
+    /// scan state and the device list say nothing about the machine.
+    read_error: Option<String>,
     notice: Option<String>,
     /// The device being paired, by object path.
     pairing: Option<String>,
@@ -440,6 +447,7 @@ impl BluetoothModel {
             devices: Vec::new(),
             powered: false,
             scanning: false,
+            read_error: None,
             notice: None,
             pairing: None,
             aliases: HashMap::new(),
@@ -458,18 +466,33 @@ impl BluetoothModel {
 
     /// Read the devices, the radio and discovery again.
     fn refresh(&mut self) {
-        match self.control.devices() {
-            Ok(devices) => self.devices = devices,
+        // A failure is kept on the model and shown in place of the adapter.
+        let _ = self.read_adapter();
+        self.changed = true;
+    }
+
+    /// Read the adapter's power, scan state and devices. A read that fails
+    /// keeps the last values and records why, so they are not shown as the
+    /// adapter's state.
+    fn read_adapter(&mut self) -> Result<(), String> {
+        let read = self
+            .control
+            .devices()
+            .and_then(|devices| Ok((devices, self.control.powered()?, self.control.scanning()?)));
+        match read {
+            Ok((devices, powered, scanning)) => {
+                self.devices = devices;
+                self.powered = powered;
+                self.scanning = scanning;
+                self.read_error = None;
+                Ok(())
+            }
             Err(error) => {
-                self.notice = Some(t_args(
-                    "settings-bluetooth-refresh-failed",
-                    &[("error", error.into())],
-                ));
+                tracing::warn!(target: "tilo::settings", %error, "Bluetooth adapter could not be read");
+                self.read_error = Some(error.clone());
+                Err(error)
             }
         }
-        self.scanning = self.control.scanning().unwrap_or(self.scanning);
-        self.powered = self.control.powered().unwrap_or(self.powered);
-        self.changed = true;
     }
 
     fn device_status_line(d: &DeviceInfo) -> String {
@@ -645,20 +668,32 @@ impl BluetoothModel {
         if let Some(notice) = &self.notice {
             body.push(caption(notice));
         }
-        body.extend(self.devices.iter().map(|d| self.device_row(d)));
-        if self.devices.is_empty() {
-            body.push(caption(&t(if self.scanning {
-                "settings-bluetooth-looking"
-            } else {
-                "settings-bluetooth-empty"
-            })));
+        if let Some(error) = &self.read_error {
+            body.push(error_caption(&t_args(
+                "settings-bluetooth-read-error",
+                &[("error", error.as_str().into())],
+            )));
+        } else {
+            body.extend(self.devices.iter().map(|d| self.device_row(d)));
+            if self.devices.is_empty() {
+                body.push(caption(&t(if self.scanning {
+                    "settings-bluetooth-looking"
+                } else {
+                    "settings-bluetooth-empty"
+                })));
+            }
         }
         crate::widgets::cards(vec![card_with_action(
             &t("settings-bluetooth-card"),
-            Box::new(self.cx.bind(
-                Toggle::from_state(&LocalState::new(self.powered)).with_id("bluetooth.toggle"),
-                effect(BluetoothEffect::SET_BLUETOOTH),
-            )),
+            Box::new(
+                self.cx.bind(
+                    Toggle::from_state(&LocalState::new(self.powered))
+                        .with_id("bluetooth.toggle")
+                        // An unread power state is not offered as a switch position.
+                        .with_enabled(self.read_error.is_none()),
+                    effect(BluetoothEffect::SET_BLUETOOTH),
+                ),
+            ),
             rows(body),
         )])
     }
@@ -808,6 +843,78 @@ mod tests {
             self.calls.lock().unwrap().push(format!("forget:{p}"));
             Ok(())
         }
+    }
+    /// An adapter that cannot be asked anything, as from a sandbox without
+    /// the system bus.
+    struct Unreachable;
+    impl BluetoothControl for Unreachable {
+        fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn powered(&self) -> Result<bool, String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn scanning(&self) -> Result<bool, String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn set_powered(&self, _: bool) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn start_scan(&self) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn stop_scan(&self) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn pair(&self, _: &str) -> Result<PairOutcome, String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn cancel_pairing(&self, _: &str) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn connect(&self, _: &str) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn disconnect(&self, _: &str) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn set_trusted(&self, _: &str, _: bool) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn set_alias(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+        fn forget(&self, _: &str) -> Result<(), String> {
+            Err("org.bluez is not reachable".into())
+        }
+    }
+
+    /// An adapter that cannot be read is reported as such: no "no devices"
+    /// list and no power switch at a guessed position.
+    #[test]
+    fn an_unreadable_adapter_is_shown_as_an_error() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let mut model = BluetoothModel::new(
+            cx,
+            Arc::new(Mock {
+                calls: Mutex::new(vec![]),
+                devices: vec![dev()],
+            }),
+        );
+        model.control = Arc::new(Unreachable);
+        assert!(model.read_adapter().is_err());
+        assert_eq!(model.devices.len(), 1, "the last read is kept");
+        let text = crate::widgets::announced_text(model.build_composition().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Can't read Bluetooth: org.bluez is not reachable"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("Headphones")),
+            "{text:#?}"
+        );
     }
 
     fn dev() -> DeviceInfo {

@@ -35,7 +35,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
+use crate::widgets::{El, caption, card, choice_row, error_caption, rows, setting_row, value_row};
 use ui::i18n::ArgValue;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
@@ -380,6 +380,9 @@ struct PowerState {
     available_profiles: Vec<PowerProfile>,
     /// Why the profiles could not be read.
     profiles_unavailable: Option<String>,
+    /// The active profile could not be read; `profile` is then only the
+    /// first choice offered, never shown as the active one.
+    profile_unread: bool,
     charge_cap: Option<ChargeCapCapability>,
 }
 
@@ -396,6 +399,7 @@ impl PowerState {
         if profile_result.is_ok() && !available_profiles.contains(&profile) {
             available_profiles.push(profile);
         }
+        let profile_unread = profile_result.is_err();
         let profiles_unavailable = match (profile_result.err(), available_result.err()) {
             (None, None) => None,
             (profile_error, capability_error) => {
@@ -419,6 +423,7 @@ impl PowerState {
             profile,
             available_profiles,
             profiles_unavailable,
+            profile_unread,
             charge_cap: control.charge_cap(),
         }
     }
@@ -594,7 +599,10 @@ pub(crate) fn answer(
                     let mut notices = area.notices.get();
                     let answer = match outcome {
                         Ok(profile) => {
-                            area.state().update(|state| state.profile = profile);
+                            area.state().update(|state| {
+                                state.profile = profile;
+                                state.profile_unread = false;
+                            });
                             area.applied
                                 .update(|applied| *applied = applied.wrapping_add(1));
                             notices.profile =
@@ -823,7 +831,11 @@ impl PowerPane {
             .iter()
             .map(|profile| profile_label(*profile))
             .collect();
-        let current = profile_label(self.state.profile);
+        let current = if self.state.profile_unread {
+            t("power-profile-unread")
+        } else {
+            profile_label(self.state.profile)
+        };
         let mut profile_rows = if profile_opts.is_empty() {
             vec![value_row(
                 &t("power-profile"),
@@ -847,13 +859,14 @@ impl PowerPane {
             )]
         };
         profile_rows.push(caption(&t("power-profile-caption")));
-        if let Some(notice) = self
-            .notices
-            .profile
-            .as_ref()
-            .or(self.state.profiles_unavailable.as_ref())
-        {
+        if let Some(notice) = &self.notices.profile {
             profile_rows.push(caption(notice));
+        } else if let Some(unavailable) = &self.state.profiles_unavailable {
+            profile_rows.push(if self.state.profile_unread {
+                error_caption(unavailable)
+            } else {
+                caption(unavailable)
+            });
         }
         card(&t("power-profile-title"), rows(profile_rows))
     }

@@ -1383,43 +1383,6 @@ pub fn provide_resources(ctx: &MailResourceCtx, doc: &AutoCommit) -> Vec<Resourc
     vec![root]
 }
 
-/// Build the canonical resource for a built-in folder. Kept separate from the
-/// tree assembly above so the search provider can materialize the *same*
-/// folder resource lazily instead of returning an address which only happens
-/// to work when another provider has already built the whole mailbox tree.
-pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resource {
-    let mut folder_node = Resource::new(
-        format!("mail.folder:{}", folder.as_key()),
-        "mail.folder",
-        folder.title().to_string(),
-    )
-    .with_action(view_spec(
-        "open",
-        "Open folder",
-        &MailOperation::RevealFolder {
-            folder: folder.as_key().to_string(),
-        },
-    ));
-    if folder == Folder::Drafts && has_draft {
-        folder_node = folder_node.with_action(
-            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
-        );
-        folder_node = folder_node.with_child(
-            Resource::new("mail.draft:current", "mail.draft", "Current draft")
-                .with_action(view_spec(
-                    "open",
-                    "Continue editing",
-                    &MailOperation::RevealDraft,
-                ))
-                .with_action(
-                    immediate_spec("discard", "Discard draft", &discard_draft_action())
-                        .destructive(),
-                ),
-        );
-    }
-    folder_node
-}
-
 /// Mailbox-level Document ops for [`tilo_resource::publish`] — bulk triage and
 /// new-folder. Compose, refresh, and the invitation are Views and Effects on
 /// [`mailbox_local_operations`].
@@ -1477,13 +1440,21 @@ pub(crate) fn mailbox_bound_document_actions() -> Vec<ActionSpec> {
 }
 
 /// Message Document ops for [`tilo_resource::publish`] — read / star / archive /
-/// delete / labels. Open / reply / forward / save-attachment stay Views/Effects.
+/// delete / labels — and the `open` view a search hit on the message takes.
+/// Reply / forward / save-attachment stay Views/Effects of the window.
 pub(crate) fn publish_message_document(message: &MessageRow) -> Resource {
     let mut resource = Resource::new(
         format!("mail.message:{}", message.id),
         "mail.message",
         message_label(message),
-    );
+    )
+    .with_action(view_spec(
+        "open",
+        "Open message",
+        &MailOperation::RevealMessage {
+            id: message.id.clone(),
+        },
+    ));
     resource = resource.with_action(immediate_spec(
         "read",
         if message.read {
@@ -1614,19 +1585,7 @@ pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::MailApp {
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut roots = provide_resources(&self.mail_resource_ctx(doc), doc);
-        if let Some(error) = self.mail_search_error()
-            && let Some(mailbox) = roots
-                .iter_mut()
-                .find(|resource| resource.id.as_str() == "mail.mailbox")
-        {
-            mailbox.children.push(Resource::new(
-                "mail.search-status",
-                "mail.search_status",
-                format!("Search index unavailable: {error}"),
-            ));
-        }
-        roots
+        provide_resources(&self.mail_resource_ctx(doc), doc)
     }
 
     pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -1681,15 +1640,6 @@ impl crate::app::MailApp {
                 )
                 .with_children(messages.iter().map(message_resource)),
             );
-        }
-        if id == "mail.search-status" {
-            return self.mail_search_error().map(|error| {
-                Resource::new(
-                    "mail.search-status",
-                    "mail.search_status",
-                    format!("Search index unavailable: {error}"),
-                )
-            });
         }
         let ctx = self.mail_resource_ctx(doc);
         find(provide_resources(&ctx, doc), id)
@@ -1932,45 +1882,6 @@ mod tests {
                     .contract
                     .risk,
                 tilo_actions::RiskLevel::Destructive
-            );
-        }
-
-        // Phase `failed_search_refresh_stays_visible_and_addressable_until_a_good_snapshot`.
-        {
-            let (app, state) = seeded_app();
-            assert!(
-                app.mail_search_error().is_none(),
-                "the sample starts with a valid retained index"
-            );
-
-            app.inject_mail_search_snapshot_failure();
-            let resources = app.publish_resources(&state.doc);
-            let mailbox = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "mail.mailbox")
-                .expect("mailbox root");
-            assert!(
-                mailbox
-                    .children
-                    .iter()
-                    .any(|resource| resource.id.as_str() == "mail.search-status"),
-                "the persistent index failure is published, not just shown in a toast"
-            );
-            let status = MailApp::publish_resource(&app, &state.doc, "mail.search-status")
-                .expect("diagnostic resource resolves exactly");
-            assert_eq!(status.kind, "mail.search_status");
-
-            app.refresh_mail_search_for_test()
-                .expect("a verified snapshot clears the old diagnostic");
-            assert!(
-                app.mail_search_error().is_none(),
-                "only a successful replacement clears the retained error"
-            );
-            assert!(
-                !app.publish_resources(&state.doc)
-                    .iter()
-                    .flat_map(|root| &root.children)
-                    .any(|resource| resource.id.as_str() == "mail.search-status")
             );
         }
 

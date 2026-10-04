@@ -15,7 +15,7 @@ for required in \
   'ProtectProc=invisible' \
   'CapabilityBoundingSet=' \
   'AmbientCapabilities=' \
-  'InaccessiblePaths=/var/lib/tilo/device-private /var/lib/tilo/secureboot /var/lib/tilo/image-trust /var/lib/tilo/rollback' \
+  'InaccessiblePaths=-/var/lib/tilo/device-private -/var/lib/tilo/secureboot -/var/lib/tilo/image-trust -/var/lib/tilo/rollback' \
   'SystemCallFilter=@system-service'; do
   grep -Fqx "$required" "$update_policy_unit" || {
     echo "update-policy sandbox is missing: $required" >&2

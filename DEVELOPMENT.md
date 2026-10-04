@@ -1135,6 +1135,9 @@ cargo check -p shell --tests                 # before finishing
 
 ### The whole suite, as CI runs it
 
+[tools/ci/README.md](tools/ci/README.md#running-pull-request-ci-locally) lists
+the local command for each pull-request CI job.
+
 The developer image (`dist/dev/Containerfile.fedora44`) carries the suite's
 runtime — GStreamer plugins, fonts, lavapipe, PulseAudio, PDFium, the test
 subjects and `cargo-nextest` — from `dist/ci/install-build-deps.sh fedora test`.

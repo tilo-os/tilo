@@ -548,19 +548,35 @@ impl App {
             if self.require_bound_broker_route(&component.binding).is_err() {
                 continue;
             }
-            if !crate::bound_dispatch::validate_bound_resources(
+            let violations = crate::bound_dispatch::bound_contract_violations(
                 self.root_widget.as_mut(),
                 &component.binding,
                 &component.resources,
-            )
-            .unwrap_or(false)
-            {
+            );
+            if !matches!(&violations, Ok(Some(found)) if found.is_empty()) {
                 // Never silent: a contract violation withdraws the whole
-                // component's published surface (agents and Ctrl+K lose it).
-                tracing::error!(
-                    resources = component.resources.len(),
-                    "refusing to publish a component surface that fails action contract validation"
-                );
+                // component's published surface (agents and Ctrl+K lose it),
+                // so name the actions that broke it and why.
+                let violations = match violations {
+                    Ok(Some(found)) => found
+                        .iter()
+                        .map(|violation| format!("{}: {}", violation.address, violation.reason))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    Ok(None) => "the component is no longer mounted".to_owned(),
+                    Err(error) => format!("{error:?}"),
+                };
+                if self
+                    .actions
+                    .refusals_logged
+                    .first(&("component", &violations))
+                {
+                    tracing::error!(
+                        resources = component.resources.len(),
+                        %violations,
+                        "refusing to publish a component surface that fails action contract validation"
+                    );
+                }
                 continue;
             }
             for resource in component.resources {
@@ -633,11 +649,18 @@ impl App {
                 .iter()
                 .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
             {
-                tracing::error!(
-                    control = %entry.binding.control_id,
-                    binding = ?entry.binding.kind,
-                    "refusing to publish a surface with a stale control action binding"
-                );
+                let binding = format!("{:?}", entry.binding.kind);
+                if self.actions.refusals_logged.first(&(
+                    "stale",
+                    &entry.binding.control_id,
+                    &binding,
+                )) {
+                    tracing::error!(
+                        control = %entry.binding.control_id,
+                        %binding,
+                        "refusing to publish a surface with a stale control action binding"
+                    );
+                }
             }
             if self
                 .actions
@@ -680,11 +703,17 @@ impl App {
         );
         if !violations.is_empty() {
             for violation in &violations {
-                tracing::error!(
-                    address = %violation.address,
-                    reason = %violation.reason,
-                    "refusing to publish an invalid resource/action surface"
-                );
+                if self.actions.refusals_logged.first(&(
+                    "surface",
+                    &violation.address,
+                    &violation.reason,
+                )) {
+                    tracing::error!(
+                        address = %violation.address,
+                        reason = %violation.reason,
+                        "refusing to publish an invalid resource/action surface"
+                    );
+                }
             }
             // Withdraw anything previously published. A stale, apparently
             // valid catalogue is more dangerous than an empty one.

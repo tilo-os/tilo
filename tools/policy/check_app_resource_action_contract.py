@@ -19,7 +19,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BASELINE = Path("tools/policy/app_resource_action_baseline.toml")
+# Audited ceilings, one file per app (`<app>.toml`, `[ratchets.<rule>]` tables
+# of `"apps/<app>/<path>" = <count>`), so changes to different apps never edit
+# the same file. Rules absent from every file allow nothing; adding an entry is
+# a certification exception requiring architectural review. A file whose debt
+# is gone is deleted.
+BASELINE = Path("tools/policy/app_resource_action_baseline")
 
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
@@ -261,23 +266,33 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
     return False
 
 
-def load_ratchet_baseline(root: Path) -> dict[str, dict[str, int]]:
-    path = root / BASELINE
-    if not path.is_file():
-        return {}
-    with path.open("rb") as handle:
-        document = tomllib.load(handle)
-    raw = document.get("ratchets", {})
-    if not isinstance(raw, dict):
-        return {}
+def baseline_file(relative: str) -> Path:
+    """The per-app baseline file that holds `relative`'s ceilings."""
+    parts = relative.split("/")
+    owner = parts[1] if len(parts) > 2 and parts[0] == "apps" else "workspace"
+    return BASELINE / f"{owner}.toml"
+
+
+def load_ratchet_baseline(
+    root: Path, violations: list[Violation] | None = None
+) -> dict[str, dict[str, int]]:
     baseline: dict[str, dict[str, int]] = {}
-    for rule, entries in raw.items():
-        if isinstance(entries, dict):
-            baseline[rule] = {
-                path: limit
-                for path, limit in entries.items()
-                if isinstance(path, str) and isinstance(limit, int) and limit >= 0
-            }
+    for path in sorted((root / BASELINE).glob("*.toml")):
+        with path.open("rb") as handle:
+            raw = tomllib.load(handle).get("ratchets", {})
+        if not isinstance(raw, dict):
+            continue
+        for rule, entries in raw.items():
+            if not isinstance(entries, dict):
+                continue
+            for relative, limit in entries.items():
+                if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
+                    continue
+                if violations is not None and root / baseline_file(relative) != path:
+                    violations.append(
+                        Violation(path, 1, f"{rule} ceiling for `{relative}` belongs in {baseline_file(relative)}")
+                    )
+                baseline.setdefault(rule, {})[relative] = limit
     return baseline
 
 
@@ -311,7 +326,7 @@ def audit_ratchets(
                 if len(matches) < limit:
                     violations.append(
                         Violation(
-                            root / BASELINE,
+                            root / baseline_file(relative),
                             1,
                             f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)}",
                         )
@@ -322,7 +337,7 @@ def audit_ratchets(
                 Violation(
                     source,
                     line_number(source_text, first_excess.start()),
-                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {BASELINE})",
+                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {baseline_file(relative)})",
                 )
             )
 
@@ -699,12 +714,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     "app host must install bounded canonical search for every live resource tree",
                 )
             )
-    ratchet_baseline = load_ratchet_baseline(root)
-    baseline_path = root / BASELINE
+    ratchet_baseline = load_ratchet_baseline(root, violations)
     for rule, entries in ratchet_baseline.items():
-        if rule not in RATCHET_REASONS:
-            violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
         for relative in entries:
+            baseline_path = root / baseline_file(relative)
+            if rule not in RATCHET_REASONS:
+                violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
             if not (root / relative).is_file():
                 violations.append(
                     Violation(

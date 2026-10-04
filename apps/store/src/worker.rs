@@ -19,7 +19,7 @@ use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
-use crate::search_provider::StoreSearchIndex;
+use crate::search::StoreDirectory;
 use crate::sources::{
     flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
     installed_tilo_to_store_item, merge, tilo_to_store_item,
@@ -56,6 +56,8 @@ pub enum Request {
     /// `Request` (and the channel that carries them) sized to the common
     /// case instead of the rare, heavy one.
     Act(Box<StoreItem>, ActionKind),
+    /// Update each app in turn, reporting progress, then refresh once.
+    UpdateAll(Vec<StoreItem>),
     SubmitReport {
         registry_name: String,
         envelope: ReportEnvelope,
@@ -126,18 +128,22 @@ impl StoreWorker {
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; the surface attaching the worker has no fallible path to report it on"
     )]
-    pub fn spawn(search_index: StoreSearchIndex, wake: WakeHandle) -> Self {
+    pub fn spawn(directory: StoreDirectory, wake: WakeHandle) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || {
-                let snapshots = Snapshots {
-                    sender: snapshot_tx,
-                    wake,
-                };
-                run(&request_rx, &snapshots, search_index);
+            .spawn({
+                let pending = Arc::clone(&pending);
+                move || {
+                    let snapshots = Snapshots {
+                        sender: snapshot_tx,
+                        wake,
+                        pending,
+                    };
+                    run(&request_rx, &snapshots, directory);
+                }
             })
             .expect("spawn store worker");
         Self {
@@ -187,6 +193,9 @@ impl StoreWorker {
 struct Snapshots {
     sender: mpsc::Sender<Snapshot>,
     wake: WakeHandle,
+    /// The UI's count of snapshots still to come: a request sends one, and
+    /// a progress report adds its own.
+    pending: Arc<AtomicUsize>,
 }
 
 impl Snapshots {
@@ -194,6 +203,12 @@ impl Snapshots {
         let sent = self.sender.send(snapshot).is_ok();
         self.wake.wake();
         sent
+    }
+
+    /// A snapshot beside the one that answers the request.
+    fn progress(&self, snapshot: Snapshot) -> bool {
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        self.send(snapshot)
     }
 }
 
@@ -208,17 +223,13 @@ struct State {
     /// The current palette/action directory. Rebuilding it is linear in a
     /// catalogue snapshot, so it belongs on this serialized worker rather
     /// than in the UI's snapshot-drain loop.
-    search_index: StoreSearchIndex,
+    directory: StoreDirectory,
     /// The catalogue's names and descriptions, indexed while they stay the
     /// same.
     item_index: ui::search::ListIndex,
 }
 
-fn run(
-    requests: &mpsc::Receiver<QueuedRequest>,
-    snapshots: &Snapshots,
-    search_index: StoreSearchIndex,
-) {
+fn run(requests: &mpsc::Receiver<QueuedRequest>, snapshots: &Snapshots, directory: StoreDirectory) {
     let staging = crate::actions::tapp_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
     let _ = std::fs::create_dir_all(&staging);
@@ -235,7 +246,7 @@ fn run(
         remotes: Vec::new(),
         searches: LruCache::new(CACHE_CAP),
         details: LruCache::new(CACHE_CAP),
-        search_index,
+        directory,
         item_index: ui::search::ListIndex::default(),
     };
     refresh(&mut state);
@@ -355,6 +366,7 @@ fn handle(
             state.remotes = crate::flathub_client::list_remotes();
             remote_result(snapshots, state, result)
         }
+        Request::UpdateAll(items) => update_all(&items, state, snapshots, staging),
         Request::Act(item, action) => {
             let outcome =
                 crate::actions::execute_with_host(state.host.as_ref(), &item, action, staging);
@@ -638,6 +650,77 @@ fn send(
     send_tracked(snapshots, state, items, status_line, query, detail, None)
 }
 
+/// Update every item in turn without opening any, report each step, and
+/// answer with what happened.
+fn update_all(
+    items: &[StoreItem],
+    state: &mut State,
+    snapshots: &Snapshots,
+    staging: &std::path::Path,
+) -> (bool, Option<Outcome>) {
+    let total = items.len();
+    let mut failures = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let progress = Snapshot {
+            items: state.base_items.clone(),
+            status_line: format!(
+                "Updating {} of {total}: {}…",
+                index.saturating_add(1),
+                item.name
+            ),
+            query: None,
+            detail: None,
+            remotes: state.remotes.clone(),
+            operation_error: None,
+        };
+        if !snapshots.progress(progress) {
+            return (false, None);
+        }
+        let action = match item.source {
+            StoreSource::Flathub => ActionKind::FlatpakUpdate,
+            StoreSource::Tilo { .. } => ActionKind::Update,
+        };
+        let outcome = crate::actions::execute_with_host(state.host.as_ref(), item, action, staging);
+        if !outcome.ok {
+            failures.push(format!("{}: {}", item.name, outcome.status_line));
+        }
+    }
+    refresh(state);
+    let summary = update_all_summary(total, &failures);
+    let operation_error = (!failures.is_empty()).then(|| summary.clone());
+    let alive = send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &summary,
+        None,
+        None,
+        operation_error,
+    );
+    let finished = if failures.is_empty() {
+        Ok(Finished::status(summary))
+    } else {
+        Err(summary)
+    };
+    (alive, Some(finished))
+}
+
+fn update_all_summary(total: usize, failures: &[String]) -> String {
+    let apps = if total == 1 { "app" } else { "apps" };
+    match failures {
+        [] => format!("Updated {total} {apps}."),
+        [first, rest @ ..] => {
+            let updated = total.saturating_sub(failures.len());
+            let more = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" (and {} more failed)", rest.len())
+            };
+            format!("Updated {updated} of {total} {apps}; {first}{more}")
+        }
+    }
+}
+
 fn send_tracked(
     snapshots: &Snapshots,
     state: &State,
@@ -724,7 +807,7 @@ fn refresh(state: &mut State) {
 /// or resource resolution. This executes on the serialized worker directly
 /// after a true `base_items` refresh, never on the UI thread.
 fn sync_authoritative_catalogue(state: &State) {
-    state.search_index.sync(&state.base_items);
+    state.directory.sync(&state.base_items);
 }
 
 fn collect_items(
@@ -794,9 +877,23 @@ fn registries_summary(registries: &[RegistryConfig]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_all_reports_what_it_updated_and_the_first_failure() {
+        use super::update_all_summary;
+        assert_eq!(update_all_summary(1, &[]), "Updated 1 app.");
+        assert_eq!(update_all_summary(3, &[]), "Updated 3 apps.");
+        assert_eq!(
+            update_all_summary(3, &["Notes: install refused".into()]),
+            "Updated 2 of 3 apps; Notes: install refused"
+        );
+        assert_eq!(
+            update_all_summary(3, &["Notes: offline".into(), "Clocks: offline".into()]),
+            "Updated 1 of 3 apps; Notes: offline (and 1 more failed)"
+        );
+    }
+
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
-    use ui::search::SearchProvider;
 
     fn item(id: &str, name: &str) -> StoreItem {
         StoreItem {
@@ -827,7 +924,7 @@ mod tests {
         }
     }
 
-    fn state_with_items(items: Vec<StoreItem>, search_index: StoreSearchIndex) -> State {
+    fn state_with_items(items: Vec<StoreItem>, directory: StoreDirectory) -> State {
         State {
             host: None,
             opened_ref: None,
@@ -836,7 +933,7 @@ mod tests {
             remotes: Vec::new(),
             searches: LruCache::new(CACHE_CAP),
             details: LruCache::new(CACHE_CAP),
-            search_index,
+            directory,
             item_index: ui::search::ListIndex::default(),
         }
     }
@@ -846,7 +943,7 @@ mod tests {
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
         // Case `request_and_drain_are_non_blocking`.
         {
-            let worker = StoreWorker::spawn(StoreSearchIndex::default(), WakeHandle::new());
+            let worker = StoreWorker::spawn(StoreDirectory::default(), WakeHandle::new());
             let started = ui::time::now();
             assert!(worker.request(Request::Search("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
@@ -857,19 +954,20 @@ mod tests {
 
         // Case `filtered_snapshot_never_truncates_authoritative_action_directory`.
         {
-            let search_index = StoreSearchIndex::default();
+            let directory = StoreDirectory::default();
             let state = state_with_items(
                 vec![
                     item("dev.example.alpha", "Alpha"),
                     item("dev.example.beta", "Beta"),
                 ],
-                search_index.clone(),
+                directory.clone(),
             );
             sync_authoritative_catalogue(&state);
             let (sender, received) = mpsc::channel();
             let snapshots = Snapshots {
                 sender,
                 wake: WakeHandle::new(),
+                pending: Arc::new(AtomicUsize::new(0)),
             };
 
             assert!(send_tracked(
@@ -883,33 +981,39 @@ mod tests {
             ));
             assert_eq!(received.recv().expect("filtered snapshot").items.len(), 1);
 
-            let provider = search_index.provider();
-            assert_eq!(provider.search_limited("Beta", 10).len(), 1);
+            assert!(
+                directory
+                    .entries()
+                    .iter()
+                    .any(|entry| entry.title == "Beta"),
+                "the directory keeps the app the filtered snapshot left out"
+            );
         }
 
         // Case `authoritative_catalogue_replacement_updates_and_removes_directory_rows`.
         {
-            let search_index = StoreSearchIndex::default();
+            let directory = StoreDirectory::default();
             let mut state = state_with_items(
                 vec![
                     item("dev.example.alpha", "Alpha"),
                     item("dev.example.beta", "Beta"),
                 ],
-                search_index.clone(),
+                directory.clone(),
             );
             sync_authoritative_catalogue(&state);
-            let provider = search_index.provider();
-            let cursor = provider
-                .search_page("", None, 1, 1)
-                .next
-                .expect("two directory rows produce a continuation");
+            assert!(directory.app("dev.example.beta").is_some());
 
             state.base_items = vec![item("dev.example.gamma", "Gamma")];
             sync_authoritative_catalogue(&state);
 
-            assert!(provider.search_limited("Beta", 10).is_empty());
-            assert_eq!(provider.search_limited("Gamma", 10).len(), 1);
-            assert!(!provider.action_directory_cursor_is_current(&cursor));
+            assert!(directory.app("dev.example.beta").is_none());
+            assert!(directory.app("dev.example.gamma").is_some());
+            let titles: Vec<String> = directory
+                .entries()
+                .into_iter()
+                .map(|entry| entry.title)
+                .collect();
+            assert_eq!(titles, ["Gamma"]);
         }
     }
 }

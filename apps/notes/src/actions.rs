@@ -1674,6 +1674,7 @@ fn page_preview_detail(bodies: &Bodies, page: PageId) -> Option<String> {
     Some(detail)
 }
 
+#[cfg(test)]
 pub(crate) fn block_resource(page: PageId, block: &NoteBlockResource) -> Option<Resource> {
     block_resource_in_page(page, block, std::slice::from_ref(block))
 }

@@ -1549,9 +1549,11 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tempfile",
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-paths",
  "tilo-wet-media",
  "tracing",
  "usvg",
@@ -7450,13 +7452,16 @@ dependencies = [
 name = "launcher"
 version = "0.1.0"
 dependencies = [
+ "ash",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fnv",
+ "getrandom 0.4.3",
  "hex",
  "landlock",
  "libc",
+ "libloading",
  "package-store",
  "runtime-bundle",
  "runtime-identity",
@@ -7464,6 +7469,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "threshold-identity",
  "tilo-app-package",
  "tilo-clock",
  "tilo-desktop-entry",
@@ -7530,6 +7536,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "wire-frame",
  "workspace-hack",
@@ -7541,6 +7548,7 @@ version = "0.1.0"
 dependencies = [
  "collab-types",
  "fnv",
+ "image",
  "legacy-agent-protocol",
  "libc",
  "serde",
@@ -7548,10 +7556,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-advisory-lock",
+ "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-files",
  "tilo-libvirt-domain",
  "tilo-paths",
+ "tilo-relay-protocol",
  "tilo-sandbox-core",
  "wire-frame",
  "workspace-hack",
@@ -14451,6 +14461,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-app-registry"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "package-store",
+ "registry-types",
+ "serde",
+ "serde_json",
+ "tilo-app-package",
+ "tilo-clock",
+ "workspace-hack",
+]
+
+[[package]]
 name = "test-http"
 version = "0.1.0"
 dependencies = [
@@ -14613,6 +14640,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-peer-state",
  "tilo-relay",
+ "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -14785,6 +14813,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",
+ "wasmparser 0.239.0",
  "workspace-hack",
  "zip",
 ]
@@ -14950,6 +14979,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-browser-compute"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "tilo-image-codec",
+ "wasm-bindgen",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
@@ -15103,6 +15142,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "serde_json",
  "workspace-hack",
 ]
 
@@ -15671,6 +15711,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-image-codec"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-installed-apps"
 version = "0.1.0"
 dependencies = [
@@ -16082,6 +16130,9 @@ dependencies = [
 name = "tilo-process"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "tempfile",
+ "tilo-advisory-lock",
  "workspace-hack",
 ]
 
@@ -16658,8 +16709,10 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-host",
  "tilo-host-search",
+ "tilo-image-codec",
  "tilo-media",
  "tilo-paths",
+ "tilo-process",
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
@@ -18268,6 +18321,7 @@ dependencies = [
  "tilo-environment",
  "tilo-files",
  "tilo-oci-images",
+ "tilo-relay-protocol",
  "tilo-resource",
  "tilo-sandbox-core",
  "tilo-test-env",
@@ -19917,6 +19971,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aho-corasick",
  "arrayvec",
+ "ash",
  "ashpd",
  "base16ct 0.2.0",
  "base16ct 1.0.0",

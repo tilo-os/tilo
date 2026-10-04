@@ -135,7 +135,7 @@ pub(crate) fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow>
 /// The effects that differ from their declaration on this device now.
 pub(crate) fn statuses(app: &SettingsApp) -> Vec<ui::framework::EffectStatus> {
     let software = app.software();
-    crate::panes::accessibility::statuses(software.on_screen_keyboard, software.speech.is_some())
+    crate::panes::accessibility::statuses(software.speech.is_some())
 }
 
 /// `effect` of one area, named as part of [`SettingsEffect`], for binding a

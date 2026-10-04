@@ -307,6 +307,14 @@ impl<'a> RegionDoc<'a> {
         self.block_len(block).unwrap_or(0)
     }
 
+    /// Text of a region block, reading only that block in the body.
+    fn text(&self, block: &str) -> Option<String> {
+        match self.region {
+            RegionKind::Body => tilo_doc::model::block_text(self.doc, &self.containers, block),
+            _ => self.block(block).map(|view| view.text),
+        }
+    }
+
     fn block(&self, block: &str) -> Option<tilo_doc::snapshot::BlockView> {
         match self.region {
             RegionKind::Body => {
@@ -552,6 +560,9 @@ impl TypeTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct EraseTarget {
     typing: TypeTarget,
+    /// The caret block's text, so one keystroke erases a whole grapheme
+    /// cluster.
+    caret_text: String,
     caret_kind: String,
     /// `(block, chars)` of the region's blocks around the caret.
     window: Vec<(String, usize)>,
@@ -579,6 +590,7 @@ impl EraseTarget {
         if local {
             return Self {
                 typing: TypeTarget::new(r),
+                caret_text: r.rd.text(&r.view.caret.block).unwrap_or_default(),
                 caret_kind: String::new(),
                 window: vec![(r.view.caret.block.clone(), r.caret_len)],
                 caret_at: 0,
@@ -597,6 +609,7 @@ impl EraseTarget {
             .collect();
         Self {
             typing: TypeTarget::new(r),
+            caret_text: r.rd.text(&r.view.caret.block).unwrap_or_default(),
             caret_kind: r
                 .rd
                 .block(&r.view.caret.block)
@@ -644,16 +657,11 @@ impl EraseTarget {
             );
             return (vec![action], view.clone());
         }
-        if backward && caret.offset > 0 {
-            let action =
-                splice_text_action(region, &caret.block, caret.offset - 1, caret.offset, "");
-            let next = ViewPoint::new(&caret.block, caret.offset - 1);
+        if (backward && caret.offset > 0) || (!backward && caret.offset < len) {
+            let (start, end) = self.grapheme_at_caret(backward);
+            let action = splice_text_action(region, &caret.block, start, end, "");
+            let next = ViewPoint::new(&caret.block, start);
             return (vec![action], collapsed(view, next));
-        }
-        if !backward && caret.offset < len {
-            let action =
-                splice_text_action(region, &caret.block, caret.offset, caret.offset + 1, "");
-            return (vec![action], collapsed(view, caret.clone()));
         }
         if backward && self.caret_at > 0 {
             let Some((previous, previous_len)) = self.window.get(self.caret_at - 1) else {
@@ -671,6 +679,31 @@ impl EraseTarget {
             return (vec![action], collapsed(view, caret.clone()));
         }
         (Vec::new(), collapsed(view, caret.clone()))
+    }
+
+    /// The char range one Backspace (`backward`) or Delete removes inside the
+    /// caret block: the whole grapheme cluster, through the shared core.
+    fn grapheme_at_caret(&self, backward: bool) -> (usize, usize) {
+        let offset = self.typing.view.caret.offset;
+        let text = &self.caret_text;
+        let byte = text
+            .char_indices()
+            .nth(offset)
+            .map_or(text.len(), |(byte, _)| byte);
+        let mut core = ui::text_edit::EditCore::at(byte);
+        let edit = if backward {
+            core.delete_backward(text, false)
+        } else {
+            core.delete_forward(text, false)
+        };
+        match edit.char_splice(text) {
+            Some(splice) if splice.removed > 0 => {
+                (splice.at, splice.at.saturating_add(splice.removed))
+            }
+            // The block's text could not be read: one character, as before.
+            _ if backward => (offset.saturating_sub(1), offset),
+            _ => (offset, offset.saturating_add(1)),
+        }
     }
 
     /// Shift+Arrow `count` times, then Backspace: a paragraph boundary is one

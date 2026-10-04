@@ -570,6 +570,12 @@ impl Table {
             .and_then(|index| self.projected_position(index))
     }
 
+    pub(super) fn projected_is_composing(&self) -> bool {
+        self.cells
+            .iter()
+            .any(|input| input.is_focused() && input.is_composing())
+    }
+
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
         crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?)

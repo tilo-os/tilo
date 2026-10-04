@@ -231,6 +231,7 @@ pub struct SurfaceCx<R: Resource> {
     pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
     pub(crate) effects: Effects<R>,
+    pub(crate) saved: ui_core::LocalState<ui_core::record::RecordSaveStatus>,
     pub(crate) alive: Weak<()>,
 }
 
@@ -285,6 +286,14 @@ impl<R: Resource> SurfaceCx<R> {
     /// past version.
     pub fn me(&self) -> Option<&str> {
         self.dispatch.me()
+    }
+
+    /// Whether the record's latest edits are durable, as
+    /// [`ViewCx::save_status`](super::ViewCx::save_status): the same state
+    /// the host updates after every sync, for a surface that draws its own
+    /// status line. A surface never tracks durability itself.
+    pub fn save_status(&self) -> ui_core::LocalState<ui_core::record::RecordSaveStatus> {
+        self.saved.clone()
     }
 
     /// Whether the participant may only view, as of now.

@@ -22,7 +22,7 @@ fn tab(
     let opened: Opened = Rc::default();
     let log = opened.clone();
     let mut widget = TerminalWidget::spawn_headless().unwrap();
-    widget.set_sessions(Sessions::scripted(recent, move |target, by| {
+    widget.set_sessions(Sessions::scripted(recent, move |target, by, _attach| {
         log.borrow_mut().push((target.clone(), by));
         answer(target).map(|()| crate::inner::TerminalBackend::for_test())
     }));
@@ -41,7 +41,7 @@ fn host_tab(
 ) -> Opened {
     let opened: Opened = Rc::default();
     let log = opened.clone();
-    let sessions = Sessions::scripted(recent, move |target, by| {
+    let sessions = Sessions::scripted(recent, move |target, by, _attach| {
         log.borrow_mut().push((target.clone(), by));
         answer(target).map(|()| crate::inner::TerminalBackend::for_test())
     });
@@ -284,7 +284,7 @@ fn supervisor_replies_say_what_to_do_next() {
     #[cfg(unix)]
     {
         let request =
-            crate::inner::ush_request(&[], &SessionTarget::Host, Requester::Person, (80, 24))
+            crate::inner::ush_request(&[], &SessionTarget::Host, Requester::Person, None, (80, 24))
                 .unwrap();
         let request: serde_json::Value = serde_json::from_slice(&request).unwrap();
         assert_eq!(request["target"], serde_json::json!({"kind": "host"}));
@@ -294,6 +294,7 @@ fn supervisor_replies_say_what_to_do_next() {
                 &[],
                 &SessionTarget::Legacy { vm: "linux".into() },
                 Requester::Person,
+                None,
                 (80, 24)
             )
             .is_err(),

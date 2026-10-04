@@ -1181,6 +1181,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
+COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
 
 FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
@@ -1955,6 +1956,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     xwayland-satellite \
     waypipe \
     virtiofsd \
+    vhost-device-vsock \
     skopeo \
     virt-viewer \
     xorriso \
@@ -2101,14 +2103,16 @@ COPY \
 COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh
 # The session-context check proves a greetd login runs in the user's SELinux
 # domain and logind session scope, with each launched app in its own scope.
-COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh /usr/libexec/tilo/
+COPY os/tests/projection-boot-check.sh os/tests/session-context-check.sh \
+     os/tests/input-hotplug-check.sh /usr/libexec/tilo/
 # Optional AirPlay media acceptance runs against the assembled image separately.
 # Its setup/probe timing is not an installation prerequisite. Keep the full
 # protocol/media/teardown test available; omitting it here does not claim success.
 # Native protocol tests and the GStreamer plugin checks above remain required.
 RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
           /usr/libexec/tilo/projection-boot-check.sh \
-          /usr/libexec/tilo/session-context-check.sh
+          /usr/libexec/tilo/session-context-check.sh \
+          /usr/libexec/tilo/input-hotplug-check.sh
 
 # Put both stores' command shims on PATH, so a package that declares CLI
 # commands can be run by name — the only way a CLI package is meant to be run.
@@ -2406,6 +2410,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/systemd/system-generators/tilo-root-generator \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
+        /usr/libexec/tilo/boot-units-gate.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------
@@ -3165,6 +3170,19 @@ COPY --from=fluxcast-builder /src/src/ /fluxcast/
 COPY --from=joycond-builder /out/ /joycond/
 COPY --from=bootc-builder /out/ /bootc/
 
+# BuildKit keys a RUN by a content hash of every bind mount, read-only or not,
+# so mounting the whole split rootfs into the uki stage hashed every file of it,
+# about two minutes of every build. With a composefs digest given, uki.sh reads
+# only these files of the rootfs; this stage hands it just those.
+FROM split AS uki-input
+RUN mkdir /uki-input \
+    && cd / \
+    && for path in usr/lib/os-release usr/lib/bootc/kargs.d \
+                   usr/lib/tilo/hardware-profile.json usr/lib/tilo/hardware-profile-definition.json \
+                   usr/lib/modules/*/dtb; do \
+         if [ -e "$path" ] || [ -L "$path" ]; then cp -a --parents "$path" /uki-input/; fi; \
+       done
+
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
 # computes the authoritative digest and os/dev/build-image.sh rewrites only the
@@ -3180,14 +3198,14 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
-# The rootfs mounts are writable (writes are discarded): BuildKit keys a
-# read-only mount by a content hash of everything under it, which for the whole
-# rootfs took two minutes of every build before this step could start.
+# /target holds only uki-input's files, so bootc's own digest of it would be
+# wrong: the digest must be given.
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
-    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=uki-input,source=/uki-input,target=/target,rw \
     --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
-    bash /usr/local/bin/uki.sh
+    { [ -n "$CFS_DIGEST" ] || { echo 'TILO_CFS_DIGEST is required (os/dev/build-image.sh passes a placeholder)' >&2; exit 1; }; } \
+    && bash /usr/local/bin/uki.sh
 
 # NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to
 # the rootfs has a different composefs digest from the one its inherited UKI seals,

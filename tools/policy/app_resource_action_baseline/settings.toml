@@ -1,0 +1,16 @@
+# Audited ceilings of apps/settings (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+
+[ratchets.raw_operation_handler]
+"apps/settings/src/settings_app.rs" = 3
+
+[ratchets.standalone_launch]
+
+[ratchets.surface_document_actions]
+
+[ratchets.widget_owned_document]
+"apps/settings/src/actions/mod.rs" = 3
+"apps/settings/src/panes/audio.rs" = 2
+"apps/settings/src/panes/network.rs" = 1

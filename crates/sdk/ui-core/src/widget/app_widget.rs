@@ -638,7 +638,7 @@ mod component_adapter {
             };
             if request
                 .target
-                .is_none_or(|target| target.instance_id == binding.instance_id)
+                .is_none_or(|target| target.same_component(&binding))
             {
                 let target = request.target.unwrap_or(&binding);
                 if let Some((invocation, accepted)) = self

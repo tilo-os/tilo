@@ -67,6 +67,9 @@ const ACCOUNTS_READABLE_WIDTH: f32 = 1040.0;
 /// label. See [`SettingsApp::readable_content_measure`].
 const FORM_READABLE_WIDTH: f32 = 720.0;
 
+/// One scroller's offset, shared with every scroller rebuilt in its place.
+type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
+
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -94,13 +97,16 @@ pub struct SettingsApp {
     /// Process-local navigation request written by a sidebar row. This keeps
     /// current-pane selection out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
+    /// Each pane's scroll offset. The content scroller is rebuilt whenever the
+    /// pane's structure changes (a control applied, a category opened), so the
+    /// offset lives here, per category, rather than in the rebuilt widget.
+    pane_scroll: std::cell::RefCell<std::collections::HashMap<Category, ScrollOffset>>,
     /// Process-local backing state for the sidebar search field. Search is a
     /// transient filter, never a durable setting or CRDT text object.
     search_state: ui::LocalState<String>,
     /// Retained, revision-aware catalogue behind Ctrl+K. Cloning its provider
     /// for the host is O(1), so a palette continuation always talks to the
     /// same generation instead of rebuilding an index on every frame.
-    search_provider: crate::search_provider::SettingsSearchProvider,
     /// Where the account stores, credential vault and mutation journal live.
     account_root: crate::accounts::AccountRoot,
     /// Secret-free snapshot for resource enumeration. Refreshes at account
@@ -196,8 +202,8 @@ impl SettingsApp {
             width_hint: None,
             search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
+            pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
-            search_provider: crate::search_provider::SettingsSearchProvider::new(),
             account_resources: account_root.store().all().to_vec(),
             account_root,
             account_commands: ui::LocalState::new(None),
@@ -403,7 +409,15 @@ impl SettingsApp {
         } else {
             Box::new(inner)
         };
-        let scroll = Scrollable::new_vertical().with_child(content);
+        let offset = std::rc::Rc::clone(
+            self.pane_scroll
+                .borrow_mut()
+                .entry(self.selected)
+                .or_default(),
+        );
+        let scroll = Scrollable::new_vertical()
+            .with_persisted_offset(offset)
+            .with_child(content);
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
@@ -1164,10 +1178,7 @@ impl SettingsApp {
 }
 
 impl Widget for SettingsApp {
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::resources::PublishesResources);
 
     fn native_input_snapshot(
         &self,
@@ -1588,15 +1599,6 @@ impl Widget for SettingsApp {
         self.shell.as_mut().and_then(|shell| {
             shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
         })
-    }
-}
-
-impl ui::search::capability::SearchSource for SettingsApp {
-    /// Fold the settings panes into the unified Ctrl+K palette. Every result
-    /// addresses the pane resource's exported `open` View operation, alongside
-    /// the collaborative setting-change actions those resources own.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 }
 
