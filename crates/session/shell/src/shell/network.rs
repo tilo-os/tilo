@@ -13,6 +13,8 @@ mod native_ingress;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
+#[cfg(test)]
+mod same_person_room_tests;
 
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
@@ -9921,6 +9923,7 @@ mod tests {
                         since: Vec::new(),
                         room: room.to_string(),
                         invite_id: Some([99; 32]),
+                        nonce: 0,
                     },
                 })
                 .expect("wrong invite redemption");
@@ -9944,6 +9947,7 @@ mod tests {
                         since: Vec::new(),
                         room: room.to_string(),
                         invite_id: Some([1; 32]),
+                        nonce: 0,
                     },
                 })
                 .expect("exact invite redemption");
