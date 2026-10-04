@@ -585,6 +585,11 @@ The previous `NavShell` API (file-explorer, mail, maps, weather):
 | Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 840 (`compact_breakpoint`, the sidebar plus the 560 the content needs); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
 | A collapse that the drawer forgot after the window crossed the breakpoint | Remembered per size class now; delete app code that re-applies it. |
 | An app holding a `FlapState` for its own sidebar or side panel, with its own breakpoint, scrim and slide arithmetic | A `SidebarDrawer` (`.right()` for a trailing panel). `FlapState::tick(layout, dt)` is now `tick(layout, dt, theme.tokens.motion.durations.base())` and `slide()` is gone: `reveal()` is already eased. |
+| A hand-placed toggle rect, its hover tracking, the sidebar shortcut and the toggle's semantic node | `let face = drawer.header(area, theme);` (`header_with_history(area, theme, opener.is_shown())` with History): the window's `HeaderRowFace` with the toggle in it. Route events with `drawer.handle_event(event, ctx)` (hit-test, hover, `HostShortcut::Sidebar`, Escape and a scrim press), paint with `drawer.paint_toggle(..)`, publish `drawer.toggle_accessibility()` and route its `Activate` with `perform_toggle_action`. The floating drawer opens under the row. |
+| `.breakpoint(f64::INFINITY)` | `.overlay_only()`. |
+| A `snap` re-applied after the first `resolve` | Delete: a snap before the first `resolve` waits for the layout. |
+| Two drawers side by side for an icon rail and a list | `.with_rail()`: one drawer, `rail_rect()` and `list_rect()`. |
+| A floating panel painted by hand at the host's own rect | `SidebarDrawer::paint_panel_in(scene, transform, rect, theme) -> Theme`. |
 
 `TreeView`:
 
@@ -686,12 +691,26 @@ Leading to trailing:
 | API | Use |
 |---|---|
 | `NavShell::new()` with `.sidebar(e)`, `.overview(e)`, `.content(e)`, `.inspector(e)` | The window's columns. |
-| `.sidebar_header(title, actions)`, `.overview_header(..)`, `.content_header(..)`, `.inspector_header(..)` | Each column's header in the one header row: a sentence-case title and the column's actions (icon `Button`s, a `ToggleGroup`). |
-| `.with_filter(e)` | The one filter field of the window, under the sidebar's header (the overview's without a sidebar); Ctrl+F / ⌘F focuses it. |
+| `.sidebar_header(title, actions)`, `.overview_header(..)`, `.content_header(..)`, `.inspector_header(..)` | Each column's header in the one header row: a sentence-case title and the column's actions (`Button`s, a `ToggleGroup`). The title starts at the content gutter (after the toggle or Back when the column holds one); the actions start after the title's measured width. Labelled buttons collapse to their icons when the row is short, then the rest move into a trailing More menu built from their names; nothing to configure. |
+| `set_sidebar_header(title, actions)`, `set_overview_header(..)`, `set_content_header(..)`, `set_inspector_header(..)` | Change a header in place. |
+| `set_sidebar_title`, `set_overview_title`, `set_content_title`, `set_inspector_title` | Change only the title. |
+| `.content_header_bound(&LocalState<String>, actions)` | The content's title follows a `LocalState` a view writes from resource state (as `NavList::bind_selection`). |
+| `.sidebar_count(n)`, `.overview_count(n)`, `.content_count(n)`; `set_*_count(Option<usize>)` | How many items the column holds, a quiet `Caption.numeric` pill after the title (`SectionHeader::count`). |
+| `.content_header_leading(e)`, `set_content_header_leading(Option<e>)` | The fill between the toggle or Back and the actions: a path bar or breadcrumb, a mode or tab switcher with no title. It stands at its own width and gets what is left when it needs more. |
+| `.with_back(&LocalState<NavStack<T>>)`; `.on_back(can_go_back, go_back)` + `set_can_go_back(bool)` | The content's Back for the app's own page stack (browse history, a drill-down from a dashboard). The shell draws its `ChevronLeft` chip at the leading edge of the content's header and pops the stack on a press; a narrow window's push stack shares the chip. |
+| `.overview_controls(e)`, `set_overview_controls(Option<e>)` | Controls that act on the overview list (its sort order), under the overview's header at the shell inset. |
+| `.overview_rail(e)` | A `NavList::rail()` the overview collapses into where the list no longer fits beside the content but the rail does; narrower still, the overview pushes. |
+| `sidebar_mut::<T>()`, `overview_mut::<T>()`, `content_mut::<T>()`, `inspector_mut::<T>()` | The column as the widget the app gave it (an explorer, an editor, a tree), the one waiting to go in if a swap is pending. |
+| `.with_sidebar_state(&LocalState<bool>)`, `.with_inspector_state(..)`; `open_inspector()`, `close_inspector()` | Show or hide from state (`ViewCx::on_stage`, a scenario opening a drawer for a shot); the shell writes the person's choice back. |
+| `.with_filter(SearchField::filter())`, `filter()`, `filter_mut()` | The one filter field of the window, under the sidebar's header (the overview's without a sidebar, else the content's); Ctrl+F / ⌘F focuses it. The shell carries its query to the column's `Filterable` after every event (`sync_filter`); read the query and the count back from `filter()`. |
 | `.mode(NavMode::{Overlay, Push, Docked})` | What the sidebar becomes in a narrow window. |
 | `.with_pane_state(&LocalState<NavPane>)`, `show(NavPane)`, `back()`, `front_pane()` | The front screen of a narrow window's push stack. |
 | `toggle_sidebar()`, `open_sidebar()`, `close_sidebar()`, `is_sidebar_open()`, `with_sidebar_hidden()`; the same for the inspector | Show and hide; remembered per window size class. |
-| `geometry()` (`NavGeometry`) | What the shell laid out, for tests and shots. |
+| `geometry()` (`NavGeometry`) | What the shell laid out, for tests and shots (`overview` is `OverviewPlacement::{None, List, Rail}`). |
+| Changing a slot or header from an event | Safe: `set_content`, `set_inspector`, `set_*_header`, … take effect when the host next builds the tree, never while it routes the event. |
+| An open drawer | Opens under the header row, which stays live (the toggle, History, the columns' header actions); the other columns stay laid out and painted under the scrim, and take no input. |
+| `chrome::HeaderRowFace::new(area, theme)` with `.with_toggle()`, `.with_back()`, `.with_history()`, `.with_history_if(shown)`, `.with_trailing()`, `.without_rule()`, `.with_inset_title()`; `row`, `toggle`, `back`, `title`, `actions`, `history`, `rule`, `split(title_width)`, `body_of(area)`, `history_rect()`, `paint_rule(..)`, `paint_title(..)`; `HeaderRowMetrics` | The header row's geometry for a painted app: the same face `NavShell` lays its row out with. |
+| `widget::WindowHeader` (`set_history_control(Option<HistoryControl>)`), `widget::HistoryOpener`, `chrome::paint_history_control(..)` | A painted app's header row takes the window's History control: provide `WindowHeader`, keep a `HistoryOpener` (`set_control`, `handle_event(event, face.history_rect(), scale)`, `paint`, `accessibility(rect)`, `perform_action`), and return `opener.take()` from `ActionControls::take_control_invocation`. A header row that hosts library controls hosts `opener.button_mut()` instead (the same History button, bound to the History door, at `widget::HISTORY_CONTROL_ID`; `take_rebuilt` / `tree_rebuilt` when it is replaced). The window then draws no History bar above the app. |
 | `NavList::new(sections)` with `NavSection`, `NavItem`, `NavAction`, `NavDrop` | The one navigation list (keyboard, disclosure, semantics, rename, drag, row actions). |
 | `.selected(id)`, `.bind_selection(&LocalState<Option<String>>)`, `.on_select(..)`, `set_sections(..)`, `set_selected(..)`, `selected_id()` | Selection and updates. Choosing a destination in a narrow window closes the drawer or pushes the content by itself. |
 | `.item_actions(actions, on_action)`, `.on_section_action(..)`, `.on_rename(..)`, `.on_move(..)` | What the person can do to rows. |
@@ -734,6 +753,10 @@ Leading to trailing:
    `selection_fill`, `row_fill`, `selection_fill_on_raised`, `floor_ramp`).
 7. App-owned search fields at the top of a sidebar (see
    [Search](#search)); a filter of the list becomes `with_filter`.
+8. `std::mem::take(&mut shell).content_header(..)` rebuilds, `Decorator`s
+   that redraw a title or a count over a header, and app-placed Back
+   buttons (`ControlSize::Small` "Back"): use `set_content_header`,
+   `set_content_title`, `set_*_count` and `with_back`.
 
 ### Example: a mail window
 
@@ -1729,6 +1752,19 @@ header row and which reads as on while History shows. Apps place nothing.
 
 - An app without a header row (a single canvas or form) keeps the window's
   History bar: the same glyph at its trailing edge, nothing else.
+- A painted app with a header row of its own (an editor's file name and
+  mode strip, a viewer's toolbar) lays the row out with
+  `chrome::HeaderRowFace`, provides `widget::WindowHeader` and keeps a
+  `widget::HistoryOpener`; the History control then stands at
+  `face.history_rect()` and the window draws no bar above it. A media app
+  may place the control in its floating strip over the media instead
+  (`chrome::paint_history_control` at any rect, presses through the
+  opener).
+
+| Painted app before | After |
+|---|---|
+| A History bar drawn by the window above the app's own header | `impl WindowHeader for App { fn set_history_control(&mut self, c) { self.history.set_control(c) } }` and `ui::provides!(.., dyn ui::widget::WindowHeader)`. |
+| Space reserved under that bar | Delete it; the app's header row is the window's top edge. |
 - The header control is bound to the window's History door. The App, the
   headless harness and `native_app_audit` all resolve that door (and the
   search door) as the window's, so delete any audit filter for
@@ -2055,3 +2091,22 @@ take them when its migration is reconciled.
 - **The sidebar collapses for the content's room.** `compact_breakpoint` is
   840 (`sidebar_width` 280 + `content_min_width` 560): tests or shots that
   pinned a docked sidebar at 720–839 px wide now see the drawer.
+- **The header row is a capability.** Every `NavShell` app replaces its
+  `std::mem::take(&mut self.shell).content_header(..)` /
+  `inspector_header(..)` rebuilds with `set_content_header` /
+  `set_inspector_header`, and any `Decorator` drawn over a header with a
+  title, `set_*_count` or `content_header_leading`: backups, clocks,
+  contacts, containers, feeds, firewall, logs, mail, monitor, passwords,
+  snippets, vpn, windows. Hand-placed Back buttons become `with_back`
+  (disk-usage, print-centre, store, tube). `with_filter` takes a
+  `SearchField` (logs). Painted apps with a header row of their own take
+  the window's History control through `WindowHeader` + `HistoryOpener`
+  and lay the row out with `HeaderRowFace` (hex-editor, photos,
+  video-editor, typst-editor, calculator, music, git-client, maps,
+  sheets); `SidebarDrawer` hosts move to `drawer.header(..)` and
+  `drawer.handle_event(..)` (code-editor, music, chat, video-player,
+  word-processor, video-editor).
+- **An open drawer leaves the window in place.** A `NavShell` drawer opens
+  under the header row; tests that expected only the drawer and its toggle
+  among the exposed children now also see the header row's controls, and
+  the toggle stays in the row instead of moving into the drawer.

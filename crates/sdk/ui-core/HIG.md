@@ -43,7 +43,17 @@ sits in it — `.sidebar_header(title, actions)`, `.overview_header(..)`,
 unified toolbar: a `Heading` title in sentence case after the shell's
 leading button, the column's actions at its trailing end, and one hairline
 under the content columns. An app never draws a band of its own above a
-column.
+column. The title starts at the content gutter (`rhythm.group`) or after
+the shell's leading button; an optional count follows it as a quiet
+`Caption.numeric` pill; the actions start after the title's measured
+width. Where they do not fit, labelled buttons show their icons alone,
+then the rest move into a trailing More menu. A path bar or a mode
+switcher with no title is the header's leading fill
+(`content_header_leading`). An app's own page stack (browse history, a
+drill-down) gets the shell's Back chip (`with_back`), the same chip a
+narrow window's push stack uses. A painted app lays the same row out with
+`chrome::HeaderRowFace` and takes the window's History control through
+`widget::WindowHeader`; there is one header-row geometry.
 
 **History is the window's, at the trailing edge of the header row.** Where
 the app has History, the host gives the shell its History control: one Plain
@@ -76,7 +86,10 @@ email client's accounts + folders.
   squeezed (`sidebar_width` + the content's minimum), it **stays a genuine
   sidebar** as a **floating drawer** over the content — the floating
   material, `radii.panel`, the floating shadow, `surfaces.scrim` behind —
-  summoned and dismissed by the same toggle, a scrim press or Esc. Choosing
+  summoned and dismissed by the same toggle, a scrim press or Esc. It opens
+  under the header row, which stays live (the toggle does not move, History
+  stays reachable); the columns behind it stay in place under the scrim
+  and take no input. Choosing
   a destination in it closes it. It remains a menu; it does **not** turn
   into a full-screen page. (`NavMode::Push` is the exception for a list of
   *categories* such as Settings: there the sidebar is the first screen of
@@ -112,7 +125,15 @@ list (overview) + the message (detail).
   **genuine sidebar** (§1a).
 - Is it *content the user reads or acts on* — a list of messages, events, or
   cities-with-info? → **content panel** (§1b), **even if it sits on the left and
-  looks sidebar-ish**.
+  looks sidebar-ish**. Where the content panel has an icon form (places as
+  a rail), give it `overview_rail`: the window narrows to rail and detail
+  before it pushes.
+- Is it *a stack of pages inside the content* — a dashboard drilling into a
+  queue, browse history? → the content's own page stack, with the shell's
+  Back (`with_back`), never a hand-placed Back button.
+- Is it *properties of the selection*? → the **inspector**; it docks while
+  the content keeps its room, floats as a drawer otherwise, and keeps the
+  person's docked or closed choice per window size class.
 
 ### 1d. Concrete app mappings
 
@@ -1119,8 +1140,17 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   host tree, measured with the host's renderer and placed at the rects the
   responsive plan gives them, so focus, routing and semantics see the real
   geometry. A column the shell is not showing (a hidden sidebar, a closed
-  drawer, a screen pushed away) is not in the host tree; an open drawer is
-  modal, so only it and its toggle take input.
+  drawer, a screen pushed away) is not in the host tree; behind an open
+  drawer the other columns stay laid out and painted but take no input,
+  and only the parts laid out this frame paint. A slot or header changed
+  while an event is routed takes effect at the next build. A part whose
+  overlay holds the pointer (a popover a header button owns) hears pointer
+  events before the columns.
+- **The header row is one face** (`chrome::HeaderRowFace`): `header_height`;
+  leading chips (toggle, Back) and trailing chips (inspector toggle,
+  History) of `min_pointer_target` in the `s3` inset, `s2` apart; the title
+  at the content gutter (`rhythm.group`) when no chip leads; the rule under
+  content columns. `NavShell` and every painted header row use it.
 - **Every column's header shares the one header row**, and every body starts
   under it, so the columns' first rows share one top edge.
 
