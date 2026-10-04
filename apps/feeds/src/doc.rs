@@ -18,11 +18,9 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use ui::doc::{read_bool, read_i64_coerced, read_number, read_str};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{
-    Article, ContentBlock, Feed, FeedKind, Folder, Id, ReadFont, ReadSettings, ReadTheme, Store,
-};
+use crate::model::{Article, ContentBlock, Feed, FeedKind, Folder, Id, Store};
 
 pub struct FeedsDoc;
 
@@ -335,65 +333,6 @@ impl FeedsDoc {
         }
     }
 
-    // --- reading settings ------------------------------------------------
-    //
-    // Stored under a `settings` map so concurrent edits merge field-level
-    // (last-writer-wins per key). These are the article-reader preferences
-    // (font size / family / page tint); they ride in the same CRDT so a
-    // collaborator reading the same cluster sees a consistent layout.
-
-    /// True once the reading settings have been written at least once.
-    pub fn has_settings(doc: &AutoCommit) -> bool {
-        matches!(
-            doc.get(&ROOT, "settings"),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        )
-    }
-
-    pub fn write_settings(doc: &mut AutoCommit, s: &ReadSettings) {
-        let obj = Self::map_field(doc, "settings");
-        // font_scale is an f64 — guard with a bit-exact compare rather than the
-        // generic put_if_changed, so a NaN would not defeat the equality check.
-        let fs = f64::from(s.font_scale);
-        if read_number(doc, &obj, "font_scale")
-            .unwrap_or(f64::NAN)
-            .to_bits()
-            != fs.to_bits()
-        {
-            let _ = doc.put(&obj, "font_scale", fs);
-        }
-        ui::doc::put_if_changed(doc, &obj, "font", s.font.as_str());
-        ui::doc::put_if_changed(doc, &obj, "theme", s.theme.as_str());
-    }
-
-    pub fn read_settings(doc: &AutoCommit) -> ReadSettings {
-        let default = ReadSettings::default();
-        let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&ROOT, "settings") else {
-            return default;
-        };
-        ReadSettings {
-            font_scale: read_number(doc, &obj, "font_scale")
-                .unwrap_or_else(|| f64::from(default.font_scale)) as f32,
-            font: {
-                let s = read_str(doc, &obj, "font").unwrap_or_default();
-                if s.is_empty() {
-                    default.font
-                } else {
-                    ReadFont::from_key(&s)
-                }
-            },
-            theme: {
-                let s = read_str(doc, &obj, "theme").unwrap_or_default();
-                if s.is_empty() {
-                    default.theme
-                } else {
-                    ReadTheme::from_key(&s)
-                }
-            },
-        }
-        .clamped()
-    }
-
     // --- reader ----------------------------------------------------------
 
     /// Read the whole store back out of the document.
@@ -568,27 +507,6 @@ mod tests {
             assert!(!FeedsDoc::is_empty(&doc));
         }
 
-        // --- phase: reading_settings_round_trip ---
-        {
-            use crate::model::{ReadFont, ReadTheme};
-            let mut doc = AutoCommit::new();
-            assert!(!FeedsDoc::has_settings(&doc));
-            // Defaults read back even before any write.
-            assert_eq!(FeedsDoc::read_settings(&doc), ReadSettings::default());
-
-            let s = ReadSettings {
-                font_scale: 1.3,
-                font: ReadFont::Serif,
-                theme: ReadTheme::Sepia,
-            };
-            FeedsDoc::write_settings(&mut doc, &s);
-            assert!(FeedsDoc::has_settings(&doc));
-            let loaded = FeedsDoc::read_settings(&doc);
-            assert_eq!(loaded.font, ReadFont::Serif);
-            assert_eq!(loaded.theme, ReadTheme::Sepia);
-            assert!((loaded.font_scale - 1.3).abs() < 0.001);
-        }
-
         // --- phase: remove_feed_deletes_feed_and_its_articles ---
         {
             let mut doc = AutoCommit::new();
@@ -704,27 +622,6 @@ mod tests {
             assert_eq!(
                 a, b,
                 "re-seeding the same store grew the document {a} -> {b}"
-            );
-        }
-
-        // --- phase: repeated_write_settings_keeps_doc_bounded ---
-        {
-            use crate::model::{ReadFont, ReadTheme};
-            let mut doc = AutoCommit::new();
-            let s = ReadSettings {
-                font_scale: 1.3,
-                font: ReadFont::Serif,
-                theme: ReadTheme::Sepia,
-            };
-            FeedsDoc::write_settings(&mut doc, &s);
-            let a = doc.save().len();
-            for _ in 0..50 {
-                FeedsDoc::write_settings(&mut doc, &s);
-            }
-            let b = doc.save().len();
-            assert_eq!(
-                a, b,
-                "re-writing unchanged settings grew the document {a} -> {b}"
             );
         }
     }

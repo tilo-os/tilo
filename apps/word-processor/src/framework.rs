@@ -18,19 +18,20 @@ use std::rc::Rc;
 use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction, RichTextState};
 use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, ResourceApp, ResourceSurface,
-    RunMode, SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_resource::{self, ActionDecl, Demand, Doc, Effect, Invoke, ModelError, Resource};
+use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
+use crate::effects::WordProcessorEffect;
 
 /// Rich text plus the images, tables and headings that document already holds.
 ///
 /// The record kind stays `tilo.rich-text`. The editor's chrome (find, open,
-/// save) stays on [`WordProcessorApp::local_operations`]. Structural objects,
+/// save) is the editor's [`crate::effects::WordProcessorEffect`]. Structural objects,
 /// notes, review, paragraph styles, and the page header and footer are
 /// [`Resource::children`], so a hosted palette does not rebuild them beside
 /// the document.
@@ -225,15 +226,6 @@ impl ResourceApp for WordProcessorApp {
     }
 
     /// The document's first heading, as the palette and history name it.
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        // History is the framework's own surface. The editor's version strip
-        // is not offered beside it. Open, save, and save-as are Effects on
-        // this door.
-        let mut specs = crate::actions::view_operations();
-        specs.extend(crate::actions::file_operation_specs());
-        specs
-    }
-
     fn label(state: &RichTextState) -> String {
         state
             .headings()
@@ -297,18 +289,6 @@ impl ResourceApp for WordProcessorApp {
     }
 }
 
-/// What the editor hands out beyond its document.
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "word-processor.effects")]
-pub enum WordProcessorEffect {
-    /// Share image
-    ///
-    /// The picture at the caret, else the document's only picture, as
-    /// content another app's operation takes (a photo editor opening it).
-    #[effect(content, permission = "read")]
-    ShareImage,
-}
-
 impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
     /// The editor reads the live state where it needs it; a new state only
     /// asks for a redraw.
@@ -351,19 +331,23 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
         self.bound_edits()
     }
 
+    /// The Find results of whoever invokes them, beneath the document.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.search_rows()
+    }
+
     fn effect(
         &mut self,
         effect: WordProcessorEffect,
-        _cx: &mut EffectCx<Document, Self>,
+        cx: &mut EffectCx<Document, Self>,
     ) -> EffectAnswer {
-        match effect {
-            WordProcessorEffect::ShareImage => {
-                let hash = self
-                    .shared_image()
-                    .ok_or("there is no one picture to share: place the caret on one")?;
-                Effected::content(&hash)
-            }
+        if effect == WordProcessorEffect::ShareImage {
+            let hash = self
+                .shared_image()
+                .ok_or("there is no one picture to share: place the caret on one")?;
+            return Effected::content(&hash);
         }
+        self.answer_effect(effect, cx)
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
@@ -381,19 +365,21 @@ impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::WordProcessorApp;
-    use ui::framework::ResourceApp;
 
     #[test]
-    fn framework_palette_includes_file_effects_and_views() {
-        let specs = WordProcessorApp::local_operations();
-        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        for id in ["find", "open", "save", "save-as"] {
-            assert!(ids.contains(&id), "{ids:?}");
+    fn the_document_publishes_file_effects_and_views() {
+        let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        let surface = app.agent_surface();
+        let ids: Vec<&str> = surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["resource"] == "tilo.rich-text")
+            .filter_map(|row| row["action"].as_str())
+            .collect();
+        for id in ["find", "open", "save", "save-as", "zoom-in", "move-caret"] {
+            assert!(ids.contains(&id), "{id}: {ids:?}");
         }
-        assert!(
-            !ids.contains(&"history"),
-            "framework history is the host surface"
-        );
     }
 
     #[test]

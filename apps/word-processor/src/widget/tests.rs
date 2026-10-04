@@ -5572,28 +5572,13 @@ fn typing_composes_with_the_input_method_and_erases_whole_clusters() {
 #[test]
 fn hosted_lookup_offers_caret_edits_not_a_second_document() {
     let (state, wp) = bound();
-    assert!(ui::resources::resource(&wp, &state.doc, "word-processor.document").is_none());
-    let hosted = ui::resources::resources(&wp, &state.doc);
     assert!(
-        hosted
-            .iter()
-            .all(|resource| resource.id.as_str() != "word-processor.document"),
-        "a hosted window does not publish a second document root"
+        ui::resources::resources(&wp, &state.doc).is_empty(),
+        "the window publishes nothing beside the framework's document"
     );
     assert!(
-        hosted.iter().all(|resource| resource
-            .actions
-            .iter()
-            .all(|action| action.kind != tilo_actions::OperationKind::Document)),
-        "the window's own rows carry no document edits"
-    );
-    let caret = hosted
-        .iter()
-        .find(|resource| resource.id.as_str() == "word-processor.caret")
-        .expect("the caret's view operations stay addressable");
-    assert!(
-        caret.actions.iter().any(|action| action.id == "move-caret"),
-        "moving the caret is a view action"
+        wp.search_rows().is_empty(),
+        "nothing found, no search results"
     );
     let edits: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
     for (id, what) in [
@@ -5787,8 +5772,7 @@ fn templates_replace_the_document_only_when_chosen() {
         let old_path =
             std::env::temp_dir().join(format!("wp-template-original-{}.md", std::process::id()));
         std::fs::write(&old_path, "Original document").unwrap();
-        wp.try_open_document_in_place(&mut state.doc, &old_path)
-            .unwrap();
+        wp.set_file(old_path.clone(), WpFormat::Markdown);
         wp.apply_template(&mut state.doc, crate::Template::Report);
         assert!(
             wp.path.is_none(),

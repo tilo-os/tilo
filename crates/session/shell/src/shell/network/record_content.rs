@@ -1,12 +1,19 @@
-//! The content a room record references, on the room's route. A device asks
-//! the room's topic for a hash its record lacks; a device of the room that
-//! keeps it answers that device alone, in bounded pieces, directly when it
-//! can reach it and on the room's topic otherwise. Both directions are room
-//! traffic: only devices the room admits to read take part, and every
-//! message names the device it comes from, bound to its authenticated
-//! transport before it is accepted.
+//! The content a record references, on the record's route.
+//!
+//! A room record's: a device asks the room's topic for a hash its record
+//! lacks; a device of the room that keeps it answers that device alone, in
+//! bounded pieces, directly when it can reach it and on the room's topic
+//! otherwise. Both directions are room traffic: only devices the room admits
+//! to read take part, and every message names the device it comes from,
+//! bound to its authenticated transport before it is accepted.
+//!
+//! A person record's: the same exchange on the person's own fabric, between
+//! the devices their root certified and nobody else, whichever room the
+//! window showing the record is in.
 
-use super::{NetCmd, ShellNetwork, room_topic_id};
+use super::{
+    NetCmd, PersonalFabricPayload, ShellNetwork, personal_continuity_topic_id, room_topic_id,
+};
 use crate::network::actor::RecordContentDelivery;
 use crate::shell::state::RoomId;
 use neighbour_wire::NeighbourMsg;
@@ -70,6 +77,10 @@ impl ShellNetwork {
 
     /// Ask the devices of `route`'s room for `hash`.
     pub fn want_record_content(&self, route: &CrdtRoute, hash: &str) {
+        if self.is_local_person_room(&route.cluster_id) {
+            self.want_person_content(route, hash);
+            return;
+        }
         if self.record_content_topic(route).is_none() {
             return;
         }
@@ -83,15 +94,14 @@ impl ShellNetwork {
 
     /// Send `piece` to `peer`, which asked `route`'s room for it.
     pub fn answer_record_content(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
+        if self.is_local_person_room(&route.cluster_id) {
+            self.answer_person_content(route, peer, piece);
+            return;
+        }
         let Some(ws) = self.record_content_topic(route) else {
             return;
         };
-        let target = self
-            .record_content
-            .requesters
-            .lock()
-            .ok()
-            .and_then(|requesters| requesters.get(&(ws, peer)).copied());
+        let target = self.requester(ws, peer);
         let msg = NeighbourMsg::RecordContentPiece {
             responder: self.local_peer_id_hash(),
             requester: peer,
@@ -130,14 +140,7 @@ impl ShellNetwork {
                 if requester == self.local_peer_hash || self.is_local_person_room(&cluster_id) {
                     return;
                 }
-                if let Ok(mut requesters) = self.record_content.requesters.lock() {
-                    if requesters.len() >= MAX_REMEMBERED_REQUESTERS
-                        && !requesters.contains_key(&(ws, requester))
-                    {
-                        requesters.clear();
-                    }
-                    requesters.insert((ws, requester), transport);
-                }
+                self.remember_requester(ws, requester, transport);
                 InboundRecordContent::Want {
                     route: route(app_id, cluster_id),
                     peer: requester,
@@ -169,6 +172,10 @@ impl ShellNetwork {
             }
             _ => return,
         };
+        self.queue_record_content(entry);
+    }
+
+    fn queue_record_content(&self, entry: InboundRecordContent) {
         if let Ok(mut inbound) = self.record_content.inbound.lock()
             && inbound.len() < MAX_QUEUED
         {
@@ -176,10 +183,119 @@ impl ShellNetwork {
         }
         self.drain_wake.poke();
     }
+
+    fn remember_requester(&self, ws: u64, peer: ContentPeer, transport: iroh::EndpointId) {
+        if let Ok(mut requesters) = self.record_content.requesters.lock() {
+            if requesters.len() >= MAX_REMEMBERED_REQUESTERS
+                && !requesters.contains_key(&(ws, peer))
+            {
+                requesters.clear();
+            }
+            requesters.insert((ws, peer), transport);
+        }
+    }
+
+    fn requester(&self, ws: u64, peer: ContentPeer) -> Option<iroh::EndpointId> {
+        self.record_content
+            .requesters
+            .lock()
+            .ok()
+            .and_then(|requesters| requesters.get(&(ws, peer)).copied())
+    }
+
+    /// The person's fabric, when this device has a person and may use it.
+    fn person_fabric(&self) -> Option<(u64, [u8; 32])> {
+        let user = self.personal_continuity_user?;
+        let ws = personal_continuity_topic_id(&user);
+        (self.personal_fabric_allowed() && self.join_topic(ws)).then_some((ws, user))
+    }
+
+    /// Ask the person's other devices for content of one of their records.
+    fn want_person_content(&self, route: &CrdtRoute, hash: &str) {
+        let Some((ws, user_public_key)) = self.person_fabric() else {
+            return;
+        };
+        let payload = PersonalFabricPayload::RecordContentWant {
+            app_id: route.app_id.clone(),
+            hash: hash.to_owned(),
+        };
+        for target in self.personal_route_targets(ws, &user_public_key) {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target,
+                payload: payload.clone(),
+            });
+        }
+    }
+
+    /// Send a piece of a person record's content to the device of the
+    /// person that asked for it.
+    fn answer_person_content(&self, route: &CrdtRoute, peer: ContentPeer, piece: ContentPiece) {
+        let Some((ws, user_public_key)) = self.person_fabric() else {
+            return;
+        };
+        let Some(target) = self.requester(ws, peer) else {
+            return;
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabricTarget {
+            ws,
+            user_public_key,
+            target,
+            payload: PersonalFabricPayload::RecordContentPiece {
+                app_id: route.app_id.clone(),
+                hash: piece.hash,
+                total: piece.total,
+                offset: piece.offset,
+                bytes: piece.bytes,
+            },
+        });
+    }
+
+    /// Queue a person-record content message another device of the person
+    /// sent on the fabric, which already authenticated it as theirs.
+    pub(super) fn dispatch_person_content(
+        &self,
+        ws: u64,
+        transport: iroh::EndpointId,
+        payload: PersonalFabricPayload,
+    ) {
+        let Some(room) = self.local_person_room() else {
+            return;
+        };
+        let peer = crate::network::behaviour::peer_liveness_handle(&transport);
+        let entry = match payload {
+            PersonalFabricPayload::RecordContentWant { app_id, hash } => {
+                self.remember_requester(ws, peer, transport);
+                InboundRecordContent::Want {
+                    route: route(app_id, room.to_string()),
+                    peer,
+                    hash,
+                }
+            }
+            PersonalFabricPayload::RecordContentPiece {
+                app_id,
+                hash,
+                total,
+                offset,
+                bytes,
+            } => InboundRecordContent::Piece {
+                route: route(app_id, room.to_string()),
+                piece: ContentPiece {
+                    hash,
+                    total,
+                    offset,
+                    bytes,
+                },
+            },
+            _ => return,
+        };
+        self.queue_record_content(entry);
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::shell::state::WorkspaceTree;
     use std::collections::BTreeMap;
@@ -221,6 +337,11 @@ mod tests {
         }
     }
 
+    /// A record-content service over `net`, keeping its content in memory.
+    pub(in crate::shell::network) fn content_over(net: &Arc<ShellNetwork>) -> Arc<RouteContent> {
+        RouteContent::new(Arc::new(Shelf::default()), Arc::new(Peers(Arc::clone(net))))
+    }
+
     struct Device {
         net: Arc<ShellNetwork>,
         commands: mpsc::Receiver<NetCmd>,
@@ -238,10 +359,7 @@ mod tests {
             crate::network::behaviour::peer_liveness_handle(&transport),
         );
         let net = Arc::new(net);
-        let content = RouteContent::new(
-            Arc::new(Shelf::default()),
-            Arc::new(Peers(Arc::clone(&net))),
-        );
+        let content = content_over(&net);
         Device {
             net,
             commands,

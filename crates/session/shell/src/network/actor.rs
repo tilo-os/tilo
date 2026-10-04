@@ -72,6 +72,20 @@ pub enum PersonalFabricPayload {
         record_id: String,
         envelope: Box<collab_types::SignedOp>,
     },
+    /// A device of the person asking for content one of `app_id`'s person
+    /// records references. Its room is the person's, implied by the route.
+    RecordContentWant {
+        app_id: String,
+        hash: String,
+    },
+    /// One bounded piece of that content, for the device that asked alone.
+    RecordContentPiece {
+        app_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

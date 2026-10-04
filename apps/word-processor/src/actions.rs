@@ -21,97 +21,21 @@ pub mod participant;
 pub mod view_ops;
 
 use automerge::AutoCommit;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::num;
 
 use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionParam, ActionRegistry, ActionSpec,
-    ContextRequirement, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec,
+    Action, ActionArgs, ActionParam, ActionRegistry, ActionSpec, ContextRequirement, EncodedAction,
+    ExecutionLocus, OperationKind, ParamType, Resource, ResultSpec,
 };
+use ui::tilo_resource::Effect as _;
+
+use crate::effects::WordProcessorEffect;
 
 /// Registry `type_id` for every word-processor action.
 pub use tilo_document::RICH_TEXT_ACTION_TYPE as WORD_PROCESSOR_ACTION_TYPE;
 pub use tilo_document::action::*;
-pub const WORD_PROCESSOR_OPERATION_TYPE: &str = "word-processor.operation";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WordProcessorOperation {
-    Open {
-        path: Option<String>,
-    },
-    Save {
-        path: Option<String>,
-    },
-    SaveAs {
-        path: Option<String>,
-    },
-    Find,
-    ZoomIn,
-    ZoomOut,
-    /// Return the page canvas to its explicit 100% scale. This matches the
-    /// percentage chip in the visible zoom stepper and Ctrl+0.
-    ZoomReset,
-    ToggleSpellcheck,
-    ToggleMarkup,
-    ToggleStyles,
-    ToggleRuler,
-    ToggleOutline,
-    /// Focus one exact body range. Used by bounded search-hit/comment resources
-    /// instead of an index into the renderer's transient cache.
-    NavigateTo {
-        block: String,
-        start: usize,
-        end: usize,
-    },
-}
-
-/// Decode an application-owned word-processor operation payload.
-///
-/// # Errors
-///
-/// Returns a message when a payload bearing
-/// [`WORD_PROCESSOR_OPERATION_TYPE`] is not valid JSON for
-/// [`WordProcessorOperation`].
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<WordProcessorOperation>, String> {
-    if type_id != WORD_PROCESSOR_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    value: &WordProcessorOperation,
-) -> Option<ActionSpec> {
-    let Ok(spec) = ActionSpec::operation(id, label, kind, WORD_PROCESSOR_OPERATION_TYPE, value)
-    else {
-        // A malformed operation must not become an invokable catalogue
-        // entry. These variants contain only JSON-native values, but keep the
-        // fallible serializer boundary fail-closed rather than panicking.
-        return None;
-    };
-    match value {
-        WordProcessorOperation::Open { .. }
-        | WordProcessorOperation::Save { .. }
-        | WordProcessorOperation::SaveAs { .. } => Some(
-            spec.destructive()
-                .execution(ExecutionMode::Background { cancellable: false })
-                .returns(ResultSpec::Job),
-        ),
-        _ => Some(spec.with_contract(ActionContract::view())),
-    }
-}
-
 /// Register the word processor's action decoder for palette execution + remote
 /// replay.
 pub fn register(registry: &mut ActionRegistry) {
@@ -229,90 +153,6 @@ fn range_label(
         .take(end.saturating_sub(start))
         .collect();
     Some(format!("Result: {}", short(&text, "Empty match")))
-}
-
-pub(crate) fn file_operation_specs() -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for (id, label, variant) in [
-        ("open", "Open document", 0_u8),
-        ("save", "Save document", 1_u8),
-        ("save-as", "Save document as", 2_u8),
-    ] {
-        specs.push(
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system file picker)",
-                OperationKind::Effect,
-                WORD_PROCESSOR_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct filesystem path; omit to open the system file picker",
-                )],
-                move |args: &ActionArgs| {
-                    let path = args
-                        .text("path")
-                        .filter(|path| !path.trim().is_empty())
-                        .map(str::to_string);
-                    let operation = match variant {
-                        0 => WordProcessorOperation::Open { path },
-                        1 => WordProcessorOperation::Save { path },
-                        _ => WordProcessorOperation::SaveAs { path },
-                    };
-                    EncodedAction::encode_operation(WORD_PROCESSOR_OPERATION_TYPE, &operation)
-                        .unwrap_or_else(|_| EncodedAction {
-                            type_id: WORD_PROCESSOR_OPERATION_TYPE.into(),
-                            payload: Vec::new(),
-                        })
-                },
-            )
-            .destructive()
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        );
-    }
-    specs
-}
-
-pub(crate) fn view_operations() -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for (id, label, value) in [
-        ("find", "Find in document", WordProcessorOperation::Find),
-        ("zoom-in", "Zoom in", WordProcessorOperation::ZoomIn),
-        ("zoom-out", "Zoom out", WordProcessorOperation::ZoomOut),
-        (
-            "zoom-reset",
-            "Reset zoom to 100%",
-            WordProcessorOperation::ZoomReset,
-        ),
-        (
-            "spellcheck",
-            "Toggle spellcheck",
-            WordProcessorOperation::ToggleSpellcheck,
-        ),
-        (
-            "markup",
-            "Toggle review markup",
-            WordProcessorOperation::ToggleMarkup,
-        ),
-        (
-            "styles",
-            "Toggle styles panel",
-            WordProcessorOperation::ToggleStyles,
-        ),
-        ("ruler", "Toggle ruler", WordProcessorOperation::ToggleRuler),
-        (
-            "outline",
-            "Toggle outline",
-            WordProcessorOperation::ToggleOutline,
-        ),
-    ] {
-        if let Some(spec) = operation(id, label, OperationKind::View, &value) {
-            specs.push(spec);
-        }
-    }
-    specs
 }
 
 fn add_caret_actions(root: &mut Resource, ctx: &WpResourceCtx) {
@@ -601,9 +441,9 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
 }
 
 /// What the word processor's framework app publishes for a view at `ctx` on
-/// `doc`: the document, its declared actions and children, with the edits
-/// bound to the view's caret and selection beside them, and the view's own
-/// operations (moving its caret, finding). For a peer in a test that serves
+/// `doc`: the document, its declared actions, effects and children, with the
+/// edits bound to the view's caret and selection beside them, and the view's
+/// Find results. For a peer in a test that serves
 /// a Writer document without a window.
 #[cfg(any(test, feature = "test-support"))]
 pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
@@ -621,22 +461,25 @@ pub fn published_for(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     for decl in bound::declarations(&view) {
         root = ui::tilo_resource::bind_declaration(root, &decl);
     }
-    for spec in
-        <crate::framework::WordProcessorApp as ui::framework::ResourceApp>::local_operations()
-    {
+    for spec in crate::effects::specs() {
         if !root.actions.iter().any(|existing| existing.id == spec.id) {
             root = root.with_action(spec);
         }
     }
     let mut published = vec![root];
-    published.extend(bound::view_only(view));
+    published.extend(
+        search_rows(ctx, doc)
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource),
+    );
     published
 }
 
-/// Selection, comment, find-hit, and caret-edit rows that depend on this
-/// peer's caret. Not a second `word-processor.document` root. Typing, marks,
-/// placing an image, inserting a table, moving the caret, and page breaks stay
-/// addressable when the framework already publishes the document.
+/// The edits a view's caret and selection offer — typing, marks, placing an
+/// image, a table, a page break, replacing or commenting the selection — as
+/// operations whose builders capture where they apply; the document
+/// publishes them as declarations bound to that view
+/// ([`bound::declarations`]).
 pub(crate) fn live_presentation_resources(
     ctx: &WpResourceCtx,
     doc: &AutoCommit,
@@ -647,12 +490,6 @@ pub(crate) fn live_presentation_resources(
     // list and sort every paragraph on each keystroke.
     add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, body));
     add_comment_resource_action(&mut scratch, ctx);
-    if !ctx.search_hits.is_empty()
-        && let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT)
-    {
-        let snapshot = tilo_doc::model::materialize(doc, &containers);
-        add_search_resources(&mut scratch, ctx, &snapshot);
-    }
     let mut extras = scratch.children;
     if let Some(selection) = extras
         .iter_mut()
@@ -673,7 +510,6 @@ pub(crate) fn live_presentation_resources(
     add_document_edit_actions(&mut caret, ctx);
     add_caret_actions(&mut caret, ctx);
     add_body_append_actions(&mut caret, ctx, doc, body);
-    view_ops::add_operations(&mut caret, ctx);
     // Hosted edits answer with the blocks they changed, same as the
     // standalone document root (see returning_changes).
     caret = returning_changes(caret);
@@ -683,15 +519,23 @@ pub(crate) fn live_presentation_resources(
     extras
 }
 
-fn add_search_resources(
-    root: &mut Resource,
-    ctx: &WpResourceCtx,
-    snapshot: &tilo_doc::snapshot::DocSnapshot,
-) {
+/// The Find results of the view `ctx` describes, as live rows beneath the
+/// document: each goes to its range in the invoker's own view.
+pub(crate) fn search_rows(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<ui::framework::LiveRow> {
     if ctx.search_hits.is_empty() {
-        return;
+        return Vec::new();
     }
-    let mut search = Resource::new(
+    let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT) else {
+        return Vec::new();
+    };
+    let hits: Vec<String> = ctx
+        .search_hits
+        .iter()
+        .take(MAX_RESOURCE_SEARCH_HITS)
+        .map(|hit| hit.block.clone())
+        .collect();
+    let blocks = tilo_doc::model::materialize_blocks(doc, &containers, &hits);
+    let mut search = ui::framework::LiveRow::new(
         "word-processor.search-results",
         "word_processor.search-results",
         "Search results",
@@ -704,37 +548,29 @@ fn add_search_resources(
         .take(MAX_RESOURCE_SEARCH_HITS)
         .enumerate()
     {
-        let label = range_label(&snapshot.blocks, &hit.block, hit.start, hit.end)
+        let label = range_label(&blocks, &hit.block, hit.start, hit.end)
             .unwrap_or_else(|| format!("Result {}", result_index + 1));
-        let view_operation = WordProcessorOperation::NavigateTo {
-            block: hit.block.clone(),
-            start: hit.start,
-            end: hit.end,
-        };
-        if let Some(spec) = operation(
-            "go-to",
-            "Go to result",
-            OperationKind::View,
-            &view_operation,
-        )
-        .map(|spec| {
-            spec.requires(ContextRequirement::FindHits)
-                .participant_view()
-        }) {
-            search.children.push(
-                Resource::new(
-                    format!(
-                        "word-processor.search-hit:{}:{}:{}",
-                        hit.block, hit.start, hit.end
-                    ),
-                    "word_processor.search-hit",
-                    label,
-                )
-                .with_action(spec),
-            );
-        }
+        search = search.row(
+            ui::framework::LiveRow::new(
+                format!(
+                    "word-processor.search-hit:{}:{}:{}",
+                    hit.block, hit.start, hit.end
+                ),
+                "word_processor.search-hit",
+                label,
+            )
+            .operation(
+                WordProcessorEffect::GoTo {
+                    block: hit.block.clone(),
+                    start: hit.start,
+                    end: hit.end,
+                }
+                .bound()
+                .requires(ContextRequirement::FindHits),
+            ),
+        );
     }
-    root.children.push(search);
+    vec![search]
 }
 
 fn add_document_edit_actions(root: &mut Resource, ctx: &WpResourceCtx) {
@@ -817,20 +653,15 @@ fn comment_resource(comment: &tilo_doc::snapshot::CommentView) -> Resource {
             id: comment.id.clone(),
         },
     ));
-    if let Some((block, start, end)) = &comment.range
-        && let Some(spec) = operation(
-            "go-to-anchor",
-            "Go to commented text",
-            OperationKind::View,
-            &WordProcessorOperation::NavigateTo {
+    if let Some((block, start, end)) = &comment.range {
+        resource.actions.push(
+            WordProcessorEffect::GoToAnchor {
                 block: block.clone(),
                 start: *start,
                 end: *end,
-            },
-        )
-        .map(ActionSpec::participant_view)
-    {
-        resource.actions.push(spec);
+            }
+            .bound(),
+        );
     }
     for reply in comment.replies.iter().take(MAX_RESOURCE_SEARCH_HITS) {
         let reply_text = reply
@@ -1215,20 +1046,14 @@ fn table_resource(table_id: &str, table_blocks: &[&tilo_doc::snapshot::BlockView
             "Delete column",
             &edit_table_action(table_id, TableEdit::DeleteColumn { column }),
         ));
-        if let Some(spec) = operation(
-            "go-to",
-            "Go to cell",
-            OperationKind::View,
-            &WordProcessorOperation::NavigateTo {
+        cell_resource.actions.push(
+            WordProcessorEffect::GoTo {
                 block: cell.id.clone(),
                 start: 0,
                 end: cell.text.chars().count(),
-            },
-        )
-        .map(ActionSpec::participant_view)
-        {
-            cell_resource.actions.push(spec);
-        }
+            }
+            .bound(),
+        );
         resource.children.push(cell_resource);
     }
     resource
@@ -1462,17 +1287,16 @@ mod tests {
     fn the_resource_catalogue_exposes_typed_bounded_document_operations() {
         // Phase: view_catalogue_exposes_zoom_reset_as_a_typed_operation.
         {
-            let specs = view_operations();
+            let specs = crate::effects::specs();
             let spec = specs
                 .iter()
                 .find(|spec| spec.id == "zoom-reset")
                 .expect("the visible zoom reset has a resource action");
             let encoded = spec_encoding(spec, None);
-            assert_eq!(encoded.type_id, WORD_PROCESSOR_OPERATION_TYPE);
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(WordProcessorOperation::ZoomReset),
-                "the resource action decodes to the one canonical reset operation"
+                crate::effects::decode(&encoded),
+                Some(WordProcessorEffect::ZoomReset),
+                "the resource action decodes to the one canonical reset effect"
             );
         }
 
@@ -1577,7 +1401,7 @@ mod tests {
                 assert_eq!(action.contract.result, ResultSpec::Job);
                 assert!(matches!(
                     action.contract.execution,
-                    ExecutionMode::Background { .. }
+                    tilo_actions::ExecutionMode::Background { .. }
                 ));
                 assert!(action.contract.validate_declaration().is_empty());
             }

@@ -1,8 +1,8 @@
 //! Root widget for the git client.
 //!
 //! Owns the in-memory [`RepoModel`], the currently-shown diff, the active
-//! screen and all transient selection / scroll state. Durable preferences
-//! live in the CRDT via [`Settings`]. The widget draws everything itself
+//! screen and all transient selection / scroll state. The diff preferences
+//! are the person's [`Settings`], a personal settings section. The widget draws everything itself
 //! into the Vello scene — a top app bar with a screen switcher, then the
 //! active screen (changes / history / panels). Events are routed by
 //! hit-testing the regions each screen emits.
@@ -295,7 +295,10 @@ pub struct GitClientApp {
     last_error: Option<String>,
     remote_job: Option<RemoteJob>,
 
+    /// The diff preferences shown, following [`Self::preferences`].
     settings: Settings,
+    /// The person's diff preferences; `None` outside a framework host.
+    preferences: Option<ui::framework::Setting<Settings>>,
     /// Fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
     /// Cached hit rects for the app-bar settings controls, set during draw.
@@ -414,6 +417,14 @@ impl GitClientApp {
     /// scenario's actions are laid out.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
+            // The side-by-side diff layout.
+            Some("split") => {
+                if let Err(error) =
+                    self.change_preferences(|s| s.diff_layout = DiffLayout::SideBySide)
+                {
+                    self.last_error = Some(error);
+                }
+            }
             Some("history") => self.switch_screen(Screen::History),
             Some("branches") => self.switch_screen(Screen::Panels),
             // A typed commit summary, so the commit box and its primary
@@ -485,6 +496,7 @@ impl GitClientApp {
             last_error: None,
             remote_job: None,
             settings: Settings::default(),
+            preferences: None,
             shared_repo_fingerprint: None,
             settings_seg: Rect::ZERO,
             settings_syn: Rect::ZERO,
@@ -1057,12 +1069,11 @@ impl GitClientApp {
         self.open_input.set_focus(field == Some(Field::Open));
     }
 
-    // --- Durable view-preference actions -------------------------------
-    // The diff-view preferences are shared-document state. Each toggle
-    // updates the local snapshot for an immediate redraw and submits its
-    // `GitClientAction` through the framework's door — the exact action the
-    // Ctrl+K resource tree exports (see `crate::actions`) — which records
-    // one Ctrl+Z step, replays on peers and presents the stored value back.
+    // --- Diff preferences ---------------------------------------------
+    // The diff-view preferences are the person's settings: each toggle
+    // updates the shown snapshot for an immediate redraw and stores it, the
+    // same change the palette's effects make. They are no undo step and
+    // never reach collaborators.
 
     /// Submit one document edit through the framework's door.
     fn submit(&self, action: &crate::actions::GitClientAction) {
@@ -1074,19 +1085,85 @@ impl GitClientApp {
     /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
     /// app-bar segmented control and the `d` shortcut.
     fn toggle_diff_layout(&mut self) {
-        self.settings.toggle_layout();
+        if let Err(error) = self.switch_diff_layout() {
+            self.last_error = Some(error);
+        }
+    }
+
+    fn switch_diff_layout(&mut self) -> Result<(), String> {
         self.diff_scroll = 0.0;
-        self.submit(&crate::actions::set_diff_layout_action(
-            self.settings.diff_layout,
-        ));
+        self.change_preferences(Settings::toggle_layout)
     }
 
     /// Flip diff syntax highlighting. Routed to by the app-bar `</>` pill.
     fn toggle_syntax_highlight(&mut self) {
-        self.settings.syntax_highlight = !self.settings.syntax_highlight;
-        self.submit(&crate::actions::GitClientAction::SetSyntaxHighlight {
-            on: self.settings.syntax_highlight,
-        });
+        if let Err(error) = self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight) {
+            self.last_error = Some(error);
+        }
+    }
+
+    /// Change the person's diff preferences, show and keep them.
+    fn change_preferences(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        change(&mut self.settings);
+        if let Some(preferences) = &self.preferences {
+            preferences
+                .set(self.settings)
+                .map_err(|error| format!("Couldn't save the diff preferences: {error}"))?;
+        }
+        Ok(())
+    }
+
+    /// Follow the person's diff preferences: this window shows them and
+    /// takes what another window or device changed.
+    pub(crate) fn follow_preferences(&mut self, preferences: ui::framework::Setting<Settings>) {
+        self.settings = preferences.get();
+        self.preferences = Some(preferences);
+    }
+
+    /// Show the diff preferences another window or device stored.
+    fn adopt_preferences(&mut self) {
+        if let Some(preferences) = &self.preferences {
+            self.settings = preferences.state().with(|stored| *stored);
+        }
+    }
+
+    /// The preference effects, labelled with what they would switch to.
+    pub(crate) fn preference_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use ui::framework::EffectStatus;
+        let s = self.settings;
+        vec![
+            EffectStatus::labelled(
+                GitClientEffect::DIFF_LAYOUT,
+                match s.diff_layout {
+                    DiffLayout::Unified => "Diff layout: side-by-side",
+                    DiffLayout::SideBySide => "Diff layout: unified",
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SYNTAX_HIGHLIGHT,
+                if s.syntax_highlight {
+                    "Turn off syntax highlighting"
+                } else {
+                    "Turn on syntax highlighting"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SHOW_WHITESPACE,
+                if s.show_whitespace {
+                    "Hide whitespace"
+                } else {
+                    "Show whitespace"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::WRAP_LINES,
+                if s.wrap_lines {
+                    "Stop wrapping long lines"
+                } else {
+                    "Wrap long lines"
+                },
+            ),
+        ]
     }
 
     /// Take the framework's dispatcher, and the repository to show: the one
@@ -1110,7 +1187,6 @@ impl GitClientApp {
     /// directory, else the picker. A past version shows the projection of
     /// the repository it held then.
     pub(crate) fn present_state(&mut self, state: &crate::doc::GitClientState) {
-        self.settings = state.settings;
         match self.mode {
             RunMode::Live => {
                 let first = !std::mem::replace(&mut self.presented, true);
@@ -2200,8 +2276,8 @@ impl GitClientApp {
                 return;
             }
         }
-        // Settings segmented control + syntax toggle — durable preferences,
-        // dispatched as actions so they undo and replicate.
+        // Settings segmented control + syntax toggle — the person's diff
+        // preferences, following them to their other devices.
         if self.settings_seg.contains(pos) {
             self.toggle_diff_layout();
             return;
@@ -2752,6 +2828,7 @@ impl Widget for GitClientApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+        self.adopt_preferences();
         self.drain_remote();
         self.publish_shared_repo_if_needed();
     }
@@ -3049,6 +3126,23 @@ impl GitClientApp {
         effect: GitClientEffect,
         cx: &mut EffectCx<crate::resource::GitClient, Self>,
     ) -> EffectAnswer {
+        // The diff preferences touch neither the repository nor the document.
+        let preference = match effect {
+            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
+            GitClientEffect::SyntaxHighlight => {
+                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
+            }
+            GitClientEffect::ShowWhitespace => {
+                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
+            }
+            GitClientEffect::WrapLines => {
+                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
+            }
+            _ => None,
+        };
+        if let Some(kept) = preference {
+            return kept.map(|()| Effected::done());
+        }
         let view = matches!(
             effect,
             GitClientEffect::ShowChanges
@@ -3167,6 +3261,10 @@ impl GitClientApp {
             GitClientEffect::Push { remote } => {
                 return self.start_effect_remote(RemoteAction::Push, remote, cx);
             }
+            GitClientEffect::DiffLayout
+            | GitClientEffect::SyntaxHighlight
+            | GitClientEffect::ShowWhitespace
+            | GitClientEffect::WrapLines => {}
         }
         match &self.last_error {
             Some(error) if !view => Err(error.clone()),

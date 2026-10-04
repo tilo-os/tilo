@@ -255,9 +255,10 @@ impl ReadFont {
     }
 }
 
-/// Article-reader preferences. Persisted in the CRDT so collaborators reading
-/// together (and the same user across sessions) share a consistent layout.
+/// Article-reader preferences: the person's own, following them to every
+/// device as a personal settings section, never the shared library.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReadSettings {
     /// Body font-size multiplier; 1.0 == `BASE_SIZE` px. Clamped to [0.8, 1.8].
     pub font_scale: f32,
@@ -275,9 +276,15 @@ impl Default for ReadSettings {
     }
 }
 
+impl ui::storage::SettingsSchema for ReadSettings {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+}
+
 impl ReadSettings {
     pub const FONT_MIN: f32 = 0.8;
     pub const FONT_MAX: f32 = 1.8;
+    /// One step of the reader's text size controls.
+    pub const FONT_STEP: f32 = 0.1;
     /// Base body size in logical px before the scale multiplier.
     pub const BASE_SIZE: f32 = 16.0;
 
