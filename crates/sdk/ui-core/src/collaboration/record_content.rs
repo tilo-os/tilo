@@ -46,6 +46,9 @@ struct LaneState {
 pub struct ContentLane {
     state: Mutex<LaneState>,
     wake: Mutex<Option<crate::WakeHandle>>,
+    /// The record's host carries its content to the record's other
+    /// readers.
+    served: std::sync::atomic::AtomicBool,
 }
 
 /// What the window sends on the record's route.
@@ -69,6 +72,17 @@ impl ContentLane {
                 .entry((app.to_owned(), record.to_owned()))
                 .or_default(),
         )
+    }
+
+    /// The record's host answered the route's content subscription: what
+    /// the app stores reaches the record's other readers by its address.
+    pub fn serve(&self) {
+        self.served
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn is_served(&self) -> bool {
+        self.served.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Wake `wake`'s owner when the store has something for the route.
@@ -236,7 +250,7 @@ impl ContentBackend for RecordContent {
     }
 
     fn shared(&self) -> bool {
-        true
+        self.local.shared() || self.lane.is_served()
     }
 
     fn collect_unreferenced(
