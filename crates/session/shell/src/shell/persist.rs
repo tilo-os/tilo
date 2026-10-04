@@ -128,13 +128,26 @@ pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
 /// and process-local launch progress and session-only grants are dropped.
 fn durable_tree(tree: &WorkspaceTree) -> std::io::Result<WorkspaceTree> {
     // Prove encoded refusal bounds before cloning any tree or serialization buffer.
+    check_durable(tree)?;
+    let durable = durable_copy(tree);
+    // Symbolic launch records may grow (for example, copying a foreign title
+    // into its durable label). Preserve the reserve on the exact output shape.
+    check_durable(&durable)?;
+    Ok(durable)
+}
+
+fn check_durable(tree: &WorkspaceTree) -> std::io::Result<()> {
     super::native_workspace_owner::publication::validate_file_layout(
         NATIVE_STATE_SCHEMA_VERSION,
         &tree.native_authority,
     )
     .map_err(std::io::Error::other)?;
-    super::native_workspace_owner::publication::preflight_tree(tree)
-        .map_err(std::io::Error::other)?;
+    super::native_workspace_owner::publication::preflight_tree(tree).map_err(std::io::Error::other)
+}
+
+/// Copy `tree` in its durable shape. Unchecked: the encoded size bounds are
+/// for whoever encodes it.
+fn durable_copy(tree: &WorkspaceTree) -> WorkspaceTree {
     let mut durable = tree.clone();
     durable.desktop.schema_version = NATIVE_STATE_SCHEMA_VERSION;
     // Native process surface IDs become durable symbolic launch records.
@@ -145,11 +158,7 @@ fn durable_tree(tree: &WorkspaceTree) -> std::io::Result<WorkspaceTree> {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
     }
-    // Symbolic launch records may grow (for example, copying a foreign title
-    // into its durable label). Preserve the reserve on the exact output shape.
-    super::native_workspace_owner::publication::preflight_tree(&durable)
-        .map_err(std::io::Error::other)?;
-    Ok(durable)
+    durable
 }
 
 fn encode_durable(durable: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
@@ -159,20 +168,118 @@ fn encode_durable(durable: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
     Ok(output.into_inner())
 }
 
+/// What a save writes, taken from the tree while the caller holds it. Only
+/// the copy happens on the caller's thread; encoding, the size checks and
+/// every write happen in [`TreeSnapshot::write_to`].
+pub struct TreeSnapshot {
+    durable: WorkspaceTree,
+    sequence: super::native_workspace_owner::store::StateSequence,
+}
+
+impl TreeSnapshot {
+    /// Copy `tree` as it would be saved now.
+    #[must_use]
+    pub fn of(tree: &WorkspaceTree) -> Self {
+        Self {
+            sequence: tree.native_runtime.next_sequence(),
+            durable: durable_copy(tree),
+        }
+    }
+
+    /// Publish the snapshot to `path` and the tree document beside it,
+    /// unless a later snapshot of the same tree already reached the file.
+    ///
+    /// # Errors
+    /// As [`save_tree_to`].
+    pub(crate) fn write_to(
+        mut self,
+        path: &Path,
+    ) -> std::io::Result<super::native_workspace_owner::store::Publication> {
+        use super::native_workspace_owner::store::{Companion, Publication};
+        check_durable(&self.durable)?;
+        let bytes = encode_durable(&self.durable)?;
+        let runtime = self.durable.native_runtime.clone();
+        let authority = &self.durable.native_authority;
+        let published = runtime.publish(path, authority, authority, &bytes, self.sequence)?;
+        if published == Publication::Written {
+            runtime.write_companion(Companion::Document, self.sequence, || {
+                save_doc_beside(&mut self.durable, path, &bytes);
+            });
+            #[cfg(test)]
+            WRITES_ON_THIS_THREAD.with(|writes| writes.set(writes.get().saturating_add(1)));
+        }
+        Ok(published)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// State files this thread published, so a test can tell a save it
+    /// queued from one it performed.
+    pub(crate) static WRITES_ON_THIS_THREAD: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Publish the complete native state file through its shared writer, then
-/// the tree document beside it (see [`state_doc_path`]).
+/// the tree document beside it (see [`state_doc_path`]), on this thread.
 /// Session-only capabilities and native process surface IDs are not persisted.
 ///
 /// # Errors
 /// Refuses stale authority snapshots, encoded limits, competing writers, and
 /// publication failures. Uncertain publication fences subsequent writes.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    let mut durable = durable_tree(tree)?;
-    let bytes = encode_durable(&durable)?;
-    tree.native_runtime
-        .publish(path, &tree.native_authority, &tree.native_authority, &bytes)?;
-    save_doc_beside(&mut durable, path, &bytes);
-    Ok(())
+    // Prove encoded refusal bounds before cloning any tree or serialization buffer.
+    check_durable(tree)?;
+    TreeSnapshot::of(tree).write_to(path).map(drop)
+}
+
+/// Save `tree` to `path` on the state writer thread, then run
+/// `after_save` there if this snapshot is the one the file now holds.
+/// Returns once the snapshot is taken; a failure is logged there. See
+/// [`wait_for_saves`].
+pub fn queue_save(tree: &WorkspaceTree, path: &Path, after_save: impl FnOnce() + Send + 'static) {
+    let snapshot = TreeSnapshot::of(tree);
+    let path = path.to_path_buf();
+    super::durable_writer::global().submit(path.clone(), move || {
+        use super::native_workspace_owner::store::Publication;
+        let started = std::time::Instant::now();
+        match snapshot.write_to(&path) {
+            Ok(Publication::Written) => after_save(),
+            Ok(Publication::Superseded) => {}
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "workspace tree persistence failed");
+                return;
+            }
+        }
+        let took = started.elapsed();
+        if took > std::time::Duration::from_millis(100) {
+            tracing::info!(
+                target: "tilo::latency",
+                took_ms = took.as_secs_f64() * 1_000.0,
+                "workspace tree save was slow (off the frame thread)"
+            );
+        }
+    });
+}
+
+/// Wait until every save queued so far is on disk: before the session ends
+/// or sleeps, and before anything reads the files back.
+pub fn wait_for_saves() {
+    super::durable_writer::global().flush();
+}
+
+/// [`wait_for_saves`] for a deadline that must not be missed, like the end
+/// of the session. Returns whether every save made it.
+pub fn wait_for_saves_within(limit: std::time::Duration) -> bool {
+    let started = std::time::Instant::now();
+    let saved = super::durable_writer::global().flush_timeout(limit);
+    if !saved {
+        tracing::error!(
+            waited_ms = started.elapsed().as_millis(),
+            "workspace tree saves did not finish in time; the newest changes may be lost"
+        );
+    }
+    saved
 }
 
 /// Largest tree document this build reads or writes. History only grows,
@@ -251,9 +358,18 @@ fn save_doc_beside(durable: &mut WorkspaceTree, path: &Path, state_json: &[u8]) 
 }
 
 /// [`save_doc_beside`] for a publication that encoded `tree` itself.
-pub(crate) fn save_doc_for(tree: &WorkspaceTree, path: &Path, state_json: &[u8]) {
+pub(crate) fn save_doc_for(
+    tree: &WorkspaceTree,
+    path: &Path,
+    state_json: &[u8],
+    sequence: super::native_workspace_owner::store::StateSequence,
+) {
     match durable_tree(tree) {
-        Ok(mut durable) => save_doc_beside(&mut durable, path, state_json),
+        Ok(mut durable) => tree.native_runtime.write_companion(
+            super::native_workspace_owner::store::Companion::Document,
+            sequence,
+            || save_doc_beside(&mut durable, path, state_json),
+        ),
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "could not save the tree document");
         }
@@ -359,6 +475,8 @@ fn attach_saved_doc(tree: &mut WorkspaceTree, path: &Path, state_json: &[u8]) {
 /// [`NATIVE_STATE_SCHEMA_VERSION`].
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     use std::io::Read;
+    // A save still queued in this process is newer than the file.
+    wait_for_saves();
     let file = std::fs::File::open(path)?;
     let mut s = String::new();
     file.take((super::native_workspace_owner::store::MAX_STATE_BYTES as u64).saturating_add(1))
@@ -1248,5 +1366,138 @@ mod tests {
         a_written_state_file_stamps_its_schema_version();
         a_newer_state_file_is_refused_preserved_and_reported();
         older_and_unversioned_state_files_are_refused_and_preserved();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn saves_run_on_the_state_writer_newest_last_and_never_torn() {
+        fn two_workspaces(path: &Path) -> (WorkspaceTree, [crate::shell::state::WorkspaceId; 2]) {
+            let mut tree = WorkspaceTree::bootstrap_default();
+            let first = tree.desktop.workspaces[0].id;
+            let second = tree.append_empty_workspace("Second");
+            tree.desktop.active = first;
+            tree.seed_doc_from_cache();
+            tree.persist_path = Some(path.to_path_buf());
+            save_tree_to(&tree, path).expect("baseline save");
+            (tree, [first, second])
+        }
+
+        // Phase `a_workspace_switch_writes_nothing_on_the_calling_thread`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let (mut tree, [first, second]) = two_workspaces(&path);
+            let before = WRITES_ON_THIS_THREAD.with(std::cell::Cell::get);
+
+            assert!(tree.switch_down());
+            assert!(tree.switch_up());
+            assert!(tree.switch_down());
+
+            assert_eq!(
+                WRITES_ON_THIS_THREAD.with(std::cell::Cell::get),
+                before,
+                "a workspace switch must leave the state file to the writer thread"
+            );
+            wait_for_saves();
+            let restarted = load_tree_from(&path).expect("restart");
+            assert_eq!(
+                restarted.desktop.active, second,
+                "the newest switch is what a restart opens"
+            );
+            assert_ne!(restarted.desktop.active, first);
+        }
+
+        // Phase `a_queued_save_never_overwrites_a_later_synchronous_one`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let (mut tree, [first, second]) = two_workspaces(&path);
+            // Taken on the frame thread, written late by the writer thread.
+            let stale = TreeSnapshot::of(&tree);
+            tree.set_active(second);
+            save_tree_to(&tree, &path).expect("synchronous save");
+            assert_eq!(
+                stale
+                    .write_to(&path)
+                    .expect("a superseded snapshot is not an error"),
+                crate::shell::native_workspace_owner::store::Publication::Superseded
+            );
+
+            let restarted = load_tree_from(&path).expect("restart");
+            assert_eq!(
+                restarted.desktop.active, second,
+                "the file keeps the later state, and its document agrees"
+            );
+            assert_ne!(restarted.desktop.active, first);
+        }
+
+        // Phase `a_burst_of_saves_lands_as_its_newest_state`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let (mut tree, [_, _]) = two_workspaces(&path);
+            let mut names = Vec::new();
+            for index in 0..40 {
+                let name = format!("Burst {index}");
+                tree.append_empty_workspace(&name);
+                tree.queue_save();
+                names.push(name);
+            }
+            wait_for_saves();
+            let restarted = load_tree_from(&path).expect("restart");
+            let on_disk: Vec<&str> = restarted
+                .desktop
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.name.as_str())
+                .collect();
+            for name in &names {
+                assert!(on_disk.contains(&name.as_str()), "{name} was lost");
+            }
+        }
+
+        // Phase `a_reader_racing_the_writer_only_sees_whole_files`.
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("state.json");
+            let (mut tree, [_, _]) = two_workspaces(&path);
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let reader = {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut reads = 0_u32;
+                    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                        let bytes = std::fs::read(&path).expect("the state file always exists");
+                        serde_json::from_slice::<WorkspaceTree>(&bytes)
+                            .expect("a reader never sees a partly written state file");
+                        reads = reads.saturating_add(1);
+                    }
+                    reads
+                })
+            };
+            for index in 0..30 {
+                tree.append_empty_workspace(&format!("Racing {index}"));
+                tree.queue_save();
+                if index % 5 == 0 {
+                    wait_for_saves();
+                }
+            }
+            wait_for_saves();
+            stop.store(true, std::sync::atomic::Ordering::Release);
+            assert!(reader.join().expect("reader") > 0);
+            let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+                .expect("state dir")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with('.') && !name.ends_with(".writer-lock"))
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "every replacement completed its rename: {leftovers:?}"
+            );
+        }
     }
 }
