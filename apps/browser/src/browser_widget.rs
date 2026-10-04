@@ -4142,7 +4142,11 @@ impl BrowserWidget {
                 WebViewEvent::LoadFinishedAt { .. }
                 | WebViewEvent::FaviconChanged { .. }
                 | WebViewEvent::TitleChanged(_)
-                | WebViewEvent::LoadProgress(_) => {}
+                | WebViewEvent::LoadProgress(_)
+                // Answers to the paint stream's own requests; its engine
+                // wrapper consumes them before they reach the browser.
+                | WebViewEvent::PaintSnapshot { .. }
+                | WebViewEvent::PaintResource { .. } => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
@@ -4215,9 +4219,6 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
-                // Answers to the paint stream's own requests; its engine
-                // wrapper consumes them before they reach the browser.
-                WebViewEvent::PaintSnapshot { .. } | WebViewEvent::PaintResource { .. } => {}
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
                 | WebViewEvent::DownloadFinished { .. }
