@@ -762,11 +762,24 @@ impl CanvasSurface {
         if !self.art.bounds().contains(at) {
             return;
         }
+        // The bucket fills inside the selection, and the wand taking from
+        // it or keeping part of it looks only there: what it finds cannot
+        // reach other parts of it through colour outside.
+        let mode = self.area_mode();
+        let within = (fill || matches!(mode.as_deref(), Some("subtract" | "intersect")))
+            .then(|| {
+                self.art
+                    .selection
+                    .as_ref()
+                    .map(crate::model::Selection::region)
+            })
+            .flatten();
         let query = crate::author::ColourQuery {
             at: Some(at),
             tolerance: crate::author::TOLERANCE,
             // Ctrl finds the colour everywhere, touching or not.
             everywhere: !fill && self.modifiers.control_key(),
+            within,
             ..crate::author::ColourQuery::default()
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
@@ -788,7 +801,7 @@ impl CanvasSurface {
                 edit::fresh_id(&self.art, "fill", &[]),
             )
         } else {
-            Some(area::found(&found, self.area_mode()))
+            Some(area::found(&found, mode))
         };
         if let Some(action) = action {
             self.dispatch(&action);

@@ -56,6 +56,12 @@ pub struct ShellDriver {
     #[cfg(target_os = "linux")]
     capture_executor: Option<CaptureExecutor>,
     lock_visual: Option<LockVisualState>,
+    /// Another device of the shown device's person, and the person's
+    /// workspace list as the shown device keeps it.
+    own_device: Option<(
+        crate::own_device::OwnDevice,
+        shell::shell::personal_workspaces::PersonalWorkspaces,
+    )>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -115,6 +121,7 @@ impl ShellDriver {
             #[cfg(target_os = "linux")]
             capture_executor: None,
             lock_visual: None,
+            own_device: None,
         }
     }
 
@@ -606,6 +613,17 @@ impl ShellDriver {
 /// Every tab in `tree` whose tile is an in-process app — the tabs that
 /// the production open-app actions give a scratch document when they
 /// mint them (`window_actions`).
+fn all_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.id)
+        .collect()
+}
+
 fn hosted_app_tabs(tree: &WorkspaceTree) -> Vec<u64> {
     use shell::shell::state::TileContent;
     tree.desktop
@@ -763,6 +781,111 @@ impl ShellDriver {
             }
         }
         self.with_chrome(|_| {});
+    }
+
+    /// Create the person's "Research" workspace on this device and show it.
+    pub fn seed_own_workspace_for_shots(&mut self) {
+        let handle = self.chrome_handle();
+        let tabs = {
+            let st = handle.borrow();
+            let person = st.local_user_id.clone();
+            let mut tree = st.tree_mut();
+            tree.set_salt_override(crate::own_device::SHOWN_SALT);
+            let before = all_tab_ids(&tree);
+            crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
+            let after = all_tab_ids(&tree);
+            drop(tree);
+            drop(st);
+            after
+                .into_iter()
+                .filter(|tab| !before.contains(tab))
+                .collect::<Vec<_>>()
+        };
+        self.open_tab_records(&tabs);
+        self.with_chrome(ChromeState::bump);
+    }
+
+    /// Split the outline of this device's own "Research" workspace off.
+    pub fn split_own_outline_for_shots(&mut self) {
+        let handle = self.chrome_handle();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let room = tree.desktop.room_of(tree.desktop.active);
+            if let Some(room) = room {
+                crate::own_device::split_outline(&mut tree, room, crate::own_device::SHOWN_SALT);
+            }
+            drop(tree);
+            drop(st);
+        }
+        self.with_chrome(ChromeState::bump);
+    }
+
+    /// Hold the person's laptop in memory beside this device.
+    pub fn seed_other_own_device_for_shots(&mut self) {
+        let person = self.chrome().local_user_id.clone();
+        let handle = self.chrome_handle();
+        handle
+            .borrow()
+            .tree_mut()
+            .set_salt_override(crate::own_device::SHOWN_SALT);
+        self.own_device = Some((
+            crate::own_device::OwnDevice::laptop(&person),
+            crate::own_device::board_list(),
+        ));
+    }
+
+    /// Receive the laptop's workspace list and room content, and look at
+    /// the laptop's workspace.
+    pub fn receive_from_other_own_device_for_shots(&mut self) {
+        let Some((mut laptop, mut list)) = self.own_device.take() else {
+            return;
+        };
+        let person = self.chrome().local_user_id.clone();
+        let handle = self.chrome_handle();
+        let arrived = {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            let arrived = laptop.deliver(&person, &mut tree, &mut list);
+            let shown = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room == laptop.room)
+                .map(|workspace| workspace.id);
+            if let Some(shown) = shown {
+                tree.desktop.set_active(shown);
+            }
+            arrived
+        };
+        // A tab arriving from another device opens its record here; the
+        // live shell fetches it from that device, a scene starts it empty.
+        self.open_tab_records(&arrived);
+        self.own_device = Some((laptop, list));
+        self.with_chrome(ChromeState::bump);
+    }
+
+    /// The laptop splits its outline off.
+    pub fn other_own_device_splits_outline_for_shots(&mut self) {
+        if let Some((laptop, _)) = self.own_device.as_mut() {
+            let room = laptop.room;
+            crate::own_device::split_outline(
+                &mut laptop.tree,
+                room,
+                crate::own_device::LAPTOP_SALT,
+            );
+        }
+    }
+
+    fn open_tab_records(&self, tabs: &[u64]) {
+        let records = self.chrome().records().clone();
+        for tab in tabs {
+            if let Err(error) =
+                shell::shell::tab_documents::create_scratch_tab_record(&records, *tab)
+            {
+                eprintln!("shots: tab {tab} has no document: {error}");
+            }
+        }
     }
 
     /// Scenario-facing wrapper for the canonical shared-workspace fixture.
@@ -1283,6 +1406,7 @@ impl ShellDriver {
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "collaborators" => self.scene_collaborators(),
             "launchpad" => self.scene_launchpad(),
+            "launchpad-notes-card" => self.scene_launchpad_notes_card(),
             "peer-sync" => self.scene_peer_sync(),
             "projection" => self.scene_projection(),
             "window-switcher" => self.scene_window_switcher(),
@@ -1667,6 +1791,42 @@ impl ShellDriver {
             st.bump();
         });
         self.relayout();
+    }
+
+    /// The launchpad a moment after its Notes card is clicked: Notes is
+    /// opening, and no launcher stands between the card and the app.
+    fn scene_launchpad_notes_card(&mut self) {
+        fn card_bounds(widget: &dyn Widget, card: &str) -> Option<Rect> {
+            if widget.name() == "CollaborationLaunchpad" {
+                return widget
+                    .accessibility()?
+                    .children
+                    .into_iter()
+                    .find_map(|node| {
+                        let bounds = node.bounds?;
+                        (node.name.as_deref() == Some(card))
+                            .then(|| Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+                    });
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| card_bounds(child, card))
+        }
+        self.scene_launchpad();
+        let _ = self.paint_settled();
+        let card = card_bounds(self.host(), "Notes").unwrap_or(Rect::ZERO);
+        assert!(
+            card.area() > 0.0,
+            "launchpad-notes-card scene: the launchpad shows no Notes card"
+        );
+        self.click_at(card.center());
+        // The live frame loop's pump takes the card's choice from the
+        // document; `step_frames` alone only runs `update`.
+        let root = self.root_obj.clone();
+        self.fb.pump_apps(&mut self.state, &root);
+        self.step_frames(12);
+        self.fb.host_mut().force_palette_settled();
     }
 
     /// The invite card (`peer_sync_overlay.rs`), reached the way a person
@@ -2462,6 +2622,7 @@ impl ShellDriver {
         "ws-settings-agents",
         "collaborators",
         "launchpad",
+        "launchpad-notes-card",
         "peer-sync",
         "projection",
         "window-switcher",

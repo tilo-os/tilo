@@ -105,6 +105,19 @@ use crate::compositor::surface_outputs::{
     Change as SurfaceOutputChange, Memberships as SurfaceOutputMemberships,
 };
 
+/// The person's other devices showing each tab, by tab.
+type PersonalViewers =
+    std::collections::BTreeMap<u64, Vec<crate::shell::device_fabric_runtime::WindowViewer>>;
+
+/// Each legacy window to stream, by surface, with the room its tab is in.
+type DesiredShares = HashMap<
+    u64,
+    (
+        crate::compositor::state::LegacyShare,
+        crate::shell::state::RoomId,
+    ),
+>;
+
 /// The legacy windows to encode for viewers: none while nobody watches the
 /// backend, so a headless machine's encoders stop and receivers get
 /// `SurfaceStreamEnd` at once.
@@ -113,44 +126,159 @@ use crate::compositor::surface_outputs::{
 /// when the backend is headless: its viewers watch through that host (which
 /// decides which of them see and control what), so every legacy window of
 /// the active workspace is shared with it, not only the explicitly shared.
+///
+/// `personal` are the person's other devices showing a tab, by tab: a legacy
+/// window streams to each device showing its tab, in whichever workspace it
+/// is, since those devices show their own choice of workspace.
+///
+/// Each share comes with the room its tab is in, whose topic carries it.
 fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
     watched: bool,
     viewer_hosts: &std::collections::HashSet<u64>,
-) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
+    personal: &PersonalViewers,
+) -> DesiredShares {
     if !watched {
         return HashMap::new();
     }
-    let Some(workspace) = tree
-        .desktop
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.id == tree.desktop.active)
-    else {
-        return HashMap::new();
-    };
     let mut desired = HashMap::new();
-    for tab in workspace
-        .strips
-        .iter()
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-    {
-        let crate::shell::state::TileContent::Foreign { app_id, surface_id } = &tab.tile else {
-            continue;
-        };
-        let mut peers = workspace
-            .shared_surfaces
+    for workspace in &tree.desktop.workspaces {
+        let active = workspace.id == tree.desktop.active;
+        for tab in workspace
+            .strips
             .iter()
-            .find_map(|(surface, peers)| (surface == *surface_id).then(|| peers.clone()))
-            .unwrap_or_default();
-        peers.extend(viewer_hosts);
-        if !peers.is_empty() {
-            desired.insert(*surface_id, (app_id.clone(), peers));
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+        {
+            let crate::shell::state::TileContent::Foreign { app_id, surface_id } = &tab.tile else {
+                continue;
+            };
+            let mut peers = std::collections::HashSet::new();
+            if active {
+                if let Some(shared) = workspace
+                    .shared_surfaces
+                    .iter()
+                    .find_map(|(surface, peers)| (surface == *surface_id).then(|| peers.clone()))
+                {
+                    peers.extend(shared);
+                }
+                peers.extend(viewer_hosts);
+            }
+            let mut decode_limits = HashMap::new();
+            if let Some(viewers) = personal.get(&tab.id) {
+                for viewer in viewers {
+                    peers.insert(viewer.peer);
+                    decode_limits.insert(viewer.peer, viewer.decode_limits.clone());
+                }
+            }
+            if !peers.is_empty() {
+                desired.insert(
+                    *surface_id,
+                    (
+                        crate::compositor::state::LegacyShare {
+                            app_id: app_id.clone(),
+                            tab: tab.id,
+                            viewers: peers,
+                            decode_limits,
+                        },
+                        workspace.room,
+                    ),
+                );
+            }
         }
     }
     desired
 }
+
+/// Whether one of the person's other devices shows a legacy window this
+/// session hosts.
+fn hosts_viewed_window(
+    tree: &crate::shell::state::WorkspaceTree,
+    personal: &PersonalViewers,
+) -> bool {
+    !personal.is_empty()
+        && tree.desktop.workspaces.iter().any(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|tab| {
+                    matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. })
+                        && personal.contains_key(&tab.id)
+                })
+        })
+}
+
+/// The size a hidden window is shown at elsewhere: the largest of its
+/// viewers' tiles, in logical pixels, so no viewer upscales it.
+fn remote_extents(desired: &DesiredShares, personal: &PersonalViewers) -> HashMap<u64, (i32, i32)> {
+    desired
+        .iter()
+        .filter_map(|(surface, (share, _))| {
+            let largest = personal.get(&share.tab)?.iter().max_by_key(|viewer| {
+                u64::from(viewer.width).saturating_mul(u64::from(viewer.height))
+            })?;
+            Some((
+                *surface,
+                (
+                    i32::try_from(largest.width).unwrap_or(i32::MAX),
+                    i32::try_from(largest.height).unwrap_or(i32::MAX),
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// The legacy windows other devices host that `tiles` (this device's laid-out
+/// tiles, by the tab each shows) show, each with its host's device key and
+/// the tile's size in logical pixels.
+fn shown_hosted_windows(
+    tree: &crate::shell::state::WorkspaceTree,
+    tiles: &[(u64, vello::kurbo::Rect)],
+) -> Vec<(String, crate::shell::device_fabric::WindowView)> {
+    let hosted = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| match &tab.tile {
+            crate::shell::state::TileContent::HostedWindow { host, .. } => {
+                Some((tab.id, host.as_str()))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the wire's side range and rounded first"
+    )]
+    let side = |value: f64| {
+        value.round().clamp(
+            1.0,
+            f64::from(crate::shell::device_fabric::MAX_WINDOW_VIEW_SIDE),
+        ) as u32
+    };
+    tiles
+        .iter()
+        .filter(|(_, rect)| rect.width() >= 1.0 && rect.height() >= 1.0)
+        .filter_map(|(tab, rect)| {
+            let host = hosted.get(tab)?;
+            Some((
+                (*host).to_owned(),
+                crate::shell::device_fabric::WindowView {
+                    tab: *tab,
+                    width: side(rect.width()),
+                    height: side(rect.height()),
+                },
+            ))
+        })
+        .collect()
+}
+
 /// Whether the active workspace shows a legacy window.
 fn has_legacy_windows(tree: &crate::shell::state::WorkspaceTree) -> bool {
     tree.desktop.active_workspace().is_some_and(|workspace| {
@@ -5996,6 +6124,19 @@ fn install_window_hosting(
     }));
 }
 
+/// Send legacy-window streams on the network, each on its tab's room.
+fn install_legacy_streams(state: &mut State, net: &Arc<crate::shell::network::ShellNetwork>) {
+    let stream_net = Arc::clone(net);
+    state.set_legacy_stream_publisher(Arc::new(move |route, message| {
+        let crate::compositor::state::LegacyStreamRoute { topic, only } = route;
+        match (topic, only) {
+            (Some(topic), Some(viewers)) => stream_net.publish_legacy_to(topic, message, viewers),
+            (Some(topic), None) => stream_net.publish_legacy_message(topic, message),
+            (None, _) => stream_net.publish_legacy_active(message),
+        }
+    }));
+}
+
 /// Join the default workspace with a freshly started network and install
 /// the chrome commands that use it.
 fn install_session_peer_sync(
@@ -6027,10 +6168,7 @@ fn install_session_peer_sync(
             crate::shell::document_import::NativeHostedRooms(hosted_net),
         ));
     });
-    let stream_net = Arc::clone(&net);
-    state.set_legacy_stream_publisher(Arc::new(move |message| {
-        stream_net.publish_legacy_active(message)
-    }));
+    install_legacy_streams(state, &net);
     let bridge_net = Arc::clone(&net);
     frame_builder
         .host_mut()
@@ -7935,6 +8073,7 @@ pub fn run() {
     // cheap idempotent mount every network tick.
     let mut pending_legacy_streams: HashMap<(u64, u64), crate::shell::peer_view::PeerStreamStart> =
         HashMap::new();
+    let mut early_legacy_frames = crate::shell::peer_view::EarlyFrames::default();
     let legacy_share_config = crate::config::load_config().flatpak_share;
     let mut hosted_legacy_checked = Instant::now();
     // Whether this loop, not a viewer's watch request, made the headless
@@ -9738,6 +9877,7 @@ pub fn run() {
                     });
                 }
             );
+            let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
             let desired = {
                 let viewer_hosts = if backend_kind == BackendKind::Headless {
                     let active_room = {
@@ -9757,9 +9897,11 @@ pub fn run() {
                 let tree = tree_handle.read();
                 // A headless session whose active room has a host shows its
                 // legacy windows to the host's viewers (browsers that opened
-                // them): it paints and encodes while it has one, and stops
-                // with the last.
-                let for_host = !viewer_hosts.is_empty() && has_legacy_windows(&tree);
+                // them), and the person's other devices the windows they
+                // show: it paints and encodes while it has a viewer, and
+                // stops with the last.
+                let for_host = (!viewer_hosts.is_empty() && has_legacy_windows(&tree))
+                    || hosts_viewed_window(&tree, &personal_viewers);
                 if for_host != watched_for_host
                     && (for_host != backend.watched() || watched_for_host)
                 {
@@ -9768,8 +9910,30 @@ pub fn run() {
                     }
                     watched_for_host = for_host;
                 }
-                desired_legacy_shares(&tree, backend.watched(), &viewer_hosts)
+                desired_legacy_shares(&tree, backend.watched(), &viewer_hosts, &personal_viewers)
             };
+            // A window hidden here is sized for the devices showing it.
+            crate::compositor::foreign::store()
+                .set_remote_extents(remote_extents(&desired, &personal_viewers));
+            state.set_personal_stream_viewers(
+                desired
+                    .iter()
+                    .flat_map(|(surface, (share, _))| {
+                        personal_viewers
+                            .get(&share.tab)
+                            .into_iter()
+                            .flatten()
+                            .map(|viewer| (viewer.peer, *surface))
+                    })
+                    .collect(),
+            );
+            state.route_legacy_streams(desired.iter().map(|(surface, (_, room))| {
+                (*surface, crate::shell::network::room_topic_id(*room))
+            }));
+            let desired = desired
+                .into_iter()
+                .map(|(surface, (share, _))| (surface, share))
+                .collect::<HashMap<_, _>>();
             // This session's legacy windows, as its own tabs in the rooms
             // other devices govern, so their members have a tab to show.
             if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
@@ -9797,6 +9961,9 @@ pub fn run() {
                     &legacy_share_config,
                 )
             );
+            // A window that changed and went still has its last frame sent
+            // once the encode cap allows, not when it next changes.
+            let _ = state.flush_share_sessions();
             let inbound_legacy = net.take_inbound_legacy();
             let inbound_legacy_count = inbound_legacy.len();
             pump_phase!(
@@ -9812,6 +9979,7 @@ pub fn run() {
                             hdr_static_metadata,
                             width,
                             height,
+                            tab,
                             ..
                         } => {
                             let reply_net = Arc::clone(net);
@@ -9838,10 +10006,20 @@ pub fn run() {
                                 display_size: Some((width, height)),
                                 hdr_static_metadata,
                                 input_sink,
+                                tab,
                             };
                             let mounted = !stream.app_id.is_empty()
                                 && frame_builder.host_mut().mount_peer_stream(&stream);
-                            if !mounted {
+                            if mounted {
+                                for frame in early_legacy_frames.take((source_peer, surface)) {
+                                    let _ = frame_builder.host_mut().push_peer_stream_frame(
+                                        source_peer,
+                                        surface,
+                                        &frame,
+                                        None,
+                                    );
+                                }
+                            } else {
                                 tracing::warn!(
                                     source_peer,
                                     surface,
@@ -9857,12 +10035,16 @@ pub fn run() {
                             encoded_h264,
                             ..
                         } => {
-                            let _ = frame_builder.host_mut().push_peer_stream_frame(
-                                source_peer,
-                                surface,
-                                &encoded_h264,
-                                None,
-                            );
+                            if frame_builder.host().has_peer_stream(source_peer, surface) {
+                                let _ = frame_builder.host_mut().push_peer_stream_frame(
+                                    source_peer,
+                                    surface,
+                                    &encoded_h264,
+                                    None,
+                                );
+                            } else {
+                                early_legacy_frames.hold((source_peer, surface), encoded_h264);
+                            }
                         }
                         crate::network::NeighbourMsg::SurfaceStreamEnd {
                             surface,
@@ -9870,6 +10052,7 @@ pub fn run() {
                             ..
                         } => {
                             pending_legacy_streams.remove(&(source_peer, surface));
+                            early_legacy_frames.forget((source_peer, surface));
                             let _ = frame_builder
                                 .host_mut()
                                 .unmount_peer_stream(source_peer, surface);
@@ -9903,12 +10086,33 @@ pub fn run() {
             pump_phase!(
                 "legacy-remount",
                 pending_legacy_count,
-                for stream in pending_legacy_streams.values() {
-                    if !stream.app_id.is_empty() {
-                        let _ = frame_builder.host_mut().mount_peer_stream(stream);
+                for (&(source_peer, surface), stream) in &pending_legacy_streams {
+                    if !stream.app_id.is_empty()
+                        && frame_builder.host_mut().mount_peer_stream(stream)
+                    {
+                        for frame in early_legacy_frames.take((source_peer, surface)) {
+                            let _ = frame_builder.host_mut().push_peer_stream_frame(
+                                source_peer,
+                                surface,
+                                &frame,
+                                None,
+                            );
+                        }
                     }
                 }
             );
+            // Which legacy windows running on the person's other devices this
+            // one shows: each host streams them here only while it does.
+            // Nothing shows under the lock.
+            let window_views = if session.is_locked() {
+                Vec::new()
+            } else {
+                let tiles = frame_builder.host().tab_tiles();
+                let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                let tree = tree_handle.read();
+                shown_hosted_windows(&tree, &tiles)
+            };
+            crate::shell::device_fabric_runtime::publish_window_views(net, window_views);
         }
         pump_checkpoint!("device-fabric-and-network");
         // Keep the presence relay current, then fold in what peers sent. Pointer
@@ -11068,6 +11272,7 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                ("legacy-stream", state.legacy_stream_deadline()),
                 (
                     "client-followup",
                     client_followup_deadline(client_pump_needed, park_now),
@@ -12425,33 +12630,183 @@ mod tests {
         });
         workspace.shared_surfaces.share(7, 9);
         let none = std::collections::HashSet::new();
+        let nobody = std::collections::BTreeMap::new();
+        let share =
+            |app_id: &str, tab: u64, viewers: &[u64]| crate::compositor::state::LegacyShare {
+                app_id: app_id.to_string(),
+                tab,
+                viewers: viewers.iter().copied().collect(),
+                decode_limits: HashMap::new(),
+            };
 
-        let watched = desired_legacy_shares(&tree, true, &none);
+        let watched = desired_legacy_shares(&tree, true, &none, &nobody);
         assert_eq!(
-            watched.get(&7),
-            Some(&("org.gimp.GIMP".to_string(), [9].into_iter().collect()))
+            watched.get(&7).map(|(share, _)| share),
+            Some(&share("org.gimp.GIMP", 12, &[9]))
         );
         assert!(
             !watched.contains_key(&8),
             "without a viewer host only explicit shares stream"
         );
         let hosts = [42].into_iter().collect();
-        let through_host = desired_legacy_shares(&tree, true, &hosts);
+        let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
-            through_host.get(&7),
-            Some(&("org.gimp.GIMP".to_string(), [9, 42].into_iter().collect()))
+            through_host.get(&7).map(|(share, _)| share),
+            Some(&share("org.gimp.GIMP", 12, &[9, 42]))
         );
         assert_eq!(
-            through_host.get(&8),
-            Some(&(
-                "org.chromium.Chromium".to_string(),
-                [42].into_iter().collect()
-            )),
+            through_host.get(&8).map(|(share, _)| share),
+            Some(&share("org.chromium.Chromium", 14, &[42])),
             "a viewer host receives every legacy window of the active workspace"
         );
         assert!(
-            desired_legacy_shares(&tree, false, &hosts).is_empty(),
+            desired_legacy_shares(&tree, false, &hosts, &nobody).is_empty(),
             "unwatched, every encoder stops"
+        );
+    }
+
+    #[test]
+    fn a_legacy_window_streams_to_each_own_device_showing_its_tab() {
+        use crate::shell::device_fabric_runtime::WindowViewer;
+        use crate::shell::state::{
+            RoomId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId, WorkspaceTree,
+        };
+        let mut tree = WorkspaceTree::bootstrap_default();
+        // A second workspace this device is not showing.
+        let mut background = tree.desktop.workspaces[0].clone();
+        background.id = WorkspaceId(90);
+        background.room = RoomId::new();
+        background.strips.truncate(1);
+        background.strips[0].window_groups = vec![WindowGroup {
+            id: 91,
+            tabs: vec![
+                Tab {
+                    id: 92,
+                    title: "Terminal".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.gnome.Ptyxis".into(),
+                        surface_id: 30,
+                    },
+                },
+                Tab {
+                    id: 93,
+                    title: "Terminal".into(),
+                    tile: TileContent::Foreign {
+                        app_id: "org.gnome.Ptyxis".into(),
+                        surface_id: 31,
+                    },
+                },
+            ],
+            active_tab: 92,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }];
+        let room = background.room;
+        tree.desktop.workspaces.push(background);
+        let viewer = |device: u8, peer: u64, width: u32, height: u32| WindowViewer {
+            device: crate::shell::personal_continuity::DeviceId::new(hex::encode([device; 32]))
+                .unwrap(),
+            peer,
+            width,
+            height,
+            decode_limits: std::collections::BTreeMap::from([(
+                media::StreamCodec::H264,
+                (1920, 1088),
+            )]),
+        };
+        let personal = std::collections::BTreeMap::from([
+            (
+                93,
+                vec![viewer(1, 501, 1200, 800), viewer(2, 502, 640, 480)],
+            ),
+            // A tab this session does not host is somebody else's to stream.
+            (777, vec![viewer(1, 501, 300, 300)]),
+        ]);
+        let none = std::collections::HashSet::new();
+
+        let desired = desired_legacy_shares(&tree, true, &none, &personal);
+        assert_eq!(
+            desired.len(),
+            1,
+            "only the shown window streams, not its sibling tab"
+        );
+        let (share, share_room) = &desired[&31];
+        assert_eq!(share.tab, 93);
+        assert_eq!(share.viewers, [501, 502].into_iter().collect());
+        assert_eq!(
+            share.decode_limits[&502],
+            std::collections::BTreeMap::from([(media::StreamCodec::H264, (1920, 1088))]),
+            "each viewer's decoder limit reaches the encoder"
+        );
+        assert_eq!(*share_room, room, "the stream goes to the tab's own room");
+        assert!(hosts_viewed_window(&tree, &personal));
+        assert_eq!(
+            remote_extents(&desired, &personal).get(&31),
+            Some(&(1200, 800)),
+            "a hidden window is sized for its largest viewer"
+        );
+        assert!(desired_legacy_shares(&tree, false, &none, &personal).is_empty());
+    }
+
+    #[test]
+    fn a_device_reports_the_hosted_windows_it_lays_out_to_their_hosts() {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
+        let desk = "ab".repeat(32);
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 61,
+                tabs: vec![
+                    Tab {
+                        id: 62,
+                        title: "Inkscape".into(),
+                        tile: TileContent::HostedWindow {
+                            app_id: "org.inkscape.Inkscape".into(),
+                            label: "Poster.svg".into(),
+                            host: desk.clone(),
+                            host_label: "Desk".into(),
+                        },
+                    },
+                    Tab {
+                        id: 63,
+                        title: "GIMP".into(),
+                        tile: TileContent::Foreign {
+                            app_id: "org.gimp.GIMP".into(),
+                            surface_id: 4,
+                        },
+                    },
+                    Tab {
+                        id: 65,
+                        title: "Notes".into(),
+                        tile: TileContent::PeerWindow {
+                            app_id: "so.tilo.notes".into(),
+                            label: "Notes".into(),
+                            note: String::new(),
+                            missing: None,
+                        },
+                    },
+                ],
+                active_tab: 62,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        // This device's own window and a Tilo app's tab stream from nowhere.
+        let tiles = [
+            (62, vello::kurbo::Rect::new(10.0, 20.0, 810.4, 620.0)),
+            (63, vello::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0)),
+            (65, vello::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0)),
+        ];
+        assert_eq!(
+            shown_hosted_windows(&tree, &tiles),
+            vec![(
+                desk,
+                crate::shell::device_fabric::WindowView {
+                    tab: 62,
+                    width: 800,
+                    height: 600,
+                }
+            )]
         );
     }
 
