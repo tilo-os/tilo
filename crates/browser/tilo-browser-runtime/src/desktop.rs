@@ -208,6 +208,14 @@ impl Shared {
             .map(|window| window.key.clone())
     }
 
+    /// The tab showing the legacy window `key`, if one does.
+    pub fn peer_window_tab(&self, key: &str) -> Option<TabId> {
+        self.peer_windows
+            .borrow()
+            .iter()
+            .find_map(|(tab, window)| (window.key == key).then_some(*tab))
+    }
+
     /// Reconcile the windows showing legacy windows with `wanted`: the
     /// launch names of the ones to open, and the tabs to close (no longer
     /// wanted, or restored from a saved desktop that streamed them before).
