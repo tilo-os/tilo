@@ -857,6 +857,7 @@ fn the_strip_lines_picked_marks_up() {
         top("card"),
         top("leaf")
     );
+    desk.shot("align-strip");
     // The strip's button has the focus now; the canvas's keys still act
     // on what is picked.
     let before = desk.art().marks.len();
@@ -921,6 +922,11 @@ fn brackets_resize_the_brush() {
         }
     };
     let before = laid(&mut desk, 850.0);
+    for _ in 0..6 {
+        desk.key("]");
+    }
+    desk.pointer(500.0, 600.0);
+    desk.shot("brush-footprint");
     desk.key("]");
     desk.key("]");
     let larger = laid(&mut desk, 865.0);

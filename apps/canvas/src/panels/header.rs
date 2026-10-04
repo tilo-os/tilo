@@ -200,6 +200,8 @@ struct Command {
     id: String,
     bind: Bind,
     edit: Edit,
+    /// Shown by its icon alone at any width, as a row of alignments is.
+    iconic: bool,
 }
 
 impl Command {
@@ -214,7 +216,14 @@ impl Command {
             id: id.to_owned(),
             bind: Box::new(move |button, cx| Box::new(cx.actions().bind(button, action))),
             edit,
+            iconic: false,
         }
+    }
+
+    /// The command by its icon alone, its label its tooltip.
+    fn iconic(mut self) -> Self {
+        self.iconic = true;
+        self
     }
 
     fn label(&self) -> String {
@@ -344,6 +353,10 @@ fn strip(
                 .push(Box::new(Spacer::fixed(3.0)));
         }
         for command in group {
+            if command.iconic {
+                row = row.push(command.button(cx, false));
+                continue;
+            }
             // Labels go in order and stop at the first that does not fit,
             // so the labelled commands are always the first ones.
             let wanted = command.label_room();
@@ -527,6 +540,7 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
                     })
                 }),
             )
+            .iconic()
         })
         .collect();
     // Spacing needs three to have a gap to even out.
@@ -537,20 +551,23 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
         ] {
             let picked = tools.selection.clone();
             let reads = picked.clone();
-            commands.push(Command::new(
-                icon,
-                &format!("canvas-distribute-{axis}"),
-                ArtworkResource::DISTRIBUTE
-                    .map(move |()| (picked.with(Clone::clone), axis.to_owned())),
-                std::sync::Arc::new(move || {
-                    CanvasAction::Align(Align {
-                        ids: reads.with(Clone::clone),
-                        edge: None,
-                        distribute: Some(axis.to_owned()),
-                        to: None,
-                    })
-                }),
-            ));
+            commands.push(
+                Command::new(
+                    icon,
+                    &format!("canvas-distribute-{axis}"),
+                    ArtworkResource::DISTRIBUTE
+                        .map(move |()| (picked.with(Clone::clone), axis.to_owned())),
+                    std::sync::Arc::new(move || {
+                        CanvasAction::Align(Align {
+                            ids: reads.with(Clone::clone),
+                            edge: None,
+                            distribute: Some(axis.to_owned()),
+                            to: None,
+                        })
+                    }),
+                )
+                .iconic(),
+            );
         }
     }
     commands
