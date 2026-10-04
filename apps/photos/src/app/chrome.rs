@@ -25,7 +25,7 @@ use vello::kurbo::{Affine, Rect};
 
 use super::{Hit, LibraryDestination, PhotosApp, SelectionHit};
 use crate::doc::PhotosDoc;
-use crate::strings::tr;
+use crate::strings::{tr, tr_count, tr_with};
 
 use ui::chrome::{NavCount, NavRowFace, NavSectionFace, SelectionState};
 use ui::widget::toolbar::Orientation;
@@ -293,7 +293,7 @@ impl PhotosApp {
                 if self.selected_photo_ids.is_empty() {
                     tr("photos-select-photos")
                 } else {
-                    count_label(self.selected_photo_ids.len(), "selected", "selected")
+                    tr_count("photos-count-selected", self.selected_photo_ids.len())
                 }
             }
             LibraryDestination::Timeline => {
@@ -318,7 +318,15 @@ impl PhotosApp {
                 }
             }
             LibraryDestination::Albums => tr("photos-albums"),
-            LibraryDestination::People => tr("photos-people"),
+            LibraryDestination::People => match &self.people_selection {
+                Some(super::PeopleSelection::Approved(name)) => name.clone(),
+                Some(super::PeopleSelection::Suggestion(id)) => self
+                    .people_controller
+                    .cluster(id)
+                    .and_then(|cluster| cluster.display_name.clone())
+                    .unwrap_or_else(|| tr("photos-people-suggested")),
+                None => tr("photos-people"),
+            },
             LibraryDestination::Places => tr("photos-places"),
             LibraryDestination::Analysis => tr("photos-analyze"),
         }
@@ -327,36 +335,20 @@ impl PhotosApp {
     /// The commands the header offers for what is shown. A command that
     /// does not apply is left out rather than shown dead.
     fn commands(&self) -> Vec<Command> {
-        let mut commands = vec![Command::labelled(Hit::Open, tr("photos-open"))];
+        // Where the content offers to open a photo itself (an empty
+        // library, no photo, an unreadable one), the header does not repeat
+        // it.
+        let mut commands = if self.content_offers_open() {
+            Vec::new()
+        } else {
+            vec![Command::icon(
+                Hit::Open,
+                tr("photos-open"),
+                Icon::FolderOpen,
+            )]
+        };
         if !self.library_mode {
-            if self.has_image() {
-                commands.push(
-                    Command::icon(Hit::RotateLeft, tr("photos-rotate-left"), Icon::RotateCcw)
-                        .after_separator(),
-                );
-                commands.push(Command::icon(
-                    Hit::RotateRight,
-                    tr("photos-rotate-right"),
-                    Icon::RotateCw,
-                ));
-                commands.push(Command::icon(
-                    Hit::CropToView,
-                    tr("photos-crop"),
-                    Icon::Scissors,
-                ));
-                if self
-                    .rendered
-                    .as_ref()
-                    .is_some_and(|rendered| !rendered.edits.is_identity())
-                {
-                    commands.push(Command::icon(Hit::Reset, tr("photos-reset"), Icon::Undo2));
-                }
-                commands.push(
-                    Command::icon(Hit::Copy, tr("photos-copy"), Icon::Copy).after_separator(),
-                );
-                commands.push(Command::icon(Hit::Share, tr("photos-share"), Icon::Send));
-                commands.push(Command::icon(Hit::Save, tr("photos-save"), Icon::Download));
-            }
+            commands.extend(self.viewer_commands());
             return commands;
         }
         let destination = if self.people_mode {
@@ -421,8 +413,74 @@ impl PhotosApp {
                     ));
                 }
             }
-            LibraryDestination::People | LibraryDestination::Analysis => {}
+            LibraryDestination::People => commands.extend(self.people_commands()),
+            LibraryDestination::Analysis => {}
         }
+        commands
+    }
+
+    /// The People overview's command: showing the suggestions you hid,
+    /// offered once there are some.
+    fn people_commands(&self) -> Option<Command> {
+        let any_hidden = self
+            .people_controller
+            .all_clusters()
+            .any(|cluster| cluster.hidden || cluster.rejected);
+        (self.people_selection.is_none() && (any_hidden || self.people_show_hidden)).then(|| {
+            Command::labelled(Hit::PeopleHidden, tr("photos-people-show-hidden"))
+                .toggled(self.people_show_hidden)
+                .after_separator()
+        })
+    }
+
+    /// Whether the content column shows an empty state whose one action
+    /// opens a photo.
+    pub(super) fn content_offers_open(&self) -> bool {
+        if self.library_mode {
+            !self.people_mode
+                && self.library_destination == LibraryDestination::Timeline
+                && self.library_items.is_empty()
+                && self.timeline_unfiltered()
+        } else {
+            self.viewer.is_none()
+                && matches!(
+                    self.canvas_state,
+                    super::CanvasState::Empty | super::CanvasState::Error
+                )
+        }
+    }
+
+    /// The commands for the open photograph: turn, crop and revert it, then
+    /// pass it on.
+    fn viewer_commands(&self) -> Vec<Command> {
+        let mut commands = Vec::new();
+        if !self.has_image() {
+            return commands;
+        }
+        commands.push(
+            Command::icon(Hit::RotateLeft, tr("photos-rotate-left"), Icon::RotateCcw)
+                .after_separator(),
+        );
+        commands.push(Command::icon(
+            Hit::RotateRight,
+            tr("photos-rotate-right"),
+            Icon::RotateCw,
+        ));
+        commands.push(Command::icon(
+            Hit::CropToView,
+            tr("photos-crop"),
+            Icon::Scissors,
+        ));
+        if self
+            .rendered
+            .as_ref()
+            .is_some_and(|rendered| !rendered.edits.is_identity())
+        {
+            commands.push(Command::icon(Hit::Reset, tr("photos-reset"), Icon::Undo2));
+        }
+        commands.push(Command::icon(Hit::Copy, tr("photos-copy"), Icon::Copy).after_separator());
+        commands.push(Command::icon(Hit::Share, tr("photos-share"), Icon::Send));
+        commands.push(Command::icon(Hit::Save, tr("photos-save"), Icon::Download));
         commands
     }
 
@@ -443,9 +501,10 @@ impl PhotosApp {
                 },
                 Icon::Star,
             ));
-            commands.push(Command::labelled(
+            commands.push(Command::icon(
                 Hit::Selection(SelectionHit::EditDetails),
                 tr("photos-edit-details"),
+                Icon::Pencil,
             ));
             if !self.library_albums.is_empty() {
                 let destination = self.selection_destination_album.as_deref().and_then(|id| {
@@ -457,7 +516,7 @@ impl PhotosApp {
                 commands.push(match destination {
                     Some(name) => Command::labelled(
                         Hit::Selection(SelectionHit::AddToAlbum),
-                        format!("Add to {name}"),
+                        tr_with("photos-add-to-named-album", "name", &name),
                     ),
                     None => Command::labelled(
                         Hit::Selection(SelectionHit::ChooseAlbum),
@@ -503,8 +562,8 @@ impl PhotosApp {
             return;
         }
         let mut toolbar = Toolbar::new(Orientation::Horizontal).push_spacer();
-        for command in commands {
-            if command.separator_before {
+        for (index, command) in commands.into_iter().enumerate() {
+            if command.separator_before && index > 0 {
                 toolbar = toolbar.push_separator();
             }
             let slot = Rc::clone(&self.pending);
@@ -531,27 +590,29 @@ impl PhotosApp {
             };
             match destination {
                 LibraryDestination::Timeline => (
-                    count_label(self.library_total, "photo", "photos"),
+                    tr_count("photos-count-photos", self.library_total),
                     String::new(),
                 ),
                 LibraryDestination::Albums => (
-                    count_label(self.library_albums.len(), "album", "albums"),
+                    tr_count("photos-count-albums", self.library_albums.len()),
                     String::new(),
                 ),
                 LibraryDestination::People => (
-                    count_label(self.people_approved.len(), "person", "people"),
+                    tr_count("photos-count-people", self.people_approved.len()),
                     String::new(),
                 ),
                 LibraryDestination::Places => (
-                    count_label(self.places_items.len(), "located photo", "located photos"),
+                    tr_count("photos-count-located", self.places_items.len()),
                     String::new(),
                 ),
                 LibraryDestination::Analysis => (
-                    count_label(self.library_photo_count, "photo", "photos"),
+                    tr_count("photos-count-photos", self.library_photo_count),
                     String::new(),
                 ),
             }
-        } else if let Some(open) = PhotosDoc::image(doc) {
+        } else if let Some(open) = PhotosDoc::image(doc)
+            && self.canvas_state == super::CanvasState::Ready
+        {
             let edits = PhotosDoc::edits(doc);
             let (w, h) = open.edited_size(&edits);
             (
@@ -567,6 +628,19 @@ impl PhotosApp {
         };
         self.chrome.status_left = left;
         self.chrome.status_right = right;
+    }
+
+    /// Whether the header leads with a back button: from an open photograph
+    /// (or one still loading or unreadable) to the library, and from one
+    /// person to People. With no photograph at all there is nothing to go
+    /// back from.
+    pub(super) fn header_back_visible(&self) -> bool {
+        if self.library_mode {
+            self.people_selection.is_some()
+                && (self.people_mode || self.library_destination == LibraryDestination::People)
+        } else {
+            !self.chrome.title.is_empty()
+        }
     }
 
     /// Whether the status bar has anything to show.
@@ -594,17 +668,25 @@ impl PhotosApp {
             Rect::new(header.x0 + inset, y, header.x0 + inset + chip, y + chip)
         };
 
-        let mut x0 = header.x0 + inset;
-        if !toggle_on_sidebar || self.chrome.toggle.x1 > header.x0 {
-            x0 = x0.max(self.chrome.toggle.x1 + gap);
-        }
-        let y = centre(header);
-        if self.library_mode {
-            self.chrome.back.apply_layout_external(Rect::ZERO);
+        // The toggle leads the header while the sidebar does not hold it.
+        let leading_free = toggle_on_sidebar && self.chrome.toggle.x1 <= header.x0;
+        let mut x0 = if leading_free {
+            header.x0 + inset
         } else {
+            self.chrome.toggle.x1 + gap
+        };
+        let y = centre(header);
+        if self.header_back_visible() {
             let back = Rect::new(x0, y, x0 + chip, y + chip);
             self.chrome.back.apply_layout_external(back);
             x0 = back.x1 + gap;
+        } else {
+            self.chrome.back.apply_layout_external(Rect::ZERO);
+            // With nothing before it, the title starts on the content's
+            // leading edge, the line the page under it starts on.
+            if leading_free {
+                x0 = header.x0 + f64::from(theme.tokens.spacing.rhythm.group);
+            }
         }
         let search = Rect::new(header.x1 - inset - chip, y, header.x1 - inset, y + chip);
         self.chrome.search.apply_layout_external(search);
@@ -694,7 +776,7 @@ impl PhotosApp {
                 None,
             );
         }
-        if !self.library_mode {
+        if self.header_back_visible() {
             self.chrome
                 .back
                 .draw(scene, transform, text, theme, presence);
@@ -881,6 +963,9 @@ impl PhotosApp {
             NavTarget::Destination(LibraryDestination::People) => self.show_people(),
             NavTarget::Destination(LibraryDestination::Places) => {
                 self.people_mode = false;
+                if self.library_destination != LibraryDestination::Places {
+                    self.places_fit_pending = true;
+                }
                 self.library_destination = LibraryDestination::Places;
             }
             NavTarget::Destination(LibraryDestination::Analysis) => {
@@ -958,6 +1043,14 @@ impl PhotosApp {
                 ..
             }
         );
+        // A floating inspector stands over the header row: what lands on it
+        // is the editor's, not the toolbar's under it.
+        if self.chrome.inspector.is_open()
+            && self.chrome.inspector.is_overlay()
+            && self.chrome.inspector.sidebar_contains(self.pointer)
+        {
+            return false;
+        }
         if pressed && self.chrome.drawer.press_dismisses(self.pointer) {
             *ctx.handled = true;
             return true;
@@ -969,10 +1062,7 @@ impl PhotosApp {
         }
         if self.chrome.drawer.sidebar_contains(self.pointer) {
             if let WindowEvent::MouseWheel { delta, .. } = event {
-                let pixels = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
-                    winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
-                };
+                let pixels = super::wheel_pixels(delta, &self.layout_theme);
                 let content = self
                     .chrome
                     .nav
@@ -1004,7 +1094,7 @@ impl PhotosApp {
                 return true;
             }
         }
-        if !self.library_mode {
+        if self.header_back_visible() {
             self.chrome.back.handle_event(event, ctx);
         }
         self.chrome.search.handle_event(event, ctx);
@@ -1051,9 +1141,9 @@ impl PhotosApp {
         nodes.push(
             AccessNode::new(Role::Button)
                 .with_name(if self.chrome.drawer.is_open() {
-                    "Hide sidebar"
+                    tr("photos-hide-sidebar")
                 } else {
-                    "Show sidebar"
+                    tr("photos-show-sidebar")
                 })
                 .with_bounds(self.chrome.toggle)
                 .with_state(AccessState {
@@ -1064,7 +1154,7 @@ impl PhotosApp {
                 .with_action_target("photos:sidebar:toggle"),
         );
         let mut header = Vec::new();
-        if !self.library_mode
+        if self.header_back_visible()
             && let Some(node) = self.chrome.back.accessibility()
         {
             header.push(
@@ -1132,7 +1222,7 @@ impl PhotosApp {
             return matches!(action, AccessAction::Activate | AccessAction::Focus);
         }
         if target == "photos:toolbar:photos-library" {
-            if matches!(action, AccessAction::Activate) && !self.library_mode {
+            if matches!(action, AccessAction::Activate) && self.header_back_visible() {
                 self.pending.set(Some(Hit::Library));
                 let (doc, _) = ui::doc::document(state, path);
                 self.drain_pending(doc);
@@ -1160,14 +1250,5 @@ impl PhotosApp {
             return false;
         }
         false
-    }
-}
-
-/// "1 photo", "12 photos".
-pub(super) fn count_label(count: usize, one: &str, many: &str) -> String {
-    if count == 1 {
-        format!("1 {one}")
-    } else {
-        format!("{count} {many}")
     }
 }
