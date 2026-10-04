@@ -457,6 +457,12 @@ pub struct CalendarApp {
     /// The accounts are a capture's sample ones: their servers answer from
     /// bundled sample calendars, and display choices are not saved.
     sample_accounts: bool,
+    /// The person's accounts, which Settings keeps and every device of theirs
+    /// shares, followed in a live window; and the revision last shown.
+    person_accounts: Option<(
+        ui::framework::PersonRecord<accounts::person::PersonAccounts>,
+        Option<u64>,
+    )>,
 
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
@@ -644,6 +650,7 @@ impl CalendarApp {
             staged_new_event: false,
             staged_popover: None,
             sample_accounts: false,
+            person_accounts: None,
             sidebar: Sidebar::new(),
             topbar: Topbar::new(),
             text_scale: 1.0,
@@ -2060,6 +2067,44 @@ impl CalendarApp {
         self.device_accounts.replace(self.configured.clone());
         self.accounts = self.display.applied_to(&self.configured);
         self.dirty = true;
+    }
+
+    /// The accounts as configured, before display choices apply.
+    #[cfg(test)]
+    pub(crate) fn configured_for_test(&self) -> &AccountStore {
+        &self.configured
+    }
+
+    /// Follow the person's accounts, which Settings keeps, in this window.
+    pub(crate) fn follow_person_accounts(
+        &mut self,
+        accounts: ui::framework::PersonRecord<accounts::person::PersonAccounts>,
+    ) {
+        self.person_accounts = Some((accounts, None));
+        self.adopt_person_accounts();
+    }
+
+    /// Show the person's `CalDAV` accounts when their record moved: each
+    /// account's settings from the record, its password from this device's
+    /// vault. An empty record leaves the accounts this device's file holds.
+    fn adopt_person_accounts(&mut self) {
+        let Some((record, seen)) = &mut self.person_accounts else {
+            return;
+        };
+        let revision = record.revision();
+        if *seen == Some(revision) {
+            return;
+        }
+        *seen = Some(revision);
+        let person = record.get();
+        if person.accounts.is_empty() {
+            return;
+        }
+        let adopted = AccountStore::from_store(&person.store(), &accounts::SecretVault::open());
+        if adopted != self.configured {
+            self.configured = adopted;
+            self.show_accounts();
+        }
     }
 
     /// Pick up display choices made in another window or on another device.
@@ -5882,6 +5927,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
             if CalDoc::is_empty(state) {
@@ -6356,6 +6402,10 @@ impl Widget for CalendarApp {
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         self.dirty = true;
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {

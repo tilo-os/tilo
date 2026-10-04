@@ -334,6 +334,11 @@ impl ResourceSurface<Mail> for MailApp {
         // A screenshot shows its fixture as it is, whatever the profile holds.
         if cx.mode().is_live() {
             self.follow_preferences(cx.settings::<MailPreferences>());
+            if let Some(accounts) =
+                cx.person_of::<accounts::person::PersonAccounts>(accounts::person::ACCOUNTS_OWNER)
+            {
+                self.follow_person_accounts(accounts);
+            }
         }
         let outbox = self.server_outbox();
         let projection = cx.drain(

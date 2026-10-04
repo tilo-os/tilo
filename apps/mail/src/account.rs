@@ -153,6 +153,11 @@ impl AccountStore {
         )
     }
 
+    /// The mail accounts `shared` holds, each password from `vault`.
+    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+        Self::from_shared(shared, vault)
+    }
+
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts: Vec<Account> = shared
@@ -504,5 +509,39 @@ mod tests {
                 "fixture-original-secret"
             );
         }
+    }
+
+    /// A mail account Settings saved in the person's accounts record reads
+    /// back in Mail as it was, its password from this device's vault and
+    /// never from the record.
+    #[test]
+    fn a_mail_account_from_the_persons_record_reads_back_with_the_devices_password() {
+        use accounts::person::PersonAccounts;
+        let root = temp_root();
+        let config = AccountConfig {
+            display_name: "Work".into(),
+            email: "me@work.example".into(),
+            password: "kept-on-the-device".into(),
+            ..AccountConfig::default()
+        };
+        let account = Account::new(config.clone());
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(
+            &AccountId::from(account.id.clone()),
+            &accounts::Secret::password(config.password),
+        );
+        vault.save();
+        let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
+        replica
+            .apply(PersonAccounts::saving(&account.to_stored()))
+            .unwrap();
+        let person = replica.state().unwrap();
+        let shown = AccountStore::from_store(&person.store(), &SecretVault::open_in(&root));
+        assert_eq!(shown.accounts, vec![account]);
+        assert!(
+            !format!("{person:?}").contains("kept-on-the-device"),
+            "the password never enters the record"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }
