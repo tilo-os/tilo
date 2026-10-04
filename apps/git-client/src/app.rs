@@ -76,8 +76,6 @@ pub enum Screen {
 /// currently shown in the diff pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DiscardTarget {
-    /// Revert the whole file's worktree changes (or delete an untracked file).
-    File,
     /// Revert a single hunk of the file's worktree changes.
     Hunk(usize),
 }
@@ -315,11 +313,14 @@ pub struct GitClientApp {
     changes_scroll: f64,
     diff_scroll: f64,
     hover_hunk: Option<usize>,
-    /// A discard action armed for confirmation on the selected file: the next
+    /// A hunk discard armed for confirmation on the selected file: the next
     /// click on the same (now red) affordance performs it; any other
     /// interaction disarms. Guards the destructive worktree revert behind a
     /// deliberate second click.
     armed_discard: Option<DiscardTarget>,
+    /// The "Discard file" button's request: the row's destructive effect,
+    /// which the host confirms before it runs.
+    discard_request: ui::control_custody::RawControlSlot,
 
     // --- History screen state ---
     selected_commit: usize,
@@ -420,8 +421,16 @@ impl GitClientApp {
             Some("commit") => self
                 .commit_input
                 .set_text("Flush the blur pass before presenting"),
-            // The two-click discard confirmation armed on the selected file.
-            Some("discard") => self.armed_discard = Some(DiscardTarget::File),
+            // A changed file in the worktree, whose "Discard file" the
+            // scenario's input then presses.
+            Some("discard") => {
+                if !self.model.unstaged.is_empty() {
+                    self.selected_change = Some((ChangeArea::Unstaged, 0));
+                } else if !self.model.untracked.is_empty() {
+                    self.selected_change = Some((ChangeArea::Untracked, 0));
+                }
+                self.diff_scroll = 0.0;
+            }
             // The narrow window's list column, revealed over its scrim
             // rather than the closed default a fresh narrow window opens to.
             Some("narrow") => self.flap.snap(true),
@@ -488,6 +497,7 @@ impl GitClientApp {
             diff_scroll: 0.0,
             hover_hunk: None,
             armed_discard: None,
+            discard_request: ui::control_custody::RawControlSlot::replace_one(),
             selected_commit: 0,
             history_scroll: 0.0,
             detail_scroll: 0.0,
@@ -974,8 +984,7 @@ impl GitClientApp {
     }
 
     /// Discard a file's worktree changes (revert unstaged edits, or delete an
-    /// untracked file). Two-click armed: the first click on a discard
-    /// affordance arms the row; only a second confirming click reaches here.
+    /// untracked file), as its row's confirmed `discard-file` asks.
     fn discard_file(&mut self, area: ChangeArea, idx: usize) {
         if self.repository_busy() {
             return;
@@ -1747,8 +1756,7 @@ impl GitClientApp {
     }
 
     /// Draw the diff-pane header for the selected file: title, +/− summary,
-    /// and (on the worktree side of a real repo) the two-click "Discard
-    /// file" affordance.
+    /// and (on the worktree side) the "Discard file" button.
     fn draw_diff_header_file(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -1772,11 +1780,10 @@ impl GitClientApp {
             Point::new(header.x1 - aw - 16.0, sy),
         );
 
-        // Discard-file affordance on the worktree (unstaged / untracked)
-        // side of a real repo. Two-click armed: shows "Discard file?" when
-        // armed, filled danger.
+        // Discard-file button on the worktree (unstaged / untracked) side;
+        // the host confirms the destructive effect it asks for.
         let mut title_max = (header.width() - aw - 16.0 - 16.0 - 12.0).max(40.0) as f32;
-        let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
+        let can_discard = !staged && self.selected_change.is_some();
         if can_discard {
             title_max = self.draw_discard_file_button(ctx, header, aw);
         }
@@ -1802,20 +1809,15 @@ impl GitClientApp {
         );
     }
 
-    /// Draw the "Discard file" / (armed) "Discard file?" button and return
-    /// the title's clamped max width now that the button occupies space.
+    /// Draw the "Discard file" button and return the title's clamped max
+    /// width now that the button occupies space.
     fn draw_discard_file_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         header: Rect,
         summary_w: f64,
     ) -> f32 {
-        let armed = self.armed_discard == Some(DiscardTarget::File);
-        let label = if armed {
-            "Discard file?"
-        } else {
-            "Discard file"
-        };
+        let label = "Discard file";
         let lw = f64::from(
             ctx.text
                 .measure_weighted(label, DIFF_DISCARD_FONT, None, TextWeight::Medium)
@@ -1824,17 +1826,12 @@ impl GitClientApp {
         let bw = lw + 20.0;
         let bx = header.x1 - summary_w - 16.0 - 12.0 - bw;
         let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
-        // Destructive outline at rest, filled danger once armed — the shared
-        // face keeps the danger ink legible on every ground it sits on.
+        // Destructive outline — the shared face keeps the danger ink legible
+        // on every ground it sits on.
         let face = ButtonFace::new(brect, label)
             .radius(6.0)
             .text_size(DIFF_DISCARD_FONT);
-        let face = if armed {
-            face.danger()
-        } else {
-            face.danger_outline()
-        };
-        draw::button(ctx, &face);
+        draw::button(ctx, &face.danger_outline());
         self.discard_file_rect = brect;
         (bx - header.x0 - 24.0).max(40.0) as f32
     }
@@ -1873,6 +1870,35 @@ impl GitClientApp {
             ctx.fill_rect(viewport, ctx.theme.tokens.colors.surfaces.base);
             self.diff_hunk_buttons.clear();
         }
+    }
+
+    /// Ask for the selected worktree file's `discard-file`, through the host
+    /// like the palette or an agent: the host asks the person to confirm
+    /// before the effect runs.
+    fn request_discard_file(&mut self) {
+        let Some((area, idx)) = self.selected_change else {
+            return;
+        };
+        let list = match area {
+            ChangeArea::Staged => return,
+            ChangeArea::Unstaged => &self.model.unstaged,
+            ChangeArea::Untracked => &self.model.untracked,
+        };
+        let Some(change) = list.get(idx) else {
+            return;
+        };
+        let discard = GitClientEffect::DiscardFile {
+            path: change.path.clone(),
+        };
+        let _ = self
+            .discard_request
+            .emit(ui::tilo_actions::ControlInvocation {
+                address: ui::tilo_actions::ActionAddress::new(
+                    crate::actions::change_resource_id(area, &change.path),
+                    ui::tilo_resource::Effect::id(&discard),
+                ),
+                arguments: serde_json::Map::new(),
+            });
     }
 
     fn current_path(&self) -> Option<String> {
@@ -2193,15 +2219,10 @@ impl GitClientApp {
     }
 
     fn handle_changes_click(&mut self, pos: Point) {
-        // Discard-file button (diff header) — armed two-click confirm.
+        // Discard-file button (diff header): the host confirms its effect.
         if self.discard_file_rect.width() > 0.0 && self.discard_file_rect.contains(pos) {
-            if self.armed_discard == Some(DiscardTarget::File) {
-                if let Some((area, idx)) = self.selected_change {
-                    self.discard_file(area, idx);
-                }
-            } else {
-                self.armed_discard = Some(DiscardTarget::File);
-            }
+            self.armed_discard = None;
+            self.request_discard_file();
             return;
         }
         // Hunk action buttons take priority (they overlap the diff body).
@@ -2705,7 +2726,31 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
     }
 }
 
+impl ui::widget::controls::ActionControls for GitClientApp {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        let _ = self.discard_request.install_custody(domain, attachment);
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.discard_request.take_legacy_compatibility() {
+            return Some(invocation);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+}
+
 impl Widget for GitClientApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.drain_remote();
         self.publish_shared_repo_if_needed();

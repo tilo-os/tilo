@@ -115,21 +115,13 @@ mod tests {
     /// What Files publishes while showing a real folder holding a file, synced
     /// against `document` exactly as the host drives it.
     fn folder_resources(document: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
-        use ui::tilo_resource::Resource as _;
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::new();
         files.navigate(directory.path().to_path_buf());
         let mut synced = document.clone();
         files.sync(&mut synced, &ROOT);
-        let state = FileExplorer::read(&synced).unwrap();
-        let mut resources = vec![ui::tilo_resource::publish::<FileExplorer>(
-            FileExplorer::KIND,
-            "Files",
-            &state,
-        )];
-        resources.extend(ui::resources::resources(&files, &synced));
-        resources
+        crate::files_app::published::tree(&files, &synced)
     }
 
     fn seeded() -> AutoCommit {

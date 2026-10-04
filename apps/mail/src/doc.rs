@@ -35,7 +35,7 @@ use ui::doc::{read_bool, read_str};
 use tilo_document::RichText;
 use ui::widget::{BlockContent, BlockKind};
 
-use crate::actions::{DraftBodySeed, IngestBaseline, ServerUpdate};
+use crate::actions::{DraftBodySeed, IngestBaseline, Outgoing, ServerUpdate};
 use crate::attachment_store;
 use crate::model::{Draft, DraftAttachment, Folder, Mailbox};
 
@@ -44,6 +44,7 @@ const RICH_BODY: &str = "rich_body";
 
 /// A message's flag entry key holding what its server has.
 const SERVER: &str = "server";
+const OUTBOX: &str = "outbox";
 
 pub struct MailDoc;
 
@@ -408,6 +409,61 @@ impl MailDoc {
                 let _ = doc.delete(&d, key);
             }
         }
+    }
+
+    // ---- outbox ----------------------------------------------------------
+    //
+    // Messages sent but not yet delivered, each under its id: the message as
+    // JSON, and the reason its server refused it once it did.
+
+    /// Queue `outgoing` in the outbox.
+    pub fn queue_outgoing(doc: &mut AutoCommit, outgoing: &Outgoing) {
+        let Ok(message) = serde_json::to_string(outgoing) else {
+            return;
+        };
+        let outbox = Self::map(doc, &ROOT, OUTBOX);
+        let entry = Self::map(doc, &outbox, &outgoing.id);
+        ui::doc::put_if_changed(doc, &entry, "message", message.as_str());
+        if doc.get(&entry, "failed").ok().flatten().is_some() {
+            let _ = doc.delete(&entry, "failed");
+        }
+    }
+
+    /// Take message `id` out of the outbox.
+    pub fn remove_outgoing(doc: &mut AutoCommit, id: &str) {
+        if let Ok(Some((Value::Object(ObjType::Map), outbox))) = doc.get(&ROOT, OUTBOX)
+            && doc.get(&outbox, id).ok().flatten().is_some()
+        {
+            let _ = doc.delete(&outbox, id);
+        }
+    }
+
+    /// Record why message `id`'s server refused it.
+    pub fn fail_outgoing(doc: &mut AutoCommit, id: &str, reason: &str) {
+        if let Ok(Some((Value::Object(ObjType::Map), outbox))) = doc.get(&ROOT, OUTBOX)
+            && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&outbox, id)
+        {
+            ui::doc::put_if_changed(doc, &entry, "failed", reason);
+        }
+    }
+
+    /// Every message in the outbox, with the reason its server refused it
+    /// if it did.
+    pub fn outbox(doc: &AutoCommit) -> Vec<(Outgoing, Option<String>)> {
+        let Ok(Some((Value::Object(ObjType::Map), outbox))) = doc.get(&ROOT, OUTBOX) else {
+            return Vec::new();
+        };
+        doc.keys(&outbox)
+            .filter_map(|id| {
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&outbox, id.as_str())
+                else {
+                    return None;
+                };
+                let outgoing: Outgoing =
+                    serde_json::from_str(&read_str(doc, &entry, "message")?).ok()?;
+                (outgoing.id == id).then(|| (outgoing, read_str(doc, &entry, "failed")))
+            })
+            .collect()
     }
 
     // ---- known message registry -----------------------------------------

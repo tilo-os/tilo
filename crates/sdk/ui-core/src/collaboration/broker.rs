@@ -10441,4 +10441,111 @@ mod tests {
             )
         });
     }
+
+    /// A native window that shows another record in its component's place
+    /// moves its live broker connection to that record's route: one inherited
+    /// transport, a second route joined with the record's kind, and the
+    /// window's primary route then the new record's.
+    #[test]
+    #[cfg(unix)]
+    fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
+        use crate::application::{LaunchTarget, RestoreInput};
+        use crate::application_test_support::{
+            DEVICE, runner_inputs, runner_permissions, runner_probe_definition,
+        };
+        let cluster = Uuid::new_v4();
+        let captures = Captures {
+            committed_history_fixture: Some(automerge::AutoCommit::new().save()),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let definition = runner_probe_definition();
+        let shown = crate::record::RecordId::minted();
+        let manager = CollaborationManager::for_route_from(
+            SdkConnectSource::Fd(fd),
+            definition.app_id.to_owned(),
+            cluster,
+            Some(shown.as_str().to_owned()),
+            None,
+            None,
+            "person",
+        )
+        .unwrap();
+        assert!(manager.has_native_committed_primary());
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners
+            .open(definition.app_id, &cluster.to_string())
+            .unwrap();
+        let views = std::rc::Rc::new(
+            crate::application_view::InstanceViewStore::new(root, DEVICE, &cluster.to_string())
+                .unwrap(),
+        );
+        let context = crate::application::HostContext::prepare_new_record(
+            definition,
+            crate::application::HostContextInputs {
+                records,
+                views,
+                device_id: DEVICE.into(),
+                instance_id: 41,
+                permissions: runner_permissions(),
+                author: crate::permissions::UserId("probe-author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
+            shown,
+        )
+        .unwrap();
+        let reopener = context.reopener();
+        let component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let mut app =
+            crate::App::from_component_with_collaboration(component, runner_inputs(), manager)
+                .unwrap();
+        assert_eq!(captures.lock().unwrap().joined.len(), 1, "the launch route");
+
+        let wanted = crate::record::RecordId::minted();
+        let (next, target) = reopener.prepare(definition, wanted.clone()).unwrap();
+        let replacement = definition
+            .instantiate(next, target, RestoreInput::None)
+            .unwrap();
+        let outcome = reopener.replace(replacement, vec![]);
+        assert!(app.swap_requested_component());
+        assert_eq!(outcome.get(), Some(Ok(())));
+        assert_eq!(
+            captures.lock().unwrap().joined.len(),
+            2,
+            "the record's route shares the one inherited transport"
+        );
+        assert_eq!(
+            captures
+                .lock()
+                .unwrap()
+                .joined_record_kinds
+                .last()
+                .map(String::as_str),
+            Some(definition.record_kind.as_str()),
+            "the record route names its kind for the owner"
+        );
+        assert_eq!(
+            app.collaboration_manager()
+                .primary_route
+                .accepted
+                .as_ref()
+                .and_then(|route| route.route.record.clone())
+                .as_deref(),
+            Some(wanted.as_str()),
+            "the window's primary route is the record it shows now"
+        );
+        app.close_components();
+    }
 }

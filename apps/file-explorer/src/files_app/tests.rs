@@ -1033,32 +1033,20 @@ mod command_path_tests {
             );
         }
 
-        for command in ["grid", "sort-size", "zoom-in", "shortcuts"] {
+        for command in ["grid", "sort-size", "zoom-in", "keyboard-shortcuts"] {
             assert!(
                 matches!(
-                    crate::files_app::published::start(
+                    crate::files_app::published::invoke(
                         &mut w,
-                        &ui::widget::ResourceOperation::local(
-                            ui::tilo_actions::InvocationId::new(),
-                            if command == "grid"
-                                || command == "sort-size"
-                                || command == "zoom-in"
-                                || command == "shortcuts"
-                            {
-                                OperationKind::View
-                            } else {
-                                OperationKind::Effect
-                            },
-                            "files.folder-command",
-                            &serde_json::to_vec(command).unwrap()
-                        ),
                         &mut doc,
-                        &automerge::ROOT
+                        folder_resource.id.as_str(),
+                        command,
+                        &serde_json::json!({}),
                     )
                     .unwrap(),
                     Some(ui::widget::ResourceOperationStart::Completed(_))
                 ),
-                "{command} is routed through the canonical dispatcher"
+                "{command} is routed through the canonical door"
             );
         }
         assert_eq!(w.view_mode(), ViewMode::Grid);
@@ -1203,7 +1191,6 @@ mod command_path_tests {
     fn entry_resource_actions_are_opaque_and_fail_closed() {
         resource_open_refuses_a_deleted_or_replayed_entry_target();
         local_resource_actions_carry_only_opaque_ids_not_host_paths();
-        entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view();
         entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door();
         projected_availability_controls_are_discoverable_and_use_the_entry_route();
         nearby_receiver_actions_are_opaque_confirmed_and_current();
@@ -1253,21 +1240,14 @@ mod command_path_tests {
                 "availability projection must expose {action}"
             );
         }
-        let payload = vec![
-            "availability".to_string(),
-            FileExplorerWidget::entry_resource_id(&w.entries[0]),
-        ];
+        let row = resource.id.as_str().to_owned();
         assert!(matches!(
-            crate::files_app::published::start(
+            crate::files_app::published::invoke(
                 &mut w,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "files.entry-command",
-                    &serde_json::to_vec(&payload).unwrap()
-                ),
                 &mut doc,
-                &automerge::ROOT
+                &row,
+                "availability",
+                &serde_json::json!({}),
             )
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Completed(_))
@@ -1584,8 +1564,12 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
         let mut doc = automerge::AutoCommit::new();
-        let payload =
-            serde_json::to_vec(&crate::search_provider::entry_resource_id(&file)).unwrap();
+        let open = crate::effects::FilesEffect::OpenItem {
+            item: crate::search_provider::entry_resource_id(&file),
+        }
+        .bound()
+        .build_json(&serde_json::Map::new())
+        .unwrap();
 
         std::fs::remove_file(&file).unwrap();
         w.refresh();
@@ -1594,8 +1578,8 @@ mod command_path_tests {
             &ui::widget::ResourceOperation::local(
                 ui::tilo_actions::InvocationId::new(),
                 OperationKind::View,
-                "files.open",
-                &payload,
+                &open.type_id,
+                &open.payload,
             ),
             &mut doc,
             &automerge::ROOT,
@@ -1624,9 +1608,9 @@ mod command_path_tests {
         let encoded = open
             .build_json(&serde_json::Map::new())
             .expect("Open takes no arguments");
-        let payload: String = serde_json::from_slice(&encoded.payload).expect("string payload");
-        assert_eq!(payload, entry.id.as_str());
-        assert_ne!(payload, file.to_string_lossy());
+        let payload: serde_json::Value =
+            serde_json::from_slice(&encoded.payload).expect("an effect payload");
+        assert_eq!(payload["args"]["item"], entry.id.as_str());
         assert!(!String::from_utf8_lossy(&encoded.payload).contains("private-plan.txt"));
     }
 
@@ -1660,50 +1644,7 @@ mod command_path_tests {
         assert!(resolved.actions.iter().any(|action| action.id == "rename"));
     }
 
-    fn entry_actions_fail_closed_when_the_operation_kind_is_replayed_as_view() {
-        let d = tempfile::tempdir().unwrap();
-        let file = d.path().join("keep.txt");
-        std::fs::write(&file, b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let resource_id = crate::search_provider::entry_resource_id(&file);
-        let payload = serde_json::to_vec(&vec!["cut", &resource_id]).unwrap();
-        let error = crate::files_app::published::start(
-            &mut w,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                OperationKind::View,
-                "files.entry-command",
-                &payload,
-            ),
-            &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
-        )
-        .expect_err("a filesystem action cannot be replayed as a view");
-        assert!(error.contains("invalid operation kind"));
-        assert!(
-            file.exists(),
-            "the rejected action made no filesystem change"
-        );
-    }
-
     fn every_exported_local_file_handler_is_declared_for_the_broker() {
-        let handlers = Widget::local_resource_operation_handlers(
-            &FileExplorerWidget::with_persistence(None, None),
-        );
-        for handler in [
-            "files.refresh",
-            "files.paste",
-            "files.new-from-template",
-            "files.open",
-            "files.reveal-record",
-            "files.folder-command",
-            "files.entry-command",
-            "files.share-link",
-            "files.remote-account",
-        ] {
-            assert!(handlers.contains(&handler), "missing handler {handler}");
-        }
         // One published operation without a handler refuses the app's whole
         // surface, and a directory search then finds none of its actions.
         let root = tempfile::tempdir().unwrap();
@@ -2570,6 +2511,7 @@ mod command_path_tests {
         std::fs::create_dir(&work).unwrap();
 
         let (mut w, _cfg) = hermetic();
+        w.templates_dir = Some(d.path().to_path_buf());
         w.navigate(work.clone());
         w.apply_command(FileCommand::NewFromTemplate(tmpl));
         assert!(
@@ -4411,22 +4353,19 @@ mod responsive_body_tests {
         h.left_release();
         let intent = ui::widget::controls::take_control_invocation(&mut h.w)
             .expect("the shared button emits a resource action");
-        assert_eq!(intent.address.resource, "tilo.control:files.retry");
+        assert_eq!(intent.address.resource, "files.retry");
         assert_eq!(intent.address.action, "invoke");
         assert!(
-            h.w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "tilo.ui.control.invoke",
-                    br#""files.retry""#,
-                ),
+            crate::files_app::published::invoke(
+                &mut h.w,
                 &mut h.state.doc,
-                &h.state.root,
+                &intent.address.resource,
+                &intent.address.action,
+                &serde_json::Value::Object(intent.arguments),
             )
             .unwrap()
             .is_some(),
-            "the resource action is accepted by the Files action boundary"
+            "the retry row refreshes the folder"
         );
         assert!(
             h.w.error().is_none(),
@@ -4451,6 +4390,8 @@ mod responsive_body_tests {
             .is_some(),
             "the same resource action an AT-SPI client discovers is handled"
         );
+        // The button queued its command; the frame after applies it.
+        h.lay_out(1200.0, 720.0);
         assert!(
             h.w.context_menu.is_open(),
             "resource/AT-SPI activation opens the real View options menu"
@@ -5248,16 +5189,12 @@ mod injected_startup_tests {
             .expect("an open action");
         assert_eq!(open.contract.availability, Availability::Available);
         assert!(matches!(
-            crate::files_app::published::start(
+            crate::files_app::published::invoke(
                 &mut widget,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    OperationKind::View,
-                    "files.remote-account",
-                    &serde_json::to_vec(&vec!["open", "cloud"]).unwrap()
-                ),
                 &mut document,
-                &automerge::ROOT
+                account.id.as_str(),
+                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
+                &serde_json::json!({}),
             )
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Completed(_))
