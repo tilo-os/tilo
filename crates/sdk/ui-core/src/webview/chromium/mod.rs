@@ -4,6 +4,7 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod protocol;
+pub mod runtime;
 mod shared;
 pub use shared::serve_shared_until_idle;
 
@@ -154,6 +155,14 @@ fn owned_private_root(root: &Path) -> bool {
             .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
 }
 
+/// Remove a private window's disposable root that no engine will use, if it
+/// is one Browser owns.
+pub fn release_private_root(root: &Path) {
+    if owned_private_root(root) {
+        cleanup_private_root(root);
+    }
+}
+
 fn cleanup_private_root(root: &Path) {
     #[cfg(unix)]
     let _lock = {
@@ -302,32 +311,16 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: super::Frame) {
     }
 }
 
-/// Error-only surface used when a real engine cannot start. It never renders a
-/// page and repeats the diagnostic on navigation so the browser's normal error
-/// presentation remains actionable.
+/// Error-only surface used when the engine is not installed or cannot start.
+/// It never renders a page and answers navigation with its message, which is
+/// written for the person using the app.
 pub struct UnavailableEngine {
     message: String,
     shared: Shared,
-    _private_root: PrivateRootCleanup,
 }
 
 impl UnavailableEngine {
     pub fn new(message: String) -> Arc<Self> {
-        Self::build(message, None)
-    }
-
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the private root is not an owned Browser directory.
-    pub fn new_with_private_root(message: String, root: &Path) -> Result<Arc<Self>, String> {
-        if !owned_private_root(root) {
-            return Err("Private Chromium root is not owned by Browser".into());
-        }
-        Ok(Self::build(message, Some(root.to_owned())))
-    }
-
-    fn build(message: String, private_root: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             message,
             shared: Shared {
@@ -340,7 +333,6 @@ impl UnavailableEngine {
                 failed: AtomicBool::new(false),
                 remote: None,
             },
-            _private_root: PrivateRootCleanup(private_root),
         })
     }
 }
@@ -391,32 +383,10 @@ impl WebViewEngine for UnavailableEngine {
 }
 
 fn host_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("TILO_CHROMIUM_HOST") {
-        return Ok(path.into());
-    }
-    #[cfg(test)]
-    let executable = std::env::var_os("TILO_TEST_CHROMIUM_DISCOVERY_EXE")
-        .map(PathBuf::from)
-        .map_or_else(std::env::current_exe, Ok)
-        .map_err(|error| error.to_string())?;
-    #[cfg(not(test))]
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let binary_name = if cfg!(target_os = "macos") {
-        "Browser Engine.app/Contents/MacOS/tilo-chromium-host"
-    } else {
-        "tilo-chromium-host"
-    };
-    for parent in executable.ancestors().skip(1).take(4) {
-        for candidate in [
-            parent.join("chromium").join(binary_name),
-            parent.join("Frameworks").join(binary_name),
-        ] {
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err("Chromium runtime is missing. Run python3 scripts/browser/build-host.py, or set TILO_CHROMIUM_HOST to its executable.".into())
+    runtime::locate().map_err(|missing| {
+        tracing::warn!(hint = %missing.developer_hint(), "Chromium engine runtime missing");
+        runtime::NOT_INSTALLED_MESSAGE.to_owned()
+    })
 }
 
 /// Every thread the Chromium transport runs is named and spawned here.
@@ -577,13 +547,26 @@ fn validated_extension_paths(extensions: &[PathBuf]) -> Result<Vec<String>, Stri
         .collect::<Result<Vec<String>, String>>()
 }
 
+/// The engine host process. It is not one of the toolkit's thin binaries: it
+/// loads CEF from beside itself and the rest from the system, so the library
+/// path the launcher points at the app's own runtime bundle does not apply to
+/// it. Nor does the hardened allocator the launcher preloads into the app:
+/// Chromium brings its own (PartitionAlloc) and frees through glibc's
+/// internals, so a preloaded allocator aborts the host at start.
+fn host_command(host: &Path) -> Command {
+    let mut command = Command::new(host);
+    command.env_remove("LD_LIBRARY_PATH");
+    command.env_remove("LD_PRELOAD");
+    command
+}
+
 fn launch_host(
     host: &Path,
     profile: &Path,
     extensions: &[String],
     private_root: Option<&Path>,
 ) -> Result<std::process::Child, String> {
-    let mut command = Command::new(host);
+    let mut command = host_command(host);
     if private_root.is_some() {
         command.arg("--private");
     }

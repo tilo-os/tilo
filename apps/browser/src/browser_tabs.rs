@@ -555,10 +555,6 @@ impl BrowserTabs {
             );
         }
     }
-    #[cfg(feature = "wpe")]
-    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
-        self.active().content_rect_handle()
-    }
     /// Present the document's bookmarks and preferences to every tab.
     pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
         for tab in &mut self.tabs {

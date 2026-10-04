@@ -92,27 +92,23 @@ grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.
   && ok 'kernel publication survives cache-write failures and retries a failed push of the completed build' \
   || bad 'a registry cache or push hiccup can fail or silently skip kernel publication'
 
-# The engine compiles only from os/Containerfile.wpe. Every image build takes
-# that stage by digest as its wpe-builder context; os/Containerfile fails
-# closed without it.
-[ "$(grep -Fc 'file: os/Containerfile.wpe' "$os")" = 2 ] \
-  && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 8 ] \
-  && grep -Fq "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)" "$os" \
-  && ok 'OS image builds take the browser engine from its isolated recipe' \
-  || bad 'an OS image build lacks the isolated browser engine context'
+# The browser engine is built inside the image build from the pinned CEF
+# distribution; no image build takes a separately compiled engine stage.
+! grep -Fq 'wpe-builder' "$os" && ! grep -Fq 'WPE_BUILDROOT_REF' "$os" \
+  && grep -Fq 'ARG CHROMIUM_RUNTIME_VERSION=' "$repo/os/Containerfile" \
+  && ok 'OS image builds compile the browser engine runtime themselves' \
+  || bad 'an OS image build still takes a separately compiled browser engine'
 
 # A cache manifest naming a blob the registry lost fails a build only when the
 # layer's content is needed. The OS build treats exactly that as a cache miss:
 # rebuild without cache-from, rewrite every cache tag, consume either digest.
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
-[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the browser engine stage/,/- name: Recognize a missing registry cache blob/' "$os"))" = 6 ] \
+[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the build toolchain/,/- name: Recognize a missing registry cache blob/' "$os"))" = 5 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
   && ! grep -Fq 'cache-from:' <<<"$uncached" \
   && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 1 ] \
   && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
   && grep -Fq "'\${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
-  && grep -A1 -F -- '- name: Build the browser engine stage without the damaged layer cache' "$os" \
-    | grep -Fq 'id: wpe-uncached' \
   && ok 'a missing registry cache blob degrades the OS build to an uncached rebuild' \
   || bad 'a lost registry cache blob can still fail the OS build'
 
@@ -310,9 +306,7 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
   && ok 'OS composition reuses the desktop payload only while no Rust or Cargo input changed since it was built' \
   || bad 'OS composition can ship a desktop payload older than its own compositor sources'
 
-grep -Fq 'with_browser=0' "$os" \
-  && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
-  && grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
+grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
   && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 8 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
@@ -323,8 +317,8 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
   && grep -Fq 'installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
-  && ok 'ordinary OS integration checks omit the release-only browser engine' \
-  || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
+  && ok 'ordinary OS integration checks run without release-only steps' \
+  || bad 'OS branch validation still requires release-only steps'
 
 ! grep -Fq 'cron:' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
@@ -337,10 +331,9 @@ grep -Fq 'with_browser=0' "$os" \
   || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
-  && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \
-  && grep -Fq "no digest-pinned WPE buildroot for %s; run build-buildroots" "$os" \
-  && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
-  || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
+  && grep -Fq 'with_browser=${REQUESTED_BROWSER:-1}' "$os" \
+  && ok 'every image carries the browser unless a manual run leaves it out' \
+  || bad 'an image can omit the browser without a manual request'
 
 # CI and os/dev/build-image.sh derive the Windows provider with one command, so
 # x86_64 can never drop it and ARM includes it as soon as both pins exist.

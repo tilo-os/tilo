@@ -1222,12 +1222,6 @@ impl BrowserWidget {
         self.begin_pip_probe();
     }
 
-    /// Handle to the live `WebView` content rect (window fractions), for the
-    /// zero-copy compositor. Updated every layout.
-    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
-        self.content_rect.clone()
-    }
-
     /// Perform a browser operation and report inputs that the Browser is not
     /// permitted to hand to the web engine.  In particular, a browser window
     /// is not a file picker: its package declares only the web schemes, and
@@ -4159,29 +4153,8 @@ fn default_engine(mode: BrowsingMode) -> SharedEngine {
     ui::webview::paint::PaintEngine::streaming(engine)
 }
 
-/// WPE is an explicit migration option; deterministic rendering is confined
-/// to `new_headless`.
+/// Deterministic rendering is confined to `new_headless`.
 fn native_engine(mode: BrowsingMode) -> SharedEngine {
-    #[cfg(feature = "wpe")]
-    if std::env::var("TILO_BROWSER_ENGINE").as_deref() == Ok("wpe") {
-        if mode.is_private() {
-            return engine_or_error(
-                crate::storage::explicit_root()
-                    .ok_or_else(|| "Private browser root was not configured".to_string())
-                    .and_then(|root| {
-                        ui::webview::chromium::UnavailableEngine::new_with_private_root(
-                            "Private windows require the Chromium engine; WPE private storage is unavailable."
-                                .into(),
-                            root,
-                        )
-                    })
-                    .map(|engine| engine as SharedEngine),
-            );
-        }
-        return engine_or_error(
-            ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine),
-        );
-    }
     if mode.is_private() {
         return engine_or_error(
             crate::storage::explicit_root()
