@@ -156,9 +156,10 @@ pub enum FeedsEffect {
     #[effect(job)]
     RefreshAll,
     /// Import OPML…
+    #[effect(device_only)]
     ImportOpml,
     /// Export OPML…
-    #[effect(permission = "read")]
+    #[effect(permission = "read", device_only)]
     ExportOpml,
 }
 

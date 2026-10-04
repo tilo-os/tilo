@@ -62,7 +62,7 @@ pub const GIT_CLIENT_ACTION_TYPE: &str = "git_client.action";
 /// stash or remote it acts on, named by path, id or name and resolved again
 /// when invoked.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
-#[effect(operation = "git_client.effect")]
+#[effect(operation = "git_client.effect", device_only)]
 pub enum GitClientEffect {
     /// Show changes
     #[effect(view)]
