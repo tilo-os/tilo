@@ -518,7 +518,7 @@ fn apply_permission_profile_action(
             ));
         }
     }
-    tree.flush_to_disk();
+    tree.queue_save();
     drop(tree);
     Ok(())
 }

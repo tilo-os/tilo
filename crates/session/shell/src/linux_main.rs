@@ -578,6 +578,9 @@ pub fn run() -> std::process::ExitCode {
             compositor::native::run();
         }
     }
+    // Layout changes are saved on a background thread; the process must not
+    // exit ahead of them.
+    shell::shell::persist::wait_for_saves_within(std::time::Duration::from_secs(10));
     std::process::ExitCode::SUCCESS
 }
 

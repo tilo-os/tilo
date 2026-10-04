@@ -354,9 +354,10 @@ jobs:
     if: needs.plan.outputs.skip != 'true'
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
     # build-rpms.yml owns all signing as a standalone main workflow. Resolve
-    # only its exact content fingerprint here; never fall back to a stale tag.
+    # only its exact content fingerprint here, waiting while a build-rpms.yml
+    # main run builds it; never fall back to a stale tag.
     runs-on: runner-quality
-    timeout-minutes: 10
+    timeout-minutes: 180
     container:
       image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
@@ -383,8 +384,8 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          ./os/dev/resolve-rpm-snapshot.sh || {
-            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone build-rpms.yml main run, then retry this release.'
+          ./os/dev/await-rpm-snapshot.sh || {
+            echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
             exit 1
           }
 

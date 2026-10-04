@@ -422,3 +422,123 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         );
     }
 }
+
+/// `pkg install` end to end in a real guest: the broker asks the tool
+/// builder, which resolves and builds `tree` against a real env-runtime in
+/// its build sandbox; the record gains the tool; after `restart` the command
+/// is on the guest's PATH. Needs a materialised env-runtime tree
+/// (`TILO_ENV_RUNTIME_TREE`) and the network for the package download.
+#[test]
+fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
+    let Some(runtime_tree) = std::env::var_os("TILO_ENV_RUNTIME_TREE").map(PathBuf::from) else {
+        eprintln!("pkg_install: TILO_ENV_RUNTIME_TREE names no env-runtime tree; not exercised");
+        return;
+    };
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    if let Some(reason) = guest_unavailable() {
+        eprintln!("pkg_install: not exercising the guest on this machine — {reason}");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The build's overlay upper wants ordinary disk; the socket a short path.
+    let build_state = tempfile::tempdir_in(
+        std::env::var_os("TILO_ENV_TOOLS_SCRATCH").map_or_else(std::env::temp_dir, PathBuf::from),
+    )
+    .expect("build state");
+    let images = dir.path().join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    std::os::unix::fs::symlink(
+        &runtime_tree,
+        images.join(PackageId::from_bytes(RUNTIME).to_hex()),
+    )
+    .unwrap();
+    std::fs::write(
+        images.join("current-runtime"),
+        PackageId::from_bytes(RUNTIME).to_string(),
+    )
+    .unwrap();
+
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    env.set("TILO_USH_IMAGES", &images);
+    env.set("TILO_ENV_TOOLS_STATE", build_state.path());
+    env.set("SHELL", "/usr/bin/bash");
+
+    let store = Store::at(dir.path().join("store"));
+    store.ensure().expect("store");
+    Records::at(store.records_root())
+        .create(
+            DEFAULT_RECORD,
+            &Environment::new(
+                "Fixture",
+                "2026.10",
+                tilo_environment::host_arch(),
+                &PackageId::from_bytes(RUNTIME),
+            ),
+        )
+        .unwrap();
+
+    let socket = dir.path().join("ush.sock");
+    let serve_socket = socket.clone();
+    let serve_store = store.clone();
+    std::thread::spawn(move || {
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (_stream, fd) = open_default_session(&socket);
+    let type_line = |line: &str| {
+        // SAFETY: `fd` is a live pty master.
+        let n = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
+        assert!(n > 0, "could not write to the pty");
+    };
+    let prompt = read_until(fd, "Fixture", tilo_test_env::hang_bound());
+    assert!(
+        prompt.contains("Fixture"),
+        "no shell came up in the guest:\n{prompt}"
+    );
+
+    type_line("command -v tree || printf 'NO_%s\\n' TREE; pkg install tree\r");
+    // The next prompt: the install is done, one way or the other.
+    let installed = read_until(fd, "]$ ", Duration::from_secs(600));
+    assert!(
+        installed.contains("NO_TREE"),
+        "tree must not be there before:\n{installed}"
+    );
+    assert!(
+        installed.contains("Run `restart`"),
+        "`pkg install tree` must build and add the tool:\n{installed}"
+    );
+    assert_tool_recorded(&store, &images);
+
+    type_line("restart\r");
+    let restarted = read_until(fd, "Fixture", tilo_test_env::hang_bound());
+    type_line("tree --version; printf 'DO%s\\n' NE\r");
+    let after = read_until(fd, "DONE", tilo_test_env::hang_bound());
+    assert!(
+        after.contains("tree v"),
+        "after `restart` the tool's command is on the PATH:\n{restarted}\n{after}"
+    );
+    // SAFETY: this test owns the descriptor.
+    unsafe { libc::close(fd) };
+}
+
+/// The record names the built tool, and its image holds the command.
+fn assert_tool_recorded(store: &Store, images: &Path) {
+    let record = Records::at(store.records_root())
+        .resolve(Some(DEFAULT_RECORD), &ush::images::DirImages::at(images))
+        .unwrap()
+        .1;
+    assert_eq!(record.tools.len(), 1, "the record gains the tool");
+    assert_eq!(record.tools[0].packages, ["tree"]);
+    let tool = record.tools[0]
+        .image(tilo_environment::host_arch())
+        .unwrap()
+        .expect("the tool has an image for this architecture");
+    assert!(
+        images.join(tool.to_hex()).join("usr/bin/tree").is_file(),
+        "the tool image holds the command"
+    );
+}
