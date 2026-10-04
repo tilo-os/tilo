@@ -7,27 +7,28 @@
 )]
 
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
-use ui::automerge::{AutoCommit, ObjId};
+use ui::framework::{
+    Dispatcher, EffectCx, EffectStatus, Effected, Progress, ResourceSurface, SurfaceCx,
+};
 use ui::presence::PresenceCtx;
 use ui::taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind, Resource,
-};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Arc, Circle, Point, Rect, RoundedRect, Stroke};
+use ui::vello::kurbo::{Affine, Arc as Sweep, Circle, Point, Rect, RoundedRect, Stroke};
 use ui::vello::peniko::Fill;
 use ui::widget::{Button, ButtonFace, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
-pub(crate) const OPERATION_TYPE: &str = "speed-test.operation";
+use crate::resource::{Measurement, SpeedEffect, SpeedTest};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -47,28 +48,50 @@ struct ResultSet {
     upload: f64,
 }
 
-enum WorkerMessage {
-    Phase(Phase),
-    Done(ResultSet),
-    Failed(String),
+/// A finished run, as the worker measured it.
+struct Run {
+    result: ResultSet,
+    server: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SpeedOperation {
-    Start,
-    Stop,
-    ChangeRegion,
+/// Where a run stands, shared between the surface and its worker.
+#[derive(Default)]
+struct RunSignal {
+    phase: AtomicU8,
+    stop: AtomicBool,
 }
 
-pub(crate) fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<ActionSpec> {
-    let mut spec =
-        ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, op).ok()?;
-    spec.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        ..ActionContract::default()
-    };
-    Some(spec)
+impl RunSignal {
+    const PING: u8 = 0;
+    const DOWNLOAD: u8 = 1;
+    const UPLOAD: u8 = 2;
+    /// The worker answered; the job's completion takes it from here.
+    const ANSWERED: u8 = 3;
+    /// The worker went away without answering: its caller cancelled it.
+    const ABANDONED: u8 = 4;
+
+    fn set(&self, phase: u8) {
+        self.phase.store(phase, Ordering::Release);
+    }
+
+    fn phase(&self) -> u8 {
+        self.phase.load(Ordering::Acquire)
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+}
+
+/// Marks a run abandoned when its worker is dropped before answering.
+struct Answers(Arc<RunSignal>);
+
+impl Drop for Answers {
+    fn drop(&mut self) {
+        if self.0.phase() != RunSignal::ANSWERED {
+            self.0.set(RunSignal::ABANDONED);
+        }
+    }
 }
 
 pub struct SpeedTestApp {
@@ -80,19 +103,16 @@ pub struct SpeedTestApp {
     ring_progress: f64,
     last_animation: Instant,
     started: Option<Instant>,
-    worker: Option<Receiver<WorkerMessage>>,
-    task: Option<ui::rt::JoinHandle<()>>,
-    region: usize,
+    run: Option<Arc<RunSignal>>,
     error: Option<String>,
-    history: Vec<ResultSet>,
+    /// Every measurement taken, newest first.
+    results: Vec<Measurement>,
+    /// A screenshot holds still on the staged values.
     shot: bool,
-    pub(crate) actions: crate::resource::ActionSink,
-    hosted: bool,
+    dispatcher: Option<Dispatcher<SpeedTest>>,
 }
 
 impl SpeedTestApp {
-    const REGIONS: [&'static str; 3] = ["Automatic · London", "Frankfurt, Germany", "New York, US"];
-
     pub fn new() -> Self {
         Self {
             rect: Rect::ZERO,
@@ -103,103 +123,109 @@ impl SpeedTestApp {
             ring_progress: 0.0,
             last_animation: ui::time::now(),
             started: None,
-            worker: None,
-            task: None,
-            region: 0,
+            run: None,
             error: None,
-            history: Vec::new(),
+            results: Vec::new(),
             shot: false,
-            actions: crate::resource::ActionSink::default(),
-            hosted: false,
+            dispatcher: None,
         }
     }
 
-    pub fn demo(scenario: &str) -> Self {
-        let mut app = Self::new();
-        app.shot = true;
-        match scenario {
-            "idle" => {}
-            "running" => {
-                app.phase = Phase::Download;
-                app.display_value = 386.4;
-                app.ring_progress = 0.58;
-            }
-            _ => {
-                let result = ResultSet {
-                    ping: 11.8,
-                    jitter: 1.6,
-                    download: 642.7,
-                    upload: 118.4,
-                };
-                app.phase = Phase::Complete;
-                app.display_value = result.download;
-                app.ring_progress = 0.79;
-                app.result = Some(result);
-                app.history = vec![
-                    ResultSet {
-                        ping: 12.4,
-                        jitter: 1.8,
-                        download: 618.2,
-                        upload: 112.9,
-                    },
-                    ResultSet {
-                        ping: 14.1,
-                        jitter: 2.2,
-                        download: 584.6,
-                        upload: 109.3,
-                    },
-                ];
-            }
-        }
-        app
-    }
-
-    fn start(&mut self) {
-        if matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload) {
-            return;
-        }
-        if let Some(previous) = self.result.take() {
-            self.history.insert(0, previous);
-            self.history.truncate(5);
-        }
+    /// Begin a run: the signal its worker reports through.
+    fn begin(&mut self) -> Arc<RunSignal> {
+        self.stop();
+        let signal = Arc::new(RunSignal::default());
+        self.run = Some(Arc::clone(&signal));
         self.phase = Phase::Ping;
-        self.error = None;
         self.display_value = 0.0;
         self.started = Some(ui::time::now());
         self.last_animation = ui::time::now();
-        let (tx, rx) = mpsc::channel();
-        self.worker = Some(rx);
-        self.cancel_task();
-        self.task = Some(ui::rt::app().spawn(run_measurement(tx)));
+        signal
     }
 
-    fn cancel_task(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-    }
-
+    /// Stop the run in flight; its worker notices and its result is dropped.
     fn stop(&mut self) {
-        self.cancel_task();
-        self.worker = None;
+        if let Some(run) = self.run.take() {
+            run.stop.store(true, Ordering::Release);
+        }
         self.phase = Phase::Idle;
         self.result = None;
         self.error = None;
         self.started = None;
     }
 
-    fn toggle_test(&mut self) {
-        if self.is_running() {
-            self.stop();
-        } else {
-            self.start();
+    /// The run `signal` answered: record what it measured.
+    fn finish(
+        &mut self,
+        signal: &Arc<RunSignal>,
+        answer: Result<Run, String>,
+        cx: &EffectCx<SpeedTest, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if !self
+            .run
+            .as_ref()
+            .is_some_and(|run| Arc::ptr_eq(run, signal))
+        {
+            return Err("the test was stopped".into());
+        }
+        self.run = None;
+        self.started = None;
+        match answer {
+            Ok(Run { result, server }) => {
+                self.result = Some(result);
+                self.display_value = result.download;
+                self.phase = Phase::Complete;
+                cx.invoke(SpeedTest::RECORD.with((
+                    result.ping,
+                    result.jitter,
+                    result.download,
+                    result.upload,
+                    server.clone(),
+                )));
+                Ok(Effected::value(ui::serde_json::json!({
+                    "ping_ms": result.ping,
+                    "jitter_ms": result.jitter,
+                    "download_mbps": result.download,
+                    "upload_mbps": result.upload,
+                    "server": server,
+                })))
+            }
+            Err(message) => {
+                self.error = Some(message.clone());
+                self.phase = Phase::Error;
+                Err(message)
+            }
         }
     }
 
-    fn cycle_region(&mut self) {
-        if !matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload) {
-            self.region = (self.region + 1) % Self::REGIONS.len();
+    /// Start or stop, as the primary button does: through the same door as
+    /// the palette and agents.
+    fn toggle_test(&self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        if self.is_running() {
+            dispatcher.effect(&SpeedEffect::Stop);
+        } else {
+            dispatcher.effect(&SpeedEffect::Start);
         }
+    }
+
+    /// The measurements below the dial: all of them, except the one the
+    /// dial shows.
+    fn history(&self) -> &[Measurement] {
+        if self.result.is_some() {
+            self.results.get(1..).unwrap_or_default()
+        } else {
+            &self.results
+        }
+    }
+
+    /// The server the last test reached.
+    fn server_label(&self) -> &str {
+        self.results
+            .first()
+            .map_or("Nearest Cloudflare server", |latest| latest.server.as_str())
     }
 
     fn primary_rect(&self) -> Rect {
@@ -221,7 +247,7 @@ impl SpeedTestApp {
         Rect::new(cx - 92.0, y - 25.0, cx + 92.0, y + 25.0)
     }
 
-    fn region_rect(&self) -> Rect {
+    fn server_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + 28.0,
             self.rect.y0 + 24.0,
@@ -262,31 +288,6 @@ impl SpeedTestApp {
         }
     }
 
-    pub(crate) fn mark_framework_hosted(&mut self) {
-        self.hosted = true;
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-        self.actions.mark_hosted_for_test();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sink_is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn has_result(&self) -> bool {
-        self.result.is_some()
-    }
-
     fn is_running(&self) -> bool {
         matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload)
     }
@@ -309,66 +310,26 @@ impl Default for SpeedTestApp {
     }
 }
 
-impl SpeedTestApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return Ok(None);
-        }
-        match serde_json::from_slice::<SpeedOperation>(payload)
-            .map_err(|error| error.to_string())?
-        {
-            SpeedOperation::Start => self.start(),
-            SpeedOperation::Stop => self.stop(),
-            SpeedOperation::ChangeRegion => self.cycle_region(),
-        }
-        Ok(Some(ActionOutput::default()))
-    }
-}
-
-impl ui::undo::CommittedActions for SpeedTestApp {
-    fn take_committed_action(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
-        // Hosted edits belong to the framework dispatcher. Standalone stays
-        // on the local host, which has no document action yet.
-        if self.actions.is_hosted() {
-            return None;
-        }
-        self.actions.take_committed()
-    }
-}
-
 impl Widget for SpeedTestApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
-    );
-
     fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
-        if let Some(rx) = &self.worker {
-            while let Ok(message) = rx.try_recv() {
-                changed = true;
-                match message {
-                    WorkerMessage::Phase(phase) => self.phase = phase,
-                    WorkerMessage::Done(result) => {
-                        self.result = Some(result);
-                        self.display_value = result.download;
-                        self.phase = Phase::Complete;
-                        self.worker = None;
-                        break;
-                    }
-                    WorkerMessage::Failed(message) => {
-                        self.error = Some(message);
-                        self.phase = Phase::Error;
-                        self.worker = None;
-                        break;
-                    }
+        if let Some(run) = &self.run {
+            let phase = match run.phase() {
+                RunSignal::PING => Some(Phase::Ping),
+                RunSignal::DOWNLOAD => Some(Phase::Download),
+                RunSignal::UPLOAD => Some(Phase::Upload),
+                RunSignal::ABANDONED => None,
+                _ => Some(self.phase),
+            };
+            match phase {
+                Some(phase) if phase != self.phase => {
+                    self.phase = phase;
+                    changed = true;
+                }
+                Some(_) => {}
+                None => {
+                    self.stop();
+                    changed = true;
                 }
             }
         }
@@ -450,25 +411,22 @@ impl Widget for SpeedTestApp {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
-        let region = self.region_rect();
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "`region` only ever advances modulo `REGIONS.len()`"
-        )]
-        let region_label = Self::REGIONS[self.region];
-        Button::paint(
+        let server = self.server_rect();
+        tr.draw_text_weighted(
             scene,
-            transform,
-            tr,
-            theme,
-            &ButtonFace::new(region, region_label).hovered(region.contains(self.pointer)),
+            self.server_label(),
+            theme.tokens.typography.scale.sm,
+            c.text_primary,
+            transform * Affine::translate((server.x0, server.y0 + 8.0)),
+            Some(server.width() as f32),
+            TextWeight::Semibold,
         );
         tr.draw_text(
             scene,
             "Server",
             theme.tokens.typography.scale.xs,
             c.text_dim,
-            transform * Affine::translate((region.x0, region.y0 - 15.0)),
+            transform * Affine::translate((server.x0, server.y0 - 15.0)),
             None,
         );
 
@@ -541,7 +499,7 @@ impl Widget for SpeedTestApp {
                 ),
             );
         }
-        let ring = Arc::new(center, (radius, radius), -2.45, 4.9, 0.0);
+        let ring = Sweep::new(center, (radius, radius), -2.45, 4.9, 0.0);
         scene.stroke(
             &Stroke::new(15.0),
             transform,
@@ -550,7 +508,7 @@ impl Widget for SpeedTestApp {
             &ring,
         );
         let progress = self.ring_progress.max(0.015);
-        let active = Arc::new(center, (radius, radius), -2.45, 4.9 * progress, 0.0);
+        let active = Sweep::new(center, (radius, radius), -2.45, 4.9 * progress, 0.0);
         scene.stroke(
             &Stroke::new(15.0),
             transform,
@@ -748,14 +706,10 @@ impl Widget for SpeedTestApp {
                 button: MouseButton::Left,
                 ..
             }
-        ) {
-            if self.primary_rect().contains(self.pointer) {
-                self.toggle_test();
-                *ctx.handled = true;
-            } else if self.region_rect().contains(self.pointer) {
-                self.cycle_region();
-                *ctx.handled = true;
-            }
+        ) && self.primary_rect().contains(self.pointer)
+        {
+            self.toggle_test();
+            *ctx.handled = true;
         }
     }
 
@@ -764,14 +718,11 @@ impl Widget for SpeedTestApp {
         root.children = vec![
             AccessNode::new(Role::Button)
                 .with_action_target("speed-test.start")
-                .with_name("Run speed test")
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-            AccessNode::new(Role::Button)
-                .with_action_target("speed-test.region")
-                .with_name("Change test region")
+                .with_name(if self.is_running() {
+                    "Stop test"
+                } else {
+                    "Run speed test"
+                })
                 .with_state(AccessState {
                     focusable: true,
                     ..Default::default()
@@ -795,33 +746,8 @@ impl Widget for SpeedTestApp {
                 self.toggle_test();
                 true
             }
-            Some(key) if *key == ui::a11y::hash_key(&"speed-test.region") => {
-                self.cycle_region();
-                true
-            }
             _ => false,
         }
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
@@ -848,57 +774,83 @@ impl Widget for SpeedTestApp {
     }
 }
 
-impl ui::resources::PublishesResources for SpeedTestApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        if self.hosted {
-            return self.live_run_extra();
-        }
-        let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
-            "speed-test:root",
-            "Internet speed test",
-            &crate::resource::SpeedTestState,
-        );
-        root.children.extend(self.live_run_extra());
-        vec![root]
+impl ResourceSurface<SpeedTest, SpeedEffect> for SpeedTestApp {
+    fn present(&mut self, state: &Rc<SpeedTest>) {
+        self.results = state.newest_first().cloned().collect();
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if self.hosted && id == "speed-test:root" {
-            return None;
-        }
-        let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
-            "speed-test:root",
-            "Internet speed test",
-            &crate::resource::SpeedTestState,
-        );
-        root.children.extend(self.live_run_extra());
-        find_resource(&[root], id)
+    fn attach(&mut self, cx: SurfaceCx<SpeedTest>) {
+        self.dispatcher = Some(cx.dispatcher());
     }
-}
 
-fn find_resource(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.shot = true;
+        match scenario {
+            Some("idle") => {}
+            Some("running") => {
+                self.phase = Phase::Download;
+                self.display_value = 386.4;
+                self.ring_progress = 0.58;
+            }
+            _ => {
+                let Some(latest) = self.results.first() else {
+                    return;
+                };
+                let result = ResultSet {
+                    ping: latest.ping,
+                    jitter: latest.jitter,
+                    download: latest.download,
+                    upload: latest.upload,
+                };
+                self.phase = Phase::Complete;
+                self.display_value = result.download;
+                self.ring_progress = 0.79;
+                self.result = Some(result);
+            }
         }
     }
-    None
-}
 
-impl SpeedTestApp {
-    /// Stop while a measurement is running. Not a second `speed-test` root.
-    fn live_run_extra(&self) -> Vec<Resource> {
-        if !self.is_running() {
-            return Vec::new();
+    fn effect(
+        &mut self,
+        effect: SpeedEffect,
+        cx: &mut EffectCx<SpeedTest, Self>,
+    ) -> ui::framework::EffectAnswer {
+        match effect {
+            SpeedEffect::Start => {
+                if self.is_running() {
+                    return Err("a test is already running".into());
+                }
+                let signal = self.begin();
+                let worker = Arc::clone(&signal);
+                Ok(cx.spawn(
+                    move |progress| run_measurement(worker, progress),
+                    move |app: &mut Self, answer, cx| app.finish(&signal, answer, cx),
+                ))
+            }
+            SpeedEffect::Stop => {
+                if !self.is_running() {
+                    return Err("no test is running".into());
+                }
+                self.stop();
+                Ok(Effected::done())
+            }
         }
-        let mut run = Resource::new("speed-test.run", "speed-test.run", "Running test");
-        if let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop) {
-            run.actions.push(spec);
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.is_running() {
+            vec![EffectStatus::unavailable(
+                SpeedEffect::START,
+                "running",
+                "A test is running",
+            )]
+        } else {
+            vec![EffectStatus::unavailable(
+                SpeedEffect::STOP,
+                "idle",
+                "No test is running",
+            )]
         }
-        vec![run]
     }
 }
 
@@ -1006,7 +958,8 @@ impl SpeedTestApp {
             None,
             TextWeight::Semibold,
         );
-        if self.history.is_empty() {
+        let history = self.history();
+        if history.is_empty() {
             tr.draw_text(
                 scene,
                 "Your latest results will appear here",
@@ -1017,11 +970,18 @@ impl SpeedTestApp {
             );
         } else {
             let visible_rows = if area.height() < 400.0 { 1 } else { 3 };
-            for (index, item) in self.history.iter().take(visible_rows).enumerate() {
+            let now = ui::time::wall();
+            for (index, item) in history.iter().take(visible_rows).enumerate() {
                 let y = area.y0 + 262.0 + index as f64 * 52.0;
+                let at = std::time::UNIX_EPOCH
+                    + Duration::from_millis(u64::try_from(item.at_ms).unwrap_or_default());
                 tr.draw_text(
                     scene,
-                    &format!("Today, {}:{:02}", 10 + index, 42 + index * 3),
+                    &format!(
+                        "{}  ·  {}",
+                        ui::widget::history::format_relative_time(at, now),
+                        item.server
+                    ),
                     theme.tokens.typography.scale.sm,
                     c.text_primary,
                     transform * Affine::translate((area.x0 + 20.0, y)),
@@ -1179,30 +1139,50 @@ impl SpeedTestApp {
     }
 }
 
-async fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
-    let message = match measure(&tx).await {
-        Ok(result) => WorkerMessage::Done(result),
-        Err(error) => WorkerMessage::Failed(error),
-    };
-    let _ = tx.send(message);
+/// Measure, reporting each phase to the surface and the effect's caller.
+async fn run_measurement(signal: Arc<RunSignal>, progress: Progress) -> Result<Run, String> {
+    let answers = Answers(signal);
+    let answer = measure(&answers.0, &progress).await;
+    answers.0.set(RunSignal::ANSWERED);
+    answer
 }
 
-async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> {
+/// Why a run ends early: stopped from the app, or cancelled by its caller.
+fn stopped(signal: &RunSignal, progress: &Progress) -> Result<(), String> {
+    if signal.stopped() || progress.is_cancelled() {
+        return Err("the test was stopped".into());
+    }
+    Ok(())
+}
+
+async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String> {
+    progress.report("ping", Some(0), Some(3));
     let client = tilo_net::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
         .build()
         .map_err(|error| error.to_string())?;
     let ping_start = ui::time::now();
-    client
+    let reached = client
         .get("https://speed.cloudflare.com/__down?bytes=1")
         .send()
         .await
         .and_then(tilo_net::Response::error_for_status)
         .map_err(|error| format!("Could not reach the test server: {error}"))?;
     let ping = ping_start.elapsed().as_secs_f64() * 1000.0;
+    // The data centre that answered, by its airport code.
+    let server = reached
+        .headers()
+        .get("cf-meta-colo")
+        .and_then(|colo| colo.to_str().ok())
+        .map_or_else(
+            || "Cloudflare".to_owned(),
+            |colo| format!("Cloudflare · {colo}"),
+        );
 
-    let _ = tx.send(WorkerMessage::Phase(Phase::Download));
+    stopped(signal, progress)?;
+    signal.set(RunSignal::DOWNLOAD);
+    progress.report("download", Some(1), Some(3));
     let download_start = ui::time::now();
     let mut response = client
         .get("https://speed.cloudflare.com/__down?bytes=10000000")
@@ -1215,11 +1195,13 @@ async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> 
         .await
         .map_err(|error| format!("Download test failed: {error}"))?
     {
+        stopped(signal, progress)?;
         bytes += chunk.len();
     }
     let download = bytes as f64 * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
 
-    let _ = tx.send(WorkerMessage::Phase(Phase::Upload));
+    signal.set(RunSignal::UPLOAD);
+    progress.report("upload", Some(2), Some(3));
     let upload_body = vec![0_u8; 2_000_000];
     let upload_start = ui::time::now();
     client
@@ -1228,34 +1210,81 @@ async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> 
         .send()
         .await
         .map_err(|error| format!("Upload test failed: {error}"))?;
+    stopped(signal, progress)?;
     let upload = 16.0 / upload_start.elapsed().as_secs_f64();
-    Ok(ResultSet {
-        ping,
-        jitter: ping * 0.08,
-        download,
-        upload,
+    Ok(Run {
+        result: ResultSet {
+            ping,
+            jitter: ping * 0.08,
+            download,
+            upload,
+        },
+        server,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::SpeedTestShell;
+    use ui::framework::ResourceApp;
+    use ui::prelude::{Replica, TestApp};
+    use ui::tilo_actions::{Availability, DoorError};
 
-    // Speed Test keeps no document: it publishes only effect operations, so
-    // the contract is the surface sweep (protocol validation) and Ctrl+K.
-    ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::resources::resources(&SpeedTestApp::new(), doc),
-        palette: ["Run speed test", "Change test region"],
+    fn availability(app: &mut TestApp<SpeedTestShell>, id: &str) -> Availability {
+        app.harness()
+            .resources()
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|action| action.id == id)
+            .map_or_else(
+                || panic!("{id} is published"),
+                |action| action.contract.availability.clone(),
+            )
     }
 
     #[test]
-    fn hosted_lookup_keeps_the_run_and_not_the_root() {
+    fn start_and_stop_are_published_as_the_run_stands() {
+        let mut app = TestApp::<SpeedTestShell>::new().expect("the app opens");
+        assert_eq!(availability(&mut app, "start"), Availability::Available);
+        assert!(matches!(
+            availability(&mut app, "stop"),
+            Availability::Unavailable { code, .. } if code == "idle"
+        ));
+        let refused = app.effect(&SpeedEffect::Stop);
+        assert!(
+            matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "idle"),
+            "{refused:?}"
+        );
+        app.invoke(SpeedTest::RECORD.with((9.0, 1.0, 500.0, 90.0, "Cloudflare · FRA".into())))
+            .expect("a run is recorded");
+        let app = app.reopen().expect("the app reopens");
+        assert_eq!(app.state().results.len(), 1, "measurements are kept");
+    }
+
+    #[test]
+    fn a_finished_run_shows_on_the_dial_and_the_earlier_ones_below_it() {
+        let mut replica = Replica::<SpeedTest>::new();
+        for invoke in SpeedTestShell::scenario(Some("complete")) {
+            replica.apply(invoke).expect("record");
+        }
         let mut app = SpeedTestApp::new();
-        app.mark_hosted_for_test();
-        let doc = AutoCommit::new();
-        assert!(ui::resources::resource(&app, &doc, "speed-test:root").is_none());
+        ResourceSurface::<SpeedTest, SpeedEffect>::present(
+            &mut app,
+            &Rc::new(replica.state().expect("state")),
+        );
+        assert_eq!(
+            app.history().len(),
+            3,
+            "an idle dial leaves every run below"
+        );
+        assert_eq!(app.server_label(), "Cloudflare · LHR");
+
+        ResourceSurface::<SpeedTest, SpeedEffect>::stage(&mut app, Some("complete"));
+        let shown = app.result.expect("the newest run is on the dial");
+        assert!((shown.download - 642.7).abs() < f64::EPSILON);
+        let below: Vec<f64> = app.history().iter().map(|run| run.download).collect();
+        assert_eq!(below, [618.2, 584.6]);
     }
 
     /// Neither the wide metadata row nor the stacked dial touches the primary action.
