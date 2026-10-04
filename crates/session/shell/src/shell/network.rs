@@ -2717,19 +2717,7 @@ impl ShellNetwork {
         if !self.personal_fabric_allowed() {
             return;
         }
-        let targets: Vec<iroh::EndpointId> = self
-            .authenticated_personal_routes
-            .lock()
-            .map(|routes| {
-                routes
-                    .values()
-                    .filter(|route| {
-                        route.workspace_topic == ws && route.user_public_key == user_public_key
-                    })
-                    .map(|route| route.endpoint_id)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let targets = self.personal_route_targets(ws, &user_public_key);
         if targets.is_empty() || !self.join_topic(ws) {
             return;
         }
@@ -2741,6 +2729,23 @@ impl ShellNetwork {
                 payload: payload.clone(),
             });
         }
+    }
+
+    /// The person's other devices with an authenticated route on their
+    /// continuity topic `ws`.
+    fn personal_route_targets(&self, ws: u64, user_public_key: &[u8; 32]) -> Vec<iroh::EndpointId> {
+        self.authenticated_personal_routes
+            .lock()
+            .map(|routes| {
+                routes
+                    .values()
+                    .filter(|route| {
+                        route.workspace_topic == ws && route.user_public_key == *user_public_key
+                    })
+                    .map(|route| route.endpoint_id)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// A person-room document an always-on host kept on the person's
@@ -5766,6 +5771,10 @@ impl ShellNetwork {
                 envelope,
             } => {
                 self.dispatch_person_document(peer, &identity, app_id, &record_id, *envelope);
+            }
+            payload @ (PersonalFabricPayload::RecordContentWant { .. }
+            | PersonalFabricPayload::RecordContentPiece { .. }) => {
+                self.dispatch_person_content(ws, peer, payload);
             }
         }
     }
@@ -12123,6 +12132,110 @@ mod tests {
         assert_eq!(document.record_id, record, "the app sees its own record id");
         assert_eq!(document.role, collab_types::Role::Owner);
         assert!(!document.replayed);
+    }
+
+    /// Content a person record references follows the record: it is asked
+    /// of and answered by the person's own devices over their fabric, never
+    /// on a room topic, whichever room the window showing it is in.
+    #[test]
+    fn a_person_records_content_travels_only_between_the_persons_devices() {
+        use tilo_action_broker::record_content::{PIECE_BYTES, content_hash};
+
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let laptop = iroh::SecretKey::from_bytes(&[0xD2; 32]);
+        let phone = iroh::SecretKey::from_bytes(&[0xD3; 32]);
+        let (on_laptop, mut laptop_sent) = personal_continuity_network_for_test(user);
+        let (on_phone, mut phone_sent) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&on_laptop, &root, &phone);
+        authenticated_personal_peer(&on_phone, &root, &laptop);
+        while laptop_sent.try_recv().is_ok() {}
+        while phone_sent.try_recv().is_ok() {}
+        let (on_laptop, on_phone) = (Arc::new(on_laptop), Arc::new(on_phone));
+        let laptop_content = record_content::tests::content_over(&on_laptop);
+        let phone_content = record_content::tests::content_over(&on_phone);
+        let route = tilo_action_broker::route::CrdtRoute::record(
+            "so.tilo.tube",
+            collab_types::person_room(&user).to_string(),
+            "history",
+        );
+        let poster: Vec<u8> = (0..PIECE_BYTES + 9)
+            .map(|index| u8::try_from(index % 239).unwrap())
+            .collect();
+        let hash = content_hash(&poster);
+        laptop_content.offer(&route, &hash, &poster).unwrap();
+        let mut arrivals = phone_content.subscribe(&route);
+
+        // Hand every fabric frame `sent` holds to `to`, from `from`.
+        let carry =
+            |sent: &mut mpsc::Receiver<NetCmd>,
+             to: &Arc<ShellNetwork>,
+             from: &iroh::SecretKey,
+             content: &tilo_action_broker::record_content::RouteContent| {
+                let mut frames = 0_usize;
+                while let Ok(command) = sent.try_recv() {
+                    match command {
+                        NetCmd::PublishPersonalFabricTarget {
+                            ws,
+                            target,
+                            payload,
+                            ..
+                        } => {
+                            assert_eq!(ws, personal_continuity_topic_id(&user));
+                            assert_ne!(target, from.public(), "never back to the sender");
+                            to.dispatch_personal_fabric(
+                                ws,
+                                from.public(),
+                                crate::network::actor::MembershipEpoch::for_test(1),
+                                user,
+                                payload,
+                            );
+                            frames = frames.saturating_add(1);
+                        }
+                        NetCmd::Publish { .. }
+                        | NetCmd::PublishRecordContent(_)
+                        | NetCmd::PublishToHosts { .. } => {
+                            panic!("a person record's content never leaves the person's fabric")
+                        }
+                        _ => {}
+                    }
+                }
+                let inbound = to.inbound_record_content_handle();
+                assert!(crate::shell::record_content::drain(&inbound, content));
+                frames
+            };
+        phone_content.want(&route, &hash);
+        assert_eq!(
+            carry(&mut phone_sent, &on_laptop, &phone, &laptop_content),
+            1
+        );
+        assert_eq!(
+            carry(&mut laptop_sent, &on_phone, &laptop, &phone_content),
+            2
+        );
+        let arrival = arrivals.try_recv().expect("the poster reached the phone");
+        assert_eq!(arrival.bytes, poster);
+
+        // A collaborator asking a room topic for it is never answered.
+        on_laptop.dispatch_neighbour_msg(
+            room_topic_id(collab_types::person_room(&user).into()),
+            phone.public(),
+            None,
+            false,
+            NeighbourMsg::RecordContentWant {
+                requester: crate::network::behaviour::peer_liveness_handle(&phone.public()),
+                app_id: route.app_id,
+                cluster_id: route.cluster_id,
+                hash,
+            },
+        );
+        assert!(
+            on_laptop
+                .inbound_record_content_handle()
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// A collaborator never sees the person room: nothing about it is
