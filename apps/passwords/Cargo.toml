@@ -21,17 +21,18 @@ accounts = { path = "../../crates/system/accounts" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 zeroize.workspace = true
-automerge.workspace = true
 taffy.workspace = true
 vello.workspace = true
 winit.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# Tests open the vault in a private profile, never the person's.
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
