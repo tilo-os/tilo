@@ -328,6 +328,12 @@ impl<R: Resource> SurfaceCx<R> {
         super::launch::flag(&self.run.launched.options, name)
     }
 
+    /// Whether the window is private, as
+    /// [`ViewCx::is_private`](super::ViewCx::is_private).
+    pub fn is_private(&self) -> bool {
+        self.run.private
+    }
+
     /// The id of the app the surface is part of, which its presence keys
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {

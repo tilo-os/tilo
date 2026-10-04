@@ -64,6 +64,8 @@ pub(crate) struct Run {
     pub(crate) fixtures: Rc<Fixtures>,
     /// What the launch that opened the window named.
     pub(crate) launched: Rc<Launched>,
+    /// A private window: a profile thrown away with the process.
+    pub(crate) private: bool,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -86,7 +88,14 @@ impl Run {
                 ..Fixtures::default()
             }),
             launched: Rc::default(),
+            private: false,
         }
+    }
+
+    /// This run in a private window, when `private`.
+    pub(crate) fn in_private(mut self, private: bool) -> Self {
+        self.private = private;
+        self
     }
 
     pub(crate) fn past() -> Self {
@@ -94,6 +103,7 @@ impl Run {
             mode: RunMode::Past,
             fixtures: Rc::default(),
             launched: Rc::default(),
+            private: false,
         }
     }
 
@@ -242,6 +252,7 @@ impl<R: Resource> Fixture<R> {
                 _directory: self.directory,
             }),
             launched: Rc::default(),
+            private: false,
         }
     }
 

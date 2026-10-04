@@ -103,6 +103,7 @@ pub struct HostContext {
     launch_arguments: Vec<String>,
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
+    private: bool,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -326,6 +327,7 @@ impl HostContext {
             launch_arguments: Vec::new(),
             handoff: None,
             launch_options: Vec::new(),
+            private: false,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -394,6 +396,16 @@ impl HostContext {
     /// The launch options the host handed over, once.
     pub fn take_launch_options(&mut self) -> Vec<LaunchOption> {
         std::mem::take(&mut self.launch_options)
+    }
+    /// Prepare the instance as a private window: its profile is thrown away
+    /// with the process, and nothing it shows reaches the person's other
+    /// windows, devices or collaborators.
+    pub fn provide_private(&mut self) {
+        self.private = true;
+    }
+    /// Whether the instance is a private window.
+    pub fn is_private(&self) -> bool {
+        self.private
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {

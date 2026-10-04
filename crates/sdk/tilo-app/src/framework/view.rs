@@ -280,6 +280,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         super::launch::flag(&self.run.launched.options, name)
     }
 
+    /// Whether the window is private ([`ResourceApp::PRIVATE_WINDOWS`](super::ResourceApp::PRIVATE_WINDOWS)):
+    /// its record, settings and files are thrown away with the process. A
+    /// view keeps what it would otherwise remember on the device (visits,
+    /// a session to restore) to itself.
+    pub fn is_private(&self) -> bool {
+        self.run.private
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
