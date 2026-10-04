@@ -472,25 +472,39 @@ pub fn rail_caption_lines(
     let (first, rest) = if taken > 0 {
         (first, words.get(taken..).unwrap_or_default().join(" "))
     } else {
-        // One word longer than the line: break inside it.
+        // One word longer than the line: break inside it, at the last
+        // syllable boundary of the reader's language whose head still fits
+        // ("Connec-tions", not "Connecti-ons"). A word with no such boundary
+        // that fits falls back to the last character that does.
         let word = words.first().copied().unwrap_or(label);
-        let chars: Vec<char> = word.chars().collect();
-        let mut cut = 0;
-        for end in 1..chars.len() {
-            let head: String = chars.iter().take(end).collect();
-            if fits(text_renderer, &format!("{head}-")) {
-                cut = end;
-            } else {
-                break;
+        let locale = crate::i18n::I18nManager::current_locale();
+        let syllable_cut = crate::text_break::discretionary_hyphen_breaks(word, &locale)
+            .into_iter()
+            .rev()
+            .find(|&byte| {
+                word.get(..byte)
+                    .is_some_and(|head| fits(text_renderer, &format!("{head}-")))
+            });
+        let cut = syllable_cut.unwrap_or_else(|| {
+            let mut cut = 0;
+            for (byte, _) in word.char_indices().skip(1) {
+                if word
+                    .get(..byte)
+                    .is_some_and(|head| fits(text_renderer, &format!("{head}-")))
+                {
+                    cut = byte;
+                } else {
+                    break;
+                }
             }
-        }
+            cut
+        });
         if cut == 0 {
             let line = text_renderer.elide_to_width_style(label, to_f32(max_w), &style);
             return vec![line];
         }
-        let head: String = chars.iter().take(cut).collect();
-        let tail: String = chars.iter().skip(cut).collect();
-        let rest = std::iter::once(tail.as_str())
+        let (head, tail) = word.split_at(cut);
+        let rest = std::iter::once(tail)
             .chain(words.iter().skip(1).copied())
             .collect::<Vec<_>>()
             .join(" ");
