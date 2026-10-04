@@ -71,7 +71,7 @@ pub mod oauth;
 pub mod pane;
 pub mod resource;
 pub mod sample;
-pub mod search_provider;
+pub mod search;
 pub mod shortcuts_overlay;
 pub mod state;
 pub mod transport;
