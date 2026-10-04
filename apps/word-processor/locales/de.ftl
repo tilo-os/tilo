@@ -14,6 +14,16 @@ toolbar-row-add = Zeile einfügen
 toolbar-row-del = Zeile löschen
 toolbar-col-add = Spalte einfügen
 toolbar-col-del = Spalte löschen
+toolbar-bold = Fett
+toolbar-italic = Kursiv
+toolbar-underline = Unterstrichen
+toolbar-strikethrough = Durchgestrichen
+toolbar-superscript = Hochgestellt
+toolbar-subscript = Tiefgestellt
+toolbar-size-down = Kleiner
+toolbar-size-up = Größer
+toolbar-image = Bild
+toolbar-table-delete = Tabelle löschen
 
 ## Toolbar accessibility names / tooltips
 a11y-group-formatting = Formatierung
@@ -121,7 +131,7 @@ style-quote = Zitat
 panel-this-paragraph = Dieser Absatz
 panel-line-spacing = Zeilenabstand
 panel-style = Absatzstil
-panel-style-hint = Ändert jeden Absatz vom Typ "{ $name }"
+panel-style-hint = Änderungen unten gelten für jeden Absatz dieser Formatvorlage.
 panel-caret-hint = Cursor in einen Absatz setzen
 panel-paragraph-styles = Absatzstile
 panel-style-properties = Stileigenschaften
@@ -173,7 +183,7 @@ outline-untitled = Unbenannte Überschrift
 ## Page layout (ruler) bottom bar
 layout-margins = Ränder
 layout-spacing = Abstände
-layout-margins-readout = Links { $l }   Oben { $t }   Rechts { $r }   Unten { $b }
+layout-margins-readout = Links { $l } px   Oben { $t } px   Rechts { $r } px   Unten { $b } px
 layout-spacing-readout = Absätze „{ $name }“: { $px } px danach
 
 ## Canvas
