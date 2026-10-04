@@ -5,6 +5,7 @@
 pub mod app;
 pub mod appsets;
 pub mod build;
+pub mod builderlayer;
 pub mod ci;
 pub mod cicache;
 pub mod cli;
