@@ -277,6 +277,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.storage.follow(self.alive.clone())
     }
 
+    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
+    /// theirs alone, kept in their own room and synced to their other
+    /// devices, never to a collaborator, whatever room this record is in.
+    /// `None` where the host keeps no records of the person's (a view of a
+    /// past version) or the record cannot be opened.
+    pub fn person<P: Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
+    }
+
     /// The app's files, secrets and settings documents, as its host gave
     /// them. A secret of one document item is
     /// `cx.storage().secrets().item(purpose, id)`.

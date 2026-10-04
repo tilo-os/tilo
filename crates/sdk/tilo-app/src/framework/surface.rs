@@ -316,6 +316,12 @@ impl<R: Resource> SurfaceCx<R> {
         self.storage.follow(self.alive.clone())
     }
 
+    /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)),
+    /// as [`ViewCx::person`](super::ViewCx::person) opens it.
+    pub fn person<P: tilo_resource::Resource>(&self) -> Option<super::PersonRecord<P>> {
+        self.storage.person::<P>()
+    }
+
     /// The app's files, secrets and settings documents, as its host gave
     /// them.
     pub fn storage(&self) -> ui_core::storage::AppStorage {
