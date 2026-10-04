@@ -502,7 +502,7 @@ pub struct FolderRef {
 }
 
 /// The presentation context the published library is built from: its folders and
-/// subscriptions, plus the order a palette-created folder should take. Derived
+/// subscriptions. Derived
 /// entirely from state the document already holds; nothing is fabricated.
 #[derive(Debug, Clone, Default)]
 pub struct FeedsResourceCtx {
@@ -512,10 +512,6 @@ pub struct FeedsResourceCtx {
     /// Unread articles across the whole reader, resolved before the global
     /// action is authored so replay never depends on a peer's local filter.
     pub unread: Vec<Id>,
-    /// The order a palette-created, uncategorised subscription takes.
-    pub next_feed_order: u32,
-    /// The order a "New folder" created from the palette takes.
-    pub next_folder_order: u32,
     pub settings: ReadSettings,
 }
 
@@ -867,12 +863,6 @@ pub(crate) fn resource_ctx_from_library_with_limits(
             }
         })
         .collect();
-    let next_folder_order = store
-        .folders
-        .iter()
-        .map(|f| f.order)
-        .max()
-        .map_or(0, |m| m + 1);
     FeedsResourceCtx {
         folders,
         feeds,
@@ -882,8 +872,6 @@ pub(crate) fn resource_ctx_from_library_with_limits(
             .map(|name| TagRef { name })
             .collect(),
         unread: store.unread_ids_for(Filter::All),
-        next_feed_order: store.next_feed_order(None),
-        next_folder_order,
         settings,
     }
 }
