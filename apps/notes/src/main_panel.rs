@@ -278,10 +278,6 @@ pub struct MainPanel {
     /// no theme of its own.
     metrics: Metrics,
     layout_theme: Theme,
-    /// How far the editor's paragraphs inset their text inside their own
-    /// rect, measured from the first one laid out. The body starts that much
-    /// short of the gutter, so the first letter stands on it.
-    line_padding: Option<f64>,
 }
 
 impl MainPanel {
@@ -327,7 +323,6 @@ impl MainPanel {
             empty_action_focused: false,
             metrics: Metrics::default(),
             layout_theme: Theme::dark(),
-            line_padding: None,
         }
     }
 
@@ -843,33 +838,6 @@ impl MainPanel {
         self.metadata_height = header + self.metrics.body_gap;
     }
 
-    /// Measure how far a paragraph's first letter stands inside its rect, from
-    /// the first paragraph laid out, and ask for one more layout pass when it
-    /// is not what the body was inset by.
-    fn measure_line_padding(&mut self) {
-        let measured = self
-            .editor
-            .editor()
-            .blocks()
-            .iter()
-            .find(|block| matches!(block.kind, ui::widget::BlockKind::Paragraph))
-            .and_then(|block| {
-                let rect = block.line.get_rect();
-                (rect.width() > 0.0)
-                    .then(|| block.line.caret_rect(&self.layout_theme, 0).x0 - rect.x0)
-            })
-            .filter(|padding| padding.is_finite() && *padding >= 0.0);
-        if let Some(padding) = measured
-            && self
-                .line_padding
-                .is_none_or(|known| (known - padding).abs() > 0.01)
-        {
-            self.line_padding = Some(padding);
-            self.tag_layout_dirty = true;
-            self.dirty = true;
-        }
-    }
-
     /// The document starts under the pinned title.
     fn scroll_top_inset(&self) -> f64 {
         self.metrics.gutter + self.title_height() + self.banner_height
@@ -1181,9 +1149,11 @@ impl Widget for MainPanel {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.metrics = Metrics::of(theme);
-        if let Some(padding) = self.line_padding {
-            self.metrics.body_inset = (self.metrics.gutter - padding).max(0.0);
-        }
+        // Every block starts its content at the editor's text inset (its
+        // handle column and the lines' own inset): the body starts that much
+        // short of the gutter, so text, tables, code and embeds stand on it.
+        let inset = self.editor.editor().text_inset(theme);
+        self.metrics.body_inset = (self.metrics.gutter - inset).max(0.0);
         self.layout_theme = theme.clone();
         // The panel is a **leaf** in the parent's flex tree — we do
         // all internal positioning by hand in `apply_layout`. Using a
@@ -1367,7 +1337,6 @@ impl Widget for MainPanel {
         if let Some(n) = self.editor_node {
             let unshifted_origin = Point::new(self.rect.x0, self.rect.y0);
             self.editor.apply_layout(taffy, n, unshifted_origin);
-            self.measure_line_padding();
             let editor_rect = self.editor.get_rect();
             let last_block_bottom = self.editor.editor().content_bottom();
             // Content height = where the lowest block actually ends,
