@@ -67,6 +67,11 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/etc/pki",
     "/etc/ssl",
     "/etc/crypto-policies",
+    // The image's pinned public trust anchors (the official app registry's
+    // owner key) — the same reasoning as the CA bundle: public bytes that
+    // decide whether a permitted catalogue verifies. Without them a
+    // sandboxed App Store configures no registry at all.
+    "/usr/share/tilo/trust",
 ];
 
 /// Read-only paths added **only** when the launch shares the host

@@ -1,0 +1,9 @@
+# Audited ceilings of apps/feeds (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/feeds/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+"apps/feeds/src/lib.rs" = 2
+"apps/feeds/src/main.rs" = 2

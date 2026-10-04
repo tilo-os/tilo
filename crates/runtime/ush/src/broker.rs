@@ -174,6 +174,11 @@ struct HostCommand {
 
 fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<HostCommand> {
     let (operation, program, args, mutating) = match req {
+        // On a relay worker the launch is a request to the relay, answered
+        // at once by `BrokerState::handle`, not a host command.
+        Request::LegacyLaunch { .. } if crate::legacy_relay::socket_from_env().is_some() => {
+            return None;
+        }
         Request::LegacyLaunch { app, args, cwd } => (
             "legacy-launch",
             LEGACY_PROGRAM,
@@ -475,16 +480,63 @@ impl BrokerState {
                 self.log("restart", None, true, None);
                 Response::Ok
             }
-            Request::LegacyLaunch { app, args, cwd } => {
-                if let Some(args) =
-                    legacy_launch_args(&self.environment.policy(), &app, &args, &cwd)
-                {
-                    self.host_command("legacy-launch", LEGACY_PROGRAM, &args)
-                } else {
-                    let reason = format!("{app:?} is not a legacy app name");
-                    self.log("legacy-launch", Some(&app), false, Some(&reason));
-                    Response::Denied { reason }
+            Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, args, &cwd),
+        }
+    }
+
+    /// A legacy app's shim: on a device, the user's own legacy VM; on a
+    /// relay worker, a launch the relay routes to a worker with KVM.
+    fn legacy_launch(&self, app: &str, args: Vec<String>, cwd: &Path) -> Response {
+        if let Some(socket) = crate::legacy_relay::socket_from_env() {
+            return self.relay_legacy_launch(&socket, app, args, cwd);
+        }
+        if let Some(args) = legacy_launch_args(&self.environment.policy(), app, &args, cwd) {
+            self.host_command("legacy-launch", LEGACY_PROGRAM, &args)
+        } else {
+            let reason = format!("{app:?} is not a legacy app name");
+            self.log("legacy-launch", Some(app), false, Some(&reason));
+            Response::Denied { reason }
+        }
+    }
+
+    /// A legacy launch from an environment on a relay worker: the relay
+    /// runs the app on a worker with KVM and its windows open on the
+    /// member's devices.
+    fn relay_legacy_launch(
+        &self,
+        socket: &Path,
+        app: &str,
+        args: Vec<String>,
+        cwd: &Path,
+    ) -> Response {
+        use crate::legacy_relay::{LaunchReply, LaunchRequest, request};
+        let asked = LaunchRequest {
+            app: app.to_string(),
+            args,
+            cwd: cwd.display().to_string(),
+        };
+        match request(socket, &asked) {
+            Ok(LaunchReply::Launched { launch }) => {
+                self.log(
+                    "legacy-launch",
+                    Some(app),
+                    true,
+                    Some(&format!("relay {launch}")),
+                );
+                Response::Command {
+                    code: 0,
+                    stdout: format!("{app} runs on the relay; its windows open on your devices.\n"),
+                    stderr: String::new(),
                 }
+            }
+            Ok(LaunchReply::Refused { detail }) => {
+                self.log("legacy-launch", Some(app), false, Some(&detail));
+                Response::Denied { reason: detail }
+            }
+            Err(error) => {
+                let reason = format!("the relay worker did not take the launch: {error}");
+                self.log("legacy-launch", Some(app), false, Some(&reason));
+                Response::Denied { reason }
             }
         }
     }

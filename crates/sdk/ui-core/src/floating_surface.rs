@@ -198,6 +198,27 @@ pub enum FloatingSurfaceClientMessage {
     /// This app can stream its window's page (sent once): the shell may ask
     /// it to with [`FloatingSurfaceHostMessage::PaintKeyframe`].
     PaintCapable,
+    /// Open another instance of this app as a desktop tab right after this
+    /// app's own tab (see [`crate::shell_tabs`]). `target` is a URI the app's
+    /// manifest declares, or `None` for an empty instance. `instance` is the
+    /// record instance the shell launched this process for; the shell only
+    /// uses it to find a tab that already shows this same app.
+    OpenTabBeside {
+        target: Option<String>,
+        background: bool,
+        instance: Option<u64>,
+    },
+    /// Close this app's own tab through the desktop's tab lifecycle.
+    CloseTab {
+        instance: Option<u64>,
+    },
+    /// Reopen the workspace's most recently closed tab.
+    ReopenClosedTab,
+    /// The next window this app maps lands as a tab right after this one.
+    PlaceNextWindowBeside {
+        background: bool,
+        instance: Option<u64>,
+    },
 }
 
 /// Shell → app lifecycle. The shell supplies one authoritative combined

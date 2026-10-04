@@ -8,10 +8,11 @@
 //! drift apart — so it is one primitive.
 //!
 //! It is **not** a general-purpose text input: no selection, no clipboard, no
-//! caret movement. Those belong to the shared CRDT-backed editor core
-//! (`tilo_ui::widget::block_editor` and friends), which is far too much machinery for
-//! a label a user types once. What this does have is the behaviour a name field
-//! must not get wrong:
+//! caret movement — those belong to [`TextInput`](crate::widget::TextInput),
+//! which is far too much machinery for a label a user types once. Its typing,
+//! grapheme-wise Backspace and IME composition still go through the shared
+//! [`EditCore`], so it erases and composes exactly like every other field.
+//! What this does have is the behaviour a name field must not get wrong:
 //!
 //! * It keeps the **tail** visible when the text outruns the box, because what
 //!   the user is typing is at the end.
@@ -30,8 +31,14 @@ use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::richtext::RichTextLayout;
+use crate::text_edit::{Edit, EditCore};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
+
+/// A name is one line: control characters never enter it.
+fn name_char(character: char) -> bool {
+    !character.is_control()
+}
 
 /// Composes `base` with a translation for text placement. Affine
 /// composition is floating-point matrix multiply — it cannot overflow or
@@ -63,9 +70,9 @@ pub enum NameFieldOutcome {
 pub struct NameField {
     buffer: String,
     placeholder: String,
-    /// Display-only IME composition, appended at this end-only field's caret.
-    preedit: String,
-    preedit_cursor: Option<(usize, usize)>,
+    /// Caret and display-only IME composition. The caret stays at the end of
+    /// the buffer: this field types and erases at its tail only.
+    core: EditCore,
     /// `draw` is intentionally `&self` because both history surfaces paint
     /// through immutable row helpers. Interior mutability retains the shaped
     /// paragraph and publishes exact candidate-window geometry.
@@ -95,8 +102,7 @@ impl Clone for NameField {
         Self {
             buffer: self.buffer.clone(),
             placeholder: self.placeholder.clone(),
-            preedit: self.preedit.clone(),
-            preedit_cursor: self.preedit_cursor,
+            core: self.core.clone(),
             visual: RefCell::new(NameFieldVisual::default()),
         }
     }
@@ -107,7 +113,7 @@ impl std::fmt::Debug for NameField {
         f.debug_struct("NameField")
             .field("buffer", &self.buffer)
             .field("placeholder", &self.placeholder)
-            .field("preedit", &self.preedit)
+            .field("preedit", &self.core.preedit())
             .finish_non_exhaustive()
     }
 }
@@ -116,11 +122,13 @@ impl NameField {
     /// A field seeded with `text` — the current name when renaming, empty when
     /// naming something for the first time.
     pub fn new(text: impl Into<String>) -> Self {
+        let buffer = text.into();
+        let mut core = EditCore::at(buffer.len());
+        core.set_filter(Some(name_char));
         Self {
-            buffer: text.into(),
+            buffer,
             placeholder: "Name this version\u{2026}".to_string(),
-            preedit: String::new(),
-            preedit_cursor: None,
+            core,
             visual: RefCell::new(NameFieldVisual::default()),
         }
     }
@@ -139,8 +147,14 @@ impl NameField {
 
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.buffer = text.into();
-        self.preedit.clear();
-        self.preedit_cursor = None;
+        self.core.clear_preedit();
+        self.core.set_caret(self.buffer.len());
+    }
+
+    /// Apply a core edit to the buffer, keeping the caret at its end.
+    fn apply(&mut self, edit: &Edit) {
+        edit.apply(&mut self.buffer);
+        self.core.set_caret(self.buffer.len());
     }
 
     /// Exact shaped caret rectangle from the most recent draw, suitable for
@@ -157,26 +171,16 @@ impl NameField {
         modifiers: &winit::event::Modifiers,
     ) -> NameFieldOutcome {
         if let WindowEvent::Ime(ime) = event {
-            return match ime {
-                Ime::Preedit(text, cursor) => {
-                    self.preedit.clone_from(text);
-                    self.preedit_cursor = *cursor;
-                    NameFieldOutcome::Edited
-                }
+            match ime {
+                Ime::Preedit(text, cursor) => self.core.set_preedit(text, *cursor),
                 Ime::Commit(text) => {
-                    self.preedit.clear();
-                    self.preedit_cursor = None;
-                    self.buffer
-                        .extend(text.chars().filter(|ch| !ch.is_control()));
-                    NameFieldOutcome::Edited
+                    let edit = self.core.commit(text);
+                    self.apply(&edit);
                 }
-                Ime::Disabled => {
-                    self.preedit.clear();
-                    self.preedit_cursor = None;
-                    NameFieldOutcome::Edited
-                }
-                Ime::Enabled => NameFieldOutcome::Edited,
-            };
+                Ime::Disabled => self.core.clear_preedit(),
+                Ime::Enabled => {}
+            }
+            return NameFieldOutcome::Edited;
         }
         let WindowEvent::KeyboardInput {
             event:
@@ -197,23 +201,20 @@ impl NameField {
             Key::Named(NamedKey::Enter) => NameFieldOutcome::Commit(self.buffer.trim().to_string()),
             Key::Named(NamedKey::Escape) => NameFieldOutcome::Cancel,
             Key::Named(NamedKey::Backspace) => {
-                let end = self.buffer.len();
-                self.buffer
-                    .truncate(crate::text_selection::prev_char_boundary(&self.buffer, end));
+                let edit = self.core.delete_backward(&self.buffer, false);
+                self.apply(&edit);
                 NameFieldOutcome::Edited
             }
             Key::Named(NamedKey::Space) => {
-                self.buffer.push(' ');
+                let edit = self.core.insert(" ");
+                self.apply(&edit);
                 NameFieldOutcome::Edited
             }
             Key::Character(c) => {
-                let text: String = c.chars().filter(|ch| !ch.is_control()).collect();
-                if text.is_empty() {
-                    // A control-only keystroke is not a character; treat it as
-                    // ours anyway so it cannot reach a host's typeahead.
-                    return NameFieldOutcome::Edited;
-                }
-                self.buffer.push_str(&text);
+                // A control-only keystroke admits nothing; it is still ours
+                // so it cannot reach a host's typeahead.
+                let edit = self.core.insert(c);
+                self.apply(&edit);
                 NameFieldOutcome::Edited
             }
             // Everything else is still consumed: while a name field is up, the
@@ -240,12 +241,12 @@ impl NameField {
         let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
         Self::draw_chrome(scene, transform, colors, &shape);
 
-        let shows_placeholder = self.buffer.is_empty() && self.preedit.is_empty();
+        let shows_placeholder = self.buffer.is_empty() && !self.core.has_preedit();
         let (display, color) = if shows_placeholder {
             (self.placeholder.clone(), colors.text_dim)
         } else {
             (
-                format!("{}{}", self.buffer, self.preedit),
+                self.core.display_text(&self.buffer).into_owned(),
                 colors.text_primary,
             )
         };
@@ -259,15 +260,10 @@ impl NameField {
             return;
         };
 
-        let preedit_at = self
-            .preedit_cursor
-            .map_or(self.preedit.len(), |(_, end)| end)
-            .min(self.preedit.len());
-        let preedit_at = self.preedit.floor_char_boundary(preedit_at);
         let caret_byte = if shows_placeholder {
             0
         } else {
-            self.buffer.len().saturating_add(preedit_at)
+            self.core.display_caret(&self.buffer)
         };
         let (caret_local_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
         let viewport_width = (rect.width() - 14.0).max(1.0);
@@ -339,7 +335,7 @@ impl NameField {
             display.hash(&mut hash);
             size.to_bits().hash(&mut hash);
             self.buffer.len().hash(&mut hash);
-            self.preedit_cursor.hash(&mut hash);
+            self.core.preedit_cursor().hash(&mut hash);
             hash.finish()
         };
         let mut visual = self.visual.borrow_mut();
@@ -357,8 +353,8 @@ impl NameField {
                 browser_emoji,
             );
             tr.note_browser_rich_layout(&layout);
-            if !self.preedit.is_empty() {
-                layout.add_underline(self.buffer.len()..display.len());
+            if let Some(range) = self.core.preedit_display_range(&self.buffer) {
+                layout.add_underline(range);
             }
             visual.layout = Some(layout);
             visual.signature = signature;
@@ -626,8 +622,57 @@ mod tests {
                 &Modifiers::default(),
             );
             assert_eq!(field.text(), "ab漢字");
-            assert!(field.preedit.is_empty());
+            assert!(!field.core.has_preedit());
         }
+    }
+
+    #[test]
+    fn typing_composing_and_erasing_clusters_leaves_the_exact_name() {
+        let m = Modifiers::default();
+        let typed = |s: &str| key(Key::Character(s.into()));
+        let backspace = key(Key::Named(NamedKey::Backspace));
+        let mut field = NameField::new("");
+        // A decomposed "é" arrives as two keystrokes; emoji and a flag as one.
+        for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
+            assert_eq!(field.handle_event(&typed(s), &m), NameFieldOutcome::Edited);
+        }
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+        // A tab is consumed but never enters a one-line name.
+        assert_eq!(
+            field.handle_event(&typed("\t"), &m),
+            NameFieldOutcome::Edited
+        );
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+
+        // The composition shows after the text and stays out of the value; a
+        // filtered control character never reaches it either.
+        field.handle_event(
+            &WindowEvent::Ime(Ime::Preedit("か\n".into(), Some((3, 3)))),
+            &m,
+        );
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+        assert_eq!(field.core.preedit(), "か");
+        assert_eq!(field.core.display_text(field.text()), "e\u{301}👍🏽🇩🇪か");
+        field.handle_event(&WindowEvent::Ime(Ime::Commit("火".into())), &m);
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪火");
+        assert!(!field.core.has_preedit());
+
+        // Backspace erases one whole cluster per press.
+        for want in ["e\u{301}👍🏽🇩🇪", "e\u{301}👍🏽", "e\u{301}", ""] {
+            field.handle_event(&backspace, &m);
+            assert_eq!(field.text(), want);
+        }
+        field.handle_event(&backspace, &m);
+        assert_eq!(field.text(), "", "Backspace on an empty name is harmless");
+
+        // A rename seeds the caret at the end of the existing name.
+        field.set_text("Draft 👍🏽");
+        field.handle_event(&backspace, &m);
+        field.handle_event(&typed("2"), &m);
+        assert_eq!(
+            field.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+            NameFieldOutcome::Commit("Draft 2".to_owned())
+        );
     }
 
     #[test]

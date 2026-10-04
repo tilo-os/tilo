@@ -825,7 +825,7 @@ impl TimePicker {
             Key::Named(NamedKey::Backspace) => {
                 // An empty buffer resets the cell value to zero.
                 if let Some(cell) = self.focused_cell {
-                    self.digit_buffer.pop();
+                    crate::text_edit::delete_last_grapheme(&mut self.digit_buffer);
                     let v: u8 = self.digit_buffer.parse().unwrap_or(0);
                     match cell {
                         TimeCell::Hours => self.hours = v,

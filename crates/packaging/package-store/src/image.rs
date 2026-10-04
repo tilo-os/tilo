@@ -517,6 +517,7 @@ impl Store {
                         pinned: false,
                         attested_by,
                         source: source.name.clone(),
+                        held: false,
                     }),
                     Err(error) => {
                         let reason = error.to_string();

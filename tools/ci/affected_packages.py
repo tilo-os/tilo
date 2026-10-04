@@ -35,6 +35,7 @@ from ci.workspace_graph import (
     cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
+from ci import runner_labels
 from ci import suites as path_suites
 
 
@@ -137,7 +138,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "os/tests/workflow_dependency_invariants.sh",
     ),
 }
-NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
+NATIVE_RUNNERS = runner_labels.NATIVE
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",

@@ -179,7 +179,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
             notes::NotesApp::from_document(&doc, &ui::permissions::UserId("same-author".into()))
                 .unwrap();
         for (status, label) in [
-            (RecordSaveStatus::MemoryOnly, "Session only"),
+            (RecordSaveStatus::MemoryOnly, "Not saved"),
             (RecordSaveStatus::Saving, "Saving…"),
             (
                 RecordSaveStatus::Failed("disk failure".into()),

@@ -24,7 +24,6 @@ jobs:
     container:
       image: ${{ needs.builder.outputs.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_BUILD_JOBS: "4"
       CARGO_INCREMENTAL: "0"
       # CI consumes diagnostics from rustc, not debugger symbols. Keeping the

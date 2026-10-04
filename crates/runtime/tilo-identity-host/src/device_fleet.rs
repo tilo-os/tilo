@@ -125,7 +125,7 @@ impl DeviceFleetStore {
             .parent()
             .and_then(std::path::Path::parent)
         {
-            let registry = root.join("home-peers.json");
+            let registry = tilo_relay_protocol::home_peer_registry_path(root);
             if let Ok(metadata) = fs::metadata(&registry)
                 && metadata.len() <= 1024 * 1024
             {
