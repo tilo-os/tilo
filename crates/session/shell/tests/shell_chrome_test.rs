@@ -82,11 +82,11 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
 }
 
 #[test]
-fn cmd_k_opens_and_escape_closes_search() {
+fn super_space_opens_and_escape_closes_search() {
     use shell::shell::Shell;
     use shell::shell::test_support::{Mods, key_press};
     let mut shell = Shell::new_for_test();
-    shell.dispatch_key(key_press("K", Mods::CMD));
+    shell.dispatch_key(key_press("Space", Mods::CMD));
     assert!(shell.search_visible());
     shell.dispatch_key(key_press("Escape", Mods::NONE));
     assert!(!shell.search_visible());

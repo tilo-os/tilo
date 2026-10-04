@@ -35,9 +35,7 @@ fn durable_key(action: ShortcutAction) -> String {
 
 /// Every rebindable action, in catalogue order.
 fn rebindable() -> impl Iterator<Item = ShortcutAction> {
-    ShortcutAction::ALL
-        .into_iter()
-        .filter(|action| action.rebindable())
+    ShortcutAction::ALL.into_iter()
 }
 
 /// Every shortcut the page lists, with its name, in page order — what a pen
@@ -443,7 +441,7 @@ mod tests {
             pane.sync(&mut doc, &automerge::ROOT);
             assert_eq!(
                 read_str_or_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
-                Some("Super+k")
+                Some("Super+Space")
             );
         }
 
@@ -451,11 +449,20 @@ mod tests {
         {
             let listed: Vec<String> = rebindable().map(durable_key).collect();
             assert!(listed.contains(&QUICK_SETTINGS.to_string()));
-            assert!(
-                !listed.contains(&"shortcuts.lock".to_string()),
-                "the lock chord is shown, not offered for editing"
-            );
-            for entry in catalogue(&ShortcutConfig::default()) {
+            assert!(listed.contains(&"shortcuts.lock".to_string()));
+            let rows = catalogue(&ShortcutConfig::default());
+            for chord in ["Super+Space", "Super+L"] {
+                let chord = KeyChord::parse(chord).expect("a chord");
+                assert_eq!(
+                    rows.iter()
+                        .filter(|entry| entry.chords.contains(&chord))
+                        .count(),
+                    1,
+                    "{} is one row",
+                    chord.display()
+                );
+            }
+            for entry in rows {
                 assert_ne!(
                     t(&entry.label_key),
                     entry.label_key,
@@ -474,7 +481,7 @@ mod tests {
             let mut pane = ShortcutPane::default();
             let mut doc = AutoCommit::new();
             pane.sync(&mut doc, &automerge::ROOT);
-            let _ = doc.put(&automerge::ROOT, QUICK_SETTINGS, "Super+k");
+            let _ = doc.put(&automerge::ROOT, QUICK_SETTINGS, "Super+Space");
             pane.sync(&mut doc, &automerge::ROOT);
             assert_eq!(
                 read_str_or_text(&doc, &automerge::ROOT, QUICK_SETTINGS).as_deref(),

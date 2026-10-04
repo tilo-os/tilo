@@ -11781,17 +11781,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Super+Space remains an immutable, hardware-neutral global-search
-        // escape hatch. Alt+Space is configurable-free application input.
-        let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
-        if is_space && super_down {
-            if !repeat {
-                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.refresh_search_results(state, path);
-            }
-            *handled = true;
-            return true;
-        }
         if self.handle_overview_keyboard_nav(logical_key, handled) {
             return true;
         }

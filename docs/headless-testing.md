@@ -541,7 +541,7 @@ Two things it pins that are easy to get wrong by hand:
 
 - The socket takes **winit** key names. `Enter` works; `Return` is an
   xkb name and comes back as a `parse_error`.
-- **`Super+K`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
+- **`Super+Space`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
   only widens to global when nothing is focused — so it appears to work
   on an empty workspace and stops working once there is a tab in front
   of you. The script measures both scopes after the app is up, where

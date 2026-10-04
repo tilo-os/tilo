@@ -4735,7 +4735,6 @@ mod tests {
                 assert!(navigation.contains("Command+K"));
                 assert!(navigation.contains("Option+Space"));
             } else {
-                assert!(navigation.contains("Super+K"));
                 assert!(navigation.contains("Super+Space"));
             }
             assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
