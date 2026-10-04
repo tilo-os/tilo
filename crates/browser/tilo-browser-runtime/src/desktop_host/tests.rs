@@ -60,7 +60,7 @@ fn fixture_with_extra_calculators(
             0 => word_processor::initialize_empty_document(doc).unwrap(),
             1 => chat::doc::ChatDoc::seed_starter(doc, "author", "Author", "AU"),
             2 => notes::notebook::initialize_empty(doc).unwrap(),
-            _ => calculator::doc::initialize_empty(doc).unwrap(),
+            _ => calculator::doc::initialize(doc).unwrap(),
         });
         if i == 0 {
             routes.insert(id, record.id.as_str().into());
@@ -88,7 +88,7 @@ fn fixture_with_extra_calculators(
         let store = owners.open(calculator_app, &room).unwrap();
         store.create_record(&record).unwrap();
         store.with(&record.id, |doc| {
-            calculator::doc::initialize_empty(doc).unwrap();
+            calculator::doc::initialize(doc).unwrap();
         });
         tabs.push(Tab {
             id,
@@ -2760,7 +2760,7 @@ fn focused_calculator_expression_clear_and_type_preserve_the_semantic_editor() {
     let history = calculator
         .store
         .read(&calculator.checkout.id, |doc| {
-            calculator::doc::load(doc).unwrap().history
+            calculator::doc::load_history(doc)
         })
         .unwrap();
     assert_eq!(history.len(), 1);
@@ -2991,7 +2991,7 @@ fn selected_calculator_enter_commits_only_its_checked_record_after_local_history
             .read(&record.checkout.id, |doc| {
                 (
                     doc.base_heads().to_vec(),
-                    calculator::doc::load(doc).unwrap().history,
+                    calculator::doc::load_history(doc),
                 )
             })
             .unwrap();
