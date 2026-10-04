@@ -96,5 +96,40 @@ class ManifestScenarioTests(unittest.TestCase):
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
 
 
+class TypedTextTests(unittest.TestCase):
+    def test_text_replies_read_back_exactly(self):
+        self.assertEqual(CLIENT.text_reply("('hi',)\n"), "hi")
+        self.assertEqual(CLIENT.text_reply("('',)"), "")
+        self.assertEqual(CLIENT.text_reply("('it\\'s, twice!',)"), "it's, twice!")
+        self.assertIsNone(CLIENT.text_reply("Error: GDBus.Error"))
+
+
+class LaunchpadCardTests(unittest.TestCase):
+    def run_card(self, opened_root: str) -> tuple[str, int]:
+        from unittest import mock
+
+        shell = mock.Mock()
+        shell.call.return_value = "(true,)"
+        with mock.patch.object(CLIENT, "shell_client", return_value=shell), \
+                mock.patch.object(CLIENT, "bus_pids", return_value={":1.1": 10}), \
+                mock.patch.object(CLIENT, "wait_for_shell_node", return_value=({}, "/card")) as node, \
+                mock.patch.object(CLIENT, "wait_for_new_app", return_value=(":1.9", 99)) as new_app, \
+                mock.patch.object(CLIENT.AtspiClient, "property", return_value=f"(<'{opened_root}'>,)"), \
+                mock.patch.object(CLIENT, "process_command", return_value="/usr/bin/tilo-launcher"), \
+                mock.patch.object(CLIENT, "close_app"):
+            opened = CLIENT.open_from_launchpad_card("unix:path=/bus", "Notes", "Notes")
+        node.assert_called_once_with(shell, "Notes")
+        shell.call.assert_called_once_with("/card", "org.a11y.atspi.Action.DoAction", "0")
+        new_app.assert_called_once_with("unix:path=/bus", {":1.1"}, "Notes")
+        return opened
+
+    def test_a_card_must_open_its_own_app(self):
+        with self.subTest(phase="the card's app joined the bus"):
+            self.assertEqual(self.run_card("notes"), (":1.9", 99))
+        with self.subTest(phase="another app is not the card's"):
+            with self.assertRaisesRegex(CLIENT.GateError, "not Notes"):
+                self.run_card("calendar")
+
+
 if __name__ == "__main__":
     unittest.main()

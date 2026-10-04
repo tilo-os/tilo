@@ -29,10 +29,11 @@ impl ShellOverlayHost {
         self.portal_dialogs.view()
     }
 
-    /// The sheet's text field as it is drawn: a secret is masked.
+    /// The sheet's text field, when it has one: a secret answer is a
+    /// secret field, hidden until its own show/hide control is used.
     #[must_use]
-    pub fn sheet_field_display(&self) -> Option<String> {
-        self.portal_dialogs.field_display()
+    pub fn sheet_field(&self) -> Option<&ui::widget::TextInput> {
+        self.portal_dialogs.text_field()
     }
 
     /// Move every waiting shortcut prompt onto the sheet queue. Whether one

@@ -397,64 +397,12 @@ impl App {
         address: &tilo_actions::ActionAddress,
     ) -> Vec<ActionUiRoute> {
         self.refresh_semantic_tree();
-        let mut routes = Vec::new();
         let bindings = self
             .with_native_presentation(|root, _, _, _, _| {
                 crate::widget::controls::control_action_bindings(root)
             })
             .unwrap_or_default();
-        for binding in bindings {
-            for path in self
-                .accessibility
-                .semantic_tree
-                .control_paths(&binding.control_id)
-            {
-                let Some(semantic_id) = path.last() else {
-                    continue;
-                };
-                // Match the canonical ResourceId emitted by SemanticTree.
-                // Semantic node ids contain punctuation and address delimiters.
-                let encoded_node_id = percent_encoding::utf8_percent_encode(
-                    semantic_id.as_str(),
-                    percent_encoding::NON_ALPHANUMERIC,
-                );
-                let semantic_address = address.resource == format!("ui:{encoded_node_id}")
-                    && self
-                        .accessibility
-                        .semantic_tree
-                        .action(semantic_id, &address.action)
-                        .is_some();
-                let matches_address = semantic_address
-                    || matches!(
-                        &binding.kind,
-                        crate::widget::ControlBindingKind::Action(candidate) if candidate == address
-                    );
-                if !matches_address {
-                    continue;
-                }
-                let Some(node) = self.accessibility.semantic_tree.node(semantic_id) else {
-                    continue;
-                };
-                routes.push(ActionUiRoute {
-                    address: address.clone(),
-                    control_id: binding.control_id.clone(),
-                    path,
-                    bounds: node.bounds,
-                    focused: node.state.focused,
-                    disabled: node.state.disabled,
-                });
-            }
-        }
-        routes.sort_by(|left, right| {
-            left.disabled
-                .cmp(&right.disabled)
-                .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))
-                .then_with(|| left.path.len().cmp(&right.path.len()))
-                .then_with(|| right.focused.cmp(&left.focused))
-                .then_with(|| left.control_id.cmp(&right.control_id))
-        });
-        routes.dedup_by(|left, right| left.path.last() == right.path.last());
-        routes
+        crate::action_locus::action_ui_routes(&self.accessibility.semantic_tree, &bindings, address)
     }
 
     pub fn preferred_action_ui_route(
