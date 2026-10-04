@@ -177,7 +177,7 @@ impl HistoryHost {
     /// The window's History door as this History serves it: the same
     /// Open, Open at and Hide as the standalone door, without session rows.
     pub(crate) fn door_resource(&self) -> tilo_actions::Resource {
-        crate::standalone_history_host::history_resource(!self.invalid_owner, self.open)
+        crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
     }
 
     /// Run one History door operation resolved against [`Self::door_resource`]
