@@ -11620,6 +11620,13 @@ pub mod tests {
             self.directory_state.borrow_mut().resolve_mode = mode;
         }
 
+        pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| (invocation.id, invocation.invocation))
+        }
+
         pub fn take_invocation_actor(&mut self) -> Option<String> {
             self.invocation_rx
                 .try_recv()
@@ -11776,12 +11783,7 @@ pub mod tests {
                 },
             );
         state.refresh_action_directory_root_snapshot();
-        let (invocation_tx, invocation_rx) = tokio::sync::mpsc::unbounded_channel();
-        state
-            .invocation_subscribers
-            .lock()
-            .expect("invocation subscribers")
-            .insert(peer_id, invocation_tx);
+        let invocation_rx = state.capture_invocations_for_test(peer_id);
         fanout.attach_capnp(Arc::clone(&state));
         LocalDirectoryFixture {
             _fanout: fanout,
@@ -11957,6 +11959,59 @@ pub mod tests {
         let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
         assert!(after_disconnect.roots.is_empty());
         assert!(after_disconnect.generation > second.generation);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let request = InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                };
+                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        drain_directory_bridge(&fixture).await;
+                        if let PendingPoll::Ready(result) = pending.poll_ready() {
+                            break result;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("bounded actual directory admission");
+                admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
+                let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
+                assert_eq!(delivered, request.invocation);
+                assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+                fixture
+                    .complete_invocation(
+                        job,
+                        &tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: delivered,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    )
+                    .await
+                    .expect("actual peer-bound completion accepts the delivered UUID");
+                assert!(fixture.take_invocation_identity().is_none());
+            })
+            .await;
     }
 
     #[test]
