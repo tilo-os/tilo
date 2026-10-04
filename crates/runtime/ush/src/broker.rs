@@ -12,11 +12,12 @@
 //! record that decides what the *next* session is — its tools and its
 //! grants — and the only writer of the record of what was asked for.
 //!
-//! A decision here does not take effect in the running guest: a new tool or
-//! a new bind needs a new mount namespace, so `pkg install` and
-//! `perm trust-dir` answer with [`Response::NeedsRestart`] and the user runs
-//! `restart` — pretending otherwise would mean a change that appears made
-//! and has not.
+//! A new tool or a new bind needs a new mount namespace, so `pkg install`
+//! and `perm trust-dir` answer with [`Response::NeedsRestart`] and the user
+//! runs `restart` — pretending otherwise would mean a change that appears
+//! made and has not. A host grant is different: the session's DNS stub and
+//! filter take it at once, so `perm allow-host` (and revoking one) answers
+//! [`Response::Applied`].
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -63,6 +64,10 @@ pub enum Request {
     TrustDir {
         path: PathBuf,
     },
+    /// `perm allow-host <host>` — let the guest reach a host, for good.
+    AllowHost {
+        host: String,
+    },
     /// `perm list` — the grants in force.
     ListPerms,
     /// `perm revoke <id>`.
@@ -108,6 +113,10 @@ pub enum Response {
     Ok,
     /// Allowed, and it will be in force after `restart`.
     NeedsRestart {
+        detail: String,
+    },
+    /// Allowed, and already in force in this session.
+    Applied {
         detail: String,
     },
     Denied {
@@ -289,6 +298,30 @@ pub struct SessionStatus {
     pub trusted_dirs: Vec<String>,
     pub readable_dirs: Vec<String>,
     pub audit_records: usize,
+    pub network: NetworkStatus,
+}
+
+/// What the session's egress enforces, for `guard status` — which tests it
+/// from inside the guest.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", rename_all = "kebab-case")]
+pub enum NetworkStatus {
+    /// A `*` grant: every host, through the guest's own namespace.
+    Unrestricted,
+    /// Only the addresses the DNS stub answered for these hosts.
+    Filtered { hosts: Vec<String> },
+    /// No route out of the namespace at all.
+    Offline,
+}
+
+impl NetworkStatus {
+    fn of(egress: Option<&tilo_egress::Egress>) -> Self {
+        match egress.map(tilo_egress::Egress::enforcement) {
+            Some(tilo_egress::Enforcement::Unrestricted) => Self::Unrestricted,
+            Some(tilo_egress::Enforcement::Filtered(hosts)) => Self::Filtered { hosts },
+            Some(tilo_egress::Enforcement::Offline) | None => Self::Offline,
+        }
+    }
 }
 
 /// The environment a session was built from, and the way back to its record.
@@ -336,6 +369,9 @@ pub struct BrokerState {
     pub builder: Arc<dyn ToolBuilder>,
     /// For `guard status`, filled in by the supervisor at start.
     pub landlock: String,
+    /// The session's egress, which takes host grants at once. `None` where
+    /// no guest network was built (tests of the policy surface).
+    pub egress: Option<Arc<tilo_egress::Egress>>,
 }
 
 impl std::fmt::Debug for BrokerState {
@@ -390,6 +426,7 @@ impl BrokerState {
                 self.host_command("system-status", "tilo", &args)
             }
             Request::TrustDir { path } => self.trust_dir(&path),
+            Request::AllowHost { host } => self.allow_host(&host),
             Request::ListPerms => Response::Perms {
                 entries: self.perm_entries(),
             },
@@ -550,12 +587,70 @@ impl BrokerState {
         }
     }
 
-    fn revoke(&self, id: &str) -> Response {
-        match self.apply("revoke", id, Environment::REVOKE_GRANT.with(id.to_owned())) {
-            Ok(_) => Response::NeedsRestart {
-                detail: format!("{id} revoked. Run `restart` to drop it from this session."),
+    fn allow_host(&self, host: &str) -> Response {
+        let normalized = match tilo_environment::normalize_host(host) {
+            Ok(h) => h,
+            Err(reason) => {
+                self.log("allow-host", Some(host), false, Some(&reason));
+                return Response::Denied { reason };
+            }
+        };
+        if let Err(reason) = self.apply(
+            "allow-host",
+            &normalized,
+            Environment::ALLOW_HOST.with(normalized.clone()),
+        ) {
+            return Response::Denied { reason };
+        }
+        let id = tilo_environment::host_grant_id(&normalized);
+        let shown = if normalized == "*" {
+            "every host".to_owned()
+        } else if let Some(domain) = normalized.strip_prefix('.') {
+            format!("{domain} and every host under it")
+        } else {
+            normalized
+        };
+        match self.sync_network() {
+            Ok(()) => Response::Applied {
+                detail: format!("{shown} is allowed (grant {id}), in this session now."),
             },
-            Err(reason) => Response::Denied { reason },
+            Err(reason) => Response::NeedsRestart {
+                detail: format!(
+                    "{shown} is allowed (grant {id}). {reason}: run `restart` to bring it \
+                     into this session."
+                ),
+            },
+        }
+    }
+
+    /// Give the session's egress the record's host grants as they stand.
+    fn sync_network(&self) -> Result<(), String> {
+        let Some(egress) = &self.egress else {
+            return Err("this session has no network of its own".into());
+        };
+        let policy = self.environment.policy().egress(Some(unix_now()));
+        egress.update_policy(policy)
+    }
+
+    fn revoke(&self, id: &str) -> Response {
+        let was_host = self
+            .environment
+            .current()
+            .grants
+            .0
+            .iter()
+            .any(|c| c.id == id && matches!(c.scope, collab_types::caps::Scope::NetHost(_)));
+        if let Err(reason) = self.apply("revoke", id, Environment::REVOKE_GRANT.with(id.to_owned()))
+        {
+            return Response::Denied { reason };
+        }
+        if was_host && self.sync_network().is_ok() {
+            return Response::Applied {
+                detail: format!("{id} revoked, in this session now."),
+            };
+        }
+        Response::NeedsRestart {
+            detail: format!("{id} revoked. Run `restart` to drop it from this session."),
         }
     }
 
@@ -762,6 +857,7 @@ impl BrokerState {
                 .map(|p| p.display().to_string())
                 .collect(),
             audit_records: self.audit.read_all().len(),
+            network: NetworkStatus::of(self.egress.as_deref()),
         }
     }
 
@@ -1446,6 +1542,7 @@ mod tests {
             images: Vec::new(),
             builder,
             landlock: "not attempted".into(),
+            egress: None,
         }
     }
 
@@ -2233,5 +2330,53 @@ mod tests {
         });
         assert_stays_asleep(&tid, "ush broker accept");
         drop(broker);
+    }
+
+    #[test]
+    fn allow_host_writes_a_net_grant_that_perm_list_shows_and_revoke_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = state(dir.path());
+        // Without a session network the grant is recorded for the next one.
+        let Response::NeedsRestart { detail } = s.handle(Request::AllowHost {
+            host: "*.Crates.io".into(),
+        }) else {
+            panic!("allow-host without a network must say restart");
+        };
+        assert!(
+            detail.contains("crates.io and every host under it"),
+            "{detail}"
+        );
+        let Response::Perms { entries } = s.handle(Request::ListPerms) else {
+            panic!("no permission list");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].scope, "net .crates.io");
+        assert_eq!(entries[0].id, tilo_environment::host_grant_id(".crates.io"));
+        assert_eq!(
+            s.environment.policy().net_hosts(Some(unix_now())),
+            [".crates.io"]
+        );
+
+        let Response::Denied { reason } = s.handle(Request::AllowHost {
+            host: "1.1.1.1".into(),
+        }) else {
+            panic!("an address literal was allowed");
+        };
+        assert!(reason.contains("address"), "{reason}");
+
+        let resp = s.handle(Request::Revoke {
+            id: entries[0].id.clone(),
+        });
+        assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+        assert!(
+            s.environment
+                .policy()
+                .net_hosts(Some(unix_now()))
+                .is_empty()
+        );
+        let Response::Status { status } = s.handle(Request::Status) else {
+            panic!("no status");
+        };
+        assert_eq!(status.network, NetworkStatus::Offline);
     }
 }
