@@ -15,6 +15,12 @@ pub trait AppSurface {
     fn request_redraw(&self);
     /// Show `cursor` while the pointer is over the app.
     fn set_cursor(&self, cursor: CursorIcon);
+    /// Whether the surface's host answers the desktop's tab chords (Ctrl+T,
+    /// Ctrl+W, Ctrl+Shift+T) itself, so the app leaves them unhandled for it
+    /// rather than asking the session's tab service.
+    fn hosts_tab_chords(&self) -> bool {
+        false
+    }
 }
 
 impl AppSurface for winit::window::Window {
@@ -438,7 +444,9 @@ impl App {
 
         // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
         // tab chords.
-        app.handle_unconsumed_tab_chord(&event, &mut handled);
+        if !window.hosts_tab_chords() {
+            app.handle_unconsumed_tab_chord(&event, &mut handled);
+        }
 
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:
@@ -597,6 +605,49 @@ impl App {
         }
         handled
     }
+    /// Whether the host the app is shown in continues its focus order past
+    /// the app, so Tab at either end of the app's order leaves the app.
+    pub fn set_tab_order_continues_in_host(&mut self, continues: bool) {
+        self.input.tab_order_continues_in_host = continues;
+    }
+
+    /// Focus the first control of the app's order, or the last with `last`:
+    /// where keyboard focus lands when it enters the app from its host.
+    /// Returns whether the app has a control to focus.
+    pub fn focus_order_edge(&mut self, last: bool) -> bool {
+        let edge = if last {
+            self.focusable_order.last()
+        } else {
+            self.focusable_order.first()
+        };
+        let Some(&id) = edge else {
+            return false;
+        };
+        self.set_focused_node(Some(id));
+        true
+    }
+
+    /// The control with keyboard focus, to restore when focus comes back.
+    pub fn focused_control(&self) -> Option<NodeId> {
+        self.focused_node
+    }
+
+    /// Give keyboard focus back to `control` if it is still in the app's
+    /// focus order, or take it from every control with `None`.
+    pub fn restore_focused_control(&mut self, control: Option<NodeId>) -> bool {
+        match control {
+            Some(id) if self.focusable_order.contains(&id) => {
+                self.set_focused_node(Some(id));
+                true
+            }
+            Some(_) => false,
+            None => {
+                self.set_focused_node(None);
+                true
+            }
+        }
+    }
+
     /// The modifier keys held, as the surface reports them.
     pub fn set_surface_modifiers(&mut self, modifiers: winit::event::Modifiers) {
         self.input.modifiers = modifiers;
@@ -742,6 +793,15 @@ mod tests {
         fn name(&self) -> &'static str {
             "Clicks"
         }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Button);
+            node.name = Some("Press".into());
+            node.state.focusable = true;
+            Some(node)
+        }
+        fn is_focusable(&self) -> bool {
+            true
+        }
         fn get_rect(&self) -> KurboRect {
             self.rect
         }
@@ -861,5 +921,186 @@ mod tests {
             false,
         ));
         assert_eq!(*clicks.borrow(), vec![Point::new(40.0, 30.0)]);
+    }
+
+    fn clicks_app() -> (App, Rc<RefCell<Vec<Point>>>) {
+        let host = crate::application_test_support::ProbeHost::new();
+        let definition = crate::application_test_support::definition(clicks_factory);
+        let target = crate::application::LaunchTarget::New;
+        let context = host
+            .prepare_with_permissions(
+                &definition,
+                72,
+                &target,
+                crate::application_test_support::runner_permissions(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(context, target, crate::application::RestoreInput::None)
+            .unwrap();
+        let app = App::from_component(component, crate::application_test_support::runner_inputs())
+            .unwrap();
+        let clicks = CLICKS.with_borrow(|slot| Rc::clone(slot.as_ref().unwrap()));
+        (app, clicks)
+    }
+
+    /// An app embedded in a host's tree is laid out where the host places
+    /// it, takes the host's pointer input in its own coordinates whatever
+    /// the host's scale, and leaves the desktop's tab chords to the host.
+    #[test]
+    fn an_embedded_app_takes_its_region_input_and_leaves_tab_chords_to_the_host() {
+        let (app, clicks) = clicks_app();
+        let mut embedded = super::super::EmbeddedApp::new(app, |_| {}).unwrap();
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = embedded.build_layout(&mut taffy, &Theme::default(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(320.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+            )
+            .unwrap();
+        embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        embedded.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+        assert!(!scene.encoding().is_empty(), "the app paints in the host");
+
+        let mut doc = automerge::AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        let mut send = |embedded: &mut super::super::EmbeddedApp,
+                        event: WindowEvent,
+                        modifiers: &winit::event::Modifiers| {
+            let mut handled = false;
+            let mut focus = None;
+            embedded.handle_event(
+                &event,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 2.0,
+                    modifiers,
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+            handled
+        };
+        let device = winit::event::DeviceId::dummy();
+        send(
+            &mut embedded,
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (280.0, 160.0).into(),
+            },
+            &modifiers,
+        );
+        assert!(send(
+            &mut embedded,
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            &modifiers,
+        ));
+        assert_eq!(
+            *clicks.borrow(),
+            vec![Point::new(40.0, 30.0)],
+            "the click lands at the app's own coordinates"
+        );
+
+        let control = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let close = crate::synthetic_input::key_event(
+            &winit::keyboard::Key::Character(winit::keyboard::SmolStr::new("w")),
+            ElementState::Pressed,
+        );
+        assert!(
+            !send(&mut embedded, close, &control),
+            "Ctrl+W is the host's to close its tab"
+        );
+    }
+
+    /// A screen reader walks from the host into an embedded app, finding its
+    /// controls where they are on the host's screen, and keyboard focus
+    /// enters the app from the host and leaves it at the end of its order.
+    #[test]
+    fn an_embedded_app_is_in_the_hosts_accessibility_tree_and_focus_order() {
+        let (app, _clicks) = clicks_app();
+        let mut embedded = super::super::EmbeddedApp::new(app, |_| {}).unwrap();
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = embedded.build_layout(&mut taffy, &Theme::default(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(320.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+            )
+            .unwrap();
+        embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
+        embedded.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            &PresenceCtx::empty(),
+        );
+
+        fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<crate::a11y::AccessNode> {
+            if node.name.as_deref() == Some(name) {
+                return Some(node.clone());
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+        let tree = embedded.accessibility().expect("the tile is in the tree");
+        let press = find(&tree, "Press").expect("the app's control is below the tile");
+        let bounds = press.bounds.expect("placed on the host's screen").to_rect();
+        assert_eq!(bounds.origin(), Point::new(100.0, 50.0));
+
+        embedded.set_focus(true);
+        assert!(
+            embedded.app().focused_control().is_some(),
+            "focus entering the app lands on its first control"
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        embedded.handle_event(
+            &crate::synthetic_input::key_event(
+                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                ElementState::Pressed,
+            ),
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        assert!(
+            !handled && embedded.app().focused_control().is_none(),
+            "Tab from the app's last control leaves it for the host"
+        );
+        embedded.set_focus(false);
+        embedded.set_focus(true);
+        assert!(embedded.app().focused_control().is_some());
     }
 }

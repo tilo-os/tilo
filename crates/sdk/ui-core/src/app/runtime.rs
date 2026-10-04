@@ -78,6 +78,9 @@ pub(super) struct InputRuntime {
     pub(super) tooltip_host: crate::widget::TooltipHost,
     /// Pen samples on their way to the pointer events they describe.
     pub(super) pen: crate::pen::PenInput,
+    /// The app is shown inside a host whose focus order continues past it:
+    /// Tab at either end of the app's order leaves it for the host.
+    pub(super) tab_order_continues_in_host: bool,
 }
 
 impl InputRuntime {
@@ -90,6 +93,7 @@ impl InputRuntime {
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
+            tab_order_continues_in_host: false,
         }
     }
 }
