@@ -44,6 +44,11 @@ char *libintl_bindtextdomain(const char *domain, const char *directory) {
     if (domain && directory) {
         int gst = !strcmp(domain, "gstreamer-1.0") ||
                   !strcmp(domain, "gst-plugins-base-1.0");
+#ifdef TILO_GST_EXTENDED_CATALOGS
+        gst = gst || !strcmp(domain, "gst-plugins-good-1.0") ||
+                     !strcmp(domain, "gst-plugins-bad-1.0") ||
+                     !strcmp(domain, "gst-plugins-ugly-1.0");
+#endif
         int glib = !strcmp(domain, "glib20");
         if ((gst && !strcmp(directory, TILO_GST_LOCALE)) ||
             (glib && !strcmp(directory, TILO_GLIB_LOCALE))) directory = locales;
