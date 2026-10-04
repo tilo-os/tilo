@@ -188,6 +188,9 @@ pub struct Tools {
     pub taper: LocalState<f64>,
     /// What the eraser takes: whole strokes, or the paint under it.
     pub erasing: LocalState<Erasing>,
+    /// What the magic wand and the bucket find colour in: every layer as
+    /// shown, or the chosen layer alone.
+    pub sampling: LocalState<Sampling>,
     /// How crisp the eraser's edge is, `0..=1`.
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
@@ -309,6 +312,16 @@ pub enum ViewRequest {
     Actual,
 }
 
+/// Where the magic wand and the bucket look for colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sampling {
+    /// Every layer, as the artwork shows.
+    #[default]
+    All,
+    /// The chosen layer alone.
+    Layer,
+}
+
 /// What the eraser takes off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Erasing {
@@ -349,6 +362,7 @@ impl Default for Tools {
             smoothing: LocalState::new(round.smoothing),
             taper: LocalState::new(round.taper),
             erasing: LocalState::new(Erasing::Paint),
+            sampling: LocalState::new(Sampling::All),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
             // The canvas and the thumbnails never wait for a picture to

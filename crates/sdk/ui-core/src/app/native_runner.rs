@@ -1209,7 +1209,9 @@ impl AppHandler {
                         primary.request_redraw();
                     }
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
+                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop => {}
             }
         }
         changed
@@ -1754,6 +1756,9 @@ impl AppHandler {
             p.record_since(crate::profiling::Pass::ScenePoolWait, __prof_pool_wait);
         }
         damage_regions.clear();
+        // Presented pixels lost geometry to a GPU scratch overflow; damage
+        // cannot describe where.
+        full_redraw_required |= render.take_full_repaint();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
             || app.input.tooltip_host.needs_frame()

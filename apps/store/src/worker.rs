@@ -16,7 +16,7 @@ use getrandom::{SysRng, rand_core::TryRng as _};
 use ui::WakeHandle;
 
 use crate::app::ReportEnvelope;
-use crate::config::{RegistryConfig, load_registries};
+use crate::config::{RegistriesFile, RegistryConfig};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::search_provider::StoreSearchIndex;
@@ -396,7 +396,8 @@ fn handle(
             registry_name,
             envelope,
         } => {
-            let outcome = match submit_report(&registry_name, &envelope) {
+            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let outcome = match submit_report(&registries, &registry_name, &envelope) {
                 Ok(case) => Ok(Finished {
                     status: format!(
                         "Report submitted as {}. Status will appear after the registry owner publishes a signed transparency snapshot.",
@@ -417,7 +418,8 @@ fn handle(
             registry_name,
             case_id,
         } => {
-            let outcome = moderation_registry(&registry_name)
+            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
                     crate::moderation_client::fetch_verified_case(&registry, &case_id)
                 })
@@ -444,7 +446,8 @@ fn handle(
             case_id,
             reason,
         } => {
-            let outcome = moderation_registry(&registry_name)
+            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
                     let now = ui::time::wall()
                         .duration_since(ui::time::UNIX_EPOCH)
@@ -745,10 +748,11 @@ fn send_tracked(
 }
 
 fn submit_report(
+    registries: &RegistriesFile,
     registry_name: &str,
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
-    let registry = moderation_registry(registry_name)?;
+    let registry = moderation_registry(registries, registry_name)?;
     let now = ui::time::wall()
         .duration_since(ui::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -779,12 +783,14 @@ fn submit_report(
 }
 
 fn moderation_registry(
+    registries: &RegistriesFile,
     registry_name: &str,
 ) -> Result<RegistryConfig, crate::moderation_client::ModerationClientError> {
-    load_registries()
+    registries
         .registries
-        .into_iter()
+        .iter()
         .find(|registry| registry.enabled && registry.name == registry_name)
+        .cloned()
         .ok_or_else(|| {
             crate::moderation_client::ModerationClientError::Offline(
                 "the app's registry is disabled or no longer configured".into(),
@@ -819,7 +825,13 @@ fn collect_items(
     installed: &[(String, String)],
     host: Option<&app_host::client::BlockingClient>,
 ) -> Vec<StoreItem> {
-    let registries = load_registries().registries;
+    let registries = match crate::config::repositories(host) {
+        Ok(file) => file.registries,
+        Err(error) => {
+            tracing::warn!("could not read the app repositories: {error}");
+            Vec::new()
+        }
+    };
     let installed_tilo = host.and_then(|host| host.list().ok()).unwrap_or_default();
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {

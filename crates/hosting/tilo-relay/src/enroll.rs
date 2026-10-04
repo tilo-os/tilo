@@ -394,6 +394,35 @@ fn restore_owner_from_parent(path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Create `directory` if needed and give it its parent's permission bits
+/// (including set-group-ID), so a directory an enrollment adds to the shared
+/// device-trust layout is reachable the way its parent is, whatever the umask
+/// this ran under. A directory this process neither owns nor could change is
+/// left as it is.
+fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(directory)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let parent = directory
+            .parent()
+            .context("shared directory has no parent")?;
+        let wanted = std::fs::metadata(parent)?.mode() & 0o7777;
+        let current = std::fs::symlink_metadata(directory)?;
+        if !current.is_dir() {
+            bail!("{} is not a directory", directory.display());
+        }
+        // SAFETY: geteuid has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
+                .context("share the enrollment directory like its parent")?;
+        }
+    }
+    Ok(())
+}
+
 /// Whether this process runs as the owner of `directory`.
 fn owns_directory(directory: &std::path::Path) -> anyhow::Result<bool> {
     #[cfg(unix)]
@@ -876,7 +905,8 @@ fn commit_staged_personal_enrollment(
     }
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
     // The public key and certificates are public, whatever the umask this
-    // commit runs under: the session reads them to verify the device.
+    // commit runs under: the session reads them to verify the device, and
+    // reaches the per-identity ones through a directory shared like its parent.
     let public = tilo_user_identity::persist::PUBLIC_FILE_MODE;
     tilo_files::native::atomic::write_with_mode(
         &paths.user_pubkey,
@@ -884,8 +914,14 @@ fn commit_staged_personal_enrollment(
         public,
     )?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &paths.device_cert_for_user(&marker.user_public_key),
+    let per_user_cert = paths.device_cert_for_user(&marker.user_public_key);
+    share_directory_like_parent(
+        per_user_cert
+            .parent()
+            .context("per-user certificate has no directory")?,
+    )?;
+    tilo_files::native::atomic::write_with_mode(
+        &per_user_cert,
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
         public,
     )?;
@@ -896,7 +932,6 @@ fn commit_staged_personal_enrollment(
     // one's directory owner and group before the marker is cleared, so
     // recovery repeats this step if it is interrupted. Parents come before
     // their children.
-    let per_user_cert = paths.device_cert_for_user(&marker.user_public_key);
     for path in [
         marker.identity_dir.join("fleets"),
         record.clone(),
@@ -1682,7 +1717,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         // projection, but still waits for
                                         // Finalized before changing its active
                                         // identity binding.
-                                        tilo_files::native::atomic::write(
+                                        tilo_user_identity::persist::write_public_key(
                                             &paths.user_pubkey,
                                             &response.payload.cert.user_public_key,
                                         )?;
@@ -1694,10 +1729,16 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
                                 if kind == EnrollmentKind::HomePeer {
+                                    let per_user_cert = paths.device_cert_for_user(
+                                        &response.payload.cert.user_public_key,
+                                    );
+                                    share_directory_like_parent(
+                                        per_user_cert
+                                            .parent()
+                                            .context("per-user certificate has no directory")?,
+                                    )?;
                                     tilo_user_identity::persist::write_device_cert(
-                                        &paths.device_cert_for_user(
-                                            &response.payload.cert.user_public_key,
-                                        ),
+                                        &per_user_cert,
                                         &response.payload.cert,
                                     )?;
                                     tilo_user_identity::persist::write_device_cert(

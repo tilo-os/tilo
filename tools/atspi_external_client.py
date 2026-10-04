@@ -20,6 +20,13 @@ once it appears.
 out to match ``nmcli`` on the same device: the connected Wi-Fi network, the
 wired link, NetworkManager's connectivity verdict, and no read error.
 
+``new-tab APP_NAME`` proves tabs are the desktop's: it opens the app, prints
+``READY``, and waits for the person (the gate's real keyboard) to press
+Ctrl+T. The app must answer with another instance of itself, in a new
+desktop tab beside the first — one window group grows by exactly one tab
+and a second process of the app joins the bus. Apps have no tab strips of
+their own.
+
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
 one-off screen-reader script.  Scenarios are intentionally limited to a safe
@@ -478,6 +485,75 @@ def type_in_app(address: str, bus: str, text: str) -> None:
     raise GateError("the app exposed no editable text field over AT-SPI")
 
 
+def tab_lists(shell: AtspiClient) -> list[list[str]]:
+    """The desktop's tab strips, in tree order: each strip's tab names. A
+    window group's strip is an AT-SPI page tab list."""
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        try:
+            tree = shell.tree(SHELL_TREE_NODE_LIMIT)
+            lists: list[list[str]] = []
+            for path in tree:
+                role = shell.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+                if "'page tab list'" not in role:
+                    continue
+                children = shell.call(path, "org.a11y.atspi.Accessible.GetChildren")
+                tabs = []
+                for child in PATH_RE.findall(children):
+                    child_role = shell.call(
+                        child, "org.a11y.atspi.Accessible.GetRoleName", check=False,
+                    )
+                    if "'page tab'" in child_role:
+                        tabs.append(tree.get(child, shell.property(child, "Name")).strip())
+                lists.append(tabs)
+            return lists
+        except GateError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(POLL_SECONDS)
+
+
+def new_tab(address: str, app_name: str) -> None:
+    """Open APP_NAME, then require that the Ctrl+T the gate presses opens a
+    second instance of it as a tab beside the first, in the same group."""
+    _bus, first = open_in_session(address, app_name)
+    pids = [first]
+    try:
+        shell = shell_client(address)
+        before_tabs = tab_lists(shell)
+        before_bus = set(bus_pids(address))
+        print("READY", flush=True)
+        _second_bus, second = wait_for_new_app(address, before_bus, app_name)
+        pids.append(second)
+        if app_name.lower() not in process_command(second).lower():
+            raise GateError(
+                f"Ctrl+T in {app_name} started {process_command(second)}, not another {app_name}"
+            )
+        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+        after_tabs = tab_lists(shell)
+        while time.monotonic() < deadline:
+            grown = [
+                (old, new) for old, new in zip(before_tabs, after_tabs)
+                if len(new) == len(old) + 1
+            ]
+            if len(after_tabs) == len(before_tabs) and len(grown) == 1:
+                old, new = grown[0]
+                print(
+                    f"AT-SPI external client passed: Ctrl+T in {app_name} opened a desktop tab "
+                    f"beside it ({old} -> {new})"
+                )
+                return
+            time.sleep(POLL_SECONDS * 4)
+            after_tabs = tab_lists(shell)
+        raise GateError(
+            f"Ctrl+T in {app_name} started a second instance, but no window group gained "
+            f"exactly one tab: before {before_tabs}, after {after_tabs}"
+        )
+    finally:
+        for pid in pids:
+            close_app(pid)
+
+
 def close_app(pid: int) -> None:
     """End the app the session opened, so the next scenario starts clean."""
     try:
@@ -900,6 +976,12 @@ def main() -> int:
         "--expect", action="append", default=[], metavar="NAME",
         help="an accessible name the app must expose after the card's action (repeatable)",
     )
+    tab = sub.add_parser(
+        "new-tab",
+        help="open an app, print READY, and require that the Ctrl+T pressed next opens it "
+        "again as a desktop tab beside the first",
+    )
+    tab.add_argument("app_name")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -934,6 +1016,9 @@ def main() -> int:
             return 0
         if args.command == "present":
             check_present(address, args.state, args.app_name, args.name)
+            return 0
+        if args.command == "new-tab":
+            new_tab(address, args.app_name)
             return 0
         if args.command == "card":
             _bus_name, pid = open_from_launchpad_card(
