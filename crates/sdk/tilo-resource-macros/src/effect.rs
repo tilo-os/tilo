@@ -43,6 +43,9 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
 )]
 struct VariantOptions {
     label: Option<String>,
+    view: bool,
+    row: bool,
+    idempotent: bool,
     job: bool,
     cancellable: bool,
     returns: bool,
@@ -58,6 +61,12 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.label = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("permission") {
                 options.permission = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+            } else if meta.path.is_ident("view") {
+                options.view = true;
+            } else if meta.path.is_ident("row") {
+                options.row = true;
+            } else if meta.path.is_ident("idempotent") {
+                options.idempotent = true;
             } else if meta.path.is_ident("job") {
                 options.job = true;
             } else if meta.path.is_ident("cancellable") {
@@ -68,7 +77,8 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.destructive = true;
             } else {
                 return Err(meta.error(
-                    "expected `label`, `job`, `cancellable`, `returns`, `destructive` or `permission`",
+                    "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
+                     `destructive`, `idempotent` or `permission`",
                 ));
             }
             Ok(())
@@ -130,7 +140,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
+        if options.view && (options.job || options.cancellable || options.destructive) {
+            return Err(syn::Error::new(
+                variant.span(),
+                "a `view` effect only changes what its caller sees: it answers at once and \
+                 asks no confirmation (drop `job`, `cancellable` and `destructive`)",
+            ));
+        }
         let permission = match options.permission.as_deref() {
+            None if options.view => quote!(Read),
             None | Some("write") => quote!(Write),
             Some("none") => quote!(None),
             Some("read") => quote!(Read),
@@ -191,14 +209,24 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(#krate::effect::Answers::Nothing)
         };
         let destructive = options.destructive;
+        let idempotent = options.idempotent;
+        let row = options.row;
+        let kind = if options.view {
+            quote!(View)
+        } else {
+            quote!(Effect)
+        };
         decls.push(quote! {
             #krate::effect::EffectDecl {
                 id: #id,
                 label: #label,
                 description: #description,
                 params: ::std::vec![#(#params),*],
+                kind: #krate::__private::OperationKind::#kind,
+                row: #row,
                 answers: #answers,
                 destructive: #destructive,
+                idempotent: #idempotent,
                 permission: #krate::__private::PermissionRequirement::#permission,
             }
         });
