@@ -303,6 +303,11 @@ pub struct PlayerApp {
     /// is nothing open: the empty state owns Open then.
     open_button_rect: Rect,
     library_button_rect: Rect,
+    /// The window's History control, held in the top strip: the strip is this
+    /// app's header row, so the window draws no bar above the picture.
+    history: ui::widget::HistoryOpener,
+    /// Where the History control sits in the strip.
+    history_button_rect: Rect,
     /// The action of the idle or error state over the picture.
     status_action_rect: Rect,
     /// The library sheet: a trailing drawer over the video.
@@ -646,6 +651,8 @@ impl PlayerApp {
             rect: Rect::ZERO,
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
+            history: ui::widget::HistoryOpener::new(),
+            history_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
             drawer: SidebarDrawer::new().right().closed().overlay_only(),
             library_scroll: 0.0,
@@ -2461,6 +2468,7 @@ impl Widget for PlayerApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::widget::WindowHeader,
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
@@ -2567,6 +2575,7 @@ impl Widget for PlayerApp {
             &[player_node],
         );
         node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+        self.history.tree_rebuilt();
         root
     }
 
@@ -2621,6 +2630,21 @@ impl Widget for PlayerApp {
             self.last_cursor =
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
+        let history_hovered = self.history.is_hovered();
+        let history_rect = if self.overlay_visible() {
+            self.history_button_rect
+        } else {
+            Rect::ZERO
+        };
+        if self
+            .history
+            .handle_event(event, history_rect, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.dirty |= history_hovered != self.history.is_hovered();
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -2662,12 +2686,23 @@ impl Widget for PlayerApp {
         }
     }
 
+    /// The player, and the window's History control at its place in the
+    /// strip, so it is addressable like any control; the strip paints it
+    /// and routes its pointer through the opener.
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.player as &dyn Widget]
+        let mut children = vec![&self.player as &dyn Widget];
+        if let Some(history) = self.history.button() {
+            children.push(history);
+        }
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.player as &mut (dyn Widget + '_)]
+        let mut children = vec![&mut self.player as &mut (dyn Widget + '_)];
+        if let Some(history) = self.history.button_mut() {
+            children.push(history);
+        }
+        children
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -2750,6 +2785,7 @@ impl Widget for PlayerApp {
             }
             children.extend(local_library_accessibility_nodes(self));
         }
+        children.extend(self.history.accessibility(self.history_button_rect));
         Some(
             AccessNode::new(Role::Group)
                 .with_name(if self.player.has_media() {
@@ -2916,7 +2952,9 @@ impl Widget for PlayerApp {
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
-        if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
+        if self.history.perform_semantic_action(target, action) {
+            true
+        } else if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
             true
         } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
@@ -3175,11 +3213,22 @@ impl ui::resources::PublishesResources for PlayerApp {
     }
 }
 
+/// The top strip is the window's header row: it holds the History control
+/// the host offers, over the picture, hiding with the other controls.
+impl ui::widget::WindowHeader for PlayerApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.dirty = true;
+        }
+    }
+}
+
 impl ui::widget::controls::ActionControls for PlayerApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.open_action
-            .as_mut()
-            .and_then(ActionEmitter::take)
+        self.history
+            .take()
+            .or_else(|| self.open_action.as_mut().and_then(ActionEmitter::take))
             .or_else(|| self.library_control_invocations.pop_front())
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
