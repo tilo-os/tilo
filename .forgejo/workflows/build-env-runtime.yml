@@ -13,10 +13,11 @@ name: Build / env-runtime image
 # image is bound to one exact runtime package id, so the runtime is rebuilt
 # only when that file changes; a run whose tag already resolves exits early.
 # The runtime's packages are snapshot markers in that file, so changing them
-# also changes the frozen RPM snapshot (build-rpms.yml). Until that snapshot
-# is published a run waits by exiting early, and the scheduled run builds
-# the runtime once it is. A dispatch on a branch builds and seals with a
-# throwaway key and publishes nothing, to check a change before it lands.
+# also changes the frozen RPM snapshot (build-rpms.yml). A run waits for a
+# build-rpms.yml main run building that snapshot; with none, it exits early
+# and the scheduled run builds the runtime once the snapshot is published.
+# A dispatch on a branch builds and seals with a throwaway key and publishes
+# nothing, to check a change before it lands.
 
 on:
   workflow_dispatch:
@@ -36,7 +37,7 @@ concurrency:
 jobs:
   fingerprint:
     runs-on: runner-quality
-    timeout-minutes: 10
+    timeout-minutes: 180
     container:
       image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
@@ -50,12 +51,17 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install registry tools
         run: |
-          if ! command -v skopeo >/dev/null; then
+          set -euo pipefail
+          missing=()
+          for tool in skopeo jq; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          if ((${#missing[@]})); then
             if command -v apt-get >/dev/null; then
               sudo -n apt-get update
-              sudo -n apt-get install -y --no-install-recommends skopeo
+              sudo -n apt-get install -y --no-install-recommends "${missing[@]}"
             else
-              sudo -n dnf install -y skopeo
+              sudo -n dnf install -y "${missing[@]}"
             fi
           fi
       - name: Compute the runtime fingerprint
@@ -83,11 +89,11 @@ jobs:
           fi
           if [[ $build == true ]]; then
             status=0
-            ./os/dev/resolve-rpm-snapshot.sh --exists || status=$?
+            ./os/dev/await-rpm-snapshot.sh --exists || status=$?
             case $status in
               0) ;;
               1)
-                echo "::notice::the frozen RPM snapshot for this checkout is not published yet; the scheduled run builds the runtime once it is"
+                echo "::notice::the frozen RPM snapshot for this checkout is not published or being built; the scheduled run builds the runtime once it is"
                 build=false
                 publish=false
                 ;;
@@ -173,7 +179,8 @@ jobs:
         run: |
           set -euo pipefail
           grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
-          echo "RPMS_REF=$(./os/dev/resolve-rpm-snapshot.sh)" >> "$GITHUB_ENV"
+          rpms_ref="$(./os/dev/resolve-rpm-snapshot.sh)"
+          echo "RPMS_REF=$rpms_ref" >> "$GITHUB_ENV"
 
       - name: Set up buildx
         uses: ./.forgejo/actions/setup-buildx
@@ -197,6 +204,8 @@ jobs:
 
   seal:
     needs: [fingerprint, builder, tree]
+    # A skipped reusable-workflow job still reports success.
+    if: needs.fingerprint.outputs.build == 'true'
     runs-on: runner
     timeout-minutes: 90
     container:
@@ -321,6 +330,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The published stage copies only the sealed tapps, but every FROM
+      # needs its argument: pass the base and the snapshot the trees used.
+      - name: Load the build's base and RPM snapshot
+        if: env.skip != 'true'
+        run: |
+          set -euo pipefail
+          grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+          rpms_ref="$(cat sealed/env-runtime-x86_64.rpms.txt)"
+          [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::sealed runtimes carry no RPMS_REF"; exit 1; }
+          [[ $(cat sealed/env-runtime-aarch64.rpms.txt) == "$rpms_ref" ]] \
+            || { echo "::error::the two runtimes were built from different RPM snapshots"; exit 1; }
+          echo "RPMS_REF=$rpms_ref" >> "$GITHUB_ENV"
+
       - name: Set up buildx
         if: env.skip != 'true'
         uses: ./.forgejo/actions/setup-buildx
@@ -335,11 +358,20 @@ jobs:
             sealed=sealed
           file: os/Containerfile.env-runtime
           target: published
+          build-args: |
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: registry.tilo.so/tilo/env-runtime:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
+
+      - name: Install checksum-pinned Cosign
+        if: env.skip != 'true'
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
 
       - name: Sign, verify and tag the runtime
         if: env.skip != 'true'
@@ -350,7 +382,6 @@ jobs:
           TAG: ${{ needs.fingerprint.outputs.tag }}
         run: |
           set -euo pipefail
-          ./os/dev/install-cached-cosign.sh
           . os/dev/configure-cosign-kms.sh
           [[ $TAG =~ ^set-[0-9a-f]{64}$ && $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]]
           ref="registry.tilo.so/tilo/env-runtime@$DIGEST"

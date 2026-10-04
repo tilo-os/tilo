@@ -19,7 +19,7 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::SystemTime;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh::address_lookup::memory::MemoryLookup;
@@ -61,7 +61,6 @@ const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
 /// Leave room for consent, cancellation, revocation, and teardown while a
 /// producer is faster than the runtime can consume media frames.
 const PERSONAL_FABRIC_DATA_QUEUE_CAPACITY: usize = 192;
-const PERSONAL_DISPLAY_QUEUE_CAPACITY: usize = 16;
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,33 +223,6 @@ fn queue_personal_fabric_action<T: PersonalFabricEnvelopeRef>(
     PersonalFabricQueueOutcome::Queued
 }
 
-fn queue_personal_display_message(
-    queue: &mut VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>,
-    message: crate::shell::device_fabric::PersonalDisplayMessage,
-) {
-    use crate::shell::device_fabric::PersonalDisplayMessage;
-    if let PersonalDisplayMessage::Frame { session_id, .. } = &message
-        && let Some(existing) = queue.iter_mut().rev().find(|existing| {
-            matches!(existing, PersonalDisplayMessage::Frame { session_id: candidate, .. } if candidate == session_id)
-        })
-    {
-        *existing = message;
-        return;
-    }
-    if queue.len() >= PERSONAL_DISPLAY_QUEUE_CAPACITY {
-        if let Some(old_frame) = queue
-            .iter()
-            .position(|queued| matches!(queued, PersonalDisplayMessage::Frame { .. }))
-        {
-            queue.remove(old_frame);
-        } else if matches!(message, PersonalDisplayMessage::Frame { .. }) {
-            return;
-        } else {
-            queue.pop_front();
-        }
-    }
-    queue.push_back(message);
-}
 const MAX_PERSONAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_PERSONAL_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MIN_PERSONAL_MEDIA_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -540,15 +512,6 @@ fn personal_media_object_matches(path: &Path, total_bytes: u64, expected: [u8; 3
 struct PersonalFabricReplayWindow {
     seen: std::collections::HashSet<[u8; 16]>,
     order: VecDeque<[u8; 16]>,
-}
-
-const PERSONAL_DISPLAY_AUTHORIZATION_TTL: Duration = Duration::from_secs(90);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PersonalDisplayAuthorization {
-    source: crate::shell::personal_continuity::DeviceId,
-    target: crate::shell::personal_continuity::DeviceId,
-    expires: Instant,
 }
 
 impl PersonalFabricReplayWindow {
@@ -1309,13 +1272,6 @@ pub struct ShellNetwork {
     /// `IdentityHello`. Membership edges alone never populate this map.
     authenticated_personal_routes:
         Mutex<std::collections::HashMap<(u64, iroh::EndpointId), AuthenticatedPersonalRoute>>,
-    /// Authenticated display lifecycle and latest-wins frames. This queue is
-    /// deliberately separate from actions so video cannot starve control.
-    personal_display_messages: Mutex<VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>>,
-    /// Explicit mirror routes authorized by target consent. They are bounded,
-    /// session-local, and never projected into durable placement state.
-    personal_display_authorizations:
-        Mutex<std::collections::BTreeMap<[u8; 16], PersonalDisplayAuthorization>>,
     /// Bounded session-local replay filter for action request ids.
     personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
     /// Streaming, content-verified cache for explicit device-local media
@@ -1770,8 +1726,6 @@ impl ShellNetwork {
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
-            personal_display_messages: Mutex::new(VecDeque::new()),
-            personal_display_authorizations: Mutex::new(std::collections::BTreeMap::new()),
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
             personal_media_cache_root: personal_media_cache_root(),
             personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
@@ -4532,177 +4486,6 @@ impl ShellNetwork {
             })
     }
 
-    /// Install one exact mirror route after target-local consent.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when this device has no personal fabric identity, the
-    /// binding is invalid or does not include this device, the peer is offline,
-    /// the session id is already bound to another route, too many sessions are
-    /// active, or the fabric or authorization store is unavailable.
-    pub fn authorize_personal_display_session(
-        &self,
-        session_id: [u8; 16],
-        source: crate::shell::personal_continuity::DeviceId,
-        target: crate::shell::personal_continuity::DeviceId,
-    ) -> Result<(), String> {
-        const MAX_AUTHORIZATIONS: usize = 8;
-        let local = self
-            .personal_continuity_device
-            .as_ref()
-            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
-        if session_id == [0; 16] || source == target || (local != &source && local != &target) {
-            return Err("invalid personal display session binding".into());
-        }
-        let peer = if local == &source { &target } else { &source };
-        if !self
-            .device_fabric
-            .lock()
-            .map_err(|_| "personal display fabric is unavailable".to_string())?
-            .snapshots()
-            .get(peer)
-            .is_some_and(|snapshot| snapshot.presence.online)
-        {
-            return Err("the certified display peer is offline".into());
-        }
-        let mut authorizations = self
-            .personal_display_authorizations
-            .lock()
-            .map_err(|_| "personal display authorization store is unavailable".to_string())?;
-        let now = Instant::now();
-        // An expiry the clock cannot represent fails closed: it lapses at once.
-        let expires = now
-            .checked_add(PERSONAL_DISPLAY_AUTHORIZATION_TTL)
-            .unwrap_or(now);
-        authorizations.retain(|_, authorization| authorization.expires > now);
-        if let Some(existing) = authorizations.get_mut(&session_id) {
-            if existing.source != source || existing.target != target {
-                return Err("personal display session id is already bound".into());
-            }
-            existing.expires = expires;
-            return Ok(());
-        }
-        if authorizations.len() >= MAX_AUTHORIZATIONS {
-            return Err("too many personal display sessions are active".into());
-        }
-        authorizations.insert(
-            session_id,
-            PersonalDisplayAuthorization {
-                source,
-                target,
-                expires,
-            },
-        );
-        drop(authorizations);
-        Ok(())
-    }
-
-    pub fn purge_personal_display_session(&self, session_id: [u8; 16]) {
-        if let Ok(mut authorizations) = self.personal_display_authorizations.lock() {
-            authorizations.remove(&session_id);
-        }
-    }
-
-    /// Send one display lifecycle/frame message to its exact certified peer.
-    /// Saved placement is the durable authorization; absent or stale bindings
-    /// fail closed before bytes reach the actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when identity, placement authorization, addressing,
-    /// message validation, or the bounded actor channel is unavailable.
-    pub fn send_personal_display(
-        &self,
-        peer: &crate::shell::personal_continuity::DeviceId,
-        message: crate::shell::device_fabric::PersonalDisplayMessage,
-    ) -> Result<(), String> {
-        let user_public_key = self
-            .personal_continuity_user
-            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
-        let local = self
-            .personal_continuity_device
-            .as_ref()
-            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
-        message
-            .validate_at(local, peer, unix_now_ms())
-            .map_err(|error| error.to_string())?;
-        if !self.display_route_authorized(&message) {
-            return Err("display stream is not authorized by a saved placement".into());
-        }
-        let peer_bytes: [u8; 32] = hex::decode(peer.as_str())
-            .map_err(|_| "invalid certified display id".to_string())?
-            .try_into()
-            .map_err(|_| "invalid certified display id".to_string())?;
-        let target = iroh::EndpointId::from_bytes(&peer_bytes)
-            .map_err(|_| "invalid certified display id".to_string())?;
-        let ws = personal_continuity_topic_id(&user_public_key);
-        if !self.join_topic(ws) {
-            return Err("personal display transport is unavailable".into());
-        }
-        self.cmd_tx
-            .try_send(NetCmd::PublishPersonalFabricTarget {
-                ws,
-                user_public_key,
-                target,
-                payload: PersonalFabricPayload::Display(message),
-            })
-            .map_err(|error| error.to_string())
-    }
-
-    pub fn take_personal_display_messages(
-        &self,
-    ) -> Vec<crate::shell::device_fabric::PersonalDisplayMessage> {
-        self.personal_display_messages
-            .lock()
-            .map_or_else(|_| Vec::new(), |mut queue| queue.drain(..).collect())
-    }
-
-    fn display_route_authorized(
-        &self,
-        message: &crate::shell::device_fabric::PersonalDisplayMessage,
-    ) -> bool {
-        use crate::shell::device_fabric::PersonalDisplayMessage;
-        let (source, target) = match message {
-            PersonalDisplayMessage::Offer { source, target, .. }
-            | PersonalDisplayMessage::Accept { source, target, .. }
-            | PersonalDisplayMessage::Frame { source, target, .. }
-            | PersonalDisplayMessage::Feedback { source, target, .. }
-            | PersonalDisplayMessage::End { source, target, .. } => (source, target),
-        };
-        let session_id = match message {
-            PersonalDisplayMessage::Offer { session_id, .. }
-            | PersonalDisplayMessage::Accept { session_id, .. }
-            | PersonalDisplayMessage::Frame { session_id, .. }
-            | PersonalDisplayMessage::Feedback { session_id, .. }
-            | PersonalDisplayMessage::End { session_id, .. } => *session_id,
-        };
-        let ephemeral = self
-            .personal_display_authorizations
-            .lock()
-            .ok()
-            .is_some_and(|mut authorizations| {
-                let now = Instant::now();
-                authorizations.retain(|_, authorization| authorization.expires > now);
-                let Some(authorization) = authorizations.get(&session_id) else {
-                    return false;
-                };
-                authorization.source == *source && authorization.target == *target
-            });
-        ephemeral
-            || self
-                .device_fabric
-                .lock()
-                .ok()
-                .and_then(|fabric| fabric.snapshots().get(target).cloned())
-                .is_some_and(|snapshot| {
-                    snapshot.presence.online
-                        && snapshot.presence.capabilities.video_output
-                        && snapshot
-                            .display
-                            .is_some_and(|display| display.stream_source.as_ref() == Some(source))
-                })
-    }
-
     /// Replace this machine's self-authored fabric snapshot and advertise it
     /// to currently connected, certified devices of the same person.
     ///
@@ -5238,10 +5021,6 @@ impl ShellNetwork {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one dispatcher authenticates a personal fabric frame once, then routes each payload kind with that same route in hand"
-    )]
     fn dispatch_personal_fabric(
         &self,
         ws: u64,
@@ -5324,26 +5103,6 @@ impl ShellNetwork {
                     return;
                 };
                 self.dispatch_personal_media_transfer(source, frame);
-            }
-            PersonalFabricPayload::Display(message) => {
-                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
-                    identity.device_pubkey,
-                )) else {
-                    return;
-                };
-                let Some(local) = self.personal_continuity_device.as_ref() else {
-                    return;
-                };
-                if message.validate_at(&source, local, unix_now_ms()).is_err()
-                    || !self.display_route_authorized(&message)
-                {
-                    tracing::warn!(peer = %peer, "dropping unauthorized personal display traffic");
-                    return;
-                }
-                let Ok(mut queue) = self.personal_display_messages.lock() else {
-                    return;
-                };
-                queue_personal_display_message(&mut queue, message);
             }
             PersonalFabricPayload::NearbyTransfer(frame) => {
                 let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
@@ -5859,7 +5618,16 @@ impl ShellNetwork {
             }
             return;
         }
-        if self.require_peer_identity && self.peer_identities.get(&origin).is_none() {
+        // A member of an enrolled room that announced nothing to this device
+        // (a browser) is known from the room's governance, which also says it
+        // may take part in the room: its actions are answered as its own.
+        let governed_action = matches!(msg, NeighbourMsg::RemoteAction { .. })
+            && self.peer_identities.get(&origin).is_none()
+            && self.governed_identity(ws, peer).is_some();
+        if self.require_peer_identity
+            && self.peer_identities.get(&origin).is_none()
+            && !governed_action
+        {
             tracing::warn!(peer = %peer, "dropping collaboration message from an unauthenticated device");
             return;
         }
@@ -5886,7 +5654,10 @@ impl ShellNetwork {
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
-        if self.require_peer_identity && !matches!(&msg, NeighbourMsg::IdentityHello { .. }) {
+        if self.require_peer_identity
+            && !governed_action
+            && !matches!(&msg, NeighbourMsg::IdentityHello { .. })
+        {
             let required = Self::required_room_verb(&msg);
             let pinned_authority_may_bootstrap = matches!(&msg, NeighbourMsg::SyncResp { .. });
             if !self.peer_room_allows(&origin, ws, required, pinned_authority_may_bootstrap) {
@@ -6580,7 +6351,7 @@ impl ShellNetwork {
         // that case `name_peer` is a no-op, so project the membership grant
         // explicitly instead of relying on the naming path to do it.
         tree.sync_room_doc(room);
-        tree.flush_to_disk();
+        tree.queue_save();
         drop(tree);
         drop(replica);
         if let Ok(mut pending) = self.pending_identity_admissions.lock() {
@@ -6851,8 +6622,6 @@ pub(crate) fn shell_network_for_test(
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
-        personal_display_messages: Mutex::new(VecDeque::new()),
-        personal_display_authorizations: Mutex::new(std::collections::BTreeMap::new()),
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
         personal_media_cache_root: None,
         personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
@@ -7362,129 +7131,6 @@ mod tests {
     fn test_capture_grant(byte: u8) -> crate::shell::remote_capture::device::RemoteCaptureGrant {
         postcard::from_bytes(&postcard::to_allocvec(&[byte; 32]).expect("serialize capture grant"))
             .expect("deserialize capture grant")
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn personal_display_frames_are_latest_wins_and_authorization_is_exact() {
-        fn personal_display_frames_are_latest_wins_without_evicting_lifecycle() {
-            use crate::shell::device_fabric::PersonalDisplayMessage;
-            let source = test_device(1);
-            let target = test_device(2);
-            let end = |byte| PersonalDisplayMessage::End {
-                session_id: [byte; 16],
-                source: source.clone(),
-                target: target.clone(),
-            };
-            let frame = |sequence| PersonalDisplayMessage::Frame {
-                session_id: [99; 16],
-                source: source.clone(),
-                target: target.clone(),
-                sequence,
-                presentation_time_us: sequence,
-                keyframe: sequence == 1,
-                width: 640,
-                height: 360,
-                annex_b: vec![0, 0, 0, 1],
-            };
-            let mut queue = VecDeque::new();
-            for byte in 1..u8::try_from(PERSONAL_DISPLAY_QUEUE_CAPACITY).unwrap() {
-                queue_personal_display_message(&mut queue, end(byte));
-            }
-            queue_personal_display_message(&mut queue, frame(1));
-            queue_personal_display_message(&mut queue, frame(2));
-            assert_eq!(queue.len(), PERSONAL_DISPLAY_QUEUE_CAPACITY);
-            assert!(queue.iter().any(|message| matches!(
-                message,
-                PersonalDisplayMessage::Frame { sequence: 2, .. }
-            )));
-            queue_personal_display_message(&mut queue, end(77));
-            assert_eq!(queue.len(), PERSONAL_DISPLAY_QUEUE_CAPACITY);
-            assert!(
-                queue
-                    .iter()
-                    .all(|message| matches!(message, PersonalDisplayMessage::End { .. }))
-            );
-        }
-
-        fn personal_display_authorization_is_exact_expiring_and_purgeable() {
-            use crate::shell::device_fabric::PersonalDisplayMessage;
-
-            let tree = WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_default().into());
-            let (network, _) = shell_network_for_test(tree, 41);
-            let source = test_device(1);
-            let target = test_device(2);
-            let other = test_device(3);
-            let session_id = [7; 16];
-            let message = |session_id, source, target| PersonalDisplayMessage::End {
-                session_id,
-                source,
-                target,
-            };
-            network
-                .personal_display_authorizations
-                .lock()
-                .unwrap()
-                .insert(
-                    session_id,
-                    PersonalDisplayAuthorization {
-                        source: source.clone(),
-                        target: target.clone(),
-                        expires: Instant::now() + Duration::from_secs(1),
-                    },
-                );
-
-            assert!(network.display_route_authorized(&message(
-                session_id,
-                source.clone(),
-                target.clone()
-            )));
-            assert!(!network.display_route_authorized(&message(
-                [8; 16],
-                source.clone(),
-                target.clone()
-            )));
-            assert!(!network.display_route_authorized(&message(
-                session_id,
-                other.clone(),
-                target.clone()
-            )));
-            assert!(!network.display_route_authorized(&message(session_id, source.clone(), other)));
-
-            network.purge_personal_display_session(session_id);
-            assert!(!network.display_route_authorized(&message(
-                session_id,
-                source.clone(),
-                target.clone()
-            )));
-
-            network
-                .personal_display_authorizations
-                .lock()
-                .unwrap()
-                .insert(
-                    session_id,
-                    PersonalDisplayAuthorization {
-                        source: source.clone(),
-                        target: target.clone(),
-                        expires: Instant::now(),
-                    },
-                );
-            assert!(!network.display_route_authorized(&message(session_id, source, target)));
-            assert!(
-                network
-                    .personal_display_authorizations
-                    .lock()
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-
-        personal_display_frames_are_latest_wins_without_evicting_lifecycle();
-        personal_display_authorization_is_exact_expiring_and_purgeable();
     }
 
     #[test]

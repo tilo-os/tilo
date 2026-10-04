@@ -19,7 +19,7 @@ Source inspected on 2026-09-15; baseline evidence is `docs/superpowers/audits/20
 - Ordinary 100%, 1200×800, 800×700 and 480×900 are first-class targets. Add 800×480 to reveal height starvation. Finish with true 200% at 800×900 after the shared scale/capture contract lands.
 - Preserve every action, keyboard access, selection, draft/edit state and explicitly chosen dimensions. Disclosure needs a visible pointer trigger, keyboard activation, Escape dismissal/focus return, and accessible name/state.
 - Measure with the same font, weight and width constraint used to paint. Never shrink fonts to disguise overlap.
-- No global padding changes, reinterpretation of explicit sizes, dependency updates, pushes or merges. No Scratchpad edits. Do not modify capture-fidelity-owned main.rs/shots.rs files during these app tasks.
+- No global padding changes, reinterpretation of explicit sizes, or dependency updates. No Scratchpad edits. Do not modify capture-fidelity-owned main.rs/shots.rs files during these app tasks.
 - Large-text/double-scale investigation remains a separate shared task. These changes consume its final measurement API; they must not compensate locally with reciprocal scale factors.
 - View-only disclosure, split position and compact route state stay out of replicated documents. Existing document mutations continue through canonical actions.
 - Resize controls must not add permanent button stacks: use the visible divider with focus/arrow-key adjustment and a reachable Reset action in its existing overflow/context surface. Preserve a clear pointer drag affordance. Secondary controls should consume space only while needed.
@@ -44,11 +44,11 @@ Source preflight split the original cross-app task into five independent impleme
 | 13 | Code Editor app-local measured text, caret/scroll and dock geometry |
 | 14 | DB Client measured grid/chrome preserving sort, scroll and split preference |
 
-All original findings remain assigned. Current source has no manual Code Editor dock resize or DB row selection; preserve actual existing state without inventing those features. API Params/Auth surfaces are read-only painted chrome; preserve Body/form editing and Send rather than adding a new editor. Source-only preflight: `.superpowers/app-ui-2026-09-15/editing-workspace-preflight.md`.
+All original findings remain assigned. Current source has no manual Code Editor dock resize or DB row selection; preserve actual existing state without inventing those features. API Params/Auth surfaces are read-only painted chrome; preserve Body/form editing and Send rather than adding a new editor.
 
 ### Task 2: Route workspaces when panes do not fit (umbrella; execute Tasks18,16,17)
 
-Execute the SearchField prerequisite and each app as separate reviewed tasks. Source preflight: `.superpowers/app-ui-2026-09-15/route-workspace-preflight.md`. Tasks16/17 preserve all original normal and scale acceptance; Task2 closes only after all three pass review.
+Execute the SearchField prerequisite and each app as separate reviewed tasks. Tasks16/17 preserve all original normal and scale acceptance; Task2 closes only after all three pass review.
 
 ### Task 3: Browse and form composition
 
@@ -94,7 +94,7 @@ Execute the SearchField prerequisite and each app as separate reviewed tasks. So
 
 ### Task 4: Disclose management controls (umbrella; execute Tasks19,20)
 
-Firewall and Windows are separate app-owned implementation/review passes. Both must pass before Task4 closes. Read-only preflight: `.superpowers/app-ui-2026-09-15/management-disclosure-preflight.md`.
+Firewall and Windows are separate app-owned implementation/review passes. Both must pass before Task4 closes.
 
 ### Task 5: Group related text
 
@@ -249,7 +249,7 @@ After shared measured components land, close these existing findings alongside t
 
 ## Task1 execution split (source preflight ruling)
 
-Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cross-app patch. Its acceptance requires all five passes. Source-only evidence: `.superpowers/app-ui-2026-09-15/editing-workspace-preflight.md`. This split preserves every confirmed finding while isolating interaction changes from larger app-local text metric repairs. Execute sequentially, independent review each; shared measured components are already dependencies.
+Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cross-app patch. Its acceptance requires all five passes. This split preserves every confirmed finding while isolating interaction changes from larger app-local text metric repairs. Execute sequentially, independent review each; shared measured components are already dependencies.
 
 ### Task 10: Code Editor initial dock composition
 
@@ -332,11 +332,11 @@ Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cros
 - Include measured widths/bands and collision handling for existing tab, Run, Snippets, result/count controls; snippet paint and hit rectangles must agree. No new snippet keyboard/a11y feature or wholesale Toolbar migration. Structure consumes the shared tab origin only; do not refactor its rows or the sidebar.
 - No selected-row model, column resizing, interactive scrollbar or grid row-number gutter exists; do not introduce them. Repair bounded half-open header/body hits and width/paint agreement within GridMetrics. Task 14 consumes accepted Task 12 geometry and requested-height state.
 
-Ruling: these narrow dependencies make the specified scale/scroll/target contract coherent; if wrong, revise the local metric/state seam without changing documents or adding controls. Source preflight: .superpowers/app-ui-2026-09-15/db-metrics-preflight.md.
+Ruling: these narrow dependencies make the specified scale/scroll/target contract coherent; if wrong, revise the local metric/state seam without changing documents or adding controls.
 
 ### Task 15: API Tester canonical active-draft adoption
 
-**Depends on Task11. Files:** `apps/api_tester/src/actions.rs`, `doc.rs`, `app.rs`, narrowly necessary `model.rs`, affected app tests. Read the controller source preflight at `.superpowers/app-ui-2026-09-15/api-draft-preflight.md` first. This repairs the actual already-mounted saved-row failure found during Task11, separately from accepted composition.
+**Depends on Task11. Files:** `apps/api_tester/src/actions.rs`, `doc.rs`, `app.rs`, narrowly necessary `model.rs`, affected app tests. This repairs the actual already-mounted saved-row failure found during Task11, separately from accepted composition.
 
 #### Controller ownership ruling
 
