@@ -1202,6 +1202,11 @@ mapping covers both.
 | `ui::search::{Facet, FacetValue, FacetFilter}`, `SearchProvider::facets()`, `CatalogSearchProvider::{facets, admits}` | Filter dimensions: chips in the palette, typed `key:value` tokens parsed by the platform. |
 | `SearchPage::pending(results, PendingToken)`, `SearchProvider::poll_page(&token) -> PagePoll` | A slow source (IMAP, YouTube, a store catalogue, a geocoder): return what you have now, answer the rest when it arrives. |
 | `ui::search::SearchRow::{message, media, file_hit}` + `SearchResult::with_row` | Say what a hit is; the platform draws the row. |
+| `SearchResult::within(anchor)` | Scope a hit addressed by a flat id (`contact:42`, `sheets.cell:B4`) by the part of the app it lies in (`group:family`, `sheet:2`), without renaming the resource. |
+| `SearchEntry { within, row, ..SearchEntry::default() }`, `tilo_resource::{SearchRow, SearchRowShape}` | The same for a framework app: the scope a flat-id entry lies in, and its row (subtitle, a named icon from `Icon::name`, a message, media or file-hit shape). |
+| `CatalogSearchProvider::search_scopes()` | A catalogue provider's scopes; the blanket `SearchProvider` impl forwards them. |
+| `ui::icons::AppImage::from_image_store(&store, url)` | A media row's thumbnail or a cover from the app's `ImageStore`. |
+| `ui::icons::Icon::{name(), from_name(name)}` | An icon by its lucide kebab name, for data that cannot name the enum. |
 | `SearchField::filter()`, `.escalates_within(scope)`, `.with_placeholder(..)`, `set_count(Some(FilterCount::new(shown, total)))` | The in-content filter field. |
 | `ui::widget::{Filterable, FilterCount, apply_filter, sync_filter, Filtered}` | Bind a filter field to a list. |
 | `ui::widget::{Findable, FindOptions, FindMode, FindMatch, FindBar, FindScope, paint_find_match, with_findable}` | Find in a document. |
@@ -1243,7 +1248,9 @@ input and everything drawn around it.
    answers both a picked hit and the resource's `open` action (agents) with
    it. Other apps keep `SearchSource::activate_search_result(action_id, ..)`.
    Anchors are paths: give items inside a part of the app the part's anchor
-   as prefix (`folder:inbox/msg:12`).
+   as prefix (`folder:inbox/msg:12`). An item whose id is flat (`kind:uuid`)
+   keeps it and says where it lies instead: `SearchResult::within(anchor)`,
+   or `SearchEntry { within: Some(anchor), .. }` in a framework app.
 4. **Scopes** ("Search this folder", "Search in playlist",
    per-mailbox search): declare each part as a `ScopeDecl { anchor, label }`
    — framework apps with `#[resource(scopes = my_scopes)]` (or
@@ -1494,6 +1501,21 @@ header row and which reads as on while History shows. Apps place nothing.
 
 - An app without a header row (a single canvas or form) keeps the window's
   History bar: the same glyph at its trailing edge, nothing else.
+- The header control is bound to the window's History door. The App, the
+  headless harness and `native_app_audit` all resolve that door (and the
+  search door) as the window's, so delete any audit filter for
+  `nav-shell-history` / `history-button` `stale-action-binding` issues.
+- A framework app whose resource keeps no document state (its state lives on
+  the device or in a service: a speed test) sets
+  `const DOCUMENT_HISTORY: bool = false` on its `ResourceApp`: no History
+  control, no History actions.
+- A view is built again for every past version History shows. Such a build
+  must start no work: check `cx.is_past()` (`SurfaceCx::is_past()` in a
+  surface) and build the surface without its worker, network or file
+  watches, presenting what the document holds.
+- A scope without History (`HistoryPresentation::External { reason }`) shows
+  its reason as an empty state where the timeline would stand; write the
+  reason as a sentence a person reads ("Forecasts are not recorded.").
 - `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
   places"). Delete descriptions and developer notes from it: "(not
   recorded)", "(forecasts are not recorded)", "Process output (not
