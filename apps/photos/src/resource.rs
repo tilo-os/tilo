@@ -2,13 +2,14 @@
 //! edits and membership are document actions, and the gallery widget is the
 //! surface. The framework host publishes through [`tilo_resource::publish`].
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use automerge::AutoCommit;
 use tilo_content::ContentStore;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::ActionSpec;
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{PHOTOS_ACTION_TYPE, PhotosAction, register};
@@ -93,16 +94,19 @@ impl ResourceApp for PhotosShell {
     const ID: &'static str = "so.tilo.photos";
     const TITLE: &'static str = "Photos";
     const ICON: Option<&'static str> = Some("photos");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
+    const OPENS: &'static [&'static str] = &["image/png", "image/jpeg", "image/webp"];
+    /// A photograph to open, or a folder of them to import, into the library.
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Photos>) -> Element {
-        cx.surface(PhotosApp::new_persistent(ContentStore::for_app()))
-    }
-
-    fn scenarios() -> &'static [&'static str] {
-        crate::SHOT_SCENARIOS
+        let content = cx.content().unwrap_or_else(ContentStore::for_app);
+        let app = if cx.mode().is_live() {
+            PhotosApp::new_persistent(content)
+                .launched_on(cx.launch_arguments().first().map(PathBuf::from))
+        } else {
+            PhotosApp::with_content(content)
+        };
+        cx.surface(app)
     }
 
     fn label(state: &PhotosState) -> String {
@@ -110,6 +114,27 @@ impl ResourceApp for PhotosShell {
             Some(image) if !image.name.is_empty() => image.name.clone(),
             _ => "Photos".into(),
         }
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::sample::SCENARIOS
+    }
+
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
+
+    /// The photographs a scenario shows live in the content store, not the
+    /// document: their bytes are put there before the view is built.
+    fn fixture(fixture: &mut Fixture<Photos>) {
+        crate::sample::put_content(fixture.content());
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Photos>> {
+        crate::sample::scenario(name)
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
     }
 }
 
@@ -120,6 +145,10 @@ impl ResourceSurface<Photos> for PhotosApp {
 
     fn attach(&mut self, cx: SurfaceCx<Photos>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or("opened"));
     }
 }
 
@@ -178,40 +207,4 @@ impl ActionSink {
     pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.local.take_committed()
     }
-}
-
-/// Default live launch: the framework-hosted resource app.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<PhotosShell>()
-}
-
-/// Capture, import and explicit file opens stay on the standalone widget path.
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots"
-            | "--responsive-matrix"
-            | "--native-audit"
-            | "--headless"
-            | "--library"
-            | "--analyze-imports" => return true,
-            "--open" | "--import-directory" | "--size" => {
-                let _ = args.next();
-                return true;
-            }
-            flag if flag.starts_with("--shots=")
-                || flag.starts_with("--open=")
-                || flag.starts_with("--import-directory=") =>
-            {
-                return true;
-            }
-            file if !file.starts_with('-') => return true,
-            _ => {}
-        }
-    }
-    false
 }
