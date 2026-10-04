@@ -4,21 +4,22 @@
 
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
 use tilo_document::{RichText, RichTextAction};
 use ui::framework::{
-    Dispatcher, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
 };
 use ui::tilo_resource::{
-    ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry, child_resource_id, publish_child,
+    self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource, SearchEntry, child_resource_id,
+    publish_child,
 };
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
     CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
-    NoteOwner, ProjectData, TaskData, encode,
+    NoteOwner, ProjectData, TaskData,
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
@@ -135,6 +136,58 @@ fn notes_child(state: &Model, id: &str) -> Option<tilo_actions::Resource> {
         _ => return None,
     };
     Some(notes_resource(owner, of))
+}
+
+/// The calendar's work outside its document: talking to the servers of the
+/// accounts on this device, files, Mail, and how this person shows each
+/// calendar.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "calendar.effects")]
+pub enum CalendarEffect {
+    /// Sync calendars
+    ///
+    /// Pulls the calendars of this device's accounts from their servers.
+    #[effect(job)]
+    Sync,
+    /// Export ICS
+    ///
+    /// Writes every event and task to an iCalendar file in Downloads.
+    ExportIcs,
+    /// Import latest ICS
+    ///
+    /// Imports the newest iCalendar file in Downloads.
+    ImportLatestIcs,
+    /// Prepare invitation in Mail
+    ///
+    /// Answers with the arguments of Mail's invitation draft for one attendee;
+    /// nothing is sent.
+    #[effect(returns, permission = "invite")]
+    PrepareInMail {
+        #[param("Event id")]
+        event_id: String,
+        #[param("Attendee id")]
+        attendee_id: String,
+    },
+    /// Set a calendar's colour
+    ///
+    /// A display choice of this person, which follows them to their other
+    /// devices.
+    SetColor {
+        #[param("Calendar id")]
+        id: String,
+        #[param("indigo, emerald, amber, red, blue, violet or slate")]
+        color: String,
+    },
+    /// Show or hide a calendar
+    ///
+    /// A display choice of this person, which follows them to their other
+    /// devices.
+    SetVisibility {
+        #[param("Calendar id")]
+        id: String,
+        #[param("Whether its events are shown")]
+        visible: bool,
+    },
 }
 
 /// Framework app: the calendar widget is the surface over [`Calendar`].
@@ -306,24 +359,17 @@ impl Resource for Calendar {
             ("show-week", "Show week", CalendarOperation::ShowWeek),
             ("show-day", "Show day", CalendarOperation::ShowDay),
             ("show-agenda", "Show agenda", CalendarOperation::ShowAgenda),
-            ("sync", "Sync calendars", CalendarOperation::Sync),
-            ("export-ics", "Export ICS", CalendarOperation::ExportIcs),
-            (
-                "import-latest-ics",
-                "Import latest ICS",
-                CalendarOperation::ImportIcs,
-            ),
         ] {
-            let kind = match operation {
-                CalendarOperation::Sync
-                | CalendarOperation::ExportIcs
-                | CalendarOperation::ImportIcs => OperationKind::Effect,
-                _ => OperationKind::View,
-            };
             ops.push(
-                ActionSpec::operation(id, label, kind, CALENDAR_OPERATION_TYPE, &operation)
-                    .expect("CalendarOperation encodes")
-                    .retry_policy(RetryPolicy::Idempotent),
+                ActionSpec::operation(
+                    id,
+                    label,
+                    OperationKind::View,
+                    CALENDAR_OPERATION_TYPE,
+                    &operation,
+                )
+                .expect("CalendarOperation encodes")
+                .retry_policy(RetryPolicy::Idempotent),
             );
         }
         ops
@@ -553,76 +599,7 @@ impl ResourceApp for CalendarShell {
     }
 }
 
-/// Framework dispatcher when hosted; local action host for standalone tests.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Calendar>>,
-    last: Option<EncodedAction>,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Calendar>) {
-        self.framework = Some(dispatcher);
-    }
-
-    /// The framework's dispatcher, once the calendar is hosted.
-    pub(crate) fn framework(&self) -> Option<&Dispatcher<Calendar>> {
-        self.framework.as_ref()
-    }
-
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &CalendarAction) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(encode(action));
-                let _ =
-                    dispatcher.apply_now_with(doc, action, crate::actions::history_context(action));
-            }
-            None => {
-                self.local.dispatch_with_context(
-                    doc,
-                    CALENDAR_ACTION_TYPE,
-                    action,
-                    crate::actions::history_context(action),
-                );
-            }
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &CalendarAction,
-        context: tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(encode(action));
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-}
-
-impl ResourceSurface<Calendar> for CalendarApp {
+impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
     fn present(&mut self, state: &Rc<Model>) {
         self.adopt_resource_state(state);
     }
@@ -635,6 +612,7 @@ impl ResourceSurface<Calendar> for CalendarApp {
         } else {
             None
         };
+        self.follow_display(cx.settings::<crate::display::CalendarDisplay>());
         self.attach_framework(
             cx.dispatcher(),
             accounts,
@@ -644,6 +622,18 @@ impl ResourceSurface<Calendar> for CalendarApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(
+        &mut self,
+        effect: CalendarEffect,
+        cx: &mut EffectCx<Calendar, Self>,
+    ) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
 
     /// The calendars of the accounts on this device, which can be opened,
@@ -914,5 +904,49 @@ mod host_undo_tests {
         )
         .expect("set location");
         assert_eq!(app.state().event(event).expect("event").location, "Room 4");
+    }
+
+    /// Sync and export say why they cannot run: no account on this device,
+    /// nothing to export.
+    #[test]
+    fn effects_that_cannot_run_are_refused_with_their_reason() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let sync = format!("{:?}", app.effect(&CalendarEffect::Sync).unwrap_err());
+        assert!(sync.contains("account"), "{sync}");
+        let export = format!("{:?}", app.effect(&CalendarEffect::ExportIcs).unwrap_err());
+        assert!(export.contains("export"), "{export}");
+    }
+
+    /// Hiding a calendar or choosing its colour is this person's setting:
+    /// kept beside the document, following them to their other devices.
+    #[test]
+    fn calendar_display_choices_are_personal_settings() {
+        let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");
+        let (calendar, name) = crate::AccountStore::sample()
+            .all_calendars()
+            .find(|(_, calendar)| calendar.visible)
+            .map(|(_, calendar)| (calendar.id.clone(), calendar.name.clone()))
+            .expect("a shown sample calendar");
+        let checkbox = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::CheckBox
+                    && node
+                        .label()
+                        .is_some_and(|label| label.contains(name.as_str()))
+            })
+            .map(|(id, _)| id)
+            .expect("the calendar's visibility checkbox");
+        app.harness()
+            .perform_a11y_action(checkbox, &ui::a11y::Action::ToggleCheck)
+            .expect("toggle the checkbox");
+        let display = app.settings::<crate::display::CalendarDisplay>().get();
+        assert_eq!(display.visible.get(&calendar), Some(&false));
+        assert!(
+            !app.state().events.is_empty(),
+            "hiding changes no calendar content"
+        );
     }
 }

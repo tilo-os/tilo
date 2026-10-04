@@ -150,6 +150,7 @@ impl<R: Resource> Dispatcher<R> {
     /// them; a test that needs those runs the app
     /// ([`TestApp`](super::testing::HeadlessApp)).
     #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
     pub fn detached(app_id: &'static str, me: &str) -> Self {
         Self::new(app_id, R::KIND, false, Some(me))
     }

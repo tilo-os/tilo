@@ -151,6 +151,13 @@ impl Palette {
         }
     }
 
+    /// The colour called `name` (any case).
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|palette| palette.name().eq_ignore_ascii_case(name))
+    }
+
     pub fn from_index(i: usize) -> Self {
         // `i % Self::ALL.len()` is always in bounds since `ALL` is a fixed,
         // non-empty array; `Self::ALL[0]` is a compile-time-safe fallback.

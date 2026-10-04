@@ -261,21 +261,6 @@ impl AccountStore {
         Some(Self::load_from_settings_in(&root))
     }
 
-    /// Persist Calendar's account projection to the canonical shared store.
-    /// Other account types and their sealed secrets are retained by
-    /// [`Self::persist_in`]; callers receive an error when the real config
-    /// root cannot be resolved or written, rather than claiming a setting was
-    /// saved when it was not.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` when no Tilo config root is available or persistence fails.
-    pub fn persist(&self) -> std::io::Result<()> {
-        let root = accounts::config_root()
-            .ok_or_else(|| std::io::Error::other("no config dir for calendar accounts"))?;
-        self.persist_in(&root)
-    }
-
     /// Load under an explicit config root — the seam tests use.
     pub fn load_from_settings_in(config_root: &Path) -> Self {
         Self::from_shared(
