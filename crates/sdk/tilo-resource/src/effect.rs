@@ -86,6 +86,31 @@ pub trait Effect: Sized + 'static {
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         Self::decode(&effect, &args)
     }
+
+    /// This effect with its arguments bound, as one published action that
+    /// takes none: what an entity offers for itself (a row's "stop this
+    /// job"), invoked like the declared effect with these arguments.
+    #[allow(
+        clippy::expect_used,
+        reason = "an effect id and a JSON argument map always serialize"
+    )]
+    fn bound(&self) -> ActionSpec {
+        let id = self.id();
+        let declared = Self::declarations().into_iter().find(|decl| decl.id == id);
+        let payload = Payload {
+            effect: id.to_owned(),
+            args: self.arguments(),
+        };
+        let label = declared.as_ref().map_or(id, |decl| decl.label);
+        let mut bound =
+            ActionSpec::operation(id, label, OperationKind::Effect, Self::OPERATION, &payload)
+                .expect("an effect invocation serializes");
+        if let Some(declared) = declared.map(|decl| decl.spec(Self::OPERATION)) {
+            bound.description = declared.description;
+            bound.contract = declared.contract;
+        }
+        bound
+    }
 }
 
 /// How the effect's specs carry an invocation: its id and its arguments.
@@ -313,6 +338,30 @@ mod tests {
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+    }
+
+    #[test]
+    fn a_bound_effect_takes_no_arguments_and_invokes_with_its_own() {
+        let value = Sample::RenameThing {
+            thing: "a".into(),
+            label: Some("A".into()),
+        };
+        let bound = value.bound();
+        assert_eq!(bound.id, "rename-thing");
+        assert_eq!(bound.label, "Rename a thing");
+        assert_eq!(bound.kind, OperationKind::Effect);
+        assert_eq!(bound.contract.permission, PermissionRequirement::Read);
+        assert!(bound.params().is_empty());
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(encoded.type_id, "test.effects");
+        assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), value);
+
+        let wipe = Sample::Wipe { passes: 3 }.bound();
+        assert_eq!(wipe.contract.risk, RiskLevel::Destructive);
+        assert_eq!(
+            wipe.contract.execution,
+            ExecutionMode::Background { cancellable: true }
+        );
     }
 
     #[test]
