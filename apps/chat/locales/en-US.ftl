@@ -4,13 +4,6 @@
 # person, so somebody can tell at a glance that they are addressing software.
 chat-mention-agent-tag = agent
 
-# Status line under the user's own name in the sidebar's identity bar.
-chat-identity-available = Available
-chat-identity-in-voice = In voice
-
-# Chip under the workspace title that adds a channel category.
-chat-sidebar-add-category = ＋ Category
-
 # Control buttons along the bottom of the expanded call overlay.
 chat-call-mute = Mute
 chat-call-unmute = Unmute
@@ -57,8 +50,11 @@ chat-call-select-input = Select microphone
 chat-call-input = Input
 chat-call-input-hint = Input from call status
 
+# The call window's connection line under its video.
 chat-call-connected = Connected
 chat-call-reconnecting = Reconnecting
 chat-call-joining = Joining
-chat-call-unavailable = Unavailable
-chat-call-stream-status = { $count } audio streams · { $status }
+chat-call-unavailable = Voice unavailable
+
+# An attachment the reader has no access to: the card says why it cannot open.
+chat-attachment-no-access = You don't have access to this file
