@@ -12,7 +12,7 @@
 //!     (relative/absolute) for copy/paste and fill.
 //!   * [`fill`]     — the smart fill-handle engine: extend a selected pattern
 //!     (formula, numeric series, dates, month/weekday names, text+number).
-//!   * [`settings`] — the shared per-user global settings store and the
+//!   * [`settings`] — the person's shared locale defaults and the
 //!     per-document overrides that layer on top of it.
 //!   * [`doc`]      — the Automerge document model (sheets + cells live in
 //!     the CRDT, so collaboration and undo come for free).
