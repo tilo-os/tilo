@@ -1759,14 +1759,13 @@ pub fn live_catalogue_resource(address: &ActionAddress, label: &str) -> Option<R
             "Open artist",
             MusicOperation::OpenArtist { id: id.to_owned() },
         )
-    } else if let Some(id) = resource.strip_prefix("music.playlist:") {
+    } else {
+        let id = resource.strip_prefix("music.playlist:")?;
         (
             "music.playlist",
             "Open playlist",
             MusicOperation::OpenPlaylist { id: id.to_owned() },
         )
-    } else {
-        return None;
     };
     Some(
         Resource::new(address.resource.clone(), kind, label).with_action(operation_spec(
