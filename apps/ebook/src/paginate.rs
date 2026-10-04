@@ -2011,7 +2011,9 @@ mod tests {
     }
 
     /// Word joiners and zero-width no-break spaces are invisible: they add
-    /// no advance and paint no glyph in any reader face.
+    /// no advance and paint no glyph in any reader face. A joiner does sit
+    /// between the letters beside it, so a kerned face sets no kerning
+    /// across it: the joined run measures as its pieces set apart.
     #[test]
     fn invisible_joiners_have_no_width() {
         let mut tr = TextRenderer::new();
@@ -2020,14 +2022,20 @@ mod tests {
                 tr.measure_font(text, 18.0, None, TextWeight::Regular, false, &family)
                     .0
             };
-            let plain = width("gods—Deliberations");
-            for joined in [
-                "gods\u{feff}—Deliberations",
-                "gods\u{2060}—\u{2060}Deliberations",
+            for (joined, pieces) in [
+                (
+                    "gods\u{feff}—Deliberations",
+                    &["gods", "—Deliberations"][..],
+                ),
+                (
+                    "gods\u{2060}—\u{2060}Deliberations",
+                    &["gods", "—", "Deliberations"][..],
+                ),
             ] {
+                let apart: f32 = pieces.iter().map(|piece| width(piece)).sum();
                 assert!(
-                    (width(joined) - plain).abs() < 0.5,
-                    "{joined:?} measures {} vs {plain}",
+                    (width(joined) - apart).abs() < 0.5,
+                    "{joined:?} measures {} vs {apart} for its pieces",
                     width(joined)
                 );
             }
