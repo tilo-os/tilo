@@ -14,8 +14,9 @@
 //!
 //! A write shows at once and is sent to the shell in the order it was made.
 //! While writes are on their way, views from the shell are held back, so a
-//! view taken before a write cannot undo it on screen; the shell's answer to
-//! the last write is the view that follows.
+//! view taken before a write cannot undo it on screen; once the last write
+//! is answered, the newest view the shell gave — its answer, or a later
+//! change it reported meanwhile — is the one that shows.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
@@ -36,8 +37,11 @@ struct State {
     /// What this process reads: the shell's last view with this process's
     /// unanswered writes applied.
     view: Map<String, Value>,
-    /// The shell's last view.
+    /// The newest view the shell gave.
     confirmed: Map<String, Value>,
+    /// The shell's revision of [`Self::confirmed`]: answers and reported
+    /// changes can arrive out of order, and an older one never replaces it.
+    confirmed_revision: u64,
     /// Writes not yet handed to the broker worker, oldest first.
     outbox: Vec<(String, Map<String, Value>)>,
     /// Writes the worker sent and the shell has not answered.
@@ -104,12 +108,26 @@ impl ChannelSettings {
         true
     }
 
-    /// The shell's view arrived or changed. Returns whether what this
-    /// process reads changed.
-    pub(crate) fn received(&self, view: Map<String, Value>) -> bool {
+    /// A new link to the shell: its revisions start again.
+    pub(crate) fn linked(&self) {
+        self.lock().confirmed_revision = 0;
+    }
+
+    /// Keep `view`, the shell's at `revision`, unless a newer one is kept.
+    fn confirm(state: &mut State, revision: u64, view: Map<String, Value>) {
+        if revision >= state.confirmed_revision {
+            state.confirmed = view;
+            state.confirmed_revision = revision;
+        }
+    }
+
+    /// The shell's view at `revision` arrived or changed. Returns whether
+    /// what this process reads changed.
+    pub(crate) fn received(&self, revision: u64, view: Map<String, Value>) -> bool {
         let mut state = self.lock();
-        state.confirmed.clone_from(&view);
-        self.show(&mut state, view)
+        Self::confirm(&mut state, revision, view);
+        let shown = state.confirmed.clone();
+        self.show(&mut state, shown)
     }
 
     /// Writes for the worker to send, in order; each is answered with
@@ -123,20 +141,17 @@ impl ChannelSettings {
 
     /// The shell's answer to one sent write: the view after it, or why it
     /// was refused. Returns whether what this process reads changed.
-    pub(crate) fn answered(&self, answer: Result<Map<String, Value>, String>) -> bool {
+    pub(crate) fn answered(&self, answer: Result<(u64, Map<String, Value>), String>) -> bool {
         let mut state = self.lock();
         state.in_flight = state.in_flight.saturating_sub(1);
-        let view = match answer {
-            Ok(view) => {
-                state.confirmed.clone_from(&view);
-                view
-            }
+        match answer {
+            Ok((revision, view)) => Self::confirm(&mut state, revision, view),
             Err(error) => {
                 tracing::warn!(app = %self.app_id, %error, "settings: the shell refused a write");
-                state.confirmed.clone()
             }
-        };
-        self.show(&mut state, view)
+        }
+        let shown = state.confirmed.clone();
+        self.show(&mut state, shown)
     }
 }
 
@@ -154,7 +169,7 @@ impl<'a> Unanswered<'a> {
     }
 
     /// See [`ChannelSettings::answered`].
-    pub(crate) fn answer(mut self, answer: Result<Map<String, Value>, String>) -> bool {
+    pub(crate) fn answer(mut self, answer: Result<(u64, Map<String, Value>), String>) -> bool {
         self.settings
             .take()
             .is_some_and(|settings| settings.answered(answer))
@@ -212,7 +227,7 @@ mod tests {
     #[test]
     fn a_write_shows_at_once_and_an_older_view_cannot_undo_it() {
         let channel = ChannelSettings::new("so.tilo.monitor");
-        channel.received(object(json!({"locale": {"region": "DE"}})));
+        channel.received(1, object(json!({"locale": {"region": "DE"}})));
         let before = channel.revision();
         channel
             .update_section(
@@ -229,7 +244,7 @@ mod tests {
         let sent = channel.take_outbox();
         assert_eq!(sent.len(), 1);
         // A view the shell took before the write arrives first.
-        assert!(!channel.received(object(json!({"locale": {"region": "DE"}}))));
+        assert!(!channel.received(1, object(json!({"locale": {"region": "DE"}}))));
         assert_eq!(
             channel.load()["app_personal"]["so.tilo.monitor"]["confirm_kill"],
             false
@@ -239,15 +254,40 @@ mod tests {
             "app_personal": {"so.tilo.monitor": {"confirm_kill": false}},
             "locale": {"region": "AT"}
         }));
-        assert!(channel.answered(Ok(after.clone())));
+        assert!(channel.answered(Ok((2, after.clone()))));
         assert_eq!(channel.load(), after);
+    }
+
+    #[test]
+    fn a_change_reported_before_the_answer_is_not_undone_by_it() {
+        let channel = ChannelSettings::new("so.tilo.monitor");
+        channel.received(
+            1,
+            object(json!({"app_personal": {"so.tilo.monitor": {"x": 1}}})),
+        );
+        channel
+            .update_section("app_personal", object(json!({"so.tilo.monitor": {"x": 2}})))
+            .unwrap();
+        let _ = channel.take_outbox();
+        // Another device's change, reported while the answer is on its way.
+        let later = object(json!({"app_personal": {"so.tilo.monitor": {"x": 3}}}));
+        assert!(
+            !channel.received(3, later.clone()),
+            "held back for the write"
+        );
+        // The answer, the shell's view right after this write, arrives last.
+        assert!(channel.answered(Ok((
+            2,
+            object(json!({"app_personal": {"so.tilo.monitor": {"x": 2}}}))
+        ))));
+        assert_eq!(channel.load(), later, "the newest view shows");
     }
 
     #[test]
     fn a_refused_write_falls_back_to_the_shells_view() {
         let channel = ChannelSettings::new("so.tilo.monitor");
         let shell = object(json!({"app_device_local": {"so.tilo.monitor": {"x": 1}}}));
-        channel.received(shell.clone());
+        channel.received(1, shell.clone());
         channel
             .update_section(
                 "app_device_local",
