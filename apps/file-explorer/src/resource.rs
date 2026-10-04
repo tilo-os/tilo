@@ -11,7 +11,9 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{
+    Dispatcher, FileHistory, Fixture, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
+};
 use ui::tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, ParamType,
 };
@@ -245,12 +247,36 @@ impl ResourceApp for FileExplorerShell {
     const ID: &'static str = "so.tilo.file-explorer";
     const TITLE: &'static str = "Files";
     const ICON: Option<&'static str> = Some("file-explorer");
+    /// A folder to open (`file-explorer ~/Documents`), or a received share
+    /// link (`file-explorer tilo-file://v2/…`) to admit and open.
+    const ARGUMENTS: usize = 1;
+    /// A received share link on standard input
+    /// (`--open-share-stdin`), so its secret stays out of the process list.
+    const FLAGS: &'static [&'static str] = &[crate::received_shares::STDIN_FLAG];
+    const FILE_HISTORY: Option<FileHistory> = Some(FileHistory {
+        title: "Selected file",
+        preview: crate::framework_history::preview,
+    });
+
+    fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
+        let widget = match cx.fixture::<crate::scenarios::Scene>() {
+            Some(scene) => FileExplorerWidget::for_scene(&scene),
+            None => FileExplorerWidget::new(),
+        };
+        cx.surface(widget)
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenarios::SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1200, 720)
     }
 
-    fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
-        cx.surface(FileExplorerWidget::new())
+    /// A capture browses folders written for it, never the machine's own.
+    fn fixture(fixture: &mut Fixture<FileExplorer>) {
+        crate::scenarios::prepare(fixture);
     }
 }
 
@@ -262,7 +288,23 @@ impl ResourceSurface<FileExplorer> for FileExplorerWidget {
     }
 
     fn attach(&mut self, cx: SurfaceCx<FileExplorer>) {
+        if let Some(source) = cx.file_history() {
+            self.show_file_history_in(source);
+        }
+        if let Some(argument) = cx.launch_arguments().first() {
+            self.open_launch_argument(argument);
+        }
+        if cx.mode().is_live() && cx.launch_flag(crate::received_shares::STDIN_FLAG) {
+            match crate::received_shares::read_link(std::io::stdin()) {
+                Ok(link) => self.admit_received_share(link),
+                Err(error) => self.set_external_status(error),
+            }
+        }
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -332,11 +374,6 @@ impl ActionSink {
             self.local.last_dispatched()
         }
     }
-}
-
-/// Live launch on the framework host.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<FileExplorerShell>()
 }
 
 #[cfg(test)]
@@ -553,5 +590,42 @@ mod tests {
                 .map(|resource| (resource.kind.as_str(), resource.label.as_str()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// A capture browses the folders written for its scenario and reads
+    /// nothing of the machine it runs on; its view state is staged once laid
+    /// out.
+    #[test]
+    fn captures_browse_their_own_scene() {
+        use ui::prelude::TestApp;
+
+        let guard = crate::model::fixture_io_guard::DenyAmbientIo::new();
+        let mut select = TestApp::<FileExplorerShell>::capture(Some("select")).unwrap();
+        assert_eq!(select.harness().inspection().viewport, [1200, 720]);
+        let frame = select.harness().inspection_json().unwrap();
+        assert!(frame.contains("Holiday plan.md"), "{frame}");
+        assert!(frame.contains("Development"), "{frame}");
+        assert_eq!(guard.attempts(), 0, "a capture read ambient state");
+        drop(guard);
+
+        let mut menu = TestApp::<FileExplorerShell>::capture(Some("context-menu")).unwrap();
+        let frame = menu.harness().inspection_json().unwrap();
+        assert!(
+            frame.contains("Meeting notes"),
+            "the scene's templates: {frame}"
+        );
+    }
+
+    /// A launch naming a folder opens it.
+    #[test]
+    fn a_launch_opens_the_folder_it_names() {
+        use ui::prelude::TestApp;
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("launched.txt"), b"x").unwrap();
+        let mut app =
+            TestApp::<FileExplorerShell>::launched(&[directory.path().to_str().unwrap()]).unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("launched.txt"), "{frame}");
     }
 }
