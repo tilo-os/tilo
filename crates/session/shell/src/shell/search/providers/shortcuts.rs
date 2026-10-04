@@ -106,6 +106,7 @@ impl ShortcutsProvider {
                 }
                 let invocation = InvocationId::new();
                 let request = InvokeRequest {
+                    on_behalf_of: None,
                     invocation,
                     target: target.clone(),
                     argument: if arguments.is_empty() {

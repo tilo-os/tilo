@@ -1334,6 +1334,7 @@ impl CapnpBrokerState {
             root.peer_id,
             (surface, offered),
             InvocationInputs {
+                caller: Some(caller),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument,
                 actor: &actor,
@@ -1416,6 +1417,7 @@ impl CapnpBrokerState {
             &address.resource,
             &address.action,
             InvocationInputs {
+                caller: Some(caller),
                 execution: super::ExecutionScope::for_call(caller, request.invocation),
                 argument: argument.as_deref(),
                 actor: &actor,

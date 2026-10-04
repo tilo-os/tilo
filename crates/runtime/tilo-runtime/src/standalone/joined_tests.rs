@@ -370,6 +370,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         .in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
+        on_behalf_of: None,
         invocation: id,
         target: RemoteActionTarget {
             provider: "7".into(),
