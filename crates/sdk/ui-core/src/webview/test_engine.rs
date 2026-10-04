@@ -97,8 +97,21 @@ impl TestEngine {
         }
         let url = inner.history.get(inner.index).cloned().unwrap_or_default();
         Ok(PageReply {
-            outline: matches!(request, PageRequest::Outline)
+            outline: matches!(request, PageRequest::Outline | PageRequest::Changes)
                 .then(|| format!("- document \"{url} — test page\"")),
+            // Logs and lookups answer with an empty, well-formed finding.
+            data: match request {
+                PageRequest::Console { .. } | PageRequest::Network { .. } => {
+                    Some(serde_json::json!({"entries": [], "next": 0, "dropped": 0}))
+                }
+                PageRequest::At { x, y } => {
+                    Some(serde_json::json!({"x": x, "y": y, "element": null}))
+                }
+                PageRequest::Settle { .. } => {
+                    Some(serde_json::json!({"settled": true, "waited_ms": 0}))
+                }
+                _ => None,
+            },
             message: "Done".into(),
             url,
             navigated: false,

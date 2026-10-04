@@ -9,6 +9,7 @@
 #include "site_info.h"
 #include "navigation_history.h"
 #include "page_automation.h"
+#include "agent_log.h"
 #include "paint_snapshot.h"
 #include "fullscreen_state.h"
 #include "credential_document.h"
@@ -241,6 +242,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);});
     page_automation_->Attach();
+    agent_log_=new tilo::AgentLog(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
+    agent_log_->Attach();
     paint_snapshot_=new tilo::PaintSnapshot(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     paint_snapshot_->Attach();
     auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
@@ -261,6 +264,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     navigation_history_=nullptr;
     if(page_automation_)page_automation_->Detach();
     page_automation_=nullptr;
+    if(agent_log_)agent_log_->Detach();
+    agent_log_=nullptr;
     if(paint_snapshot_)paint_snapshot_->Detach();
     paint_snapshot_=nullptr;
     if(startup_diagnostics_)startup_diagnostics_->Detach();
@@ -494,7 +499,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
     else if(op=="credential_action") {CredentialCommand(d);}
-    else if(op=="page") page_automation_->Request(d);
+    else if(op=="page") {
+      // Whatever an agent reads or does next, its logs start here.
+      const auto action=d->GetString("action").ToString();
+      if(action=="console" || action=="network") agent_log_->Request(d);
+      else { agent_log_->Activate();page_automation_->Request(d); }
+    }
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="try_close_tab") {DetachVisible();}
@@ -911,6 +921,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   std::string credential_committed_origin_;
   CefRefPtr<tilo::NavigationHistory> navigation_history_;
   CefRefPtr<tilo::PageAutomation> page_automation_;
+  CefRefPtr<tilo::AgentLog> agent_log_;
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
   CefRefPtr<tilo::Capabilities> capabilities_;
   CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
@@ -1061,9 +1072,17 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="page") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
-    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit")return false;
+    if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="press" && action!="submit" &&
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network")return false;
+    const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
+      action=="console" || action=="network";
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
-                            : action!="outline" && action!="press")return false;
+                            : !elementless)return false;
+    for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;
+    if(action=="at" && (!number("x") || !number("y") || Number(d,"x")<0 || Number(d,"y")<0 || Number(d,"x")>100000 || Number(d,"y")>100000))return false;
+    if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
+       d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
+    if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
     if(action=="select") {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");
