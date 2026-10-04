@@ -73,6 +73,8 @@ getrandom.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# The node apps probe speaks remote-action frames.
+tilo-actions = { path = "../../collab/actions" }
 
 [lints]
 workspace = true
