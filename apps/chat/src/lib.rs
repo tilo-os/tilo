@@ -21,8 +21,6 @@
 //! Current audio streams come only from its verified publisher inventory;
 //! nothing about a call is written to the document. Read access permits listening,
 //! while publication also requires current Write authority and a capture lease.
-//! The legacy custom-Iroh and simulator module is diagnostic infrastructure;
-//! it does not provide or advertise governed MOQT readiness.
 //!
 //! [`ChatShell`] is the app every host runs and mounts ([`definition`]).
 
@@ -65,7 +63,6 @@ pub mod i18n;
 pub mod identity;
 pub mod images;
 mod local_voice;
-pub mod media;
 pub mod mention;
 pub mod model;
 pub mod paint;

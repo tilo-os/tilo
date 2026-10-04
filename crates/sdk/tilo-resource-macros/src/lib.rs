@@ -637,6 +637,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut variants = Vec::new();
     let mut arms = Vec::new();
     let mut risks = Vec::new();
+    let mut permissions = Vec::new();
     let mut change_kinds = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
@@ -845,6 +846,9 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         } else {
             quote!(.describe(#description))
         };
+        permissions.push(quote! {
+            #action_enum::#variant { .. } => #krate::__private::PermissionRequirement::#permission,
+        });
         decls.push(quote! {
             #krate::ActionDecl::new(
                 #id,
@@ -921,6 +925,19 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
         }
     };
+    // An action declared at another level than writing is applied at that
+    // level too, whichever door it comes through.
+    let permission_fn = if permissions.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn permission(action: &Self::Action) -> #krate::__private::PermissionRequirement {
+                match &action.operation {
+                    #(#permissions)*
+                }
+            }
+        }
+    };
     let body = if arms.is_empty() {
         quote!(match *self {})
     } else {
@@ -984,6 +1001,8 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             fn declarations() -> ::std::vec::Vec<#krate::ActionDecl<Self>> {
                 ::std::vec![#(#decls),*]
             }
+
+            #permission_fn
 
             fn children(state: &Self) -> ::std::vec::Vec<#krate::__private::Resource> {
                 let _ = state;

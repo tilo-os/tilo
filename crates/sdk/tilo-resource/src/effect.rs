@@ -57,12 +57,15 @@
 //! then its result), `cancellable` (a job the caller may cancel), `returns`
 //! (answers with a JSON value), `destructive` (asks for confirmation),
 //! `privileged` (hands out or shows a credential, such as copying a one-time
-//! code: asks for confirmation too), `idempotent` (safe to repeat after an
+//! code: asks for confirmation too), `sensitive` (discloses a copy of private
+//! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
 //! uncertain outcome), `device_only` (only the person at this device) and
 //! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
-//! secret the host keeps out of logs, history and confirmations.
+//! secret the host keeps out of logs, history and confirmations, and
+//! `#[param("…", choices = EXPR)]` names the values it takes when they are a
+//! fixed list (`EXPR` yields strings: a constant table, an array of names).
 
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction, ExecutionMode,
@@ -134,6 +137,39 @@ pub trait Effect: Sized + 'static {
                 move |_| encoded.clone(),
             ),
         }
+    }
+
+    /// This effect bound to the item it acts on, as [`bound`](Self::bound),
+    /// still asking its caller for the arguments named in `asking`: rename
+    /// *this* file, to a name the caller gives. The bound arguments are this
+    /// effect's own; an asked one the caller supplies replaces it.
+    fn bound_asking(&self, asking: &[&str]) -> ActionSpec {
+        let id = self.id();
+        let Some(decl) = Self::declarations().into_iter().find(|decl| decl.id == id) else {
+            return self.bound();
+        };
+        let params = decl
+            .params
+            .iter()
+            .filter(|param| asking.contains(&&*param.name))
+            .cloned()
+            .collect();
+        let bound = self.arguments();
+        decl.spec_with(Self::OPERATION, params, move |args| {
+            let mut merged = bound.clone();
+            merged.extend(args.to_json());
+            EncodedAction::encode_operation(
+                Self::OPERATION,
+                &Payload {
+                    effect: id.to_owned(),
+                    args: merged,
+                },
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: Self::OPERATION.to_owned(),
+                payload: Vec::new(),
+            })
+        })
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
@@ -244,7 +280,10 @@ impl EffectDecl {
         spec.contract = ActionContract {
             permission: self.permission,
             risk: self.risk,
-            confirmation: if matches!(self.risk, RiskLevel::Destructive | RiskLevel::Privileged) {
+            confirmation: if matches!(
+                self.risk,
+                RiskLevel::Destructive | RiskLevel::Privileged | RiskLevel::Sensitive
+            ) {
                 ConfirmationPolicy::Confirm
             } else {
                 ConfirmationPolicy::None
@@ -366,13 +405,22 @@ mod tests {
         /// Copy a thing's key.
         #[effect(privileged, permission = "read")]
         CopyKey { thing: String },
+        /// Paint a thing.
+        Paint {
+            #[param("The colour", choices = ["red", "green"])]
+            colour: String,
+            #[param(choices = SHADES)]
+            shade: Option<String>,
+        },
     }
+
+    const SHADES: [&str; 2] = ["light", "dark"];
 
     #[test]
     fn a_derived_vocabulary_publishes_each_variant_and_round_trips_through_its_spec() {
         let specs = Sample::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key"]);
+        assert_eq!(ids, ["reload", "rename-thing", "wipe", "copy-key", "paint"]);
 
         let rename = &specs[1];
         assert_eq!(rename.label, "Rename a thing");
@@ -384,6 +432,19 @@ mod tests {
         assert_eq!(rename.contract.permission, PermissionRequirement::Read);
         assert!(matches!(rename.contract.result, ResultSpec::Json { .. }));
         assert_eq!(rename.contract.execution, ExecutionMode::Immediate);
+
+        let paint = &specs[4];
+        assert_eq!(paint.params()[0].description, "The colour");
+        let choices = |index: usize| -> Vec<&str> {
+            paint.params()[index]
+                .choices
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect()
+        };
+        assert_eq!(choices(0), ["red", "green"]);
+        assert_eq!(choices(1), ["light", "dark"]);
+        assert!(!paint.params()[1].required);
 
         let wipe = &specs[2];
         assert_eq!(wipe.label, "Wipe");
@@ -428,6 +489,26 @@ mod tests {
             Sample::Wipe { passes: 3 }
         );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
+
+        // Bound to the thing it acts on, it still asks for the rest.
+        let asking = Sample::RenameThing {
+            thing: "a".into(),
+            label: None,
+        }
+        .bound_asking(&["label"]);
+        assert_eq!(asking.id, "rename-thing");
+        let asked: Vec<&str> = asking.params().iter().map(|param| &*param.name).collect();
+        assert_eq!(asked, ["label"]);
+        let mut label = serde_json::Map::new();
+        label.insert("label".into(), "b".into());
+        let encoded = asking.build_json(&label).unwrap();
+        assert_eq!(
+            Sample::from_payload(&encoded.payload).unwrap(),
+            Sample::RenameThing {
+                thing: "a".into(),
+                label: Some("b".into()),
+            }
+        );
     }
 
     /// A vocabulary with presentation-only effects and effects offered only
@@ -501,6 +582,23 @@ mod tests {
         let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, "test.effects");
         assert_eq!(Sample::from_payload(&encoded.payload).unwrap(), copy);
+    }
+
+    /// A copy of private data leaving the app asks first, without being a
+    /// credential or a deletion.
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.exports")]
+    enum Exports {
+        /// Export the address book.
+        #[effect(job, sensitive)]
+        ExportBook,
+    }
+
+    #[test]
+    fn a_sensitive_effect_asks_first() {
+        let spec = Exports::ExportBook.bound();
+        assert_eq!(spec.contract.risk, RiskLevel::Sensitive);
+        assert_eq!(spec.contract.confirmation, ConfirmationPolicy::Confirm);
     }
 
     /// A secret argument is published as one, and still reaches the handler.

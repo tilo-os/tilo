@@ -12,16 +12,13 @@
 use std::rc::Rc;
 
 use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    ActionParam, ActionSpec, OperationKind, PROMPTED_PARAM, ParamType,
-    Resource as PublishedResource,
-};
+use ui::tilo_actions::{ActionParam, PROMPTED_PARAM, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    CONTACTS_ACTION_TYPE, ContactsAction, book_effect_specs, contact_resource_id,
+    CONTACTS_ACTION_TYPE, ContactsAction, ContactsEffect, contact_resource_id,
     create_contact_action, open_contact_address, open_group_address, ordered_groups,
     publish_children, register, resolve_child, split_name,
 };
@@ -85,13 +82,6 @@ impl Resource for Contacts {
 
     fn child(state: &ContactsState, id: &str) -> Option<PublishedResource> {
         resolve_child(&state.contacts, id)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        book_effect_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     /// Every contact is found by anything it holds — name, organisation,
@@ -195,6 +185,8 @@ impl ResourceApp for ContactsShell {
     const ID: &'static str = "so.tilo.contacts";
     const TITLE: &'static str = "Contacts";
     const ICON: Option<&'static str> = Some("contacts");
+    const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
         cx.surface(ContactsApp::new())
@@ -262,13 +254,26 @@ impl ResourceApp for ContactsShell {
     }
 }
 
-impl ResourceSurface<Contacts> for ContactsApp {
+impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
+    fn effect(
+        &mut self,
+        effect: ContactsEffect,
+        cx: &mut ui::framework::EffectCx<Contacts, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
     fn present(&mut self, state: &Rc<ContactsState>) {
         self.present_book(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_dispatcher(cx.dispatcher());
+        // A vCard file the app was opened with ("open with", a dropped
+        // file) is imported into the address book.
+        if let Some(file) = cx.launch().file() {
+            self.open_cards(String::from_utf8_lossy(file.bytes()).into_owned());
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -294,6 +299,7 @@ mod tests {
         group_resource_id,
     };
     use ui::framework::testing::TestApp;
+    use ui::tilo_actions::OperationKind;
 
     fn has_control(app: &mut TestApp<ContactsShell>, label: &str) -> bool {
         app.harness()
@@ -307,6 +313,30 @@ mod tests {
             .children
             .iter()
             .find(|child| child.id.as_str() == id)
+    }
+
+    /// A vCard file the app is opened with is imported into the book, as
+    /// an import the person picked: created through the door, undone in one
+    /// step.
+    #[test]
+    fn a_vcard_file_the_app_is_opened_with_is_imported() {
+        let cards = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nN:Lovelace;Ada;;;\r\nEND:VCARD\r\n\
+                     BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Alan Turing\r\nN:Turing;Alan;;;\r\nEND:VCARD\r\n";
+        let (file, _receipt) =
+            ui::application::OpenFile::new("friends.vcf", "text/vcard", cards.as_bytes().to_vec())
+                .unwrap();
+        let mut app = TestApp::<ContactsShell>::handed(file).unwrap();
+        app.harness().relayout();
+        let mut names: Vec<String> = app
+            .state()
+            .contacts
+            .iter()
+            .map(crate::model::Contact::display_name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Ada Lovelace", "Alan Turing"]);
+        assert!(app.undo());
+        assert!(app.state().contacts.is_empty(), "one import, one undo step");
     }
 
     /// A new window starts on an empty book; captures stage the sample book
@@ -361,12 +391,10 @@ mod tests {
         let state = ContactsState { contacts };
 
         let book = ui::tilo_resource::publish::<Contacts>(Contacts::KIND, "Contacts", &state);
-        for id in ["new-contact", "import-vcard", "export-all-vcard"] {
-            assert!(
-                book.actions.iter().any(|action| action.id == id),
-                "{id} is on the book"
-            );
-        }
+        assert!(
+            book.actions.iter().any(|action| action.id == "new-contact"),
+            "new-contact is on the book"
+        );
         assert!(find(&book, FAVORITES_RESOURCE_ID).is_some());
         let ada = find(&book, &contact_resource_id(state.contacts[0].id)).unwrap();
         for id in [

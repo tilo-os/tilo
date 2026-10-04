@@ -73,6 +73,10 @@ impl Resource for Document {
         <RichText as Resource>::annotates(action)
     }
 
+    fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
+        <RichText as Resource>::permission(action)
+    }
+
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         <RichText as Resource>::register(registry);
     }
@@ -91,6 +95,7 @@ impl Resource for Document {
                 params: decl.params,
                 permission: decl.permission,
                 destructive: decl.destructive,
+                result: decl.result,
                 build: decl.build,
             })
             .collect();
@@ -290,6 +295,7 @@ impl ResourceSurface<Document> for WordProcessorWidget {
             let format = crate::WpFormat::from_path(&path);
             self.set_file(path, format);
         }
+        self.follow_personal_dictionary(cx.settings());
         self.attach_framework(cx.live(), cx.dispatcher());
     }
 

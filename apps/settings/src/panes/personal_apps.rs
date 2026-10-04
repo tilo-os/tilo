@@ -1,60 +1,286 @@
-//! Personal default applications. Workspace policy deliberately does not live
+//! Personal default applications: which installed app opens each kind of
+//! file and link for this person, wherever they sign in. The choices are the
+//! `default_apps` section of the person's settings, which the launcher reads
+//! when it opens a file or a link. Workspace policy deliberately does not live
 //! here: it is contextual and belongs to the shell's Workspace Settings.
 
-use std::collections::HashMap;
-use ui::doc::read_str;
-use ui::widget::{AppModel, ModelPath};
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 
-use automerge::{AutoCommit, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
+use serde::{Deserialize, Serialize};
 use taffy::{NodeId, TaffyTree};
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::i18n::ArgValue;
 use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, Widget};
+use ui::tilo_actions::ResourcePresentation;
+use ui::tilo_resource::{self, Effect};
+use ui::widget::{AppModel, Button, Dropdown, ModelPath, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
+use crate::effects::{SettingsEffect, effect};
+use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, choice_row_described, rows, value_row};
-use ui::i18n::ArgValue;
+
+/// The most kinds of file and link the published tree lists.
+const MAX_KIND_ROWS: usize = 256;
+/// The most apps one kind lists.
+const MAX_APP_ROWS: usize = 128;
+
+/// The person's default apps, as their settings hold them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefaultApps {
+    #[serde(default)]
+    pub handlers: BTreeMap<ResourceKind, String>,
+}
+
+impl ui::storage::SettingsSchema for DefaultApps {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(desktop_policy::PERSONAL_DEFAULTS_SECTION);
+}
+
+impl DefaultApps {
+    fn personal(&self) -> PersonalDefaults {
+        PersonalDefaults {
+            handlers: self.handlers.clone(),
+        }
+    }
+}
+
+/// Which app opens each kind of file and link.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum DefaultAppsEffect {
+    /// Open a kind of file or link with an installed app.
+    #[effect(idempotent)]
+    SetDefaultApp {
+        #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]
+        kind: String,
+        #[param("The installed app's id")]
+        app: String,
+    },
+}
+
+/// Answer `effect`: only an installed app that claims the kind is accepted.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: DefaultAppsEffect,
+    _cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let DefaultAppsEffect::SetDefaultApp { kind, app: package } = effect;
+    let resource =
+        parse_kind(&kind).ok_or_else(|| format!("`{kind}` is not a kind of file or link"))?;
+    let area = app.default_apps();
+    let resolver = DefaultAppResolver::new(area.candidates());
+    let mut defaults = area.prefs.borrow().get().personal();
+    defaults
+        .set(resource, package, &resolver)
+        .map_err(|error| error.to_string())?;
+    app.host().update(|stored: &mut DefaultApps| {
+        stored.handlers = defaults.handlers;
+    })
+}
+
+/// The kind a published id names: `ext:pdf`, `mime:text/html`,
+/// `scheme:https`.
+fn parse_kind(kind: &str) -> Option<ResourceKind> {
+    let (prefix, name) = kind.split_once(':')?;
+    match prefix {
+        "ext" => ResourceKind::extension(name).ok(),
+        "mime" => ResourceKind::mime(name).ok(),
+        "scheme" => ResourceKind::scheme(name).ok(),
+        _ => None,
+    }
+    .filter(|parsed| parsed.as_str() == kind)
+}
+
+/// What the Default Apps area keeps for the window: the choices as last
+/// read, and the installed apps that claim kinds of files and links.
+pub struct DefaultAppsArea {
+    prefs: RefCell<Followed<DefaultApps>>,
+    candidates: OnceCell<Vec<AppCandidate>>,
+    sample: bool,
+}
+
+impl DefaultAppsArea {
+    /// The area over `cx`'s settings. A capture lists sample apps rather
+    /// than the ones this device has installed.
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            prefs: RefCell::new(cx.follow::<DefaultApps>()),
+            candidates: OnceCell::new(),
+            sample: !cx.reaches_devices(),
+        }
+    }
+
+    fn candidates(&self) -> &[AppCandidate] {
+        self.candidates.get_or_init(|| {
+            if self.sample {
+                sample_candidates()
+            } else {
+                installed_candidates()
+            }
+        })
+    }
+
+    /// One live row per kind of file or link, showing the app that opens it
+    /// now, with a row per installed app that claims it offering to make it
+    /// the default.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let mut prefs = self.prefs.borrow_mut();
+        prefs.refresh();
+        let defaults = prefs.get().personal();
+        let candidates = self.candidates();
+        let resolver = DefaultAppResolver::new(candidates);
+        kinds(candidates)
+            .into_iter()
+            .take(MAX_KIND_ROWS)
+            .map(|kind| {
+                let id = format!("settings.default-app:{}", kind.as_str());
+                let current = resolver.resolve(&kind, "", &defaults, None);
+                let mut row = LiveRow::new(
+                    id.clone(),
+                    "settings.default-app-handler",
+                    kind.display_label(),
+                );
+                if let Some(current) = &current {
+                    row = row.presentation(ResourcePresentation {
+                        detail: Some(current.package_id.clone()),
+                        ..ResourcePresentation::default()
+                    });
+                }
+                for app in apps_for(candidates, &kind).into_iter().take(MAX_APP_ROWS) {
+                    let mut choose = SettingsEffect::from(DefaultAppsEffect::SetDefaultApp {
+                        kind: kind.as_str().to_owned(),
+                        app: app.package_id.clone(),
+                    })
+                    .bound();
+                    choose.label = format!(
+                        "Open {} with {}",
+                        PersonalAppsPane::resource_label(&kind),
+                        app.display_name
+                    );
+                    row = row.row(
+                        LiveRow::new(
+                            format!("{id}/{}", app.package_id),
+                            "settings.default-app-candidate",
+                            app.display_name.clone(),
+                        )
+                        .operation(choose),
+                    );
+                }
+                row
+            })
+            .collect()
+    }
+}
+
+/// The apps a capture lists.
+fn sample_candidates() -> Vec<AppCandidate> {
+    let claim = |package: &str, name: &str, kinds: Vec<ResourceKind>| AppCandidate {
+        package_id: package.into(),
+        display_name: name.into(),
+        resources: kinds.into_iter().collect(),
+    };
+    let ext = |ext: &str| ResourceKind::extension(ext).ok();
+    let scheme = |scheme: &str| ResourceKind::scheme(scheme).ok();
+    vec![
+        claim(
+            "so.tilo.browser",
+            "Browser",
+            [scheme("https"), ext("html")]
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
+        claim(
+            "so.tilo.pdf",
+            "PDF Viewer",
+            ext("pdf").into_iter().collect(),
+        ),
+        claim(
+            "so.tilo.photos",
+            "Photos",
+            [ext("jpg"), ext("png")].into_iter().flatten().collect(),
+        ),
+    ]
+}
+
+/// Every kind some candidate claims, in order.
+fn kinds(candidates: &[AppCandidate]) -> Vec<ResourceKind> {
+    let mut kinds: Vec<_> = candidates
+        .iter()
+        .flat_map(|app| app.resources.iter().cloned())
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
+/// The candidates that claim `kind`, by name.
+fn apps_for<'a>(candidates: &'a [AppCandidate], kind: &ResourceKind) -> Vec<&'a AppCandidate> {
+    let mut apps: Vec<_> = candidates.iter().filter(|app| app.handles(kind)).collect();
+    apps.sort_by(|a, b| {
+        a.display_name
+            .cmp(&b.display_name)
+            .then_with(|| a.package_id.cmp(&b.package_id))
+    });
+    apps
+}
 
 pub struct PersonalAppsPane {
+    cx: PaneCx,
     candidates: Vec<AppCandidate>,
-    defaults: PersonalDefaults,
-    /// Where choices persist; `None` is the per-user `default-apps.json`.
-    defaults_path: Option<std::path::PathBuf>,
-    /// The choice each dropdown last showed, as seeded or read back. The
-    /// resolver's pick seeded into an untouched dropdown is not a choice;
-    /// only a value that moves away from what was shown is.
-    shown: HashMap<String, String>,
-    needs_seed: bool,
-    commit_context_pending: bool,
-    actions: crate::resource::ActionSink,
+    prefs: Followed<DefaultApps>,
+    /// The app each kind's chooser shows, by kind.
+    shown: HashMap<ResourceKind, LocalState<String>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
 
 impl PersonalAppsPane {
-    pub fn new() -> Self {
-        Self::with_state(installed_candidates(), PersonalDefaults::load(), None)
-    }
-
-    pub fn with_state(
-        candidates: Vec<AppCandidate>,
-        defaults: PersonalDefaults,
-        defaults_path: Option<std::path::PathBuf>,
-    ) -> Self {
-        Self {
+    /// The pane over `cx`'s choices, among `area`'s apps.
+    pub fn new(cx: PaneCx, area: &DefaultAppsArea) -> Self {
+        let candidates = area.candidates().to_vec();
+        let prefs = cx.follow::<DefaultApps>();
+        let shown = kinds(&candidates)
+            .into_iter()
+            .map(|kind| (kind, LocalState::new(String::new())))
+            .collect();
+        let pane = Self {
+            cx,
             candidates,
-            defaults,
-            defaults_path,
-            shown: HashMap::new(),
-            needs_seed: true,
-            commit_context_pending: false,
-            actions: crate::resource::ActionSink::default(),
+            prefs,
+            shown,
             composed: None,
             rect: Rect::ZERO,
+        };
+        pane.show();
+        pane
+    }
+
+    /// Show the app that opens each kind now: the person's choice, else the
+    /// one the resolver picks — which is shown, not stored.
+    fn show(&self) {
+        let defaults = self.prefs.get().personal();
+        let resolver = DefaultAppResolver::new(&self.candidates);
+        for (kind, state) in &self.shown {
+            let current = resolver
+                .resolve(kind, "", &defaults, None)
+                .and_then(|selected| {
+                    self.candidates
+                        .iter()
+                        .find(|app| app.package_id == selected.package_id)
+                })
+                .map(Self::option)
+                .unwrap_or_default();
+            state.set(current);
         }
     }
 
@@ -74,64 +300,41 @@ impl PersonalAppsPane {
         }
     }
 
-    fn resources(&self) -> Vec<ResourceKind> {
-        let mut resources: Vec<_> = self
-            .candidates
-            .iter()
-            .flat_map(|a| a.resources.iter().cloned())
-            .collect();
-        resources.sort();
-        resources.dedup();
-        resources
-    }
-
-    fn apps_for(&self, resource: &ResourceKind) -> Vec<&AppCandidate> {
-        let mut apps: Vec<_> = self
-            .candidates
-            .iter()
-            .filter(|a| a.handles(resource))
-            .collect();
-        apps.sort_by(|a, b| {
-            a.display_name
-                .cmp(&b.display_name)
-                .then_with(|| a.package_id.cmp(&b.package_id))
-        });
-        apps
-    }
-
     fn option(app: &AppCandidate) -> String {
         format!("{} — {}", app.display_name, app.package_id)
     }
 
-    fn key(resource: &ResourceKind) -> String {
-        format!("default_apps.{}", resource.as_str().replace(':', "."))
-    }
-
     fn build_composition(&self) -> Box<dyn Widget> {
-        let resources = self.resources();
         let mut file_rows = Vec::new();
-        for resource in &resources {
-            let apps = self.apps_for(resource);
+        for kind in kinds(&self.candidates) {
+            let apps = apps_for(&self.candidates, &kind);
+            let Some(state) = self.shown.get(&kind) else {
+                continue;
+            };
             if apps.is_empty() {
                 continue;
             }
             let options: Vec<String> = apps.iter().map(|a| Self::option(a)).collect();
-            let current = self
-                .defaults
-                .handlers
-                .get(resource)
-                .and_then(|id| apps.iter().find(|a| &a.package_id == id))
-                .map_or_else(
-                    || options.first().cloned().unwrap_or_default(),
-                    |a| Self::option(a),
-                );
-            let label = Self::resource_label(resource);
-            let picker_path = Self::draft_key(&Self::key(resource));
-            let picker = Dropdown::new(options, &picker_path)
-                .with_id(&format!("personal-default.{}", resource.as_str()))
-                .with_placeholder(&current);
+            let by_option: Vec<(String, String)> = apps
+                .iter()
+                .map(|app| (Self::option(app), app.package_id.clone()))
+                .collect();
+            let placeholder = state.get();
+            let named = kind.as_str().to_owned();
+            let picker = self.cx.bind(
+                Dropdown::from_state(options, state)
+                    .with_id(&format!("personal-default.{}", kind.as_str()))
+                    .with_placeholder(&placeholder),
+                effect(DefaultAppsEffect::SET_DEFAULT_APP).map(move |shown: String| {
+                    let app = by_option
+                        .iter()
+                        .find(|(option, _)| *option == shown)
+                        .map_or_else(|| shown.clone(), |(_, package)| package.clone());
+                    (named.clone(), app)
+                }),
+            );
             file_rows.push(choice_row_described(
-                &label,
+                &Self::resource_label(&kind),
                 &t("settings-personal-apps-choice-follows"),
                 Box::new(picker),
             ));
@@ -168,36 +371,6 @@ impl PersonalAppsPane {
             card(&t("settings-personal-apps-files-title"), body),
         ])
     }
-
-    fn draft_key(canonical: &str) -> String {
-        format!("{canonical}.edit")
-    }
-
-    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch_with_context(
-            state,
-            SETTINGS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
-        );
-    }
-
-    pub(crate) fn bind_dispatcher(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
-    ) {
-        self.actions.attach(dispatcher);
-    }
-}
-
-impl Default for PersonalAppsPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub fn build() -> Box<dyn Widget> {
-    Box::new(PersonalAppsPane::new())
 }
 
 /// Read real installed manifests. A type only appears if an installed GUI app
@@ -250,90 +423,9 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 }
 
 impl Widget for PersonalAppsPane {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if self.needs_seed {
-            let initial_values = {
-                let resolver = DefaultAppResolver::new(&self.candidates);
-                let mut initial_values = Vec::new();
-                for resource in self.resources() {
-                    if let Some(selected) = resolver.resolve(&resource, "", &self.defaults, None)
-                        && let Some(app) = self
-                            .candidates
-                            .iter()
-                            .find(|a| a.package_id == selected.package_id)
-                    {
-                        initial_values.push((Self::key(&resource), Self::option(app)));
-                    }
-                }
-                initial_values
-            };
-            for (key, value) in initial_values {
-                self.dispatch(state, &set_text_action(&key, &value));
-                self.shown.insert(key, value);
-            }
-            self.needs_seed = false;
-        }
-        let mut changed = false;
-        for resource in self.resources() {
-            let key = Self::key(&resource);
-            let canonical = read_str(state, root, &key);
-            let draft_key = Self::draft_key(&key);
-            let draft = read_str(state, root, &draft_key);
-            let Some(option) = canonical.clone() else {
-                continue;
-            };
-            if canonical.as_deref()
-                == self
-                    .defaults
-                    .handlers
-                    .get(&resource)
-                    .and_then(|id| {
-                        self.apps_for(&resource)
-                            .into_iter()
-                            .find(|app| &app.package_id == id)
-                    })
-                    .map(Self::option)
-                    .as_deref()
-                && draft.as_deref().is_some_and(|draft| draft != option)
-            {
-                self.dispatch(state, &set_text_action(&key, draft.unwrap_or_default()));
-                continue;
-            }
-            if let Some(canonical) = canonical
-                && read_str(state, root, &draft_key).as_deref() != Some(&canonical)
-            {
-                let _ = state.put(root, draft_key, canonical);
-            }
-            if self.shown.get(&key) == Some(&option) {
-                continue;
-            }
-            self.shown.insert(key.clone(), option.clone());
-            let Some(app) = self
-                .apps_for(&resource)
-                .into_iter()
-                .find(|a| Self::option(a) == option)
-            else {
-                continue;
-            };
-            if self.defaults.handlers.get(&resource) != Some(&app.package_id) {
-                let resolver = DefaultAppResolver::new(&self.candidates);
-                if self
-                    .defaults
-                    .set(resource, app.package_id.clone(), &resolver)
-                    .is_ok()
-                {
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            let _ = match &self.defaults_path {
-                Some(path) => self.defaults.save_at(path),
-                None => self.defaults.save(),
-            };
+        if self.prefs.refresh() {
+            self.show();
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -396,14 +488,12 @@ impl Widget for PersonalAppsPane {
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
@@ -427,25 +517,12 @@ impl Widget for PersonalAppsPane {
     }
 }
 
-impl ui::undo::UndoPoints for PersonalAppsPane {
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
-        crate::panes::preference_commit_context(
-            pending,
-            "personal-apps",
-            &t("settings-personal-apps-undo-name"),
-            &t("settings-personal-apps-undo-action"),
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::SettingsShell;
+    use ui::prelude::TestApp;
+
     fn candidate(id: &str, ext: &str) -> AppCandidate {
         AppCandidate {
             package_id: id.into(),
@@ -453,6 +530,7 @@ mod tests {
             resources: [ResourceKind::extension(ext).unwrap()].into(),
         }
     }
+
     #[test]
     fn personal_apps_copy_comes_from_the_catalogue() {
         assert_eq!(
@@ -469,79 +547,71 @@ mod tests {
         );
     }
 
-    /// Dropdown choices persist and MIME/scheme claims are personal defaults.
+    /// A choice is the person's `default_apps` section, which the launcher
+    /// reads; an app that does not claim the kind is refused, and showing
+    /// the resolver's pick stores nothing.
     #[test]
-    fn personal_default_apps_persist_and_expose_claims() {
-        // Case `dropdown_change_persists_personal_choice`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("default-apps.json");
-            let candidates = vec![candidate("so.tilo.a", "pdf"), candidate("so.tilo.b", "pdf")];
-            let mut pane = PersonalAppsPane::with_state(
-                candidates,
-                PersonalDefaults::default(),
-                Some(path.clone()),
-            );
-            let mut doc = AutoCommit::new();
-            pane.sync(&mut doc, &automerge::ROOT);
-            doc.put(
-                &automerge::ROOT,
-                "default_apps.ext.pdf",
-                "so.tilo.b — so.tilo.b",
-            )
-            .unwrap();
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                pane.defaults
-                    .handlers
-                    .get(&ResourceKind::extension("pdf").unwrap())
-                    .map(String::as_str),
-                Some("so.tilo.b")
-            );
-            assert_eq!(
-                PersonalDefaults::load_at(&path)
-                    .handlers
-                    .get(&ResourceKind::extension("pdf").unwrap())
-                    .map(String::as_str),
-                Some("so.tilo.b"),
-                "the choice survives a reload"
-            );
-        }
+    fn a_default_app_is_the_persons_choice() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let settings = app.settings::<DefaultApps>();
+        assert!(
+            settings.get().handlers.is_empty(),
+            "showing the resolver's pick is not a personal choice"
+        );
+        app.effect_on(
+            "settings.default-app:ext:pdf/so.tilo.pdf",
+            &SettingsEffect::from(DefaultAppsEffect::SetDefaultApp {
+                kind: "ext:pdf".into(),
+                app: "so.tilo.pdf".into(),
+            }),
+        )
+        .expect("the app's row offers making it the default");
+        let section = settings
+            .document()
+            .section(desktop_policy::PERSONAL_DEFAULTS_SECTION);
+        assert_eq!(
+            PersonalDefaults::from_section(&section)
+                .handlers
+                .get(&ResourceKind::extension("pdf").unwrap())
+                .map(String::as_str),
+            Some("so.tilo.pdf")
+        );
+        let refused = DefaultAppsEffect::SetDefaultApp {
+            kind: "ext:pdf".into(),
+            app: "so.tilo.photos".into(),
+        };
+        assert!(app.effect(&SettingsEffect::from(refused)).is_err());
+        let surface = app.agent_surface().to_string();
+        assert!(
+            surface.contains("settings.default-app:scheme:https"),
+            "{surface}"
+        );
+    }
 
-        // Case `mime_and_scheme_claims_are_exposed_as_personal_defaults`.
-        {
-            let candidate = AppCandidate {
-                package_id: "so.tilo.browser".into(),
-                display_name: "Browser".into(),
-                resources: [
-                    ResourceKind::mime("text/html").unwrap(),
-                    ResourceKind::scheme("https").unwrap(),
-                ]
-                .into(),
-            };
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("default-apps.json");
-            let mut pane = PersonalAppsPane::with_state(
-                vec![candidate],
-                PersonalDefaults::default(),
-                Some(path.clone()),
-            );
-            let mut doc = AutoCommit::new();
-            pane.sync(&mut doc, &automerge::ROOT);
-            pane.sync(&mut doc, &automerge::ROOT);
-            assert!(
-                pane.defaults.handlers.is_empty(),
-                "showing the resolver's pick is not a personal choice"
-            );
-            assert!(!path.exists(), "opening the pane persists nothing");
-            assert_eq!(
-                read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
-                Some("Browser — so.tilo.browser")
-            );
-            assert_eq!(
-                read_str(&doc, &automerge::ROOT, "default_apps.scheme.https").as_deref(),
-                Some("Browser — so.tilo.browser")
-            );
-        }
+    /// The pane shows the resolver's pick until the person chooses, then
+    /// follows the choice whoever made it.
+    #[test]
+    fn the_pane_follows_the_choices() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let area = DefaultAppsArea {
+            prefs: RefCell::new(cx.follow::<DefaultApps>()),
+            candidates: OnceCell::from(vec![
+                candidate("so.tilo.a", "pdf"),
+                candidate("so.tilo.b", "pdf"),
+            ]),
+            sample: true,
+        };
+        let pdf = ResourceKind::extension("pdf").unwrap();
+        let mut pane = PersonalAppsPane::new(cx.clone(), &area);
+        assert_eq!(pane.shown[&pdf].get(), "so.tilo.a — so.tilo.a");
+        cx.settings::<DefaultApps>()
+            .update(|apps| {
+                apps.handlers.insert(pdf.clone(), "so.tilo.b".into());
+            })
+            .unwrap();
+        let mut doc = ui::automerge::AutoCommit::new();
+        pane.sync(&mut doc, &ui::automerge::ROOT);
+        assert_eq!(pane.shown[&pdf].get(), "so.tilo.b — so.tilo.b");
     }
 }

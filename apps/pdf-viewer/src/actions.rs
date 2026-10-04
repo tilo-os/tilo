@@ -668,6 +668,7 @@ impl PdfViewerAction {
         use ui::permissions::Verb;
         match self {
             PdfViewerAction::AddReply { .. }
+            | PdfViewerAction::AddComment { .. }
             | PdfViewerAction::SetCommentBody { .. }
             | PdfViewerAction::SetCommentResolved { .. } => Verb::Comment,
             _ => Verb::Write,

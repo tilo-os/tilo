@@ -459,7 +459,6 @@ files-menu-restore = Restore
 files-menu-delete-permanently = Delete Permanently
 files-menu-empty-trash = Empty Trash
 files-menu-rename = Rename
-files-action-rename-prompt = New name
 files-menu-cut = Cut
 files-menu-copy = Copy
 files-menu-properties = Properties…

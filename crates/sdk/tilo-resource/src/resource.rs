@@ -146,6 +146,17 @@ pub trait Resource: Sized + 'static {
         false
     }
 
+    /// The least a participant must be allowed to do for `action` to apply:
+    /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
+    /// reply or a note someone who may only comment can still add. The
+    /// dispatcher a view or surface edits through checks it, and a declared
+    /// action that builds it names the same level with
+    /// [`ActionDecl::requiring`].
+    fn permission(action: &Self::Action) -> PermissionRequirement {
+        let _ = action;
+        PermissionRequirement::Write
+    }
+
     /// Mutations offered by name. The generic [`APPLY`] action is always
     /// offered in addition, so any typed value can reach the host.
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -322,6 +333,9 @@ pub struct ActionDecl<R: Resource> {
     pub params: Vec<ActionParam>,
     pub permission: PermissionRequirement,
     pub destructive: bool,
+    /// What the action answers its caller with, beside the change: the state
+    /// it left, as the declaring resource's surface reports it.
+    pub result: Option<tilo_actions::ResultSpec>,
     pub build: BuildAction<R>,
 }
 
@@ -334,6 +348,7 @@ impl<R: Resource> Clone for ActionDecl<R> {
             params: self.params.clone(),
             permission: self.permission,
             destructive: self.destructive,
+            result: self.result.clone(),
             build: Arc::clone(&self.build),
         }
     }
@@ -353,6 +368,7 @@ impl<R: Resource> ActionDecl<R> {
             params,
             permission: PermissionRequirement::Write,
             destructive: false,
+            result: None,
             build: Arc::new(build),
         }
     }
@@ -360,6 +376,14 @@ impl<R: Resource> ActionDecl<R> {
     #[must_use]
     pub fn describe(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Declare what the action answers its caller with (an outline of the
+    /// state it left), which the hosting surface supplies after it applies.
+    #[must_use]
+    pub fn returns(mut self, result: tilo_actions::ResultSpec) -> Self {
+        self.result = Some(result);
         self
     }
 
@@ -521,6 +545,9 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     }
     if decl.destructive {
         spec = spec.destructive();
+    }
+    if let Some(result) = &decl.result {
+        spec.contract.result = result.clone();
     }
     spec
 }

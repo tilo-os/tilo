@@ -33,6 +33,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -914,10 +915,6 @@ pub struct SlidesApp {
     /// edit (or undo) to the current slide invalidates the cached render.
     deck_rev: u64,
 
-    /// Complete, incremental Ctrl+K index. Cloning its provider handle is
-    /// cheap; rebuilding a large deck's postings each frame is not.
-    search_provider: crate::search_provider::SlideSearchProvider,
-
     /// Where image elements' bytes live, addressed by the hash in their `src`.
     /// Created once with the app and shared with its image and document workers.
     content: ContentStore,
@@ -1038,7 +1035,6 @@ impl SlidesApp {
 
     fn build(dispatch: Dispatcher<SlidesDeck>, content: ContentStore, live: bool) -> Self {
         let deck = starter_deck();
-        let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
         let (document_worker, document_worker_error) = if live {
             match DocumentWorker::new(content.clone()) {
                 Ok(worker) => (Some(worker), None),
@@ -1095,7 +1091,6 @@ impl SlidesApp {
             text_scale: 1.0,
             breakpoint: NARROW_BREAKPOINT,
             deck_rev: 0,
-            search_provider,
             images: ImageStore::new(content.clone()),
             content,
             rail_scroll: 0.0,
@@ -1428,7 +1423,6 @@ impl SlidesApp {
                 self.cur_slide = index;
                 self.focus_slide = None;
             }
-            self.search_provider.refresh(&self.deck);
             self.bump_deck_revision();
         }
         if self.deck.slides.is_empty() {
@@ -1499,18 +1493,50 @@ impl SlidesApp {
         self.dispatch.apply(action);
     }
 
-    /// The context Ctrl+K needs to build the deck's resource tree: the deck
-    /// title, each slide (with its elements), and this peer's live selection.
-    pub(crate) fn slides_resource_ctx(&self) -> crate::actions::SlidesResourceCtx {
-        let mut ctx = crate::actions::SlidesResourceCtx::from_deck(&self.deck);
-        ctx.ranks.clone_from(&self.ranks);
-        if let Some(slide) = ctx.slides.get(self.cur_slide) {
-            ctx.selection = Some(crate::actions::selection_ctx_for(
-                slide,
-                self.sel.as_deref(),
-            ));
+    /// The edits bound to the selected element, published on the deck
+    /// beside its declared actions: delete it, bring it to the front, send
+    /// it to the back.
+    pub(crate) fn selection_declarations(&self) -> Vec<ActionDecl<SlidesDeck>> {
+        if self.mode != Mode::Edit {
+            return Vec::new();
         }
-        ctx
+        let (Some(slide), Some(element)) = (self.slide(), self.selected_element()) else {
+            return Vec::new();
+        };
+        let (index, slide_id, element_id) = (self.cur_slide, slide.id.clone(), element.id.clone());
+        let label = crate::actions::element_label(element.kind, &element.text);
+        let mut declarations = vec![{
+            let element_id = element_id.clone();
+            ActionDecl::new(
+                "delete-selection",
+                format!("Delete {label}"),
+                Vec::new(),
+                move |_, _| Ok(actions::delete_element_action(index, element_id.clone())),
+            )
+            .describe("Delete the element selected in the editor.")
+            .destructive()
+        }];
+        for (id, front, verb) in [
+            ("bring-selection-front", true, "Bring to front"),
+            ("send-selection-back", false, "Send to back"),
+        ] {
+            let Some(z) = actions::restack_z_for_author(&self.deck, &slide_id, &element_id, front)
+            else {
+                continue;
+            };
+            let (slide_id, element_id) = (slide_id.clone(), element_id.clone());
+            declarations.push(
+                ActionDecl::new(id, format!("{verb}: {label}"), Vec::new(), move |_, _| {
+                    Ok(actions::set_element_z_action(
+                        slide_id.clone(),
+                        element_id.clone(),
+                        z,
+                    ))
+                })
+                .describe("Restack the element selected in the editor."),
+            );
+        }
+        declarations
     }
 
     // --- rail scroll geometry ----------------------------------------------
@@ -5366,8 +5392,7 @@ impl Widget for SlidesApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::AudiencePresentationProvider,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::resources::PublishesResources
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6061,28 +6086,11 @@ impl Widget for SlidesApp {
     }
 }
 
-impl ui::search::capability::SearchSource for SlidesApp {
-    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
-    /// palette. Every row addresses an exported resource `View` operation, so
-    /// search uses the same brokered navigation route as agents and a11y.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
 impl ui::resources::PublishesResources for SlidesApp {
-    /// [`tilo_resource::publish`] owns the deck door; the surface adds its
-    /// live selection.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::live_presentation_resources(&self.slides_resource_ctx())
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "slides.deck" {
-            return None;
-        }
-        Self::publish_resource(self, doc, id)
-    }
-
+    /// The deck's edits answer their caller with the deck's outline, so an
+    /// agent sees what it changed without reading the deck again. The deck
+    /// itself is published by its resource; the editor publishes nothing
+    /// beside it.
     fn document_action_result(
         &self,
         doc: &AutoCommit,

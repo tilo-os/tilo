@@ -43,7 +43,6 @@ use crate::actions::{self, ChatAction};
 use crate::call::CallState;
 use crate::doc::ChatDoc;
 use crate::identity::LocalIdentity;
-use crate::media::MediaEngine;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
 use crate::permissions::ChatPermissions;
 use crate::responsive::{FlapMode, FlapState, LEFT_BREAKPOINT, RIGHT_BREAKPOINT};
@@ -687,9 +686,6 @@ pub struct ChatApp {
     // this person, so their lines go on reading "You".
     pub(crate) former_ids: Vec<Id>,
 
-    // Engines (call sounds + media transport).
-    pub(crate) media: MediaEngine,
-
     // The OS permission gate: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
     // `PermissionContext` the compositor passes into `draw`.
@@ -918,7 +914,6 @@ impl ChatApp {
             // Default to the deterministic local bus; the live binary
             // (`ChatApp::new`) upgrades to the real transport. This keeps
             // `--shots`/tests from binding a real iroh endpoint per instance.
-            media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
             dispatch: None,
             preferences: None,
@@ -3531,11 +3526,9 @@ impl Widget for ChatApp {
     /// continuous redraws (the roster/rings are static), so an idle call
     /// no longer pins a core.
     fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
-        // A bound media endpoint wakes the event loop; sync adopts it.
-        let media_bound = self.media.poll_binding();
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || media_bound
+        std::mem::take(&mut self.read_on_present)
     }
 
     fn needs_animation_frame(&self) -> bool {
