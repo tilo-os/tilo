@@ -10,7 +10,9 @@
 //! [`ChipStyle`], never a colour: [`ChipStyle::Neutral`] is the quiet raised
 //! pill, [`ChipStyle::Tinted`] carries a [`Tone`] (a status or a person) as a
 //! faint wash and edge with neutral ink, [`ChipStyle::Live`] is the one filled
-//! pill, for something happening right now. Canvas hosts paint the same
+//! pill, in your colour, for something that wants your attention (an unread
+//! count, something live). Danger red is only for errors and failures, a
+//! `Tinted(Tone::Danger)` status. Canvas hosts paint the same
 //! pills with [`ChipFace`] and [`super::BadgeFace`].
 //!
 //! Interactions surface through the toolkit's drain channel —
@@ -67,8 +69,10 @@ pub enum ChipStyle {
     /// A tone washed into the body and drawn as the edge, with neutral ink
     /// measured on the washed body.
     Tinted(Tone),
-    /// Something happening right now (live, recording): the one filled
-    /// pill, in the danger status colour with ink measured on it.
+    /// Something that wants your attention (an unread count, a mention,
+    /// something live): the one filled pill, in your colour
+    /// (`intent.you`) with ink measured on it, the same mark as a sidebar's
+    /// unread count. Never danger red: red is an error or a failure.
     Live,
 }
 
@@ -122,7 +126,7 @@ impl ChipStyle {
                 }
             }
             Self::Live => {
-                let fill = colors.semantic.danger;
+                let fill = colors.intent.you;
                 let ink = colors.on_surface_at(fill, ON_FILL_MIN_CONTRAST).ink;
                 ChipColors {
                     fill,
@@ -1110,8 +1114,11 @@ mod tests {
                 );
                 assert!(colors.edge.is_some(), "a tinted pill is closed by its edge");
             }
+            // Unread and attention are your colour, as a sidebar's unread
+            // count; red is only for errors.
             let live = ChipStyle::Live.colors(&theme, ground, false, false);
-            assert_eq!(live.fill, theme.tokens.colors.semantic.danger);
+            assert_eq!(live.fill, theme.tokens.colors.intent.you);
+            assert_ne!(live.fill, theme.tokens.colors.semantic.danger);
             assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
             let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
             assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);

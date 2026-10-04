@@ -8,7 +8,8 @@ use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill, ImageBrush};
 
 use ui::paint::PaintCtx;
-use ui::text_render::TextWeight;
+use ui::text_render::TextStyle;
+use vello::peniko::Color;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -44,6 +45,56 @@ pub struct DeckAssets<'a> {
     pub images: &'a dyn ImageLookup,
 }
 
+/// `theme` at unit text scale, when it is scaled: what a slide's words lay
+/// out against.
+pub fn unit_scale(theme: &ui::theme::Theme) -> Option<ui::theme::Theme> {
+    ((theme.text_scale - 1.0).abs() > f32::EPSILON).then(|| theme.clone().with_text_scale(1.0))
+}
+
+/// The colour under the middle of text element `e`: the topmost filled
+/// shape beneath it on the slide, else the slide's background.
+fn ground_under(palette: &Palette, slide: &Slide, e: &Element) -> Color {
+    let centre = Point::new(e.x + e.w / 2.0, e.y + e.h / 2.0);
+    let mut ground = palette.slide_bg(slide.background);
+    for other in slide.z_sorted() {
+        if other.id == e.id {
+            break;
+        }
+        let covers = match other.kind {
+            ElementKind::Rect => {
+                Rect::new(other.x, other.y, other.x + other.w, other.y + other.h).contains(centre)
+            }
+            ElementKind::Ellipse => {
+                let (rx, ry) = (other.w / 2.0, other.h / 2.0);
+                if rx <= 0.0 || ry <= 0.0 {
+                    false
+                } else {
+                    let dx = (centre.x - (other.x + rx)) / rx;
+                    let dy = (centre.y - (other.y + ry)) / ry;
+                    dx * dx + dy * dy <= 1.0
+                }
+            }
+            ElementKind::Text | ElementKind::Line | ElementKind::Image => false,
+        };
+        if covers && let Some(fill) = palette.resolve_role(&other.fill) {
+            ground = fill;
+        }
+    }
+    ground
+}
+
+/// The ink a text element is drawn in. The `text` and `text-dim` roles
+/// resolve against what the text actually stands on (a shape's fill, or the
+/// slide's background), so a label on a node stays legible in every theme;
+/// every other role is the colour it names.
+pub fn text_ink(palette: &Palette, slide: &Slide, e: &Element) -> Color {
+    match e.fill.as_str() {
+        "text" => palette.ink_on(ground_under(palette, slide, e), false),
+        "text-dim" => palette.ink_on(ground_under(palette, slide, e), true),
+        role => palette.resolve_role(role).unwrap_or(palette.text),
+    }
+}
+
 /// Paint one slide into `dest`. `corner` is the slide-card corner radius
 /// in pixels (0 for present mode's full-bleed render).
 pub fn draw_slide(
@@ -53,11 +104,13 @@ pub fn draw_slide(
     dest: Rect,
     corner: f64,
 ) {
-    draw_slide_except(ctx, assets, slide, dest, corner, None);
+    draw_slide_except(ctx, assets, slide, dest, corner, None, false);
 }
 
 /// [`draw_slide`], leaving out the words of text element `editing`: the
-/// canvas draws that box's editor in their place.
+/// canvas draws that box's editor in their place. With `prompts`, a text
+/// box with no words yet shows a dimmed prompt for them (the editor's
+/// canvas); a thumbnail or a presentation shows it empty.
 pub fn draw_slide_except(
     ctx: &mut PaintCtx<'_>,
     assets: DeckAssets<'_>,
@@ -65,6 +118,7 @@ pub fn draw_slide_except(
     dest: Rect,
     corner: f64,
     editing: Option<&str>,
+    prompts: bool,
 ) {
     let (scene, transform) = (&mut *ctx.scene, ctx.transform);
     let s = dest.width() / SLIDE_W;
@@ -72,7 +126,15 @@ pub fn draw_slide_except(
     let palette = &assets.palette.on(slide.background);
     let bg = palette.slide_bg(slide.background);
     let card = RoundedRect::from_rect(dest, corner);
-    scene.fill(Fill::NonZero, transform, bg, None, &card);
+    if corner > 0.0 {
+        // A framed slide (the canvas, a thumbnail, a preview) is a card:
+        // its ground with an edge derived from it, so a white slide on a
+        // white window keeps its outline.
+        ui::surface::card(scene, transform, dest, corner, bg);
+    } else {
+        // Full bleed while presenting.
+        scene.fill(Fill::NonZero, transform, bg, None, &card);
+    }
 
     // Clip element painting to the slide card so overflowing shapes stay
     // crisp at the rounded edge.
@@ -82,13 +144,59 @@ pub fn draw_slide_except(
         palette,
         images: assets.images,
     };
+    // A slide's type is sized in slide units, whatever the reader's text
+    // scale: its words lay out against a theme at unit scale.
+    let unit_theme = unit_scale(ctx.theme);
     for el in slide.z_sorted() {
-        if el.kind == ElementKind::Text && editing == Some(el.id.as_str()) {
+        if el.kind == ElementKind::Text {
+            if editing == Some(el.id.as_str()) {
+                continue;
+            }
+            if el.is_blank_text() && !prompts {
+                continue;
+            }
+            let theme = unit_theme.as_ref().unwrap_or(ctx.theme);
+            let prompt = (prompts && el.is_blank_text()).then(|| prompt_for(slide, el));
+            let shown = prompt.as_ref().unwrap_or(el);
+            let ink = text_ink(palette, slide, shown);
+            draw_text_element(
+                &mut PaintCtx::new(ctx.scene, ctx.transform, ctx.text, theme),
+                ink,
+                shown,
+                dest,
+                s,
+            );
             continue;
         }
         draw_element(ctx, assets, el, dest, s);
     }
     ctx.scene.pop_layer();
+}
+
+/// What text box `e` on `slide` asks for while it has no words: the slide's
+/// largest text box asks for a title, any other for text.
+pub fn prompt_text(slide: &Slide, e: &Element) -> String {
+    let largest = slide
+        .elements
+        .iter()
+        .filter(|other| other.kind == ElementKind::Text)
+        .map(|other| other.font_size)
+        .fold(0.0_f64, f64::max);
+    crate::strings::tr(if e.font_size >= largest {
+        "slides-prompt-title"
+    } else {
+        "slides-prompt-text"
+    })
+}
+
+/// Text box `e`, which has no words yet, as the editor shows it: a dimmed
+/// prompt for its words.
+fn prompt_for(slide: &Slide, e: &Element) -> Element {
+    let mut prompt = e.clone();
+    prompt.text = prompt_text(slide, e);
+    prompt.blocks.clear();
+    prompt.fill = "text-dim".into();
+    prompt
 }
 
 /// Per-layout chrome: a faint footer rule + slide-number dot region so a
@@ -173,7 +281,13 @@ fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, des
             draw_image_element(ctx, assets, e, er, s);
         }
         ElementKind::Text => {
-            draw_text_element(ctx, palette, e, dest, s);
+            draw_text_element(
+                ctx,
+                palette.resolve_role(&e.fill).unwrap_or(palette.text),
+                e,
+                dest,
+                s,
+            );
         }
     }
 }
@@ -224,21 +338,14 @@ fn draw_image_element(
         }
         ImageState::Loading => {
             scene.fill(Fill::NonZero, transform, palette.surface_dim, None, &frame);
-            let msg = "Loading image…";
-            let font = (14.0 * s).clamp(9.0, 15.0) as f32;
-            let (tw, th) = tr.measure_weighted(msg, font, None, TextWeight::Regular);
-            tr.draw_text_weighted(
+            draw_placeholder_line(
+                tr,
                 scene,
-                msg,
-                font,
-                with_alpha(palette.text_dim, 200),
-                transform
-                    * Affine::translate((
-                        er.center().x - f64::from(tw) / 2.0,
-                        er.center().y - f64::from(th) / 2.0,
-                    )),
-                None,
-                TextWeight::Regular,
+                transform,
+                palette,
+                er,
+                s,
+                &crate::strings::tr("slides-image-loading"),
             );
         }
         ImageState::Failed => {
@@ -246,28 +353,49 @@ fn draw_image_element(
             scene.stroke(
                 &Stroke::new((1.5 * s).max(0.75)),
                 transform,
-                with_alpha(palette.danger, 180),
+                palette.failed,
                 None,
                 &frame,
             );
-            let msg = "Image unavailable";
-            let font = (13.0 * s).clamp(9.0, 14.0) as f32;
-            let (tw, th) = tr.measure_weighted(msg, font, None, TextWeight::Regular);
-            tr.draw_text_weighted(
+            draw_placeholder_line(
+                tr,
                 scene,
-                msg,
-                font,
-                with_alpha(palette.text_dim, 210),
-                transform
-                    * Affine::translate((
-                        er.center().x - f64::from(tw) / 2.0,
-                        er.center().y - f64::from(th) / 2.0,
-                    )),
-                None,
-                TextWeight::Regular,
+                transform,
+                palette,
+                er,
+                s,
+                &crate::strings::tr("slides-image-unavailable"),
             );
         }
     }
+}
+
+/// One line centred in an image element that has no picture to show, set at
+/// the slide's own scale like the rest of its content.
+fn draw_placeholder_line(
+    tr: &mut ui::text_render::TextRenderer,
+    scene: &mut Scene,
+    transform: Affine,
+    palette: &Palette,
+    er: Rect,
+    s: f64,
+    message: &str,
+) {
+    // A caption-sized line in slide units, scaled with the slide.
+    let style = TextStyle::content((24.0 * s) as f32);
+    let (tw, th) = tr.measure_style(message, None, &style);
+    tr.draw_style(
+        scene,
+        message,
+        palette.text_dim,
+        transform
+            * Affine::translate((
+                er.center().x - f64::from(tw) / 2.0,
+                er.center().y - f64::from(th) / 2.0,
+            )),
+        None,
+        &style,
+    );
 }
 
 thread_local! {
@@ -282,8 +410,11 @@ const KEPT_TEXT_VIEWS: usize = 4_096;
 
 /// The block editor a text box is laid out with, for its words: the same
 /// for the read-only views and the canvas editor.
+/// The editor a text box's words are set in. An empty box shows no hint of
+/// its own: the canvas prompts for its words (see [`prompt_text`]).
 pub fn text_box_editor(e: &Element) -> BlockEditor {
     BlockEditor::new()
+        .with_empty_hint("")
         .with_wrap_lines(true)
         .with_compact_paragraph_spacing(true)
         .with_body_size(e.font_size as f32)
@@ -313,7 +444,7 @@ pub fn text_box_rect(e: &Element) -> Rect {
     Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
 }
 
-fn draw_text_element(ctx: &mut PaintCtx<'_>, palette: &Palette, e: &Element, dest: Rect, s: f64) {
+fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Rect, s: f64) {
     let PaintCtx {
         scene,
         transform,
@@ -321,7 +452,6 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, palette: &Palette, e: &Element, des
         theme,
     } = ctx;
     let (transform, theme) = (*transform, *theme);
-    let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
     // Slide text is sized in slide units, whatever the reader's text scale.
     let reader_scale = tr.text_scale();
     tr.set_text_scale(1.0);
