@@ -67,9 +67,6 @@ pub(super) struct ChromeMetrics {
     pub(super) field_pad: f64,
     /// Height of the drop-to-delete zone at the foot of the sidebar.
     pub(super) drop_zone_h: f64,
-    /// How far the open fill picker paints past its own right edge (its hex
-    /// field and colour readout), which its popover makes room for.
-    pub(super) picker_spill: f64,
 }
 
 impl ChromeMetrics {
@@ -101,7 +98,6 @@ impl ChromeMetrics {
                 + f64::from(metrics.icon_lg)
                 + f64::from(sp.s2)
                 + line(TextRole::Body),
-            picker_spill: 0.0,
         }
     }
 
@@ -425,32 +421,7 @@ impl SlidesApp {
             DropZoneFace::new(&crate::strings::tr("slides-drop-to-delete"))
                 .icon(Icon::Trash)
                 .height(tr, theme, zone_w, 0.0);
-        self.chrome_metrics.picker_spill = self.fill_picker_spill(tr, theme);
         self.drawer_theme_scale(theme);
-    }
-
-    /// How far the fill picker's hex field and colour readout reach past
-    /// the picker's own width, measured on the picker laid out at its
-    /// preferred size. The readout is measured at its widest value so the
-    /// popover does not shift while a colour is dragged. Zero while closed.
-    fn fill_picker_spill(&mut self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        if !self.fill_picker_open {
-            return 0.0;
-        }
-        let (w, h) = self.fill_picker.preferred_size();
-        self.fill_picker
-            .apply_layout_external(Rect::new(0.0, 0.0, w, h));
-        let hex = self.fill_picker.hex_input_rect();
-        let style = theme.text(TextRole::Caption);
-        let readout = [
-            "rgb(888, 888, 888)",
-            "rgb(000, 000, 000)",
-            &self.fill_picker.rgb_string(),
-        ]
-        .iter()
-        .map(|sample| f64::from(tr.measure_style(sample, None, &style).0))
-        .fold(0.0_f64, f64::max);
-        (hex.x1.max(hex.x0 + readout) - w).max(0.0).ceil()
     }
 
     /// The breakpoint below which both side panels become drawers: a slide
@@ -882,9 +853,9 @@ impl SlidesApp {
         let (w, h) = self.fill_picker.preferred_size();
         let (top, bottom) = self.fill_picker_panel_insets();
         let x = if inspector.width() > 1.0 {
-            inspector.x0 - m.s2 - m.s4 - m.picker_spill - w
+            inspector.x0 - m.s2 - m.s4 - w
         } else {
-            r.x1 - m.s4 - m.s2 - m.picker_spill - w
+            r.x1 - m.s4 - m.s2 - w
         }
         .max(r.x0 + m.s4 + m.s2);
         let y = (r.y0 + m.header_h + top + m.s2)
@@ -907,7 +878,7 @@ impl SlidesApp {
         Rect::new(
             picker.x0 - side,
             picker.y0 - top,
-            picker.x1 + self.chrome_metrics.picker_spill + side,
+            picker.x1 + side,
             picker.y1 + bottom,
         )
     }
