@@ -1,0 +1,45 @@
+[package]
+name = "tilo-sibling-unlock"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Early-boot unlock of an encrypted root with the consent of another of the owner's devices, and its enrolment."
+
+[lib]
+name = "tilo_sibling_unlock"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-sibling-unlock"
+path = "src/main.rs"
+
+[dependencies]
+# cryptsetup, systemd-creds, systemctl and NetworkManager are driven as the
+# programs the initramfs already carries, like tilo-rollback does, so linking
+# libcryptsetup or a TPM stack adds nothing to the image or the build host.
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+ed25519-dalek.workspace = true
+futures.workspace = true
+hex.workspace = true
+# The peer network: a sibling is reached directly or through a relay.
+iroh.workspace = true
+iroh-base.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+tempfile.workspace = true
+tilo-seal = { path = "../tilo-seal" }
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
+tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true
