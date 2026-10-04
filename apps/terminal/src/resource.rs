@@ -680,6 +680,7 @@ impl ResourceApp for TerminalShell {
     const ID: &'static str = "so.tilo.terminal";
     const TITLE: &'static str = "Terminal";
     const ICON: Option<&'static str> = Some("terminal");
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1200, 720)
     }
@@ -689,32 +690,20 @@ impl ResourceApp for TerminalShell {
         reason = "a framework surface without an emulator cannot present a terminal"
     )]
     fn view(cx: &mut ViewCx<Terminal>) -> Element {
-        // History mode and library tests present a headless emulator. The live
-        // window prefers a real PTY and falls back to that emulator.
-        let widget = if cx.read_only() || cfg!(test) {
-            TerminalWidget::spawn_headless()
-        } else {
+        // A window someone may type in runs its session; a past version, a
+        // screenshot, a participant who may only view, and this crate's own
+        // tests present a terminal with no process behind it.
+        let widget = if cx.mode().is_live() && !cx.read_only() && !cfg!(test) {
             TerminalWidget::spawn_default().or_else(|_| TerminalWidget::spawn_headless())
+        } else {
+            TerminalWidget::spawn_headless()
         }
         .expect("terminal surface requires an emulator");
         cx.surface(widget)
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "shell",
-            "shell-select",
-            "colors",
-            "tui",
-            "scrollback",
-            "find",
-            "empty",
-            "empty-menu",
-            "ended",
-            "targets",
-            "environments",
-            "host",
-        ]
+        crate::scenarios::SCENARIOS
     }
 }
 
@@ -743,9 +732,16 @@ impl ResourceSurface<Terminal> for TerminalWidget {
     fn present(&mut self, _state: &std::rc::Rc<SessionState>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Terminal>) {
+        self.wake_through(cx.waker());
         self.attach_framework(cx.dispatcher());
         #[cfg(test)]
         note_attach_retained(self.retains_framework_dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if let Some(name) = scenario {
+            self.stage_scenario(name);
+        }
     }
 }
 
@@ -861,6 +857,45 @@ mod tests {
             super::ATTACH_RETAINED.with(std::cell::Cell::get),
             "attach retains the dispatcher"
         );
+    }
+
+    /// A scenario's output on screen through `--shots`' own path, with the
+    /// view state staged over it.
+    fn captured<T>(scenario: &str, read: impl FnOnce(&mut TerminalWidget) -> T) -> T {
+        let mut app = ui::framework::testing::TestApp::<TerminalShell>::capture(Some(scenario))
+            .unwrap_or_else(|error| panic!("{scenario} stages: {error}"));
+        app.harness()
+            .with_widget_mut(read)
+            .expect("the terminal surface is hosted")
+    }
+
+    #[test]
+    fn scenarios_stage_their_output_and_view_state() {
+        let (open, matches) = captured("find", |terminal| terminal.find_test_state());
+        assert!(open, "the find scenario opens the find bar");
+        assert_eq!(matches.len(), 1, "one line matches `build step 042`");
+
+        let selected = captured("shell-select", |terminal| terminal.test_selected_text());
+        assert_eq!(
+            selected.as_deref(),
+            Some("primes below 20: 2 3 5 7 11 13 17 19"),
+            "the printed line is selected, not the command that echoed it"
+        );
+
+        let (scrolled, oldest) = captured("scrollback", |terminal| {
+            (
+                terminal.scroll_offset(),
+                terminal.visible_lines().join("\n"),
+            )
+        });
+        assert_eq!(scrolled, 20);
+        assert!(oldest.contains("log entry 040"), "{oldest}");
+
+        assert!(captured("tui", |terminal| terminal.is_alt_screen()));
+        assert!(captured("ended", |terminal| terminal.is_disconnected()));
+        assert!(captured("empty-menu", |terminal| terminal.context_menu_is_open()));
+        let target = captured("host", |terminal| terminal.session_target().cloned());
+        assert_eq!(target, Some(crate::target::SessionTarget::Host));
     }
 
     #[test]
