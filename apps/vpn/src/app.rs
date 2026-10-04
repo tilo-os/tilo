@@ -811,7 +811,7 @@ impl VpnApp {
         });
     }
 
-    pub(crate) fn toggle_conn_tor(&mut self, id: ConnId) {
+    pub(crate) fn toggle_conn_tor(&self, id: ConnId) {
         let next = self.vault.get(id).is_none_or(|c| !c.tor);
         if let Some(dispatcher) = &self.dispatcher {
             dispatcher.apply(&actions::set_conn_tor_action(id, next));
@@ -990,7 +990,7 @@ impl VpnApp {
         ))
     }
 
-    fn finish_import(&mut self, imported: Imported, cx: &mut EffectCx<Vpn, Self>) -> EffectAnswer {
+    fn finish_import(&mut self, imported: Imported, cx: &EffectCx<Vpn, Self>) -> EffectAnswer {
         self.importing = false;
         let target = self.provision_target.take();
         match imported {
@@ -1010,11 +1010,12 @@ impl VpnApp {
                 self.log(message.clone());
                 Err(message)
             }
-            Imported::Done {
-                connection,
-                details,
-                log,
-            } => {
+            Imported::Done(done) => {
+                let import::Done {
+                    connection,
+                    details,
+                    log,
+                } = *done;
                 self.log(log);
                 let id = connection.id;
                 // `NetworkManager` holds the profile now; the shared fleet
@@ -1190,7 +1191,7 @@ impl VpnApp {
         &mut self,
         id: ConnId,
         deleted: Result<(), String>,
-        cx: &mut EffectCx<Vpn, Self>,
+        cx: &EffectCx<Vpn, Self>,
     ) -> EffectAnswer {
         self.deleting = None;
         if let Err(message) = deleted {
@@ -3751,6 +3752,7 @@ mod tests {
     use super::*;
     use crate::model::sample_vault;
     use crate::resource::VpnShell;
+    use ui::framework::ResourceApp;
     use ui::framework::testing::TestApp;
     use ui::portal::PortalOutcome;
     use ui::tilo_resource::Invoke;
@@ -3805,7 +3807,7 @@ mod tests {
         .expect("the profile is published")
     }
 
-    /// A WireGuard provider file with a private key, in a temporary place.
+    /// A `WireGuard` provider file with a private key, in a temporary place.
     fn provider_file(stem: &str, secret: &str, endpoint: &str) -> std::path::PathBuf {
         let raw = format!(
             "[Interface]\nPrivateKey = {secret}\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = {endpoint}\nAllowedIPs = 0.0.0.0/0\n"
@@ -3926,13 +3928,13 @@ mod tests {
             assert!(busy.rows[0].1.y0 >= notice.y1);
             app.shot_loading = false;
             let p = app.layout().tor_pill.center();
-            let before = app.vault.tor_global;
+            let before = app.tor_global;
             dispatch(&mut app, &mut doc, &cursor_at(p));
             dispatch(&mut app, &mut doc, &press());
             assert!(matches!(app.pending, Some(Pending::TorGlobal(next, _)) if next != before));
             dispatch(&mut app, &mut doc, &esc_key());
             assert!(app.pending.is_none());
-            assert_eq!(app.vault.tor_global, before);
+            assert_eq!(app.tor_global, before);
         }
         // Case `header_control_band_grows_with_the_text_scale`:
         // The header control band follows the measured Import label: at 2× it is
@@ -4223,26 +4225,89 @@ mod tests {
     }
 
     #[test]
+    fn every_scenario_stages_the_fleet_and_its_stand_in_device() {
+        for scenario in VpnShell::scenarios() {
+            let app = TestApp::<VpnShell>::capture(Some(scenario)).unwrap();
+            let expected = if *scenario == "empty" { 0 } else { 4 };
+            assert_eq!(app.state().connections.len(), expected, "{scenario}");
+        }
+
+        // The stand-in device's tunnel states are what the list shows.
+        let mut connecting = TestApp::<VpnShell>::capture(Some("connecting")).unwrap();
+        let shown = connecting.harness().inspection_json().unwrap();
+        assert!(shown.contains("Home, WireGuard, Connected"), "{shown}");
+        assert!(shown.contains("Work, OpenVPN, Connecting"), "{shown}");
+
+        // 'Home' is not set up on the stand-in device: it cannot connect.
+        let mut unprovisioned = TestApp::<VpnShell>::capture(Some("unprovisioned")).unwrap();
+        let home = unprovisioned
+            .state()
+            .connections
+            .iter()
+            .find(|c| c.name == "Home")
+            .unwrap()
+            .id;
+        let row = published_row(&mut unprovisioned, home);
+        let connect = row
+            .actions
+            .iter()
+            .find(|action| action.id == "connect")
+            .unwrap();
+        assert!(matches!(
+            connect.contract.availability,
+            ui::tilo_actions::Availability::Unavailable { ref code, .. } if code == "local_credentials_required"
+        ));
+
+        // Everywhere else 'Home' is up, so it can be disconnected.
+        let mut detail = TestApp::<VpnShell>::capture(Some("detail")).unwrap();
+        let row = published_row(&mut detail, home);
+        let disconnect = row
+            .actions
+            .iter()
+            .find(|action| action.id == "disconnect")
+            .unwrap();
+        assert_eq!(
+            disconnect.contract.availability,
+            ui::tilo_actions::Availability::Available
+        );
+    }
+
+    /// Where the painted control offering `target` is.
+    fn semantic_target_rect(node: &ui::headless::InspectionNode, target: &str) -> Option<Rect> {
+        fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<Rect> {
+            if node.action_target.as_deref() == Some(target) {
+                return node.bounds.map(ui::a11y::AccessBounds::to_rect);
+            }
+            node.children.iter().find_map(|child| find(child, target))
+        }
+        node.semantics
+            .as_ref()
+            .and_then(|semantics| find(semantics, target))
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| semantic_target_rect(child, target))
+            })
+    }
+
+    /// Click the painted control offering `target`.
+    fn click_target(harness: &mut ui::headless::FrameHarness, target: &str) {
+        let at = semantic_target_rect(&harness.inspection().root, target)
+            .unwrap_or_else(|| panic!("{target} is painted"))
+            .center();
+        harness.click_at(at.x, at.y);
+    }
+
+    #[test]
     fn the_import_sheet_imports_through_the_published_effect() {
         let mut app = TestApp::<VpnShell>::new().unwrap();
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Cancelled);
         let _scope = ui::host::enter(&services);
         let harness = app.harness();
-        harness
-            .perform_semantic_named(
-                "vpn_app",
-                Some("vpn:import-dialog"),
-                &ui::a11y::Action::Activate,
-            )
-            .unwrap();
-        harness
-            .perform_semantic_named(
-                "vpn_app",
-                Some("vpn:import-openvpn"),
-                &ui::a11y::Action::Activate,
-            )
-            .unwrap();
+        click_target(harness, "vpn:import-dialog");
+        click_target(harness, "vpn:add-kind:openvpn");
+        click_target(harness, "vpn:import-openvpn");
         let picked = harness.wait_until(ui::time::Duration::from_secs(10), |_| {
             !recorder.pick_requests().is_empty()
         });

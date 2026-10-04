@@ -54,12 +54,15 @@ pub enum Imported {
     /// `NetworkManager` holds a new profile it could not be told apart from
     /// the others: trying again could duplicate a credential-bearing profile.
     Ambiguous(String),
-    /// The profile is imported (or, in a test process, parsed only).
-    Done {
-        connection: Connection,
-        details: LocalProfileDetails,
-        log: String,
-    },
+    /// The profile is imported.
+    Done(Box<Done>),
+}
+
+/// A profile imported (or, in a test process, parsed only).
+pub struct Done {
+    pub connection: Connection,
+    pub details: LocalProfileDetails,
+    pub log: String,
 }
 
 const AMBIGUOUS: &str = "NetworkManager imported a profile, but its exact new UUID could not be identified. The external profile exists; recover or remove it in NetworkManager before attempting another import.";
@@ -119,18 +122,29 @@ pub fn run(import: Import, progress: &Progress) -> Imported {
         Some(existing) => existing,
         None => config::parse_config(&stem, kind, &text),
     };
-    let mut details = config::parse_local_details(kind, &text);
+    let details = config::parse_local_details(kind, &text);
     text.zeroize();
     if !config::exec_allowed() {
-        return Imported::Done {
+        return Imported::Done(Box::new(Done {
             connection,
             details,
             log: format!(
                 "parsed {} '{stem}' (host import disabled in test process)",
                 kind.badge()
             ),
-        };
+        }));
     }
+    hand_to_network_manager(&path, kind, &stem, connection, details)
+}
+
+/// Import `path` into `NetworkManager` and find the exact profile it made.
+fn hand_to_network_manager(
+    path: &std::path::Path,
+    kind: ConnKind,
+    stem: &str,
+    connection: Connection,
+    mut details: LocalProfileDetails,
+) -> Imported {
     let known: HashSet<String> = match os_actions::list_vpn_connections() {
         Ok(profiles) => profiles.into_iter().map(|profile| profile.uuid).collect(),
         Err(error) => {
@@ -164,9 +178,9 @@ pub fn run(import: Import, progress: &Progress) -> Imported {
         return Imported::Ambiguous(AMBIGUOUS.into());
     }
     details.network_manager_uuid.clone_from(&profile.uuid);
-    Imported::Done {
+    Imported::Done(Box::new(Done {
         connection,
         details,
         log: format!("imported {} '{stem}' into NetworkManager", kind.badge()),
-    }
+    }))
 }
