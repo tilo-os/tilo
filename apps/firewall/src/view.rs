@@ -16,7 +16,7 @@ use ui::a11y::AccessNode;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Badge, Banner, Button, ButtonRole, ChipStyle, Column, Decorator, Dropdown, Element, EmptyState,
@@ -620,6 +620,7 @@ fn rule_table(
             .with_kind(TextKind::Identifier)
             .with_optional_text(|row: &RuleRow| row.source.clone(), "Anywhere"),
         ColumnDef::new("enabled", "Enabled", ColumnWidth::Auto)
+            .with_align(CellAlign::Center)
             .with_accessible_value(|row: &RuleRow| {
                 if row.enabled { "On" } else { "Off" }.to_string()
             })
@@ -898,6 +899,7 @@ fn services(zone: &Zone, wide: bool, switches: &Switches) -> DataTable<ServiceRo
         ColumnDef::new("protocol", "Protocol", ColumnWidth::Auto)
             .with_text(|row: &ServiceRow| row.protocol.to_string()),
         ColumnDef::new("allowed", "Allowed", ColumnWidth::Auto)
+            .with_align(CellAlign::Center)
             .with_accessible_value(|row: &ServiceRow| {
                 if row.allowed { "On" } else { "Off" }.to_string()
             })

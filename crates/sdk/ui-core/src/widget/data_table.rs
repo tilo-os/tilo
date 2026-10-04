@@ -115,6 +115,41 @@ pub type CellAccessibleValue<Row> = Arc<dyn Fn(&Row) -> String + Send + Sync>;
 /// field), which the table paints dimmed as the column's absent label.
 pub type CellText<Row> = Arc<dyn Fn(&Row) -> Option<String> + Send + Sync>;
 
+/// Where a column's header, text, badges and controls sit across its width.
+/// A column follows its [`TextKind`] unless it says otherwise: numbers at the
+/// trailing edge, everything else at the leading edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CellAlign {
+    #[default]
+    Leading,
+    /// A short status or a control (a switch, a badge) under its header.
+    Center,
+    Trailing,
+}
+
+impl CellAlign {
+    /// The alignment a column of `kind` takes when it names none.
+    #[must_use]
+    pub fn for_kind(kind: TextKind) -> Self {
+        if kind == TextKind::Numeric {
+            Self::Trailing
+        } else {
+            Self::Leading
+        }
+    }
+
+    /// The x of something `width` wide placed in `cell` with `pad` kept
+    /// from the edge it sits against.
+    #[must_use]
+    pub fn place(self, cell: Rect, width: f64, pad: f64) -> f64 {
+        match self {
+            Self::Leading => cell.x0 + pad,
+            Self::Center => cell.center().x - width / 2.0,
+            Self::Trailing => cell.x1 - pad - width,
+        }
+    }
+}
+
 pub struct ColumnDef<Row> {
     pub key: String,
     pub header: String,
@@ -147,6 +182,8 @@ pub struct ColumnDef<Row> {
     /// A checkbox column: the box is ticked by this and toggled through the
     /// table's checkbox callback.
     pub checked: Option<CellChecked<Row>>,
+    /// `None` follows [`Self::kind`] (see [`CellAlign::for_kind`]).
+    pub align: Option<CellAlign>,
     pub(crate) resize_handle_px: f32,
 }
 
@@ -168,6 +205,7 @@ impl<Row> ColumnDef<Row> {
             priority: 0,
             badge: None,
             checked: None,
+            align: None,
             resize_handle_px: 6.0,
         }
     }
@@ -187,6 +225,7 @@ impl<Row> ColumnDef<Row> {
         let spoken = Arc::clone(&checked);
         let mut column = Self::new(key, header, ColumnWidth::Auto);
         column.checked = Some(checked);
+        column.align = Some(CellAlign::Center);
         column.accessible_value = Some(Arc::new(move |row| {
             if spoken(row) {
                 "Checked"
@@ -243,6 +282,20 @@ impl<Row> ColumnDef<Row> {
     pub fn with_kind(mut self, kind: TextKind) -> Self {
         self.kind = kind;
         self
+    }
+
+    /// Place the column's header and cells: [`CellAlign::Center`] for a
+    /// column of switches or short statuses that stand under their header.
+    #[must_use]
+    pub fn with_align(mut self, align: CellAlign) -> Self {
+        self.align = Some(align);
+        self
+    }
+
+    /// Where the column's header and cells sit.
+    #[must_use]
+    pub fn alignment(&self) -> CellAlign {
+        self.align.unwrap_or_else(|| CellAlign::for_kind(self.kind))
     }
 
     #[must_use]
@@ -1881,7 +1934,7 @@ impl<Row> DataTable<Row> {
                 &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 Rect::new(cr.x0, header_rect.y0, cr.x1, header_rect.y1),
                 &header,
-                col.kind == TextKind::Numeric,
+                col.alignment(),
                 sorted,
             );
         }
@@ -2028,7 +2081,7 @@ impl<Row> DataTable<Row> {
                                 text_renderer,
                                 theme,
                                 cell_rect,
-                                col.kind == TextKind::Numeric,
+                                col.alignment(),
                                 &label,
                                 tone,
                             );
@@ -2569,7 +2622,7 @@ fn cell_style(theme: &Theme, kind: TextKind) -> crate::text_render::TextStyle {
     theme.text(TextRole::Caption).with_kind(kind)
 }
 
-/// Paint one text cell: leading or (numeric) trailing, elided to the cell,
+/// Paint one text cell placed by the column's alignment, elided to the cell,
 /// centred on the row; an absent value is the column's label in tertiary ink.
 fn paint_cell_text<Row>(
     scene: &mut Scene,
@@ -2581,7 +2634,7 @@ fn paint_cell_text<Row>(
     value: Option<&str>,
 ) {
     let style = cell_style(theme, column.kind);
-    let numeric = column.kind == TextKind::Numeric;
+    let align = column.alignment();
     let pad = f64::from(theme.tokens.spacing.s2);
     let (label, ink) = match value {
         Some(value) => (value, theme.text_primary),
@@ -2596,11 +2649,7 @@ fn paint_cell_text<Row>(
         let mut y = centered_text_top(cell.y0, cell.height(), px(block));
         for line in &lines {
             let (w, _) = text.measure_style(line, None, &style);
-            let x = if numeric {
-                cell.x1 - pad - f64::from(w)
-            } else {
-                cell.x0 + pad
-            };
+            let x = align.place(cell, f64::from(w), pad);
             text.draw_style(scene, line, ink, translated(transform, x, y), None, &style);
             y += line_h;
         }
@@ -2608,11 +2657,7 @@ fn paint_cell_text<Row>(
     }
     let label = text.elide_to_width_style(label, room, &style);
     let (w, h) = text.measure_style(&label, None, &style);
-    let x = if numeric {
-        cell.x1 - pad - f64::from(w)
-    } else {
-        cell.x0 + pad
-    };
+    let x = align.place(cell, f64::from(w), pad);
     text.draw_style(
         scene,
         &label,
@@ -2623,15 +2668,15 @@ fn paint_cell_text<Row>(
     );
 }
 
-/// Paint a cell's badge: a quiet pill tinted with its tone at the cell's
-/// leading (or, numeric, trailing) edge, centred on the row.
+/// Paint a cell's badge: a quiet pill tinted with its tone, placed across
+/// the cell by the column's alignment and centred on the row.
 fn paint_cell_badge(
     scene: &mut Scene,
     transform: Affine,
     text: &mut TextRenderer,
     theme: &Theme,
     cell: Rect,
-    numeric: bool,
+    align: CellAlign,
     label: &str,
     tone: crate::widget::Tone,
 ) {
@@ -2642,11 +2687,7 @@ fn paint_cell_badge(
     let w = crate::widget::BadgeFace::intrinsic_width(label, text, theme)
         .min((cell.width() - 2.0 * pad).max(0.0));
     let h = crate::widget::BadgeFace::height(theme);
-    let x = if numeric {
-        cell.x1 - pad - w
-    } else {
-        cell.x0 + pad
-    };
+    let x = align.place(cell, w, pad);
     let style = if tone == crate::widget::Tone::Neutral {
         crate::widget::ChipStyle::Neutral
     } else {
@@ -2777,13 +2818,28 @@ impl<Row: 'static> Widget for DataTable<Row> {
             let child = cell.widget.build_layout(taffy, theme, node_map);
             let mut style = taffy.style(child).cloned().unwrap_or_default();
             style.position = taffy::Position::Absolute;
+            // A leading column's control fills it; a centred or trailing one
+            // keeps its own width, at most the column's, so it can stand
+            // where the column's alignment puts it.
+            let fills = self
+                .columns
+                .get(cell.column_index)
+                .is_none_or(|column| column.alignment() == CellAlign::Leading);
             if let Some(column) = self.col_rects.get(cell.column_index) {
                 style.inset.left = length(px(column.x0 - self.rect.x0));
-                style.size.width = Dimension::length(px(column.width()));
+                if fills {
+                    style.size.width = Dimension::length(px(column.width()));
+                } else {
+                    style.max_size.width = Dimension::length(px(column.width()));
+                }
             } else if let Some(column) = self.columns.get(cell.column_index)
                 && let ColumnWidth::Fixed(width) = column.width
             {
-                style.size.width = Dimension::length(width);
+                if fills {
+                    style.size.width = Dimension::length(width);
+                } else {
+                    style.max_size.width = Dimension::length(width);
+                }
             }
             let top = self
                 .viewport
@@ -3022,10 +3078,18 @@ impl<Row: 'static> Widget for DataTable<Row> {
         for cell in &mut self.mounted_cells {
             let Some(child) = cell.node else { continue };
             let child_layout = taffy.layout(child).copied().unwrap_or_default();
+            // A control stands where its column's alignment puts it, flush
+            // with the column's edge as a leading or trailing one.
+            let width = f64::from(child_layout.size.width);
             let desired_x = self
                 .col_rects
                 .get(cell.column_index)
-                .map_or(self.rect.x0, |column| column.x0);
+                .map_or(self.rect.x0, |column| {
+                    self.columns
+                        .get(cell.column_index)
+                        .map_or(CellAlign::Leading, ColumnDef::alignment)
+                        .place(*column, width, 0.0)
+                });
             // A control centres on its row's line.
             let row_top = self.rect.y0
                 + self.header_h
@@ -3653,13 +3717,13 @@ fn compute_column_rects<Row>(
 }
 
 /// Paint one column header in `cell` (the column's rect at the header's
-/// height): `Caption` strong in secondary ink, leading or (numeric)
-/// trailing, with the sort direction as a chevron beside it.
+/// height): `Caption` strong in secondary ink, placed by the column's
+/// alignment, with the sort direction as a chevron beside it.
 fn paint_header_label(
     ctx: &mut crate::paint::PaintCtx<'_>,
     cell: Rect,
     label: &str,
-    numeric: bool,
+    align: CellAlign,
     sorted: Option<bool>,
 ) {
     if cell.width() <= 0.0 {
@@ -3682,11 +3746,8 @@ fn paint_header_label(
     let label = ctx.text.elide_to_width_style(label, px(room), &text_style);
     let (label_w, label_h) = ctx.text.measure_style(&label, None, &text_style);
     let label_y = centered_text_top(cell.y0, cell.height(), label_h);
-    let label_x = if numeric {
-        cell.x1 - pad_x - f64::from(label_w)
-    } else {
-        cell.x0 + pad_x
-    };
+    let trailing = align == CellAlign::Trailing;
+    let label_x = align.place(cell, f64::from(label_w), pad_x);
     ctx.text(
         &label,
         &text_style,
@@ -3697,7 +3758,7 @@ fn paint_header_label(
     if let Some(ascending) = sorted {
         // The sort direction is an icon beside the label: before a
         // trailing-aligned numeric header, after a leading one.
-        let x0 = if numeric {
+        let x0 = if trailing {
             label_x - icon_gap - icon
         } else {
             label_x + f64::from(label_w) + icon_gap
@@ -3960,7 +4021,7 @@ impl<'a> DataTableFace<'a> {
                 ctx,
                 *cell,
                 column.header,
-                column.kind == TextKind::Numeric,
+                CellAlign::for_kind(column.kind),
                 sorted,
             );
         }
@@ -5391,10 +5452,45 @@ mod tests {
             assert!(t.selection().is_selected(1));
         }
 
+        fn aligned_columns_place_their_controls_under_the_header() {
+            for (align, expect) in [
+                (CellAlign::Leading, 0.0),
+                (CellAlign::Center, 0.5),
+                (CellAlign::Trailing, 1.0),
+            ] {
+                let mut table = DataTable::new(vec![
+                    ColumnDef::new("action", "Action", ColumnWidth::Fixed(160.0))
+                        .with_align(align)
+                        .with_widget(|row: &R, index| {
+                            Box::new(Button::new(&format!("go-{index}"), &row.name, None))
+                        }),
+                    ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)),
+                ])
+                .with_row_key(|row: &R| {
+                    u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
+                });
+                table.set_rows(rows4());
+                let _ = lay_out(&mut table);
+                let _ = lay_out(&mut table);
+                let column = table.col_rects[0];
+                let control = table.mounted_cells[0].widget.get_rect();
+                let slack = column.width() - control.width();
+                assert!(
+                    align == CellAlign::Leading || slack > 1.0,
+                    "a placed control keeps its own width: {control:?} in {column:?}"
+                );
+                assert!(
+                    (control.x0 - column.x0 - slack * expect).abs() < 0.5,
+                    "{align:?}: {control:?} in {column:?}"
+                );
+            }
+        }
+
         interactive_cell_consumes_click_without_selecting_its_row();
         click_selects_row_and_fires_callback();
         non_selectable_table_ignores_body_clicks();
         keyboard_arrows_move_selection_when_focused();
+        aligned_columns_place_their_controls_under_the_header();
     }
 
     fn dispatch(
