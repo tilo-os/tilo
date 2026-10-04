@@ -9,6 +9,45 @@ use tokio::sync::oneshot;
 
 use super::*;
 
+#[test]
+fn worker_without_environments_needs_no_local_guest_backend() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("members");
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let worker = worker_environments(None, &root, &key, &temp.path().join("missing-key")).unwrap();
+    assert!(worker.host.is_none() && worker.legacy.is_none());
+    assert!(!root.exists());
+}
+
+#[test]
+fn configured_local_environment_host_requires_a_supported_backend() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("members");
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let config = tilo_relay_protocol::config::EnvironmentsConfig {
+        capacity: 3,
+        member_sessions: 2,
+        ..Default::default()
+    };
+    let result = worker_environments(Some(&config), &root, &key, &temp.path().join("missing-key"));
+    #[cfg(target_os = "linux")]
+    {
+        let worker = result.unwrap();
+        let host = worker.host.expect("Linux retains the ush backend");
+        assert_eq!(host.config().capacity, 3);
+        assert_eq!(host.config().quota.max_sessions, 2);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let error = result
+            .err()
+            .expect("unsupported hosting must fail explicitly");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("Linux"));
+        assert!(!root.exists(), "refusal must not create a member area");
+    }
+}
+
 /// A guest that prints a banner, then echoes its input.
 pub(crate) struct EchoLauncher {
     pub(crate) sizes: Arc<Mutex<Vec<PtySize>>>,
