@@ -86,7 +86,7 @@ jobs:
   # a branch run builds and boots the guest but publishes nothing.
   signing-preflight:
     if: github.ref == 'refs/heads/main'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:

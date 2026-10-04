@@ -95,30 +95,30 @@ impl<T: 'static> RichTextViews for ViewCx<RichText, T> {
 }
 
 /// A rich-text field of any resource in a view:
-/// `cx.rich_text_field(body_of, EditBody)`.
+/// `cx.rich_text_field(&child_resource_id::<Message>("body"), body_of, EditBody)`.
 pub trait RichTextFieldViews<R: Resource> {
-    /// The rich text `locate` finds in the resource's document, edited as
-    /// the resource's own action `wrap(edit)`.
+    /// The rich text `locate` finds in the resource's document, the child
+    /// resource `id` of it, edited as the resource's own action
+    /// `wrap(edit)`. The resource publishes the child at the same `id` with
+    /// the same `wrap` ([`publish_child`](ui::tilo_resource::publish_child)).
     fn rich_text_field(
         &self,
+        id: &str,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
         wrap: impl Fn(RichTextAction) -> R::Action + 'static,
     ) -> Element;
 }
 
-impl<R: Resource, T: 'static> RichTextFieldViews<R> for ViewCx<R, T>
-where
-    R::Action: serde::Serialize,
-{
+impl<R: Resource, T: 'static> RichTextFieldViews<R> for ViewCx<R, T> {
     fn rich_text_field(
         &self,
+        id: &str,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
         wrap: impl Fn(RichTextAction) -> R::Action + 'static,
     ) -> Element {
-        Box::new(RichTextSurface::field(RichTextField::framework(
-            self.dispatcher(),
+        Box::new(RichTextSurface::field(RichTextField::new(
+            self.child::<RichText>(id, wrap),
             locate,
-            wrap,
         )))
     }
 }

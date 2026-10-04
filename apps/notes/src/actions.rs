@@ -48,7 +48,6 @@ use crate::num;
 use tilo_document::RichText;
 use tilo_document::RichTextAction;
 use tilo_document::action::RegionKind;
-use ui::tilo_resource::Resource as _;
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::{BlockContent, BlockKind};
 
@@ -1552,19 +1551,36 @@ pub(crate) fn notebook_page_children(
         .collect()
 }
 
-#[allow(
-    clippy::expect_used,
-    reason = "empty rich-text document initialize/read cannot fail"
-)]
+/// The id a page's rich-text body is published and edited under, as a
+/// child resource of the notebook.
+pub fn page_body_id(page: PageId) -> String {
+    ui::tilo_resource::child_resource_id::<crate::resource::Notebook>(&format!("page/{page}/body"))
+}
+
+/// A rich-text edit of `page`'s body as the notebook's action.
+fn page_body_edit(page: PageId) -> impl Fn(RichTextAction) -> NotesAction + Send + Sync + 'static {
+    move |edit| edit_body_action(page, edit)
+}
+
+/// The dispatcher `page`'s body is edited through: each edit applies as the
+/// notebook's [`NotesAction::EditBody`].
+pub(crate) fn page_body_dispatcher(
+    notebook: &ui::framework::Dispatcher<crate::resource::Notebook>,
+    page: PageId,
+) -> ui::framework::Dispatcher<RichText> {
+    notebook.child(&page_body_id(page), page_body_edit(page))
+}
+
+/// A page's body, published as the rich-text resource it is: its actions
+/// apply as the notebook's [`NotesAction::EditBody`] on that page.
 fn page_body_child(page: &PageMeta) -> Resource {
-    // Vocabulary door for the nested body. Live editor edits still wrap
-    // through [`NotesAction::EditBody`] until a nested dispatcher can address
-    // the page's body map directly.
-    let mut body_doc = AutoCommit::new();
-    RichText::initialize(&mut body_doc).expect("empty rich text initializes");
-    let state = RichText::read(&body_doc).expect("empty rich text reads");
-    let id = format!("notes.page:{}/body", page.id);
-    let mut body = ui::tilo_resource::publish::<RichText>(&id, &page.title, &state);
+    let id = page_body_id(page.id);
+    let mut body = ui::tilo_resource::publish_child::<RichText, crate::resource::Notebook>(
+        &id,
+        &page.title,
+        None,
+        page_body_edit(page.id),
+    );
     stamp_published_dynamic_continuations(&mut body, id.as_bytes());
     body
 }
@@ -2325,6 +2341,7 @@ mod tests {
     use crate::model::Workspace;
     use automerge::transaction::Transactable;
     use tilo_actions::{ActionInput, LocalTransport};
+    use ui::tilo_resource::Resource as _;
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
@@ -2884,7 +2901,7 @@ mod tests {
                 .iter()
                 .find(|r| r.kind == RichText::KIND)
                 .expect("page nests a rich-text body child");
-            assert_eq!(body.id.as_str(), format!("notes.page:{projects_id}/body"));
+            assert_eq!(body.id.as_str(), page_body_id(projects_id));
         }
 
         eprintln!("phase page_resource_publishes_the_localized_editor_view");

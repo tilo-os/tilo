@@ -78,6 +78,9 @@ vendor/*/Cargo.lock
 # Local agent captures, logs, source snapshots and review scratch.
 /.superpowers/
 
+# Finder metadata lists a developer's local directory contents.
+.DS_Store
+
 # Python bytecode is regenerated from source.
 __pycache__/
 *.pyc

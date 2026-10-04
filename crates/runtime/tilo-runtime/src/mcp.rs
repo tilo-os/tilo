@@ -14,6 +14,8 @@ pub struct McpServer<H> {
     host: H,
     room: String,
     actor: String,
+    /// One transport-issued execution scope, independent of history labels.
+    caller: Caller,
     /// The agent run every invocation of this connection is attributed to.
     run: Option<tilo_actions::ActionGroup>,
     /// Pixel fallback, when the host runs beside a compositor.
@@ -284,10 +286,14 @@ fn tool_result(result: Result<Value, String>) -> Value {
 impl<H: ActionHost + Send + Sync> McpServer<H> {
     #[must_use]
     pub fn new(host: H, room: String, actor: String) -> Self {
+        let caller = Caller::local_person(actor.clone())
+            .in_room(room.clone())
+            .in_new_execution();
         Self {
             host,
             room,
             actor,
+            caller,
             run: None,
             computer: None,
             detail: Detail::Compact,
@@ -801,7 +807,13 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         // Every connection is one agent run, so its edits are attributed to
         // it in history and undo, whatever transport it came over. A host
         // that names the run itself (the HTTP endpoint) has done so already.
-        if self.run.is_none() {
+        // A client that connects again may continue the run it had, so its
+        // undo still reaches what it did before.
+        let continued = match params.pointer(SURFACE_RUN) {
+            None | Some(Value::Null) => None,
+            Some(run) => Some(continued_run(run)?),
+        };
+        if self.run.is_none() || continued.is_some() {
             let label: String = params
                 .pointer("/clientInfo/name")
                 .and_then(Value::as_str)
@@ -812,14 +824,16 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 .filter(|character| !character.is_control())
                 .take(64)
                 .collect();
+            let label = self.run.take().map_or(label, |run| run.label);
             self.run = Some(tilo_actions::ActionGroup {
-                id: format!("mcp:{}", uuid::Uuid::new_v4()),
+                id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                 label,
                 kind: "agent-run".into(),
             });
         }
+        let run = self.run.as_ref().map(|run| run.id.clone());
         Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
+            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"run":run,"execution_id":self.caller.execution_id()}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
         )
     }
     /// One catalogue page from the action host, as this bridge's caller.
@@ -1957,7 +1971,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     }
     /// The fixed profile actor, confined to the profile's workspace.
     fn caller(&self) -> Caller {
-        Caller::local_person(self.actor.clone()).in_room(self.room.clone())
+        self.caller.clone()
     }
     fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
         self.host()
@@ -2047,6 +2061,24 @@ const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs
 /// to keep version 1's rows.
 const SURFACE: &str = "so.tilo.mcp";
 const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
+/// The agent run a client continues: `{"so.tilo.mcp": {"run": "mcp:…"}}`
+/// with the id its earlier connection was answered with, or one it chose.
+/// Provenance only, like every run: it names whose steps `undo` takes back,
+/// never what the connection may do.
+const SURFACE_RUN: &str = "/capabilities/experimental/so.tilo.mcp/run";
+/// The longest run id a client may name.
+const MAX_RUN_ID: usize = 96;
+
+/// The run id a client asks to continue, checked.
+fn continued_run(run: &Value) -> Result<String, &'static str> {
+    run.as_str()
+        .map(str::trim)
+        .filter(|id| {
+            (1..=MAX_RUN_ID).contains(&id.len()) && id.chars().all(|c| c.is_ascii_graphic())
+        })
+        .map(str::to_owned)
+        .ok_or("run must be 1 to 96 printable characters without spaces: a run id from history or the run an earlier initialize answered")
+}
 /// Rows per page when the caller names no limit.
 const DEFAULT_PAGE: u32 = 64;
 /// Resources a compact needle page lists in full; more means the needle was

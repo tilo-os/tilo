@@ -18,11 +18,10 @@
 - Preserve primary actions, keyboard access, state and explicit manual dimensions.
 - Keep legacy renderer-relative font APIs compatible; theme-resolved fonts must scale once.
 - Do not globally change primitive padding or reinterpret explicit fixed sizes.
-- Preserve unrelated working changes and untracked Scratchpad ownership.
-- No pushes, merges, publishing or dependency upgrades.
-- Existing linked worktree /Users/xaver/dev/tilo-macos-shell; sequential implementers and scoped reviews.
+- No dependency upgrades.
+- Sequential implementers and scoped reviews.
 - Focused RED/GREEN behavior regressions before implementation; run relevant existing UI tests once before scoped commit. CARGO_BUILD_JOBS=4, CARGO_PROFILE_DEV_DEBUG=0, CARGO_PROFILE_TEST_DEBUG=0.
-- Every task report includes exact commands/results, self-review, screenshot paths if requested, and remaining gaps. No subagents from implementers.
+- Every task report includes exact commands/results, self-review, screenshot paths if requested, and remaining gaps.
 
 ### Task 1: Resolved text sizing and bounded EmptyState
 
@@ -67,7 +66,7 @@ Confirmed double scaling: RichTextLine::build_layout at442 calls `inner.set_font
 - [ ] Scratchpad's38px editor is **not** inherently a wrong multiline minimum: TextInput::build_layout uses auto height and measures content; Scrollable::fill_parent_height grows viewport only (scrollable.rs972/995). Empty short fields should stay compact in forms. Add opt-in `Scrollable::with_content_min_viewport_height()` (or equivalent existing API if discovered) setting the direct child's minimum height to available viewport during measured layout, while retaining intrinsic height for overflowing content. Default false. The Widget prepaint hook explicitly permits changing only its own node style: do not mutate the child node through that hook. Implement the minimum via an owned wrapper with its own hook/inherited viewport decision, or a bounded layout-protocol extension reviewed separately. This is preferable to globally expanding multiline inputs.
 - [ ] Prove empty editor fills viewport, long editor exceeds viewport and scrolls, short form multiline remains content-sized, footer stays visible, clicking lower empty area focuses/positions caret. Then one-line Scratchpad opt-in on its existing Scrollable chain (`apps/scratchpad/src/lib.rs:116–124`) preserves original source and all action bindings. Coordinate that app edit with controller.
 
-- [ ] Preserve original Scratchpad file backed up at `.superpowers/app-ui-2026-09-15/scratchpad-original/lib.rs`; minimal diff only, do not stage pre-existing untracked app/manifests. Save the app-only patch in this task's report workspace; framework changes may be committed independently. The user explicitly authorized improving every app; owner task is finished, so no permission pause.
+- [ ] Keep the Scratchpad diff minimal; framework changes may be committed independently.
 - [ ] Recapture Scratchpad wide/narrow/200%, inspect empty writing area, edit and save via existing action binding, then reopen isolated profile and verify persisted body. Confirm field remains scrollable for long content and footer stays reachable.
 
 
@@ -80,7 +79,7 @@ Confirmed double scaling: RichTextLine::build_layout at442 calls `inner.set_font
 
 **Files:** `ui/src/widget/toolbar.rs`, scoped additions in `ui/src/widget/context_menu.rs`; reuse existing Widget overlay/focus hooks (`ui/src/widget/mod.rs`) without changing that trait. Do not confuse widget Toolbar with `ui/src/chrome/toolbar.rs`.
 
-**Preflight:** `.superpowers/sdd/2026-09-15-measured-ui-components/task-4-preflight.md` maps the existing APIs and concrete gaps. ContextMenu currently has point-only placement, full unbounded height and no scrolling. Extend it with a bounded anchored route, measured row/label geometry, clipping, scrolling and offset-aware hit testing; retain legacy callers' placement behavior unless they opt into the new route. This is shared menu infrastructure, not a second Toolbar-specific popup. Keep host focus on Toolbar and route internal focus into/out of the owned menu through existing hooks. Synthetic menu accessibility must include action targets and painted bounds, not just nested labels. Tests must cover the existing legacy menu behavior as well as the new route.
+**Preflight:** ContextMenu currently has point-only placement, full unbounded height and no scrolling. Extend it with a bounded anchored route, measured row/label geometry, clipping, scrolling and offset-aware hit testing; retain legacy callers' placement behavior unless they opt into the new route. This is shared menu infrastructure, not a second Toolbar-specific popup. Keep host focus on Toolbar and route internal focus into/out of the owned menu through existing hooks. Synthetic menu accessibility must include action targets and painted bounds, not just nested labels. Tests must cover the existing legacy menu behavior as well as the new route.
 
 Three separate approximate sizing paths currently disagree: `measure_item_axis`147, `decide_visible_count`214 and `measure_visible_axes`252. apply_layout loses theme and falls back to character count and16px labels. draw uses actual renderer measurement. `is_overflow_open`202 explicitly says host paints the popover; the widget supplies no reachable hidden command route, and its accessibility node is only Role::Toolbar.
 
@@ -97,7 +96,7 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 
 **Files:** `ui/src/widget/card.rs`, `ui/src/widget/card_composition.rs`, focused framework/harness tests. Inspect but preserve unrelated `column.rs` formatting. Do not change application files in this task.
 
-**Diagnosis:** Read `.superpowers/app-ui-2026-09-15/intrinsic-card-diagnosis.md`. This is a source-backed hypothesis, not verified implementation. Card, ContentCard and CardGrid explicitly set min-height zero; enclosing intrinsic Column uses automatic Grid rows, which can allocate less than content in a definite short viewport. Current Store narrow capture has Discover more overlapping Files despite individual card containment. Do not compensate with app pixel heights.
+**Diagnosis:** This is a source-backed hypothesis, not verified implementation. Card, ContentCard and CardGrid explicitly set min-height zero; enclosing intrinsic Column uses automatic Grid rows, which can allocate less than content in a definite short viewport. Current Store narrow capture has Discover more overlapping Files despite individual card containment. Do not compensate with app pixel heights.
 
 - [ ] First reproduce RED with actual measured layout in a short definite Scrollable: intrinsic Column containing at least eight standalone ContentCards and trailing action; repeat legacy Card containing six form rows. Assert each surface contains descendants, following siblings clear previous content plus requested gap, and content exceeds fixed viewport. Test geometry before paint.
 - [ ] Add nested section regression: Ready heading, content-sized CardGrid of six cards, spacer, Discover heading, second grid. Cover one-column narrow and nested multi-column wide paths, each grid allocated bottom beyond last card bottom, following section below preceding content. Small fixture under MaxContent does not establish this contract.
@@ -106,7 +105,7 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 - [ ] Verify 1×/2× and wide→narrow→wide produce same geometry as fresh layout, bottom action remains reachable by scrolling, pointer and keyboard invokes it exactly once. Run relevant Card, CardGrid, ContentCard, intrinsic Column and scroll regressions; broad UI suite once after focused passes.
 - [ ] Build Store/Settings with corrected shared source and capture narrow/short/wide and scaled routes using isolated profiles. In full catalogue, Discover starts below all installed cards; in Region, Preview starts below final control. No application workarounds or capture-path changes in this shared commit. Coordinate exact route fixtures from App Task3 report.
 
-**Report:** `.superpowers/sdd/2026-09-15-measured-ui-components/task-5-report.md`; include RED/GREEN evidence, candidate result, fixed/manual compatibility, capture provenance and remaining limitations. Scoped commit, no subagents or pushes.
+**Report:** include RED/GREEN evidence, candidate result, fixed/manual compatibility, capture provenance and remaining limitations. Scoped commit.
 
 
 ## App migration guidance (not additional framework tasks)
@@ -139,7 +138,7 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 
 **Dependency:** Tasks2 and7 accepted before dispatch. Preserve Task7 final-empty-line normalization and its regressions when consuming shape_styled. Confirmed ordinary-size Notes defect, not a speculative typography redesign.
 **Files:** `ui/src/widget/rich_text_line.rs`, scoped `ui/src/widget/text_input.rs` attributed single-line support, and narrowly `ui/src/widget/block_editor.rs` current-frame link-hit refresh plus regression (see ruling below). Only extend `ui/src/richtext.rs` or `ui/src/text_render.rs` if existing range decoration support cannot preserve behavior. Report architectural need before widening production scope.
-**Evidence:** `.superpowers/app-ui-2026-09-15/rich-mark-diagnosis.md`, actual Notes images in `task2-after-20260916/captures/notes/`. Inner plain text is painted then marked substrings painted again from a separate shape with different advances.
+**Evidence:** actual Notes captures. Inner plain text is painted then marked substrings painted again from a separate shape with different advances.
 
 - [ ] Feed complete mark-derived RichSpan runs plus underline/strike information into TextInput's authoritative unmasked single-line RichTextLayout, using existing shape_styled/draw_rich and rich_text_editor.rs conversion as examples. Normal TextInput remains plain by default. No new editor implementation and no opaque eraser/repaint workaround.
 - [ ] Paint glyphs once. Caret, selection, horizontal scrolling, pointer-byte inversion, peer presence and link hit geometry all consume the same styled layout. Keep existing code span sans face/color/chip appearance for this repair; don't add a separate product font change. Derive decoration bounds from actual shaped ranges, with backgrounds before glyphs and rules after.
@@ -152,11 +151,11 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 
 **Execution order:** after Task4, before Task6. Shared2/3 accepted; this separate defect was discovered during writing-surface verification.
 **Files:** `ui/src/richtext.rs`, focused regressions in `ui/src/widget/text_input.rs`; do not modify Scrollable or app source.
-**Evidence:** `.superpowers/app-ui-2026-09-15/trailing-line-diagnosis.md` and its direct-rustc public API probe. cosmic-text 0.19.0 set_rich_text drops the final empty paragraph after LF, while set_text retains it. Metadata still contains the line, producing an EOF caret on row zero and wrong pointer mapping.
+**Evidence:** a direct-rustc public API probe. cosmic-text 0.19.0 set_rich_text drops the final empty paragraph after LF, while set_text retains it. Metadata still contains the line, producing an EOF caret on row zero and wrong pointer mapping.
 
 - [ ] Establish RED for plain versus styled `"x\n"`: equal two-line height, EOF caret on the final row, visual-line index, logical-line band and below-content hit returns EOF. Controls: `"x"`, `"x\ny"`, `"\n"`, multiple trailing LF and split attributed spans, at 1× and 2×.
 - [ ] Normalize at the RichTextLayout attributed shaping boundary before shaping: final empty BufferLine, no artificial visible character or byte offset change, final effective run attrs/metrics and alignment preserved. Confirm actual cosmic-text APIs before implementation. Do not switch measurement to the broken styled height or special-case Scrollable.
 - [ ] TextInput integration: measure then draw a multiline trailing-LF value; content height agrees within documented pixel ceiling, EOF caret remains at final row, clicking that row maps to `text.len()`, and caret-follow scroll stays at the end. Preserve attributed styling, current-line/gutter geometry and default/manual dimensions.
 - [ ] Run focused richtext/TextInput/CodeEditor regressions and Scrollable integration suite, scoped check and format. Record exact RED/GREEN; no broad suite/dependency upgrade. Report any final-empty-line style ambiguity before expanding scope. Selection LF-only decoration redesign is excluded.
 
-**Report:** `.superpowers/sdd/2026-09-15-measured-ui-components/task-7-report.md`. No subagents, no push. Commit only exact owned paths using `git commit --only` and verify the resulting file list.
+**Report:** scoped commit; verify the resulting file list.

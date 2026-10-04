@@ -484,6 +484,68 @@ fn the_eraser_rubs_out_paint_or_whole_strokes() {
     );
 }
 
+/// An eraser has no ink, but it is a mark like any other: the selection
+/// tool picks it where it rubbed (its outline shows while that tool is in
+/// hand), and Delete takes it away, the paint under it back.
+#[test]
+fn an_eraser_is_picked_and_removed_like_a_mark() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.drag((100.0, 450.0), (450.0, 450.0));
+    let painted = desk.art().marks.last().unwrap().id.clone();
+    desk.key("x");
+    desk.drag((275.0, 400.0), (275.0, 500.0));
+    let rub = desk.art().marks.last().unwrap().id.clone();
+    desk.key("v");
+    desk.pointer(275.0, 470.0);
+    desk.shot("eraser-outlined");
+    desk.click(275.0, 470.0);
+    desk.shot("eraser-picked");
+    desk.key("Delete");
+    let art = desk.art();
+    assert!(art.mark(&rub).is_none(), "the picked eraser is removed");
+    assert!(art.mark(&painted).is_some(), "the paint it rubbed stays");
+}
+
+/// The eyedropper takes the colour the canvas shows: where an eraser took
+/// the paint off, the ground beneath, not the erased stroke's ink.
+#[test]
+fn the_eyedropper_sees_what_an_eraser_left() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.drag((100.0, 450.0), (450.0, 450.0));
+    let ink = desk.art().marks.last().unwrap().style.stroke.clone();
+    desk.key("x");
+    desk.drag((275.0, 400.0), (275.0, 500.0));
+    let picked = |desk: &mut Desk, at: (f64, f64), corner: f64| {
+        desk.key("i");
+        desk.click(at.0, at.1);
+        desk.key("r");
+        desk.drag((corner, 40.0), (corner + 40.0, 70.0));
+        desk.art().marks.last().unwrap().style.fill.clone()
+    };
+    let beside = picked(&mut desk, (150.0, 450.0), 40.0);
+    let erased = picked(&mut desk, (275.0, 450.0), 120.0);
+    assert_eq!(beside, ink, "beside the eraser the ink shows");
+    assert_ne!(erased, ink, "under the eraser it does not");
+    // The ground, give or take its paper's tooth.
+    let ground = desk.art().ground.colour;
+    let channels = |hex: &str| -> Vec<i32> {
+        (1..7)
+            .step_by(2)
+            .map(|at| i32::from_str_radix(hex.get(at..at + 2).unwrap(), 16).unwrap())
+            .collect()
+    };
+    let erased = channels(erased.as_deref().unwrap());
+    assert!(
+        erased
+            .iter()
+            .zip(channels(&ground))
+            .all(|(a, b)| (a - b).abs() <= 8),
+        "the ground shows: {erased:?} against {ground}"
+    );
+}
+
 /// A pen paints with its own pressure, whatever the hand's speed; its
 /// eraser end erases.
 #[test]
@@ -620,8 +682,7 @@ fn shots() -> std::path::PathBuf {
 #[ignore = "writes screenshots to look at"]
 fn screenshots_of_gestures_in_progress() {
     for scenario in ["selection", "turned", "points", "close-up", "landscape"] {
-        let mut app = TestApp::<App>::new().unwrap();
-        app.stage(Some(scenario)).unwrap();
+        let mut app = TestApp::<App>::capture(Some(scenario)).unwrap();
         let mut desk = Desk {
             canvas: app.harness().targets().get("canvas").copied().unwrap(),
             app,
@@ -679,8 +740,7 @@ fn screenshots_of_gestures_in_progress() {
 
     // A stroke on the oil layer, shown as the oil will paint it before the
     // brush lifts.
-    let mut app = TestApp::<App>::new().unwrap();
-    app.stage(Some("landscape")).unwrap();
+    let mut app = TestApp::<App>::capture(Some("landscape")).unwrap();
     app.harness()
         .perform_named("canvas-layer", &ui::a11y::Action::SetValue("land".into()))
         .unwrap();
@@ -714,4 +774,61 @@ fn screenshots_of_gestures_in_progress() {
     desk.shot("wet-oil-preview");
     desk.button(ElementState::Released);
     desk.shot("wet-oil-painted");
+}
+
+/// A mask rides in its layer's row: its picture beside the layer's, each
+/// choosing what the brush paints, and the strip over the canvas saying
+/// while it is the mask.
+#[test]
+fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
+    let mut desk = Desk::open();
+    let layer = desk.art().top_layer().unwrap().id.clone();
+    desk.app
+        .invoke(canvas::ArtworkResource::SET_LAYER_MASK.with((layer.clone(), "reveal".into())))
+        .expect("a mask is added");
+    let mask = desk.art().mask_of(&layer).unwrap().id.clone();
+    let targets = desk.app.harness().targets();
+    assert!(
+        !targets.contains_key(&format!("canvas-layer-name-{mask}")),
+        "the mask has no row of its own"
+    );
+    // The layer the next brush stroke lands on.
+    let stroke = |desk: &mut Desk| {
+        let before: Vec<String> = desk
+            .art()
+            .marks
+            .iter()
+            .map(|mark| mark.id.clone())
+            .collect();
+        desk.key("b");
+        desk.drag((100.0, 450.0), (300.0, 470.0));
+        let art = desk.art();
+        let new = art.marks.iter().find(|mark| !before.contains(&mark.id));
+        new.expect("a stroke is laid").layer.clone()
+    };
+    // A mask just added is what is painted next.
+    assert_eq!(stroke(&mut desk), mask);
+    assert!(
+        desk.app
+            .harness()
+            .targets()
+            .contains_key("canvas-paint-layer"),
+        "the strip offers the way back to the layer"
+    );
+    desk.shot("mask-painting");
+    desk.app
+        .harness()
+        .click_named(&format!("canvas-paint-{layer}"))
+        .expect("the layer's picture");
+    assert_eq!(stroke(&mut desk), layer);
+    desk.app
+        .harness()
+        .click_named(&format!("canvas-paint-{mask}"))
+        .expect("the mask's picture");
+    assert_eq!(stroke(&mut desk), mask);
+    desk.app
+        .harness()
+        .click_named("canvas-paint-layer")
+        .expect("back to the layer from the strip");
+    assert_eq!(stroke(&mut desk), layer);
 }

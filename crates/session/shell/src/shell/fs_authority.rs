@@ -276,13 +276,17 @@ fn next_retry_delay(current: std::time::Duration, publisher_missing: bool) -> st
 
 /// Block until the publication worker has retired with nothing queued, or
 /// `timeout` passes. The worker's retirement is signalled, so this returns as
-/// soon as publication settles.
+/// soon as publication settles. Exports still queued on the state writer,
+/// which schedule publications, are waited for first.
 ///
 /// # Errors
 ///
 /// On timeout, or if the queue is poisoned, returns a report of the queue
 /// state and the recent publisher attempts, including their stderr.
 pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> Result<(), String> {
+    if !crate::shell::durable_writer::global().flush_timeout(timeout) {
+        return Err("capability exports are still queued on the state writer".into());
+    }
     let Ok(queue) = fs_authority_publication_queue().lock() else {
         return Err("filesystem authority publication queue is poisoned".into());
     };

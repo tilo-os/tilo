@@ -4,7 +4,7 @@
 
 **Design:** Add a compositor-free service host around `spawn_native` and the existing identity broker. Keep policy, certification, resource discovery, action dispatch and results unchanged. Isolate Unix descriptor inheritance in an adapter. The initial host links the shell library because the existing broker depends on its workspace model; this is deliberate reuse, not a second broker implementation or a claim that crate extraction is complete. No app-specific runtime integration is added.
 
-**Constraints:** Preserve unrelated worktree changes. Use isolated identity, data and blob storage. Do not use harness trust bypasses. This proves trusted local native applications, not sandbox parity or a Windows port.
+**Constraints:** Use isolated identity, data and blob storage. Do not use harness trust bypasses. This proves trusted local native applications, not sandbox parity or a Windows port.
 
 - [x] Add a regression test for isolated host lifecycle and exclusivity; observe failure before implementing the host.
 - [x] Add `runtime_host::Session` using existing identity provisioning, workspace persistence, production collaboration and identity brokers. Add the Unix app-launch adapter with inherited service descriptors.

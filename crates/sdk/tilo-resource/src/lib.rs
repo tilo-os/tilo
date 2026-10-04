@@ -65,6 +65,9 @@
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **lookup by kind** — a host that works with whatever a room holds
+//!   reads, publishes and replays any registered type from the kind its
+//!   record names ([`Kinds`], [`ResourceKind`]);
 //! * **document machinery** — fractional [`order`] keys, stamped commits and
 //!   positional replay ([`history`]), writing large content as a few changes
 //!   ([`batch`]) and id-aligned structural [`diff`]s, shared by every
@@ -105,6 +108,7 @@ extern crate self as tilo_resource;
 
 pub mod action;
 pub mod batch;
+pub mod child;
 pub mod collection;
 pub mod delta;
 pub mod diff;
@@ -112,6 +116,7 @@ pub mod effect;
 pub mod group;
 pub mod history;
 pub mod items;
+pub mod kind;
 pub mod model;
 pub mod order;
 pub mod reader;
@@ -119,25 +124,29 @@ pub mod replica;
 pub mod resource;
 pub mod schema;
 pub mod shape;
+pub mod text;
 
 pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
+pub use child::{child_resource_id, publish_child};
 pub use collection::{Collection, Id};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use effect::{Answers, Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
+pub use kind::{Kinds, ResourceKind};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
 };
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, action_label, build_action,
-    encode, origin_now_ms, publish,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Resource, SearchEntry, action_label,
+    build_action, declaration_spec, encode, origin_now_ms, publish,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
+pub use text::{PlainText, TextEdit};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -161,6 +170,7 @@ pub mod __private {
             anchor: None,
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
+            action: None,
         }]
     }
 

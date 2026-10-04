@@ -293,3 +293,12 @@ test('receiver honours a cleared pointer immediately and reports staleness', () 
   assert.equal(remote.sample(17).stale, false);
   assert.equal(remote.sample(20_000).stale, true);
 });
+
+test('a change of focused app or record snaps without carrying old-surface motion', () => {
+  for (const focus of [{app:'a',record:'other'}, {app:'b',record:'one'}, null]) {
+    const remote = createRemotePresence();
+    remote.accept(frame(1, 0, {focus:{app:'a',record:'one'},pointer:[900,900]}), 0);
+    remote.accept(frame(2, 16, {focus,pointer:[10,20]}), 16);
+    for (const at of [16,20,60]) assert.deepEqual(remote.sample(at).pointer,[10,20]);
+  }
+});

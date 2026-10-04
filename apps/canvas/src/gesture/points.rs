@@ -11,7 +11,7 @@
 use ui::vello::kurbo::{BezPath, Point};
 
 use super::outline::{Anchor, Outline, Part, PointRef};
-use crate::model::{Shape, StrokePoint};
+use crate::model::{Mark, Shape, StrokePoint};
 
 /// The most points a stroke's editor shows.
 const MOST_SHOWN: usize = 40;
@@ -24,12 +24,15 @@ pub enum Editable {
 }
 
 impl Editable {
-    /// The points of a path, polygon, line or brush stroke.
-    pub fn of_shape(shape: &Shape) -> Option<Self> {
-        match shape {
-            Shape::Stroke { points, size, .. } => {
-                Some(Self::Stroke(StrokeEdit::new(points.clone(), *size)))
-            }
+    /// The points of a path, polygon, line or brush stroke; a stroke's
+    /// path is shown as its brush follows it, after the mark's smoothing.
+    pub fn of_mark(mark: &Mark) -> Option<Self> {
+        match &mark.shape {
+            Shape::Stroke { points, size, .. } => Some(Self::Stroke(StrokeEdit::new(
+                points.clone(),
+                *size,
+                crate::brushes::Dynamics::of_mark(mark).smoothing,
+            ))),
             shape => Outline::of_shape(shape).map(Self::Outline),
         }
     }
@@ -130,6 +133,9 @@ pub struct StrokeEdit {
     /// The indices of the points shown, first to last.
     keys: Vec<usize>,
     anchors: Vec<Anchor>,
+    /// The brush's size, and how much it smooths the path it follows.
+    size: f64,
+    smoothing: f64,
 }
 
 fn at(point: &[f64]) -> Point {
@@ -142,7 +148,7 @@ fn at(point: &[f64]) -> Point {
 impl StrokeEdit {
     /// The stroke's points, showing those that shape it: where it turns,
     /// its ends, and no more than [`MOST_SHOWN`].
-    pub fn new(points: Vec<StrokePoint>, size: f64) -> Self {
+    pub fn new(points: Vec<StrokePoint>, size: f64, smoothing: f64) -> Self {
         let mut tolerance = (size * 0.25).max(1.0);
         let mut keys = crate::brushes::kept(&points, tolerance);
         while keys.len() > MOST_SHOWN && tolerance < crate::model::MAX_SIDE {
@@ -153,6 +159,8 @@ impl StrokeEdit {
             points,
             keys,
             anchors: Vec::new(),
+            size,
+            smoothing,
         };
         edit.refresh();
         edit
@@ -183,16 +191,10 @@ impl StrokeEdit {
         shape
     }
 
+    /// The curve the brush lays the stroke along, not the polyline
+    /// through its points.
     fn to_path(&self) -> BezPath {
-        let mut path = BezPath::new();
-        for (index, point) in self.points.iter().enumerate() {
-            if index == 0 {
-                path.move_to(at(point));
-            } else {
-                path.line_to(at(point));
-            }
-        }
-        path
+        crate::brushes::centreline(&self.points, self.size, self.smoothing)
     }
 
     fn hit(&self, to: Point, reach: f64) -> Option<PointRef> {
@@ -325,7 +327,7 @@ mod tests {
 
     #[test]
     fn a_dense_stroke_shows_a_few_points_and_bends_when_one_is_dragged() {
-        let mut edit = StrokeEdit::new(stroke(), 4.0);
+        let mut edit = StrokeEdit::new(stroke(), 4.0, 0.0);
         assert_eq!(edit.anchors.len(), 2, "a straight stroke shows its ends");
         let middle = edit.insert_near(Point::new(50.0, 1.0), 3.0).unwrap();
         assert_eq!(edit.anchors.len(), 3);

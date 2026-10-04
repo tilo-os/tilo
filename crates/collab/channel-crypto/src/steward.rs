@@ -56,11 +56,48 @@ use crate::{
 #[serde(deny_unknown_fields)]
 struct StewardLedger {
     /// For each admitted device, the `issued_at` of the request it was
-    /// admitted with. A newer request from a member means it lost its state
-    /// and must be admitted again.
+    /// admitted with.
     admitted: BTreeMap<Ed25519PublicKey, u64>,
     /// The newest frame each device has acknowledged.
     acknowledged: BTreeMap<Ed25519PublicKey, [u8; 32]>,
+    /// For each device, the digests of every key package it was admitted
+    /// with. A member asking with a key package not among them lost its
+    /// state and must be admitted again, whatever its request's clock says;
+    /// one asking with a package already used is a replay.
+    packages: BTreeMap<Ed25519PublicKey, BTreeSet<[u8; 32]>>,
+}
+
+/// The ledger as written before it recorded key packages.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LedgerWithoutPackages {
+    admitted: BTreeMap<Ed25519PublicKey, u64>,
+    acknowledged: BTreeMap<Ed25519PublicKey, [u8; 32]>,
+}
+
+impl StewardLedger {
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        postcard::from_bytes::<Self>(bytes).or_else(|_| {
+            let earlier: LedgerWithoutPackages = postcard::from_bytes(bytes)
+                .map_err(|error| Error::Serialization(error.to_string()))?;
+            Ok(Self {
+                admitted: earlier.admitted,
+                acknowledged: earlier.acknowledged,
+                packages: BTreeMap::new(),
+            })
+        })
+    }
+
+    fn admitted_with(&self, device: &Ed25519PublicKey, request: &MlsAccessRequestV1) -> bool {
+        self.packages
+            .get(device)
+            .is_some_and(|used| used.contains(&package_digest(request)))
+    }
+}
+
+fn package_digest(request: &MlsAccessRequestV1) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(&request.key_package).into()
 }
 
 /// What [`ChannelSteward::reconcile`] changed.
@@ -158,8 +195,7 @@ impl<S: StewardStore> ChannelSteward<S> {
             ));
         }
         let ledger = match store.read(StewardRecord::Ledger)? {
-            Some(bytes) => postcard::from_bytes(&bytes)
-                .map_err(|error| Error::Serialization(error.to_string()))?,
+            Some(bytes) => StewardLedger::decode(&bytes)?,
             None => StewardLedger::default(),
         };
         let mut steward = Self {
@@ -317,12 +353,7 @@ impl<S: StewardStore> ChannelSteward<S> {
                 continue;
             }
             let member = self.members().contains(device);
-            let newer = self
-                .ledger
-                .admitted
-                .get(device)
-                .is_none_or(|admitted| request.issued_at > *admitted);
-            if member && !newer {
+            if member && self.ledger.admitted_with(device, request) {
                 continue;
             }
             if request.channel != self.channel || request.verify().is_err() {
@@ -337,8 +368,7 @@ impl<S: StewardStore> ChannelSteward<S> {
                 self.remove(*device, vault).await?;
                 outcome.removed.push(*device);
             }
-            self.admit(*device, package, request.issued_at, vault)
-                .await?;
+            self.admit(*device, package, request, vault).await?;
             outcome.admitted.push(*device);
         }
         Ok(outcome)
@@ -348,7 +378,7 @@ impl<S: StewardStore> ChannelSteward<S> {
         &mut self,
         device: Ed25519PublicKey,
         package: KeyPackage,
-        issued_at: u64,
+        request: &MlsAccessRequestV1,
         vault: &VaultKey,
     ) -> Result<()> {
         let current = self.members();
@@ -377,7 +407,12 @@ impl<S: StewardStore> ChannelSteward<S> {
                     self.device(),
                 ))
                 .await?;
-            self.ledger.admitted.insert(device, issued_at);
+            self.ledger.admitted.insert(device, request.issued_at);
+            self.ledger
+                .packages
+                .entry(device)
+                .or_default()
+                .insert(package_digest(request));
             self.ledger.acknowledged.remove(&device);
             self.save_ledger()?;
             self.append(
@@ -604,5 +639,29 @@ impl<S: StewardStore> std::fmt::Debug for ChannelSteward<S> {
             .field("members", &self.members().len())
             .field("frames", &self.journal.frames().len())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ledger_written_before_key_packages_were_recorded_still_opens() {
+        let device = Ed25519PublicKey::from_bytes([9; 32]);
+        let earlier = (
+            BTreeMap::from([(device, 41_u64)]),
+            BTreeMap::from([(device, [5_u8; 32])]),
+        );
+        let bytes = postcard::to_allocvec(&earlier).unwrap();
+        let ledger = StewardLedger::decode(&bytes).unwrap();
+        assert_eq!(ledger.admitted.get(&device), Some(&41));
+        assert_eq!(ledger.acknowledged.get(&device), Some(&[5; 32]));
+        assert!(ledger.packages.is_empty());
+
+        let mut current = ledger;
+        current.packages.entry(device).or_default().insert([7; 32]);
+        let reread = StewardLedger::decode(&postcard::to_allocvec(&current).unwrap()).unwrap();
+        assert_eq!(reread.packages, current.packages);
     }
 }

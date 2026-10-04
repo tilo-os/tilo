@@ -29,17 +29,6 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
-    let Some(dir) = args.value("--emit-photos") else {
-        return Ok(false);
-    };
-    emit_photos(std::path::Path::new(dir)).map_err(|error| {
-        LaunchError::Operation(format!("could not emit sample photos: {error}"))
-    })?;
-    println!("camera: wrote sample photos to {dir}");
-    Ok(true)
-}
-
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
@@ -140,26 +129,6 @@ pub fn main() {
                 "--camera-state",
                 "--mode",
             ])
-            .allowed_live_options(&["--emit-photos"])
-            .command_handler(command)
             .configure_app(|app| camera::actions::register(app.action_registry_mut())),
     );
-}
-
-/// Write procedural photos and a lossless QR poster for headless testing.
-fn emit_photos(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use camera::model::PhotoFormat;
-    for seed in 0..5u8 {
-        let frame = camera::frame::thumbnail(seed, 960, 640);
-        camera::library::write_photo(dir, &frame, PhotoFormat::Jpeg)?;
-        let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(4));
-    }
-    let (qr, _) = camera::frame::scanner_frame(
-        4,
-        900,
-        640,
-        "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;",
-    );
-    camera::library::write_photo(dir, &qr, PhotoFormat::Png)?;
-    Ok(())
 }

@@ -2,20 +2,19 @@
 //!
 //! [`Hosted`] is the framework's: a [`RichText`] resource, edited through
 //! the app's [`Dispatcher`]. [`RichTextField`] is rich text stored inside
-//! another resource — a message body, a note's page, a comment — edited
-//! through that resource's own action, which carries the rich-text edit and
-//! names the field, so history, undo, permissions and replay stay the owning
-//! resource's.
+//! another resource — a message body, a note's page, a comment — as a child
+//! resource of it, edited through the child dispatcher that wraps each edit
+//! in that resource's own action, so history, undo, permissions and replay
+//! stay the owning resource's.
 
 use std::rc::Rc;
 
 use tilo_document::{RichText, RichTextAction, RichTextState};
-use ui::ActionHost;
+use ui::automerge::ObjId;
 use ui::automerge::transaction::Transactable;
-use ui::automerge::{ChangeHash, ObjId};
 use ui::framework::{Dispatcher, Live, ResourceSelection};
 use ui::presence::PresenceKey;
-use ui::tilo_actions::{Action, ActionContext, ActionError};
+use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Demand, Doc, ModelError, Resource, Tracker};
 use ui::widget::PresenceKeyFn;
 
@@ -54,18 +53,6 @@ pub trait RichTextSource {
     /// The presence keys collaborators address paragraphs by.
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         None
-    }
-
-    /// The undo boundary before this event's first edit, for a source that
-    /// dispatches its own actions; `None` while typing continues a step.
-    fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        None
-    }
-
-    /// Whether the step the last boundary opened stays open for the edits
-    /// that continue it (the next letters of a word).
-    fn keeps_step_open(&self) -> bool {
-        false
     }
 }
 
@@ -135,15 +122,6 @@ impl RichTextSource for Hosted {
 /// Finds a field's map in the owning document.
 type Locate = Box<dyn Fn(&Doc) -> Option<ObjId>>;
 
-/// Applies the owning resource's action through its dispatcher.
-type ApplyThrough<A> = Box<dyn Fn(&mut Doc, &A) -> Result<(), ActionError>>;
-
-/// The owning resource's dispatcher, type-erased over the resource.
-struct FrameworkSink<A> {
-    apply: ApplyThrough<A>,
-    read_only: Box<dyn Fn() -> bool>,
-}
-
 /// The state of rich text under one field, kept current as the document
 /// changes by re-reading what changed.
 pub(crate) struct FieldState {
@@ -205,100 +183,60 @@ impl FieldState {
     }
 }
 
-/// Rich text stored in a field of another resource, edited through that
-/// resource's action.
+/// Rich text stored in a field of another resource — a message body, a
+/// note's page, a comment — edited as a child resource of it.
 ///
 /// `locate` finds the field's map in the document (creating nothing: the
-/// owning resource creates the field with
-/// [`RichText::initialize_under`]); `wrap` turns an edit into the owning
-/// resource's action, registered under `action_type`, whose `apply` applies
-/// the edit under the field with
-/// [`RichTextAction::apply_under`]. The owning resource's action is what
-/// history attributes, undo takes back and a collaborator replays; typing a
-/// word is one undo step, as in a rich-text resource.
-pub struct RichTextField<A> {
+/// owning resource creates the field with [`RichText::initialize_under`]).
+/// Edits go through `dispatcher`, the owning resource's child dispatcher
+/// for the field ([`Dispatcher::child`]), which wraps each edit in the
+/// owning resource's action; that action's `apply` applies the edit under
+/// the field with [`RichTextAction::apply_under`]. So the owning resource's
+/// action is what history attributes, undo takes back, permissions check
+/// and a collaborator replays, and typing a word is one undo step, as in a
+/// rich-text resource.
+///
+/// Without a dispatcher ([`view_only`](Self::view_only)) the field shows the
+/// text and refuses every edit: displaying is never editing.
+pub struct RichTextField {
     locate: Locate,
-    wrap: Box<dyn Fn(RichTextAction) -> A>,
-    action_type: &'static str,
-    context: Option<ActionContext>,
-    actions: ActionHost,
-    /// In a framework app, the owning resource's dispatcher: it checks
-    /// permissions, attributes and bounds undo steps itself.
-    framework: Option<FrameworkSink<A>>,
+    dispatch: Option<Dispatcher<RichText>>,
     field: Option<FieldState>,
-    read_only: bool,
     presence: Option<PresenceKeyFn>,
-    step: Step,
 }
 
-/// How the local edits of this field group into undo steps.
-#[derive(Default)]
-struct Step {
-    /// The last edit, to tell whether the next continues it.
-    last: Option<RichTextAction>,
-    /// Every edit since the last boundary continued the one before it.
-    continuing: bool,
-    /// An edit was applied since the last boundary was taken.
-    applied: bool,
-    /// The last boundary opened a step that stays open.
-    opened: bool,
-}
-
-impl<A> RichTextField<A> {
-    /// The rich text `locate` finds, edited as `wrap(edit)` under the owning
-    /// resource's `action_type`.
+impl RichTextField {
+    /// The rich text `locate` finds, edited through `dispatcher`.
     pub fn new(
-        action_type: &'static str,
+        dispatcher: Dispatcher<RichText>,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
-        wrap: impl Fn(RichTextAction) -> A + 'static,
     ) -> Self {
-        Self {
-            locate: Box::new(locate),
-            wrap: Box::new(wrap),
-            action_type,
-            context: None,
-            actions: ActionHost::new(),
-            framework: None,
-            field: None,
-            read_only: false,
-            presence: None,
-            step: Step::default(),
-        }
-    }
-
-    /// The field of a framework app's resource `R`, edited through its
-    /// dispatcher: permission-checked, attributed and undone per author like
-    /// every other edit of `R`. Typing a word is one undo step when `R`'s
-    /// [`coalesces`](Resource::coalesces) delegates to
-    /// [`RichText::coalesces`] for its wrapped edits.
-    pub fn framework<R>(
-        dispatcher: Dispatcher<R>,
-        locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
-        wrap: impl Fn(RichTextAction) -> A + 'static,
-    ) -> Self
-    where
-        R: Resource<Action = A>,
-    {
-        let app = dispatcher.app_id();
-        let reader = dispatcher.clone();
-        let mut field = Self::new(R::ACTION_TYPE, locate, wrap).with_presence(move |block| {
-            ResourceSelection::Item(block.to_owned())
-                .presence::<R>(app)
-                .0
-        });
-        field.framework = Some(FrameworkSink {
-            apply: Box::new(move |doc, action| dispatcher.apply_now(doc, action)),
-            read_only: Box::new(move || reader.read_only()),
-        });
+        let mut field = Self::view_only(locate);
+        field.attach(dispatcher);
         field
     }
 
-    /// The history context edits are recorded with (the owning resource,
-    /// the app).
-    #[must_use]
-    pub fn with_context(mut self, context: ActionContext) -> Self {
-        self.context = Some(context);
-        self
+    /// The rich text `locate` finds, shown and never edited.
+    pub fn view_only(locate: impl Fn(&Doc) -> Option<ObjId> + 'static) -> Self {
+        Self {
+            locate: Box::new(locate),
+            dispatch: None,
+            field: None,
+            presence: None,
+        }
+    }
+
+    /// Edit through `dispatcher` from now on.
+    pub fn attach(&mut self, dispatcher: Dispatcher<RichText>) {
+        let app = dispatcher.app_id();
+        self.dispatch = Some(dispatcher);
+        if self.presence.is_none() {
+            self.presence = Some(Rc::new(move |block: &str| {
+                ResourceSelection::Item(block.to_owned())
+                    .presence::<RichText>(app)
+                    .0
+            }));
+        }
     }
 
     /// Key collaborators' carets by paragraph with `key`.
@@ -306,11 +244,6 @@ impl<A> RichTextField<A> {
     pub fn with_presence(mut self, key: impl Fn(&str) -> PresenceKey + 'static) -> Self {
         self.presence = Some(Rc::new(key));
         self
-    }
-
-    /// Whether the participant may only view: edits are refused while set.
-    pub fn set_read_only(&mut self, read_only: bool) {
-        self.read_only = read_only;
     }
 
     fn reread(&mut self, doc: &mut Doc, root: ObjId) {
@@ -328,13 +261,9 @@ impl<A> RichTextField<A> {
     }
 }
 
-impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
+impl RichTextSource for RichTextField {
     fn read_only(&self) -> bool {
-        self.read_only
-            || self
-                .framework
-                .as_ref()
-                .is_some_and(|sink| (sink.read_only)())
+        self.dispatch.as_ref().is_none_or(Dispatcher::read_only)
     }
 
     fn sync(&mut self, doc: &mut Doc) {
@@ -387,57 +316,16 @@ impl<A: Action + serde::Serialize> RichTextSource for RichTextField<A> {
     }
 
     fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
-        if self.read_only {
-            return Err(ActionError::Refused(
+        match &self.dispatch {
+            Some(dispatch) => dispatch.apply_now(doc, edit),
+            None => Err(ActionError::Refused(
                 "this text is open to view only".into(),
-            ));
+            )),
         }
-        let action = (self.wrap)(edit.clone());
-        if let Some(sink) = &self.framework {
-            return (sink.apply)(doc, &action);
-        }
-        let context = self
-            .context
-            .clone()
-            .unwrap_or_else(|| ActionContext::for_action("", "", edit));
-        self.actions
-            .try_dispatch_with_context(doc, self.action_type, &action, context)?;
-        if RichText::annotates(edit) {
-            // Part of the edit that wrote the text, not a step of its own.
-            return Ok(());
-        }
-        let step = &mut self.step;
-        let continues = step
-            .last
-            .as_ref()
-            .is_some_and(|previous| RichText::coalesces(previous, edit));
-        step.last = Some(edit.clone());
-        let first_of_event = !std::mem::replace(&mut step.applied, true);
-        step.continuing = continues && (first_of_event || step.continuing);
-        Ok(())
     }
 
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         self.presence.clone()
-    }
-
-    fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        let bracket = self.actions.take_committed();
-        let continuing = std::mem::take(&mut self.step.continuing);
-        // Only typing continues into the next event; a split, a move or a
-        // format is a step of its own, closed now.
-        let continuable = self
-            .step
-            .last
-            .as_ref()
-            .is_some_and(|edit| matches!(edit, RichTextAction::SpliceText { .. }));
-        self.step.opened = bracket.is_some() && !continuing && continuable;
-        self.step.applied = false;
-        if continuing { None } else { bracket }
-    }
-
-    fn keeps_step_open(&self) -> bool {
-        self.step.opened
     }
 }
 
@@ -470,14 +358,6 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
 
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         self.borrow().presence_keys()
-    }
-
-    fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
-        self.borrow_mut().take_committed()
-    }
-
-    fn keeps_step_open(&self) -> bool {
-        self.borrow().keeps_step_open()
     }
 }
 
