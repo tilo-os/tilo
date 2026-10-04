@@ -3,9 +3,8 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
+use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::tilo_actions::{ActionSpec, OperationKind};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
@@ -17,10 +16,15 @@ use crate::app::ImagerApp;
 use crate::doc::ImagerDoc;
 use crate::model::{InstallProfile, Source};
 
-/// Shared image-selection and install-profile projection.
+/// The reviewed image, the images reviewed before it and the install
+/// profile: everything the imager keeps in its document.
 #[derive(Clone, Debug, Default)]
 pub struct ImagerState {
     pub source: Option<Source>,
+    /// Previously reviewed images, most recent first.
+    pub recent: Vec<Source>,
+    /// The rank a newly remembered image takes: before every recent one.
+    pub next_recent_rank: i64,
     pub profile: InstallProfile,
 }
 
@@ -42,8 +46,21 @@ impl Resource for Imager {
     fn read(doc: &Doc) -> Result<ImagerState, ModelError> {
         Ok(ImagerState {
             source: ImagerDoc::source(doc),
+            recent: ImagerDoc::recent(doc),
+            next_recent_rank: ImagerDoc::next_recent_rank(doc),
             profile: ImagerDoc::profile(doc),
         })
+    }
+
+    /// An empty reviewed source, recent list and install profile.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        ImagerDoc::seed(doc);
+        Ok(())
+    }
+
+    /// Typing into one profile field is one step until the field changes.
+    fn coalesces(previous: &ImagerAction, next: &ImagerAction) -> bool {
+        previous.same_text_field(next)
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -127,7 +144,7 @@ impl ResourceApp for ImagerShell {
 
 impl ResourceSurface<Imager> for ImagerApp {
     fn present(&mut self, state: &Rc<ImagerState>) {
-        self.adopt_resource_state(state);
+        self.present_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
@@ -135,84 +152,13 @@ impl ResourceSurface<Imager> for ImagerApp {
     }
 }
 
-/// Framework dispatcher for the selected image and install profile.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Imager>>,
-    hosted: bool,
-    last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Imager>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    /// Test-only: mark hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ImagerAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = EncodedAction::encode(IMAGER_ACTION_TYPE, action).ok();
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => {
-                self.local
-                    .dispatch_with_context(doc, type_id, action, context);
-            }
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::widget::Widget;
 
     #[test]
     fn resource_publish_owns_profile_door_and_hosted_keeps_no_duplicate_root() {
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         ImagerDoc::seed_demo(&mut doc);
         let state = Imager::read(&doc).expect("seeded imager state");
         let published =
@@ -255,43 +201,6 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "hostname"),
             "hostname must be on the customization child"
-        );
-
-        let mut app = ImagerApp::new();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone[0].kind, "imager.sources");
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "imager.customization"),
-            "standalone publishes the profile tree"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, "imager.sources").is_none());
-        let source_id = standalone[0]
-            .children
-            .iter()
-            .find(|child| child.kind == "imager.source")
-            .map(|child| child.id.as_str().to_owned())
-            .expect("reviewed source");
-        assert!(
-            ui::resources::resource(&app, &seeded, &source_id).is_some_and(|source| source
-                .actions
-                .iter()
-                .any(|action| action.id == "clear-source")),
-            "a hosted image source stays the published row"
-        );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras.is_empty(),
-            "hosted must not republish imager.sources beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
         );
     }
 }
