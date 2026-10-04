@@ -13,7 +13,7 @@
   {
     "name": "nvme0n1",
     "model": "CT2000P310SSD8",
-    "stable_id": "eui.0000000000000000d06885095069cf4e",
+    "stable_id": "eui.00000000000000000000000000000a01",
     "size": 2000398934016,
     "kind": "Nvme",
     "tran": "nvme",
@@ -43,7 +43,7 @@
   {
     "name": "nvme1n1",
     "model": "WD PC SN560 SDDPNQE-1T00-1002",
-    "stable_id": "eui.00000000000000000969bd1af40cbd7e",
+    "stable_id": "eui.00000000000000000000000000000b02",
     "size": 1024209543168,
     "kind": "Nvme",
     "tran": "nvme",
