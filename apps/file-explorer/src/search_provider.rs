@@ -544,7 +544,7 @@ mod tests {
             std::fs::create_dir_all(&cfg).unwrap();
 
             let mut app = crate::files_app::FileExplorerWidget::with_persistence(
-                Some(cfg),
+                Some(&cfg),
                 Some(home.clone()),
             );
             // Move away from Home so activation demonstrably navigates back.

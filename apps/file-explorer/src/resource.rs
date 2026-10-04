@@ -373,6 +373,7 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         self.attach_framework(
             cx.dispatcher(),
             cx.settings::<FilesPreferences>(),
+            cx.settings::<crate::recent::RecentFiles>(),
             cx.device().map(str::to_owned),
             ops,
         );

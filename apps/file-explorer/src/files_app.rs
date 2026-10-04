@@ -644,10 +644,6 @@ pub struct FileExplorerWidget {
     /// Shared, persistent favourites + drag-reorder state (see
     /// [`crate::places_sidebar`]). Cloned into the sidebar each rebuild.
     favs: FavStore,
-    /// Per-device config dir for recent files and the preview cache (`None`
-    /// when the environment has none — the UI still works, just doesn't keep
-    /// them).
-    config_dir: Option<PathBuf>,
     /// Icon/row zoom step (see [`crate::config`]); `0` = default.
     zoom_level: i32,
     /// Whether dotfiles are shown.
@@ -758,7 +754,10 @@ pub struct FileExplorerWidget {
     /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
     /// a scrolling grid never rebuilds the GPU blob per frame.
     /// Recently opened or changed files, newest first.
+    /// The Recent list of a window no framework hosts.
     recent: crate::recent::RecentFiles,
+    /// This device's Recent list, in a hosted window.
+    recent_setting: Option<ui::framework::Setting<crate::recent::RecentFiles>>,
     /// "Open With" candidates per file type, asked of the host once per
     /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
@@ -787,7 +786,8 @@ impl FileExplorerWidget {
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
         // renders as an absolute trail from the filesystem root.
-        let mut widget = Self::with_persistence(config::config_dir(), crate::model::user_home());
+        let mut widget =
+            Self::with_persistence(config::config_dir().as_deref(), crate::model::user_home());
         widget.accounts_root = accounts::config_root();
         widget.refresh_external_search_catalogs();
         widget
@@ -799,11 +799,13 @@ impl FileExplorerWidget {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
+        recent: ui::framework::Setting<crate::recent::RecentFiles>,
         device: Option<String>,
         ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
+        self.recent_setting = Some(recent);
         self.device = device;
         self.ops_drain = ops_drain;
         self.adopt_preferences();
@@ -1377,9 +1379,9 @@ impl FileExplorerWidget {
     /// Construct with an explicit persistence directory + home, resolving the
     /// XDG user dirs from the real environment. `new` uses the real per-user
     /// config dir; tests pass a `tempdir` (or `None`) so they never read or
-    /// write the user's real recent files or preview cache.
+    /// write the user's real preview cache.
     #[doc(hidden)]
-    pub fn with_persistence(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Self {
+    pub fn with_persistence(config_dir: Option<&Path>, home: Option<PathBuf>) -> Self {
         Self::with_persistence_dirs(config_dir, home, favorites::UserDirs::from_system())
     }
 
@@ -1393,7 +1395,7 @@ impl FileExplorerWidget {
         reason = "the constructor declares the complete stable widget state in one auditable place"
     )]
     pub fn with_persistence_dirs(
-        config_dir: Option<PathBuf>,
+        config_dir: Option<&Path>,
         home: Option<PathBuf>,
         user_dirs: favorites::UserDirs,
     ) -> Self {
@@ -1463,7 +1465,7 @@ impl FileExplorerWidget {
         reason = "Declare the complete stable widget state in one auditable constructor."
     )]
     fn with_inputs(
-        config_dir: Option<PathBuf>,
+        config_dir: Option<&Path>,
         home: Option<PathBuf>,
         user_dirs: favorites::UserDirs,
         inputs: Option<StartupInputs>,
@@ -1513,15 +1515,11 @@ impl FileExplorerWidget {
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
         let thumbs = match &services {
-            FileServices::Legacy => build_thumb_service(config_dir.as_deref()).map(Arc::new),
+            FileServices::Legacy => build_thumb_service(config_dir).map(Arc::new),
             FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
-        let config_dir_recent = config_dir
-            .as_deref()
-            .map(crate::recent::RecentFiles::load)
-            .unwrap_or_default();
         Self {
             services,
             startup_accounts,
@@ -1596,7 +1594,6 @@ impl FileExplorerWidget {
             pending_fav_menu: None,
             last_cursor: Point::ZERO,
             favs: places_sidebar::new_store(favorites),
-            config_dir,
             zoom_level,
             show_hidden,
             user_dirs,
@@ -1641,7 +1638,8 @@ impl FileExplorerWidget {
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
             thumbs,
-            recent: config_dir_recent,
+            recent: crate::recent::RecentFiles::default(),
+            recent_setting: None,
             open_with_cache: RefCell::new(HashMap::new()),
             app_chooser: ui::widget::command_palette::CommandPalette::commands(),
             app_chooser_target: None,
@@ -8271,22 +8269,6 @@ impl FileExplorerWidget {
 mod native_observer;
 
 impl FileExplorerWidget {
-    fn history_registration_impl(
-        &self,
-    ) -> Result<
-        Option<ui::history_mode::HistoryRegistration>,
-        ui::history_mode::HistoryRegistrationError,
-    > {
-        ui::history_mode::HistoryRegistration::new(
-            &crate::framework_history::HISTORY,
-            vec![ui::history_mode::HistorySourceRegistration::CheckedFiles {
-                scope: "selected-file",
-                source: self.framework_history.clone(),
-            }],
-        )
-        .map(Some)
-    }
-
     fn has_action_control_bindings_impl(&self) -> bool {
         // Own accessibility actions are semantic; preserve the same modal child
         // exposure as the complete binding inventory.
@@ -8418,7 +8400,6 @@ impl Collaborative for FileExplorerWidget {
 impl Widget for FileExplorerWidget {
     ui::provides!(
         dyn ui::widget::Collaborative,
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -9173,17 +9154,6 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for FileExplorerWidget {
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<ui::history_mode::HistoryRegistration>,
-        ui::history_mode::HistoryRegistrationError,
-    > {
-        self.history_registration_impl()
     }
 }
 
