@@ -28,7 +28,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{Album, Artist, Library, Playback, Playlist, Track};
+use crate::model::{Album, Artist, Library, Playlist, Track};
 
 const ORDER_STEP: i64 = 1_048_576;
 
@@ -107,48 +107,13 @@ pub fn is_seeded(doc: &AutoCommit) -> bool {
     get_map(doc, &ROOT, "library").is_some()
 }
 
-/// The actor of the shared empty-library change. Nobody edits as it.
-const EMPTY_SEED_ACTOR: &[u8] = b"so.tilo.music.library.empty-seed.v1";
-
-/// The canonical empty-library seed, built once per process: [`seed`] of an
-/// empty library under a fixed actor at time 0, so the same bytes everywhere.
-fn empty_seed_genesis() -> &'static [u8] {
-    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
-    GENESIS.get_or_init(|| {
-        let mut doc = AutoCommit::new();
-        doc.set_actor(automerge::ActorId::from(EMPTY_SEED_ACTOR));
-        seed(&mut doc, &Library::default(), &Playback::default());
-        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
-        doc.save()
-    })
-}
-
-/// Seed an unseeded document with the empty library that every replica
-/// shares. Must run outside an open transaction (it applies a change).
-///
-/// [`seed`] mints `library`, `playlists`, `liked`, … under the current actor,
-/// so two replicas that each open the same unseeded record seed twice and a
-/// merge keeps one set of containers: every like, playlist or track added
-/// under the other disappears. Adopting one canonical change (fixed actor,
-/// no dependencies, time 0) makes both replicas hold the *same* containers.
-pub fn seed_empty_shared(doc: &mut AutoCommit) {
-    let untouched = doc
-        .get_all(&ROOT, "library")
-        .is_ok_and(|values| values.is_empty());
-    if untouched {
-        let _ = tilo_automerge::ApplyIncoming::load_incoming(doc, empty_seed_genesis());
-    }
-    if !is_seeded(doc) {
-        seed(doc, &Library::default(), &Playback::default());
-    }
-}
-
-/// Write the full library + playback into a fresh document. A failure to
-/// create one of the top-level containers aborts the rest of that container's
-/// seeding (an existing document from a corrupt or pathological state); a
-/// failure on a single item within a container (an artist, an album) skips
-/// just that item and continues with its siblings.
-pub fn seed(doc: &mut AutoCommit, lib: &Library, _playback: &Playback) {
+/// Write a whole library into a fresh document: empty for a new record's
+/// genesis, the sample catalogue in tests. A failure to create one of the
+/// top-level containers aborts the rest of that container's seeding (an
+/// existing document from a corrupt or pathological state); a failure on a
+/// single item within a container (an artist, an album) skips just that item
+/// and continues with its siblings.
+pub fn seed(doc: &mut AutoCommit, lib: &Library) {
     let Ok(library) = doc.put_object(&ROOT, "library", ObjType::Map) else {
         return;
     };
@@ -253,33 +218,14 @@ fn write_playlist(doc: &mut AutoCommit, playlists: &ObjId, index: usize, p: &Pla
     }
 }
 
-/// A live (YouTube-Music) search result to merge into the library. Kept a plain
-/// owned struct so the `crate::backend` / `crate::stream` types never leak into
-/// the CRDT layer.
-#[derive(Clone, Debug)]
-pub struct LiveTrack {
-    /// Library track id (stable, e.g. `yt:<videoId>`).
-    pub track_id: String,
-    pub title: String,
-    pub artist_id: String,
-    pub artist_name: String,
-    pub album_id: String,
-    pub album_title: String,
-    pub duration_s: u32,
-    /// The `YouTube` video id the stream is resolved from.
-    pub yt_id: String,
-}
-
 fn get_or_create_map(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     get_map(doc, parent, key).or_else(|| doc.put_object(parent, key, ObjType::Map).ok())
 }
 
-/// Merge a live search result — its artist, album and the track itself — into
-/// the library so it shows up in the UI and becomes playable (its real
-/// `yt_id` is what [`crate::backend`] resolves a stream from). Idempotent: an
-/// existing artist / album / track with the same id is left as-is, so repeated
-/// searches don't churn the document.
-pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
+/// Add a catalogue track, its album and its artist to the library. Idempotent:
+/// an existing artist / album / track with the same id is left as it is, so
+/// importing a track again does not churn the document.
+pub fn import_track(doc: &mut AutoCommit, track: &Track, album: &Album, artist: &Artist) {
     let Some(library) = get_or_create_map(doc, &ROOT, "library") else {
         return;
     };
@@ -287,43 +233,30 @@ pub fn upsert_live_track(doc: &mut AutoCommit, t: &LiveTrack) {
     let Some(artists) = get_or_create_map(doc, &library, "artists") else {
         return;
     };
-    if get_map(doc, &artists, &t.artist_id).is_none()
-        && let Ok(m) = doc.put_object(&artists, t.artist_id.as_str(), ObjType::Map)
+    if get_map(doc, &artists, &artist.id).is_none()
+        && let Ok(m) = doc.put_object(&artists, artist.id.as_str(), ObjType::Map)
     {
-        let _ = doc.put(&m, "name", t.artist_name.as_str());
-        let _ = doc.put(&m, "genre", "");
-        let _ = doc.put(&m, "monthly_listeners", 0i64);
+        let _ = doc.put(&m, "name", artist.name.as_str());
+        let _ = doc.put(&m, "genre", artist.genre.as_str());
+        let _ = doc.put(&m, "monthly_listeners", artist.monthly_listeners as i64);
     }
 
     let Some(albums) = get_or_create_map(doc, &library, "albums") else {
         return;
     };
-    if get_map(doc, &albums, &t.album_id).is_none()
-        && let Ok(m) = doc.put_object(&albums, t.album_id.as_str(), ObjType::Map)
+    if get_map(doc, &albums, &album.id).is_none()
+        && let Ok(m) = doc.put_object(&albums, album.id.as_str(), ObjType::Map)
     {
-        let _ = doc.put(&m, "title", t.album_title.as_str());
-        let _ = doc.put(&m, "artist_id", t.artist_id.as_str());
-        let _ = doc.put(&m, "year", 0i64);
+        let _ = doc.put(&m, "title", album.title.as_str());
+        let _ = doc.put(&m, "artist_id", album.artist_id.as_str());
+        let _ = doc.put(&m, "year", i64::from(album.year));
     }
 
     let Some(tracks) = get_or_create_map(doc, &library, "tracks") else {
         return;
     };
-    if get_map(doc, &tracks, &t.track_id).is_none() {
-        write_track(
-            doc,
-            &tracks,
-            &Track {
-                id: t.track_id.clone(),
-                title: t.title.clone(),
-                album_id: t.album_id.clone(),
-                artist_id: t.artist_id.clone(),
-                track_no: 0,
-                duration_s: t.duration_s,
-                yt_id: t.yt_id.clone(),
-                plays: 0,
-            },
-        );
+    if get_map(doc, &tracks, &track.id).is_none() {
+        write_track(doc, &tracks, track);
     }
 }
 
@@ -715,9 +648,8 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let lib = seed::sample_library();
-            let pb = seed::sample_playback(&lib);
             assert!(!is_seeded(&doc));
-            seed(&mut doc, &lib, &pb);
+            seed(&mut doc, &lib);
             assert!(is_seeded(&doc));
 
             let loaded = load_library(&doc);
@@ -734,29 +666,39 @@ mod tests {
         // Phase `seeding_contains_no_device_effect_maps`.
         {
             let mut doc = AutoCommit::new();
-            let lib = seed::sample_library();
-            let pb = seed::sample_playback(&lib);
-            seed(&mut doc, &lib, &pb);
+            seed(&mut doc, &seed::sample_library());
             assert!(get_map(&doc, &ROOT, "playback").is_none());
             assert!(get_map(&doc, &ROOT, "cache").is_none());
         }
 
-        // Phase `upsert_live_track_merges_and_is_idempotent`.
+        // Phase `import_track_merges_and_is_idempotent`.
         {
             let mut doc = seeded_doc();
             let before = load_library(&doc).total_tracks();
-            let lt = LiveTrack {
-                track_id: "yt:abc123".into(),
+            let artist = Artist {
+                id: "ytc_aurora".into(),
+                name: "AURORA".into(),
+                genre: String::new(),
+                monthly_listeners: 0,
+            };
+            let album = Album {
+                id: "ytal_allmy".into(),
+                title: "All My Demons".into(),
+                artist_id: artist.id.clone(),
+                year: 0,
+            };
+            let track = Track {
+                id: "yt:abc123".into(),
                 title: "Runaway".into(),
-                artist_id: "ytc_aurora".into(),
-                artist_name: "AURORA".into(),
-                album_id: "ytal_allmy".into(),
-                album_title: "All My Demons".into(),
+                album_id: album.id.clone(),
+                artist_id: artist.id.clone(),
+                track_no: 0,
                 duration_s: 245,
                 yt_id: "abc123".into(),
+                plays: 0,
             };
-            upsert_live_track(&mut doc, &lt);
-            upsert_live_track(&mut doc, &lt); // idempotent
+            import_track(&mut doc, &track, &album, &artist);
+            import_track(&mut doc, &track, &album, &artist); // idempotent
             let lib = load_library(&doc);
             assert_eq!(
                 lib.total_tracks(),
@@ -781,7 +723,7 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let lib = seed::sample_library();
-            seed(&mut doc, &lib, &seed::sample_playback(&lib));
+            seed(&mut doc, &lib);
             add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000);
             add_track_to_playlist(&mut doc, "pl_morning", "tk_h1", 9_000_000); // dedup
             let loaded = load_library(&doc);
@@ -840,36 +782,9 @@ mod tests {
         }
     }
 
-    /// Two replicas open the same unseeded record and each act before
-    /// syncing: both replicas' likes and playlists must survive the merge.
-    #[test]
-    fn concurrent_first_opens_on_two_replicas_keep_both_libraries() {
-        for _ in 0..8 {
-            let mut base = AutoCommit::new();
-            base.commit();
-            let mut a = base.fork();
-            let mut b = base.fork();
-            seed_empty_shared(&mut a);
-            seed_empty_shared(&mut b);
-            set_liked(&mut a, "tk_a", true);
-            set_liked(&mut b, "tk_b", true);
-            create_playlist_with_id(&mut a, "pl_a", "A");
-            create_playlist_with_id(&mut b, "pl_b", "B");
-            a.merge_incoming(&mut b).unwrap();
-            let lib = load_library(&a);
-            assert!(
-                lib.liked.contains("tk_a") && lib.liked.contains("tk_b"),
-                "both likes survive; got {:?}",
-                lib.liked
-            );
-            assert!(has_playlist(&a, "pl_a") && has_playlist(&a, "pl_b"));
-        }
-    }
-
     fn seeded_doc() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        let lib = seed::sample_library();
-        seed(&mut doc, &lib, &seed::sample_playback(&lib));
+        seed(&mut doc, &seed::sample_library());
         doc
     }
 

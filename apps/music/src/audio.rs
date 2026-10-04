@@ -1953,12 +1953,13 @@ mod tests {
     #[test]
     #[cfg(feature = "audio")]
     fn empty_app_does_not_initialize_gstreamer() {
+        use ui::widget::Widget as _;
         const CHILD: &str = "TILO_TEST_EMPTY_MUSIC_NO_GST";
         if std::env::var_os(CHILD).is_some() {
             // A fresh process is essential: other audio tests initialize the
             // process-global GStreamer runtime, hiding an eager constructor.
             assert_eq!(unsafe { gstreamer::ffi::gst_is_initialized() }, 0);
-            let mut app = crate::app_root_for_shot("empty");
+            let mut app = crate::MusicApp::offline();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
             let mut engine = AudioEngine::new();

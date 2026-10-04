@@ -344,6 +344,12 @@ pub enum MusicAction {
     SetSavedAlbum { album: String, saved: bool },
     /// Set whether the user follows an artist to an explicit value.
     SetFollowedArtist { artist: String, followed: bool },
+    /// Add a catalogue track, with its album and artist, to the library: a
+    /// streamed track once it is played, so it stays playable, likeable and
+    /// listable on every device. Idempotent: an artist, album or track
+    /// already in the library is kept as it is. Content from outside the
+    /// library, so no undo step takes it back.
+    ImportTrack(Box<crate::model::CatalogueTrack>),
 }
 
 /// Durable, browseable history metadata for a library mutation.
@@ -410,6 +416,12 @@ pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
             artist,
             "music.artist",
             artist,
+        ),
+        MusicAction::ImportTrack(imported) => (
+            "Add song to library",
+            &imported.track.id,
+            "music.track",
+            &imported.track.title,
         ),
     };
     context.action_label = label.to_string();
@@ -549,12 +561,36 @@ impl Action for MusicAction {
                 )?;
                 mdoc::set_followed_artist(doc, artist, *followed);
             }
+            MusicAction::ImportTrack(imported) => {
+                let crate::model::CatalogueTrack {
+                    track,
+                    album,
+                    artist,
+                } = imported.as_ref();
+                require(
+                    !track.id.is_empty()
+                        && track.album_id == album.id
+                        && track.artist_id == artist.id
+                        && album.artist_id == artist.id
+                        && !album.id.is_empty()
+                        && !artist.id.is_empty(),
+                    "a track is imported with its own album and artist",
+                )?;
+                mdoc::import_track(doc, track, album, artist);
+            }
         }
         Ok(())
     }
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            MusicAction::ImportTrack(_) => tilo_actions::ChangeKind::External,
+            _ => tilo_actions::ChangeKind::Content,
+        }
     }
 }
 
@@ -707,6 +743,18 @@ pub fn set_saved_album_action(album: &str, saved: bool) -> MusicAction {
         album: album.to_string(),
         saved,
     }
+}
+
+pub fn import_track_action(
+    track: &crate::model::Track,
+    album: &crate::model::Album,
+    artist: &crate::model::Artist,
+) -> MusicAction {
+    MusicAction::ImportTrack(Box::new(crate::model::CatalogueTrack {
+        track: track.clone(),
+        album: album.clone(),
+        artist: artist.clone(),
+    }))
 }
 
 pub fn set_followed_artist_action(artist: &str, followed: bool) -> MusicAction {
@@ -1965,8 +2013,8 @@ mod tests {
     /// A Music app with the sample library synced into a fresh document.
     fn seeded() -> (MusicApp, AutoCommit) {
         let mut app = MusicApp::new();
-        app.seed_sample_library();
         let mut doc = AutoCommit::new();
+        crate::doc::seed(&mut doc, &crate::seed::sample_library());
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
     }

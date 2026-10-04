@@ -31,7 +31,6 @@
 [ratchets.standalone_launch]
 "apps/chat/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
-"apps/music/src/lib.rs" = 2
 "apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
 
@@ -44,7 +43,6 @@
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
-"apps/music/src/doc.rs" = 1
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
 "apps/photos/src/framework_history.rs" = 2
