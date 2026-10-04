@@ -256,6 +256,7 @@ impl RichTextLayout {
             crate::text_render::browser_emoji_runs(&shaping_text, &attrs, browser_emoji),
             metrics,
             style.kind,
+            style.optical(),
         );
         crate::font_catalog::matched::set_spans(
             &mut buffer,
@@ -418,6 +419,7 @@ impl RichTextLayout {
             }),
             Metrics::new(size, line_height),
             style.kind,
+            style.optical(),
         );
         buffer.set_rich_text(
             planned.iter().map(|(text, attrs)| (*text, attrs.clone())),

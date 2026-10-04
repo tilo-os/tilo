@@ -24,6 +24,13 @@ pub fn font_choice(kind: &FontKind) -> FontChoice {
         FontKind::Default => FontChoice::SansSerif,
         FontKind::Serif => FontChoice::Serif,
         FontKind::Mono => FontChoice::Monospace,
+        // A reading face by its name; the toolkit sets each run in the
+        // face's optical cut for its size. A name this build does not ship
+        // reads in the system's reading face.
+        FontKind::Reading(name) => ui::ReadingFace::from_name(name)
+            .map_or(FontChoice::Serif, |face| {
+                FontChoice::Named(face.family().to_owned())
+            }),
         FontKind::Named(n) => FontChoice::Named(n.clone()),
     }
 }

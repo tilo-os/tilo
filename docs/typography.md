@@ -6,9 +6,11 @@ italic state, and family. Passing one value through the whole layout pipeline
 prevents wrapping, clipping, and baseline drift.
 
 The product font policy is deterministic: Tilo Sans is the UI face,
-Noto Serif is the reading serif, and Noto Sans Mono is the code face. The
-renderer pins all three generic families to those names; a theme can set the
-UI face to the built-in Hyperlegible face instead ([UI faces](#ui-faces)).
+New Computer Modern is the reading face, and Noto Sans Mono is the code face.
+The renderer pins all three generic families to those names; a theme can set
+the UI face to the built-in Hyperlegible face instead ([UI faces](#ui-faces))
+and the reading face to one of the other reading faces the system ships
+([Reading faces](#reading-faces)).
 Scripts the UI face lacks fall back to faces matched to it ([Script
 fallbacks](#script-fallbacks)); the catalog adds Noto for symbols, emoji, CJK,
 Arabic, Hebrew, Devanagari, Bengali, and Thai. Application code names a role
@@ -44,6 +46,9 @@ the default text scale), so the text-scale setting changes every role at once.
 | `Caption` | 12 / 400 / 1.35 | Secondary line, timestamps, metadata |
 | `Reading` | 16 / 400 / 1.6, serif | Long-form documents and books |
 | `Code` | 13 / 400 / 1.5, mono | Code and terminal |
+
+`Reading` sets figures old-style and proportional, as a book does;
+`.numeric()` makes them tabular lining again.
 
 There is no all-caps or letter-spaced role. Section headers are sentence case
 in `Subheading` (inside a section) or `Heading` (a section of a page).
@@ -119,8 +124,8 @@ set in, applying only what that face has and leaving out the rest silently.
 
 | `TextKind` | Text | Features, where the face has them |
 |---|---|---|
-| `Prose` (default) | Running text; numbers in sentences stay proportional | none |
-| `Numeric` | Times, dates, durations, counts in tables and lists, prices, sizes, progress, clocks, table numeric columns, stat values, timestamps in rows | tabular lining figures (`tnum`, `lnum`) |
+| `Prose` (default) | Running text; numbers in sentences stay proportional | none (the `Reading` role's own old-style figures stay) |
+| `Numeric` | Times, dates, durations, counts in tables and lists, prices, sizes, progress, clocks, table numeric columns, stat values, timestamps in rows | tabular lining figures (`tnum`, `lnum`), in place of any figure style the role set |
 | `Secret` | Verification and recovery codes, TOTP, API keys, hashes, IDs, revealed passwords, Wi-Fi and licence keys | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
 | `Identifier` | Usernames, handles, email addresses, invite codes, room names shown for verification, other people's file names, URLs in permission prompts and link previews | distinct I and l |
 | `Code` | Source and terminal text | none; set in the mono face |
@@ -210,6 +215,89 @@ it back. Any other value is taken as a family name. The accessibility layer's
 Every role, and text built on the generic sans family (inputs, toolkit
 internals), follows the theme's UI face; reading and code keep their faces,
 and the legibility floors apply unchanged.
+
+## Reading faces
+
+The `Reading` role is set in the theme's reading face. The default is New
+Computer Modern, Computer Modern as TeX sets it, used the way TeX uses
+optical sizes: the toolkit sets every run in the cut drawn for the size it is
+actually set at, after the text scale and for each span of a paragraph on its
+own (a superscript, a footnote, a chapter title):
+
+| Size (logical px) | Cut | Why |
+|---|---|---|
+| below 12.5 | 8 pt (`NewCM08-Book`) | Footnotes, superscripts, small captions: wider, sturdier shapes |
+| 12.5 to 24 | Book | Body text at screen reading sizes, where Regular's hairlines get thin |
+| 24 and up | Regular | Titles and chapter openers, where the fine hairlines are the beauty |
+
+On a dark ground light ink loses hairlines first, so Book carries on to 32 px
+there before Regular takes over. A style carries its ground
+([`TextGround`](#custom-painted-surfaces)): every theme role has its theme's
+content ground (`Theme::on_ground` re-measures it), and a surface that paints
+its own page says which it is with `TextStyle::with_ground`. Book and Regular
+share their advance widths, so the switch never reflows a page. Italics take
+Book's italic below 12.5 px (the 8 pt design ships upright only), and every
+cut shares the one Bold. `OpticalSizing::Value(px)` pins a design size and
+`OpticalSizing::None` sets the family exactly as named, the same controls that
+drive a variable face's `opsz` axis. The thresholds were chosen by rendering
+each cut at 9-36 px at 1× and 2× on light and dark grounds
+(`ui-examples --example reading-face-shots`).
+
+The reading faces a theme or a reader can choose instead are listed by
+`ui::ReadingFace`:
+
+| `ReadingFace` | Name | Optical sizes |
+|---|---|---|
+| `Default` | New Computer Modern | 8 pt, Book and Regular cuts, as above |
+| `Libertinus` | Libertinus | Libertinus Serif, and Libertinus Serif Display for large upright text (from 24 px, 32 px on dark) |
+| `Literata` | Literata | `opsz` axis, following the size |
+| `Garamond` | EB Garamond | one design |
+| `SourceSerif` | Source Serif | `opsz` axis, following the size |
+
+Apps choose a face by name, never by file or family literal:
+
+```rust
+use ui::{ReadingFace, TextRole};
+
+// A theme's reading face, as a theme document's `type.reading` stores it.
+theme.tokens.typography.set_reading_face(ReadingFace::Literata.name());
+let page = theme.text(TextRole::Reading);
+
+// A per-reader choice inside an app (Books): the Reading style in the face
+// the reader picked.
+let face = ReadingFace::from_name(&setting).unwrap_or_default();
+let page = theme
+    .text(TextRole::Reading)
+    .with_family(FontChoice::Named(face.family().to_owned()));
+```
+
+New Computer Modern covers Latin, Greek, Cyrillic and Vietnamese; scripts a
+reading face lacks fall back as for any face ([Script
+fallbacks](#script-fallbacks)). Small caps (`with_small_caps`, `c2sc`),
+ligatures and kerning reach every reading face through the same shaping path
+as all text. The faces, their releases and licences are recorded in the
+catalog's `PROVENANCE.md`; New Computer Modern's files all name themselves
+`NewComputerModern` at weight 400, so the catalog sets each cut under its own
+family (`New Computer Modern Book`, `New Computer Modern 08`, and `New
+Computer Modern` for Regular) without changing a byte of the files.
+
+New Computer Modern's cuts ship under two licences. Book, Book Italic,
+Italic, Bold, Bold Italic and the 8 pt cut are under the GUST Font License;
+the Regular cut (`NewCM10-Regular`) is GPL-3.0-or-later with a Font Exception
+and a Distribution Exception. The catalog manifest scopes each file
+(`tilo_font_catalog::Scope`):
+
+| Catalog | Scopes | New Computer Modern |
+|---|---|---|
+| Tilo OS image (`/usr/share/fonts/tilo`, `tools/font-catalog.py stage --scope os`) | `product`, `os` | every cut, Regular for titles |
+| SDK standalone catalog next to a third-party app's Windows, macOS, Android or web build (`--scope product`; `tilo-app build` stages it for Android and web) | `product` | the GUST cuts only; Book sets titles too |
+
+The toolkit sets each run in the largest cut its size calls for that the
+loaded catalog has, so an app needs no code for either catalog: in the
+standalone catalog a 48 px title lands on Book, and large italics stay on the
+Regular design's Italic, which is GUST-licensed. A catalog directory without
+its `os` files loads as a standalone catalog; one that has them verifies them
+like every other file.
 
 ## OpenType and paragraph controls
 
@@ -426,6 +514,10 @@ margin; CJK and Southeast Asian text use Unicode/ICU break opportunities; and
 mixed-direction paragraphs preserve visual BiDi order while retaining logical
 selection offsets. Pagination keeps headings with their following text and
 enforces two-line widow and orphan minima.
+
+Readers choose the typeface in the typography popover: the system's reading
+face, the other reading faces ([Reading faces](#reading-faces)), the UI face,
+mono, or a family they added from the system list.
 
 Readers can switch the typography popover to **Ragged** composition when they
 prefer natural spacing. That mode deliberately disables automatic hyphenation,

@@ -645,7 +645,7 @@ fn shaped_layout_is_cached_until_display_inputs_or_fonts_change() {
     // requested named family rather than silently reverting to sans.
     {
         let mut tr = crate::font_catalog::fixture_renderer();
-        let fam = crate::text_render::UI_SERIF_FAMILY.to_owned();
+        let fam = crate::tokens::ReadingFace::Literata.family().to_owned();
         assert!(tr.system_families().contains(&fam));
 
         let mut ti = TextInput::local()

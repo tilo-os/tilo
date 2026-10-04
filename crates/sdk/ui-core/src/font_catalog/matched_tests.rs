@@ -48,7 +48,7 @@ fn plan_text<'t>(
     attrs: Attrs<'static>,
     kind: TextKind,
 ) -> Vec<(&'t str, Attrs<'static>)> {
-    plan(fs.db(), [(text, attrs)], BASE, kind)
+    plan(fs.db(), [(text, attrs)], BASE, kind, Optical::default())
 }
 
 fn ui(weight: u16) -> Attrs<'static> {
@@ -215,7 +215,13 @@ fn explicit_features_win_and_stylistic_sets_stay_with_their_face() {
         .with_font_feature(crate::text_render::OpenTypeTag::new(*b"ss03"), 1)
         .with_kerning(false);
     let attrs = style.cosmic_attrs();
-    let spans = plan(fs.db(), [("y Привет", attrs)], BASE, TextKind::Numeric);
+    let spans = plan(
+        fs.db(),
+        [("y Привет", attrs)],
+        BASE,
+        TextKind::Numeric,
+        Optical::default(),
+    );
     assert_eq!(features(&spans[0].1), [*b"tnum", *b"ss03", *b"kern"]);
     let fallback = features(&spans[1].1);
     assert!(fallback.contains(b"kern") && !fallback.contains(b"ss03"));
@@ -246,6 +252,7 @@ fn planned_paragraphs_keep_their_final_empty_line() {
         [("Hi Привет\n", attrs.clone())],
         BASE,
         TextKind::Prose,
+        Optical::default(),
     );
     assert!(spans.len() > 1);
     let mut buffer = Buffer::new(&mut fs, BASE);
@@ -265,7 +272,13 @@ const FEATURES_FIXTURE_FAMILY: &str = "Tilo Sans Features Fixture";
 
 fn glyph_ids(fs: &mut FontSystem, text: &str, kind: TextKind) -> Vec<u16> {
     let attrs = Attrs::new().family(Family::Name(FEATURES_FIXTURE_FAMILY));
-    let spans = plan(fs.db(), [(text, attrs.clone())], BASE, kind);
+    let spans = plan(
+        fs.db(),
+        [(text, attrs.clone())],
+        BASE,
+        kind,
+        Optical::default(),
+    );
     let mut buffer = Buffer::new(fs, BASE);
     set_spans(&mut buffer, &spans, &attrs, None);
     buffer.shape_until_scroll(fs, false);
