@@ -42,7 +42,7 @@ class TiloVm:
         self.log = log
 
     def run(self, *args: str, timeout: float = 120, check: bool = True,
-            slot: bool = True) -> str:
+            slot: bool = True, cwd: Path | None = None) -> str:
         env = dict(os.environ, TILO_VM=self.vm)
         if slot:
             env["TILO_VM_SLOT"] = self.slot
@@ -50,7 +50,7 @@ class TiloVm:
         started = time.monotonic()
         try:
             proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  timeout=timeout)
+                                  timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as exc:
             self._log(cmd, None, time.monotonic() - started, "", str(exc))
             raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc
