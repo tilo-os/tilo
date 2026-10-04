@@ -246,63 +246,28 @@ impl CameraApp {
         panel
     }
 
-    /// The shutter: a ring in media ink around a disc (photo), a red dot
-    /// (video) or a red square (recording). It is the one capture control
-    /// the toolkit has no widget for, so its parts are painted here from the
-    /// theme's media and status colours.
+    /// The shutter: the toolkit's capture button, a photo, a video or the
+    /// recording in progress, inked from the media colours.
     fn draw_shutter(
         &mut self,
         scene: &mut Scene,
         t: Affine,
+        tr: &mut TextRenderer,
         theme: &Theme,
         center: Point,
         live: bool,
     ) -> Rect {
-        let colors = &theme.tokens.colors;
-        let spacing = &theme.tokens.spacing;
-        let radius = f64::from(theme.tokens.metrics.min_pointer_target);
-        let ring = f64::from(spacing.s1);
-        let recording = self.is_recording();
-        let ink = if live {
-            colors.media.ink
-        } else {
-            colors.media.ink_dim
+        let kind = match self.mode {
+            _ if self.is_recording() => ui::widget::CaptureKind::Recording,
+            CaptureMode::Video => ui::widget::CaptureKind::Video,
+            CaptureMode::Photo => ui::widget::CaptureKind::Photo,
         };
-        let danger = colors.semantic.danger;
-        p::circle_stroke(
-            scene,
-            t,
-            center,
-            radius - ring / 2.0,
-            if recording { danger } else { ink },
-            ring,
-        );
-        let core = radius - ring - f64::from(spacing.s1);
-        match self.mode {
-            CaptureMode::Video if recording => {
-                let half = core / 2.0;
-                p::fill_round(
-                    scene,
-                    t,
-                    Rect::new(
-                        center.x - half,
-                        center.y - half,
-                        center.x + half,
-                        center.y + half,
-                    ),
-                    f64::from(theme.tokens.radii.detail),
-                    danger,
-                );
-            }
-            CaptureMode::Video => p::circle(scene, t, center, core, danger),
-            CaptureMode::Photo => p::circle(scene, t, center, core, ink),
-        }
-        let hit = Rect::new(
-            center.x - radius,
-            center.y - radius,
-            center.x + radius,
-            center.y + radius,
-        );
+        let rect = ui::widget::CaptureButtonFace::rect(center, theme);
+        let hovered = rect.contains(self.last_mouse);
+        let hit = ui::widget::CaptureButtonFace::new(kind)
+            .live(live)
+            .hovered(hovered)
+            .paint(&mut ui::paint::PaintCtx::new(scene, t, tr, theme), center);
         self.push_region(hit, Action::Shutter);
         hit
     }
@@ -351,7 +316,7 @@ impl CameraApp {
             );
             self.draw_no_feed(scene, t, tr, theme, area);
         }
-        let shutter = self.draw_shutter(scene, t, theme, center, live);
+        let shutter = self.draw_shutter(scene, t, tr, theme, center, live);
         self.draw_recent_capture(scene, t, tr, theme, full, shutter);
         self.draw_lens_switch(scene, t, tr, theme, full, shutter);
         if self.is_recording() {

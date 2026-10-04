@@ -6333,7 +6333,9 @@ impl WordProcessorWidget {
             right: canvas_right,
             top: tb_bottom,
         } = *geometry;
-        let mut recovery_h = self.recovery.height(theme);
+        let mut recovery_h = self
+            .recovery
+            .height(text_renderer, theme, canvas_right - canvas_left);
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
             self.recovery
@@ -6344,18 +6346,20 @@ impl WordProcessorWidget {
         if self.save_error.is_some() {
             let sp = &theme.tokens.spacing;
             let (across, along) = (f64::from(sp.s3), f64::from(sp.s2));
-            let h = ButtonFace::height(ControlSize::Regular, theme) + 2.0 * along;
+            let title = t("toast-save-failed");
+            let content = ui::widget::BannerContent::new(ui::widget::BannerKind::Error, &title)
+                .dismissible(true);
+            let width = (canvas_right - canvas_left - 2.0 * across).max(1.0);
+            let h = ui::widget::Banner::height(&content, width, text_renderer, theme);
             let top = tb_bottom + recovery_h + along;
             let rect = Rect::new(canvas_left + across, top, canvas_right - across, top + h);
-            let title = t("toast-save-failed");
-            let close = ui::widget::Banner::paint(
+            let hit = ui::widget::Banner::paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
-                &ui::widget::BannerContent::new(ui::widget::BannerKind::Error, &title)
-                    .dismissible(true),
+                &content,
                 self.pointer,
             );
-            self.save_error = Some(close);
+            self.save_error = Some(hit.dismiss.unwrap_or(Rect::ZERO));
             recovery_h += h + 2.0 * along;
         }
         let find_h = self.find.height(theme);
