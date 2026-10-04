@@ -45,7 +45,7 @@ mod annotations;
 mod chrome;
 mod overlays;
 
-use chrome::{BAR_COMMANDS, ChromeMetrics, MenuButton};
+use chrome::{ChromeMetrics, CommandSlot, MenuRow};
 use overlays::SettingsSheet;
 
 use crate::actions::{self, SheetsAction, SheetsResourceCtx};
@@ -259,17 +259,6 @@ enum MenuItem {
     AutoSum,
 }
 
-/// Which dropdown (if any) is open.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum OpenMenu {
-    None,
-    File,
-    Format,
-    /// Holds secondary commands when the accessible text scale or viewport
-    /// leaves insufficient room for the full toolbar.
-    More,
-}
-
 /// Whether the per-document settings panel is open.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SettingsPanel {
@@ -473,11 +462,17 @@ pub struct SheetsApp {
     formula_rect: Rect,
     grid_rect: Rect,
     tabs_rect: Rect,
-    menu_buttons: Vec<MenuButton>,
-    /// The File, Format or More menu, and what each of its rows runs (`None`
-    /// for a separator).
-    menu: ContextMenu,
-    menu_items: Vec<Option<MenuItem>>,
+    /// The command bar, and what its commands and menus last ran.
+    toolbar: ui::widget::Toolbar,
+    command_slot: CommandSlot,
+    /// The Format menu's rows as the bar holds them.
+    format_rows_shown: Option<Vec<MenuRow>>,
+    /// The theme the chrome was last measured in, for laying the bar out
+    /// between frames.
+    chrome_theme: Theme,
+    /// The window's History control in the header row's corner.
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
     /// The document-settings sheet as last laid out.
     settings_sheet: Option<SettingsSheet>,
     /// Measured chrome text metrics driving `relayout` (see [`ChromeMetrics`]).
@@ -530,6 +525,8 @@ pub struct SheetsApp {
     /// each card stands in it. Empty when the sheet has no annotations.
     dock_rect: Rect,
     dock_cards: Vec<(annotations::DockCard, Rect)>,
+    /// Scrolls the dock sideways to the cards past its edge.
+    dock_scroll: ui::widget::ScrollRegion,
     /// Query-ready workbook projection, rebuilt only when document heads
     /// change so global search never reads the CRDT synchronously.
     searchable_sheets: Vec<actions::SearchableSheet>,
@@ -564,7 +561,6 @@ pub struct SheetsApp {
     last_press: Option<(Instant, Addr)>,
     last_mouse: Point,
     current_active_format: CellFormat,
-    open_menu: OpenMenu,
     settings_panel: SettingsPanel,
     global: GlobalSettings,
     doc_settings: DocSettings,
@@ -660,7 +656,14 @@ impl Default for SheetsApp {
 
 impl SheetsApp {
     pub fn new() -> Self {
+        let command_slot = CommandSlot::default();
         Self {
+            toolbar: Self::build_command_bar(&command_slot),
+            command_slot,
+            format_rows_shown: None,
+            chrome_theme: Theme::dark(),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
             grid: Grid::new(),
             text_scale: 1.0,
             rect: Rect::ZERO,
@@ -668,9 +671,6 @@ impl SheetsApp {
             formula_rect: Rect::ZERO,
             grid_rect: Rect::ZERO,
             tabs_rect: Rect::ZERO,
-            menu_buttons: Vec::new(),
-            menu: ContextMenu::new(),
-            menu_items: Vec::new(),
             settings_sheet: None,
             metrics: ChromeMetrics::fallback(),
             tab_rects: Vec::new(),
@@ -698,6 +698,7 @@ impl SheetsApp {
             annotation_clicks: Vec::new(),
             dock_rect: Rect::ZERO,
             dock_cards: Vec::new(),
+            dock_scroll: ui::widget::ScrollRegion::horizontal(),
             searchable_sheets: Vec::new(),
             search_projection_heads: None,
             search_provider: crate::search_provider::SheetSearchProvider::new(&[]),
@@ -714,7 +715,6 @@ impl SheetsApp {
             last_press: None,
             last_mouse: Point::ZERO,
             current_active_format: CellFormat::General,
-            open_menu: OpenMenu::None,
             settings_panel: SettingsPanel::None,
             global: GlobalSettings::default(),
             doc_settings: DocSettings::default(),
@@ -1129,15 +1129,11 @@ impl SheetsApp {
             return;
         };
         match name.as_str() {
-            "file" => self.open_command_menu(OpenMenu::File),
-            "format" => self.open_command_menu(OpenMenu::Format),
+            "file" => self.toolbar.open_command_menu(chrome::bar::FILE),
+            "format" => self.toolbar.open_command_menu(chrome::bar::FORMAT),
             "more" => {
-                let overflowing = self
-                    .menu_buttons
-                    .iter()
-                    .any(|button| button.opens == Some(OpenMenu::More));
-                if overflowing {
-                    self.open_command_menu(OpenMenu::More);
+                if self.toolbar.has_overflow() {
+                    self.toolbar.open_overflow();
                 } else {
                     // Nothing to open, and a capture of the plain window under
                     // this name would pass for the menu.
@@ -1145,7 +1141,7 @@ impl SheetsApp {
                     {
                         eprintln!(
                             "sheets: scenario `more` needs a window too narrow for the command \
-                             bar, for example --viewport 520x600 or --text-scale 2"
+                             bar, for example --viewport 390x844 or --text-scale 2"
                         );
                     }
                 }
@@ -3215,7 +3211,7 @@ impl SheetsApp {
     /// [`dispatch_command`]; nothing here is a stub.
     fn open_command_palette(&mut self, doc: &AutoCommit) {
         // Close any other overlay so the palette owns the surface.
-        self.open_menu = OpenMenu::None;
+        self.toolbar.close_menus();
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
         self.name_box_edit = None;
@@ -3673,7 +3669,8 @@ impl Widget for SheetsApp {
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::undo::UndoPoints
+        dyn ui::undo::UndoPoints,
+        dyn ui::widget::WindowHeader
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -3886,7 +3883,7 @@ impl Widget for SheetsApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.annotation_clicks.clear();
         // Measure first, so this frame's chrome (and the hit-rects it leaves
@@ -3896,7 +3893,7 @@ impl Widget for SheetsApp {
         // anchors to what is painted (and the More menu knows whether the bar
         // overflowed).
         self.apply_staged_overlay();
-        self.draw_chrome(scene, transform, text_renderer, theme);
+        self.draw_chrome(scene, transform, text_renderer, theme, presence);
         if self.is_loading() {
             self.draw_loading(scene, transform, text_renderer, theme);
         } else {
@@ -3962,6 +3959,9 @@ impl Widget for SheetsApp {
         }
         // A menu or popover over the sheet is modal and takes the event first.
         if self.route_overlays(event, event_ctx) {
+            return;
+        }
+        if self.route_dock_scroll(event, event_ctx) {
             return;
         }
         if self.route_inline_editor(
@@ -4057,72 +4057,13 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
-        let toolbar_controls = self
-            .menu_buttons
-            .iter()
-            .filter_map(|button| {
-                let formula_view = self.grid.formula_view();
-                let (name, target, description) = match (button.opens, &button.item) {
-                    (Some(OpenMenu::File), _) => (
-                        "File menu",
-                        "sheets.toolbar.file",
-                        "Open file and interchange actions",
-                    ),
-                    (Some(OpenMenu::Format), _) => (
-                        "Format menu",
-                        "sheets.toolbar.format",
-                        "Apply a number or text format to the selection",
-                    ),
-                    (Some(OpenMenu::More), _) => (
-                        "More commands",
-                        "sheets.toolbar.more",
-                        "Open the commands that do not fit the toolbar",
-                    ),
-                    (_, Some(MenuItem::ToggleBold)) => (
-                        "Bold",
-                        "sheets.toolbar.bold",
-                        "Make the selection bold or regular; shortcut Control+B",
-                    ),
-                    (_, Some(MenuItem::AutoSum)) => (
-                        "AutoSum",
-                        "sheets.toolbar.autosum",
-                        "Insert a sum for the numeric run above the active cell",
-                    ),
-                    (_, Some(MenuItem::ToggleFormulaView)) => (
-                        if formula_view {
-                            "Show calculated results"
-                        } else {
-                            "Show formulas"
-                        },
-                        "sheets.toolbar.formula-view",
-                        "Toggle calculated values and raw formulas; shortcut Control+Shift+F",
-                    ),
-                    (_, Some(MenuItem::OpenDocSettings)) => (
-                        "Document settings",
-                        "sheets.toolbar.settings",
-                        "Set workbook-wide currency, date, and time conventions",
-                    ),
-                    _ => return None,
-                };
-                let mut state = AccessState::new().focusable(true);
-                if matches!(
-                    button.item,
-                    Some(MenuItem::ToggleBold | MenuItem::ToggleFormulaView)
-                ) {
-                    state = state.checked(self.command_is_toggled(button.item.as_ref()));
-                }
-                if let Some(menu) = button.opens {
-                    state = state.expanded(self.open_menu == menu);
-                }
-                Some(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_description(description)
-                        .with_action_target(target)
-                        .with_bounds(button.rect)
-                        .with_state(state),
-                )
-            })
+        // The command bar's own nodes (its commands, the More button and
+        // any open menu), the window's History control, then the formula bar.
+        let toolbar_controls: Vec<AccessNode> = Widget::accessibility(&self.toolbar)
+            .map(|toolbar| toolbar.children)
+            .unwrap_or_default()
+            .into_iter()
+            .chain(self.history.accessibility(self.history_rect))
             .chain([
                 AccessNode::new(Role::Button)
                     .with_name("Start a formula")
@@ -4365,42 +4306,25 @@ impl Widget for SheetsApp {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if self.history.perform_semantic_action(target, action) {
+            self.pending.redraw = true;
+            return true;
+        }
+        if self
+            .toolbar
+            .perform_semantic_action(target, action, state, path)
+        {
+            let (doc, _) = ui::doc::document(state, path);
+            self.drain_command_bar(doc);
+            self.pending.redraw = true;
+            return true;
+        }
         let (state, _) = ui::doc::document(state, path);
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
-            let opened = match target {
-                "sheets.toolbar.file" => Some(OpenMenu::File),
-                "sheets.toolbar.format" => Some(OpenMenu::Format),
-                "sheets.toolbar.more" => Some(OpenMenu::More),
-                _ => None,
-            };
-            if let Some(menu) = opened {
-                if self.open_menu == menu {
-                    self.close_overlays();
-                } else {
-                    self.open_command_menu(menu);
-                }
-                return true;
-            }
             match target {
-                "sheets.toolbar.bold" => {
-                    self.run_menu_item(state, &MenuItem::ToggleBold);
-                    return true;
-                }
                 "sheets.fx" => {
                     self.start_formula_entry();
-                    return true;
-                }
-                "sheets.toolbar.autosum" => {
-                    self.run_menu_item(state, &MenuItem::AutoSum);
-                    return true;
-                }
-                "sheets.toolbar.settings" => {
-                    self.run_menu_item(state, &MenuItem::OpenDocSettings);
-                    return true;
-                }
-                "sheets.toolbar.formula-view" => {
-                    self.toggle_formula_view();
                     return true;
                 }
                 "sheets.name-box" => {
@@ -4545,9 +4469,24 @@ impl ui::resources::PublishesResources for SheetsApp {
     }
 }
 
+/// The command bar's row is the window's header row: it holds the History
+/// control the host offers, so the window draws no History bar above the
+/// sheet.
+impl ui::widget::WindowHeader for SheetsApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.relayout();
+            self.pending.redraw = true;
+        }
+    }
+}
+
 impl ui::widget::controls::ActionControls for SheetsApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation()
+        self.history
+            .take()
+            .or_else(|| self.palette.take_control_invocation())
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         use ui::widget::Widget as _;
@@ -4843,9 +4782,6 @@ impl SheetsApp {
         if self.try_settings_panel_click(p, state, handled) {
             return;
         }
-        if self.try_menu_bar_click(p, state, handled) {
-            return;
-        }
         if self.try_chrome_click(p, modifiers, state, handled) {
             return;
         }
@@ -4875,30 +4811,6 @@ impl SheetsApp {
         }
         self.pending.redraw = true;
         *handled = true;
-        true
-    }
-
-    /// Command bar: opens a menu, or runs a command.
-    fn try_menu_bar_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
-        if !self.toolbar_rect.contains(p) {
-            return false;
-        }
-        // Take what the hit says before touching `self`: `run_menu_item` needs
-        // `&mut self`, which cannot coexist with the borrow `find` holds.
-        let hit = self
-            .menu_buttons
-            .iter()
-            .find(|b| b.rect.contains(p))
-            .map(|b| (b.opens, b.item.clone()));
-        if let Some((opens, item)) = hit {
-            if let Some(opens) = opens {
-                self.open_command_menu(opens);
-            } else if let Some(item) = item {
-                self.run_menu_item(state, &item);
-            }
-            self.pending.redraw = true;
-            *handled = true;
-        }
         true
     }
 
@@ -5929,7 +5841,6 @@ mod interaction_tests;
 mod tests {
     use super::*;
     use crate::grid::GridCmd;
-    use ui::widget::{ButtonFace, ButtonRole, ControlSize};
 
     /// Serializes tests that round-trip through the process-global system
     /// clipboard, so a parallel test's copy can't land between another's
@@ -6006,14 +5917,15 @@ mod tests {
     fn chrome_density_follows_measured_text() {
         // Case `chrome_metrics_keep_the_one_x_density`.
         // At 1× the measured chrome is built from the toolkit's control
-        // heights and the spacing scale: a 44 px command bar (a small control
-        // with `s2` around it), a 40 px formula bar, a 44 px tab strip, the
+        // heights and the spacing scale: the command bar is the window's
+        // header row, a 40 px formula bar, a 44 px tab strip, the
         // small control height for the column header and the default row, and
         // a 56 px row header.
         {
-            let (app, _tr, _theme) = measured_app(1280.0, 720.0, 1.0);
+            let (app, _tr, theme) = measured_app(1280.0, 720.0, 1.0);
             assert!(
-                (app.toolbar_rect.height() - 44.0).abs() < 0.01,
+                (app.toolbar_rect.height() - ui::chrome::HeaderRowFace::height(&theme)).abs()
+                    < 0.01,
                 "command bar"
             );
             assert!(
@@ -6052,36 +5964,20 @@ mod tests {
             assert!(app.grid.metrics().col_header_h() >= m.lh_caption);
             assert!(app.grid.metrics().default_row_h() >= m.lh_body);
 
-            // Command buttons: one centre line, `s2` apart, each wide enough
-            // for the label it paints (measured with the painting face).
-            let centre = app.menu_buttons[0].rect.center().y;
-            for pair in app.menu_buttons.windows(2) {
+            // Commands: one centre line in the header row, each at least a
+            // line box tall.
+            let shown: Vec<Rect> = chrome::bar::COMMANDS
+                .iter()
+                .filter_map(|index| app.toolbar.item_rect(*index))
+                .collect();
+            assert!(shown.len() >= 6, "the whole bar fits 1280 px at 2x");
+            for rect in &shown {
                 assert!(
-                    (pair[0].rect.center().y - centre).abs() < 0.01,
+                    (rect.center().y - app.toolbar_rect.center().y).abs() < 0.5,
                     "one centre line"
                 );
                 assert!(
-                    (pair[1].rect.x0 - pair[0].rect.x1 - m.s2).abs() < 0.01,
-                    "commands are s2 apart"
-                );
-            }
-            for b in app
-                .menu_buttons
-                .iter()
-                .filter(|b| b.opens != Some(OpenMenu::More))
-            {
-                let w = ButtonFace::new(Rect::ZERO, &b.label)
-                    .role(ButtonRole::Plain)
-                    .control_size(ControlSize::Small)
-                    .intrinsic_width(&mut tr, &theme);
-                assert!(
-                    b.rect.width() >= w - 0.01,
-                    "'{}' needs {w:.1}, button is {:.1}",
-                    b.label,
-                    b.rect.width()
-                );
-                assert!(
-                    b.rect.height() >= m.lh_label,
+                    rect.height() >= m.lh_label,
                     "button taller than its line box"
                 );
             }
@@ -6266,18 +6162,21 @@ mod tests {
         // interaction minimum. Keep their hit geometry aligned with the shared
         // fine-pointer contract, and prove the same surfaces expand at 2× type.
         {
-            let (app, _tr, theme) = measured_app(560.0, 720.0, 1.0);
+            let (app, _tr, _theme) = measured_app(560.0, 720.0, 1.0);
             let minimum =
                 f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
-            for button in &app.menu_buttons {
-                let face =
-                    ButtonFace::new(button.rect, &button.label).control_size(ControlSize::Small);
-                assert!(
-                    face.hit_rect(&theme).height() >= minimum,
-                    "'{}' reaches the pointer minimum",
-                    button.label
-                );
-            }
+            let commands = |app: &SheetsApp| -> Vec<Rect> {
+                chrome::bar::COMMANDS
+                    .iter()
+                    .filter_map(|index| app.toolbar.item_rect(*index))
+                    .collect()
+            };
+            assert!(
+                commands(&app)
+                    .iter()
+                    .all(|rect| rect.height() >= minimum - 0.01),
+                "every command reaches the pointer minimum"
+            );
             assert!(app.name_box_rect.height() >= minimum);
             assert!(app.formula_field_rect.height() >= minimum);
             assert!(
@@ -6288,9 +6187,9 @@ mod tests {
 
             let (app2, _tr, _theme) = measured_app(560.0, 720.0, 2.0);
             assert!(
-                app2.menu_buttons
+                commands(&app2)
                     .iter()
-                    .all(|button| button.rect.height() >= minimum * 1.25)
+                    .all(|rect| rect.height() >= minimum * 1.25)
             );
             assert!(
                 app2.grid.accessibility_window().rows[0].bounds.height()
@@ -7756,33 +7655,30 @@ mod tests {
         // Case `narrow_large_text_collapses_secondary_toolbar_actions_without_clipping`.
         {
             let (mut app, mut tr, theme) = measured_app(560.0, 720.0, 2.0);
-            let labels: Vec<&str> = app
-                .menu_buttons
-                .iter()
-                .map(|button| button.label.as_str())
-                .collect();
-            assert_eq!(labels.first(), Some(&"File"));
-            assert_eq!(labels.get(1), Some(&"Format"));
-            assert_eq!(
-                labels.last(),
-                Some(&crate::app::chrome::MORE_LABEL),
+            assert!(app.toolbar.item_rect(chrome::bar::FILE).is_some());
+            assert!(app.toolbar.item_rect(chrome::bar::FORMAT).is_some());
+            assert!(
+                app.toolbar.has_overflow(),
                 "what does not fit moves into More"
             );
-            assert!(labels.len() < crate::app::chrome::BAR_COMMANDS.len() + 1);
-            assert!(
-                app.menu_buttons
-                    .iter()
-                    .all(|button| button.rect.x1 <= app.rect.x1)
-            );
-            app.open_command_menu(OpenMenu::More);
+            let shown = chrome::bar::COMMANDS
+                .iter()
+                .filter_map(|index| app.toolbar.item_rect(*index))
+                .collect::<Vec<_>>();
+            assert!(shown.iter().all(|rect| rect.x1 <= app.rect.x1));
+            app.toolbar.open_overflow();
             paint_frame(&mut app, &mut tr, &theme);
-            let shown = app.menu_buttons.len() - 1;
+            let (_, menu) = app.toolbar.shown_menu().expect("the More menu opens");
             assert_eq!(
-                app.menu.items().len(),
-                crate::app::chrome::BAR_COMMANDS.len() - shown,
+                menu.items()
+                    .iter()
+                    .filter(|item| item.label().is_some())
+                    .count(),
+                // Six commands, File and Format among those shown.
+                6 - shown.len(),
                 "More holds exactly the commands the bar dropped"
             );
-            let panel = Widget::get_rect(&app.menu);
+            let panel = Widget::get_rect(menu);
             assert!(panel.x0 >= app.rect.x0 && panel.x1 <= app.rect.x1);
         }
     }
@@ -8632,9 +8528,11 @@ mod tests {
             use ui::widget::Widget as _;
 
             let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+            app.relayout();
             let root = automerge::ROOT;
             assert!(app.perform_semantic_action(
-                "sheets.toolbar.formula-view",
+                &format!("toolbar.item.{}", chrome::bar::FORMULAS),
                 &ui::a11y::Action::Activate,
                 &mut doc,
                 &root,
@@ -8667,9 +8565,11 @@ mod tests {
                 .into_iter()
                 .map(|binding| binding.control_id)
                 .collect();
+            let bold = format!("toolbar.item.{}", chrome::bar::BOLD);
+            let formulas = format!("toolbar.item.{}", chrome::bar::FORMULAS);
             for target in [
-                "sheets.toolbar.bold",
-                "sheets.toolbar.formula-view",
+                bold.as_str(),
+                formulas.as_str(),
                 "sheets.fx",
                 "sheets.name-box",
                 "sheets.formula-bar",

@@ -15,7 +15,7 @@
 //!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `tabcolour`, `tabrename`,
 //!     `commandpalette`, `loading`, `error`, `conflict`, `reducedmotion`.
 //!     `more` opens the overflow menu, which only exists when the command bar
-//!     does not fit: pair it with `--viewport 520x600` or `--text-scale 2`.
+//!     does not fit: pair it with `--viewport 390x844` or `--text-scale 2`.
 //!     `tabcolour` colours both tabs and opens the colour popover.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk

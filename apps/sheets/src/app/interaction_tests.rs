@@ -45,15 +45,19 @@ fn painted() -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
     (app, doc, tr, theme)
 }
 
-/// Click the command on the bar that opens `opens` and is called `label`.
-fn click_command(app: &mut SheetsApp, doc: &mut AutoCommit, opens: Option<OpenMenu>, label: &str) {
+/// Click the bar's command at `index` (see [`chrome::bar`]).
+fn click_command(app: &mut SheetsApp, doc: &mut AutoCommit, index: usize) {
     let centre = app
-        .menu_buttons
-        .iter()
-        .find(|button| button.opens == opens && button.label == label)
-        .map(|button| button.rect.center())
+        .toolbar
+        .item_rect(index)
+        .map(|rect| rect.center())
         .expect("the command is on the bar");
     click(app, doc, centre);
+}
+
+/// The command whose own menu is open, if any.
+fn shown_menu(app: &SheetsApp) -> Option<usize> {
+    app.toolbar.shown_menu().and_then(|(index, _)| index)
 }
 
 /// The commands, the menus and the sheet tabs act on pointer and keyboard.
@@ -66,17 +70,18 @@ fn painted_chrome_answers_pointer_and_keyboard() {
     // Case `format_menu_applies_the_clicked_format`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
-        click_command(&mut app, &mut doc, Some(OpenMenu::Format), "Format");
-        assert!(app.menu.is_open() && app.open_menu == OpenMenu::Format);
+        click_command(&mut app, &mut doc, chrome::bar::FORMAT);
+        assert_eq!(shown_menu(&app), Some(chrome::bar::FORMAT));
         paint_frame(&mut app, &mut tr, &theme);
-        let percent = app
-            .menu_items
+        let (_, menu) = app.toolbar.shown_menu().expect("the Format menu");
+        let percent = menu
+            .items()
             .iter()
-            .position(|item| matches!(item, Some(MenuItem::SetFormat(f)) if f.category() == FormatCategory::Percent))
+            .position(|item| item.label() == Some("Percent"))
             .expect("a Percent row");
-        let row = app.menu.item_rect(percent).expect("the row is laid out");
+        let row = menu.item_rect(percent).expect("the row is laid out");
         click(&mut app, &mut doc, row.center());
-        assert!(!app.menu.is_open(), "choosing a row closes the menu");
+        assert_eq!(shown_menu(&app), None, "choosing a row closes the menu");
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             app.current_active_format.category(),
@@ -85,20 +90,17 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         );
     }
 
-    // Case `one_click_moves_from_one_menu_to_the_next`.
+    // Case `an_opener_opens_and_closes_its_menu`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
-        click_command(&mut app, &mut doc, Some(OpenMenu::File), "File");
-        assert_eq!(app.open_menu, OpenMenu::File);
+        click_command(&mut app, &mut doc, chrome::bar::FILE);
+        assert_eq!(shown_menu(&app), Some(chrome::bar::FILE));
         paint_frame(&mut app, &mut tr, &theme);
-        click_command(&mut app, &mut doc, Some(OpenMenu::Format), "Format");
-        assert_eq!(app.open_menu, OpenMenu::Format, "Format opens in one click");
+        click_command(&mut app, &mut doc, chrome::bar::FILE);
+        assert_eq!(shown_menu(&app), None, "the same opener closes its menu");
         paint_frame(&mut app, &mut tr, &theme);
-        click_command(&mut app, &mut doc, Some(OpenMenu::Format), "Format");
-        assert!(
-            !app.menu.is_open() && app.open_menu == OpenMenu::None,
-            "the same opener closes its menu"
-        );
+        click_command(&mut app, &mut doc, chrome::bar::FORMAT);
+        assert_eq!(shown_menu(&app), Some(chrome::bar::FORMAT));
     }
 
     // Case `bold_command_and_ctrl_b_share_one_path`.
@@ -107,11 +109,18 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         app.grid.select_only((1, 1));
         app.sync(&mut doc, &automerge::ROOT);
         assert!(!app.active_cell_bold);
-        click_command(&mut app, &mut doc, None, "Bold");
+        click_command(&mut app, &mut doc, chrome::bar::BOLD);
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.active_cell_bold, "the Bold command bolds the cell");
         paint_frame(&mut app, &mut tr, &theme);
-        assert!(app.command_is_toggled(Some(&MenuItem::ToggleBold)));
+        let bold = Widget::accessibility(&app.toolbar)
+            .and_then(|bar| {
+                bar.children
+                    .into_iter()
+                    .find(|node| node.name.as_deref() == Some("Bold"))
+            })
+            .expect("the Bold toggle");
+        assert_eq!(bold.state.checked, Some(true), "the toggle reads as on");
         assert!(feed(&mut app, &mut doc, &char_event("b"), ctrl_mods()));
         app.sync(&mut doc, &automerge::ROOT);
         assert!(!app.active_cell_bold, "Ctrl+B takes it off again");
@@ -120,7 +129,7 @@ fn painted_chrome_answers_pointer_and_keyboard() {
     // Case `settings_sheet_applies_a_choice_and_closes_on_done`.
     {
         let (mut app, mut doc, mut tr, theme) = painted();
-        click_command(&mut app, &mut doc, None, "Document settings");
+        click_command(&mut app, &mut doc, chrome::bar::SETTINGS);
         assert_eq!(app.settings_panel, SettingsPanel::Document);
         paint_frame(&mut app, &mut tr, &theme);
         let eur = app
@@ -195,34 +204,40 @@ fn painted_chrome_answers_pointer_and_keyboard() {
 #[test]
 fn floating_surfaces_keep_clear_of_edges_and_openers() {
     // Case `the_more_menu_keeps_off_the_window_edge`.
-    // A window too narrow for the bar moves the commands that do not fit into
-    // the More menu, which opens under its button and stays inside the window
-    // with room to spare.
+    // A window narrower than the bar's own width moves the commands that do
+    // not fit into the More menu, which opens under its button and stays
+    // inside the window with room to spare.
     {
-        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(520.0, 600.0, 1.0);
+        let (mut probe, _doc, mut tr, theme) = measured_app_with_doc(1280.0, 600.0, 1.0);
+        let whole = probe.toolbar.intrinsic_size(&mut tr, &theme).width;
+        // Two thirds of the bar's width leaves File and Format in place with
+        // the rest in More, whatever the commands measure at.
+        let width = whole * 2.0 / 3.0 + 2.0 * probe.metrics.s3;
+        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(width, 600.0, 1.0);
         app.sync(&mut doc, &automerge::ROOT);
         paint_frame(&mut app, &mut tr, &theme);
         assert!(
-            app.menu_buttons
-                .iter()
-                .any(|button| button.opens == Some(OpenMenu::More)),
-            "520 px is too narrow for the whole bar"
+            app.toolbar.has_overflow(),
+            "{width:.0} px is too narrow for a {whole:.0} px bar"
         );
-        app.open_command_menu(OpenMenu::More);
+        app.toolbar.open_overflow();
         paint_frame(&mut app, &mut tr, &theme);
-        let menu = app.menu.get_rect();
-        assert!(app.menu.is_open() && !app.menu_items.is_empty());
+        let (index, menu) = app.toolbar.shown_menu().expect("the More menu opens");
+        assert_eq!(index, None);
+        assert!(!menu.items().is_empty());
+        let menu = menu.get_rect();
         assert!(
             menu.x1 <= app.rect.x1 - app.metrics.s2 + 0.01,
             "the menu {menu:?} touches the window's right edge"
         );
-        let anchor = app
-            .menu_buttons
-            .iter()
-            .find(|button| button.opens == Some(OpenMenu::More))
-            .map(|button| button.rect)
-            .expect("the More button");
-        assert!(menu.y0 > anchor.y1, "the menu opens below its button");
+        assert!(
+            menu.y0
+                > app
+                    .toolbar
+                    .item_rect(chrome::bar::FORMAT)
+                    .expect("Format stays")
+                    .y1
+        );
     }
 
     // Case `a_phone_width_moves_several_commands_into_the_menu`.
@@ -230,22 +245,18 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
     // framework's phone width, where several commands wait in the menu.
     {
         let (fits, _doc, _tr, _theme) = measured_app_with_doc(800.0, 600.0, 1.0);
-        assert!(
-            fits.menu_buttons
-                .iter()
-                .all(|button| button.opens != Some(OpenMenu::More)),
-            "the bar fits 800 px at 1x"
-        );
+        assert!(!fits.toolbar.has_overflow(), "the bar fits 800 px at 1x");
         let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(390.0, 844.0, 1.0);
         app.sync(&mut doc, &automerge::ROOT);
         paint_frame(&mut app, &mut tr, &theme);
-        app.open_command_menu(OpenMenu::More);
-        assert!(app.menu.is_open());
+        app.toolbar.open_overflow();
+        paint_frame(&mut app, &mut tr, &theme);
+        let (_, menu) = app.toolbar.shown_menu().expect("the More menu opens");
         assert!(
-            app.menu_items.len() >= 2,
+            menu.items().len() >= 2,
             "a phone-width bar moves several commands into the menu"
         );
-        assert!(app.menu.get_rect().x1 <= app.rect.x1 - app.metrics.s2 + 0.01);
+        assert!(menu.get_rect().x1 <= app.rect.x1 - app.metrics.s2 + 0.01);
     }
 
     // Case `the_tab_menu_and_colour_popover_stand_clear_of_the_tab`.
@@ -304,4 +315,35 @@ fn floating_surfaces_keep_clear_of_edges_and_openers() {
         );
         assert!(second.x0 > before[1].0.x0, "the later tabs moved aside");
     }
+}
+
+/// The command bar's row is the window's header row: the History control the
+/// host offers stands in its trailing corner, clear of every command, and a
+/// press on it goes through the History door.
+#[test]
+fn the_header_row_holds_the_window_history_control() {
+    use ui::widget::WindowHeader as _;
+    use ui::widget::controls::ActionControls as _;
+
+    let (mut app, mut doc, mut tr, theme) = painted();
+    assert!(app.history_rect.is_zero_area(), "no History until offered");
+    app.set_history_control(Some(ui::widget::HistoryControl::Closed));
+    paint_frame(&mut app, &mut tr, &theme);
+    let history = app.history_rect;
+    assert!(!history.is_zero_area());
+    assert!(app.toolbar_rect.contains(history.center()));
+    assert!(history.x1 <= app.rect.x1 && history.x1 > app.rect.x1 - 64.0);
+    for index in chrome::bar::COMMANDS {
+        if let Some(rect) = app.toolbar.item_rect(index) {
+            assert!(
+                rect.intersect(history).is_zero_area(),
+                "command {index} {rect:?} under History {history:?}"
+            );
+        }
+    }
+    click(&mut app, &mut doc, history.center());
+    assert!(
+        app.take_control_invocation().is_some(),
+        "the press opens History"
+    );
 }
