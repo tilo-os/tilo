@@ -47,7 +47,7 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         bindings.iter().any(|binding| matches!(
             &binding.kind,
             ui::widget::ControlBindingKind::Action(address) if address.action == open.action
-        ) && binding.control_id == "settings.sidebar.bluetooth"),
+        ) && binding.control_id == open.encode()),
         "the Bluetooth row opens its pane through {}: {bindings:#?}",
         open.action
     );
