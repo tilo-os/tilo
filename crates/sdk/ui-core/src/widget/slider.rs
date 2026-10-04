@@ -16,9 +16,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 /// Both `draw` and `handle_event` use this to translate between
 /// cursor x and a 0..1 value, so it has to live in one place.
 const TRACK_PADDING: f64 = 5.0;
-/// How many times slower the value follows the pointer while Shift is held
-/// during a drag.
-const FINE_DRAG: f64 = 10.0;
 /// Thickness of the slider track.
 const TRACK_HEIGHT: f64 = 6.0;
 
@@ -79,6 +76,10 @@ pub struct Slider {
 }
 
 impl Slider {
+    /// How fast the value follows the pointer while Shift is held during a
+    /// drag, as a share of the usual pace.
+    const FINE_DRAG: f64 = 0.1;
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -573,7 +574,7 @@ impl Widget for Slider {
                     let new_value = if ctx.modifiers.state().shift_key() {
                         let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
                         let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
-                        (value + (p.x - x) / track / FINE_DRAG).clamp(0.0, 1.0)
+                        (value + (p.x - x) / track * Self::FINE_DRAG).clamp(0.0, 1.0)
                     } else {
                         self.fine_from = None;
                         self.value_from_cursor_x(p.x)
