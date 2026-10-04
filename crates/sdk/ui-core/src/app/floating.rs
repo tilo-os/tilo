@@ -499,32 +499,24 @@ impl App {
 /// Start another process of this executable showing `target`.
 #[cfg(feature = "native")]
 fn open_standalone_instance(target: Option<&str>) -> Result<(), String> {
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        let _ = target;
-        Err("this platform runs one window per app".into())
-    }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let mut command = std::process::Command::new(executable);
-        if let Some(target) = target {
-            // One opaque positional, never something an argument parser
-            // could read as a flag.
-            if target.starts_with('-') {
-                return Err("refusing an argument-shaped target".into());
-            }
-            command.arg(target);
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut command = std::process::Command::new(executable);
+    if let Some(target) = target {
+        // One opaque positional, never something an argument parser
+        // could read as a flag.
+        if target.starts_with('-') {
+            return Err("refusing an argument-shaped target".into());
         }
-        let mut child = command
-            .stdin(std::process::Stdio::null())
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        crate::background::Background::current()
-            .spawn("standalone-instance-reaper", move || {
-                let _ = child.wait();
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        command.arg(target);
     }
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    crate::background::Background::current()
+        .spawn("standalone-instance-reaper", move || {
+            let _ = child.wait();
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
