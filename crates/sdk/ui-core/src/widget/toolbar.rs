@@ -1370,6 +1370,12 @@ impl Widget for Toolbar {
             let Ok(mut style) = tree.style(node).cloned() else {
                 return changed;
             };
+            // A row a manual layout places (a header's actions) takes the
+            // rect it is given, a hidden one none: its minimum is the
+            // placement's, and holding a minimum of its own would fight it.
+            if style.position == taffy::Position::Absolute {
+                return changed;
+            }
             let cross = match self.orientation {
                 Orientation::Horizontal => &mut style.min_size.height,
                 Orientation::Vertical => &mut style.min_size.width,
@@ -1410,13 +1416,17 @@ impl Widget for Toolbar {
             Orientation::Horizontal => style.min_size.height,
             Orientation::Vertical => style.min_size.width,
         };
-        if style.flex_basis == want_basis && current_min == want_min {
+        // A manually placed row keeps the placement's minimum (see above).
+        let placed = style.position == taffy::Position::Absolute;
+        if style.flex_basis == want_basis && (placed || current_min == want_min) {
             return changed;
         }
         style.flex_basis = want_basis;
-        match self.orientation {
-            Orientation::Horizontal => style.min_size.height = want_min,
-            Orientation::Vertical => style.min_size.width = want_min,
+        if !placed {
+            match self.orientation {
+                Orientation::Horizontal => style.min_size.height = want_min,
+                Orientation::Vertical => style.min_size.width = want_min,
+            }
         }
         tree.set_style(node, style).is_ok() || changed
     }
