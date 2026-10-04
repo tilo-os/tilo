@@ -43,6 +43,8 @@ use ui::widget::{
     Widget,
 };
 
+use ui::framework::{LaunchInput, RunMode};
+
 use crate::actions::PlayerOperation;
 use crate::collab::{CollabPlayback, Role};
 use crate::preferences::{PlaybackPreferences, RecentMedia};
@@ -411,11 +413,22 @@ enum LibraryTab {
     Shared,
 }
 
-fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
+/// A player for a window built in `mode`: only a window someone uses
+/// decodes with the system's engine and announces itself to the session's
+/// media controls. A capture or a past version gets the deterministic
+/// synthesized engine and reaches nothing outside the process.
+fn configured_player(mode: RunMode, autoplay: bool, loop_enabled: bool) -> VideoPlayer {
+    let engine = if mode.is_live() {
+        media::MediaEngine::new()
+    } else {
+        media::MediaEngine::new_synthesized()
+    };
     let mut player = VideoPlayer::new()
-        .with_engine(media::MediaEngine::new())
+        .with_engine(engine)
         .with_test_id("video_surface");
-    player.enable_mpris("tilo_video_player", "Video Player");
+    if mode.is_live() {
+        player.enable_mpris("tilo_video_player", "Video Player");
+    }
     configure_player_settings(&mut player, autoplay, loop_enabled);
     player
 }
@@ -571,6 +584,45 @@ pub fn source_for_path(path: &Path) -> media::Source {
     }
 }
 
+/// The source a launch argument names: a stream's `http(s)` URL, else a
+/// path.
+pub fn source_for_argument(argument: &str) -> media::Source {
+    if argument.starts_with("http://") || argument.starts_with("https://") {
+        media::Source::Remote {
+            url: argument.to_owned(),
+        }
+    } else {
+        source_for_path(Path::new(argument))
+    }
+}
+
+/// What a source is called before anyone names it: a file's name, or a
+/// stream's.
+fn source_title(source: &media::Source) -> String {
+    match source {
+        media::Source::LocalFile(path) | media::Source::Workspace(path) => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("selected video")
+            .to_string(),
+        media::Source::Remote { .. } => "Streaming video".to_string(),
+    }
+}
+
+/// The synthesized clip a capture plays when its launch named no video.
+fn demo_source() -> media::Source {
+    media::Source::Remote {
+        url: "https://demo.local/clip.mp4".into(),
+    }
+}
+
+/// The shareable identity of the capture's demo clip, which its scenarios'
+/// shared annotations point at.
+pub(crate) fn demo_media_ref() -> String {
+    local_source_token(&demo_source(), 0)
+}
+
 /// Opaque, deterministic per-process identity for a local source. Resource
 /// IDs and action payload guards need a stable token, but publishing a URI
 /// would expose an absolute path to search, history, or a collaborator.
@@ -652,7 +704,13 @@ pub struct PlayerApp {
     /// `tilo_resource::publish`; standalone keeps the contextual builder.
     framework_hosted: bool,
     shared_library: crate::shared::SharedLibrary,
-    shot_shared: bool,
+    /// What the window is built for: only a live one starts a decoder
+    /// service, media controls or collaboration.
+    mode: RunMode,
+    /// What a capture waits for before its frame is taken.
+    capture_awaits: CaptureAwaits,
+    /// The video a capture's launch named, played once the scenario stages.
+    pub(crate) capture_launched: Option<String>,
     /// Opaque source identity for durable shared playlists and markers. It
     /// survives reopening the same local media, unlike the per-open source ID.
     current_media_ref: Option<String>,
@@ -666,10 +724,6 @@ pub struct PlayerApp {
     /// painted in the no-frame state, preserving a successfully playing video
     /// when a later picker request fails.
     open_error: Option<String>,
-    /// Test-only observation of the authoritative retained portal failure.
-    /// Production builds carry no observer or additional settlement path.
-    #[cfg(test)]
-    history_test_open_error_observer: Option<std::rc::Rc<std::cell::RefCell<Option<String>>>>,
     /// Where files have no path: the kept copy (`crate::kept`) of each
     /// queue or recent entry opened by contents, by entry id.
     kept: HashMap<String, String>,
@@ -679,6 +733,16 @@ pub struct PlayerApp {
     kept_recall: Option<KeptRecall>,
     kept_wake: ui::wake::WakeHandle,
     dirty: bool,
+}
+
+/// What a capture of the player waits for before it is taken: a decoded
+/// picture of what it plays, or what became of opening it (a picture or the
+/// decoder's error).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureAwaits {
+    Nothing,
+    Frame,
+    Outcome,
 }
 
 struct KeptRecall {
@@ -880,17 +944,21 @@ impl PlayerApp {
         }
     }
 
-    /// A player with a fresh engine and no media loaded.
-    pub fn new() -> Self {
-        Self::new_with_preferences(PlaybackPreferences::load())
-    }
-
-    fn new_with_preferences(preferences: PlaybackPreferences) -> Self {
+    /// A player with a fresh engine and no media loaded, for a window built
+    /// in `mode`. A live window reads this device's preferences and recent
+    /// videos; a capture and a past version start from the defaults.
+    pub fn new(mode: RunMode) -> Self {
         // Tests exercise the real request and completion paths; a recording
         // host answers every picker so no desktop file chooser ever opens.
         #[cfg(test)]
         ui::host::install_default(ui::host::HostServices::recording().0);
-        let player = configured_player(preferences.autoplay, preferences.loop_enabled);
+        if !mode.is_live() {
+            let preferences = PlaybackPreferences::default();
+            let player = configured_player(mode, preferences.autoplay, preferences.loop_enabled);
+            return Self::from_prepared(player, preferences, VecDeque::new(), mode);
+        }
+        let preferences = PlaybackPreferences::load();
+        let player = configured_player(mode, preferences.autoplay, preferences.loop_enabled);
         let recent: VecDeque<LocalMediaEntry> = crate::preferences::load_recent_history()
             .into_iter()
             .map(|entry| LocalMediaEntry {
@@ -899,13 +967,14 @@ impl PlayerApp {
                 source: entry.source,
             })
             .collect();
-        Self::from_prepared(player, preferences, recent)
+        Self::from_prepared(player, preferences, recent, mode)
     }
 
     fn from_prepared(
         player: VideoPlayer,
         preferences: PlaybackPreferences,
         recent: VecDeque<LocalMediaEntry>,
+        mode: RunMode,
     ) -> Self {
         let kept_retained = recent
             .iter()
@@ -977,7 +1046,9 @@ impl PlayerApp {
             actions: crate::resource::ActionSink::default(),
             framework_hosted: false,
             shared_library: crate::shared::SharedLibrary::default(),
-            shot_shared: false,
+            mode,
+            capture_awaits: CaptureAwaits::Nothing,
+            capture_launched: None,
             current_media_ref: None,
             current_source_id: None,
             source_generation: 0,
@@ -986,8 +1057,6 @@ impl PlayerApp {
             metadata_revision: 0,
             search_metadata: DecoderMetadata::default(),
             open_error: None,
-            #[cfg(test)]
-            history_test_open_error_observer: None,
             kept: HashMap::new(),
             kept_retained,
             kept_recall: None,
@@ -996,14 +1065,11 @@ impl PlayerApp {
         }
     }
 
-    /// Construct the real root type from inert prepared inputs, so the
-    /// binary's launch-composition tests can exercise the production widget
-    /// without reading settings, registering MPRIS, opening a
-    /// decoder/provider, or attaching collaboration. Not feature-gated: the
-    /// binary's tests cannot switch on a library feature without a self
-    /// dev-dependency, which would claim `--features video-player/thin`.
-    #[doc(hidden)]
-    pub fn history_test_root() -> Self {
+    /// The real root type over inert prepared inputs: a queue, recent
+    /// videos and decoder metadata, without reading settings, registering
+    /// media controls, opening a decoder or attaching collaboration.
+    #[cfg(test)]
+    pub(crate) fn fixture_root() -> Self {
         let preferences = PlaybackPreferences {
             autoplay: false,
             loop_enabled: true,
@@ -1035,7 +1101,7 @@ impl PlayerApp {
                 },
             },
         ]);
-        let mut app = Self::from_prepared(player, preferences, recent);
+        let mut app = Self::from_prepared(player, preferences, recent, RunMode::Past);
         app.queue = vec![
             current.clone(),
             LocalMediaEntry {
@@ -1065,113 +1131,105 @@ impl PlayerApp {
         app
     }
 
-    #[cfg(test)]
-    pub(crate) fn history_test_with_pending_portal() -> (
-        Self,
-        std::sync::mpsc::Sender<PortalOutcome>,
-        std::rc::Rc<std::cell::RefCell<Option<String>>>,
-    ) {
-        let mut app = Self::history_test_root();
-        let (sender, channel) = std::sync::mpsc::channel();
-        let observed_error = std::rc::Rc::new(std::cell::RefCell::new(None));
-        app.history_test_open_error_observer = Some(observed_error.clone());
-        app.portal_generation = 11;
-        app.portal_open = Some(PendingPortalOpen {
-            channel: PickerChannel::Path(channel),
-            generation: 11,
-            invocation: None,
-        });
-        (app, sender, observed_error)
-    }
-
-    /// Open a filesystem `path` immediately (used by `--open PATH` and the
-    /// portal outcome). Autoplays.
-    #[must_use]
-    pub fn with_open_path(mut self, path: &Path) -> Self {
-        let _ = self.open_path(path);
-        self
-    }
-
-    /// Open a broker-validated handoff source before the first frame.
-    #[must_use]
-    pub fn with_open_source(mut self, source: media::Source, title: String) -> Self {
-        let _ = self.open_local_source(source, title, None);
-        self
-    }
-
-    /// Land on the acknowledged source playhead and preserve whether the
-    /// source was playing. This runs after open so local autoplay preferences
-    /// cannot override the handoff transaction.
-    #[must_use]
-    pub fn with_handoff_transport(mut self, position_ms: u64, resume_playing: bool) -> Self {
-        self.player.seek_to_ms(position_ms);
-        if resume_playing {
-            self.player.play();
-        } else {
-            self.player.pause();
+    /// Open what the launch named: a path or a stream's URL, continuing the
+    /// playback another device handed over when it says where that stood.
+    /// The handoff's position and play state land after the open, so local
+    /// autoplay preferences cannot override them.
+    pub fn open_launch(&mut self, launch: &LaunchInput<'_>) {
+        let Some(argument) = launch.argument() else {
+            return;
+        };
+        let handoff = launch.handoff();
+        let source = source_for_argument(argument);
+        let title = handoff
+            .and_then(|handoff| handoff.title.clone())
+            .unwrap_or_else(|| source_title(&source));
+        let queue_id = self.ensure_queued(source.clone(), title.clone());
+        if let Err(error) = self.open_local_source(source, title, Some(queue_id)) {
+            tracing::warn!(%error, "video player: could not open the launch's video");
+            return;
         }
-        self
+        if let Some(handoff) = handoff {
+            self.player.seek_to_ms(handoff.position_ms);
+            if handoff.resume_playing {
+                self.player.play();
+            } else {
+                self.player.pause();
+            }
+        }
     }
 
-    /// Build a player staged for a headless `--shots` capture: a source opened
-    /// with its real engine state and the controls revealed. Opens
-    /// `open` when given, else a synthesized demo clip. Never attaches a collab
-    /// socket, so no thread/portal is created.
-    ///
-    /// `scenario` selects an optional demo overlay for the capture:
-    ///   * `"empty"` — the first-run state before a source is chosen.
-    ///   * `"error"` — a decoder/open failure before a picture arrives.
-    ///   * `"loading"` — a source admitted while its first frame is pending.
-    ///   * `"native-error"` — use `--open` with a bad source to capture the
-    ///     decoder's actual error event rather than fixture copy.
-    ///   * `"playing"` / `"paused"` — explicit transport states (the
-    ///     default remains paused for byte-stable review).
-    ///   * `"settings"` — open the real autoplay/repeat settings menu.
-    ///   * `"fullscreen"` — toggle fullscreen so the control bar shows its
-    ///     immersive (exit-fullscreen) state.
-    ///   * `"metadata"` — open the controls menu with deterministic embedded
-    ///     audio/subtitle/chapter metadata.
-    ///   * `"library"` / `"recent"` — populated device-local queue/history.
-    ///   * `"shared"` — shared playlist and timestamp-annotation management.
-    ///   * `"library-focus"` — the same queue with a keyboard-visible Play
-    ///     focus ring, for accessibility visual review.
-    ///   * anything else / `None` — a plain player.
-    pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
-        let mut app = Self::new();
-        app.stage_shot_source(open, scenario);
-        app.stage_shot_scenario(scenario);
+    /// Stage a capture of `scenario` (`None` for a plain `--shots`): the
+    /// video the launch named, else a synthesized demo clip, the scenario's
+    /// view state, and what the capture waits for before it is taken.
+    pub(crate) fn stage_capture(&mut self, launched: Option<&str>, scenario: Option<&str>) {
+        self.stage_shot_source(launched, scenario);
+        self.stage_shot_scenario(scenario);
         if !matches!(scenario, Some("empty" | "error")) {
-            app.player.reveal_controls();
+            self.player.reveal_controls();
         }
+    }
+
+    /// A player staged as a capture of `scenario` over the demo clip.
+    #[cfg(test)]
+    pub(crate) fn for_shot(scenario: Option<&str>) -> Self {
+        let mut app = Self::new(RunMode::Capture);
+        app.stage_capture(None, scenario);
         app
     }
 
-    fn stage_shot_source(&mut self, open: Option<PathBuf>, scenario: Option<&str>) {
-        if !matches!(scenario, Some("empty" | "error")) {
-            if let Some(path) = open {
-                let _ = self.open_path(&path);
-            } else {
-                // The demo shot must stay hermetic: pin the deterministic
-                // synthesized-frame engine so no real GStreamer pipeline is
-                // built and the placeholder `demo.local` host is never
-                // contacted — even though `decode` compiles the real backend in
-                // by default. `--shots --open <file>` is the real-decode path.
-                self.player
-                    .set_engine(media::MediaEngine::new_synthesized());
-                let source = media::Source::Remote {
-                    url: "https://demo.local/clip.mp4".into(),
-                };
-                let queue_id = self.ensure_queued(source.clone(), "Demo clip".into());
-                let _ = self.set_current_source(&source);
-                self.player.open(source);
-                self.title = "Demo clip".to_string();
-                self.current_queue_id = Some(queue_id);
-                // Park at a fixed position for a stable reference frame. The
-                // explicit `playing` fixture starts the real engine below;
-                // default/`paused` deliberately stay deterministic.
-                self.player.seek_to_ms(8_000);
-                self.player.pause();
+    fn stage_shot_source(&mut self, launched: Option<&str>, scenario: Option<&str>) {
+        if matches!(scenario, Some("empty" | "error")) {
+            return;
+        }
+        if let Some(argument) = launched {
+            // A capture of a real file shows that file decoded, never the
+            // synthesized stand-in: without the system decoder it waits for
+            // a picture that cannot come and refuses to capture.
+            let engine = media::MediaEngine::new();
+            if !engine.is_real_decode() {
+                self.open_error =
+                    Some("A real video capture requires the GStreamer decoder and runtime".into());
+                self.capture_awaits = CaptureAwaits::Frame;
+                return;
             }
+            self.player.set_engine(engine);
+            let source = source_for_argument(argument);
+            let title = source_title(&source);
+            let queue_id = self.ensure_queued(source.clone(), title.clone());
+            let _ = self.open_local_source(source, title, Some(queue_id));
+            self.capture_awaits = match scenario {
+                Some("native-error") => CaptureAwaits::Outcome,
+                Some("loading") => CaptureAwaits::Nothing,
+                _ => CaptureAwaits::Frame,
+            };
+            return;
+        }
+        // The demo stays hermetic: the synthesized engine draws a
+        // deterministic frame and the placeholder host is never contacted.
+        let source = demo_source();
+        let queue_id = self.ensure_queued(source.clone(), "Demo clip".into());
+        let _ = self.set_current_source(&source);
+        self.player.open(source);
+        self.title = "Demo clip".to_string();
+        self.current_queue_id = Some(queue_id);
+        // Park at a fixed position for a stable reference frame. The
+        // explicit `playing` fixture starts the engine below; default and
+        // `paused` deliberately stay deterministic.
+        self.player.seek_to_ms(8_000);
+        self.player.pause();
+        if scenario != Some("loading") {
+            self.capture_awaits = CaptureAwaits::Frame;
+        }
+    }
+
+    /// Whether a capture still waits for what it shows.
+    fn capture_pending(&self) -> bool {
+        let pictured = self.player.latest_frame().is_some();
+        match self.capture_awaits {
+            CaptureAwaits::Nothing => false,
+            CaptureAwaits::Frame => !pictured,
+            CaptureAwaits::Outcome => !pictured && self.open_error.is_none(),
         }
     }
 
@@ -1246,28 +1304,6 @@ impl PlayerApp {
             Some("shared") => {
                 self.library_visible = true;
                 self.library_tab = LibraryTab::Shared;
-                self.shared_library = crate::shared::SharedLibrary {
-                    playlists: vec![crate::shared::Playlist {
-                        id: "watch-later".into(),
-                        name: "Watch later".into(),
-                    }],
-                    items: Vec::new(),
-                    annotations: vec![
-                        crate::shared::TimestampAnnotation {
-                            id: "opening".into(),
-                            media_ref: self.current_media_ref.clone().unwrap_or_default(),
-                            time_ms: 8_000,
-                            text: "Opening detail".into(),
-                        },
-                        crate::shared::TimestampAnnotation {
-                            id: "bookmark".into(),
-                            media_ref: self.current_media_ref.clone().unwrap_or_default(),
-                            time_ms: 45_000,
-                            text: String::new(),
-                        },
-                    ],
-                };
-                self.shot_shared = true;
             }
             Some("fullscreen") => self.player.toggle_fullscreen(),
             _ => {}
@@ -1339,7 +1375,7 @@ impl PlayerApp {
         let local_has_rows = !self.shared_library.playlists.is_empty()
             || !self.shared_library.items.is_empty()
             || !self.shared_library.annotations.is_empty();
-        if incoming_empty && (local_has_rows || self.shot_shared) {
+        if incoming_empty && local_has_rows {
             return;
         }
         if state != &self.shared_library {
@@ -1357,27 +1393,15 @@ impl PlayerApp {
         self.actions.attach(dispatcher);
     }
 
-    /// Shared read access to the inner video surface (for the headless shot
-    /// warm-up and integration tests that assert a decoded frame landed).
+    /// Shared read access to the inner video surface, for tests that assert
+    /// a decoded frame landed.
     pub fn player(&self) -> &VideoPlayer {
         &self.player
     }
 
-    /// Whether a decoded picture is currently on the surface. The `--shots`
-    /// path pumps `sync` until this is true so a real (asynchronously prerolled)
-    /// decode is captured, not a blank frame.
-    pub fn has_media_frame(&self) -> bool {
-        self.player.latest_frame().is_some()
-    }
-
     fn open_path(&mut self, path: &Path) -> Result<(), String> {
         let source = source_for_path(path);
-        let title = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("selected video")
-            .to_string();
+        let title = source_title(&source);
         let queue_id = self.ensure_queued(source.clone(), title.clone());
         self.open_local_source(source, title, Some(queue_id))
     }
@@ -1674,8 +1698,11 @@ impl PlayerApp {
                 message: Some("video was closed before decoding a first frame".into()),
             });
         }
-        let mut player =
-            configured_player(self.preferences.autoplay, self.preferences.loop_enabled);
+        let mut player = configured_player(
+            self.mode,
+            self.preferences.autoplay,
+            self.preferences.loop_enabled,
+        );
         player.set_transport_enabled(
             self.collab
                 .as_ref()
@@ -3682,12 +3709,6 @@ fn local_library_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNod
     nodes
 }
 
-impl Default for PlayerApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl FloatingSurfaceProvider for PlayerApp {
     fn take_floating_surface_request(
         &mut self,
@@ -3715,7 +3736,6 @@ impl Widget for PlayerApp {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource
@@ -3777,16 +3797,12 @@ impl Widget for PlayerApp {
         let (state, path) = ui::doc::document(state, path);
         self.poll_kept_recall();
         let shared = crate::shared::read(state);
-        if !self.shot_shared && shared != self.shared_library {
+        if shared != self.shared_library {
             self.shared_library = shared;
             self.invalidate_search_cache();
             self.dirty = true;
         }
         self.drain_portal();
-        #[cfg(test)]
-        if let Some(observer) = &self.history_test_open_error_observer {
-            observer.replace(self.open_error.clone());
-        }
         self.tick_collab();
         self.player.sync(state, path);
         self.drain_player_media_events();
@@ -4344,6 +4360,10 @@ impl Widget for PlayerApp {
             || self.media_open.is_some()
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        self.player.has_pending_visual_work() || self.capture_pending()
+    }
+
     fn needs_idle_sync(&self) -> bool {
         // A follower must keep syncing even with no local input so it applies
         // the host's incoming transport.
@@ -4437,12 +4457,6 @@ impl ui::widget::controls::ActionControls for PlayerApp {
         if let Some(action) = &mut self.open_action {
             action.refresh_availability(allowed);
         }
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for PlayerApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -4607,7 +4621,7 @@ mod tests {
         }
         // Case `opening_a_path_sets_title_and_loads_the_engine`.
         {
-            let mut app = PlayerApp::new_with_preferences(PlaybackPreferences::default());
+            let mut app = PlayerApp::new(RunMode::Capture);
             app.open_path(&PathBuf::from("/tmp/Holiday.mp4"))
                 .expect("source identity available");
             assert_eq!(app.title, "Holiday.mp4");
@@ -4656,7 +4670,7 @@ mod tests {
         }
         // Case `reopening_the_same_uri_invalidates_old_dynamic_targets`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("metadata"));
+            let mut app = PlayerApp::for_shot(Some("metadata"));
             let old_source = app.current_source_id.clone().unwrap();
             let source = media::Source::Remote {
                 url: "https://demo.local/clip.mp4".into(),
@@ -4680,7 +4694,7 @@ mod tests {
     fn portal_open_is_single_flight_generation_fenced_and_retained() {
         // Case `portal_outcome_opens_the_chosen_file`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Chosen.webm")));
             ui::host::scoped(&services, || app.trigger_open()).expect("picker starts");
@@ -4694,7 +4708,7 @@ mod tests {
         }
         // Case `portal_open_is_single_flight_and_a_direct_open_supersedes_it`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             app.trigger_open().expect("first picker starts");
             let first_generation = app.portal_open.as_ref().map(|open| open.generation);
             assert!(
@@ -4715,7 +4729,7 @@ mod tests {
         }
         // Case `portal_generation_exhaustion_fails_closed_without_aliasing_old_requests`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             app.portal_generation = u64::MAX;
             let error = app.trigger_open().expect_err("generation must not wrap");
             assert!(error.contains("generation exhausted"));
@@ -4724,7 +4738,7 @@ mod tests {
         }
         // Case `stale_portal_outcome_cannot_open_media_in_release_or_debug_builds`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Stale.webm")));
             ui::host::scoped(&services, || app.trigger_open()).expect("picker starts");
@@ -4737,7 +4751,7 @@ mod tests {
         }
         // Case `completed_portal_result_backpressures_new_async_requests_until_polled`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             app.queue_resource_result(tilo_actions::InvocationUpdate::Cancelled {
                 invocation: tilo_actions::InvocationId::new(),
                 message: Some("test completion".into()),
@@ -4751,7 +4765,7 @@ mod tests {
         }
         // Case `portal_failure_is_retained_for_the_empty_state`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             let (services, recorder) = ui::host::HostServices::recording();
             recorder.respond_to_pick(PortalOutcome::Failed("permission denied".into()));
             ui::host::scoped(&services, || app.trigger_open()).expect("picker starts");
@@ -4851,7 +4865,7 @@ mod tests {
         }
         // Case `metadata_revision_boundary_discards_the_cache_before_resetting`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("metadata"));
+            let mut app = PlayerApp::for_shot(Some("metadata"));
             let _first = ui::search::capability::search_providers(&app);
             assert_eq!(app.search_catalog_builds.get(), 1);
             assert!(app.search_cache.borrow().is_some());
@@ -4874,7 +4888,7 @@ mod tests {
         }
         // Case `stale_stream_and_chapter_targets_are_refused_before_engine_mutation`.
         {
-            let app = PlayerApp::for_shot(None, Some("metadata"));
+            let app = PlayerApp::for_shot(Some("metadata"));
             let audio = app.shot_metadata.as_ref().unwrap().audio_tracks[0].clone();
             let chapter = app.shot_metadata.as_ref().unwrap().chapters[0].clone();
             let stale_source = "https://old.example/clip.mkv".to_string();
@@ -4936,7 +4950,7 @@ mod tests {
     fn library_controls_emit_canonical_host_actions_and_are_accessible() {
         // Case `open_affordance_emits_the_advertised_host_routable_effect`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             app.request_open_action();
             let invocation =
                 ui::widget::controls::take_control_invocation(&mut app).expect("open intent");
@@ -4949,7 +4963,7 @@ mod tests {
         }
         // Case `library_row_emits_its_canonical_play_action_without_opening_directly`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("library"));
+            let mut app = PlayerApp::for_shot(Some("library"));
             let item_id = app.queue[1].id.clone();
             let source_before = app.current_source_id.clone();
             app.request_library_play(&item_id);
@@ -4967,7 +4981,7 @@ mod tests {
         }
         // Case `library_remove_and_clear_controls_emit_their_canonical_host_actions`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("library"));
+            let mut app = PlayerApp::for_shot(Some("library"));
             let item_id = app.queue[1].id.clone();
             app.request_library_remove(&item_id);
             let remove =
@@ -4985,7 +4999,7 @@ mod tests {
         }
         // Case `library_play_focus_has_a_real_accessibility_target_and_visual_state`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("library"));
+            let mut app = PlayerApp::for_shot(Some("library"));
             let focused_id = app.queue[1].id.clone();
             app.library_row_hits = vec![
                 LibraryRowHit {
@@ -5010,7 +5024,7 @@ mod tests {
         }
         // Case `library_close_and_tabs_are_reachable_accessibility_controls`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("library"));
+            let mut app = PlayerApp::for_shot(Some("library"));
             app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
             app.library_queue_tab_rect = Rect::new(44.0, 0.0, 132.0, 44.0);
             app.library_recent_tab_rect = Rect::new(132.0, 0.0, 220.0, 44.0);
@@ -5065,7 +5079,7 @@ mod tests {
         }
         // Case `library_has_conventional_escape_close_and_complete_hover_help`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("shared"));
+            let mut app = PlayerApp::for_shot(Some("shared"));
             app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
             app.last_cursor = Point::new(20.0, 20.0);
             assert_eq!(app.tooltip(), Some("Close library (Escape)"));
@@ -5086,7 +5100,7 @@ mod tests {
         }
         // Case `library_navigation_is_published_as_canonical_actions`.
         {
-            let app = PlayerApp::for_shot(None, Some("library"));
+            let app = PlayerApp::for_shot(Some("library"));
             let resources = ui::resources::resources(&app, &AutoCommit::new());
             let queue =
                 find_resource(&resources, "video-player.queue.local").expect("queue resource");
@@ -5141,7 +5155,7 @@ mod tests {
         }
         // Case `library_visibility_controls_restore_the_last_explicit_tab`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("library"));
+            let mut app = PlayerApp::for_shot(Some("library"));
             let mut doc = AutoCommit::new();
 
             // Pointer activation reopens Recent, not the hard-coded Queue default.
@@ -5291,7 +5305,7 @@ mod tests {
         }
         // Case `unavailable_transport_is_rejected_even_if_a_caller_bypasses_discovery`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             let encoded = tilo_actions::EncodedAction::encode_operation(
                 crate::actions::OPERATION_TYPE,
                 &crate::actions::PlayerOperation::TogglePlayback,
@@ -5312,7 +5326,7 @@ mod tests {
         }
         // Case `idle_collaboration_does_not_turn_a_paused_player_into_an_animation`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             app.collab = Some(CollabPlayback::new(Role::Host));
             assert!(Widget::needs_idle_sync(&app));
             assert!(
@@ -5352,11 +5366,7 @@ mod tests {
         // line with the same margins — one geometry for hit-testing and paint.
         {
             for scale in [1.0_f32, 2.0] {
-                let mut app = lay_out(
-                    PlayerApp::for_shot(None, Some("playing")),
-                    (1200.0, 800.0),
-                    scale,
-                );
+                let mut app = lay_out(PlayerApp::for_shot(Some("playing")), (1200.0, 800.0), scale);
                 let estimated = (app.library_button_rect, app.open_button_rect);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
@@ -5506,11 +5516,7 @@ mod tests {
             assert!(two.scrim_h >= two.button_h + 2.0 * OVERLAY_MARGIN);
 
             for scale in [1.0_f32, 2.0] {
-                let app = lay_out(
-                    PlayerApp::for_shot(None, Some("playing")),
-                    (1200.0, 800.0),
-                    scale,
-                );
+                let app = lay_out(PlayerApp::for_shot(Some("playing")), (1200.0, 800.0), scale);
                 let strip = app.top_strip();
                 let open = app.open_button_rect;
                 let library = app.library_button_rect;
@@ -5556,18 +5562,14 @@ mod tests {
                 "title never runs under the header buttons"
             );
 
-            let app = lay_out(
-                PlayerApp::for_shot(None, Some("library")),
-                (1200.0, 800.0),
-                1.0,
-            );
+            let app = lay_out(PlayerApp::for_shot(Some("library")), (1200.0, 800.0), 1.0);
             assert_eq!(app.library_close_rect, g.close);
             assert_eq!(app.library_queue_tab_rect, g.queue_tab);
             assert_eq!(app.library_recent_tab_rect, g.recent_tab);
         }
         // Case `fresh_player_shows_a_clean_empty_state_with_no_frame`.
         {
-            let mut app = PlayerApp::new();
+            let mut app = PlayerApp::new(RunMode::Capture);
             let mut doc = AutoCommit::new();
             // Pumping the app before any file is opened must not fabricate a frame.
             app.sync(&mut doc, &root());
@@ -5586,7 +5588,7 @@ mod tests {
     /// features (real `GStreamer` decode is proven separately by the
     /// `--features decode` integration test with a real generated file).
     fn synth_app() -> PlayerApp {
-        let mut app = PlayerApp::new_with_preferences(PlaybackPreferences::default());
+        let mut app = PlayerApp::new(RunMode::Capture);
         app.player.set_engine(media::MediaEngine::new_synthesized());
         app
     }
@@ -5660,7 +5662,7 @@ mod tests {
         }
         // Case `queued_item_uses_the_same_pending_decoder_lifecycle_as_direct_open`.
         {
-            let mut app = PlayerApp::for_shot(None, Some("library"));
+            let mut app = PlayerApp::for_shot(Some("library"));
             let item_id = app.queue[1].id.clone();
             let payload = serde_json::to_vec(&PlayerOperation::OpenQueueItem {
                 item_id: item_id.clone(),
@@ -5854,7 +5856,7 @@ mod tests {
     fn search_provider_reads_metadata_without_reindex_or_transport() {
         // Case `repeated_search_provider_retrieval_does_not_reindex_metadata`.
         {
-            let app = PlayerApp::for_shot(None, Some("metadata"));
+            let app = PlayerApp::for_shot(Some("metadata"));
             let first = ui::search::capability::search_providers(&app);
             assert_eq!(app.search_catalog_builds.get(), 1);
             let second = ui::search::capability::search_providers(&app);
@@ -5870,7 +5872,7 @@ mod tests {
         }
         // Case `search_reveal_operation_never_changes_transport`.
         {
-            let mut app = PlayerApp::for_shot(None, None);
+            let mut app = PlayerApp::for_shot(None);
             app.player.pause();
             let position = app.player.position_ms();
             app.perform_resource_operation(PlayerOperation::Reveal);
