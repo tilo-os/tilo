@@ -358,22 +358,34 @@ pub fn thumbnail(seed: u8, w: u32, h: u32) -> FrameBuf {
 /// pixel coordinates. If encode/decode somehow fails the frame is still
 /// returned (with `None`) so the viewfinder is never blank.
 pub fn scanner_frame(seed: u8, w: u32, h: u32, payload: &str) -> (FrameBuf, Option<ScannedCode>) {
+    let centre = (w as f32 / 2.0, h as f32 / 2.0 - h as f32 / 22.0);
+    scanner_frame_at(seed, w, h, payload, centre, h as f32 * 0.40)
+}
+
+/// [`scanner_frame`] with the poster centred on `centre` (frame pixels) and
+/// about `size` pixels square, so a sample scene can hold its code inside
+/// the scan guide wherever the layout puts it.
+pub fn scanner_frame_at(
+    seed: u8,
+    w: u32,
+    h: u32,
+    payload: &str,
+    centre: (f32, f32),
+    size: f32,
+) -> (FrameBuf, Option<ScannedCode>) {
     let mut buf = FrameBuf::new(w, h);
     paint_scene(&mut buf, seed);
 
-    // Poster geometry: a white card a bit right-of-center.
     let Some(qr) = scan::encode(payload) else {
         return (buf, None);
     };
     let modules = qr.size as i32;
     let quiet = 4i32; // module quiet zone
     let total_modules = modules + quiet * 2;
-    // Choose a module pixel size so the poster is ~38% of the frame height.
-    let target = (h as f32 * 0.40) as i32;
-    let mscale = (target / total_modules).max(2);
+    let mscale = (size as i32 / total_modules).max(2);
     let poster = total_modules * mscale;
-    let px0 = (w as i32 - poster) / 2;
-    let py0 = (h as i32 - poster) / 2 - (h as i32) / 22;
+    let px0 = centre.0 as i32 - poster / 2;
+    let py0 = centre.1 as i32 - poster / 2;
 
     // Card with soft shadow.
     let pad = mscale * 2;

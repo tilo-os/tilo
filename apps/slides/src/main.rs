@@ -52,10 +52,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
     let legacy = std::env::var("SLIDES_SHOT").ok();
     match args.scenario.as_deref().or(legacy.as_deref()) {
-        Some(
-            "narrow" | "narrow_closed" | "inspector" | "many_rail" | "toolbar_menu"
-            | "inspector_widgets",
-        ) => NARROW_VIEWPORT,
+        Some("narrow" | "narrow_closed" | "many_rail" | "toolbar_menu" | "inspector_widgets") => {
+            NARROW_VIEWPORT
+        }
         _ => ui::launch::DEFAULT_VIEWPORT,
     }
 }
@@ -112,6 +111,7 @@ pub fn main() {
                 "rename",
                 "notes_edit",
                 "slide_props",
+                "layout_menu",
                 "toolbar_menu",
                 "many",
                 "many_rail",
