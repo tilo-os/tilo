@@ -580,8 +580,6 @@ pub struct App {
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
-    /// To distinguish app-driven from compositor-driven transitions.
-    pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     persistence: PersistenceRuntime,
     autosave_generation: u64,
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
@@ -1415,7 +1413,7 @@ impl App {
         Self::with_parts(Some(scope), state, root, inputs)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn from_scoped_parts_with_controlled_custody(
         scope: crate::WakeScope,
         state: State,
@@ -2436,42 +2434,6 @@ impl App {
         self.invalidate_widget_resource_cache();
     }
 
-    /// Pair with [`crate::persist::open`], which hands back the document the
-    /// previous session left plus its writer:
-    ///
-    /// ```ignore
-    /// let (state, autosave) = tilo_ui::persist::open("so.tilo.my-app");
-    /// tilo_ui::App::from_factory(state, my_app::app_root)
-    ///     .with_autosave(autosave)
-    ///     .run();
-    /// ```
-    #[must_use]
-    /// # Panics
-    /// Fails closed if the host storage lifetime counter is exhausted.
-    #[allow(
-        clippy::expect_used,
-        reason = "storage identity must fail closed rather than wrap and admit an old owner"
-    )]
-    #[cfg(feature = "native")]
-    pub(crate) fn history_storage_generation(&self) -> u64 {
-        self.autosave_generation
-    }
-    #[cfg(feature = "native")]
-    pub(crate) fn install_app_state_history(
-        &mut self,
-        definition: &'static crate::history_mode::HistoryDefinition,
-    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        if self.persistence.records.is_some() {
-            return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
-        }
-        let registration = crate::history_mode::HistoryRegistration::installed_app_state(
-            definition,
-            self.persistence.autosave.as_ref(),
-            uuid::Uuid::new_v4(),
-        )?;
-        self.install_history(registration)
-    }
-
     /// Inspect controlled launch composition without opening a native window.
     /// Available only to downstream runner tests through `test-support`.
     #[cfg(any(test, feature = "test-support"))]
@@ -2864,44 +2826,6 @@ mod participant_invocation_tests;
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
 
-/// Finish the current writer and every retained outgoing-owner failure before
-/// reporting widget-owned durability. Reports remain owned by the runner.
-///
-/// # Errors
-/// Returns the current writer failure or a retained owner's unresolved failure.
-pub(crate) fn flush_widget_owned_persistence(
-    root: &mut dyn Widget,
-    reports: &mut Vec<crate::application::ComponentCloseReport>,
-) -> Result<(), String> {
-    reports.extend(crate::component_lifecycle::take_component_close_reports(
-        root,
-    ));
-    let current = crate::component_lifecycle::try_flush_owned_persistence(root)
-        .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()));
-    reports.extend(crate::component_lifecycle::take_component_close_reports(
-        root,
-    ));
-    for report in reports.iter_mut() {
-        if report.record_error.is_some() && report.record_retry.is_some() {
-            // The report retains the actual outgoing owner and exact legacy
-            // record target. Successful retry clears only that owner's error.
-            let _ = report.retry_record();
-        }
-    }
-    current?;
-    for report in reports.iter() {
-        if let Some(error) = report
-            .record_error
-            .as_ref()
-            .or(report.view_error.as_ref())
-            .or(report.teardown_error.as_ref())
-        {
-            return Err(error.clone());
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod render_retry_tests {
     use super::*;
@@ -2924,12 +2848,11 @@ mod render_retry_tests {
 mod legacy_owner_routing_tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::{collections::HashMap, rc::Rc};
+    use std::collections::HashMap;
 
     struct OwnerProbe {
         label: &'static str,
         report: Option<crate::application::ComponentCloseReport>,
-        flushes: Rc<Cell<usize>>,
     }
 
     impl Widget for OwnerProbe {
@@ -3017,14 +2940,6 @@ mod legacy_owner_routing_tests {
         ) -> Vec<crate::application::ComponentCloseReport> {
             self.report.take().into_iter().collect()
         }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            assert!(
-                self.report.is_none(),
-                "the outgoing failure has moved into host custody"
-            );
-            self.flushes.set(self.flushes.get() + 1);
-            Some(Ok(()))
-        }
     }
     impl crate::widget::AppWidget for OwnerProbe {
         fn app_kind(&self) -> crate::widget::AppKind {
@@ -3050,7 +2965,6 @@ mod legacy_owner_routing_tests {
             crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(OwnerProbe {
                 label,
                 report: None,
-                flushes: Rc::new(Cell::new(0)),
             })));
         tile.bind_record(store.clone(), checkout.clone());
         tile
@@ -3157,35 +3071,6 @@ mod legacy_owner_routing_tests {
                     .unwrap(),
                 "first named"
             );
-        }
-
-        // Case `widget_owned_runner_rejects_outgoing_error_drained_before_final_flush`.
-        {
-            let flushes = Rc::new(Cell::new(0));
-            let probe = OwnerProbe {
-                label: "current owner",
-                flushes: Rc::clone(&flushes),
-                report: Some(crate::application::ComponentCloseReport {
-                    recovery: None,
-                    view_error: None,
-                    view_retry: None,
-                    record_error: Some("outgoing owner could not persist".into()),
-                    record_retry: None,
-                    record_retry_target: None,
-                    teardown_error: None,
-                }),
-            };
-            let inputs = crate::launch::LegacyLaunchInputs::new(
-                State::new(),
-                Box::new(probe),
-                crate::persist::DocWriter::disabled("fixture owns storage"),
-            )
-            .with_widget_owned_persistence();
-            assert_eq!(
-                crate::headless::run_initialized(&crate::headless::Spec::default(), inputs),
-                3
-            );
-            assert_eq!(flushes.get(), 1, "the current owner must still be flushed");
         }
     }
 }
