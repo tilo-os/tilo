@@ -318,7 +318,9 @@ impl ResourceApp for DisksShell {
     const ID: &'static str = "so.tilo.disks";
     const TITLE: &'static str = "Disks";
     const ICON: Option<&'static str> = Some("disks");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<Disks>) -> Element {
         cx.surface(DisksApp::new())

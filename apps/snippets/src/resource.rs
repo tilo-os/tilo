@@ -95,6 +95,7 @@ impl Resource for Snippets {
                     snippet.title.clone()
                 },
                 text: snippet.description.clone(),
+                action: None,
             })
             .collect()
     }
@@ -108,7 +109,9 @@ impl ResourceApp for SnippetsShell {
     const ID: &'static str = "so.tilo.snippets";
     const TITLE: &'static str = "Snippets";
     const ICON: Option<&'static str> = Some("snippets");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
+    }
 
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
         cx.surface(SnippetsApp::new())
@@ -124,6 +127,12 @@ impl ResourceSurface<Snippets> for SnippetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Snippets>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

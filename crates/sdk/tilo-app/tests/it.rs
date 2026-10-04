@@ -5,6 +5,8 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "child_resources.rs"]
+pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
 #[path = "effects.rs"]
@@ -19,8 +21,12 @@ pub mod identity;
 pub mod incremental;
 #[path = "item_actions.rs"]
 pub mod item_actions;
+#[path = "launch.rs"]
+pub mod launch;
 #[path = "live_permissions.rs"]
 pub mod live_permissions;
+#[path = "live_rows.rs"]
+pub mod live_rows;
 #[path = "model_contract.rs"]
 pub mod model_contract;
 #[path = "scenarios.rs"]

@@ -319,6 +319,7 @@ COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.s
 COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
 COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
+COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \
@@ -1885,6 +1886,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     "$vm_firmware" \
     freerdp \
     xwayland-satellite \
+    waypipe \
+    virtiofsd \
+    skopeo \
     virt-viewer \
     xorriso \
     genisoimage \

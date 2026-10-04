@@ -1822,6 +1822,8 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: composing_a_note_types_backspaces_and_persists ---
     {
         let mut app = app_with_sample();
+        let (_library_app, library) = crate::resource::library_dispatcher_for_test();
+        app.attach_framework(library);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         // Select a word, then start a note with the 'm' shortcut.
@@ -1867,6 +1869,8 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: clicking_a_finished_note_reopens_it_for_editing ---
     {
         let mut app = app_with_sample();
+        let (_library_app, library) = crate::resource::library_dispatcher_for_test();
+        app.attach_framework(library);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let __p = page_point(&app);
@@ -4440,6 +4444,8 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
     // delete one, then trash the whole highlight — all through the real hits.
     {
         let mut app = app_with_sample();
+        let (_library_app, library) = crate::resource::library_dispatcher_for_test();
+        app.attach_framework(library);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Make a single-word highlight, then open its overlay directly.
