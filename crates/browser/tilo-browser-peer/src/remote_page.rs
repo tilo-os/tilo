@@ -505,7 +505,7 @@ mod tests {
             workspace_id: 1,
             publisher: [0; 32],
             surface: 7,
-            events: input.clone(),
+            events: input,
         };
         assert!(request.valid(), "the host accepts every event");
         assert!(page.take_input().is_empty());
