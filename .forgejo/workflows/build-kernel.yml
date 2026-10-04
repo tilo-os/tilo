@@ -109,7 +109,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           fetch-tags: false
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require the selected native kernel architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
