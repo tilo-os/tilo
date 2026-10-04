@@ -59,6 +59,9 @@ pub enum MailEffect {
     /// Note what was read, as an edit.
     #[effect(permission = "read")]
     Note { text: String },
+    /// Show the sent folder.
+    #[effect(view)]
+    ShowSent,
 }
 
 thread_local! {
@@ -98,6 +101,7 @@ impl ResourceApp for MailApp {
                 cx.invoke(Mailbox::FETCHED.with(text));
                 Ok(Effected::done())
             }
+            MailEffect::ShowSent => Ok(Effected::value("sent")),
         })
         .status(move || {
             if reached.get() {
@@ -177,6 +181,11 @@ fn effects_are_published_and_answer_every_caller_through_the_door() {
     // phase: an immediate effect answers at once
     let count = app.effect(&MailEffect::Count).unwrap();
     assert_eq!(count.value, Some(serde_json::json!(0)));
+
+    // phase: a view is published as one and reaches its handler the same way
+    assert_eq!(effect(&surface, "show-sent").unwrap()["operation"], "View");
+    let shown = app.effect(&MailEffect::ShowSent).unwrap();
+    assert_eq!(shown.value, Some(serde_json::json!("sent")));
 
     // phase: a job reports progress, then finishes on the UI thread with an
     // action and its result
