@@ -85,7 +85,14 @@ impl GreeterApp {
                 "display_name": user.display_name,
             })),
             "session": self.sessions.get(self.selected_session).map(|session| session.name.clone()),
-            "status": self.status,
+            "sessions": self.sessions.iter().map(|session| session.name.clone()).collect::<Vec<_>>(),
+            "session_choice": self.offers_session_choice(),
+            "status": self.status_text(),
+            "notice": match self.notice {
+                super::Notice::None => Value::Null,
+                super::Notice::Hint(key) => json!({ "kind": "hint", "key": key }),
+                super::Notice::Error(key) => json!({ "kind": "error", "key": key }),
+            },
             "accepts_input": self.phase == AuthPhase::Idle && self.keyboard_focus,
             "image": { "composefs": console_control::booted_composefs() },
         })

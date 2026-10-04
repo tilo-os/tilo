@@ -22,7 +22,11 @@
 //! - the compositor's runtime state files (`$XDG_RUNTIME_DIR/tilo`: the
 //!   connected displays, input devices), read-only, with every
 //!   subdirectory (capabilities, identity projections, service sockets)
-//!   masked by an empty tmpfs.
+//!   masked by an empty tmpfs;
+//! - the installed applications, read-only: the image's store
+//!   (`/usr/share/tilo-apps`) and the person's own, at the path the app's
+//!   remapped `XDG_DATA_HOME` names, so the default-app and notification
+//!   lists show what is really installed.
 //!
 //! The rest of the sandbox is unchanged: no network namespace of its own, the
 //! same seccomp profile, Landlock rules for exactly the paths bound here.
@@ -35,7 +39,13 @@ use crate::dbus_proxy::{self, DBusProxyGuard};
 pub const CLIENTS: &[&str] = &["so.tilo.settings"];
 
 /// Host paths bound read-only (and executable) at the same path.
-pub const HOST_READ_PATHS: &[&str] = &["/usr/bin", "/usr/sbin", "/usr/libexec", "/etc"];
+pub const HOST_READ_PATHS: &[&str] = &[
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/libexec",
+    "/etc",
+    package_store::layout::SYSTEM_DATA_DIR,
+];
 
 /// Where the filtered system bus appears inside the sandbox: the path every
 /// client library tries when `DBUS_SYSTEM_BUS_ADDRESS` is unset.
@@ -89,6 +99,9 @@ pub struct SystemAuthorityPlan {
     pub system_bus: bool,
     /// The compositor's runtime state directory, bound read-only.
     pub runtime_state: Option<RuntimeState>,
+    /// The person's own app store, bound read-only where the app looks for
+    /// it and at its own path, which its registry's entries name.
+    pub user_apps: Option<SocketBind>,
 }
 
 /// The compositor publishes what it sees of the hardware (displays, input
@@ -121,6 +134,14 @@ fn runtime_state_in(dir: PathBuf) -> Option<RuntimeState> {
 /// The host sockets the control panel's clients use, for a session of `uid`.
 fn authority_sockets(uid: u32) -> Vec<PathBuf> {
     vec![PathBuf::from(format!("/run/user/{uid}/pipewire-0"))]
+}
+
+/// Where an app looks for the person's app store: under the `XDG_DATA_HOME`
+/// its sandbox environment names.
+fn sandbox_user_apps() -> PathBuf {
+    PathBuf::from(crate::appdir::SANDBOX_APP_DIR)
+        .join(".local/share")
+        .join("tilo-apps")
 }
 
 /// The upstream system bus address.
@@ -159,6 +180,12 @@ pub fn resolve(
         }
     }
     plan.runtime_state = runtime_state(uid);
+    plan.user_apps = package_store::layout::default_user_root()
+        .filter(|store| store.is_dir())
+        .map(|host| SocketBind {
+            host,
+            sandbox: sandbox_user_apps(),
+        });
     let guard = spawn_system_bus_proxy(uid);
     if let Some(guard) = &guard {
         plan.sockets.push(SocketBind {
@@ -217,6 +244,15 @@ pub fn push_binds(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
             argv.extend(["--tmpfs".to_string(), masked.display().to_string()]);
         }
     }
+    if let Some(store) = &plan.user_apps {
+        let host = store.host.display().to_string();
+        argv.extend(["--ro-bind".to_string(), host.clone(), host.clone()]);
+        argv.extend([
+            "--ro-bind".to_string(),
+            host,
+            store.sandbox.display().to_string(),
+        ]);
+    }
     if plan.system_bus {
         argv.extend([
             "--setenv".to_string(),
@@ -237,6 +273,10 @@ pub fn push_landlock_rules(argv: &mut Vec<String>, plan: &SystemAuthorityPlan) {
     }
     if let Some(state) = &plan.runtime_state {
         argv.extend(["--ro".to_string(), state.dir.display().to_string()]);
+    }
+    if let Some(store) = &plan.user_apps {
+        argv.extend(["--ro".to_string(), store.host.display().to_string()]);
+        argv.extend(["--ro".to_string(), store.sandbox.display().to_string()]);
     }
 }
 
@@ -285,6 +325,10 @@ mod tests {
                 dir: "/run/user/1000/tilo".into(),
                 masked: vec!["/run/user/1000/tilo/services".into()],
             }),
+            user_apps: Some(SocketBind {
+                host: "/home/a/.local/share/tilo-apps".into(),
+                sandbox: sandbox_user_apps(),
+            }),
         };
         let mut binds = Vec::new();
         push_binds(&mut binds, &plan);
@@ -305,6 +349,12 @@ mod tests {
                 "/run/user/1000/tilo",
                 "--tmpfs",
                 "/run/user/1000/tilo/services",
+                "--ro-bind",
+                "/home/a/.local/share/tilo-apps",
+                "/home/a/.local/share/tilo-apps",
+                "--ro-bind",
+                "/home/a/.local/share/tilo-apps",
+                "/run/tilo/app/.local/share/tilo-apps",
                 "--setenv",
                 "DBUS_SYSTEM_BUS_ADDRESS",
                 "unix:path=/run/dbus/system_bus_socket",
@@ -323,6 +373,10 @@ mod tests {
                 SANDBOX_SYSTEM_BUS,
                 "--ro",
                 "/run/user/1000/tilo",
+                "--ro",
+                "/home/a/.local/share/tilo-apps",
+                "--ro",
+                "/run/tilo/app/.local/share/tilo-apps",
             ]
         );
     }

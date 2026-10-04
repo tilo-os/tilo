@@ -46,6 +46,9 @@ fn device_identity(
             "label": "Home",
             "user_public_key": hex::encode(user.user_pk),
             "relay_workspace_ids": [workspace],
+            // What the relay's status said when the device last refreshed:
+            // a worker runs environments there.
+            "environments": {"sessions": true, "legacy_apps": false},
         }])
         .to_string(),
     )
