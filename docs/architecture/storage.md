@@ -1701,8 +1701,10 @@ that sharing it is not an operation that exists.
 
 **Each point that admits room traffic enforces it.**
 
-- *Broker.* A join naming the person room is admitted, as owner, only from a
-  device certified by the root the room is derived from
+- *Broker.* A join naming the person room is admitted, as owner — a foreign
+  device, on an operating system Tilo does not control, with the
+  foreign-device cap's role, as in any room — only from a device certified by
+  the root the room is derived from
   (`admit_verified_join_at`); a join naming anyone else's person room fails
   like a join to a room the session does not host.
 - *Network.* A document of the local person's room is never published on a
@@ -1729,9 +1731,12 @@ directory per app on the device, `<data home>/tilo-person/<package>`, which
 the launcher binds into the app's launches in every room at
 `/run/tilo/person` (`TILO_PERSON_DIR`): the same app open in two rooms reads
 one record. When another window of the app already holds the stored record,
-a window opens a replica that stores nothing and converges with it over the
-record's route. Without a root identity there is no person room; the records
-are kept on the device in a scope no route can name.
+a window opens a replica that stores nothing on the very same route: it
+converges with that window, and what the person's other devices or host send
+there reaches it as well. A record larger than one frame travels as the
+1 MiB segments its app signs, which receivers reassemble. Without a root
+identity there is no person room; the records are kept on the device in a
+scope no route can name.
 
 **The framework opens it.** A view or surface asks for the person's record of
 a resource type — `cx.person::<WatchHistory>()` — and gets a
@@ -1758,13 +1763,12 @@ kept, and takes it in only from a device the same root certified.
 
 **Known limits.**
 
-- A device of the same root admitted with a foreign-device certificate is
-  admitted to the person room as owner, without the foreign-device role cap.
 - Only the person's own hosts keep person records: a workspace host of a
   shared room never sees them, so a person without an always-on host of their
   own still needs two of their devices online at once to catch up.
-- Person records travel as whole personal-fabric frames (at most 4 MiB, with
-  short send timeouts): a record near that size should become a collection.
+- A person record larger than the collaboration transport's limit (64 MiB in
+  one mutation) is refused like any record's; one that grows toward it
+  should become a collection.
 - A process hosting several identities routes only its own root's person
   room.
 
