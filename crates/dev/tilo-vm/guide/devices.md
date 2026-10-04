@@ -195,14 +195,68 @@ and switches to that copy; the credentials never reach the device. A device
 whose disk asks for a passphrase at boot waits for it at its own keyboard
 after every reboot. tilo-vm cannot power a device on: `vm start` only waits
 for SSH, `vm restart` reboots over SSH, and after `vm stop` someone has to
-power it on. `vm create`, `vm reset`, `vm serial`, `vm shot` and
+power it on (`vm wake` wakes one that sleeps, below). `vm create`, `vm reset`, `vm serial`, `vm shot` and
 `vm control` need a hypervisor and say so. `vm rm opi` forgets the device
 and its key; the device is untouched.
+
+## Asleep, awake, and on another address
+
+**It stays awake while you work on it.** Every tilo-vm command that talks to
+tilo-vmd renews a lease: a logind `sleep` lock (`tilo-vm-awake.service`,
+listed by `systemd-inhibit --list` on the device) until 30 minutes after the
+last request. A lost connection does not end it, and it ends by itself when
+you stop. The lock blocks suspend only: the screen still blanks and locks,
+and closing the lid or a critical battery still suspends. `vm status` shows
+until when it holds.
+
+```sh
+tilo-vm vm awake yoga --for 2h   # a long build or test with no tilo-vm requests in between
+tilo-vm vm awake yoga            # until when it is held
+tilo-vm vm awake yoga --off      # done: it may suspend once idle (the next request holds it again)
+```
+
+Hold it with `--for` before anything that runs long without tilo-vm
+requests: waking a device is not reliable (below), keeping it awake is.
+
+**Its address is only a hint.** `vm add` and `vm status` record the device's
+hostname, its MAC on the network tilo-vm reached it on, and what can wake it.
+When the recorded address gives no route or no answer, every command looks
+the device up as `<hostname>.local` (mDNS, through `getent hosts` or
+`avahi-resolve`), records the new address in `vms.toml` and says so. It
+keeps trying the address and the name for a minute, so a Wi-Fi roam does
+not fail a command. After that it reports `asleep or gone` and offers
+`vm wake`.
+
+**Waking it.** `tilo-vm vm wake yoga` sends the device's Wake-on-LAN magic
+packet from this machine (UDP port 9, to 255.255.255.255 and the device's
+subnet broadcast), so this machine has to be on the device's LAN. It sends
+it again while it waits, up to 150 seconds, for tilo-vmd, whose first
+request holds the device awake again. Whether the packet wakes it depends on
+the hardware, and `vm status` shows what the device reported:
+
+| `wake:` says | Means |
+|---|---|
+| Wake-on-LAN magic packet on `<if>` (enabled) | Ethernet WoL: `vm wake` wakes it |
+| Wake-on-LAN ... supported but disabled | the image did not enable it; the printed `ethtool -s <if> wol g` does, until the next boot |
+| Wi-Fi WoWLAN ... not known to wake this machine | the Wi-Fi chip lists magic-packet wake, but the machine around it may not wake on it (a Snapdragon laptop does not, in s2idle or deep sleep): count on someone at the machine |
+| cannot wake on a magic packet | someone has to wake it at the machine |
+| unknown | the image has no `ethtool` or `iw` to ask |
+
+When it cannot be counted on, `vm wake` says so before it sends the packet;
+keep such a device awake with `vm awake --for` instead. A device with no MAC
+recorded (registered before tilo-vm recorded one) is woken by hand once,
+then `vm status` records it. A libvirt VM is woken through the hypervisor
+(`virsh dompmwakeup`); `vm start` does the same for one that is suspended.
 
 ## When something is off
 
 - `vm add` or `vm status` says the key was refused: run the install command
   it prints (once per device and key).
+- `asleep or gone`: it answers neither at its address nor by name for a
+  minute. `tilo-vm vm wake <name>`, or wake it at the machine; then
+  `tilo-vm vm awake <name> --for 2h` keeps it from sleeping again.
+- `moved from <old> to <new>`: it was found by name on another address and
+  that is recorded now; nothing to do.
 - `cannot run commands as root without a password`: the `--ssh` account has
   no passwordless sudo; rerun `vm add` with the same `--ssh` and `--key` and
   `--grant-sudo` (each `vm add` records what it is given).
