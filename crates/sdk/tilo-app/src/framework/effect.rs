@@ -138,8 +138,15 @@ impl EffectReply {
         self.progress.is_cancelled()
     }
 
-    /// Answer with `result`.
+    /// Answer with `result`; a failure is told to the caller as its
+    /// message.
     pub fn finish(self, result: Result<ActionOutput, String>) {
+        self.answer(result.map_err(failure));
+    }
+
+    /// Answer with `result`, a failure carrying its code (`portal_failed`,
+    /// `device_busy`) for programs and whether trying again may help.
+    pub fn answer(self, result: Result<ActionOutput, ActionFailure>) {
         self.progress.finish(Box::new(result));
     }
 }
@@ -521,7 +528,7 @@ impl<R: Resource, H: 'static> OwnedJobs<R, H> {
                 };
                 if let Some(result) = result {
                     if let Err(error) = result {
-                        tracing::warn!(%error, kind = R::KIND, %key, "a job failed");
+                        tracing::warn!(error = %error.message, kind = R::KIND, %key, "a job failed");
                     }
                     self.jobs.queue.borrow_mut().running.remove(&key);
                 }
@@ -640,7 +647,7 @@ enum Polled {
         total: Option<u64>,
     },
     /// Finished, or chained into another job (`None`).
-    Finished(Option<Result<ActionOutput, String>>),
+    Finished(Option<Result<ActionOutput, ActionFailure>>),
 }
 
 /// The jobs one handler runs, keyed by what they answer.
@@ -695,9 +702,9 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
             Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => {
                 self.running.remove(key);
-                return Some(Polled::Finished(Some(Err(
+                return Some(Polled::Finished(Some(Err(failure(
                     "the effect ended without an answer".into(),
-                ))));
+                )))));
             }
         };
         let value = match event {
@@ -718,14 +725,11 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
         };
         let job = self.running.remove(key)?;
         let Some(then) = job.then else {
-            return Some(Polled::Finished(Some(
-                value
-                    .downcast::<Result<ActionOutput, String>>()
-                    .map_or_else(
-                        |_| Err("the effect answered with another type".into()),
-                        |result| *result,
-                    ),
-            )));
+            let answered = match value.downcast::<Result<ActionOutput, ActionFailure>>() {
+                Ok(result) => *result,
+                Err(_) => Err(failure("the effect answered with another type".into())),
+            };
+            return Some(Polled::Finished(Some(answered)));
         };
         let mut cx = EffectCx::new(env.clone(), invocation);
         let answer = then(host, value, &mut cx);
@@ -734,32 +738,38 @@ impl<R: Resource, H: 'static, K: Eq + Hash + Clone> Running<R, H, K> {
                 self.insert(key.clone(), next);
                 Polled::Finished(None)
             }
-            (Ok(Effected::Pending), None) => Polled::Finished(Some(Err(
+            (Ok(Effected::Pending), None) => Polled::Finished(Some(Err(failure(
                 "the effect's completion answered later but started no job".into(),
-            ))),
+            )))),
             (answer, next) => {
                 if let Some(next) = next {
                     next.stop();
                 }
-                Polled::Finished(Some(answer.map(|answer| match answer {
-                    Effected::Done(output) => output,
-                    Effected::Pending => ActionOutput::default(),
-                })))
+                Polled::Finished(Some(
+                    answer
+                        .map(|answer| match answer {
+                            Effected::Done(output) => output,
+                            Effected::Pending => ActionOutput::default(),
+                        })
+                        .map_err(failure),
+                ))
             }
         })
     }
 }
 
-fn failed(invocation: InvocationId, message: String) -> InvocationUpdate {
-    InvocationUpdate::Failed {
-        invocation,
-        error: ActionFailure {
-            code: "effect_failed".into(),
-            message,
-            details: None,
-            retryable: false,
-        },
+/// An effect's failure told only by its message.
+fn failure(message: String) -> ActionFailure {
+    ActionFailure {
+        code: "effect_failed".into(),
+        message,
+        details: None,
+        retryable: false,
     }
+}
+
+fn failed(invocation: InvocationId, error: ActionFailure) -> InvocationUpdate {
+    InvocationUpdate::Failed { invocation, error }
 }
 
 /// The handler of one effect vocabulary `E`, and the jobs it runs.
@@ -885,7 +895,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             Polled::Finished(Some(Ok(output))) => {
                 Some(InvocationUpdate::Succeeded { invocation, output })
             }
-            Polled::Finished(Some(Err(message))) => Some(failed(invocation, message)),
+            Polled::Finished(Some(Err(error))) => Some(failed(invocation, error)),
         }
     }
 }
@@ -1017,7 +1027,7 @@ impl<R: Resource, K: Eq + Hash + Clone + 'static, T: 'static> Drainer<R> for Dra
                 };
                 if let Some(result) = result {
                     if let Err(error) = result {
-                        tracing::warn!(%error, kind = R::KIND, "a projection entry failed");
+                        tracing::warn!(error = %error.message, kind = R::KIND, "a projection entry failed");
                     }
                     self.settled.insert(key.clone(), revision);
                     settled = true;
