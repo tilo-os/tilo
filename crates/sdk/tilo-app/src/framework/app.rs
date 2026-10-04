@@ -418,7 +418,12 @@ fn create<A: ResourceApp>(
     if let Some(file) = &file {
         file.report_opened(<A::Resource as Resource>::KIND);
     }
-    let run = run.launched(Launched { arguments, file });
+    let handoff = context.take_handoff();
+    let run = run.launched(Launched {
+        arguments,
+        file,
+        handoff,
+    });
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -562,7 +567,31 @@ fn prepare_app<A: ResourceApp>(
     let named = A::launch_record(&LaunchInput::new(arguments, None));
     let mut prepared = prepare_named(definition, args, named)?;
     hand_launch(definition, arguments, &mut prepared)?;
+    // The session launches the target of a playback handoff with where it
+    // stood in its environment; a capture continues nothing.
+    if args.shots.is_none()
+        && let Some(handoff) = process_handoff()
+    {
+        prepared.context.provide_handoff(handoff);
+    }
     Ok(prepared)
+}
+
+/// The playback handoff the session handed this process at its start.
+#[cfg(tilo_native_runner)]
+fn process_handoff() -> Option<ui_core::application::PlaybackHandoff> {
+    let position_ms = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
+        .ok()?
+        .parse()
+        .ok()?;
+    Some(ui_core::application::PlaybackHandoff {
+        position_ms,
+        resume_playing: std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING")
+            .is_ok_and(|value| value == "1"),
+        title: std::env::var("TILO_MEDIA_HANDOFF_TITLE")
+            .ok()
+            .filter(|title| !title.trim().is_empty()),
+    })
 }
 
 /// Hand a prepared component what its launch named: the arguments, and the

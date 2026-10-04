@@ -300,3 +300,60 @@ fn a_handed_file_is_kept_in_the_content_store_the_view_reads() {
         .expect("the view reads the content store the launch kept the bytes in");
     assert_eq!(content.read(&hash), Some(bytes));
 }
+
+/// A player that shows what its launch asked it to play, without keeping any
+/// of it in its record.
+struct PlayerApp;
+
+impl ResourceApp for PlayerApp {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-player";
+    const TITLE: &'static str = "Player";
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        let launch = cx.launch();
+        let shown = match (launch.argument(), launch.handoff()) {
+            (Some(media), Some(handoff)) => format!(
+                "{media} ({}) from {} ms, {}",
+                handoff.title.as_deref().unwrap_or("untitled"),
+                handoff.position_ms,
+                if handoff.resume_playing {
+                    "playing"
+                } else {
+                    "paused"
+                }
+            ),
+            (Some(media), None) => format!("{media} from the start"),
+            (None, _) => "nothing to play".to_owned(),
+        };
+        Box::new(Text::new(&shown))
+    }
+}
+
+#[test]
+fn the_view_reads_the_media_a_launch_names_and_the_playback_it_continues() {
+    let shown = |app: &mut TestApp<PlayerApp>| app.harness().inspection_json().unwrap();
+
+    let mut handed = TestApp::<PlayerApp>::handed_off(
+        &["https://media.example/evening.mp4"],
+        PlaybackHandoff {
+            position_ms: 42_000,
+            resume_playing: true,
+            title: Some("Evening news".into()),
+        },
+    )
+    .unwrap();
+    assert!(
+        shown(&mut handed)
+            .contains("https://media.example/evening.mp4 (Evening news) from 42000 ms, playing")
+    );
+    assert_eq!(handed.state(), Sketch::default(), "the record is untouched");
+
+    let mut launched =
+        TestApp::<PlayerApp>::launched(&["https://media.example/evening.mp4"]).unwrap();
+    assert!(shown(&mut launched).contains("https://media.example/evening.mp4 from the start"));
+
+    let mut plain = TestApp::<PlayerApp>::new().unwrap();
+    assert!(shown(&mut plain).contains("nothing to play"));
+}
