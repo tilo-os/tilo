@@ -16829,7 +16829,19 @@ impl Widget for ShellOverlayHost {
         // left untouched, so onboarding resumes where it was once the sheet
         // is answered or dismissed.
         if self.onboarding.is_some()
-            && self.route_portal_dialog_event(event, *ctx.modifiers, ctx.handled)
+            && self.route_portal_dialog_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: ctx.scale_factor,
+                    modifiers: ctx.modifiers,
+                    state,
+                    path: ctx.path,
+                    handled: &mut *ctx.handled,
+                    focus_target: &mut *ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            )
         {
             return;
         }

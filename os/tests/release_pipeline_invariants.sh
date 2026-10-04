@@ -461,7 +461,7 @@ grep -Fq "PKGEXT='.pkg.tar.zst'" "$repo/dist/arch/build-arch.sh" \
 # Joining an identity from first-boot onboarding is proven on two booted
 # disks sharing one Ethernet segment, driven over AT-SPI, including a helper
 # failure that must surface in the UI.
-grep -Fq './os/dev/test-nearby-pairing.sh "$DEV_DISK"' "$os" \
+grep -Fq './os/dev/test-nearby-pairing.sh "$TILO_DISK"' "$os" \
   && grep -Fq 'lan_qemu_args' "$repo/os/dev/vm.sh" \
   && grep -Fq 'native-atspi-smoke.sh oobe-nearby' "$repo/os/dev/test-nearby-pairing.sh" \
   && grep -Fq "chmod 2750 /var/lib/tilo/enrollment-commits" "$repo/os/dev/test-nearby-pairing.sh" \

@@ -2627,6 +2627,11 @@ jobs:
           # throwaway overlay of the still-unbooted disk, it signs in straight
           # to the desktop, without identity setup or recovery.
           ./os/dev/test-joined-device-startup.sh "$TILO_DISK" --out "$TILO_RUN/joined-device"
+          # Two more overlays on one Ethernet segment: one creates an
+          # identity, the other joins it from first-boot onboarding through
+          # Connect a nearby device, first through an injected helper failure
+          # and then for real, and signs in again afterwards.
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
@@ -2775,36 +2780,6 @@ jobs:
             echo '::notice::installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested'
           fi
 
-      # Two fresh boots of the gated dev disk on one Ethernet segment: one
-      # creates an identity, the other joins it from first-boot onboarding
-      # through Connect a nearby device, first through an injected helper
-      # failure and then for real. The disk itself is never booted (overlays).
-      - name: Join an identity from a nearby device during first use
-        id: nearby-pairing
-        if: steps.release.outcome == 'success' && steps.release-mode.outputs.dev-gate == 'true' && needs.plan.outputs.hardware-profile == 'generic'
-        timeout-minutes: 120
-        env:
-          TILO_VM_ARCH: ${{ matrix.arch }}
-          TILO_USER: quickuser
-          TILO_PASS: tilo
-          TILO_BOOT_WAIT_ATTEMPTS: "600"
-          TILO_DISTROBOX: ""
-          DEV_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
-        run: |
-          set -euo pipefail
-          # The display mode selected for the gate above comes in through the
-          # job environment.
-          ./os/dev/test-nearby-pairing.sh "$DEV_DISK" \
-            --out /var/tmp/tilo-nearby-pairing-${{ matrix.arch }}
-
-      - name: Upload the nearby pairing evidence
-        if: always() && steps.nearby-pairing.outcome != 'skipped' && steps.nearby-pairing.outcome != ''
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        with:
-          name: tilo-os-nearby-pairing-${{ matrix.arch }}
-          path: /var/tmp/tilo-nearby-pairing-${{ matrix.arch }}
-          if-no-files-found: ignore
-
       - name: Upload the boot's QEMU and serial logs
         if: always()
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
@@ -2816,6 +2791,7 @@ jobs:
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.ppm
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/*.png
             /var/tmp/tilo-projection-vm-${{ matrix.arch }}/joined-device/
+            /var/tmp/tilo-projection-vm-${{ matrix.arch }}/nearby-pairing/
             /var/tmp/tilo-projection-image-${{ matrix.arch }}/qcow2/.install.log
           if-no-files-found: ignore
 
