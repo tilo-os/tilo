@@ -1,12 +1,11 @@
 //! Mail — Tilo native email client, built on the CRDT-native `ui` toolkit.
 //!
 //! ## Layout
-//! Three panes: a folder/account **sidebar** (Inbox/Starred/Sent/Drafts/
-//! Archive/Junk/Trash with unread counts), a **message list** threaded by
-//! conversation (sender · subject · snippet · date · read/star/attachment
-//! indicators), and a **reader** (headers · body · attachments). A modal
-//! **Compose** window (To/Cc/Bcc · subject · body · attachments · send /
-//! save-draft) and an **Account-setup** form (IMAP/SMTP host/port/TLS/user)
+//! The toolkit's window shell with three columns: a **sidebar** of accounts
+//! and their folders (`sidebar.rs`), the **message list** threaded by
+//! conversation (`list.rs`), and the **reader** showing the open conversation
+//! (`reader.rs`). The column headers carry the list's and the message's
+//! actions (`header.rs`). A **compose** window and the **account** sheet
 //! layer on top.
 //!
 //! ## Protocols
@@ -61,17 +60,19 @@ pub mod attachment_store;
 pub mod autoconfig;
 pub mod compose;
 pub mod doc;
-pub mod draw;
 pub mod engine;
+pub mod header;
 pub mod html_mail;
 pub mod i18n;
+pub mod list;
 pub mod model;
 pub mod oauth;
-pub mod pane;
+pub mod reader;
 pub mod resource;
 pub mod sample;
 pub mod search_provider;
 pub mod shortcuts_overlay;
+pub mod sidebar;
 pub mod state;
 pub mod transport;
 pub mod util;
@@ -123,7 +124,6 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
         "setup_add" => app.prime_setup_add_shot(),
         "setup_oauth" => app.prime_setup_oauth_shot(),
         "html_mail" => app.prime_html_mail_shot(),
-        "search" => app.prime_search_shot(),
         "preview" => app.prime_preview_shot(),
         "bulk" => app.prime_bulk_shot(),
         "bulk_purge_confirmation" => app.prime_bulk_purge_confirmation_shot(),

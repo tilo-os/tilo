@@ -108,6 +108,15 @@ impl Resource for Mail {
         children
     }
 
+    /// Every folder is a part of the mailbox search can be narrowed to.
+    fn search_scopes(state: &MailboxState) -> Vec<ui::search::ScopeDecl> {
+        let mut scopes = crate::search_provider::folder_scopes();
+        scopes.extend(state.custom_folders.iter().map(|(id, name)| {
+            ui::search::ScopeDecl::new(format!("mail.folder:{id}"), name.clone())
+        }));
+        scopes
+    }
+
     fn search(state: &MailboxState) -> Vec<SearchEntry> {
         let folders = state.folders.iter().map(|folder| SearchEntry {
             anchor: Some(format!("mail.folder:{folder}")),
@@ -174,7 +183,6 @@ impl ResourceApp for MailShell {
             "setup_oauth",
             "firstrun",
             "html_mail",
-            "search",
             "preview",
             "bulk",
             "bulk_purge_confirmation",
