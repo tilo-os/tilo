@@ -13,6 +13,8 @@ notes-surface-tag = Show notes tagged { $tag }
 notes-surface-backlink = Open linking note: { $title }
 notes-parent-path = In { $path }
 notes-linked-from = Linked from
+notes-save-failed = This note could not be saved
+notes-save-failed-detail = Your latest changes are still in the note, but they are not stored yet.
 
 notes-affordance-new-note = New note
 notes-affordance-new-child = New child note

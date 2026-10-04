@@ -152,9 +152,7 @@ Active work, one note each.
         ),
         (
             formulas,
-            r#"# Formula notebook
-
-Three formulas I keep reaching for, written once so I stop re-deriving them.
+            r"Three formulas I keep reaching for, written once so I do not have to work them out again.
 
 ## TeX
 
@@ -165,15 +163,15 @@ Three formulas I keep reaching for, written once so I stop re-deriving them.
 ## Typst
 
 ```typst visual
-integral_0^infinity frac(1, 1+x^2) + vec(alpha, beta, gamma)
+frac(1, 1+x^2) + vec(alpha, beta, gamma)
 ```
 
 ## Typst cases
 
 ```typst
-f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
+f(x) = cases(x^2 & x >= 0, -x & x < 0)
 ```
-"#,
+",
         ),
     ];
 

@@ -57,6 +57,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "menu",
     "sidebar_hover",
     "note_menu",
+    "title_context_menu",
     "rename",
     "rename_commit",
     "slash",

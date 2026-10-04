@@ -76,6 +76,8 @@ mod canonical_views;
 
 #[path = "note_context_menu.rs"]
 mod note_context_menu;
+#[path = "note_header.rs"]
+mod note_header;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 
