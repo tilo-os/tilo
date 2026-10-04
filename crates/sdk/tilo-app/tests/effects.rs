@@ -79,6 +79,8 @@ impl ResourceApp for MailApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         let online = cx.local(false);
         let reached = online.clone();
+        let shown = cx.local(false);
+        let shown_text = shown.clone();
         cx.effects(move |effect: MailEffect, cx| match effect {
             MailEffect::Count => Ok(Effected::value(cx.live().with(|mail| mail.sent.len()))),
             MailEffect::Fetch { from } => {
@@ -101,7 +103,10 @@ impl ResourceApp for MailApp {
                 cx.invoke(Mailbox::FETCHED.with(text));
                 Ok(Effected::done())
             }
-            MailEffect::ShowSent => Ok(Effected::value("sent")),
+            MailEffect::ShowSent => {
+                shown.set(true);
+                Ok(Effected::done())
+            }
         })
         .status(move || {
             if reached.get() {
@@ -137,6 +142,14 @@ impl ResourceApp for MailApp {
                 .push(Box::new(
                     cx.text(|mail| format!("Fetched: {}", mail.fetched)),
                 ))
+                .push(Box::new(Text::from_state(&shown_text, |shown| {
+                    if *shown {
+                        "Showing sent"
+                    } else {
+                        "Showing inbox"
+                    }
+                    .to_owned()
+                })))
                 .push(Box::new(Text::from_state(
                     &cx.dispatcher().refused(),
                     |refused| {
@@ -184,8 +197,14 @@ fn effects_are_published_and_answer_every_caller_through_the_door() {
 
     // phase: a view is published as one and reaches its handler the same way
     assert_eq!(effect(&surface, "show-sent").unwrap()["operation"], "View");
-    let shown = app.effect(&MailEffect::ShowSent).unwrap();
-    assert_eq!(shown.value, Some(serde_json::json!("sent")));
+    app.effect(&MailEffect::ShowSent).unwrap();
+    assert!(
+        app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Showing sent"),
+        "the view's handler ran"
+    );
 
     // phase: a job reports progress, then finishes on the UI thread with an
     // action and its result
