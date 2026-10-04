@@ -308,7 +308,6 @@ fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) 
     }
 }
 
-/// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 /// The xdg `app_id` a toplevel declared, for naming it in latency records.
 fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
     smithay::wayland::compositor::with_states(surface, |states| {
@@ -319,6 +318,7 @@ fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
     })
 }
 
+/// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
 fn event_time(state: &State) -> u32 {
     // `as_millis()` is `u128`; keep the low 32 bits exactly as `as u32` would (wrapping after ~49.7 days of uptime), just without the lint-flagged cast. `millis` is always in range, so `try_from` never actually falls back.
     let millis = state.start_time.elapsed().as_millis() % (1u128 << 32);
