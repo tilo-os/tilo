@@ -65,16 +65,7 @@ pub use model::{
 };
 pub use resource::{Calendar, CalendarShell};
 
-use ui::widget::Widget;
-
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<CalendarShell>()
-}
-
-/// Build a fully-populated app for the hermetic `--shots` / test path. This
-/// is the ONLY place sample events, tasks and calendar accounts come from —
-/// the live app never fabricates content.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(CalendarApp::new_demo())
 }
