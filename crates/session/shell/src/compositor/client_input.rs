@@ -1320,6 +1320,9 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            state.end_remote_typing();
+        }
         state.release_personal_keyboard_focus();
         // Another device of the person last placed this seat's pointer, on a
         // window it shows. The host's cursor never left its spot, so the
