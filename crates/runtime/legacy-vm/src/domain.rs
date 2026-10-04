@@ -100,6 +100,24 @@ pub fn is_ours(domain_xml: &str, config: &VmConfig) -> bool {
             || domain_xml.contains(&format!("guest=\"{guest}\"")))
 }
 
+/// The `<uuid>` of a defined domain.
+#[must_use]
+pub fn domain_uuid(domain_xml: &str) -> Option<&str> {
+    let uuid = domain_xml
+        .split("<uuid>")
+        .nth(1)?
+        .split("</uuid>")
+        .next()?
+        .trim();
+    (uuid.len() == 36 && uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')).then_some(uuid)
+}
+
+/// `domain_xml` naming `uuid`, placed right after the domain's name.
+#[must_use]
+pub fn with_uuid(domain_xml: &str, uuid: &str) -> String {
+    domain_xml.replacen("</name>", &format!("</name><uuid>{uuid}</uuid>"), 1)
+}
+
 /// The tags of virtio-fs shares attached to a live domain.
 #[must_use]
 pub fn attached_tags(domain_xml: &str) -> Vec<String> {
@@ -180,6 +198,13 @@ mod tests {
                 ),
                 "libvirt's own serialisation is still ours"
             );
+            let uuid = "b9a49084-2e51-412a-ae9c-c1f9d51b0863";
+            let live = format!("<domain><name>x</name>\n  <uuid>{uuid}</uuid></domain>");
+            assert_eq!(domain_uuid(&live), Some(uuid));
+            let redefined = with_uuid(&xml, uuid);
+            assert!(redefined.contains(&format!("</name><uuid>{uuid}</uuid>")));
+            assert_eq!(domain_uuid(&redefined), Some(uuid));
+            assert_eq!(domain_uuid("<domain/>"), None);
             assert!(!is_ours(
                 "<domain><name>tilo-legacy-linux</name></domain>",
                 &config
