@@ -61,6 +61,9 @@ mod governed_rooms;
 mod governed_workspace_access;
 #[path = "interactive_workspace_owner.rs"]
 mod interactive_workspace_owner;
+#[cfg(target_os = "linux")]
+#[path = "legacy_on_kvm.rs"]
+mod legacy_on_kvm;
 #[path = "live_plane.rs"]
 mod live_plane;
 #[path = "multi_host.rs"]
