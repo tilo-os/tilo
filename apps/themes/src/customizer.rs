@@ -3,15 +3,19 @@
 //! Composes real `ui` toolkit widgets — a [`ColorPicker`], two
 //! [`Slider`]s and a [`Dropdown`] — with a custom token-chip grid. The
 //! chip grid selects *which* colour token the picker edits; the picker,
-//! sliders and dropdown retain their values in local typed state. The app
-//! dispatches a granular action only when a changed value is committed.
+//! sliders and dropdown retain their values in local typed state. Every
+//! value a person sets on one of them is reported as a [`ControlEdit`],
+//! which the app turns into a granular action.
 //!
 //! The picker has no public colour setter, so when the bound token (or
 //! the selected theme) changes the app calls [`Customizer::load_picker`]
 //! to swap in a fresh picker — the one place this app rebuilds a child
 //! widget on demand.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+use ui::tilo_actions;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -174,6 +178,41 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
+/// One value a person set on a control, in the control's own units: a
+/// slider's normalized position, the picked colour, the chosen font. Setting
+/// a control from the theme it shows reports nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ControlEdit {
+    Color(model::Rgb),
+    Radius(f64),
+    Spacing(f64),
+    Motion(f64),
+    Material(f64),
+    Icon(f64),
+    Chrome(f64),
+    Character(f64),
+    Tint(f64),
+    Font(String),
+}
+
+type Edits = Rc<RefCell<Vec<ControlEdit>>>;
+
+/// A slider bound to `state` whose every user-set value is reported as
+/// `edit` of it.
+fn edit_slider(
+    state: &LocalState<f64>,
+    edits: &Edits,
+    edit: fn(f64) -> ControlEdit,
+    id: &str,
+    name: &str,
+) -> Slider {
+    let edits = Rc::clone(edits);
+    Slider::from_state(state)
+        .on_change(move |value| edits.borrow_mut().push(edit(value)))
+        .with_id(id)
+        .with_accessible_name(name)
+}
+
 pub struct Customizer {
     color_picker: ColorPicker,
     radius_slider: Slider,
@@ -196,7 +235,8 @@ pub struct Customizer {
     character_state: LocalState<f64>,
     tint_state: LocalState<f64>,
     font_state: LocalState<String>,
-    action_theme: Option<String>,
+    edits: Edits,
+    action_key: Option<String>,
     pending_edit_token: Option<TokenId>,
 
     // pushed-in view state
@@ -242,6 +282,10 @@ impl Default for Customizer {
 }
 
 impl Customizer {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor lists every control the panel owns"
+    )]
     pub fn new() -> Self {
         // Before a spec is loaded the picker shows the default theme's
         // accent. `load_picker` replaces it with the token being edited.
@@ -255,36 +299,78 @@ impl Customizer {
         let character_state = LocalState::new(f64::from(model::CHARACTER_NORM_AT_STOCK));
         let tint_state = LocalState::new(0.0);
         let font_state = LocalState::new(String::from("Inter"));
+        let edits = Edits::default();
+        let picked = Rc::clone(&edits);
+        let chosen = Rc::clone(&edits);
         Self {
-            color_picker: ColorPicker::from_state(&color_state),
-            radius_slider: Slider::from_state(&radius_state)
-                .with_id("radius_slider")
-                .with_accessible_name("Corner radius"),
-            spacing_slider: Slider::from_state(&spacing_state)
-                .with_id("spacing_slider")
-                .with_accessible_name("Interface spacing"),
-            motion_slider: Slider::from_state(&motion_state)
-                .with_id("motion_slider")
-                .with_accessible_name("Motion"),
-            material_slider: Slider::from_state(&material_state)
-                .with_id("material_slider")
-                .with_accessible_name("Materials"),
-            icon_slider: Slider::from_state(&icon_state)
-                .with_id("icon_slider")
-                .with_accessible_name("Icons"),
-            chrome_slider: Slider::from_state(&chrome_state)
-                .with_id("chrome_slider")
-                .with_accessible_name("Chrome weight"),
-            character_slider: Slider::from_state(&character_state)
-                .with_id("character_slider")
-                .with_accessible_name("Motion character"),
-            tint_slider: Slider::from_state(&tint_state)
-                .with_id("tint_slider")
-                .with_accessible_name("Material tint"),
+            color_picker: ColorPicker::from_state(&color_state).on_change(move |color| {
+                picked
+                    .borrow_mut()
+                    .push(ControlEdit::Color(model::rgb_of(color)));
+            }),
+            radius_slider: edit_slider(
+                &radius_state,
+                &edits,
+                ControlEdit::Radius,
+                "radius_slider",
+                "Corner radius",
+            ),
+            spacing_slider: edit_slider(
+                &spacing_state,
+                &edits,
+                ControlEdit::Spacing,
+                "spacing_slider",
+                "Interface spacing",
+            ),
+            motion_slider: edit_slider(
+                &motion_state,
+                &edits,
+                ControlEdit::Motion,
+                "motion_slider",
+                "Motion",
+            ),
+            material_slider: edit_slider(
+                &material_state,
+                &edits,
+                ControlEdit::Material,
+                "material_slider",
+                "Materials",
+            ),
+            icon_slider: edit_slider(
+                &icon_state,
+                &edits,
+                ControlEdit::Icon,
+                "icon_slider",
+                "Icons",
+            ),
+            chrome_slider: edit_slider(
+                &chrome_state,
+                &edits,
+                ControlEdit::Chrome,
+                "chrome_slider",
+                "Chrome weight",
+            ),
+            character_slider: edit_slider(
+                &character_state,
+                &edits,
+                ControlEdit::Character,
+                "character_slider",
+                "Motion character",
+            ),
+            tint_slider: edit_slider(
+                &tint_state,
+                &edits,
+                ControlEdit::Tint,
+                "tint_slider",
+                "Material tint",
+            ),
             font_dropdown: Dropdown::from_state(
                 FONTS.iter().map(std::string::ToString::to_string).collect(),
                 &font_state,
             )
+            .on_change(move |font| {
+                chosen.borrow_mut().push(ControlEdit::Font(font.to_owned()));
+            })
             .with_id("font_dropdown"),
             buttons: vec![
                 Button::new("themes.duplicate", "Duplicate", None).fit_content(ACTIONS_H),
@@ -303,7 +389,8 @@ impl Customizer {
             character_state,
             tint_state,
             font_state,
-            action_theme: None,
+            edits,
+            action_key: None,
             pending_edit_token: None,
             spec: None,
             edit_token: TokenId::Accent,
@@ -432,14 +519,17 @@ impl Customizer {
             .set(f64::from(model::tint_norm(spec.material_tint)));
         self.font_state.set(spec.font.clone());
     }
+    /// Bind Duplicate, Reset and Delete to the published actions of the theme
+    /// shown; `key` names what they were bound for, so the same bindings are
+    /// not rebuilt every frame.
     pub fn bind_actions(
         &mut self,
-        theme_id: &str,
+        key: &str,
         duplicate: tilo_actions::ActionBinding<()>,
         reset: Option<tilo_actions::ActionBinding<()>>,
         delete: Option<tilo_actions::ActionBinding<()>>,
     ) {
-        if self.action_theme.as_deref() == Some(theme_id) {
+        if self.action_key.as_deref() == Some(key) {
             return;
         }
         let mut buttons = vec![
@@ -466,12 +556,17 @@ impl Customizer {
                 .with_enabled(false),
         });
         self.buttons = buttons;
-        self.action_theme = Some(theme_id.to_string());
+        self.action_key = Some(key.to_string());
         self.structure_dirty = true;
     }
 
     pub fn take_edit_token(&mut self) -> Option<TokenId> {
         self.pending_edit_token.take()
+    }
+
+    /// The values set on the controls since the last call, in order.
+    pub fn take_edits(&mut self) -> Vec<ControlEdit> {
+        std::mem::take(&mut *self.edits.borrow_mut())
     }
 }
 
@@ -1269,7 +1364,7 @@ impl Customizer {
     }
 }
 
-/// The same color swatch paint used by live customization and frozen library views.
+/// The colour swatch paint of one token chip.
 fn draw_token_chip(
     scene: &mut Scene,
     t: Affine,
@@ -1287,49 +1382,5 @@ fn draw_token_chip(
         draw::stroke_rrect(scene, t, rect, 6.0, theme.accent_primary, 2.5);
     } else {
         ui::surface::card(scene, t, rect, 6.0, fill);
-    }
-}
-
-pub(crate) fn draw_snapshot_tokens(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    spec: &ThemeSpec,
-    rect: Rect,
-) {
-    draw::text(
-        tr,
-        scene,
-        t,
-        &format!(
-            "{} · radius {:.2} · spacing {:.2}",
-            spec.font, spec.radius_norm, spec.spacing_norm
-        ),
-        13.,
-        theme.text_primary,
-        rect.x0,
-        rect.y0,
-    );
-    for (i, token) in TokenId::ALL.iter().enumerate() {
-        let y = rect.y0 + 34. + i as f64 * 38.;
-        draw_token_chip(
-            scene,
-            t,
-            theme,
-            Rect::new(rect.x0, y, rect.x0 + 28., y + 28.),
-            spec.token(*token),
-            false,
-        );
-        draw::text(
-            tr,
-            scene,
-            t,
-            &format!("{} · {}", token.label(), model::hex(spec.token(*token))),
-            12.,
-            theme.text_primary,
-            rect.x0 + 40.,
-            y + 5.,
-        );
     }
 }

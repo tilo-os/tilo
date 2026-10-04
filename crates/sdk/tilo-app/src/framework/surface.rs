@@ -480,6 +480,12 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
+    // A harness reaches a hosted surface by its own type, as it would the
+    // surface mounted alone.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.surface.as_any_mut()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut ui_core::taffy::TaffyTree<()>,
