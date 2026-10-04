@@ -83,36 +83,15 @@ fn sync(app: &mut Framed<SettingsApp>) {
     app.sync(&mut state.doc, &state.root);
 }
 
-/// Walk the live tree for the `SidebarRow` carrying `label`, returning its
-/// computed on-screen rect.
+/// The on-screen rect of the navigation row carrying `label`.
 fn row_rect(app: &SettingsApp, label: &str) -> Option<Rect> {
-    fn walk(w: &dyn Widget, label: &str, out: &mut Option<Rect>) {
-        if w.name() == "SidebarRow" && w.test_id() == Some(label) {
-            *out = Some(w.get_rect());
-        }
-        for c in w.children() {
-            walk(c, label, out);
-        }
-    }
-    let mut out = None;
-    walk(app, label, &mut out);
-    out
+    crate::support::nav_row(app, label).map(|row| row.rect)
 }
 
-/// Is the `SidebarRow` for `label` currently drawn active? Read from the
-/// row's `get_state` snapshot in the live tree.
+/// Is the row for `label` currently drawn selected? Read from the list's
+/// published semantics.
 fn row_is_active(app: &SettingsApp, label: &str) -> bool {
-    fn walk(w: &dyn Widget, label: &str, out: &mut bool) {
-        if w.name() == "SidebarRow" && w.test_id() == Some(label) {
-            *out = ui::undo::get_state(w).as_deref() == Some("active");
-        }
-        for c in w.children() {
-            walk(c, label, out);
-        }
-    }
-    let mut out = false;
-    walk(app, label, &mut out);
-    out
+    crate::support::nav_row(app, label).is_some_and(|row| row.selected)
 }
 
 /// Render the laid-out app and report whether the scene encoded any draw
@@ -135,20 +114,13 @@ fn renders_something(app: &mut SettingsApp) -> bool {
     !scene.encoding().is_empty()
 }
 
-/// Count the `SidebarRow` widgets whose snapshot reads "active". After a
-/// navigation exactly one row — the target — must be active.
+/// Count the selected navigation rows. After a navigation exactly one row, the
+/// target, must be selected.
 fn active_row_count(app: &SettingsApp) -> usize {
-    fn walk(w: &dyn Widget, n: &mut usize) {
-        if w.name() == "SidebarRow" && ui::undo::get_state(w).as_deref() == Some("active") {
-            *n = n.saturating_add(1);
-        }
-        for c in w.children() {
-            walk(c, n);
-        }
-    }
-    let mut n = 0;
-    walk(app, &mut n);
-    n
+    crate::support::nav_rows(app)
+        .iter()
+        .filter(|row| row.selected)
+        .count()
 }
 
 /// The shared click-and-assert routine: starting from a fresh app on the

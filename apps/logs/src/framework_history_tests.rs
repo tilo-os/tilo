@@ -74,7 +74,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
     let heads = driver.state_mut().doc.get_heads();
     let pending = driver.state_mut().doc.pending_ops();
     assert!(
-        live.contains("Back to entries"),
+        live.contains("Hide inspector"),
         "offline detail selection is visible"
     );
     assert!(live.contains("Error"), "offline error query is applied");
@@ -83,7 +83,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
         "offline filtered journal row is visible"
     );
 
-    driver.click_named("history-open").unwrap();
+    driver.open_history().unwrap();
     let history = driver.inspection_json().unwrap();
     assert!(history.contains(crate::framework_history::LIMITATION));
     assert!(driver.targets().contains_key("history-open"));
@@ -100,7 +100,7 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
 
     driver.click_named("history-open").unwrap();
     let returned = driver.inspection_json().unwrap();
-    assert!(returned.contains("Back to entries"));
+    assert!(returned.contains("Hide inspector"));
     assert!(returned.contains("Error"));
     assert!(returned.contains("Failed to set privacy: Rejected"));
     assert_eq!(resource_snapshot(&driver), resources);
@@ -266,7 +266,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         "exact selected row is live"
     );
 
-    driver.click_named("history-open").unwrap();
+    driver.open_history().unwrap();
     assert!(picker.is_pending(), "portal request remains pending");
     driver.click_named("history-open").unwrap();
     let returned = driver.inspection_json().unwrap();

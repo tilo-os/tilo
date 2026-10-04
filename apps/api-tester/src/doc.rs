@@ -259,17 +259,6 @@ impl ApiDoc {
         }
     }
 
-    /// Get-or-create the live `Text` object backing the active request's
-    /// URL — returned so the URL bar's `TextInput` can bind to it.
-    pub fn url_text(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
-        Self::text_obj(doc, root, "url")
-    }
-
-    /// Get-or-create the live `Text` object backing the body editor.
-    pub fn body_text(doc: &mut AutoCommit, root: &ObjId) -> ObjId {
-        Self::text_obj(doc, root, "body")
-    }
-
     /// Persist collections as keyed records. A deleted UUID is never revived by
     /// a stale whole-workspace flush; creating a genuinely new collection uses
     /// a fresh UUID.
@@ -1125,7 +1114,7 @@ mod tests {
     /// Case of `records_round_trip_through_the_document`.
     fn url_text_is_live_and_editable() {
         let (mut d, root) = doc();
-        let obj = ApiDoc::url_text(&mut d, &root);
+        let obj = ApiDoc::text_obj(&mut d, &root, "url");
         let _ = d.splice_text(&obj, 0, 0, "https://api.example.com/users");
         assert_eq!(
             ApiDoc::read_text(&d, &root, "url"),

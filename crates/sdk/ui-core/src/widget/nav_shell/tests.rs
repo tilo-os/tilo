@@ -112,6 +112,51 @@ fn child_rect(h: &FrameHarness, id: &str) -> Option<Rect> {
         .map(Widget::get_rect)
 }
 
+fn notes_shell() -> NavShell {
+    NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Notes", Vec::new())
+        .content_header("", Vec::new())
+}
+
+/// The sidebar docks only while the content beside it keeps the room it
+/// needs (a readable column); an 800 × 600 window would leave a document
+/// 520 px, so its sidebar becomes the drawer and the content gets the
+/// window.
+#[test]
+fn the_sidebar_collapses_when_the_content_would_be_squeezed() {
+    let theme = Theme::dark();
+    let m = Metrics::resolve(&theme);
+    for (width, docked) in [
+        (1280_u32, true),
+        (1024, true),
+        (840, true),
+        (800, false),
+        (640, false),
+    ] {
+        let mut h = harness(notes_shell(), width, 600, theme.clone());
+        settle(&mut h, width, 600);
+        let g = geometry(&h);
+        assert!(
+            (g.breakpoint - (m.sidebar + m.content_min)).abs() < 1e-6,
+            "{width}: the breakpoint is the sidebar plus the content's need"
+        );
+        assert_eq!(
+            g.sidebar == SidebarPlacement::Docked,
+            docked,
+            "{width}: {:?}",
+            g.sidebar
+        );
+        let content = child_rect(&h, "content").expect("the content is laid out");
+        assert!(
+            content.width() >= m.content_min - 1e-6,
+            "{width}: the content keeps a readable column ({})",
+            content.width()
+        );
+    }
+}
+
 #[test]
 fn the_shell_follows_the_window_and_the_text_scale() {
     for (scale, theme) in [

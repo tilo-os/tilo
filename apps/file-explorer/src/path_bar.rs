@@ -1,11 +1,11 @@
 //! `PathBar` — the single, calm path affordance at the top of the file
 //! manager. It has two modes:
 //!
-//! * **Breadcrumb** (default): the clickable path trail (`Home › Projects ›
-//!   tilo`). Clicking an ancestor navigates to it.
-//! * **Editable** (Finder/Nautilus location bar): clicking the current
-//!   location — or the empty trail area, or pressing Ctrl+L — turns the trail
-//!   into a real editable text field. As you type, **path completions appear in
+//! * **Breadcrumb** (default): the shared [`ui::widget::Breadcrumb`] trail
+//!   (`Home > Projects > tilo`). Clicking an ancestor navigates to it.
+//! * **Editable** (Finder/Nautilus location bar): clicking the empty trail
+//!   area, or pressing Ctrl+L, turns the trail into a real editable text
+//!   field. As you type, **path completions appear in
 //!   a dropdown below the field**; Enter navigates, Esc reverts to the trail.
 //!
 //! The path is shown exactly **once** — this bar replaces both the old separate
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -29,21 +29,21 @@ use ui::icons::icon_for_path;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Autocomplete, AutocompleteOutcome, Suggestion, Widget};
+use ui::widget::{Autocomplete, AutocompleteOutcome, Breadcrumb, Suggestion, Widget};
 
-use crate::breadcrumb_bar::BreadcrumbBar;
 use crate::breadcrumbs::breadcrumb_components;
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::t;
 use crate::model::format_path;
 
-/// Height of the bar (a single line of text plus breathing room for the
-/// editable field's chrome).
-pub const PATH_BAR_HEIGHT: f32 = 34.0;
-
 pub struct PathBar {
     /// The clickable trail (breadcrumb mode).
-    crumbs: BreadcrumbBar,
+    crumbs: Breadcrumb,
+    /// Where each trail segment goes, in trail order.
+    targets: Vec<PathBuf>,
+    /// The trail's node in the last layout, so events reach it at its rect.
+    crumbs_node: Option<NodeId>,
+    last_cursor: Point,
     /// The editable field + completion popover (edit mode).
     field: Autocomplete,
     editing: bool,
@@ -63,7 +63,10 @@ pub struct PathBar {
 impl PathBar {
     pub fn new(sink: CommandSink) -> Self {
         Self {
-            crumbs: BreadcrumbBar::new(Vec::new(), sink.clone()),
+            crumbs: Breadcrumb::new(Vec::new()),
+            targets: Vec::new(),
+            crumbs_node: None,
+            last_cursor: Point::ZERO,
             field: Autocomplete::new()
                 .with_id("files.path_input")
                 .with_placeholder(&t("files-path-placeholder")),
@@ -89,15 +92,30 @@ impl PathBar {
     ) {
         self.current = current;
         self.home = home;
-        self.crumbs.set_workspace_roots(workspace_roots.clone());
         self.workspace_roots = workspace_roots;
         if !self.editing {
-            self.crumbs.set_segments(breadcrumb_components(
-                &self.current,
-                self.home.as_deref(),
-                &self.workspace_roots,
-            ));
+            self.refresh_crumbs();
         }
+    }
+
+    /// Rebuild the trail for the current location. The trail is a stateless
+    /// widget, so it is replaced only when its segments change.
+    fn refresh_crumbs(&mut self) {
+        let components =
+            breadcrumb_components(&self.current, self.home.as_deref(), &self.workspace_roots);
+        let labels: Vec<String> = components.iter().map(|(label, _)| label.clone()).collect();
+        let targets: Vec<PathBuf> = components.into_iter().map(|(_, target)| target).collect();
+        if labels == self.crumbs.segments() && targets == self.targets {
+            return;
+        }
+        let sink = self.sink.clone();
+        let goto = targets.clone();
+        self.crumbs = Breadcrumb::new(labels).on_navigate(move |index| {
+            if let Some(target) = goto.get(index) {
+                push(&sink, FileCommand::Navigate(target.clone()));
+            }
+        });
+        self.targets = targets;
     }
 
     /// Enter edit mode: seed the field with the current path, wire the
@@ -123,11 +141,7 @@ impl PathBar {
         self.editing = false;
         self.field.close();
         self.field.set_focus(false);
-        self.crumbs.set_segments(breadcrumb_components(
-            &self.current,
-            self.home.as_deref(),
-            &self.workspace_roots,
-        ));
+        self.refresh_crumbs();
     }
 }
 
@@ -135,26 +149,55 @@ impl Widget for PathBar {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only fails on tree-internal bookkeeping errors, never on
-        // caller input; there is none to report here.
+        // The trail fills the bar, so it truncates against the real width.
+        let crumbs = self.crumbs.build_layout(taffy, theme, node_map);
+        let height = Dimension::length(theme.tokens.metrics.min_pointer_target);
+        // `set_style` and `new_with_children` only fail for a node of another
+        // tree; the trail's node was just built in this one.
         #[allow(
             clippy::unwrap_used,
-            reason = "new_leaf cannot fail for a freshly built style"
+            reason = "the trail's node was just created in this same tree"
         )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(PATH_BAR_HEIGHT),
-                },
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                ..Default::default()
-            })
-            .unwrap();
+        let node = {
+            taffy
+                .set_style(
+                    crumbs,
+                    Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height,
+                        },
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            taffy
+                .new_with_children(
+                    Style {
+                        display: Display::Flex,
+                        // The bar asks for more width than any window has: the
+                        // toolbar is offered a band to fill, and the bar shrinks
+                        // to whatever its neighbours leave.
+                        size: Size {
+                            width: Dimension::length(f32::from(u16::MAX)),
+                            height,
+                        },
+                        min_size: Size {
+                            width: Dimension::length(0.0),
+                            height,
+                        },
+                        flex_grow: 1.0,
+                        flex_shrink: 1.0,
+                        ..Default::default()
+                    },
+                    &[crumbs],
+                )
+                .unwrap()
+        };
+        self.crumbs_node = Some(crumbs);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -173,7 +216,10 @@ impl Widget for PathBar {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        self.crumbs.apply_layout_external(self.rect);
+        if let Some(crumbs) = self.crumbs_node {
+            self.crumbs
+                .apply_layout(taffy, crumbs, Point::new(self.rect.x0, self.rect.y0));
+        }
         self.field.apply_layout_external(self.rect);
     }
 
@@ -220,8 +266,27 @@ impl Widget for PathBar {
                 AutocompleteOutcome::None => {}
             }
         } else {
-            self.crumbs.handle_event(event, ctx);
-            if self.crumbs.take_edit_requested() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            }
+            let node = self.crumbs_node.unwrap_or(ctx.node_id);
+            self.crumbs
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            // A press on the trail's empty area (not on an ancestor) turns it
+            // into the editable location.
+            if !*ctx.handled
+                && matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                        ..
+                    }
+                )
+                && self.rect.contains(self.last_cursor)
+            {
+                *ctx.handled = true;
                 self.begin_edit();
             }
         }
@@ -288,11 +353,11 @@ impl Widget for PathBar {
         if self.editing {
             return self.field.perform_action(action, state, path);
         }
-        let handled = self.crumbs.perform_action(action, state, path);
-        if self.crumbs.take_edit_requested() {
+        if matches!(action, ui::a11y::Action::Activate) {
             self.begin_edit();
+            return true;
         }
-        handled
+        self.crumbs.perform_action(action, state, path)
     }
 }
 
@@ -517,7 +582,7 @@ mod tests {
             );
         }
 
-        // --- phase: breadcrumb_mode_is_focusable_and_activation_enters_named_text_input ---
+        // --- phase: breadcrumb_mode_names_the_trail_and_activation_enters_named_text_input ---
         {
             use ui::a11y::{Action, Role};
 
@@ -527,11 +592,9 @@ mod tests {
                 Some(PathBuf::from("/home/u")),
                 Vec::new(),
             );
-            bar.set_focus(true);
             let trail = bar.accessibility().expect("trail semantics");
-            assert_eq!(trail.role, Role::Group);
-            assert_eq!(trail.name.as_deref(), Some("Breadcrumbs"));
-            assert!(trail.state.focused && trail.state.focusable);
+            assert_eq!(trail.role, Role::List);
+            assert_eq!(trail.value.as_deref(), Some("Documents"));
 
             let mut doc = AutoCommit::new();
             assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));

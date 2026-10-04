@@ -15,26 +15,62 @@
 //! vertically.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
 
 use ui::gesture::{DragSelect, Granularity};
+use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::text_selection::{Selection, extend_span_drag, line_boundaries, word_boundaries};
 use ui::theme::Theme;
-use ui::widget::{Image, ImageFit, SmallContentAlign, ViewportState};
+use ui::tokens::{Spacing, TextRole};
+use ui::widget::{
+    Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, Image, ImageFit,
+    SmallContentAlign, ViewportState,
+};
 
 use crate::compile::{PageImage, TextRun};
 
-const THUMB_STRIP_W: f64 = 104.0;
-const THUMB_GAP: f64 = 14.0;
-/// Vertical gap between stacked pages, in **content** (page-point) units, so it
-/// scales with zoom exactly like the pages.
-const PAGE_GAP_PT: f64 = 20.0;
-/// Screen-px padding the viewport reserves around the page stack.
-const VIEW_PAD: f64 = 22.0;
+/// The preview's geometry, every length a step of the theme's spacing scale.
+#[derive(Clone, Copy, PartialEq)]
+struct Metrics {
+    /// Vertical gap between stacked pages, in **content** (page-point) units,
+    /// so it scales with zoom exactly like the pages.
+    page_gap_pt: f64,
+    /// Screen padding the viewport reserves around the page stack.
+    view_pad: f64,
+    /// Width of a page thumbnail.
+    thumb_w: f64,
+    /// Space around and between the thumbnails.
+    thumb_gap: f64,
+}
+
+impl Metrics {
+    fn of(spacing: &Spacing) -> Self {
+        Self {
+            page_gap_pt: f64::from(spacing.s6),
+            view_pad: f64::from(spacing.s6),
+            thumb_w: f64::from(spacing.s16 + spacing.s3),
+            thumb_gap: f64::from(spacing.s3),
+        }
+    }
+
+    /// Width of the thumbnail strip.
+    fn strip_w(&self) -> f64 {
+        self.thumb_w + 2.0 * self.thumb_gap
+    }
+}
+
+/// Why the pane shows no pages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Empty {
+    Compiling,
+    NoPages,
+    Failed,
+}
 
 /// A page's placement within the content-space page stack (all in page points).
 #[derive(Clone, Copy)]
@@ -98,8 +134,18 @@ pub struct PreviewPane {
     /// Page index considered "current" (top-most visible) — drives the
     /// thumbnail highlight and the status bar.
     current: usize,
-    /// Set by the app when there are no pages to show.
-    placeholder: Option<String>,
+    /// Why there are no pages to show.
+    empty: Empty,
+    metrics: Metrics,
+    /// Intrinsic page sizes in page points, for re-stacking when the spacing
+    /// scale changes.
+    page_pt: Vec<(f64, f64)>,
+    page_text: Vec<Vec<TextRun>>,
+    /// Height of the stale-render banner, reserved above the pages while it
+    /// shows; measured at paint.
+    banner_h: f64,
+    /// Height of one thumbnail number label; measured at paint.
+    thumb_label_h: f64,
     /// The pages on screen are from an earlier successful compile — the latest
     /// compile failed, so we keep the last good render and flag it as stale
     /// rather than blanking the pane and losing the reader's place.
@@ -111,7 +157,7 @@ impl Default for PreviewPane {
         Self {
             rect: Rect::ZERO,
             viewport: ViewportState::new()
-                .with_padding(VIEW_PAD)
+                .with_padding(Metrics::of(&Spacing::default()).view_pad)
                 .with_zoom_bounds(0.1, 8.0)
                 .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             images: Vec::new(),
@@ -127,7 +173,12 @@ impl Default for PreviewPane {
             dragging_bar: false,
             fit_width: true,
             current: 0,
-            placeholder: Some("Compiling…".into()),
+            empty: Empty::Compiling,
+            metrics: Metrics::of(&Spacing::default()),
+            page_pt: Vec::new(),
+            page_text: Vec::new(),
+            banner_h: 0.0,
+            thumb_label_h: 0.0,
             stale: false,
         }
     }
@@ -145,8 +196,14 @@ impl PreviewPane {
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
-        let was_at_top = self.viewport.scroll_y() <= 0.5;
         self.rect = rect;
+        self.refit();
+    }
+
+    /// Fit the viewport to the pane's current rect, beside the thumbnails and
+    /// under the banner.
+    fn refit(&mut self) {
+        let was_at_top = self.viewport.scroll_y() <= 0.5;
         self.viewport.set_rect(self.main_rect());
         // Re-apply the fit-width intent so a resize keeps the page spanning the
         // pane; a pinned custom zoom is left untouched.
@@ -186,6 +243,25 @@ impl PreviewPane {
         )
     }
 
+    /// Forget every page: a newly opened document starts with none, and shows
+    /// its own render (or its own failure) rather than the last one's.
+    pub fn clear(&mut self) {
+        self.images.clear();
+        self.sizes_px.clear();
+        self.page_pt.clear();
+        self.page_text.clear();
+        self.boxes.clear();
+        self.cells.clear();
+        self.content_w = 0.0;
+        self.content_h = 0.0;
+        self.viewport.set_content_size(0.0, 0.0);
+        self.stale = false;
+        self.fit_width = true;
+        self.current = 0;
+        self.empty = Empty::Compiling;
+        self.clear_selection();
+    }
+
     pub fn set_pages(&mut self, pages: &[PageImage]) {
         self.set_pages_with_text(pages, &[]);
     }
@@ -193,53 +269,77 @@ impl PreviewPane {
     /// Install freshly compiled pages together with their extracted text layer.
     /// `page_text` is parallel to `pages` (empty when the compile failed).
     pub fn set_pages_with_text(&mut self, pages: &[PageImage], page_text: &[Vec<TextRun>]) {
-        let was_empty = self.images.is_empty();
+        // A reader at the top of the document stays there as the pages change
+        // under them; one who scrolled keeps their place.
+        let at_top = self.images.is_empty() || self.viewport.scroll_y() <= 0.5;
         self.images = pages
             .iter()
             .map(|p| Image::from_rgba(p.rgba.clone(), p.width, p.height).with_fit(ImageFit::Fill))
             .collect();
         self.sizes_px = pages.iter().map(|p| (p.width, p.height)).collect();
-        self.placeholder = if pages.is_empty() {
-            Some("No pages".into())
-        } else {
-            None
-        };
+        self.empty = Empty::NoPages;
+        self.page_pt = pages.iter().map(|p| (p.width_pt, p.height_pt)).collect();
+        self.page_text = page_text.to_vec();
 
-        // Build the content-space page stack in page points.
-        let content_w = pages
+        // Fresh pages supersede any stale render.
+        self.stale = false;
+        self.restack(at_top);
+        self.clear_selection();
+    }
+
+    /// Follow `theme`'s spacing scale: the page gap, the viewport padding and
+    /// the thumbnail strip. Re-stacks the pages when the scale changed.
+    pub fn apply_theme(&mut self, theme: &Theme) {
+        let metrics = Metrics::of(&theme.tokens.spacing);
+        if metrics == self.metrics {
+            return;
+        }
+        self.metrics = metrics;
+        let at_top = self.viewport.scroll_y() <= 0.5;
+        let viewport = std::mem::replace(&mut self.viewport, ViewportState::new());
+        self.viewport = viewport.with_padding(metrics.view_pad);
+        self.restack(at_top);
+        self.refit();
+    }
+
+    /// Lay the compiled pages out as one stack in page points and rebuild the
+    /// text layer over it. `to_top` scrolls back to the top once the fit-width
+    /// zoom is re-applied (a fresh render, or a reader who was at the top).
+    fn restack(&mut self, to_top: bool) {
+        let gap = self.metrics.page_gap_pt;
+        let content_w = self
+            .page_pt
             .iter()
-            .map(|p| p.width_pt)
+            .map(|(w, _)| *w)
             .fold(0.0_f64, f64::max)
             .max(1.0);
-        let mut boxes = Vec::with_capacity(pages.len());
+        let mut boxes = Vec::with_capacity(self.page_pt.len());
         let mut y = 0.0f64;
-        for p in pages {
-            let x_off = ((content_w - p.width_pt) / 2.0).max(0.0);
+        for &(w_pt, h_pt) in &self.page_pt {
+            let x_off = ((content_w - w_pt) / 2.0).max(0.0);
             boxes.push(PageBox {
                 x_off,
                 top: y,
-                w_pt: p.width_pt,
-                h_pt: p.height_pt,
+                w_pt,
+                h_pt,
             });
-            y += p.height_pt + PAGE_GAP_PT;
+            y += h_pt + gap;
         }
-        let content_h = (y - PAGE_GAP_PT).max(0.0);
+        let content_h = (y - gap).max(0.0);
         self.boxes = boxes;
         self.content_w = content_w;
         self.content_h = content_h;
         self.viewport.set_content_size(content_w, content_h);
 
-        // Fresh pages supersede any stale render.
-        self.stale = false;
-
         // Flatten the per-page runs into content-space cells in reading order.
-        self.rebuild_cells(page_text);
-        self.clear_selection();
+        let page_text = std::mem::take(&mut self.page_text);
+        self.rebuild_cells(&page_text);
+        self.page_text = page_text;
 
         // Keep the fit-width intent honoured now that the content size changed.
         if self.fit_width {
             self.viewport.set_zoom(self.viewport.fit_width_zoom());
-            if was_empty {
+            if to_top {
                 self.viewport.set_scroll(self.viewport.scroll_x(), 0.0);
             }
         }
@@ -268,9 +368,11 @@ impl PreviewPane {
         self.cells = cells;
     }
 
-    pub fn set_placeholder(&mut self, text: Option<String>) {
+    /// Say why there are no pages: the first compile failed rather than is
+    /// still running. Ignored while pages are showing.
+    pub fn set_failed(&mut self) {
         if self.images.is_empty() {
-            self.placeholder = text;
+            self.empty = Empty::Failed;
         }
     }
 
@@ -317,6 +419,14 @@ impl PreviewPane {
         self.recompute_current();
     }
 
+    /// Show the document from its top at fit-width: the view a freshly opened
+    /// document starts in.
+    pub fn reset_view(&mut self) {
+        self.fit_width();
+        self.viewport.set_scroll(self.viewport.scroll_x(), 0.0);
+        self.recompute_current();
+    }
+
     pub fn fit_width(&mut self) {
         self.fit_width = true;
         self.viewport.set_zoom(self.viewport.fit_width_zoom());
@@ -327,27 +437,48 @@ impl PreviewPane {
         self.images.len() > 1
     }
 
-    /// The main (non-thumbnail) viewport rect.
+    /// The main (non-thumbnail) viewport rect: beside the thumbnail strip and
+    /// under the stale banner, when they show.
     fn main_rect(&self) -> Rect {
-        if self.has_thumbs() {
-            Rect::new(
-                self.rect.x0 + THUMB_STRIP_W,
-                self.rect.y0,
-                self.rect.x1,
-                self.rect.y1,
-            )
+        let x0 = if self.has_thumbs() {
+            self.rect.x0 + self.metrics.strip_w()
         } else {
-            self.rect
-        }
+            self.rect.x0
+        };
+        let y0 = if self.stale && !self.images.is_empty() {
+            (self.rect.y0 + self.banner_h).min(self.rect.y1)
+        } else {
+            self.rect.y0
+        };
+        Rect::new(x0, y0, self.rect.x1, self.rect.y1)
     }
 
     fn thumb_strip(&self) -> Rect {
         Rect::new(
             self.rect.x0,
             self.rect.y0,
-            self.rect.x0 + THUMB_STRIP_W,
+            self.rect.x0 + self.metrics.strip_w(),
             self.rect.y1,
         )
+    }
+
+    /// Where each page's thumbnail and its page number sit in the strip, one
+    /// layout for both painting and hit-testing. `line` is the height of the
+    /// number label.
+    fn thumb_slots(&self, line: f64) -> Vec<(Rect, Rect)> {
+        let gap = self.metrics.thumb_gap;
+        let tw = self.metrics.thumb_w;
+        let x0 = self.rect.x0 + gap;
+        let mut y = self.rect.y0 + gap;
+        let mut slots = Vec::with_capacity(self.sizes_px.len());
+        for &(pw, ph) in &self.sizes_px {
+            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
+            let image = Rect::new(x0, y, x0 + tw, y + th);
+            let label = Rect::new(x0, y + th, x0 + tw, y + th + line);
+            slots.push((image, label));
+            y += th + line + gap;
+        }
+        slots
     }
 
     // ----- scrolling / zoom input ----------------------------------------
@@ -675,21 +806,14 @@ impl PreviewPane {
     }
 
     fn thumb_click(&mut self, p: Point) {
-        let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
-        let mut y = self.rect.y0 + THUMB_GAP;
-        for (i, &(pw, ph)) in self.sizes_px.iter().enumerate() {
-            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
-            let r = Rect::new(
-                self.rect.x0 + THUMB_GAP,
-                y,
-                self.rect.x0 + THUMB_GAP + tw,
-                y + th,
-            );
-            if r.contains(p) {
-                self.scroll_to_page(i);
-                return;
-            }
-            y += th + THUMB_GAP + 16.0;
+        // The label line only places the slots below each image; hit-testing
+        // the image and its number alike keeps the whole thumbnail clickable.
+        let hit = self
+            .thumb_slots(self.thumb_label_h)
+            .iter()
+            .position(|(image, label)| image.union(*label).contains(p));
+        if let Some(i) = hit {
+            self.scroll_to_page(i);
         }
     }
 
@@ -787,6 +911,8 @@ impl PreviewPane {
 
     // ----- drawing -------------------------------------------------------
 
+    /// Paint the preview on the ground of `theme`, which is the region the
+    /// pane sits in: the pane fills nothing of its own.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -794,12 +920,25 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.neutral[1], None, &self.rect);
-
         if self.images.is_empty() {
-            self.draw_placeholder(scene, transform, tr, theme);
+            self.draw_empty(scene, transform, tr, theme);
             return;
+        }
+        // The banner and the number labels are measured here, where the text
+        // renderer is; a change re-fits the viewport beside them.
+        let banner_h = if self.stale {
+            f64::from(theme.tokens.metrics.panel_row_height)
+        } else {
+            0.0
+        };
+        let label_h = f64::from(
+            tr.measure_style("0", None, &theme.text(TextRole::Caption))
+                .1,
+        );
+        if (banner_h - self.banner_h).abs() > 0.01 || (label_h - self.thumb_label_h).abs() > 0.01 {
+            self.banner_h = banner_h;
+            self.thumb_label_h = label_h;
+            self.refit();
         }
 
         self.draw_main(scene, transform, tr, theme);
@@ -811,8 +950,8 @@ impl PreviewPane {
         }
     }
 
-    /// A floating banner across the top of the preview telling the user the
-    /// pages below are from the last good compile, not the current source.
+    /// The banner across the top of the preview telling the user the pages
+    /// below are from the last good compile, not the current source.
     fn draw_stale_banner(
         &self,
         scene: &mut Scene,
@@ -820,40 +959,20 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
-        let main = self.main_rect();
-        let text = "Compile failed — showing last successful render";
-        let font = 12.0;
-        let (tw, _) = tr.measure(text, font, None);
-        let pad_x = 12.0;
-        let h = 26.0;
-        let w = (f64::from(tw) + pad_x * 2.0).min(main.width() - 20.0);
-        let x0 = main.x0 + (main.width() - w) * 0.5;
-        let y0 = main.y0 + 10.0;
-        let banner = Rect::new(x0, y0, x0 + w, y0 + h);
-        // Soft shadow, then a warning-toned pill.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(banner.inflate(2.0, 2.0), 9.0),
+        let gap = f64::from(theme.tokens.spacing.s3);
+        let area = Rect::new(
+            self.main_rect().x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + self.banner_h,
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.semantic.warning,
-            None,
-            &RoundedRect::from_rect(banner, 8.0),
-        );
-        let ty = y0 + (h - f64::from(font) * 1.25) / 2.0;
-        tr.draw_text(
-            scene,
-            text,
-            font,
-            c.on_surface(c.semantic.warning).ink,
-            transform * Affine::translate((x0 + pad_x, ty)),
-            Some((w - pad_x * 2.0) as f32),
+        let banner = area.inset((-gap, -gap / 2.0));
+        let content = BannerContent::new(BannerKind::Warning, "Showing the last successful render");
+        Banner::paint(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            banner,
+            &content,
+            Point::new(-1.0, -1.0),
         );
     }
 
@@ -867,6 +986,9 @@ impl PreviewPane {
         let c = &theme.tokens.colors;
         let main = self.viewport.rect();
         let page_count = self.images.len();
+        let caption = theme.text(TextRole::Caption).numeric();
+        let caption_gap = f64::from(theme.tokens.spacing.s2);
+        let page_radius = f64::from(theme.tokens.radii.detail);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &main);
 
         for (i, (b, image)) in self.boxes.iter().zip(self.images.iter_mut()).enumerate() {
@@ -882,29 +1004,33 @@ impl PreviewPane {
             if page_rect.y1 < main.y0 || page_rect.y0 > main.y1 {
                 continue;
             }
-            // Drop shadow behind the page.
-            let shadow = page_rect + vello::kurbo::Vec2::new(3.0, 4.0);
-            scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &shadow);
-            // Paper.
-            image.paint_at(scene, transform, page_rect);
-            // Border: derived against the pane the page floats on.
-            scene.stroke(
-                &Stroke::new(1.0),
+            // The page lifts off the pane: the elevation token's shadow, then
+            // the paper, then its derived edge.
+            ui::surface::shadow(
+                scene,
                 transform,
-                ui::surface::edge_on(c.neutral[1]),
-                None,
-                &page_rect,
+                page_rect,
+                page_radius,
+                &theme.tokens.elevation.floating,
+            );
+            image.paint_at(scene, transform, page_rect);
+            ui::paint::stroke_rect(
+                scene,
+                transform,
+                page_rect,
+                ui::surface::edge_on(c.surfaces.content),
+                1.0,
             );
 
             // Page caption under the page.
             let label = format!("Page {} of {page_count}", i + 1);
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &label,
-                11.0,
                 c.text_dim,
-                transform * Affine::translate((page_rect.x0, page_rect.y1 + 6.0)),
+                transform * Affine::translate((page_rect.x0, page_rect.y1 + caption_gap)),
                 None,
+                &caption,
             );
         }
 
@@ -925,7 +1051,7 @@ impl PreviewPane {
         }
         let lo = self.selection.min();
         let hi = self.selection.max().min(self.cells.len());
-        let fill = selection_color(theme);
+        let fill = theme.tokens.colors.intent.selection_tint;
 
         let mut run: Option<((usize, i64), Rect)> = None;
         let flush = |scene: &mut Scene, band: Rect, vp: &ViewportState| {
@@ -968,87 +1094,91 @@ impl PreviewPane {
     ) {
         let c = &theme.tokens.colors;
         let strip = self.thumb_strip();
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &strip);
-        scene.stroke(
-            &Stroke::new(1.0),
+        // The strip stands on the pane's ground; one hairline separates it
+        // from the pages.
+        ui::paint::fill_rect(
+            scene,
             transform,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &vello::kurbo::Line::new(
-                Point::new(strip.x1, strip.y0),
-                Point::new(strip.x1, strip.y1),
-            ),
+            Rect::new(strip.x1 - 1.0, strip.y0, strip.x1, strip.y1),
+            ui::surface::edge_on(c.surfaces.content),
         );
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &strip);
 
-        let tw = THUMB_STRIP_W - 2.0 * THUMB_GAP;
-        let mut y = self.rect.y0 + THUMB_GAP;
-        for (i, (&(pw, ph), image)) in self.sizes_px.iter().zip(self.images.iter_mut()).enumerate()
-        {
-            let th = tw * f64::from(ph.max(1)) / f64::from(pw.max(1));
-            let r = Rect::new(
-                self.rect.x0 + THUMB_GAP,
-                y,
-                self.rect.x0 + THUMB_GAP + tw,
-                y + th,
-            );
-
-            if i == self.current {
-                let ring = r.inflate(3.0, 3.0);
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    theme.accent_primary,
-                    None,
-                    &ring,
-                );
+        let number = theme.text(TextRole::Caption).numeric();
+        let gap = self.metrics.thumb_gap;
+        let current = self.current;
+        let item_radius = f64::from(theme.tokens.radii.item);
+        let slots = self.thumb_slots(self.thumb_label_h);
+        for (i, (image, label_rect)) in slots.iter().enumerate() {
+            // The page the preview is on is the lifted one.
+            if i == current {
+                let lift = c.lift_on(c.surfaces.content, 1.0);
+                // A positive inset grows the rect: the plate surrounds the
+                // thumbnail and its number with half a gap to spare.
+                let plate = image.union(*label_rect).inset(gap / 2.0);
+                ui::paint::fill_round(scene, transform, plate, item_radius, lift);
             }
-            image.paint_at(scene, transform, r);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                ui::surface::edge_on(c.surfaces.raised),
-                None,
-                &r,
-            );
-
-            let label = format!("{}", i + 1);
-            tr.draw_text(
+            if let Some(thumb) = self.images.get_mut(i) {
+                thumb.paint_at(scene, transform, *image);
+            }
+            ui::paint::stroke_rect(
                 scene,
-                &label,
-                10.0,
-                c.text_dim,
-                transform * Affine::translate((r.x0, r.y1 + 2.0)),
-                None,
+                transform,
+                *image,
+                ui::surface::edge_on(c.surfaces.content),
+                1.0,
             );
-            y += th + THUMB_GAP + 14.0;
+            let text = (i + 1).to_string();
+            let (w, _) = tr.measure_style(&text, None, &number);
+            tr.draw_style(
+                scene,
+                &text,
+                if i == current {
+                    c.text_primary
+                } else {
+                    c.text_dim
+                },
+                transform
+                    * Affine::translate((
+                        label_rect.center().x - f64::from(w) / 2.0,
+                        label_rect.y0,
+                    )),
+                None,
+                &number,
+            );
         }
 
         scene.pop_layer();
     }
 
-    fn draw_placeholder(
+    /// The pane while it has no pages: the compile is running, produced
+    /// nothing, or failed before anything rendered.
+    fn draw_empty(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
-        let text = self
-            .placeholder
-            .clone()
-            .unwrap_or_else(|| "No output".into());
-        let (w, _h) = tr.measure(&text, 14.0, None);
-        let x = self.rect.x0 + (self.rect.width() - f64::from(w)) * 0.5;
-        let y = self.rect.y0 + self.rect.height() * 0.5 - 9.0;
-        tr.draw_text(
-            scene,
-            &text,
-            14.0,
-            c.text_dim,
-            transform * Affine::translate((x.max(self.rect.x0 + 12.0), y)),
-            None,
+        let content = match self.empty {
+            Empty::Compiling => EmptyStateContent::new("Compiling the document"),
+            Empty::NoPages => EmptyStateContent {
+                icon: Some(Icon::FileText),
+                message: Some("The document has no pages."),
+                ..EmptyStateContent::new("Nothing to preview")
+            },
+            Empty::Failed => EmptyStateContent {
+                icon: Some(Icon::TriangleAlert),
+                message: Some("Fix the errors listed under Problems."),
+                error: true,
+                ..EmptyStateContent::new("The document did not compile")
+            },
+        };
+        EmptyState::paint(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            self.rect,
+            &content,
+            Point::new(-1.0, -1.0),
         );
     }
 }
@@ -1060,11 +1190,6 @@ fn wheel_px(delta: &MouseScrollDelta, scale_factor: f64) -> (f64, f64) {
         MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
         MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
     }
-}
-
-/// A translucent accent used for the selection highlight over the page.
-fn selection_color(theme: &Theme) -> Color {
-    ui::paint::with_alpha(theme.accent_primary, 90)
 }
 
 #[cfg(test)]

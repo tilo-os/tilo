@@ -106,6 +106,13 @@ pub struct ToggleGroup {
     control_size: ControlSize,
     /// The geometry seen in `build_layout`, for `measure`.
     metrics: StripMetrics,
+    /// Each segment's natural width with its full label and with its short
+    /// form, measured with the text renderer; the strip is partitioned from
+    /// them.
+    naturals: Vec<(f64, f64)>,
+    /// Per segment, whether the partition had to fall back to its short
+    /// label.
+    use_short: Vec<bool>,
     /// The width `measure` settled on, pinned onto the node so a stretching
     /// parent cannot widen a fitted strip.
     measured_width: Option<f32>,
@@ -144,6 +151,8 @@ impl ToggleGroup {
             style: SegmentedStyle::Segmented,
             control_size: ControlSize::Regular,
             metrics: StripMetrics::stock(ControlSize::Regular),
+            naturals: Vec::new(),
+            use_short: Vec::new(),
             measured_width: None,
             active_touch: None,
         }
@@ -313,7 +322,19 @@ impl ToggleGroup {
     /// [`Self::apply_layout_external`] so both compute identical geometry.
     fn set_rect_and_partition(&mut self, rect: Rect) {
         self.rect = rect;
-        self.segment_rects = partition(rect, self.segments.len());
+        let (rects, use_short) = if self.naturals.len() == self.segments.len() {
+            partition_sized(rect, &self.naturals)
+        } else {
+            (
+                partition(rect, self.segments.len()),
+                vec![false; self.segments.len()],
+            )
+        };
+        if rects != self.segment_rects || use_short != self.use_short {
+            self.cache_dirty = true;
+        }
+        self.segment_rects = rects;
+        self.use_short = use_short;
         #[allow(
             clippy::float_cmp,
             reason = "exact equality is intentional: both rects come from the same taffy \
@@ -353,6 +374,62 @@ fn partition(rect: Rect, n: usize) -> Vec<Rect> {
             Rect::new(x0, rect.y0, x1, rect.y1)
         })
         .collect()
+}
+
+/// `rect` split among segments of natural widths `naturals` (full label,
+/// short label): equal segments while every full label fits an equal share;
+/// otherwise each segment as wide as its label needs with the room left
+/// shared equally; only when the full labels cannot all fit, the short forms
+/// where a segment has one; and only past that, shares in proportion (the
+/// labels then elide). Returns the rects and, per segment, whether it shows
+/// its short form.
+fn partition_sized(rect: Rect, naturals: &[(f64, f64)]) -> (Vec<Rect>, Vec<bool>) {
+    let n = naturals.len();
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let avail = rect.width().max(0.0);
+    let count = usize_to_f64(n);
+    let full: Vec<f64> = naturals.iter().map(|(full, _)| *full).collect();
+    let widest = full.iter().copied().fold(0.0, f64::max);
+    if widest * count <= avail + 1e-6 {
+        return (partition(rect, n), vec![false; n]);
+    }
+    let fitted = |widths: &[f64]| -> Option<Vec<f64>> {
+        let sum: f64 = widths.iter().sum();
+        (sum <= avail + 1e-6).then(|| {
+            let extra = (avail - sum) / count;
+            widths.iter().map(|w| w + extra).collect()
+        })
+    };
+    let (widths, use_short) = if let Some(widths) = fitted(&full) {
+        (widths, vec![false; n])
+    } else {
+        let short: Vec<f64> = naturals
+            .iter()
+            .map(|(full, short)| full.min(*short))
+            .collect();
+        let use_short: Vec<bool> = naturals.iter().map(|(full, short)| short < full).collect();
+        if let Some(widths) = fitted(&short) {
+            (widths, use_short)
+        } else {
+            let sum: f64 = short.iter().sum::<f64>().max(1.0);
+            (short.iter().map(|w| w * avail / sum).collect(), use_short)
+        }
+    };
+    let last = n.saturating_sub(1);
+    let mut x = rect.x0;
+    let rects = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let x1 = if i == last { rect.x1 } else { x + w };
+            let seg = Rect::new(x, rect.y0, x1, rect.y1);
+            x = x1;
+            seg
+        })
+        .collect();
+    (rects, use_short)
 }
 
 /// The indices `i` whose right edge carries a separator: between two
@@ -427,6 +504,16 @@ impl StripMetrics {
             .get(index)
             .cloned()
             .unwrap_or_else(|| Self::of(size, &Theme::dark()))
+    }
+
+    /// One segment's natural width for `label`: the chosen (strong) label
+    /// plus its padding, never narrower than the strip is tall.
+    fn natural(&self, label: &str, text: &mut TextRenderer) -> f64 {
+        let w = f64::from(
+            text.measure_style(label, None, &self.label.clone().strong())
+                .0,
+        );
+        (w + 2.0 * self.pad_x).max(self.height).ceil()
     }
 
     /// The narrowest strip that shows every full label: equal segments as
@@ -548,6 +635,26 @@ impl<'a> SegmentedFace<'a> {
         theme: &Theme,
     ) -> f64 {
         StripMetrics::of(size, theme).intrinsic_width(labels, text)
+    }
+    /// The segment rects of a strip in `rect`: equal while every label fits
+    /// an equal share, otherwise each as wide as its label needs with the
+    /// rest shared, as a `ToggleGroup` partitions itself.
+    pub fn partition(
+        rect: Rect,
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<Rect> {
+        let metrics = StripMetrics::of(size, theme);
+        let naturals: Vec<(f64, f64)> = labels
+            .iter()
+            .map(|label| {
+                let w = metrics.natural(label, text);
+                (w, w)
+            })
+            .collect();
+        partition_sized(rect, &naturals).0
     }
 }
 
@@ -711,26 +818,39 @@ impl ToggleGroup {
         }
     }
 
-    /// The labels this strip shows in `rect`: each full label where it fits
-    /// its share, otherwise its short form when it has one.
-    fn shown_labels(&self, text: &mut TextRenderer, theme: &Theme) -> Vec<String> {
-        let metrics = StripMetrics::of(self.control_size, theme);
-        let style = metrics.label.clone().strong();
+    /// The labels this strip shows: each full label, or its short form where
+    /// the partition had to fall back to it.
+    fn shown_labels(&self) -> Vec<String> {
         self.segments
             .iter()
-            .zip(&self.segment_rects)
-            .map(|(segment, rect)| {
-                let room = rect.width() - 2.0 * metrics.pad_x;
-                match &segment.short {
-                    Some(short)
-                        if f64::from(text.measure_style(&segment.label, None, &style).0) > room =>
-                    {
-                        short.clone()
-                    }
-                    _ => segment.label.clone(),
-                }
+            .enumerate()
+            .map(|(i, segment)| match &segment.short {
+                Some(short) if self.use_short.get(i).copied().unwrap_or(false) => short.clone(),
+                _ => segment.label.clone(),
             })
             .collect()
+    }
+
+    /// Measure every segment's natural widths; returns whether they changed.
+    fn measure_naturals(&mut self, text: &mut TextRenderer) -> bool {
+        let metrics = self.metrics.clone();
+        let naturals: Vec<(f64, f64)> = self
+            .segments
+            .iter()
+            .map(|segment| {
+                let full = metrics.natural(&segment.label, text);
+                let short = segment
+                    .short
+                    .as_deref()
+                    .map_or(full, |short| metrics.natural(short, text));
+                (full, short)
+            })
+            .collect();
+        if naturals == self.naturals {
+            return false;
+        }
+        self.naturals = naturals;
+        true
     }
 
     fn handle_key_event(&mut self, key: &KeyEvent, handled: &mut bool) {
@@ -917,6 +1037,7 @@ impl Widget for ToggleGroup {
     ) -> Size<f32> {
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let intrinsic = px_f32(self.metrics.intrinsic_width(&labels, text));
+        self.measure_naturals(text);
         if !self.fill {
             self.measured_width = Some(intrinsic);
         }
@@ -948,6 +1069,7 @@ impl Widget for ToggleGroup {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
+        self.measure_naturals(text);
         if self.fill {
             return false;
         }
@@ -1015,7 +1137,17 @@ impl Widget for ToggleGroup {
             out_scene.append(&self.cached, Some(cached_transform));
             return;
         }
-        let shown = self.shown_labels(text_renderer, theme);
+        // The partition follows the measured labels; a strip laid out before
+        // its labels were measured (or in another theme) re-partitions here,
+        // before it paints and before the next hit-test.
+        let metrics = StripMetrics::of(self.control_size, theme);
+        if metrics != self.metrics {
+            self.metrics = metrics;
+        }
+        if self.measure_naturals(text_renderer) {
+            self.set_rect_and_partition(self.rect);
+        }
+        let shown = self.shown_labels();
         let labels: Vec<&str> = shown.iter().map(String::as_str).collect();
         self.cached.reset();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
@@ -1519,9 +1651,59 @@ mod tests {
                 0,
                 Rect::new(0.0, 0.0, 90.0, 32.0),
             );
-            assert_eq!(group.shown_labels(&mut text, &theme), ["Mon", "Tue"]);
+            group.metrics = StripMetrics::of(ControlSize::Regular, &theme);
+            group.measure_naturals(&mut text);
+            group.set_rect_and_partition(Rect::new(0.0, 0.0, 90.0, 32.0));
+            assert_eq!(group.shown_labels(), ["Mon", "Tue"]);
             group.set_rect_and_partition(Rect::new(0.0, 0.0, 400.0, 32.0));
-            assert_eq!(group.shown_labels(&mut text, &theme), ["Monday", "Tuesday"]);
+            assert_eq!(group.shown_labels(), ["Monday", "Tuesday"]);
+        }
+
+        // Case `segments_size_to_their_labels_before_any_label_shortens`.
+        // "Day / Week / Year" in a strip too narrow for three equal "Week"
+        // segments but wide enough for the three labels: no segment elides,
+        // the wider label gets the wider segment.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut group = group_at(
+                vec![
+                    Segment::new("Day"),
+                    Segment::new("Week"),
+                    Segment::new("Year"),
+                ],
+                1,
+                Rect::new(0.0, 0.0, 400.0, 32.0),
+            );
+            group.metrics = StripMetrics::of(ControlSize::Regular, &theme);
+            group.measure_naturals(&mut text);
+            let naturals: Vec<f64> = group.naturals.iter().map(|(full, _)| *full).collect();
+            let widest = naturals.iter().copied().fold(0.0, f64::max);
+            let sum: f64 = naturals.iter().sum();
+            assert!(
+                sum < widest * 3.0,
+                "the labels differ in width: {naturals:?}"
+            );
+
+            // Room for three equal widest segments: equal widths.
+            group.set_rect_and_partition(Rect::new(0.0, 0.0, (widest * 3.0).ceil(), 32.0));
+            let widths: Vec<f64> = group.segment_rects.iter().map(Rect::width).collect();
+            assert!(
+                widths.iter().all(|w| (w - widths[0]).abs() < 1e-6),
+                "{widths:?}"
+            );
+
+            // Less than that but room for every label: sized to the labels.
+            let tight = (sum + widest * 3.0) / 2.0;
+            group.set_rect_and_partition(Rect::new(0.0, 0.0, tight, 32.0));
+            for (rect, natural) in group.segment_rects.iter().zip(&naturals) {
+                assert!(rect.width() + 1e-6 >= *natural, "{rect:?} holds {natural}");
+            }
+            assert_eq!(group.shown_labels(), ["Day", "Week", "Year"]);
+            assert!(
+                (group.segment_rects.last().unwrap().x1 - tight).abs() < 1e-6,
+                "the strip is filled exactly"
+            );
         }
     }
 

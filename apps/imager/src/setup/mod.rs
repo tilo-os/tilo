@@ -40,17 +40,3 @@ mod test_support;
 pub mod view;
 
 pub use view::app_root;
-
-use ui::widget::Column;
-
-/// A padding-free, content-sized column: one section of a page.
-pub(crate) fn stack() -> Column {
-    Column::new().with_no_padding().with_intrinsic_height()
-}
-
-/// A page body: its header, then each section a `GROUP` apart.
-pub(crate) fn page(header: Column) -> Column {
-    stack()
-        .with_gap(crate::rhythm::px::GROUP)
-        .push(Box::new(header))
-}

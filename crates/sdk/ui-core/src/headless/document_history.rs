@@ -285,6 +285,23 @@ impl FrameHarness {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Result<(), String> {
+        // The app's registered History owns the door wherever it has one,
+        // as in the App: the standalone chrome never stands in for it.
+        if let Some(history) = &mut self.history {
+            let resources = [history.door_resource()];
+            let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+                &resources, address, argument, None, false,
+            )
+            .map_err(|error| error.to_string())?;
+            let encoded = crate::bound_dispatch::encode_resource_action(
+                &resources,
+                address,
+                arguments.as_ref(),
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+            return history.invoke_door(&encoded);
+        }
         if !self.history_chrome_enabled {
             return Err("History chrome is not enabled".into());
         }

@@ -21,9 +21,9 @@ use crate::model::{
 use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 
 /// Which workspace tab the main panel is showing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MainTab {
-    /// SQL editor + results grid.
+    /// SQL editor + results table.
     Query,
     /// Browse rows of the selected table.
     Data,
@@ -170,12 +170,12 @@ impl Session {
 
         // Two example remotes, disconnected (no password, gated on a real
         // server). They demonstrate the sidebar's multi-engine roster.
-        let mut pg = ConnectionProfile::new("Analytics · prod", Engine::Postgres);
+        let mut pg = ConnectionProfile::new("Production analytics", Engine::Postgres);
         pg.host = "db.internal".into();
         pg.database = "analytics".into();
         pg.user = "reader".into();
         s.connections.push(pg);
-        let mut my = ConnectionProfile::new("Shop · staging", Engine::MySql);
+        let mut my = ConnectionProfile::new("Staging shop", Engine::MySql);
         my.host = "mysql.staging".into();
         my.database = "shop".into();
         my.user = "app".into();
@@ -410,6 +410,22 @@ impl Session {
         self.set_schema(DatabaseSchema::default());
         self.status = RunStatus::Busy(format!("Connecting to {}…", profile.name));
         self.worker.request(DbRequest::Connect(Box::new(profile)));
+    }
+
+    /// Make the connection called `name` the active one and leave it
+    /// unopened, as a connect that failed with `message` does.
+    pub fn fail_connecting(&mut self, name: &str, message: &str) {
+        if let Some(index) = self.connections.iter().position(|c| c.name == name) {
+            self.active = index;
+        }
+        self.connected = false;
+        self.active_query = None;
+        self.query_result = None;
+        self.query_gen += 1;
+        self.data_result = None;
+        self.data_gen += 1;
+        self.set_schema(DatabaseSchema::default());
+        self.status = RunStatus::Error(message.to_owned());
     }
 
     /// Switch the active connection and (re)open its engine on the worker.

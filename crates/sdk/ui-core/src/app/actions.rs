@@ -294,7 +294,7 @@ impl App {
             tracing::warn!(%error, "legacy control availability refused");
         }
         let trace = self.trace_resource_stage(Stage::BoundDiscovery);
-        self.refresh_history_controls();
+        let history_door = self.refresh_history_controls();
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -335,6 +335,8 @@ impl App {
             });
         // Opening search is the host's, and this host always answers it.
         allowed.insert(crate::search::search_address());
+        // So is the window's History door, wherever History serves it.
+        allowed.extend(history_door);
         crate::widget::controls::refresh_control_action_availability(
             self.root_widget.as_mut(),
             &allowed,

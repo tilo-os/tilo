@@ -46,7 +46,6 @@
 pub mod actions;
 pub mod adopt;
 pub mod app;
-pub mod chrome;
 pub mod doc;
 pub mod model;
 pub mod render;
@@ -148,6 +147,34 @@ pub fn app_root_search() -> Box<dyn Widget> {
 pub fn app_root_sign() -> Box<dyn Widget> {
     let mut app = PdfApp::sample();
     app.arm_shots_sign_compose();
+    Box::new(app)
+}
+
+/// Screenshot-only: the Signatures panel composing a typed signature.
+pub fn app_root_sign_type() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_sign_type();
+    Box::new(app)
+}
+
+/// Screenshot-only: the review panel on its Contents tab.
+pub fn app_root_contents() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_panel(app::SidebarTab::Outline);
+    Box::new(app)
+}
+
+/// Screenshot-only: the Highlight tool armed with its colour popover open.
+pub fn app_root_marker_colours() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_marker_colours();
+    Box::new(app)
+}
+
+/// Screenshot-only: marked-up pages whose review has no comments yet.
+pub fn app_root_no_comments() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_no_comments();
     Box::new(app)
 }
 

@@ -58,6 +58,9 @@ pub fn open_account_address(id: AccountId) -> ActionAddress {
     ActionAddress::new(account_resource_id(id), "open")
 }
 
+/// The id of the vault's operation that opens the add sheet.
+pub(crate) const ADD_ACCOUNT_OPERATION: &str = "add-account";
+
 /// Local operations exported by account resources. Payloads carry only stable
 /// account ids; code generation happens after the broker has resolved the
 /// fresh resource and admitted the operation.
@@ -382,7 +385,7 @@ fn account_label(a: &Account) -> String {
 /// encrypted local vault and dispatches only its metadata action afterward.
 pub(crate) fn add_account_view() -> ActionSpec {
     account_operation(
-        "add-account",
+        ADD_ACCOUNT_OPERATION,
         "Add account",
         OperationKind::View,
         &TotpOperation::OpenAddAccount,

@@ -13,29 +13,45 @@ fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
             .any(|child| has_resource_id(child, id))
 }
 
+/// Lay the header row out at `width`, as a frame would.
+fn lay_out_header(app: &mut PhotosApp, width: f64) {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    app.rect = Rect::new(0.0, 0.0, width, 800.0);
+    app.chrome.drawer.scale_for(&theme);
+    let content = app.chrome.drawer.resolve(app.rect);
+    app.chrome.header = Rect::new(content.x0, 0.0, width, chrome::header_height(&theme));
+    app.place_chrome(&mut text, &theme);
+}
+
+/// The names of the commands the header toolbar shows.
+fn toolbar_names(app: &PhotosApp) -> Vec<String> {
+    app.chrome
+        .toolbar
+        .accessibility()
+        .map(|toolbar| {
+            toolbar
+                .children
+                .into_iter()
+                .filter_map(|node| node.name)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The semantic route of the header command named `name`.
+fn toolbar_target(app: &PhotosApp, name: &str) -> Option<String> {
+    app.chrome.toolbar.accessibility().and_then(|toolbar| {
+        toolbar
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some(name))
+            .and_then(|node| node.action_target)
+    })
+}
+
 #[test]
 fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
-    eprintln!("phase timeline_geometry_keeps_200_percent_text_legible_and_density_bounded");
-    {
-        assert_eq!(timeline_column_count(390.0, 4, false), 2);
-        assert_eq!(timeline_column_count(620.0, 4, false), 2);
-        assert_eq!(timeline_column_count(390.0, 4, true), 1);
-        assert_eq!(timeline_column_count(1_440.0, 0, false), 4);
-        assert_eq!(timeline_column_count(1_440.0, 4, false), 6);
-        assert_eq!(timeline_column_count(1_440.0, 4, true), 2);
-    }
-
-    eprintln!("phase high_text_timeline_uses_readable_card_measures");
-    {
-        let width = 1_440.0;
-        assert_eq!(timeline_column_count(width, 4, true), 2);
-        let two_column_card_width = (width - f64::from(PAD * 2.0) - 8.0) / 2.0;
-        assert!(
-            two_column_card_width >= 600.0,
-            "200% text needs a real reading measure, got {two_column_card_width}"
-        );
-    }
-
     eprintln!("phase justified_timeline_preserves_aspects_and_never_crosses_a_day");
     {
         let item = |id: &str, day: &str, aspect_ratio| TimelinePhoto {
@@ -57,7 +73,8 @@ fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
             width: 600.0,
             target_height: 160.0,
             gap: 12.0,
-            compact: false,
+            header_height: 28.0,
+            day_gap: 24.0,
         });
         let layout = projection.visible_photos(0.0, projection.total_height());
         assert_eq!(layout.len(), 4);
@@ -89,14 +106,6 @@ fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
                 .all(|entry| (entry.width / entry.height - entry.photo.aspect_ratio).abs() < 0.01)
         );
     }
-
-    eprintln!(
-        "phase timeline_virtual_window_has_stable_overscan_without_materialising_the_library"
-    );
-    {
-        assert_eq!(timeline_virtual_range(500, 12, 4, 5), 60..90);
-        assert_eq!(timeline_virtual_range(3, 4, 4, 1), 3..3);
-    }
 }
 
 #[test]
@@ -113,11 +122,10 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         assert_eq!(app.canvas_state, CanvasState::Loading);
         assert!(!app.has_image());
         assert_eq!(app.empty_state_text().0, tr("photos-loading-title"));
-        assert!(
-            app.buttons
-                .iter()
-                .filter(|(hit, _)| !matches!(hit, Hit::Open | Hit::Library))
-                .all(|(_, button)| !button.is_enabled())
+        assert_eq!(
+            app.command_hits(),
+            vec![Hit::Open],
+            "a photo whose bytes have not arrived offers no edit or export"
         );
 
         let dir = tempfile::tempdir().unwrap();
@@ -324,105 +332,57 @@ fn people_review_commits_only_explicit_canonical_actions() {
 }
 
 #[test]
-fn library_masthead_rows_never_overlap_at_200_percent() {
-    eprintln!("phase compact_header_rows_are_non_overlapping_at_200_percent");
-    {
-        let header =
-            compact_library_header_geometry(Rect::new(0.0, 94.0, 390.0, 820.0), true, true);
-        let title = Rect::new(12.0, header.title_y, 378.0, header.title_y + 26.0);
-        let count = Rect::new(12.0, header.count_y, 192.0, header.count_y + 22.0);
-        let albums = Rect::new(12.0, header.albums_y, 378.0, header.albums_y + 44.0);
-        let album_actions = header.album_actions;
-        assert!(title.y1 <= count.y0);
-        assert!(count.y1 <= header.controls.y0);
-        assert!(header.controls.y1 <= albums.y0);
-        assert!(albums.y1 <= album_actions.y0);
-        assert!((album_actions.height() - 44.0).abs() < f64::EPSILON);
-        assert!(album_actions.y1 <= header.timeline_y);
-        assert!(header.timeline_y > 94.0);
+fn header_controls_never_paint_through_each_other() {
+    fn overlaps(left: Rect, right: Rect) -> bool {
+        left.x0 < right.x1 && left.x1 > right.x0 && left.y0 < right.y1 && left.y1 > right.y0
     }
 
-    eprintln!("phase compact_library_masthead_keeps_its_count_out_of_the_control_row");
-    {
-        let header =
-            compact_library_header_geometry(Rect::new(0.0, 94.0, 640.0, 820.0), false, false);
-        let title = Rect::new(12.0, header.title_y, 220.0, header.title_y + 24.0);
-        let count = Rect::new(12.0, header.count_y, 220.0, header.count_y + 18.0);
-
-        assert!(
-            title.y1 <= count.y0,
-            "the count must not read as a title suffix"
-        );
-        assert!(
-            count.y1 <= header.timeline_y,
-            "the first date group must remain below the compact library context"
-        );
-        assert!(
-            header.controls.x0 > count.x1,
-            "shared density and selection controls must retain their own hit lane"
-        );
-    }
-
-    eprintln!("phase library_masthead_controls_never_paint_through_each_other");
-    {
-        fn overlaps(left: Rect, right: Rect) -> bool {
-            left.x0 < right.x1 && left.x1 > right.x0 && left.y0 < right.y1 && left.y1 > right.y0
-        }
-
+    for (width, scale, library) in [
+        (1_280.0, 1.0, true),
+        (1_280.0, 1.0, false),
+        (800.0, 1.0, true),
+        (560.0, 1.0, false),
+        (1_280.0, 2.0, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("header.png");
+        std::fs::write(&path, pixels::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/header.png", 40, 20));
-        let photo_id = photo.id.clone();
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![photo],
-                albums: vec![Album {
-                    id: "photos.album:header".into(),
-                    name: "Header".into(),
-                    photo_ids: vec![photo_id],
-                }],
-            },
-        );
-        app.show_library();
-        app.sync(&mut doc, &ROOT);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark();
-        let presence = PresenceCtx::empty();
-
-        app.canvas_rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
-        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-        app.draw_album_editor(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-        let mut desktop_controls: Vec<Rect> =
-            app.places_hits.iter().map(|(_, rect)| *rect).collect();
-        desktop_controls.extend(app.selection_hits.iter().map(|(_, rect)| *rect));
-        desktop_controls.extend(app.timeline_density_hits.iter().map(|(_, rect)| *rect));
-        desktop_controls.extend(app.album_editor_hits.iter().map(|(_, rect)| *rect));
-        for (index, rect) in desktop_controls.iter().enumerate() {
-            assert!(
-                desktop_controls
-                    .iter()
-                    .skip(index + 1)
-                    .all(|other| !overlaps(*rect, *other)),
-                "desktop masthead controls overlap: {rect:?}"
-            );
+        app.open_path(&mut doc, &path.to_string_lossy());
+        if library {
+            app.show_library();
         }
+        app.sync(&mut doc, &ROOT);
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(scale);
+        app.rect = Rect::new(0.0, 0.0, width, 800.0);
+        app.chrome.drawer.scale_for(&theme);
+        let content = app.chrome.drawer.resolve(app.rect);
+        app.chrome.header = Rect::new(content.x0, 0.0, width, chrome::header_height(&theme));
+        app.place_chrome(&mut text, &theme);
 
-        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
-        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
-        let select = app
-            .selection_hits
-            .iter()
-            .find_map(|(hit, rect)| (*hit == SelectionHit::Start).then_some(*rect))
-            .expect("compact library keeps Select visible");
+        let mut controls = vec![("toggle".to_owned(), app.chrome.toggle)];
+        controls.extend(app.toolbar_item_rects());
+        controls.retain(|(_, rect)| rect.width() > 0.0);
         assert!(
-            app.timeline_density_hits
-                .iter()
-                .all(|(_, density)| !overlaps(select, *density)),
-            "compact density controls must not paint underneath Select"
+            controls.len() >= 4,
+            "{width}px at {scale}x: the header lost its controls: {controls:?}"
         );
+        for (index, (name, rect)) in controls.iter().enumerate() {
+            assert!(
+                rect.x0 >= -0.5 && rect.x1 <= width + 0.5,
+                "{width}px at {scale}x: `{name}` is outside the window: {rect:?}"
+            );
+            for (other_name, other) in controls.iter().skip(index + 1) {
+                assert!(
+                    !overlaps(*rect, *other),
+                    "{width}px at {scale}x: `{name}` {rect:?} overlaps `{other_name}` {other:?}"
+                );
+            }
+        }
     }
 }
 
@@ -469,13 +429,14 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
             width: 600.0,
             target_height: 160.0,
             gap: 12.0,
-            compact: false,
+            header_height: 28.0,
+            day_gap: 24.0,
         });
         let markers = projection.date_markers(0.0);
         assert_eq!(markers.len(), 2, "one boundary per capture day");
         assert!(
-            markers[0].2 && markers[1].2,
-            "each year change is a major boundary"
+            !markers[0].2 && markers[1].2,
+            "the newest day opens the timeline; the year change after it is a major boundary"
         );
         assert!(markers[0].1 < markers[1].1);
         assert_eq!(timeline_date_label(&markers[0].0), "Feb 03, 2026");
@@ -831,13 +792,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         app.sync(&mut doc, &ROOT);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         app.timeline_scroll_y = 900.0;
         let (photo, screen_y) = {
             let visible = app
@@ -850,13 +805,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             (first.photo.id.clone(), first.y)
         };
         assert!(app.adjust_timeline_density(true));
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         let visible = app
             .timeline_projection
             .visible_photos(app.timeline_scroll_y, app.timeline_viewport_height);
@@ -884,7 +833,6 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         }
         PhotosDoc::set_library(&mut doc, &library);
         app.show_library();
-        app.large_text_toolbar = true;
         app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 796.0);
         app.sync(&mut doc, &ROOT);
 
@@ -892,37 +840,19 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         let mut text = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
         text.set_text_scale(theme.text_scale);
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme);
 
         assert!(app.metadata_filter_cards.is_empty());
-        assert!(
-            app.album_editor_hits.is_empty(),
-            "200% keeps album management out of the photo-first masthead"
-        );
         assert!(
             app.library_cards
                 .first()
                 .is_some_and(|(_, rect, _)| rect.y0 < app.canvas_rect.y1),
             "the first photograph must remain above the fold at 200%"
         );
-        let semantics = app.accessibility_tree();
-        let children = &semantics.children[1].children;
         assert!(
-            children.iter().any(|node| {
-                node.action_target.as_deref() == Some("photos:timeline:density-in")
-            })
+            app.command_hits().contains(&Hit::Smaller) && app.command_hits().contains(&Hit::Larger),
+            "density stays reachable from the header at 200%"
         );
-        assert!(!children.iter().any(|node| {
-            node.action_target
-                .as_deref()
-                .is_some_and(|target| target.starts_with("photos:library-page:"))
-        }));
 
         let before = app.timeline_density;
         assert!(app.perform_library_semantic_action(
@@ -1123,7 +1053,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         );
     }
 
-    eprintln!("phase people_places_and_albums_keep_complete_paged_collections");
+    eprintln!("phase people_and_places_keep_complete_paged_collections");
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
@@ -1157,11 +1087,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         assert_eq!(app.library_albums.len(), 29);
         assert!(app.page_collection(CollectionPageHit::PeopleNext));
         assert!(app.page_collection(CollectionPageHit::PlacesNext));
-        assert!(app.page_collection(CollectionPageHit::AlbumsNext));
-        assert_eq!(
-            (app.people_page, app.places_page, app.albums_page),
-            (1, 1, 1)
-        );
+        assert_eq!((app.people_page, app.places_page), (1, 1));
         assert!(app.perform_library_semantic_action(
             "photos:collection-page:people-next",
             &AccessAction::Activate,
@@ -1384,91 +1310,72 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         ));
         assert_eq!(
             app.notice.as_deref(),
-            Some("That destination album is no longer available")
+            Some(tr("photos-album-gone").as_str())
         );
     }
 
-    eprintln!("phase album_editor_pages_large_libraries_without_changing_shared_membership");
+    eprintln!("phase album_editor_keeps_its_draft_local_while_the_timeline_scrolls");
     {
+        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
+
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..49 {
-            library
-                .photos
-                .push(LibraryPhoto::from_image(OpenImage::from_path(
-                    &format!("/photos/library-{index}.png"),
-                    20,
-                    10,
-                )));
+            let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
+                &format!("/photos/library-{index}.png"),
+                20,
+                10,
+            ));
+            photo.captured_at = Some(format!("2026-06-{:02}", 1 + index % 28));
+            library.photos.push(photo);
         }
         PhotosDoc::set_library(&mut doc, &library);
-        app.library_total = library.photos.len();
-        app.library_mode = true;
-        app.album_editor = true;
-        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
-        let before = PhotosDoc::library(&doc);
-
+        app.show_library();
+        app.sync(&mut doc, &ROOT);
+        app.begin_new_album(&doc);
+        app.sync(&mut doc, &ROOT);
+        assert!(app.album_editor);
+        app.sync_inspector();
+        assert!(
+            app.chrome.inspector.is_open(),
+            "the editor opens in the inspector"
+        );
+        app.canvas_rect = Rect::new(0.0, 56.0, 920.0, 772.0);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_album_editor(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        let before = PhotosDoc::library(&doc);
+        let mut tree = TaffyTree::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut focus = None;
+        let mut handled = false;
+        let modifiers = winit::event::Modifiers::default();
+        app.pointer = Point::new(400.0, 400.0);
+        app.handle_event(
+            &WindowEvent::MouseWheel {
+                device_id: DeviceId::dummy(),
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: TouchPhase::Moved,
+            },
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
-        let (_, previous) = app
-            .album_page_buttons
-            .iter()
-            .find(|(hit, _)| *hit == AlbumEditorHit::PreviousPage)
-            .expect("the editor has a previous-page control");
-        let (_, next) = app
-            .album_page_buttons
-            .iter()
-            .find(|(hit, _)| *hit == AlbumEditorHit::NextPage)
-            .expect("the editor has a next-page control");
-        assert!(!previous.is_enabled());
-        assert!(next.is_enabled());
-        let semantics = app.accessibility_tree();
-        let pager = &semantics.children[1].children;
-        assert!(pager.iter().any(|node| {
-            node.action_target.as_deref() == Some("photos:album-editor:previous-page")
-                && node.state.disabled
-                && node.name.as_deref() == Some("Show previous photographs")
-        }));
-        assert!(pager.iter().any(|node| {
-            node.action_target.as_deref() == Some("photos:album-editor:next-page")
-                && !node.state.disabled
-                && node.name.as_deref() == Some("Show next photographs")
-        }));
-
-        assert!(app.perform_library_semantic_action(
-            "photos:album-editor:next-page",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(app.library_offset, 24);
-        assert!(app.perform_library_semantic_action(
-            "photos:album-editor:previous-page",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        // The preceding activation is valid from the second page and leaves
-        // the editor's membership draft local.
-        assert_eq!(app.library_offset, 0);
-
-        app.page_library(true);
-        assert_eq!(app.library_offset, 24);
-        app.page_library(true);
-        assert_eq!(app.library_offset, 48);
-        app.page_library(true);
-        assert_eq!(app.library_offset, 48);
-        app.page_library(false);
-        assert_eq!(app.library_offset, 24);
-        app.page_library(false);
-        assert_eq!(app.library_offset, 0);
+        assert!(handled);
+        assert!(
+            app.timeline_scroll_y > 0.0,
+            "the timeline scrolls beside the editor"
+        );
+        assert!(app.album_editor);
         assert_eq!(PhotosDoc::library(&doc), before);
     }
 
@@ -1626,45 +1533,25 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
-    eprintln!("phase accessibility_exposes_and_routes_every_toolbar_control");
+    eprintln!("phase accessibility_exposes_and_routes_every_header_command");
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         app.sync(&mut doc, &ROOT);
+        lay_out_header(&mut app, 1_280.0);
 
         let empty = app.accessibility_tree();
         assert_eq!(empty.role, Role::Group);
-        assert_eq!(empty.children[0].role, Role::Toolbar);
-        assert_eq!(
-            empty.children[0].children.len(),
-            SLOTS
-                .iter()
-                .filter(|slot| matches!(slot, Slot::Item(_)))
-                .count()
-        );
-        assert_eq!(empty.children[1].role, Role::Image);
-        assert_eq!(
-            empty.children[0].children[0].action_target.as_deref(),
-            Some("photos:toolbar:photos-open")
+        assert_eq!(empty.children[0].role, Role::Image);
+        let commands = toolbar_names(&app);
+        assert!(
+            !commands.contains(&tr("photos-open")),
+            "the empty state offers Open itself; the header does not repeat it"
         );
         assert!(
-            empty.children[0]
-                .children
-                .iter()
-                .find(|node| {
-                    node.action_target.as_deref() == Some("photos:toolbar:photos-rotate-right")
-                })
-                .is_some_and(|node| node.state.disabled),
-            "rotate must be unavailable without a photograph"
-        );
-        assert!(
-            !app.perform_toolbar_semantic_action(
-                "photos:toolbar:photos-rotate-right",
-                &AccessAction::Activate,
-                &mut doc,
-            ),
-            "a disabled semantic control must reject activation"
+            !commands.contains(&tr("photos-rotate-right")),
+            "rotate is not offered without a photograph: {commands:?}"
         );
 
         let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
@@ -1673,9 +1560,12 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.original_identity = Some(decode_key(&image));
         app.refresh(&doc);
         app.sync(&mut doc, &ROOT);
+        lay_out_header(&mut app, 1_280.0);
+        let target = toolbar_target(&app, &tr("photos-rotate-right"))
+            .expect("a photograph offers rotate right");
         assert!(Widget::perform_semantic_action(
             &mut app,
-            "photos:toolbar:photos-rotate-right",
+            &target,
             &AccessAction::Activate,
             &mut doc,
             &ROOT,
@@ -1689,18 +1579,19 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.sync(&mut doc, &ROOT);
         let opened = app.accessibility_tree();
         assert_eq!(
-            opened.children[1].name.as_deref(),
+            opened.children[0].name.as_deref(),
             Some("accessible.png — edited")
         );
-        let status = opened
-            .children
-            .last()
-            .expect("opened image has status text");
-        assert_eq!(status.role, Role::StaticText);
-        assert_eq!(status.live, Some(Politeness::Polite));
+        assert!(
+            opened
+                .children
+                .iter()
+                .any(|node| node.role == Role::StaticText && node.live == Some(Politeness::Polite)),
+            "the status bar is a polite live region"
+        );
     }
 
-    eprintln!("phase compact_more_is_a_keyboard_menu_with_a_share_action");
+    eprintln!("phase narrow_header_keeps_every_command_reachable_through_more");
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
@@ -1709,28 +1600,34 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         PhotosDoc::set_image(&mut doc, Some(&image));
         app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.refresh(&doc);
         app.sync(&mut doc, &ROOT);
-        app.compact_more_open = true;
-
-        // Crop and Reset start disabled, so Down must land on Copy rather
-        // than trapping a keyboard user on unavailable commands.
-        app.step_compact_more_focus(true);
-        assert_eq!(app.focused_compact_more_hit(), Some(Hit::Copy));
-        app.step_compact_more_focus(true);
-        assert_eq!(app.focused_compact_more_hit(), Some(Hit::Share));
-
-        let toolbar = app.toolbar_semantics();
+        lay_out_header(&mut app, 520.0);
+        assert!(
+            toolbar_names(&app)
+                .iter()
+                .any(|name| name == "More commands"),
+            "a narrow header moves commands into More"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "toolbar.overflow",
+            &AccessAction::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        let toolbar = app.chrome.toolbar.accessibility().unwrap();
         let menu = toolbar
             .children
             .iter()
             .find(|node| node.role == Role::Menu)
-            .expect("narrow overflow exposes a menu");
-        assert!(menu.children.iter().any(|item| {
-            item.action_target.as_deref() == Some("photos:toolbar:photos-share")
-                && item.state.focused
-                && item.state.focusable
-        }));
+            .expect("the overflow opens a menu");
+        assert!(
+            menu.children
+                .iter()
+                .any(|item| item.name.as_deref() == Some(tr("photos-save").as_str())),
+            "Save stays reachable from the menu"
+        );
     }
 
     eprintln!("phase metadata_sheet_focus_tracks_each_adaptive_section");
@@ -1852,11 +1749,6 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                     app.metadata_editor_scroll.abs() < f64::EPSILON,
                     "1× holds the whole sheet without scrolling"
                 );
-            } else {
-                assert!(
-                    app.metadata_editor_scroll > 0.0,
-                    "2× on 800×900 needs the field list to scroll to reveal Longitude"
-                );
             }
         }
     }
@@ -1894,7 +1786,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.original = Some((image.path.clone(), shots_pattern(1_200, 800)));
         app.refresh(&doc);
 
-        let canvas = app.accessibility_tree().children[1].clone();
+        let canvas = app.accessibility_tree().children[0].clone();
         let description = canvas
             .description
             .expect("open image carries its shared context");
@@ -1919,6 +1811,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     eprintln!("phase synchronized_app_registers_the_canonical_photo_search_provider");
@@ -1950,39 +1843,52 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         );
     }
 
-    eprintln!("phase in_app_full_text_search_advances_in_bounded_index_pages");
+    eprintln!("phase platform_search_narrows_photos_by_people_places_and_tags");
     {
+        use ui::search::{FacetFilter, SearchProvider, SearchQuery};
+
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let photos = (0..400)
-            .map(|index| {
-                let path = format!("needle-photo-{index:03}.png");
-                LibraryPhoto::from_image(OpenImage::from_path(&path, 40, 20))
-            })
-            .collect();
+        let mut beach = LibraryPhoto::from_image(OpenImage::from_path("/photos/beach.png", 40, 20));
+        beach.people = vec!["Noor".into()];
+        beach.tags = vec!["summer".into()];
+        let mut city = LibraryPhoto::from_image(OpenImage::from_path("/photos/city.png", 40, 20));
+        city.people = vec!["Sam".into()];
+        let (beach_id, city_id) = (beach.id.clone(), city.id.clone());
         PhotosDoc::set_library(
             &mut doc,
             &crate::model::PhotoLibrary {
-                photos,
+                photos: vec![beach, city],
                 ..Default::default()
             },
         );
         let mut app = PhotosApp::new();
-        app.search_provider.sync(&doc).unwrap();
-        app.library_query = "needle".into();
+        app.sync(&mut doc, &ROOT);
+        let facets = SearchProvider::facets(&app.search_provider);
+        let person = facets
+            .iter()
+            .find(|facet| facet.key == "person")
+            .expect("people narrow a search");
+        assert!(person.values.iter().any(|value| value.value == "Noor"));
+        assert!(facets.iter().any(|facet| facet.key == "tag"));
 
-        app.advance_library_query();
-        assert!(!app.library_query_complete);
-        assert!(app.library_query_matches.len() <= ui::search::DEFAULT_SEARCH_RESULT_LIMIT);
-
-        for _ in 0..16 {
-            app.advance_library_query();
-            if app.library_query_complete {
-                break;
-            }
-        }
-        assert!(app.library_query_complete);
-        assert_eq!(app.library_query_matches.len(), 400);
+        let query = SearchQuery::new("png").with_filter(FacetFilter::new("person", "Noor"));
+        let page = app
+            .search_provider
+            .search_page(&query, None, usize::MAX, usize::MAX);
+        let anchors: Vec<String> = page
+            .results
+            .iter()
+            .map(ui::search::SearchResult::anchor)
+            .collect();
+        assert!(anchors.contains(&beach_id), "{anchors:?}");
+        assert!(!anchors.contains(&city_id), "{anchors:?}");
+        assert!(
+            page.results
+                .iter()
+                .all(|hit| matches!(hit.row, Some(ui::search::SearchRow::Media { .. }))),
+            "a photo hit reads as media with its thumbnail"
+        );
     }
 
     eprintln!("phase rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic");
@@ -2012,7 +1918,11 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
 
         assert!(app.search_provider.resource(&first_id).is_some());
         assert!(app.search_provider.resource(&second_id).is_none());
-        assert!(app.status.contains("kept its previous index"));
+        assert!(app.search_refresh_error.as_deref().is_some_and(|error| {
+            error.starts_with(
+                crate::strings::tr_with("photos-search-stale", "reason", "").trim_end(),
+            )
+        }));
         let diagnostic = ui::resources::resource(&app, &doc, "photos.search-status")
             .expect("rejected refresh is an exact addressable resource");
         assert_eq!(diagnostic.kind, "photos.diagnostic");
@@ -2135,33 +2045,30 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
-    eprintln!("phase toolbar_capsules_and_status_band_contain_their_text_at_any_scale");
+fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
+    eprintln!("phase header_row_contains_its_controls_at_any_text_scale");
     {
-        assert!(
-            (btn_h(1.0) - BTN_H).abs() < f32::EPSILON,
-            "1× keeps the authored capsule"
-        );
-        assert!(
-            (status_h(1.0) - BAR_H * 0.6).abs() < f32::EPSILON,
-            "1× keeps the authored band"
-        );
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let (_, label_line) = tr.measure("More", BUTTON_LABEL_SIZE, None);
-        let (_, status_line) = tr.measure("harbour.png · 1200 × 800", STATUS_TEXT_SIZE, None);
-        assert!(
-            btn_h(2.0) >= label_line + 2.0 * BTN_PAD_Y,
-            "2× capsule {} contains a {label_line} px label",
-            btn_h(2.0)
-        );
-        assert!(
-            status_h(2.0) >= status_line + 2.0 * STATUS_PAD_Y,
-            "2× band {} contains a {status_line} px line",
-            status_h(2.0)
-        );
-        // Icon-only items stay square at every scale.
-        assert!((item_width(Face::IconOnly, "", btn_h(2.0)) - btn_h(2.0)).abs() < f32::EPSILON);
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut app = PhotosApp::new();
+            let mut doc = AutoCommit::new();
+            PhotosDoc::seed(&mut doc);
+            app.sync(&mut doc, &ROOT);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
+            app.chrome.drawer.scale_for(&theme);
+            let content = app.chrome.drawer.resolve(app.rect);
+            app.chrome.header = Rect::new(content.x0, 0.0, 1_280.0, chrome::header_height(&theme));
+            app.place_chrome(&mut text, &theme);
+            let header = app.chrome.header;
+            for (name, rect) in app.toolbar_item_rects() {
+                assert!(
+                    rect.y0 >= header.y0 - 0.5 && rect.y1 <= header.y1 + 0.5,
+                    "{scale}x: `{name}` {rect:?} escapes the header row {header:?}"
+                );
+            }
+        }
     }
 
     eprintln!("phase library_card_actions_share_one_edge_inset");
@@ -2230,7 +2137,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
         }
     }
 
-    eprintln!("phase regular_album_management_keeps_every_visible_control_at_44px");
+    eprintln!("phase album_management_lives_in_the_header_and_the_inspector");
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
@@ -2244,56 +2151,43 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
             photo_ids: vec![photo.id],
         });
         PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
         app.show_library();
         app.active_album = Some("photos.album:trip".into());
-        // Album management lives in the desktop masthead. Compact layouts
-        // intentionally reclaim that row for the photo timeline and expose
-        // the same canonical actions through their responsive overflow.
-        app.canvas_rect = Rect::new(0.0, 0.0, 1_280.0, 900.0);
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let presence = PresenceCtx::empty();
-        app.draw_album_editor(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &presence,
-        );
-        assert_eq!(app.album_editor_hits.len(), 2);
+        app.sync(&mut doc, &ROOT);
         assert!(
-            app.album_editor_hits
-                .iter()
-                .all(|(_, rect)| rect.height() >= 44.0)
+            app.command_hits().contains(&Hit::EditAlbum),
+            "an open album is edited from the header"
         );
 
         app.begin_edit_album(&doc);
+        app.rect = Rect::new(0.0, 0.0, 1_280.0, 900.0);
+        app.sync_inspector();
+        app.chrome.inspector.snap(true);
+        app.chrome.inspector.resolve(app.rect);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark();
         app.draw_album_editor(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &Theme::dark(),
-            &presence,
+            &theme,
+            &PresenceCtx::empty(),
         );
-
-        assert!(
-            app.album_editor_hits
-                .iter()
-                .all(|(_, rect)| rect.height() >= 44.0)
-        );
-        assert!(
-            app.album_page_buttons
-                .iter()
-                .all(|(_, button)| button.get_rect().height() >= 44.0)
-        );
-        assert!(app.album_editor_hits.iter().all(|(_, rect)| {
-            rect.x0 >= app.canvas_rect.x0
-                && rect.x1 <= app.canvas_rect.x1
-                && rect.y0 >= app.canvas_rect.y0
-                && rect.y1 <= app.canvas_rect.y1
-        }));
+        let panel = app.chrome.inspector.sidebar_rect();
+        assert!(panel.width() > 0.0, "the editor opens in the inspector");
+        let control = ui::widget::ControlSize::Regular.height(&theme);
+        assert!(app.album_editor_hits.len() >= 3);
+        for (hit, rect) in &app.album_editor_hits {
+            assert!(
+                rect.height() >= control - 0.5,
+                "{hit:?} is not a regular control: {rect:?}"
+            );
+            assert!(
+                rect.x0 >= panel.x0 && rect.x1 <= panel.x1 && rect.y1 <= panel.y1,
+                "{hit:?} {rect:?} escapes the inspector {panel:?}"
+            );
+        }
     }
 }
 
@@ -2332,6 +2226,12 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         app.show_library_analysis();
         app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
         app.library_analysis_coverage = (12, 34, 5);
+        app.library_analysis_capability = Some(tilo_vision::LocalVisionCapability {
+            profile_id: "local".into(),
+            model_id: "vision".into(),
+            model_label: "Local vision".into(),
+            revision: "0123456789abcdef".into(),
+        });
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         app.draw_library_analysis(
@@ -2347,14 +2247,17 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             .find(|(hit, _)| *hit == LibraryAnalysisHit::Start)
             .map(|(_, button)| button.get_rect())
             .expect("start control");
-        assert!(start.width() >= 350.0);
-        assert!(start.height() >= 44.0);
+        assert!(start.width() > 0.0, "the phone layout keeps Analyze photos");
+        assert!(
+            start.height() >= ui::widget::ControlSize::Regular.height(&Theme::dark()) - 0.5,
+            "Analyze photos is a regular control: {start:?}"
+        );
         assert!(start.x0 >= app.canvas_rect.x0 && start.x1 <= app.canvas_rect.x1);
         let tree = app.accessibility_tree();
         assert!(
             tree.children
                 .iter()
-                .any(|node| node.name.as_deref() == Some("Photo analysis"))
+                .any(|node| node.name.as_deref() == Some(tr("photos-analysis-label").as_str()))
         );
     }
 
@@ -2376,7 +2279,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             .find(|(hit, _)| *hit == DirectoryStatusHit::Stop)
             .map(|(_, button)| button.get_rect())
             .expect("stop button");
-        assert!(stop.width() >= 44.0 && stop.height() >= 40.0);
+        assert!(stop.width() >= 32.0 && stop.height() >= 32.0);
 
         let mut doc = AutoCommit::new();
         let mut tree = TaffyTree::new();
@@ -2471,7 +2374,13 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         app.show_directory_import_errors_for_shot();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_directory_import_details(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        app.draw_directory_import_details(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
         let receipt = app.directory_import_receipt.as_ref().expect("receipt");
         assert!(receipt.failures.len() <= DIRECTORY_FAILURE_DETAIL_LIMIT);
         assert_eq!(receipt.failure_count, 27);
@@ -2490,12 +2399,14 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                 .count(),
             DIRECTORY_FAILURES_PER_PAGE
         );
-        assert!(
-            dialog
-                .description
-                .as_deref()
-                .is_some_and(|text| text.contains("18 additional"))
-        );
+        assert!(dialog.description.as_deref().is_some_and(|text| text
+            == tr_args(
+                "photos-import-issues-total",
+                &[
+                    ("kept", ArgValue::Number(9.0)),
+                    ("count", ArgValue::Number(27.0)),
+                ],
+            )));
         assert!(dialog.children.iter().all(|node| {
             !node.name.as_deref().unwrap_or_default().contains('/')
                 && !node
@@ -2545,8 +2456,8 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             .collect::<Vec<_>>();
         assert_eq!(controls.len(), 2);
         assert!(controls.iter().all(|rect| {
-            rect.width() >= 44.0
-                && rect.height() >= 40.0
+            rect.width() >= 32.0
+                && rect.height() >= 32.0
                 && rect.x0 >= app.canvas_rect.x0
                 && rect.x1 <= app.canvas_rect.x1
         }));
@@ -2558,6 +2469,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             Affine::IDENTITY,
             &mut text,
             &Theme::high_contrast(),
+            &PresenceCtx::empty(),
         );
         let layout = app
             .directory_import_details_layout
@@ -2729,4 +2641,49 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             );
         }
     }
+}
+
+/// The layout tree holds pointers into the People buttons and the viewer,
+/// and the framework syncs again between building that tree and measuring
+/// it. A sync must therefore never replace the People buttons, and replacing
+/// the viewer must report a structure change so the tree is rebuilt instead
+/// of measured through a freed widget.
+#[test]
+fn sync_never_frees_a_laid_out_child() {
+    let mut app = PhotosApp::new();
+    let mut doc = AutoCommit::new();
+    let staging = tempfile::tempdir().expect("staging dir");
+    app.stage_scenario("people", staging.path());
+    app.sync(&mut doc, &automerge::ROOT);
+    app.refresh_people_controls();
+    let laid_out = app.people_controls.as_ptr();
+    assert!(
+        !app.people_controls.is_empty(),
+        "the People surface has controls"
+    );
+    app.people_show_hidden = !app.people_show_hidden;
+    app.sync(&mut doc, &automerge::ROOT);
+    assert!(
+        std::ptr::eq(app.people_controls.as_ptr(), laid_out),
+        "a sync between building the tree and measuring it keeps the People buttons"
+    );
+
+    let mut app = PhotosApp::new();
+    let mut doc = AutoCommit::new();
+    app.stage_scenario("opened", staging.path());
+    app.sync(&mut doc, &automerge::ROOT);
+    assert!(
+        app.viewer.is_some(),
+        "the opened scenario shows a photograph"
+    );
+    assert!(
+        app.take_structure_dirty(),
+        "a new viewer invalidates the tree that pointed at the old one"
+    );
+    assert!(!app.take_structure_dirty(), "reading the flag clears it");
+    app.sync(&mut doc, &automerge::ROOT);
+    assert!(
+        !app.take_structure_dirty(),
+        "a sync that keeps the photograph keeps the viewer"
+    );
 }

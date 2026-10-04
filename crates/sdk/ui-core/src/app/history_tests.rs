@@ -24,6 +24,10 @@ fn app() -> App {
 }
 /// An app on `state` whose History is the framework's registered History.
 fn app_on(state: State) -> App {
+    app_with_root(state, Box::new(crate::widget::Column::new()))
+}
+/// An app on `state` showing `root` under the framework's registered History.
+fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -37,11 +41,8 @@ fn app_on(state: State) -> App {
         }],
     )
     .unwrap();
-    App::from_managed_root_with_controlled_inputs(
-        state,
-        ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
-    )
-    .unwrap()
+    App::from_managed_root_with_controlled_inputs(state, ManagedRoot::new(root, registration))
+        .unwrap()
 }
 /// Lay out and paint one 900×650 frame, as the native runner does.
 pub(crate) fn layout(app: &mut App) {
@@ -7949,6 +7950,52 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
     layout(&mut app);
     assert!(!app.history.as_ref().unwrap().is_open());
     assert!(!has_open_button(&app));
+}
+
+/// The History control in a `NavShell` app's header row opens and closes
+/// the app's registered History, as that History's own button does.
+#[test]
+fn header_history_control_opens_framework_history() {
+    let history_buttons = |app: &mut App| -> Vec<Option<accesskit::Toggled>> {
+        app.build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                node.label() == Some("History") && node.role() == accesskit::Role::Button
+            })
+            .map(|(_, node)| node.toggled())
+            .collect()
+    };
+    let mut state = State::new();
+    for body in ["old", "live"] {
+        state.doc.put(ROOT, "body", body).unwrap();
+        state.commit_action(None, None);
+    }
+    let shell = crate::widget::NavShell::new()
+        .content_header("Notes", vec![])
+        .content(Box::new(crate::widget::Text::new("Body")));
+    let mut app = app_with_root(state, Box::new(shell));
+    layout(&mut app);
+    assert_eq!(history_buttons(&mut app), [Some(accesskit::Toggled::False)]);
+
+    let header = node_for_test_id(&app, "nav-shell-history");
+    let bounds = app
+        .inspect_node(header, |widget| widget.get_rect())
+        .unwrap();
+    assert!(app.dispatch_semantic_click(bounds.center().x, bounds.center().y));
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().is_open());
+    assert_eq!(
+        history_buttons(&mut app),
+        [Some(accesskit::Toggled::True)],
+        "the one History control reads as on while History shows"
+    );
+
+    let close = named(&mut app, "History");
+    app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
+    layout(&mut app);
+    assert!(!app.history.as_ref().unwrap().is_open());
+    assert_eq!(history_buttons(&mut app), [Some(accesskit::Toggled::False)]);
 }
 
 #[test]

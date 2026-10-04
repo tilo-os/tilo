@@ -2388,6 +2388,7 @@ pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
     TrendRange, TrendStyle,
 };
+pub(crate) mod chart_labels;
 mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{

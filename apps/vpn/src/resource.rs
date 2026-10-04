@@ -101,10 +101,35 @@ impl ResourceApp for VpnShell {
     const ID: &'static str = "so.tilo.vpn";
     const TITLE: &'static str = "VPN";
     const ICON: Option<&'static str> = Some("vpn");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Vpn>) -> Element {
-        cx.surface(VpnApp::new())
+        cx.surface(VpnApp::for_launch())
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "detail",
+            "config",
+            "activity",
+            "add",
+            "confirm",
+            "setup",
+            "unprovisioned",
+            "connecting",
+            "disconnected",
+            "loading",
+            "error",
+            "empty",
+            "phone",
+            "phone-detail",
+            "phone-config",
+            "phone-add",
+        ]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.starts_with("phone").then_some((520, 820))
     }
 }
 
@@ -115,6 +140,10 @@ impl ResourceSurface<Vpn> for VpnApp {
 
     fn attach(&mut self, cx: SurfaceCx<Vpn>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 

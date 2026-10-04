@@ -95,10 +95,10 @@ impl PdfSearchProvider {
                 ),
                 SearchResult::for_action(
                     PDF_SEARCH_KIND,
-                    format!("Bookmark — {title}"),
+                    title.clone(),
                     ActionAddress::new(&resource, "open"),
                 )
-                .with_subtitle(format!("Contents · page {page}")),
+                .with_subtitle(format!("Bookmark on page {page}")),
             )?;
             ids.insert(resource);
         }
@@ -114,10 +114,13 @@ impl PdfSearchProvider {
                 ),
                 SearchResult::for_action(
                     PDF_SEARCH_KIND,
-                    format!("{} annotation", annotation.kind.type_key()),
+                    sentence_case(&format!("{} annotation", annotation.kind.type_key())),
                     ActionAddress::new(&resource, "open"),
                 )
-                .with_subtitle(format!("Page {} · {}", annotation.page, annotation.author)),
+                .with_subtitle(format!(
+                    "By {} on page {}",
+                    annotation.author, annotation.page
+                )),
             )?;
             ids.insert(resource);
         }
@@ -168,7 +171,10 @@ impl PdfSearchProvider {
                     format!("Signature by {}", signature.signer),
                     ActionAddress::new(&resource, "open"),
                 )
-                .with_subtitle(format!("Page {} · {}", signature.page, signature.date)),
+                .with_subtitle(format!(
+                    "Signed {} on page {}",
+                    signature.date, signature.page
+                )),
             )?;
             ids.insert(resource);
         }
@@ -198,7 +204,7 @@ impl PdfSearchProvider {
                     ),
                     SearchResult::for_action(
                         PDF_SEARCH_KIND,
-                        format!("Match {} · page {page}", index + 1),
+                        format!("Match {} on page {page}", index + 1),
                         ActionAddress::new(&resource, "open"),
                     )
                     .with_subtitle(format!("Find result for “{}”", ctx.search_query)),
@@ -218,4 +224,14 @@ impl CatalogSearchProvider for PdfSearchProvider {
     fn catalog(&self) -> Option<SearchCatalog> {
         Some(self.catalog.clone())
     }
+}
+
+/// `text` with its first letter upper-cased, for a label built from a key.
+fn sentence_case(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        std::iter::once(first.to_ascii_uppercase())
+            .chain(chars)
+            .collect()
+    })
 }

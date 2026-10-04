@@ -259,6 +259,205 @@ pub fn draw_pill(
     );
 }
 
+/// What a document's save state is, as the save status surface shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveState {
+    /// Nothing to report (memory only, or nothing changed yet).
+    Idle,
+    /// A save is in flight.
+    Saving,
+    /// The last change is stored.
+    Saved,
+    /// The last save failed; the text says why.
+    Failed(String),
+}
+
+impl From<&crate::record::RecordSaveStatus> for SaveState {
+    fn from(status: &crate::record::RecordSaveStatus) -> Self {
+        use crate::record::RecordSaveStatus;
+        match status {
+            RecordSaveStatus::Saved => Self::Saved,
+            RecordSaveStatus::Saving => Self::Saving,
+            RecordSaveStatus::Failed(reason) => Self::Failed(reason.clone()),
+            RecordSaveStatus::MemoryOnly => Self::Idle,
+        }
+    }
+}
+
+/// What a person did on the save status surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveAction {
+    /// "Try again" on a failed save.
+    Retry,
+    /// Dismissed the failure.
+    Dismiss,
+}
+
+/// A document's save status, on the framework's status surfaces (HIG §7c):
+/// "Saving…" and "Saved" are a change worth noticing once, so they show in
+/// the transient [`StatusBubble`]; a failed save is an error the person must
+/// act on, so it is an error toast (danger icon, the reason, a "Try again"
+/// action and a close button) that stays until the save succeeds or it is
+/// dismissed. An app reports the state and routes clicks; it never pins a
+/// bubble open or paints its own save pill.
+///
+/// Both float in the bottom-trailing corner of the area they report on,
+/// clear of its scroll bar gutter.
+#[derive(Clone, Debug, Default)]
+pub struct SaveStatusSurface {
+    bubble: StatusBubble,
+    state: Option<SaveState>,
+    dismissed: bool,
+    hit: crate::widget::toast::ToastCardHit,
+    hover: Option<Point>,
+}
+
+impl SaveStatusSurface {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Report the save state. A change shows it; the same state again does
+    /// nothing, so calling this every frame is fine. Returns whether what
+    /// is shown changed.
+    pub fn set(&mut self, state: SaveState, now: Instant) -> bool {
+        if self.state.as_ref() == Some(&state) {
+            return false;
+        }
+        let was_failed = self.failure().is_some();
+        self.dismissed = false;
+        let text = match &state {
+            SaveState::Saving => crate::i18n!("save-status-saving"),
+            SaveState::Saved => crate::i18n!("save-status-saved"),
+            SaveState::Idle | SaveState::Failed(_) => String::new(),
+        };
+        self.state = Some(state);
+        if !text.is_empty() {
+            self.bubble.show(&text, now);
+        }
+        was_failed != self.failure().is_some() || !text.is_empty()
+    }
+
+    /// The reason of a failed save that is showing, if any.
+    #[must_use]
+    pub fn failure(&self) -> Option<&str> {
+        match &self.state {
+            Some(SaveState::Failed(reason)) if !self.dismissed => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Whether anything is showing at `now`.
+    #[must_use]
+    pub fn is_visible(&self, now: Instant) -> bool {
+        self.failure().is_some() || self.bubble.is_visible(now)
+    }
+
+    /// Frames are needed only while the bubble lingers or fades.
+    #[must_use]
+    pub fn needs_frame(&self, now: Instant) -> bool {
+        self.failure().is_none() && self.bubble.needs_frame(now)
+    }
+
+    /// The pointer moved to `p`; returns whether the hover changed.
+    pub fn pointer_moved(&mut self, p: Point) -> bool {
+        let before = self.hovered_action();
+        self.hover = Some(p);
+        before != self.hovered_action()
+    }
+
+    fn hovered_action(&self) -> Option<SaveAction> {
+        let p = self.hover?;
+        self.failure()?;
+        if self.hit.primary_action_rect.contains(p) {
+            Some(SaveAction::Retry)
+        } else if self.hit.secondary_action_rect.contains(p) {
+            Some(SaveAction::Dismiss)
+        } else {
+            None
+        }
+    }
+
+    /// A click at `p`: the action it hits on a showing failure. Dismissing
+    /// hides the failure until the state changes again.
+    pub fn click(&mut self, p: Point) -> Option<SaveAction> {
+        self.hover = Some(p);
+        let action = self.hovered_action()?;
+        if action == SaveAction::Dismiss {
+            self.dismissed = true;
+        }
+        Some(action)
+    }
+
+    /// Whether `p` is on the failure card (so a host keeps the click).
+    #[must_use]
+    pub fn contains(&self, p: Point) -> bool {
+        self.failure().is_some() && self.hit.card_rect.contains(p)
+    }
+
+    /// The corner of `area` the surface floats in: `area` less its scroll
+    /// bar gutter on the trailing edge.
+    fn corner(area: Rect, theme: &Theme) -> Rect {
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        Rect::new(area.x0, area.y0, (area.x1 - gutter).max(area.x0), area.y1)
+    }
+
+    /// The failure card in `corner`: the reason's two lines over the action
+    /// row, a gutter in from the bottom-trailing corner.
+    fn failure_rect(corner: Rect, theme: &Theme) -> Rect {
+        let s = &theme.tokens.spacing;
+        let gutter = f64::from(s.s4);
+        let title = f64::from(theme.text(TextRole::Label).line_height_px());
+        let body = f64::from(theme.text(TextRole::Caption).line_height_px());
+        let actions = f64::from(theme.tokens.metrics.min_pointer_target);
+        let height = f64::from(s.s2) * 2.0 + title + body + f64::from(s.s2) + actions;
+        let width = f64::from(theme.tokens.metrics.panel_width_utility)
+            .min((corner.width() - 2.0 * gutter).max(0.0));
+        let x1 = corner.x1 - gutter;
+        let y1 = corner.y1 - gutter;
+        Rect::new(x1 - width, (y1 - height).max(corner.y0), x1, y1)
+    }
+
+    /// Paint what is showing in `area`; returns the painted rect.
+    pub fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        now: Instant,
+    ) -> Option<Rect> {
+        let corner = Self::corner(area, theme);
+        let Some(reason) = self.failure().map(str::to_owned) else {
+            self.hit = crate::widget::toast::ToastCardHit::default();
+            return self.bubble.paint(scene, transform, tr, theme, corner, now);
+        };
+        let hovered = self.hovered_action();
+        let title = crate::i18n!("save-status-failed");
+        let retry = crate::i18n!("save-status-retry");
+        let dismiss = crate::i18n!("save-status-dismiss");
+        let card =
+            crate::widget::toast::ToastCard::new(&title, crate::widget::toast::ToastKind::Error)
+                .body(&reason)
+                .actions(
+                    &dismiss,
+                    crate::icons::Icon::X,
+                    hovered == Some(SaveAction::Dismiss),
+                    &retry,
+                    crate::icons::Icon::RotateCw,
+                    hovered == Some(SaveAction::Retry),
+                );
+        let rect = Self::failure_rect(corner, theme);
+        self.hit = crate::widget::toast::paint_card(scene, transform, tr, theme, rect, &card);
+        if self.hit.secondary_action_rect.is_zero_area() {
+            return None;
+        }
+        (!self.hit.card_rect.is_zero_area()).then_some(self.hit.card_rect)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +580,56 @@ mod tests {
             );
             assert!(!b.is_visible(t0 + Duration::from_millis(1950)));
         }
+    }
+
+    /// Saving and saved are transient bubble text; a failure is an error
+    /// card with "Try again" that stays until the save succeeds or it is
+    /// dismissed, painted in danger and never as the bubble.
+    #[test]
+    fn a_failed_save_is_an_error_with_an_action_and_success_is_transient() {
+        crate::i18n::I18nManager::init("en-US");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        assert!(surface.set(SaveState::Saved, t0));
+        assert!(surface.failure().is_none() && surface.is_visible(t0));
+        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
+        assert!(!surface.is_visible(later), "saved fades by itself");
+
+        assert!(surface.set(SaveState::Failed("Disk full".into()), later));
+        assert_eq!(surface.failure(), Some("Disk full"));
+        let much_later = later + DEFAULT_LINGER * 4;
+        assert!(surface.is_visible(much_later), "a failure stays");
+        assert!(!surface.needs_frame(much_later), "and asks for no frames");
+        let mut scene = Scene::new();
+        let card = surface
+            .paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                area,
+                much_later,
+            )
+            .expect("the failure is painted");
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        assert!(
+            card.x1 <= area.x1 - gutter,
+            "clear of the scroll bar gutter"
+        );
+        let retry = surface.hit.primary_action_rect;
+        assert!(!retry.is_zero_area(), "it offers Try again");
+        assert_eq!(surface.click(retry.center()), Some(SaveAction::Retry));
+        assert!(
+            surface.failure().is_some(),
+            "retrying keeps it until the state changes"
+        );
+        let dismiss = surface.hit.secondary_action_rect;
+        assert_eq!(surface.click(dismiss.center()), Some(SaveAction::Dismiss));
+        assert!(surface.failure().is_none(), "dismissed");
+        assert!(surface.set(SaveState::Saving, much_later));
+        assert!(surface.is_visible(much_later));
     }
 }

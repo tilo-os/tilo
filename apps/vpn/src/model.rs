@@ -204,7 +204,7 @@ pub fn sample_vault() -> Vault {
     work.status = ConnStatus::Disconnected;
     work.last_used = "Yesterday".to_string();
 
-    let mut relay = Connection::new("Cloud Relay", ConnKind::WireGuard);
+    let mut relay = Connection::new("Frankfurt relay", ConnKind::WireGuard);
     relay.status = ConnStatus::Disconnected;
     relay.last_used = "3 days ago".to_string();
     relay.tor = true;
