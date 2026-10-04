@@ -13,6 +13,7 @@
 //!   (its own crate, so the compositor's lock screen shares it without
 //!   depending on the greeter).
 //! * [`auth`] — background auth worker + the UI-facing update protocol.
+//! * [`device_status`] — battery and Wi-Fi for the status corner.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the sign-in panel).
 //! * [`i18n`] — the sign-in screen's string catalogue.
 //! * [`local_users`] — conservative local-account discovery for one-passcode login.
@@ -31,6 +32,7 @@
 )]
 
 pub mod auth;
+pub mod device_status;
 pub mod greeter_app;
 pub mod i18n;
 pub mod local_users;

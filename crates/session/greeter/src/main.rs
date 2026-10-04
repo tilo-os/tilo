@@ -16,7 +16,9 @@
 //     `personal-no-fingerprint`, personal-device transient variants, and the
 //     personal-device errors `personal-locked`, `personal-session-failed`,
 //     `personal-service-down` and `personal-passcode-expired`, and
-//     `personal-sessions` with a second session installed. Defaults to
+//     `personal-sessions` with a second session installed,
+//     `personal-repeated-error`, and `accounts` for a machine with several
+//     accounts. Defaults to
 //     `form`. `TILO_SHOTS_THEME=light|dark|high-contrast` selects the review
 //     palette.
 
@@ -61,6 +63,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
         let mut widget = GreeterApp::for_shot(scenario);
+        match arg_value(&args, "--direction") {
+            Some("split") => widget.set_direction(greeter::greeter_app::Direction::Split),
+            Some("poster") => widget.set_direction(greeter::greeter_app::Direction::Poster),
+            _ => {}
+        }
         let credentials = shot_credentials(scenario);
         if let Some((_, password)) = credentials {
             widget.seed_shot_password(password);
@@ -165,6 +172,13 @@ fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
     (scale.is_finite() && (0.75..=2.0).contains(&scale)).then_some(scale)
 }
 
+/// The value after `flag` (`--flag value`), if present.
+fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let mut iter = args.iter().skip(1);
+    iter.find(|arg| *arg == flag)?;
+    iter.next().map(String::as_str)
+}
+
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
 /// in `args`, otherwise `None`.
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
@@ -216,6 +230,8 @@ fn parse_scenario_arg(args: &[String]) -> Option<AuthScenario> {
         "personal-service-down" => Some(AuthScenario::PersonalServiceDown),
         "personal-passcode-expired" => Some(AuthScenario::PersonalPasscodeExpired),
         "personal-sessions" => Some(AuthScenario::PersonalSessions),
+        "personal-repeated-error" => Some(AuthScenario::PersonalRepeatedError),
+        "accounts" => Some(AuthScenario::Accounts),
         _ => None,
     }
 }
@@ -231,7 +247,8 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         AuthScenario::Form
         | AuthScenario::Personal
         | AuthScenario::PersonalNoFingerprint
-        | AuthScenario::PersonalSessions => None,
+        | AuthScenario::PersonalSessions
+        | AuthScenario::Accounts => None,
         // Hint/error states deliberately show the missing passcode. Busy
         // states do too, for a more important reason: the live submit path
         // moves the passcode into a zeroizing worker value before entering
@@ -242,6 +259,7 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
         | AuthScenario::Error
         | AuthScenario::PersonalHint
         | AuthScenario::PersonalError
+        | AuthScenario::PersonalRepeatedError
         | AuthScenario::PersonalLocked
         | AuthScenario::PersonalSessionFailed
         | AuthScenario::PersonalServiceDown
@@ -276,6 +294,16 @@ fn render_shot_to_png(
     use automerge::{ObjType, transaction::Transactable};
 
     let theme = ui::launch::capture_theme(text_scale);
+    // `--theme` names the palette on hosts that do not pass the environment
+    // through to the renderer.
+    let args: Vec<String> = std::env::args().collect();
+    let theme = match arg_value(&args, "--theme").and_then(ui::theme::Theme::named) {
+        Some(named) => match text_scale {
+            Some(scale) => named.with_text_scale(scale),
+            None => named,
+        },
+        None => theme,
+    };
     let mut state = ui::State::new();
     if let Some(username) = username {
         let uobj = state

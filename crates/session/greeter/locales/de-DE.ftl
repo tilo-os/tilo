@@ -30,3 +30,12 @@ greeter-error-unavailable = Dein Passwort konnte nicht geprüft werden. Versuch 
 greeter-error-session = Dein Desktop konnte nicht starten. Versuch es noch einmal oder starte den Computer neu.
 greeter-error-service = Der Anmeldedienst antwortet nicht. Starte den Computer neu und versuch es dann erneut.
 greeter-error-no-session = Es ist kein Desktop installiert, bei dem du dich anmelden kannst.
+greeter-error-passcode-again = Falsches Passwort, { $count }-mal hintereinander. Versuch es noch einmal.
+
+# Die Statusecke und die Bedienelemente des Bildschirms.
+greeter-suspend = Bereitschaft
+greeter-power = Ein/Aus
+greeter-larger-text = Größere Schrift
+greeter-high-contrast = Hoher Kontrast
+greeter-screen-reader = Bildschirmleser
+greeter-accounts = Konten auf diesem Computer

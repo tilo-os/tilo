@@ -1667,6 +1667,11 @@ impl AppHandler {
         if app.sync_model(false) {
             floating_content_changed = true;
         }
+        // A control may have asked for larger text or high contrast; both
+        // rebuild the tree, so this frame repaints everything in the new look.
+        if app.apply_accessibility_request() {
+            floating_content_changed = true;
+        }
         if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
             if app.admit_native_close_request() {
                 event_loop.exit();
