@@ -65,13 +65,29 @@ impl ResourceApp for ClocksShell {
     fn scenarios() -> &'static [&'static str] {
         &[
             "empty",
+            "empty-world",
+            "empty-alarms",
             "running",
             "ringing",
             "world",
             "alarms",
             "stopwatch",
             "timers",
+            "running-narrow",
+            "ringing-narrow",
+            "world-narrow",
+            "alarms-narrow",
+            "stopwatch-narrow",
+            "timers-narrow",
+            "new-alarm",
+            "new-timer",
+            "new-alarm-narrow",
+            "new-timer-narrow",
         ]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        name.ends_with("-narrow").then_some((520, 820))
     }
 }
 
@@ -114,6 +130,10 @@ impl ResourceSurface<Clocks> for ClocksApp {
     fn attach(&mut self, cx: SurfaceCx<Clocks>) {
         self.actions.attach(cx.dispatcher());
         self.mark_framework_hosted();
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario.unwrap_or_default());
     }
 }
 

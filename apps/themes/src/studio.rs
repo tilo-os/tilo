@@ -299,7 +299,7 @@ impl Studio {
         #[param("Hue in degrees, 0 to 360")] hue: f64,
     ) -> Result<(), Refusal> {
         let hue = finite(hue, "a hue")?.rem_euclid(360.0);
-        edit(self, &theme, |t| t.palette.0.hue = hue)
+        edit(self, &theme, |t| t.palette.0.hue = Some(hue))
     }
 
     /// Set the neutrals' chroma: 0 is pure grey, 0.01 the most temperature
@@ -485,7 +485,13 @@ mod tests {
         let (mut studio, id) = studio_with("dark-soft");
         assert_eq!(studio.themes[&id].name, "Dark soft copy");
         studio.set_hue(id.clone(), 400.0).unwrap();
-        assert!((studio.themes[&id].palette.0.hue - 40.0).abs() < 1e-4);
+        assert!(
+            studio.themes[&id]
+                .palette
+                .0
+                .hue
+                .is_some_and(|hue| (hue - 40.0).abs() < 1e-4)
+        );
         assert!(
             studio.set_chroma(id.clone(), 0.2).is_err(),
             "too much colour"

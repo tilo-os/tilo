@@ -731,8 +731,7 @@ jobs:
             if [[ ! $payload_source =~ ^[0-9a-f]{40}$ ]] \
                 || ! git fetch --quiet --no-tags --depth=1 origin "$payload_source" \
                 || [[ -n $(git diff --name-only "$payload_source" "$GITHUB_SHA" -- \
-                             Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor \
-                             ':(exclude)vendor/fonts') ]]; then
+                             Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then
               echo "::notice::desktop payload from ${payload_source:-an unknown revision} predates this commit's desktop inputs; building the desktop from source"
               exit 0
             fi
