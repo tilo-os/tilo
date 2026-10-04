@@ -3,10 +3,7 @@ use std::collections::BTreeMap;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
-use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Column, Container, EmptyState, ListRow, Row, Section,
-    Text, Widget,
-};
+use ui::widget::{Actions, Button, ButtonRole, Column, EmptyState, ListRow, Text, Widget};
 
 pub(crate) struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
@@ -325,20 +322,36 @@ impl Capabilities {
         } else {
             ("Save", "Don’t save")
         };
+        // Content of the popover the browser anchors to the control the
+        // question concerns: what is asked, then the decision.
         Some(Box::new(
-            Container::new().with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Banner::warning(title).with_message(detail)))
-                    .push(Box::new(
-                        Actions::new(decide(accept, true).role(ButtonRole::Primary))
-                            .secondary(decide(decline, false)),
-                    )),
-            )),
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(Text::new(&title).with_role(TextRole::Subheading)))
+                .push(Box::new(
+                    Text::new(&detail).with_role(TextRole::Caption).dimmed(),
+                ))
+                .push(Box::new(
+                    Actions::new(decide(accept, true).role(ButtonRole::Primary))
+                        .secondary(decide(decline, false)),
+                )),
         ))
     }
-    pub fn downloads(&self, engine: &SharedEngine) -> Box<dyn Widget> {
+    /// Whether the question on offer is a site's permission request, rather
+    /// than a file the page offers.
+    pub fn prompt_is_permission(&self) -> bool {
+        !self.permissions.is_empty()
+    }
+    /// Answer the question on offer with no: the person dismissed it.
+    pub fn decline_prompt(&self, engine: &SharedEngine) {
+        if let Some((&id, _)) = self.permissions.first_key_value() {
+            engine.send(WebViewCommand::PermissionDecision { id, allow: false });
+        } else if let Some((&id, _)) = self.downloads.borrow().prompts.first_key_value() {
+            engine.send(WebViewCommand::DownloadDecision { id, allow: false });
+        }
+    }
+    pub fn downloads(&self, engine: &SharedEngine, theme: &ui::theme::Theme) -> Box<dyn Widget> {
         let downloads = self.downloads.borrow();
         let mut column = Column::new().with_no_padding().with_intrinsic_height();
         column = column.push(Box::new(
@@ -356,15 +369,9 @@ impl Capabilities {
         }
         if downloads.records.is_empty() {
             drop(downloads);
-            return Box::new(
-                column.push(Box::new(
-                    EmptyState::new("No downloads yet")
-                        .with_icon(Icon::Download)
-                        .with_message(
-                            "Files you download appear here. You choose where each one is saved.",
-                        ),
-                )),
-            );
+            return Box::new(column.push(Box::new(
+                EmptyState::new("No downloads yet").with_icon(Icon::Download),
+            )));
         }
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
         for (&id, d) in downloads.records.iter().rev() {
@@ -381,24 +388,20 @@ impl Capabilities {
                 _ => d.error.clone(),
             };
             let mut row = ListRow::new(format!("browser.download.row.{id}"), &d.name);
-            let mut buttons = Row::new().no_wrap();
+            let mut buttons = Vec::new();
+            let mut bar = None;
             if d.state == "progress" {
-                let percent = d
-                    .received
-                    .saturating_mul(100)
-                    .checked_div(d.total)
-                    .unwrap_or(0)
-                    .min(100);
-                if d.total > 0 {
-                    row = row.meta(format!("{percent}%"));
-                }
                 let engine = engine.clone();
-                buttons = buttons.push(Box::new(
+                bar = Some(crate::rows::transfer_bar(
+                    d.received,
+                    (d.total > 0).then_some(d.total),
+                ));
+                buttons.push(
                     Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
                         .on_effect(move || {
                             engine.send(WebViewCommand::CancelNativeDownload { id });
                         }),
-                ));
+                );
             }
             if d.state == "complete" && !d.path.is_empty() {
                 for (name, label, reveal) in
@@ -406,7 +409,7 @@ impl Capabilities {
                 {
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
-                    buttons = buttons.push(Box::new(
+                    buttons.push(
                         Button::new(&format!("browser.download.{name}.{id}"), label, None)
                             .on_effect(move || match open_download(&path, reveal) {
                                 Err(message) => notice.set(message),
@@ -427,37 +430,35 @@ impl Capabilities {
                                         });
                                 }
                             }),
-                    ));
+                    );
                 }
             }
             if matches!(d.state.as_str(), "failed" | "cancelled") {
                 if d.retryable {
                     let engine = engine.clone();
-                    buttons = buttons.push(Box::new(
+                    buttons.push(
                         Button::new(&format!("browser.download.retry.{id}"), "Retry", None)
                             .on_effect(move || {
                                 engine.send(WebViewCommand::RetryDownload { id });
                             }),
-                    ));
+                    );
                 } else {
                     row = row.meta("Can’t retry");
                 }
             }
             row = row.secondary(status);
-            rows.push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .push(Box::new(
-                        Container::new()
-                            .with_no_padding()
-                            .with_flex_grow()
-                            .with_child(Box::new(row)),
-                    ))
-                    .push(Box::new(buttons)),
-            ));
+            let line = crate::rows::with_buttons(row, buttons);
+            rows.push(match bar {
+                Some(bar) => crate::rows::with_progress(
+                    line,
+                    bar.with_label(format!("Downloading {}", d.name)),
+                    theme,
+                ),
+                None => Box::new(line),
+            });
         }
         drop(downloads);
-        Box::new(column.push(Box::new(Section::new(rows))))
+        Box::new(column.push(crate::rows::separated(rows, theme)))
     }
 }
 
@@ -501,7 +502,7 @@ mod tests {
                 error: String::new(),
             });
             assert!(second.downloads_changed());
-            let mut rows = second.downloads(&second_engine);
+            let mut rows = second.downloads(&second_engine, &ui::theme::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
             let result = rows
                 .start_operation(
@@ -534,7 +535,9 @@ mod tests {
                 error: String::new(),
             });
             assert!(contains(
-                second.downloads(&second_engine).as_ref(),
+                second
+                    .downloads(&second_engine, &ui::theme::Theme::dark())
+                    .as_ref(),
                 "browser.download.open.7"
             ));
             for id in 8..150 {
@@ -595,7 +598,7 @@ mod tests {
                     total: 8,
                     error: String::new(),
                 });
-                let view = capabilities.downloads(&engine);
+                let view = capabilities.downloads(&engine, &ui::theme::Theme::dark());
                 assert_eq!(
                     contains(view.as_ref(), "browser.download.open.7"),
                     state == "complete"
@@ -669,7 +672,7 @@ mod tests {
                 total: 0,
                 error: "connection reset".into(),
             });
-            let mut rows = capabilities.downloads(&engine);
+            let mut rows = capabilities.downloads(&engine, &ui::theme::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.retry.41"));
             let result = rows
                 .start_operation(
@@ -732,7 +735,9 @@ mod tests {
             });
             assert!(capabilities.exit_cleanup_complete());
             assert!(contains(
-                capabilities.downloads(&engine).as_ref(),
+                capabilities
+                    .downloads(&engine, &ui::theme::Theme::dark())
+                    .as_ref(),
                 "browser.download.terminal-status"
             ));
         }

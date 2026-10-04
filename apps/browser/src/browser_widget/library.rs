@@ -11,8 +11,8 @@ use ui::tokens::TextRole;
 use ui::webview::WebViewCommand;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, Button, Column, Container, Element, EmptyState, ListRow, Row, ScrollAxis, Scrollable,
-    Section, SegmentedStyle, Spacer, Text, ToggleGroup, Widget,
+    Banner, Button, Column, Container, Element, EmptyState, ListRow, Row, Section, SegmentedStyle,
+    Spacer, Text, ToggleGroup, Widget,
 };
 
 use super::{BrowserWidget, LibrarySection};
@@ -63,21 +63,6 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// A row with the commands that apply to it beside it. Each command is a
-    /// button, so it is reachable by keyboard and assistive technology.
-    fn row_with_actions(row: ListRow, actions: Vec<Button>) -> Element {
-        let mut line = Row::new().no_wrap().push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_flex_grow()
-                .with_child(Box::new(row)),
-        ));
-        for action in actions {
-            line = line.push(Box::new(action));
-        }
-        Box::new(line)
-    }
-
     fn bookmark_rows(&self) -> Vec<Element> {
         self.bookmarks
             .entries()
@@ -110,12 +95,12 @@ impl BrowserWidget {
                             observed_tags: entry.tags.clone(),
                         }),
                 );
-                Self::row_with_actions(row, vec![remove])
+                Box::new(crate::rows::with_buttons(row, vec![remove])) as Element
             })
             .collect()
     }
 
-    fn download_rows(&self) -> Vec<Element> {
+    fn download_rows(&self, theme: &Theme) -> Vec<Element> {
         self.downloads
             .entries()
             .iter()
@@ -127,9 +112,12 @@ impl BrowserWidget {
                 let mut row = ListRow::new(format!("{id}.row"), name)
                     .secondary(super::download_status_text(entry));
                 let mut actions = Vec::new();
+                let mut progress = None;
                 match entry.status {
                     DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
-                        row = row.meta(format!("{:.0}%", entry.progress * 100.0));
+                        progress = (entry.status == DownloadStatus::Downloading).then(|| {
+                            crate::rows::transfer_bar(entry.received_bytes, entry.total_bytes)
+                        });
                         actions.push(
                             self.bind_button(
                                 Button::new(&format!("{id}.cancel"), "Cancel", None)
@@ -164,7 +152,15 @@ impl BrowserWidget {
                         );
                     }
                 }
-                Self::row_with_actions(row, actions)
+                let line = crate::rows::with_buttons(row, actions);
+                match progress {
+                    Some(bar) => crate::rows::with_progress(
+                        line,
+                        bar.with_label(format!("Downloading {name}")),
+                        theme,
+                    ),
+                    None => Box::new(line) as Element,
+                }
             })
             .collect()
     }
@@ -246,85 +242,79 @@ impl BrowserWidget {
         rows
     }
 
-    /// What the section shows when it has no rows.
+    /// What the section shows when it has no rows: one sentence.
     fn library_empty_state(&self) -> EmptyState {
         match self.library_section {
             LibrarySection::History if self.history_paused() => {
-                EmptyState::new("History is paused in this window")
-                    .with_icon(Icon::Pause)
-                    .with_message("New pages here are not saved to history.")
+                EmptyState::new("History is paused in this window").with_icon(Icon::Pause)
             }
-            LibrarySection::History => EmptyState::new("No browsing history yet")
-                .with_icon(Icon::History)
-                .with_message("Pages you visit appear here. History stays on this device."),
+            LibrarySection::History => {
+                EmptyState::new("No browsing history yet").with_icon(Icon::History)
+            }
             LibrarySection::Bookmarks => EmptyState::new("No bookmarks yet")
                 .with_icon(Icon::Star)
-                .with_message("Use the star in the address bar to keep a page."),
-            LibrarySection::Downloads => EmptyState::new("No downloads yet")
-                .with_icon(Icon::Download)
-                .with_message("Files you download appear here. You choose where each one is saved."),
-            LibrarySection::Extensions => EmptyState::new("No active extensions")
-                .with_icon(Icon::Layers)
-                .with_message(
-                    "Install an unpacked Manifest V3 package in the browser extension folder, then approve its permissions here.",
-                ),
+                .with_message("Select the star in the address bar to keep a page."),
+            LibrarySection::Downloads => {
+                EmptyState::new("No downloads yet").with_icon(Icon::Download)
+            }
+            LibrarySection::Extensions => {
+                EmptyState::new("No extensions installed").with_icon(Icon::Layers)
+            }
         }
     }
 
-    fn library_body(&self) -> Element {
+    fn library_body(&self, theme: &Theme) -> Element {
         if self.library_section == LibrarySection::Downloads
             && self.capabilities.owns_download_presentation()
         {
-            return self.capabilities.downloads(&self.engine);
+            return self.capabilities.downloads(&self.engine, theme);
         }
-        let rows = match self.library_section {
-            LibrarySection::History => self.history_rows(),
-            LibrarySection::Bookmarks => self.bookmark_rows(),
-            LibrarySection::Downloads => self.download_rows(),
-            LibrarySection::Extensions => self.extension_rows(),
+        let list = match self.library_section {
+            LibrarySection::History => {
+                let rows = self.history_rows();
+                (!rows.is_empty()).then(|| Box::new(Section::new(rows)) as Element)
+            }
+            LibrarySection::Bookmarks => {
+                let rows = self.bookmark_rows();
+                (!rows.is_empty()).then(|| crate::rows::separated(rows, theme))
+            }
+            LibrarySection::Downloads => {
+                let rows = self.download_rows(theme);
+                (!rows.is_empty()).then(|| crate::rows::separated(rows, theme))
+            }
+            LibrarySection::Extensions => {
+                let rows = self.extension_rows();
+                (!rows.is_empty()).then(|| crate::rows::separated(rows, theme))
+            }
         };
-        if rows.is_empty() {
+        let Some(list) = list else {
             return Box::new(self.library_empty_state());
-        }
+        };
         let mut body = Column::new().with_no_padding().with_intrinsic_height();
         if self.library_section == LibrarySection::Extensions
             && let Some(message) = &self.extension_notice
         {
             body = body.push(Box::new(Banner::info(message)));
         }
-        Box::new(body.push(Box::new(Section::new(rows))))
+        Box::new(body.push(list))
     }
 
-    pub(super) fn build_library_composition(&self, theme: &Theme) -> Box<dyn Widget> {
-        let metrics = &theme.tokens.metrics;
-        // The widest a list reads comfortably; a narrower window uses all it has.
-        let measure = metrics.panel_width_sheet + metrics.panel_width_list;
+    pub(super) fn build_library_composition(
+        &self,
+        theme: &Theme,
+        notices: &[crate::notice::Notice],
+    ) -> Box<dyn Widget> {
         let current = SECTIONS
             .iter()
             .position(|(section, ..)| *section == self.library_section)
             .unwrap_or(0);
 
-        // Search is the platform's: the button opens it narrowed to the
-        // section on screen.
-        let search = match SECTIONS.get(current) {
-            Some((LibrarySection::Extensions, ..)) | None => {
-                search_button(SearchRequest::this_app())
-            }
-            Some((_, label, scope)) => {
-                search_button(SearchRequest::within(ScopeDecl::new(*scope, *label)))
-            }
-        };
-        // The header and the tabs line up with the text inside the rows below.
-        let inset = theme.tokens.spacing.s3;
-        let mut header = Row::new()
-            .no_wrap()
-            .with_padding(inset, 0.0)
-            .push(Box::new(
-                Text::new("Library")
-                    .with_role(TextRole::LargeTitle)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(Spacer::new()));
+        let mut header = Row::new().no_wrap().push(Box::new(
+            Text::new("Library")
+                .with_role(TextRole::LargeTitle)
+                .with_heading_level(1),
+        ));
+        header = header.push(Box::new(Spacer::new()));
         if self.library_section == LibrarySection::History {
             let label = if self.history_paused() {
                 "Resume history"
@@ -337,13 +327,21 @@ impl BrowserWidget {
                 "toggle-history-pause",
             )));
         }
-        header = header
-            .push(Box::new(search))
-            .push(Box::new(self.bind_button(
-                Button::new("browser.library.close", "Done", None),
-                "browser",
-                "show-page",
-            )));
+        // Search is the platform's: the button opens it narrowed to the
+        // section on screen. Extensions are not a search scope, so that page
+        // has no button.
+        if let Some((_, label, scope)) = SECTIONS.get(current)
+            && self.library_section != LibrarySection::Extensions
+        {
+            header = header.push(Box::new(search_button(SearchRequest::within(
+                ScopeDecl::new(*scope, *label),
+            ))));
+        }
+        header = header.push(Box::new(self.bind_button(
+            Button::new("browser.library.close", "Done", None),
+            "browser",
+            "show-page",
+        )));
 
         let queue = self.pending_commands.clone();
         let tabs = ToggleGroup::new(
@@ -360,20 +358,18 @@ impl BrowserWidget {
             }
         });
 
-        let page = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(header))
-            .push(Box::new(Row::new().no_wrap().push(Box::new(tabs))))
-            .push(self.library_body());
-        Box::new(
-            Scrollable::new(ScrollAxis::Vertical)
-                .fill_parent_height()
-                .with_child(Box::new(
-                    Container::new()
-                        .with_centered_max_width(measure)
-                        .with_child(Box::new(page)),
-                )),
-        )
+        let mut parts: Vec<Element> = notices.iter().map(|notice| notice.widget(false)).collect();
+        parts.extend([
+            Box::new(header) as Element,
+            Box::new(Spacer::fixed(theme.tokens.spacing.rhythm.group)),
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_padding(0.0, 0.0)
+                    .push(Box::new(tabs)),
+            ),
+            self.library_body(theme),
+        ]);
+        crate::settings::page(theme, parts)
     }
 }

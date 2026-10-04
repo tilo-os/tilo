@@ -323,13 +323,13 @@ impl SiteControls {
     }
     /// Review fixture: the panel open on a secure page with the status the
     /// engine would report for it.
-    pub(crate) fn stage_for_review(&mut self, information: bool) {
-        self.navigation("https://example.com/");
+    pub(crate) fn stage_for_review(&mut self, information: bool, url: &str) {
+        self.navigation(url);
         self.open = true;
         self.information = information;
         self.status = Some(SiteStatus {
             request_id: 1,
-            origin: "https://example.com".into(),
+            origin: origin(url).unwrap_or_default(),
             generation: 2,
             blocked: 14,
             global_enabled: true,
@@ -339,8 +339,11 @@ impl SiteControls {
             certificate_status: 0,
             tls_version: 6,
             content_status: 0,
-            subject: "example.com".into(),
-            issuer: "DigiCert Global G2 TLS RSA SHA256 2020 CA1".into(),
+            subject: url::Url::parse(url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_default(),
+            issuer: "DigiCert".into(),
             expires: 13_437_613_041_000_000.0,
             permissions: ["camera", "microphone", "location", "notifications"]
                 .into_iter()
@@ -372,8 +375,9 @@ impl SiteControls {
         clippy::too_many_lines,
         reason = "the two bounded site-panel pages share their action context"
     )]
-    /// The panel, `width` by `height`, with its content inset by `inset`.
-    pub fn panel(&self, width: f32, height: f32, inset: f32) -> Box<dyn Widget> {
+    /// The panel's content, `width` wide. It is as tall as it needs to be up
+    /// to `max_height`, then scrolls.
+    pub fn panel(&self, width: f32, max_height: f32) -> Box<dyn Widget> {
         let line =
             |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
         let note = |text: &str| {
@@ -464,7 +468,7 @@ impl SiteControls {
                             .with_enabled(self.action.is_none()),
                     ))
                     .push(note(
-                        "Blocks camera, microphone, location and notifications for this site. Reload to end existing media sessions.",
+                        "Blocks camera, microphone, location and notifications. Reload the page to end sessions already running.",
                     ))
                     .push(Box::new(
                         self.button("browser.site.clear", "Clear site data", action("clear"))
@@ -472,7 +476,7 @@ impl SiteControls {
                             .with_enabled(self.action.is_none()),
                     ))
                     .push(note(
-                        "Clears this site’s storage and matching cookies. Cookies may also be used on other ports and subdomains. Reload to reset data still in this page.",
+                        "Clears this site’s storage and cookies, including cookies shared with its subdomains. Reload the page to reset data it still holds.",
                     ));
             } else {
                 let state = if !status.global_enabled {
@@ -488,9 +492,6 @@ impl SiteControls {
                         "{} requests blocked or replaced in this page",
                         status.blocked
                     )))
-                    .push(note(
-                        "This includes the site’s embedded frames. Requests without a known top-level page stay protected and are not counted here.",
-                    ))
                     .push(Box::new(
                         self.button(
                             "browser.site.toggle",
@@ -530,16 +531,11 @@ impl SiteControls {
                 .with_focus_trap()
                 .with_no_padding()
                 .with_width(width)
-                .with_height(height)
                 .with_child(Box::new(
                     Scrollable::new(ScrollAxis::Vertical)
                         .with_focus_reveal()
-                        .with_height(height)
-                        .with_child(Box::new(
-                            Container::new()
-                                .with_padding(inset)
-                                .with_child(Box::new(column)),
-                        )),
+                        .with_max_height(max_height)
+                        .with_child(Box::new(column)),
                 )),
         )
     }
@@ -751,7 +747,7 @@ mod tests {
             controls.open = true;
             controls.committed = Some("https://example.test".into());
             let theme = ui::theme::Theme::dark();
-            let mut panel = controls.panel(480.0, 444.0, 16.0);
+            let mut panel = controls.panel(448.0, 444.0);
             let mut tree = taffy::TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
             let mut text = ui::text_render::TextRenderer::new();
