@@ -62,7 +62,10 @@ work on a device too, beside the device's session.
   `registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`, copies out only the
   component's files, removes the image again, and uploads just that layer
   with its provenance (`authority = "ci"`, the image's digest and the commit
-  CI built). The board never downloads the multi-gigabyte image. The aarch64
+  CI built). The board never downloads the multi-gigabyte image. The layer
+  stays in this host's cache (`<cache>/tilo-vm/ci-layers`, the six most
+  recently used) under the image's digest, so swapping the same build again
+  costs one registry lookup (`skopeo inspect --raw`) and the upload, no pull. The aarch64
   lane builds the newest main commit only, so check that a commit has arm64
   first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
 - **Your worktree on a builder of the device's architecture**

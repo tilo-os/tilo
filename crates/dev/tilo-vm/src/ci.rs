@@ -125,11 +125,54 @@ pub fn host_commands(
 }
 
 /// What the pulled image says about itself, for the layer's provenance.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Pulled {
     pub digest: Option<String>,
     /// `org.opencontainers.image.revision`: the commit CI built.
     pub revision: Option<String>,
+}
+
+/// The registry's manifest of `image`, without pulling it.
+pub fn manifest_command(image: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["inspect", "--raw"]).arg(format!("docker://{image}"))
+}
+
+/// The digest of `arch`'s image in a [`manifest_command`] answer: the
+/// matching entry of an index, or the digest of a single-image manifest.
+/// It is the digest a pull for `arch` reports, so it names the content.
+pub fn arch_digest(raw: &str, arch: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let Some(manifests) = value.get("manifests").and_then(serde_json::Value::as_array) else {
+        use sha2::Digest as _;
+        return Some(format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(raw.trim_end_matches('\n')))
+        ));
+    };
+    manifests
+        .iter()
+        .find(|m| {
+            let platform = m.get("platform");
+            let field = |key: &str| {
+                platform
+                    .and_then(|p| p.get(key))
+                    .and_then(serde_json::Value::as_str)
+            };
+            field("architecture") == Some(podman_arch(arch))
+                && field("os").is_none_or(|os| os == "linux")
+        })
+        .and_then(|m| m.get("digest")?.as_str())
+        .map(str::to_owned)
+}
+
+/// The digest `image` has for `arch` in the registry now, or `None` when
+/// the registry (or skopeo) cannot say.
+pub fn registry_digest(runner: &mut dyn Runner, image: &str, arch: &str) -> Option<String> {
+    let output = runner.output(&manifest_command(image)).ok()?;
+    output
+        .success
+        .then(|| arch_digest(&output.stdout, arch))
+        .flatten()
 }
 
 /// `podman image inspect` of the pulled image: its digest and revision.
@@ -312,6 +355,23 @@ mod tests {
                     digest: Some("sha256:ab12".into()),
                     revision: Some("fff3babf03ebbefb1e3757b8a9e0263c2c815943".into()),
                 }
+            );
+            let index = r#"{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[
+                {"digest":"sha256:5988","platform":{"architecture":"arm64","os":"linux"}},
+                {"digest":"sha256:8b92","platform":{"architecture":"amd64","os":"linux"}}]}"#;
+            assert_eq!(
+                arch_digest(index, "aarch64").as_deref(),
+                Some("sha256:5988")
+            );
+            assert_eq!(arch_digest(index, "x86_64").as_deref(), Some("sha256:8b92"));
+            assert_eq!(arch_digest(index, "riscv64"), None);
+            assert_eq!(
+                arch_digest("{}", "aarch64").as_deref(),
+                Some("sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a")
+            );
+            assert_eq!(
+                manifest_command("registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci").display(),
+                "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci"
             );
             assert_eq!(
                 parse_inspect("sha256:ab12 <no value>\n"),

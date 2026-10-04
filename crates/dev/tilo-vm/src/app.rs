@@ -19,6 +19,7 @@ use tilo_vm_protocol::{
 use crate::appsets;
 use crate::build;
 use crate::ci;
+use crate::cicache;
 use crate::cli::{
     Builder, Command, CreateArgs, FlightCommand, GamepadCommand, ImageCommand, InputCommand,
     PenCommand, ScenarioCommand, SeatCommand, SlotAppsCommand, SlotCommand, TouchCommand,
@@ -3989,20 +3990,47 @@ impl App {
             };
         }
         // A device, or a VM without podman: pull here, upload only the layer.
+        // The layer stays cached here by the image's digest, so a repeat swap
+        // of the same build only asks the registry which digest it is.
         let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
         let staging = build::Staging::new(&worktree)?;
         let arch = remote.hello.arch.clone();
-        let why = if from_host {
-            "only the layer goes to the device"
-        } else {
-            "the VM has no podman"
-        };
-        eprintln!("tilo-vm: pulling {image} ({arch}) on this host; {why}");
+        let cache = cicache::CiCache::at_home();
         let runner = &mut self.runner;
-        let pulled = self.receipt.phase("pull", || {
-            ci::extract_on_host(runner, &image, &arch, &job.paths, &staging.tree())
-        })?;
-        build::pack(&staging.tree(), &staging.archive())?;
+        let digest = self
+            .receipt
+            .phase("lookup", || ci::registry_digest(runner, &image, &arch));
+        let cached = digest
+            .as_deref()
+            .and_then(|digest| cache.get(digest, &component.name));
+        let (archive, pulled) = if let Some((archive, pulled)) = cached {
+            eprintln!(
+                "tilo-vm: {image} ({arch}) is {}, whose {} layer this host has kept; no pull",
+                digest.as_deref().unwrap_or_default(),
+                component.name
+            );
+            self.receipt.set("ci_cache", "hit");
+            (archive, pulled)
+        } else {
+            let why = if from_host {
+                "only the layer goes to the device"
+            } else {
+                "the VM has no podman"
+            };
+            eprintln!("tilo-vm: pulling {image} ({arch}) on this host; {why}");
+            let runner = &mut self.runner;
+            let pulled = self.receipt.phase("pull", || {
+                ci::extract_on_host(runner, &image, &arch, &job.paths, &staging.tree())
+            })?;
+            build::pack(&staging.tree(), &staging.archive())?;
+            if let Err(error) = cache.put(&component.name, &staging.archive(), &pulled) {
+                self.warnings.push(format!(
+                    "could not keep the layer for the next swap: {error}"
+                ));
+            }
+            self.receipt.set("ci_cache", "miss");
+            (staging.archive(), pulled)
+        };
         // The record the VM's own pull would have written.
         let provenance = tilo_vm_protocol::Provenance::from_ci(
             &job.provenance,
@@ -4010,7 +4038,6 @@ impl App {
             pulled.digest,
             pulled.revision,
         );
-        let archive = staging.archive();
         let upload = self
             .receipt
             .phase("transfer", || -> Result<String, CliError> {
