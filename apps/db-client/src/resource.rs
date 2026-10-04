@@ -1,23 +1,28 @@
 //! Database client as a [`tilo_resource::Resource`]: connection profiles and
-//! saved queries sync (passwords stay local); connect / run SQL are Effects.
+//! saved queries sync (passwords stay on the device); connect / run SQL are
+//! Effects.
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp,
+    ResourceSurface, SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::{
+    ActionAddress, ActionArgs, ActionParam, ParamType, Resource as PublishedResource,
+};
+use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
 use ui::tilo_resource::{
-    Doc, ModelError, PlainText, Resource, SearchEntry, child_resource_id, publish_child,
+    self, ActionDecl, Doc, Effect, Id, Invoke, ModelError, PlainText, Resource, SearchEntry,
+    TextEdit, child_resource_id, publish_child,
 };
 use ui::widget::Element;
+use uuid::Uuid;
 
-use crate::actions::{
-    DB_ACTION_TYPE, DbAction, document_bound_actions, document_children, register,
-    root_local_operations,
-};
+use crate::actions::{DB_ACTION_TYPE, DbAction, register};
 use crate::app::DbClientApp;
 use crate::doc::{ConnectionsDoc, EditorDoc, SavedQueriesDoc, SavedQuery};
-use crate::model::ConnectionProfile;
+use crate::model::{ConnectionProfile, Engine};
 
 /// Shared catalogue projection (no passwords, no live session).
 #[derive(Clone, Debug, Default)]
@@ -30,6 +35,41 @@ pub struct DbState {
 
 /// The database workspace resource.
 pub struct DbClient;
+
+/// The collection field saved connections are published under.
+const CONNECTIONS: &str = "connections";
+/// The collection field saved queries are published under.
+const SAVED_QUERIES: &str = "saved_queries";
+
+/// The item actions of saved connections and saved queries, offered on each
+/// item with its id bound.
+const ITEM_ACTIONS: &[ItemAction] = &[
+    ItemAction {
+        action: "rename_connection",
+        param: "connection",
+        collection: Some(CONNECTIONS),
+    },
+    ItemAction {
+        action: "remove_connection",
+        param: "connection",
+        collection: Some(CONNECTIONS),
+    },
+    ItemAction {
+        action: "remove_query",
+        param: "query",
+        collection: Some(SAVED_QUERIES),
+    },
+];
+
+fn text_arg(args: &ActionArgs, name: &str) -> Result<String, String> {
+    args.text(name)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("`{name}` is required"))
+}
+
+fn item_arg(args: &ActionArgs, name: &str) -> Result<Uuid, String> {
+    Uuid::parse_str(&text_arg(args, name)?).map_err(|_| format!("`{name}` is not an item id"))
+}
 
 impl Resource for DbClient {
     const KIND: &'static str = "database.workspace";
@@ -51,20 +91,172 @@ impl Resource for DbClient {
         })
     }
 
-    fn bound_actions(state: &DbState) -> Vec<ActionSpec> {
-        document_bound_actions(state)
-    }
-
     /// A new workspace starts with the containers every replica writes into,
     /// the SQL buffer among them, so two people who open it before syncing
     /// type into the same text.
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
-        crate::doc::adopt_shared_schema(doc);
-        Ok(())
+        crate::doc::create_schema(doc).map_err(|error| ModelError::invalid(error.to_string()))
+    }
+
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        vec![
+            ActionDecl::new(
+                "add_connection",
+                "Add connection",
+                vec![
+                    ActionParam::required("name", ParamType::Text, "Connection name"),
+                    ActionParam::required("engine", ParamType::Text, "Database engine")
+                        .with_choices(["sqlite", "postgres", "mysql"]),
+                    ActionParam::optional("host", ParamType::Text, "Server host"),
+                    ActionParam::optional("port", ParamType::Integer, "Server port"),
+                    ActionParam::optional("database", ParamType::Text, "Database name"),
+                    ActionParam::optional("user", ParamType::Text, "User name"),
+                    ActionParam::optional("file_path", ParamType::Text, "SQLite file"),
+                ],
+                |args, _| {
+                    let engine = Engine::from_key(&text_arg(args, "engine")?);
+                    let mut profile = ConnectionProfile::new(&text_arg(args, "name")?, engine);
+                    if let Some(host) = args.text("host") {
+                        host.clone_into(&mut profile.host);
+                    }
+                    if let Some(port) = args.integer("port") {
+                        profile.port = u16::try_from(port).map_err(|_| "`port` is out of range")?;
+                    }
+                    for (name, field) in [
+                        ("database", &mut profile.database),
+                        ("user", &mut profile.user),
+                        ("file_path", &mut profile.file_path),
+                    ] {
+                        if let Some(value) = args.text(name) {
+                            value.clone_into(field);
+                        }
+                    }
+                    Ok(crate::actions::add_connection_action(&profile))
+                },
+            )
+            .describe("Save a connection profile; its password stays on each device"),
+            ActionDecl::new(
+                "rename_connection",
+                "Rename connection",
+                vec![
+                    ActionParam::required("connection", ParamType::Text, "Connection id"),
+                    ActionParam::required("name", ParamType::Text, "Connection name"),
+                ],
+                |args, _| {
+                    Ok(crate::actions::rename_connection_action(
+                        item_arg(args, "connection")?,
+                        &text_arg(args, "name")?,
+                    ))
+                },
+            ),
+            ActionDecl::new(
+                "remove_connection",
+                "Remove saved connection",
+                vec![ActionParam::required(
+                    "connection",
+                    ParamType::Text,
+                    "Connection id",
+                )],
+                |args, _| {
+                    Ok(crate::actions::remove_connection_action(item_arg(
+                        args,
+                        "connection",
+                    )?))
+                },
+            )
+            .destructive(),
+            ActionDecl::new(
+                "save_query",
+                "Save query",
+                vec![
+                    ActionParam::required("name", ParamType::Text, "Query name"),
+                    ActionParam::required("sql", ParamType::Text, "SQL"),
+                ],
+                |args, _| {
+                    Ok(crate::actions::save_query_action(
+                        Uuid::new_v4(),
+                        &text_arg(args, "name")?,
+                        &text_arg(args, "sql")?,
+                    ))
+                },
+            ),
+            ActionDecl::new(
+                "remove_query",
+                "Remove saved query",
+                vec![ActionParam::required("query", ParamType::Text, "Query id")],
+                |args, _| {
+                    Ok(crate::actions::remove_query_action(item_arg(
+                        args, "query",
+                    )?))
+                },
+            )
+            .destructive(),
+        ]
+    }
+
+    /// "Save current query" names the SQL in the shared buffer.
+    fn bound_declarations(state: &DbState) -> Vec<ActionDecl<Self>> {
+        let sql = state.editor_sql.clone();
+        if sql.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![ActionDecl::new(
+            "save_current_query",
+            "Save current query",
+            vec![ActionParam::required(
+                tilo_actions::PROMPTED_PARAM,
+                ParamType::Text,
+                "Query name",
+            )],
+            move |args, _| {
+                Ok(crate::actions::save_query_action(
+                    Uuid::new_v4(),
+                    &text_arg(args, tilo_actions::PROMPTED_PARAM)?,
+                    &sql,
+                ))
+            },
+        )]
     }
 
     fn children(state: &DbState) -> Vec<PublishedResource> {
-        let mut children = document_children(state);
+        let collections = [
+            ItemCollection {
+                field: CONNECTIONS,
+                items: state
+                    .connections
+                    .iter()
+                    .map(|profile| (Id::from_raw(profile.id.to_string()), profile.name.clone()))
+                    .collect(),
+            },
+            ItemCollection {
+                field: SAVED_QUERIES,
+                items: state
+                    .saved_queries
+                    .iter()
+                    .map(|query| (Id::from_raw(query.id.to_string()), query.name.clone()))
+                    .collect(),
+            },
+        ];
+        let mut children = item_children::<Self>(&collections, ITEM_ACTIONS);
+        for child in &mut children {
+            if let Some(profile) = state
+                .connections
+                .iter()
+                .find(|profile| connection_resource_id(profile.id) == child.id.as_str())
+            {
+                child
+                    .actions
+                    .push(crate::actions::connect_operation(profile.id));
+            } else if let Some(query) = state
+                .saved_queries
+                .iter()
+                .find(|query| saved_query_resource_id(query.id) == child.id.as_str())
+            {
+                child
+                    .actions
+                    .push(crate::actions::run_saved_query_operation(query));
+            }
+        }
         children.push(publish_child::<PlainText, Self>(
             &sql_resource_id(),
             "SQL",
@@ -74,30 +266,37 @@ impl Resource for DbClient {
         children
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Run SQL is an Effect with no document delta. Connect rides each
-        // connection child from [`children`].
-        root_local_operations()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
-    }
-
     fn search(state: &DbState) -> Vec<SearchEntry> {
-        let connections = state.connections.iter().map(|profile| SearchEntry {
-            anchor: Some(format!("connection:{}", profile.id)),
-            title: profile.name.clone(),
-            text: format!("{} {}", profile.engine.as_key(), profile.host),
-            action: None,
+        // Saved SQL can contain credentials or tokens: a saved query is
+        // found by its intentional name, never by arbitrary SQL literals.
+        let connections = state.connections.iter().map(|profile| {
+            SearchEntry::new(
+                &profile.name,
+                format!("{} {}", profile.engine.as_key(), profile.host),
+            )
+            .anchored(connection_resource_id(profile.id))
+            .invoking(ActionAddress::new(
+                connection_resource_id(profile.id),
+                "connect",
+            ))
         });
-        let queries = state.saved_queries.iter().map(|query| SearchEntry {
-            anchor: Some(format!("saved-query:{}", query.id)),
-            title: query.name.clone(),
-            text: query.sql.clone(),
-            action: None,
+        let queries = state.saved_queries.iter().map(|query| {
+            SearchEntry::new(&query.name, "Collaborative saved query")
+                .anchored(saved_query_resource_id(query.id))
+                .invoking(ActionAddress::new(saved_query_resource_id(query.id), "run"))
         });
         connections.chain(queries).collect()
     }
+}
+
+/// The id a saved connection is published under.
+pub(crate) fn connection_resource_id(id: Uuid) -> String {
+    item_resource_id::<DbClient>(CONNECTIONS, &Id::from_raw(id.to_string()))
+}
+
+/// The id a saved query is published under.
+pub(crate) fn saved_query_resource_id(id: Uuid) -> String {
+    item_resource_id::<DbClient>(SAVED_QUERIES, &Id::from_raw(id.to_string()))
 }
 
 /// The id the SQL buffer is published under, as a plain-text child of the
@@ -113,21 +312,50 @@ pub(crate) fn sql_dispatcher(dispatcher: &Dispatcher<DbClient>) -> Dispatcher<Pl
     dispatcher.child::<PlainText>(&sql_resource_id(), DbAction::EditSql)
 }
 
-/// Hosted-only extras that are not document state: an in-flight job and the
-/// current query result. The workspace door stays on [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &DbClientApp) -> Vec<PublishedResource> {
-    let mut extras = Vec::new();
-    if let Some(label) = app.live_job_label() {
-        extras.push(PublishedResource::new(
-            "database.job",
-            "database.job",
-            label,
-        ));
-    }
-    if let Some(result) = app.live_query_result_resource() {
-        extras.push(result);
-    }
-    extras
+/// The client's work on a database server, which changes no document: run
+/// SQL on the open connection. Connecting, browsing a table and running a
+/// saved query ride the rows they act on.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "db_client.effects")]
+pub enum DbEffect {
+    /// Run SQL
+    ///
+    /// Runs a statement on the open connection; it may change the database.
+    #[effect(job, cancellable, destructive)]
+    Query {
+        #[param("SQL query")]
+        sql: String,
+    },
+}
+
+/// What a capture shows in place of a database server: the bundled sample
+/// catalog, opened for the connection with this id.
+pub(crate) struct SampleDatabase {
+    pub(crate) connection: Uuid,
+}
+
+/// The connection a capture opens on the bundled sample catalog.
+const SAMPLE_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0001);
+/// Two example remotes, listed disconnected beside the sample.
+const ANALYTICS_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0002);
+const SHOP_CONNECTION: Uuid = Uuid::from_u128(0x5a3b_1e00_0000_4000_8000_0000_0000_0003);
+
+/// The connections a populated capture lists: the bundled sample, then two
+/// remotes that are not reachable from a screenshot.
+fn sample_connections() -> Vec<ConnectionProfile> {
+    let mut sample = ConnectionProfile::sqlite_sample();
+    sample.id = SAMPLE_CONNECTION;
+    let mut analytics = ConnectionProfile::new("Analytics · prod", Engine::Postgres);
+    analytics.id = ANALYTICS_CONNECTION;
+    analytics.host = "db.internal".into();
+    analytics.database = "analytics".into();
+    analytics.user = "reader".into();
+    let mut shop = ConnectionProfile::new("Shop · staging", Engine::MySql);
+    shop.id = SHOP_CONNECTION;
+    shop.host = "mysql.staging".into();
+    shop.database = "shop".into();
+    shop.user = "app".into();
+    vec![sample, analytics, shop]
 }
 
 /// Framework app: the database client widget over [`DbClient`].
@@ -138,181 +366,131 @@ impl ResourceApp for DbClientShell {
     const ID: &'static str = "so.tilo.db-client";
     const TITLE: &'static str = "Database Client";
     const ICON: Option<&'static str> = Some("db-client");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
 
     fn view(cx: &mut ViewCx<DbClient>) -> Element {
         cx.surface(DbClientApp::new())
     }
+
+    /// `empty` is the first run; every other scenario shows the bundled
+    /// sample catalog with a query run against it, and `status`, `connect`
+    /// and `confirm` add the status bubble, the new-connection sheet and the
+    /// destructive-statement confirmation.
+    fn scenarios() -> &'static [&'static str] {
+        &["default", "empty", "status", "connect", "confirm"]
+    }
+
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
+
+    fn fixture(fixture: &mut Fixture<DbClient>) {
+        if fixture.scenario() != Some("empty") {
+            fixture.provide(SampleDatabase {
+                connection: SAMPLE_CONNECTION,
+            });
+        }
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<DbClient>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
+        sample_connections()
+            .iter()
+            .map(crate::actions::add_connection_action)
+            .chain([DbAction::EditSql(TextEdit::ReplaceText {
+                text: crate::sample::DEFAULT_QUERY.to_owned(),
+            })])
+            .filter_map(|action| Invoke::apply(&action).ok())
+            .collect()
+    }
 }
 
-impl ResourceSurface<DbClient> for DbClientApp {
+impl ResourceSurface<DbClient, DbEffect> for DbClientApp {
     fn present(&mut self, state: &Rc<DbState>) {
         self.adopt_resource_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<DbClient>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher for saved connections and saved queries.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<DbClient>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<DbClient>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
+        self.attach_framework(&cx);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &DbAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        let _ = self.try_dispatch_with_context(doc, type_id, action, context);
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &DbAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => dispatcher.apply_now_with(doc, action, context),
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
+    fn effect(&mut self, effect: DbEffect, cx: &mut EffectCx<DbClient, Self>) -> EffectAnswer {
+        match effect {
+            DbEffect::Query { sql } => self.start_query_effect(&sql, cx),
         }
     }
 
-    /// Hosted commits are recorded by the dispatcher. Standalone tests still
-    /// read the local host's rising edge.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.session_connected() {
+            Vec::new()
+        } else {
+            vec![EffectStatus::unavailable(
+                DbEffect::QUERY,
+                "not_connected",
+                "Open a saved connection before running SQL",
+            )]
+        }
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.live_rows()
     }
-}
 
-/// Live launch through the framework host.
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
-    ui::framework::launch_spec::<DbClientShell>()
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.live_row(id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{add_connection_action, provide_resources, save_query_action};
-    use crate::model::Engine;
-    use tilo_actions::Action;
-    use ui::widget::Widget;
-    use uuid::Uuid;
+    use ui::framework::testing::TestApp;
 
     #[test]
-    fn resource_publish_owns_workspace_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
+    fn the_workspace_publishes_its_items_with_their_actions_and_live_rows_beside_them() {
+        let mut app = TestApp::<DbClientShell>::new().unwrap();
         let mut profile = ConnectionProfile::new("Analytics", Engine::Postgres);
         profile.host = "db.internal".into();
-        add_connection_action(&profile).apply(&mut doc).unwrap();
-        save_query_action(Uuid::new_v4(), "Daily totals", "SELECT 1")
-            .apply(&mut doc)
+        profile.password = "s3cret".into();
+        app.invoke(Invoke::apply(&crate::actions::add_connection_action(&profile)).unwrap())
             .unwrap();
-        EditorDoc::set_sql(&mut doc, "SELECT * FROM customers");
-        doc.commit();
+        app.invoke(
+            Invoke::apply(&crate::actions::save_query_action(
+                Uuid::new_v4(),
+                "Daily totals",
+                "SELECT 1",
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        app.settle();
 
-        let state = DbClient::read(&doc).expect("seeded db state");
-        let published = ui::tilo_resource::publish::<DbClient>("database", "Database", &state);
-        assert_eq!(published.kind, "database.workspace");
+        let surface = app.agent_surface().to_string();
+        for needle in [
+            "add_connection",
+            "save_query",
+            "rename_connection",
+            "remove_connection",
+            "remove_query",
+            "connect",
+            "\"query\"",
+            "Run SQL",
+            &connection_resource_id(profile.id),
+        ] {
+            assert!(surface.contains(needle), "missing {needle} in {surface}");
+        }
         assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "save_query"),
-            "save_query bound_action must be on the framework resource"
+            !surface.contains("database.query-result"),
+            "no query ran, so no live result is published"
         );
         assert!(
-            published.actions.iter().any(|action| action.id == "query"),
-            "query Effect must be on the framework resource"
+            !surface.contains("s3cret"),
+            "the published tree never holds a password"
         );
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.kind == "database.connection"),
-            "connection children must be on the framework resource"
-        );
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.kind == "database.saved-query"),
-            "saved-query children must be on the framework resource"
-        );
-        assert!(
-            published
-                .children
-                .iter()
-                .all(|child| child.kind != "database.query-result"),
-            "shared projection must not carry live query results"
-        );
-
-        let mut app = DbClientApp::new();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone[0].kind, "database.workspace");
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "database.connection"),
-            "standalone publishes connection children"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "database.workspace"),
-            "hosted must not republish database.workspace beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
-
-        let door = provide_resources(&state);
-        assert_eq!(door[0].kind, "database.workspace");
     }
 }

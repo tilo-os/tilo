@@ -101,6 +101,15 @@ mod tests {
 
     use crate::TerminalWidget;
 
+    /// Where the session runs and the environments it can run in: still
+    /// available once its process has ended.
+    const TARGET_ACTIONS: [&str; 4] = [
+        "open-in",
+        "create-environment",
+        "grant-folder",
+        "rename-environment",
+    ];
+
     /// A PTY master with no process behind it: writes are dropped, reads return
     /// EOF. Enough for the emulator to seed its grid and accept input.
     struct MockMaster;
@@ -421,6 +430,10 @@ mod tests {
                 vec![
                     "send",
                     "run",
+                    "open-in",
+                    "create-environment",
+                    "grant-folder",
+                    "rename-environment",
                     "interrupt",
                     "clear",
                     "paste",
@@ -710,6 +723,9 @@ mod tests {
                             .actions
                             .iter()
                             .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
+                            // Moving the session elsewhere is what an ended
+                            // session is for; only its process input closes.
+                            .filter(|action| !TARGET_ACTIONS.contains(&action.id.as_str()))
                             .all(|action| {
                                 matches!(
                                     action.contract.availability,
