@@ -9,7 +9,8 @@ changes except what the input explains. It checks, in order:
 
   idle         the greeter before any input
   pointer      the pointer travelling over empty backdrop: only the pointer's
-               own neighbourhood may change, nothing goes black or stale
+               current neighbourhood may change; no trail of earlier pointer
+               positions, nothing black or stale
   typing       each passcode keystroke reaches the screen within the latency
                bound and repaints only a small part of it
   wrong        a wrong passcode: the greeter's console reports the error the
@@ -324,9 +325,11 @@ class Run:
             time.sleep(0.35)
             image = self.capture(f"02-pointer-{i}" if i in (0, 3) else None)
             judge_whole(image, f"pointer at {x},{y}")
-            explained = []
-            for px, py in (previous, (x, y)):
-                explained.append((px - POINTER_BOX, py - POINTER_BOX, px + POINTER_BOX, py + POINTER_BOX))
+            # Only the pointer where it is now may differ. Where it was must
+            # be restored: a stamp left behind is a trail of old cursors,
+            # which a software cursor composited without honouring buffer
+            # age leaves on screen.
+            explained = [(x - POINTER_BOX, y - POINTER_BOX, x + POINTER_BOX, y + POINTER_BOX)]
             stray = [
                 (tx, ty)
                 for tx, ty in image.changed_tiles(reference)
@@ -341,7 +344,8 @@ class Run:
                 image.write_png(self.out / f"02-pointer-{i}-stale.png")
                 raise Failed(
                     f"pointer at {x},{y}: {len(stray)} tiles away from the pointer "
-                    f"differ from the idle frame, first at {stray[0]}"
+                    f"differ from the idle frame, first at {stray[0]} (a pointer trail "
+                    f"or stale region; the previous position was {previous})"
                 )
             previous = (x, y)
         self.monitor.pointer(4, 4, w, h)
