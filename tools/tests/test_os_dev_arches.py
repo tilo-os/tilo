@@ -41,8 +41,8 @@ class OsDevArchesTests(unittest.TestCase):
                 self.assertTrue(selected(path), path)
                 self.assertTrue(any(selected(item) for item in host + [path]))
         self.assertFalse(any(selected(path) for path in host))
-        # Main builds x86_64 on every push here, aarch64 in os-dev-arm.yml.
-        self.assertRegex(workflow, r"(?m)^  push:\n    branches: \[main\]$")
+        # Main pushes build in os-dev-x86.yml and os-dev-arm.yml, not here.
+        self.assertNotRegex(workflow, r"(?m)^  push:$")
         self.assertEqual(MODULE.arches("push", paths=host), ["x86_64"])
 
     def test_architecture_choice(self):
@@ -57,15 +57,17 @@ class OsDevArchesTests(unittest.TestCase):
                 self.assertEqual(MODULE.arches("pull_request", paths=[path]), both)
         self.assertEqual(MODULE.arch_specific(["os/Containerfile", "os/kernel/x"]), ["os/kernel/x"])
 
-    def test_main_aarch64_builds_newest_commit_one_at_a_time(self):
-        workflow = (ROOT / ".forgejo/workflows/os-dev-arm.yml").read_text()
-        self.assertRegex(workflow, r"(?m)^  push:\n    branches: \[main\]$")
-        self.assertIn("  group: os-dev-aarch64-main\n  cancel-in-progress: false\n", workflow)
-        self.assertIn('if [[ $head == "$GITHUB_SHA" ]]; then', workflow)
-        self.assertIn("    if: needs.newest.outputs.build == 'true'\n"
-                      "    uses: ./.forgejo/workflows/build-image.yml\n"
-                      "    with:\n"
-                      "      arches: '[\"aarch64\"]'\n", workflow)
+    def test_main_builds_newest_commit_one_at_a_time_per_arch(self):
+        for name, arch in (("os-dev-arm.yml", "aarch64"), ("os-dev-x86.yml", "x86_64")):
+            with self.subTest(arch=arch):
+                workflow = (ROOT / ".forgejo/workflows" / name).read_text()
+                self.assertRegex(workflow, r"(?m)^  push:\n    branches: \[main\]$")
+                self.assertIn(f"  group: os-dev-{arch}-main\n  cancel-in-progress: false\n", workflow)
+                self.assertIn('if [[ $head == "$GITHUB_SHA" ]]; then', workflow)
+                self.assertIn("    if: needs.newest.outputs.build == 'true'\n"
+                              "    uses: ./.forgejo/workflows/build-image.yml\n"
+                              "    with:\n"
+                              f"      arches: '[\"{arch}\"]'\n", workflow)
 
 
 if __name__ == "__main__":

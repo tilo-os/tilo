@@ -1151,6 +1151,8 @@ pub fn native_services(
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
         launchable_catalogue: launchable_catalogue_path(),
+        // The session's records, installed before any broker starts.
+        settings: settings_store::installed_source(),
         ..Default::default()
     }
 }

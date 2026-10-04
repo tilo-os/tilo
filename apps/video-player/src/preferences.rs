@@ -1,8 +1,7 @@
 //! Device-local Video Player preferences.
 //!
-//! Playback preferences intentionally live in the shared Tilo settings file,
-//! under this app's own section, rather than in the collaborative media
-//! document. Two people reviewing the same clip may reasonably want different
+//! Playback preferences intentionally live in the app's device-local
+//! settings rather than in the collaborative media document. Two people reviewing the same clip may reasonably want different
 //! autoplay defaults, while repeat is only used by the local host to drive the
 //! shared transport when it reaches the end.
 
@@ -10,11 +9,20 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-const SECTION: &str = "video_player";
+/// The app's device-local settings, kept as the raw keys this module reads
+/// one by one, so a malformed key falls back alone.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+struct Stored(Map<String, Value>);
 
-fn settings() -> ui::storage::SettingsSection {
-    ui::storage::SettingsSection::named(SECTION)
+impl ui::storage::SettingsSchema for Stored {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
 }
+
+fn settings() -> ui::storage::Settings<Stored> {
+    ui::storage::Settings::for_app("so.tilo.video-player")
+}
+
 const AUTOPLAY: &str = "autoplay";
 const LOOP_ENABLED: &str = "loop_enabled";
 const RECENT_HISTORY: &str = "recent_history";
@@ -82,7 +90,7 @@ impl PlaybackPreferences {
     /// Load the app's device-local preferences. A missing, malformed, or
     /// wrong-typed value safely uses the default for that individual key.
     pub fn load() -> Self {
-        Self::from_section(&settings().load())
+        Self::from_section(&settings().get().0)
     }
 
     fn from_section(section: &Map<String, Value>) -> Self {
@@ -102,7 +110,7 @@ impl PlaybackPreferences {
     /// Persist only this app's two settings, preserving unrelated settings and
     /// unknown keys in the Video Player section.
     pub fn save(self) -> std::io::Result<()> {
-        settings().update(self.values())
+        settings().set(&Stored(self.values()))
     }
 
     fn values(self) -> Map<String, Value> {
@@ -116,12 +124,12 @@ impl PlaybackPreferences {
 
     #[cfg(test)]
     fn load_at(path: &Path) -> Self {
-        Self::from_section(&settings().in_file(path).load())
+        Self::from_section(&settings().in_file(path).get().0)
     }
 
     #[cfg(test)]
     fn save_at(self, path: &Path) -> std::io::Result<()> {
-        settings().in_file(path).update(self.values())
+        settings().in_file(path).set(&Stored(self.values()))
     }
 }
 
@@ -130,7 +138,8 @@ impl PlaybackPreferences {
 /// other Tilo preference reader.
 pub fn load_recent_history() -> Vec<RecentMedia> {
     settings()
-        .load()
+        .get()
+        .0
         .get(RECENT_HISTORY)
         .and_then(Value::as_array)
         .map_or_else(Vec::new, |items| {
@@ -158,9 +167,9 @@ fn save_recent_history_to(entries: &[RecentMedia], path: Option<&Path>) -> std::
         .into_iter()
         .collect();
     if let Some(path) = path {
-        settings().in_file(path).update(values)
+        settings().in_file(path).set(&Stored(values))
     } else {
-        settings().update(values)
+        settings().set(&Stored(values))
     }
 }
 
@@ -168,7 +177,8 @@ fn save_recent_history_to(entries: &[RecentMedia], path: Option<&Path>) -> std::
 fn load_recent_history_at(path: &Path) -> Vec<RecentMedia> {
     settings()
         .in_file(path)
-        .load()
+        .get()
+        .0
         .get(RECENT_HISTORY)
         .and_then(Value::as_array)
         .map_or_else(Vec::new, |items| {
@@ -238,7 +248,7 @@ mod tests {
             let path = test_path();
             std::fs::write(
                 &path,
-                r#"{"video_player":{"autoplay":"yes","loop_enabled":true}}"#,
+                r#"{"app_device_local":{"so.tilo.video-player":{"autoplay":"yes","loop_enabled":true}}}"#,
             )
             .expect("write corrupt setting");
             assert_eq!(
@@ -300,7 +310,7 @@ mod tests {
             assert_eq!(load_recent_history_at(&path).len(), RECENT_HISTORY_LIMIT);
             std::fs::write(
                 &path,
-                r#"{"video_player":{"recent_history":[{"id":"","title":"bad"}]}}"#,
+                r#"{"app_device_local":{"so.tilo.video-player":{"recent_history":[{"id":"","title":"bad"}]}}}"#,
             )
             .expect("write malformed row");
             assert!(load_recent_history_at(&path).is_empty());
