@@ -1215,9 +1215,11 @@ impl GreeterApp {
                 )),
         ));
         form.push(Box::new(self.build_status(theme)));
-        // While an attempt runs the alternate factor stays in place, inert
-        // and out of the focus order, so the form does not change size.
-        if self.fingerprint != FingerprintAvailability::Unavailable {
+        // While an attempt runs, the alternate factor gives way to the live
+        // prompt; its space stays reserved so the form does not change size.
+        if self.fingerprint != FingerprintAvailability::Unavailable && busy {
+            form.push(Box::new(Spacer::fixed(FIELD_HEIGHT)));
+        } else if self.fingerprint != FingerprintAvailability::Unavailable {
             form.push(Box::new(
                 Stack::column(
                     0.0,
@@ -1230,8 +1232,7 @@ impl GreeterApp {
                         .ghost()
                         .with_icon(Icon::Fingerprint)
                         .content_sized()
-                        .with_min_height(FIELD_HEIGHT)
-                        .with_enabled(!busy),
+                        .with_min_height(FIELD_HEIGHT),
                     )],
                 )
                 .align(align),
