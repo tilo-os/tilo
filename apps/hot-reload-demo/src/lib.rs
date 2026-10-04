@@ -12,6 +12,7 @@ fn install_catalog() {
 }
 
 use ui::prelude::*;
+use ui::widget::{Column, Field, Form, FormPage, FormSection, LabelPlacement};
 
 /// A durable document. Text fields are collaborative text: two people typing
 /// in the same field merge character by character.
@@ -72,6 +73,25 @@ impl ResourceApp for App {
         }
     }
 
+    fn scenarios() -> &'static [&'static str] {
+        &["filled"]
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
+        match name {
+            Some("filled") => vec![
+                Document::SET_CONTENT.with((
+                    "Quarterly planning notes".into(),
+                    "Three priorities for the next quarter: ship the offline editor, \
+                 move the sync service to the new relay, and cut cold-start time \
+                 in half. Each has an owner and a review date."
+                        .into(),
+                )),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
     fn view(cx: &mut ViewCx<Document>) -> Element {
         crate::install_catalog();
         let title = cx
@@ -83,17 +103,43 @@ impl ResourceApp for App {
             .with_id("document-body-input")
             .with_placeholder("document-body-placeholder")
             .multiline(true);
-        Box::new(ui::column![
-            Text::new("document-heading").with_role(TextRole::Title),
-            labeled_field("document-title-label", title),
-            labeled_field("document-body-label", body),
-            Text::new("document-preview-heading").with_role(TextRole::Heading),
-            cx.text(|document| document.title.clone())
-                .with_role(TextRole::Heading)
-                .with_id("document-title-preview"),
-            cx.text(|document| document.body.clone())
-                .with_id("document-body-preview"),
-        ])
+        let has_content =
+            cx.value(|document| !document.title.is_empty() || !document.body.is_empty());
+        let preview = cx.switch(&has_content, |cx, has_content| -> Element {
+            if *has_content {
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(
+                            cx.text(|document| document.title.clone())
+                                .with_role(TextRole::Subheading)
+                                .with_id("document-title-preview"),
+                        ))
+                        .push(Box::new(
+                            cx.text(|document| document.body.clone())
+                                .with_id("document-body-preview"),
+                        )),
+                )
+            } else {
+                Box::new(
+                    Text::new("document-preview-empty")
+                        .with_role(TextRole::Body)
+                        .dimmed(),
+                )
+            }
+        });
+        Box::new(FormPage::new(
+            "document-heading",
+            Form::new()
+                .with_label_placement(Some(LabelPlacement::Above))
+                .section(
+                    FormSection::new("document-edit-heading")
+                        .field(Field::new("document-title-label", title))
+                        .field(Field::new("document-body-label", body)),
+                )
+                .section(FormSection::new("document-preview-heading").content(preview)),
+        ))
     }
 }
 

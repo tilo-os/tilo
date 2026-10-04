@@ -9,8 +9,9 @@ browser_startup = true
 file = "TiloSans[wdth,wght].ttf"
 bytes = 296124
 sha256 = "140edddcc0ee4953e5120ac208757e88f48c786788bfdd092d2dba1bb49abef4"
-source_path = "vendor/fonts/tilo-sans/fonts/default/TiloSans[wdth,wght].ttf"
-source_commit = "c29493874c0874e530ed6bc6398b96bac7bf8df6"
+source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.001/TiloSans%5Bwdth,wght%5D.ttf"
+source_tag = "tilo/tilo-sans v1.001"
+source_commit = "a30688acf80960aac72dd91f7e42f53b37b110c4"
 source_metadata = "Tilo Sans; Regular; PS `TiloSans-Regular`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
@@ -27,8 +28,9 @@ browser_startup = true
 file = "TiloSans-Italic[wdth,wght].ttf"
 bytes = 306512
 sha256 = "a4ca118abf92d41fa93f46a6833436bea98869eada3f07634a3594104dfad09c"
-source_path = "vendor/fonts/tilo-sans/fonts/default/TiloSans-Italic[wdth,wght].ttf"
-source_commit = "c29493874c0874e530ed6bc6398b96bac7bf8df6"
+source_url = "https://code.tilo.so/tilo/tilo-sans/releases/download/v1.001/TiloSans-Italic%5Bwdth,wght%5D.ttf"
+source_tag = "tilo/tilo-sans v1.001"
+source_commit = "a30688acf80960aac72dd91f7e42f53b37b110c4"
 source_metadata = "Tilo Sans; Italic; PS `TiloSans-Italic`; v1.001; axes in native order `wdth` 75/100/100, `wght` 400/400/700; the default build (Latin, Vietnamese, Greek; Cyrillic and the distinct I/l features held back)"
 reserved_aliases = ["Tilo Sans"]
 license_spdx = "OFL-1.1"
@@ -447,8 +449,7 @@ sha256 = "459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81"
 
 [[license]]
 file = "LICENSES/Tilo-Sans-OFL.txt"
-source_path = "vendor/fonts/tilo-sans/OFL.txt"
-source_commit = "c29493874c0874e530ed6bc6398b96bac7bf8df6"
+source_url = "https://code.tilo.so/tilo/tilo-sans/src/commit/a30688acf80960aac72dd91f7e42f53b37b110c4/OFL.txt"
 sha256 = "63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98"
 
 [[license]]
@@ -464,4 +465,4 @@ sha256 = "aca6a428580965d2297d1b718042dd427c2a9443ece3b0d02d758e161e0c4030"
 [[license]]
 file = "LICENSES/FONT-COPYRIGHT-NOTICES.txt"
 source_in_license_scratch = "licenses/../font-name-notices.txt"
-sha256 = "899cbfa63616a743b34c88fd14e7c6063ade6b8a9398da9c01fd16309fe31634"
+sha256 = "48e368a57ae95346cf9ab291557054815cfe5ab8b2f61ad4a850f4f68a00333c"

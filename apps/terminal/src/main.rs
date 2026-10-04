@@ -41,7 +41,7 @@
 
 use std::fmt::Write as _;
 
-use terminal::TerminalWidget;
+use terminal::{GridPos, TerminalWidget};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -86,7 +86,11 @@ fn launch_spec_with_root(
             "find",
             "empty",
             "empty-menu",
+            "menu-selection",
+            "find-none",
+            "find-many",
             "ended",
+            "ended-empty",
         ])
 }
 
@@ -143,21 +147,35 @@ fn parse_size(raw: &str) -> Option<(u32, u32)> {
 }
 
 fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let scenario = args.scenario.as_deref();
+    // A plain `--shots` is the live shell, which is the app's main screen.
+    let scenario = Some(args.scenario.as_deref().unwrap_or("shell"));
     let mut widget = match scenario {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
-        Some("ended") => {
+        Some(name @ ("ended" | "ended-empty")) => {
+            // `ended` leaves a transcript behind; `ended-empty` exits without
+            // printing anything.
+            let transcript = name == "ended";
             #[cfg(unix)]
             let command = {
                 // Spawn the portable shell path: macOS has no /bin/true.
                 let mut command = terminal::CommandBuilder::new("/bin/sh");
-                command.args(["-c", "exit 0"]);
+                let script = if transcript {
+                    ENDED_TRANSCRIPT_SH
+                } else {
+                    "exit 0"
+                };
+                command.args(["-c", script]);
                 command
             };
             #[cfg(windows)]
             let command = {
                 let mut command = terminal::CommandBuilder::new("cmd.exe");
-                command.args(["/d", "/c", "exit /b 0"]);
+                let script = if transcript {
+                    ENDED_TRANSCRIPT_CMD
+                } else {
+                    "exit /b 0"
+                };
+                command.args(["/d", "/c", script]);
                 command
             };
             TerminalWidget::spawn_command(command)
@@ -182,6 +200,18 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
+
+/// The output the `ended` scenario's shell prints before it exits, so the shot
+/// shows a session that kept its transcript.
+#[cfg(unix)]
+const ENDED_TRANSCRIPT_SH: &str = "printf '%s\n' \
+  'user@tilo ~/tilo $ ./deploy.sh staging' \
+  'Building release bundle...' \
+  'Uploading 3 files to staging.tilo.so' \
+  'Deploy finished in 4.2s' \
+  'Shell closed by the remote end.'";
+#[cfg(windows)]
+const ENDED_TRANSCRIPT_CMD: &str = "echo user@tilo ~/tilo $ ./deploy.sh staging& echo Building release bundle...& echo Uploading 3 files to staging.tilo.so& echo Deploy finished in 4.2s& echo Shell closed by the remote end.";
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG.
@@ -224,10 +254,11 @@ fn render_shot_to_png(
     Ok(())
 }
 
-/// Drive the real login shell for the `shell` shot: let the prompt settle,
-/// send a short demo command exactly as a keystroke would, and pump `sync` so
-/// the live PTY output lands in the captured frame. This exercises the same
-/// reader → `sync` → vte → CRDT path the live terminal uses every frame.
+/// Drive the real login shell for the `shell` shot: give it a fixed demo
+/// prompt, send a few short commands exactly as keystrokes would, and pump
+/// `sync` so the live PTY output lands in the captured frame. This exercises
+/// the same reader → `sync` → vte → CRDT path the live terminal uses every
+/// frame.
 fn drive_live_shell(
     widget: &mut TerminalWidget,
     doc: &mut automerge::AutoCommit,
@@ -239,14 +270,23 @@ fn drive_live_shell(
         widget.sync(doc, root);
         std::thread::sleep(Duration::from_millis(40));
     }
-    // A short demo: identify the shell, print some content, and end with a
-    // green "done" so the shot shows real SGR-coloured output.
+    // Replace the host's prompt (it differs per machine) with a fixed one and
+    // start from a clean screen, so the shot reads the same everywhere.
     #[cfg(unix)]
-    widget.write_input(
-        b"clear; printf 'Tilo terminal - live PTY session\\n'; \
-          printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
-          printf '\\033[1;32mdone\\033[0m\\n'\r",
-    );
+    {
+        widget.write_input(b"PS1='user@tilo ~ $ '; clear\r");
+        for _ in 0..10 {
+            widget.sync(doc, root);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        // A short demo: print some content and end with a green "done" so the
+        // shot shows real SGR-coloured output.
+        widget.write_input(
+            b"echo 'Tilo terminal - live PTY session'\r\
+              echo 'primes below 20: 2 3 5 7 11 13 17 19'\r\
+              tput bold; tput setaf 2; echo done; tput sgr0\r",
+        );
+    }
     #[cfg(windows)]
     widget.write_input(
         b"@echo off\r\ncls\r\necho Tilo terminal - live PTY session\r\necho primes below 20: 2 3 5 7 11 13 17 19\r\necho \x1b[1;32mdone\x1b[0m\r\n",
@@ -254,6 +294,12 @@ fn drive_live_shell(
     for _ in 0..150 {
         widget.sync(doc, root);
         if widget.grid_text().lines().any(|line| line.trim() == "done") {
+            // One more beat so the prompt that follows the last command is in
+            // the frame too.
+            for _ in 0..5 {
+                widget.sync(doc, root);
+                std::thread::sleep(Duration::from_millis(40));
+            }
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -276,6 +322,95 @@ fn apply_demo_selection(widget: &mut TerminalWidget) {
     } else if let Some(row) = widget.find_row_last("done") {
         widget.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
     }
+}
+
+/// Feed the `tui` scenario: an alternate-screen redraw sized to the grid.
+fn feed_tui(widget: &mut TerminalWidget, doc: &mut automerge::AutoCommit, root: &automerge::ObjId) {
+    let (cols, rows) = widget.grid_size();
+    let mut s = String::new();
+    s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
+    // Reverse-video title bar across the top.
+    let title = format!(
+        " {:<width$}",
+        "Tilo EDIT  main.rs  [+]",
+        width = cols.saturating_sub(1)
+    );
+    let _ = write!(s, "\x1b[1;1H\x1b[7m{title}\x1b[0m");
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "demo source text shown verbatim in the tui shot; the braces are \
+                      the sample code's own println! syntax, not a format template here"
+    )]
+    let lines = [
+        "fn start() {",
+        "    // alternate-screen redraw via CSI ?1049h",
+        "    let greeting = \"hello, Tilo\";",
+        "    for i in 0..3 {",
+        "        println!(\"{i}: {greeting}\");",
+        "    }",
+        "}",
+    ];
+    for (i, line) in lines.iter().enumerate() {
+        // Line-number gutter in a dim color, then source text.
+        let _ = write!(
+            s,
+            "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
+            i + 3,
+            i + 1,
+            line
+        );
+    }
+    // A status line on the second-to-last row in reverse video, and
+    // the command line on the last.
+    let status = format!(
+        " {:<width$}",
+        "NORMAL  main.rs  3,17  Top",
+        width = cols.saturating_sub(1)
+    );
+    let _ = write!(
+        s,
+        "\x1b[{};1H\x1b[7m{status}\x1b[0m",
+        rows.saturating_sub(1)
+    );
+    let _ = write!(s, "\x1b[{rows};1H:wq");
+    widget.feed(doc, root, s.as_bytes());
+}
+
+/// Feed long build output, one numbered step per line, so find has scrollback
+/// to search.
+fn feed_build_log(
+    widget: &mut TerminalWidget,
+    doc: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+) {
+    let mut s = String::new();
+    for i in 0..80 {
+        // A terminal LF preserves the current column. Use the shell's
+        // normal CRLF output so this models a readable transcript.
+        let _ = writeln!(s, "{i:>4}  build step {i:03}: compiling terminal search\r");
+    }
+    widget.feed(doc, root, s.as_bytes());
+    widget.sync(doc, root);
+}
+
+/// Feed a short session: a few commands with their output, ending at a prompt.
+fn feed_transcript(
+    widget: &mut TerminalWidget,
+    doc: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+) {
+    let prompt = "\x1b[32muser@tilo\x1b[0m \x1b[34m~/tilo\x1b[0m $ ";
+    let mut s = String::new();
+    let _ = write!(s, "{prompt}git status --short\r\n");
+    s.push_str(" M src/main.rs\r\n M src/session.rs\r\n?? notes.md\r\n");
+    let _ = write!(s, "{prompt}cargo test\r\n");
+    s.push_str("   Compiling tilo-session v0.4.2\r\n");
+    s.push_str("    Finished `test` profile in 3.18s\r\n");
+    s.push_str("     Running unittests src/lib.rs\r\n");
+    s.push_str("test result: ok. 42 passed; 0 failed; 0 ignored\r\n");
+    let _ = write!(s, "{prompt}");
+    widget.feed(doc, root, s.as_bytes());
+    widget.sync(doc, root);
 }
 
 /// Feed a named demo scenario's VT byte sequences through the widget's
@@ -313,45 +448,14 @@ fn run_scenario(
             s.push_str("\r\n\r\n styles:         ");
             s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
             s.push_str("\r\n foreground:     ");
-            s.push_str("\x1b[38;2;255;90;90mred \x1b[38;2;90;220;120mgreen \x1b[38;2;110;160;255mblue\x1b[0m\r\n");
-            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, Tilo\"\x1b[0m\r\n");
+            s.push_str("\x1b[38;2;214;62;62mred \x1b[38;2;34;150;78mgreen \x1b[38;2;52;108;220mblue\x1b[0m\r\n");
+            s.push_str("\r\n$ \x1b[32mecho\x1b[0m \x1b[33m\"hello, Tilo\"\x1b[0m\r\n");
             widget.feed(doc, root, s.as_bytes());
         }
-        // A full-screen alternate-screen redraw resembling a text editor.
-        "tui" => {
-            let mut s = String::new();
-            s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
-            // Reverse-video title bar across the top.
-            s.push_str("\x1b[1;1H\x1b[7m Tilo EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
-            #[allow(
-                clippy::literal_string_with_formatting_args,
-                reason = "demo source text shown verbatim in the tui shot; the braces are \
-                          the sample code's own println! syntax, not a format template here"
-            )]
-            let lines = [
-                "fn start() {",
-                "    // alternate-screen redraw via CSI ?1049h",
-                "    let greeting = \"hello, Tilo\";",
-                "    for i in 0..3 {",
-                "        println!(\"{i}: {greeting}\");",
-                "    }",
-                "}",
-            ];
-            for (i, line) in lines.iter().enumerate() {
-                // Line-number gutter in a dim color, then source text.
-                let _ = write!(
-                    s,
-                    "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
-                    i + 3,
-                    i + 1,
-                    line
-                );
-            }
-            // A status line near the bottom in reverse video.
-            s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
-            s.push_str("\x1b[24;1H:wq");
-            widget.feed(doc, root, s.as_bytes());
-        }
+        // A full-screen alternate-screen redraw resembling a text editor,
+        // sized to the grid so its bars span the window and its status line
+        // sits on the last rows, as a real editor draws them.
+        "tui" => feed_tui(widget, doc, root),
         // Long output, then scrolled back so history is on screen.
         "scrollback" => {
             let mut s = String::new();
@@ -369,20 +473,47 @@ fn run_scenario(
         // Search state is explicitly local and is shown over real retained
         // scrollback, not a fabricated remote/agent transcript operation.
         "find" => {
-            let mut s = String::new();
-            for i in 0..80 {
-                // A terminal LF preserves the current column. Use the shell's
-                // normal CRLF output so this models a readable transcript.
-                let _ = writeln!(s, "{i:>4}  build step {i:03}: compiling terminal search\r");
-            }
-            widget.feed(doc, root, s.as_bytes());
-            widget.sync(doc, root);
+            feed_build_log(widget, doc, root);
             widget.open_find();
             widget.set_find_query("build step 042");
         }
-        // A command that exits immediately exercises the persistent terminal
-        // lifecycle status, including the reader's EOF transition.
-        "ended" => std::thread::sleep(std::time::Duration::from_millis(50)),
+        // A command that exits exercises the persistent terminal lifecycle
+        // status, including the reader's EOF transition. Wait for the exit and
+        // for the output to land, so the shot is the settled session.
+        "ended" | "ended-empty" => {
+            for _ in 0..100 {
+                widget.sync(doc, root);
+                let printed = name == "ended-empty"
+                    || widget
+                        .grid_text()
+                        .contains("Shell closed by the remote end.");
+                if widget.is_disconnected() && printed {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        }
+        // A session with a selected line and the Copy on select preference on:
+        // the menu offers Copy, and the preference shows its check mark.
+        "menu-selection" => {
+            feed_transcript(widget, doc, root);
+            widget.set_select_to_copy(true);
+            if let Some(row) = widget.find_row_last("test result:") {
+                let (cols, _) = widget.grid_size();
+                widget.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
+            }
+            widget.open_context_menu_at(Point::new(300.0, 230.0));
+        }
+        // A query nothing in the scrollback matches.
+        "find-none" => {
+            feed_build_log(widget, doc, root);
+            widget.set_find_query("segmentation fault");
+        }
+        // A query that matches several lines, with the first one current.
+        "find-many" => {
+            feed_build_log(widget, doc, root);
+            widget.set_find_query("step 04");
+        }
         // Context-menu rendering must work before the first PTY byte arrives;
         // this is deliberately distinct from a content-filled menu shot.
         "empty-menu" => widget.open_context_menu_at(Point::new(24.0, 24.0)),
