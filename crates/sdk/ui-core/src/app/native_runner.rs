@@ -3338,6 +3338,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
+        if self.app.open_requested_palette() {
+            request_primary_redraw();
+        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
