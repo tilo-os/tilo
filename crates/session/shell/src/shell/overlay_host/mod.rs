@@ -369,6 +369,19 @@ struct OverlayInputs {
     now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
 }
 
+/// How long a launchpad app card waits for the Applications index to take
+/// in the installed apps after boot before falling back to the launcher.
+const LAUNCHPAD_APP_RESOLVE_WINDOW: Duration = Duration::from_secs(5);
+/// How often a waiting launchpad app card asks the index again.
+const LAUNCHPAD_APP_RETRY: Duration = Duration::from_millis(25);
+
+/// A launchpad app card chosen before its app resolved.
+struct PendingLaunchpadApp {
+    app_id: &'static str,
+    display_name: &'static str,
+    give_up_at: Instant,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independently-toggled, documented piece of overlay/transition \
@@ -453,6 +466,9 @@ pub struct ShellOverlayHost {
     /// user presses Enter. Their tickets are polled at frame refresh without
     /// ever blocking the compositor on a broker RPC.
     pending_action_admissions: Vec<(String, crate::shell::search::PendingInvocation)>,
+    /// A launchpad app card awaiting the Applications index; see
+    /// [`Self::retry_pending_launchpad_app`].
+    pending_launchpad_app: Option<PendingLaunchpadApp>,
     /// `palette.query()` after the last fan-out; refresh is
     /// short-circuited when this still matches.
     last_search_query: String,
@@ -1992,6 +2008,7 @@ impl ShellOverlayHost {
             search_results: Vec::new(),
             pending_palette_action: None,
             pending_action_admissions: Vec::new(),
+            pending_launchpad_app: None,
             last_search_query: String::new(),
             last_search_revision: String::new(),
             active_kind_filter: Vec::new(),
@@ -3914,7 +3931,8 @@ impl ShellOverlayHost {
     }
 
     /// Shell chrome on screen that holds a secret: the administrator
-    /// authentication and network-secrets sheets, the quick-settings pane
+    /// authentication and network-secrets sheets, a shortcut step that asks
+    /// for a secret answer, the quick-settings pane
     /// while it asks for a Wi-Fi passphrase, the display sheet while it asks
     /// for an `AirPlay` PIN or password, a Bluetooth pairing dialog, and the
     /// setup steps that restore or back up the identity (passphrases and a
@@ -3930,13 +3948,8 @@ impl ShellOverlayHost {
         {
             rects.push(rect);
         }
-        if self.portal_dialogs.view().is_some_and(|view| {
-            matches!(
-                view,
-                crate::shell::portal_dialog::DialogView::Authentication { .. }
-                    | crate::shell::portal_dialog::DialogView::NetworkSecrets { .. }
-            )
-        }) && let Some(layout) = self.portal_dialogs.layout(self.rect)
+        if self.portal_dialogs.holds_secret()
+            && let Some(layout) = self.portal_dialogs.layout(self.rect)
         {
             rects.push(layout.sheet);
         }
@@ -7156,56 +7169,101 @@ impl ShellOverlayHost {
         self.refresh_search_results(doc, root);
     }
 
+    /// Open `app_id` from its launchpad card through the Applications
+    /// provider's typed `applications/<package id>` action, the same row the
+    /// launcher's Enter fires. A card chosen before that provider's index has
+    /// taken in the installed apps is retried each tick rather than handing
+    /// the person a pre-filled launcher to confirm.
     fn open_launchpad_app(
+        &mut self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        app_id: &'static str,
+        display_name: &'static str,
+    ) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
+        self.pending_launchpad_app = None;
+        if !self.invoke_launchpad_app(doc, root, app_id, display_name) {
+            self.pending_launchpad_app = Some(PendingLaunchpadApp {
+                app_id,
+                display_name,
+                give_up_at: Instant::now()
+                    .checked_add(LAUNCHPAD_APP_RESOLVE_WINDOW)
+                    .unwrap_or_else(Instant::now),
+            });
+        }
+    }
+
+    /// Retry a launchpad app card the Applications index could not resolve
+    /// yet. Past [`LAUNCHPAD_APP_RESOLVE_WINDOW`] the app is genuinely absent
+    /// from this catalogue, so the launcher opens filtered to it instead.
+    fn retry_pending_launchpad_app(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+        let Some(pending) = self.pending_launchpad_app.take() else {
+            return;
+        };
+        if self.invoke_launchpad_app(doc, root, pending.app_id, pending.display_name) {
+            return;
+        }
+        if Instant::now() < pending.give_up_at {
+            self.pending_launchpad_app = Some(pending);
+            return;
+        }
+        self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
+        self.palette.set_query(pending.display_name);
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.last_search_query = "\u{0}launchpad-refresh\u{0}".to_string();
+        self.refresh_search_results(doc, root);
+    }
+
+    /// Invoke the app's own action when the Applications provider resolves
+    /// it: the installed app, or the catalogue offer for one not installed.
+    /// `false` while neither address resolves.
+    fn invoke_launchpad_app(
         &mut self,
         doc: &mut AutoCommit,
         root: &ObjId,
         app_id: &str,
         display_name: &str,
-    ) {
+    ) -> bool {
+        use crate::shell::search::action_api::{AllVisible, ResourceRef};
         let Some(chrome) = self.chrome.clone() else {
-            return;
+            return false;
         };
-        // Ask the same provider as the palette, including its catalogue
-        // fallback, rather than assuming the default image has every app.
-        chrome.borrow_mut().open_target = crate::shell::chrome_state::OpenTarget::Beside;
-        self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
-        self.palette.set_query(display_name);
-        self.last_search_query = "\u{0}launchpad-refresh\u{0}".to_string();
-        self.refresh_search_results(doc, root);
-        let result = self
-            .search_results
-            .iter()
-            .find(|result| {
-                result.provider_id == "applications"
-                    && result.id.eq_ignore_ascii_case(app_id)
-                    && result.params.is_empty()
-            })
-            .cloned();
-        let Some(result) = result else {
-            // Keep a useful, filtered recovery route visible if the current
-            // catalogue genuinely has no exact app.
-            self.palette_visible = true;
-            self.palette.set_focus(true);
-            return;
+        let catalogue_id = format!("app:{app_id}");
+        let resolved = [app_id, catalogue_id.as_str()].into_iter().find_map(|id| {
+            let resource = ResourceRef::new("applications", id);
+            let catalog = {
+                let state = chrome.borrow();
+                self.action_catalog_for_resource(&resource, &state, doc, root, &AllVisible)
+            };
+            catalog.contains(&resource).then_some((catalog, resource))
+        });
+        let Some(action) = resolved
+            .as_ref()
+            .and_then(|(catalog, resource)| catalog.select(resource))
+        else {
+            return false;
         };
-        if let Err(error) = (result.on_open)(
-            doc,
-            root,
-            &chrome,
-            &crate::shell::search::action_api::ActionArgs::none(),
-        ) {
+        match action.invoke_nullary(doc, root, &chrome) {
             // Application actions own their user-facing launch notice (the
             // callback has already translated any typed LaunchError into a
             // bounded, actionable card). Keep this outer launchpad adapter
             // from adding a second raw ActionError card, which used to put
             // paths/backend details into the fixed top-right toast and leave
             // the user with two conflicting errors.
-            Self::report_launchpad_action_failure(display_name, &error);
-        } else {
-            self.palette_visible = false;
-            self.palette.close();
+            Err(error) => Self::report_launchpad_action_failure(display_name, &error),
+            Ok(_) => {
+                if self.palette_visible {
+                    self.palette_visible = false;
+                    self.palette.close();
+                }
+            }
         }
+        true
     }
 
     /// The application action callback owns the user-facing notice for a
@@ -16049,6 +16107,7 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
+        self.retry_pending_launchpad_app(doc, path);
         // Before the resync, so what an action moved is spliced this frame.
         self.run_requested_shortcut_actions();
         self.latch_overview_transition();
@@ -18435,7 +18494,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 8] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -18469,6 +18528,12 @@ impl ShellOverlayHost {
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
+            (
+                "launchpad-app",
+                self.pending_launchpad_app
+                    .as_ref()
+                    .and_then(|_| now.checked_add(LAUNCHPAD_APP_RETRY)),
+            ),
         ]
     }
 
