@@ -805,6 +805,22 @@ fn rail_captions_wrap_before_they_elide() {
         "{lines:?}"
     );
     assert_eq!(lines.concat().replace('-', ""), "Subscriptions");
+
+    // Case `a_long_word_breaks_at_a_syllable_not_a_letter`.
+    let mut broken = 0;
+    for width in [52.0, 60.0, 68.0] {
+        let lines = crate::chrome::rail_caption_lines(&theme, &mut text, "Connections", width);
+        let syllables = crate::text_break::discretionary_hyphen_breaks("Connections", "en-US");
+        if let [head, _] = lines.as_slice() {
+            broken += 1;
+            let cut = head.trim_end_matches('-').len();
+            assert!(
+                syllables.contains(&cut),
+                "{width}: breaks at a syllable boundary {syllables:?}, not inside one: {lines:?}"
+            );
+        }
+    }
+    assert!(broken > 0, "the word is too wide for a narrow rail");
 }
 
 /// Sections handed over before the first layout stand at the navigation
