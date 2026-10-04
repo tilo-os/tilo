@@ -203,7 +203,7 @@ fn history_restore_reconciles_fields_and_rebases_open_forms() {
                 )
                 .unwrap();
             }
-            d.click_named("history-open").unwrap();
+            d.open_history().unwrap();
             select_version(&mut d, selected);
             d.click_named("history-restore").unwrap();
             d.key("Enter");
@@ -278,7 +278,7 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
                 )
                 .unwrap();
             }
-            d.click_named("history-open").unwrap();
+            d.open_history().unwrap();
             select_version(&mut d, selected);
             d.click_named("history-restore").unwrap();
             d.key("Enter");
@@ -335,7 +335,7 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
         let field = d.a11y_node_named("Phone 1").unwrap();
         d.perform_a11y_action(field, &ui::a11y::Action::SetValue("local 222".into()))
             .unwrap();
-        d.click_named("history-open").unwrap();
+        d.open_history().unwrap();
         select_version(&mut d, selected);
         d.click_named("history-restore").unwrap();
         d.key("Enter");
