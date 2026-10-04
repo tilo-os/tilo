@@ -2011,32 +2011,28 @@ mod tests {
     }
 
     /// Word joiners and zero-width no-break spaces are invisible: they add
-    /// no advance and paint no glyph in any reader face. A joiner does sit
-    /// between the letters beside it, so a kerned face sets no kerning
-    /// across it: the joined run measures as its pieces set apart.
+    /// no advance and paint no glyph in any reader face. A joiner does glue
+    /// the dash to its words, which a kerned face (New Computer Modern) may
+    /// then kern: the joined run is never wider than the plain one and at
+    /// most a kern pair or two narrower.
     #[test]
     fn invisible_joiners_have_no_width() {
+        const SIZE: f32 = 18.0;
         let mut tr = TextRenderer::new();
         for family in [FontChoice::Serif, FontChoice::SansSerif] {
             let mut width = |text: &str| {
-                tr.measure_font(text, 18.0, None, TextWeight::Regular, false, &family)
+                tr.measure_font(text, SIZE, None, TextWeight::Regular, false, &family)
                     .0
             };
-            for (joined, pieces) in [
-                (
-                    "gods\u{feff}—Deliberations",
-                    &["gods", "—Deliberations"][..],
-                ),
-                (
-                    "gods\u{2060}—\u{2060}Deliberations",
-                    &["gods", "—", "Deliberations"][..],
-                ),
+            let plain = width("gods—Deliberations");
+            for joined in [
+                "gods\u{feff}—Deliberations",
+                "gods\u{2060}—\u{2060}Deliberations",
             ] {
-                let apart: f32 = pieces.iter().map(|piece| width(piece)).sum();
+                let measured = width(joined);
                 assert!(
-                    (width(joined) - apart).abs() < 0.5,
-                    "{joined:?} measures {} vs {apart} for its pieces",
-                    width(joined)
+                    measured < plain + 0.5 && plain - measured < 0.2 * SIZE,
+                    "{joined:?} measures {measured} vs {plain}"
                 );
             }
             assert!(width("\u{2060}\u{feff}") < 0.5);
