@@ -2,8 +2,6 @@
 
 [collections.default]
 include = ["*"]
-# Browser remains an OS-native WPE integration build.
-exclude = ["browser"]
 
 [collections.desktop]
 extends = ["default"]

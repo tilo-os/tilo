@@ -47,9 +47,6 @@ pub mod browser_tab_strip;
 pub mod browser_tabs;
 pub mod browser_widget;
 pub mod browsing_mode;
-/// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
-#[cfg(feature = "wpe")]
-pub mod compositor;
 mod credentials;
 mod daily_controls;
 pub mod downloads;

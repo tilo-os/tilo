@@ -18,6 +18,21 @@ sys.modules[SPEC.name] = CLIENT
 SPEC.loader.exec_module(CLIENT)
 
 
+class PageServerTests(unittest.TestCase):
+    def test_the_served_page_carries_the_expected_title_and_records_its_fetch(self):
+        import urllib.request
+
+        server, url, requests = CLIENT.serve_page("Engine <check>")
+        try:
+            self.assertTrue(url.startswith("http://127.0.0.1:"))
+            with urllib.request.urlopen(url, timeout=10) as response:
+                body = response.read().decode()
+            self.assertIn("<title>Engine &lt;check&gt;</title>", body)
+            self.assertEqual(requests, ["/"])
+        finally:
+            server.shutdown()
+
+
 class SettingsNetworkTests(unittest.TestCase):
     DEVICES = "ethernet:connected:Wired connection 1\nwifi:connected:caf\\:e\nloopback:connected (externally):lo\n"
 

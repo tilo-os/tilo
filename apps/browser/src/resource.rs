@@ -406,18 +406,6 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserTabs {
             let waker = cx.waker();
             self.engine_handle()
                 .set_waker(Box::new(move || waker.wake()));
-            // Zero-copy GPU compositing: when the engine exports dmabuf frames
-            // (TILO_WEBVIEW_DMABUF=1), a render-thread hook blits the imported
-            // texture over the content rect.
-            #[cfg(feature = "wpe")]
-            if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
-                ui::render_thread::set_frame_post_processor(Box::new(
-                    crate::compositor::WebViewCompositor::new(
-                        self.engine_handle(),
-                        self.content_rect_handle(),
-                    ),
-                ));
-            }
         }
     }
 

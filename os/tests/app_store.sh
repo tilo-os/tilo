@@ -426,9 +426,9 @@ $(printf '%s\n' "$bogus" | sed 's/^/      /')
   fi
 fi
 
-# Thin apps must use the same feature set and package exclusions as CI's default
-# collection. Putting browser/wpe into the image thin graph unified ui/webview
-# into every tapp and added ~1.9 MB of .text versus package-apps (#1158).
+# Thin apps must use the same feature set and package set as CI's default
+# collection: a divergent graph made image thin apps ~1.9 MB of .text larger
+# than package-apps (#1158).
 collection_features="$(python3 "$REPO/tools/apps/app_release.py" --collection default   | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["features"]))')"
 image_features="$(printf '%s' "$feat_line" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
 collection_sorted="$(printf '%s' "$collection_features" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
@@ -440,13 +440,12 @@ else
       collection: $collection_sorted
       a divergent graph is what made image thin apps ~1.9 MB of .text larger than CI"
 fi
-if grep -Eq 'THIN_EXCLUDES="browser"' "$CONTAINERFILE" \
-   && ! grep -Fq 'THIN_BROWSER_FEATURE=",browser/wpe"' "$CONTAINERFILE" \
-   && ! grep -Fq 'APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}"' "$CONTAINERFILE"; then
-  ok "image thin apps always exclude browser (separate WPE runtime), matching the collection"
+if grep -Fq 'if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi' "$CONTAINERFILE" \
+   && ! grep -Eq '^exclude *=.*"browser"' "$REPO/dist/apps/app-collections.toml"; then
+  ok "image thin apps carry the Browser like the default collection, unless the image omits it"
 else
-  bad "image thin-apps step can still pull browser/wpe into the unified collection graph
-      which reintroduces the ~1.9 MB .text gap versus CI (#1158)"
+  bad "the image thin-app package set diverges from the default collection's Browser
+      (it may leave the Browser out only when TILO_WITH_BROWSER=0 omits its engine)"
 fi
 
 # --- nobody may re-enable ashpd's default backend ----------------------------
