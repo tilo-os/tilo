@@ -38,6 +38,7 @@ pub mod actions;
 mod graphics;
 pub mod resource;
 mod scenarios;
+pub mod screen;
 pub mod target;
 
 pub use graphics::TerminalImagePlacement;
