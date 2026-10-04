@@ -409,7 +409,6 @@ speakers-run-microphone-failed = Could not listen: { $reason }
 speakers-run-waiting-for-microphones = Approve on each device that asks, or cancel and switch that microphone off.
 
 # Navigation: sidebar sections, categories and the page heading
-settings-page-eyebrow = SETTINGS
 settings-search-placeholder = Search settings
 settings-section-connectivity = Connectivity
 settings-section-devices = Devices

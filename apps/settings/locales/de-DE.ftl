@@ -409,7 +409,6 @@ speakers-run-microphone-failed = Konnte nicht mithören: { $reason }
 speakers-run-waiting-for-microphones = Erlaube es auf jedem Gerät, das fragt, oder brich ab und schalte das Mikrofon aus.
 
 # Navigation: sidebar sections, categories and the page heading
-settings-page-eyebrow = EINSTELLUNGEN
 settings-search-placeholder = Einstellungen durchsuchen
 settings-section-connectivity = Verbindungen
 settings-section-devices = Geräte

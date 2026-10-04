@@ -115,20 +115,14 @@ fn stack(items: Vec<El>, gap: f32) -> Column {
 /// A category is a real page, not merely the selected row in a navigation
 /// list. Keeping its identity in plain type (rather than another raised card)
 /// establishes where the person is while avoiding the old card-within-page
-/// treatment. The small "Settings" eyebrow also makes the shared shell's
-/// arrow unambiguous on a narrow content screen: it returns to the Settings
-/// list, not to a previous app/window.
+/// treatment. The window already says it is Settings, so the heading carries
+/// no eyebrow label repeating it.
 pub fn page_heading(title: &str, subtitle: &str) -> El {
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(spacing().s1)
-            .push(Box::new(
-                Text::new(&crate::i18n::t("settings-page-eyebrow"))
-                    .with_scaled_size(12.0)
-                    .dimmed(),
-            ))
             .push(Box::new(Text::new(title).with_scaled_size(24.0)))
             .push(Box::new(
                 Text::new(subtitle).with_scaled_size(13.0).dimmed(),
