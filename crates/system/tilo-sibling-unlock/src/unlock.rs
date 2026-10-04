@@ -98,8 +98,8 @@ pub async fn attempt(
     token: &Token,
     material: &Material,
     boot_id: BootId,
-    siblings: &impl Siblings,
-    volume: &impl Volume,
+    siblings: &(impl Siblings + Sync),
+    volume: &(impl Volume + Sync),
     ask_dir: &Path,
     answer_within: Duration,
 ) -> Result<Outcome> {
@@ -120,7 +120,9 @@ pub async fn attempt(
     if !volume.opens(keyslot, &passphrase) {
         return Ok(Outcome::Refused(Refusal::WrongHalf));
     }
-    let deadline = tokio::time::Instant::now() + answer_within;
+    let deadline = tokio::time::Instant::now()
+        .checked_add(answer_within)
+        .context("the answer deadline is out of range")?;
     loop {
         if let Some(ask) = askpass::pending(ask_dir, device).first() {
             askpass::answer(ask, &passphrase)?;

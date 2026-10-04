@@ -226,8 +226,10 @@ mod tests {
 
     #[test]
     fn two_tokens_or_a_bad_slot_fail_closed() {
-        let one = serde_json::to_value(token()).unwrap();
-        let metadata = serde_json::json!({ "tokens": { "0": one.clone(), "1": one } });
+        let metadata = serde_json::json!({ "tokens": {
+            "0": serde_json::to_value(token()).unwrap(),
+            "1": serde_json::to_value(token()).unwrap(),
+        } });
         assert!(from_metadata(&metadata.to_string()).is_err());
 
         let mut bad = token();
