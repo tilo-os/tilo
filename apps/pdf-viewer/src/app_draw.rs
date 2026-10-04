@@ -54,18 +54,17 @@ struct SidebarHits<'a> {
     edit_rect: &'a mut Rect,
 }
 
+/// Where every toolbar control stands. The pages toggle leads the row; the
+/// zoom stepper, find and the review-panel toggle close it; the commands
+/// between are the shared [`ui::widget::Toolbar`], so a command that does not
+/// fit is a zero rect here and a row of its More menu.
 struct ToolbarLayout {
-    /// Toolbar rows this layout occupies: 1, or 2 when the tool strip no
-    /// longer fits between the edge clusters and wraps beneath them.
-    rows: usize,
     toggle_rail: Rect,
     open: Rect,
     save: Rect,
-    /// The segmented tool strip, and each tool's segment inside it.
-    tool_strip: Rect,
+    /// Each tool's toggle, zero while it waits in the More menu.
     tools: Vec<(Tool, Rect)>,
-    /// The marker-colour well beside the strip while a markup tool is armed:
-    /// its pointer target (the painted swatch is centred in it).
+    /// The marker-colour well, while it is in the row.
     colour: Option<Rect>,
     /// The zoom stepper, and its step-out / step-in ends.
     zoom: Rect,
@@ -76,9 +75,81 @@ struct ToolbarLayout {
     toggle_sidebar: Rect,
 }
 
-/// The tool strip's segment labels, in `Tool::ALL` order.
-fn tool_labels() -> Vec<&'static str> {
-    Tool::ALL.iter().map(|tool| tool.label()).collect()
+/// The controls at the toolbar row's two ends, and the band between them.
+struct ToolbarFixed {
+    toggle_rail: Rect,
+    band: Rect,
+    zoom: Rect,
+    zoom_out: Rect,
+    zoom_in: Rect,
+    search: Rect,
+    toggle_sidebar: Rect,
+}
+
+/// The toolbar's item indices, in the order `build_toolbar` pushes them.
+const TB_OPEN: usize = 0;
+const TB_SAVE: usize = 1;
+/// The first tool toggle; the tools follow in `Tool::ALL` order.
+const TB_TOOLS: usize = 3;
+const TB_COLOUR: usize = TB_TOOLS + Tool::ALL.len();
+const TB_FIT: usize = TB_COLOUR + 2;
+
+/// The glyph a tool's toggle shows.
+fn tool_icon(tool: Tool) -> Icon {
+    match tool {
+        Tool::Select => Icon::MousePointer2,
+        Tool::Highlight => Icon::Highlighter,
+        Tool::Ink => Icon::Pencil,
+        Tool::Note => Icon::MessageSquare,
+        Tool::Text => Icon::Type,
+        Tool::Sign => Icon::PenTool,
+    }
+}
+
+/// What the marker-colour well is called: the colour the next mark takes.
+fn marker_colour_name(swatch: Swatch) -> String {
+    format!("Marker colour: {}", swatch_label(swatch))
+}
+
+/// The reader's command row. Overflow takes the lowest priority first and,
+/// among equals, the trailing command first: Open and Save have shortcuts and
+/// leave first, Fit next; the tools and the colour they mark in stay longest.
+/// The commands run nothing themselves: the reader drains
+/// [`ui::widget::Toolbar::take_activated`] through [`toolbar_command`].
+fn build_toolbar() -> ui::widget::Toolbar {
+    let mut bar = ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal)
+        .push_icon(Icon::FolderOpen, "Open PDF", || {})
+        .push_icon(Icon::Download, "Save annotated PDF", || {})
+        .with_priority(1)
+        .push_separator();
+    for tool in Tool::ALL {
+        bar = bar
+            .push_icon_toggle(tool_icon(tool), tool.label(), tool == Tool::Select, || {})
+            .with_priority(3);
+    }
+    bar.push_swatch(
+        render::swatch_color(Swatch::Yellow),
+        &marker_colour_name(Swatch::Yellow),
+        || {},
+    )
+    .with_priority(3)
+    .push_spacer()
+    .push_button(fit_label(FitMode::Page), || {})
+    .with_priority(2)
+}
+
+/// The command behind the toolbar item at `index`.
+fn toolbar_command(index: usize) -> Option<ToolbarHit> {
+    match index {
+        TB_OPEN => Some(ToolbarHit::Open),
+        TB_SAVE => Some(ToolbarHit::Save),
+        TB_COLOUR => Some(ToolbarHit::MarkerColour),
+        TB_FIT => Some(ToolbarHit::Fit),
+        i if (TB_TOOLS..TB_COLOUR).contains(&i) => {
+            Tool::ALL.get(i - TB_TOOLS).copied().map(ToolbarHit::Tool)
+        }
+        _ => None,
+    }
 }
 
 /// The Fit button's label: it names what pressing it does.
@@ -114,130 +185,117 @@ impl PdfApp {
     // ---- pure layout ------------------------------------------------
 
     fn toolbar_layout(&self) -> ToolbarLayout {
-        self.toolbar_layout_for(self.toolbar_rect)
+        let fixed = self.toolbar_fixed();
+        let item = |index: usize| self.toolbar.item_rect(index).unwrap_or(Rect::ZERO);
+        let tools = Tool::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, tool)| (*tool, item(TB_TOOLS + i)))
+            .collect();
+        ToolbarLayout {
+            toggle_rail: fixed.toggle_rail,
+            open: item(TB_OPEN),
+            save: item(TB_SAVE),
+            tools,
+            colour: self.toolbar.item_rect(TB_COLOUR),
+            zoom: fixed.zoom,
+            zoom_out: fixed.zoom_out,
+            zoom_in: fixed.zoom_in,
+            fit: item(TB_FIT),
+            search: fixed.search,
+            toggle_sidebar: fixed.toggle_sidebar,
+        }
     }
 
-    /// The toolbar laid out in `tb`. `recompute_regions` calls this with a
-    /// one-row bar to learn how many rows the width needs; every other caller
-    /// goes through `toolbar_layout` with the bar that was sized from it.
-    fn toolbar_layout_for(&self, tb: Rect) -> ToolbarLayout {
+    /// The controls at the row's two ends, and the band between them that
+    /// the command toolbar takes. Pure geometry from `toolbar_rect`.
+    fn toolbar_fixed(&self) -> ToolbarFixed {
+        let tb = self.toolbar_rect;
         let theme = &self.layout_theme;
-        let row_h = f64::from(theme.tokens.metrics.header_height);
         let control = ButtonFace::height(ControlSize::Regular, theme)
             .max(f64::from(theme.tokens.metrics.min_pointer_target));
         let inset = f64::from(theme.tokens.spacing.s3);
         let related = f64::from(theme.tokens.spacing.rhythm.related);
         let cluster = f64::from(theme.tokens.spacing.rhythm.section);
-        // The edge clusters always live on the first row; `tb` may be two
-        // rows tall, so centre on the row, not on the whole bar.
-        let cy = tb.y0 + row_h / 2.0;
+        let cy = tb.center().y;
         let row =
             |x0: f64, width: f64| Rect::new(x0, cy - control / 2.0, x0 + width, cy + control / 2.0);
-
-        // ---- trailing cluster, right to left ----
-        let mut rx = tb.x1 - inset;
-        let mut place = |width: f64, gap_after: f64| {
-            let r = row(rx - width, width);
-            rx -= width + gap_after;
-            r
-        };
-        let toggle_sidebar = place(control, related);
-        let search = place(control, cluster);
-        let fit = place(self.fit_w, related);
-        let zoom = place(self.zoom_w, 0.0);
-        let right_start = zoom.x0;
+        let toggle_sidebar = row(tb.x1 - inset - control, control);
+        let search = row(toggle_sidebar.x0 - related - control, control);
+        let zoom = row(search.x0 - cluster - self.zoom_w, self.zoom_w);
         let zoom_out = Rect::new(zoom.x0, zoom.y0, zoom.x0 + zoom.height(), zoom.y1);
         let zoom_in = Rect::new(zoom.x1 - zoom.height(), zoom.y0, zoom.x1, zoom.y1);
-
-        // ---- leading cluster ----
         let toggle_rail = row(tb.x0 + inset, control);
-        let open = row(toggle_rail.x1 + cluster, control);
-        let save = row(open.x1 + related, control);
-        let left_end = save.x1;
-
-        // ---- the tool strip, centred on the window ----
-        // The strip stands on the window's centre line; the marker-colour
-        // well of a markup tool hangs off its trailing edge. The well's room
-        // is kept even while it is hidden, so arming a tool never moves the
-        // others. When the edge clusters leave too little room the strip
-        // wraps onto a second row, flush with the bar's leading inset (the
-        // edge the panel toggle and the find bar share), instead of running
-        // under the zoom controls; every command stays reachable.
-        let strip_w = self.tool_strip_w;
-        let well_room = related + control;
-        let lo = left_end + cluster;
-        let hi = right_start - cluster - well_room - strip_w;
-        let (rows, tools_cy, x0, span_x1) = if hi < lo {
-            (2, tb.y0 + row_h * 1.5, tb.x0 + inset, tb.x1 - inset)
-        } else {
-            let centred = tb.center().x - strip_w / 2.0;
-            (1, cy, centred.clamp(lo, hi), right_start - cluster)
-        };
-        let strip_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let tool_strip = Rect::new(
-            x0,
-            tools_cy - strip_h / 2.0,
-            (x0 + strip_w).min(span_x1),
-            tools_cy + strip_h / 2.0,
-        );
-        let n = Tool::ALL.len() as f64;
-        let seg_w = tool_strip.width() / n;
-        let tools = Tool::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                // Both edges from the same expression, so neighbours meet
-                // exactly.
-                let edge = |k: usize| tool_strip.x0 + seg_w * k as f64;
-                (
-                    *t,
-                    Rect::new(edge(i), tool_strip.y0, edge(i + 1), tool_strip.y1),
-                )
-            })
-            .collect();
-
-        let well_x = tool_strip.x1 + related;
-        let colour = (self.tool.annotates() && well_x + control <= span_x1).then(|| {
-            Rect::new(
-                well_x,
-                tools_cy - control / 2.0,
-                well_x + control,
-                tools_cy + control / 2.0,
-            )
-        });
-
-        ToolbarLayout {
-            rows,
+        // The commands start a cluster's gap after the pages toggle and end
+        // one sibling step before the stepper, so Fit reads with the zoom.
+        let band_x0 = toggle_rail.x1 + cluster;
+        let band_x1 = (zoom.x0 - f64::from(theme.tokens.spacing.s3)).max(band_x0);
+        ToolbarFixed {
             toggle_rail,
-            open,
-            save,
-            tool_strip,
-            tools,
-            colour,
+            band: Rect::new(band_x0, toggle_rail.y0, band_x1, toggle_rail.y1),
             zoom,
             zoom_out,
             zoom_in,
-            fit,
             search,
             toggle_sidebar,
         }
     }
 
-    /// Measure the toolbar's text-sized controls (the tool strip, the Fit
-    /// button and the zoom stepper) in `theme`, so the pure layout above
-    /// places them at the width they paint at. Re-lays the regions out when a
+    /// Carry the reader's state onto the toolbar's commands (which tool is
+    /// armed, the marker colour, the Fit label, what is enabled). Touches the
+    /// toolbar only when something changed, so an open More menu keeps its
+    /// hover.
+    fn sync_toolbar(&mut self) {
+        let has_doc = self.has_document;
+        let can_save = has_doc && self.raster_active();
+        let signature = format!(
+            "{has_doc}:{can_save}:{}:{}:{:?}:{}:{}",
+            self.pending_open.is_none(),
+            self.pages_dirty,
+            self.tool,
+            self.swatch.key(),
+            fit_label(self.fit),
+        );
+        if signature == self.toolbar_synced {
+            return;
+        }
+        self.toolbar_synced = signature;
+        let bar = &mut self.toolbar;
+        // A pending open owns the document slot; a second picker would only
+        // compete with it.
+        bar.set_enabled(TB_OPEN, self.pending_open.is_none());
+        bar.set_enabled(TB_SAVE, can_save);
+        // Unsaved page edits (reorder, delete, duplicate, import): Save
+        // carries the toolkit's dot.
+        bar.set_dot(TB_SAVE, can_save && self.pages_dirty);
+        for (i, tool) in Tool::ALL.iter().enumerate() {
+            bar.set_active(TB_TOOLS + i, *tool == self.tool);
+            bar.set_enabled(TB_TOOLS + i, has_doc);
+        }
+        bar.set_swatch(
+            TB_COLOUR,
+            render::swatch_color(self.swatch),
+            &marker_colour_name(self.swatch),
+        );
+        bar.set_enabled(TB_COLOUR, has_doc);
+        bar.set_label(TB_FIT, fit_label(self.fit));
+        bar.set_enabled(TB_FIT, has_doc);
+    }
+
+    /// Place the command toolbar in its band from the cached measurements
+    /// (the layout pass has no renderer).
+    fn lay_out_toolbar(&mut self) {
+        self.sync_toolbar();
+        self.toolbar_band = self.toolbar_fixed().band;
+        let theme = self.layout_theme.clone();
+        self.toolbar.lay_out_at(self.toolbar_band, &theme);
+    }
+
+    /// Measure the zoom stepper and the review panel's tabs in `theme`, and
+    /// the command toolbar with them, so the pure layout above places them at
+    /// the width they paint at. Re-lays the regions out when the stepper's
     /// width changed (a theme or text-scale change).
     fn measure_toolbar(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let labels = tool_labels();
-        let strip = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, theme);
-        let fit = ["Fit page", "Fit width"]
-            .iter()
-            .map(|label| {
-                ButtonFace::new(Rect::ZERO, label)
-                    .role(ButtonRole::Plain)
-                    .intrinsic_width(tr, theme)
-            })
-            .fold(0.0, f64::max);
         let zoom = self.zoom_input.preferred_width(theme, tr);
         // Tabs pack from the leading edge, each as wide as its label.
         let tab_widths = [false, true].map(|short| {
@@ -253,16 +311,13 @@ impl PdfApp {
             [0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width))
         });
         self.tab_widths = Some(tab_widths);
-        let changed = (strip - self.tool_strip_w).abs() > 0.5
-            || (fit - self.fit_w).abs() > 0.5
-            || (zoom - self.zoom_w).abs() > 0.5;
-        if changed {
-            self.tool_strip_w = strip;
-            self.fit_w = fit;
+        if (zoom - self.zoom_w).abs() > 0.5 {
             self.zoom_w = zoom;
             self.recompute_regions();
             self.sync_viewport_frame();
         }
+        self.sync_toolbar();
+        self.toolbar.lay_out_in(self.toolbar_band, tr, theme);
     }
 
     /// Every tooltip-able toolbar button as `(label, anchor-rect)`. Used both
@@ -285,9 +340,9 @@ impl PdfApp {
             for (t, r) in &lay.tools {
                 out.push((format!("{} ({})", t.label(), t.hotkey()), *r));
             }
-        }
-        if let Some(r) = lay.colour {
-            out.push((format!("Marker colour: {}", swatch_label(self.swatch)), r));
+            if let Some(r) = lay.colour {
+                out.push((marker_colour_name(self.swatch), r));
+            }
         }
         out.push(("Find in document (Ctrl+F)".to_string(), lay.search));
         out.push((
@@ -1668,7 +1723,9 @@ impl PdfApp {
     // ---- toolbar ----------------------------------------------------
 
     /// The window's toolbar row: no fill of its own (it stands on the content
-    /// ground) and one hairline under it; every control is a framework face.
+    /// ground) and one hairline under it. The pages toggle, the zoom stepper,
+    /// find and the review-panel toggle hold the ends; the shared toolbar
+    /// holds the commands between and moves what does not fit into More.
     fn draw_toolbar(
         &mut self,
         scene: &mut Scene,
@@ -1688,116 +1745,30 @@ impl PdfApp {
                 lay.toggle_rail,
                 Icon::PanelLeft,
                 "Show or hide pages",
-                !has_doc,
                 self.show_rail,
-            ),
-            (
-                lay.open,
-                Icon::FolderOpen,
-                "Open PDF",
-                self.pending_open.is_some(),
-                false,
-            ),
-            (
-                lay.save,
-                Icon::Download,
-                "Save annotated PDF",
-                !(has_doc && self.raster_active()),
-                false,
             ),
             (
                 lay.search,
                 Icon::Search,
                 "Find in document",
-                !has_doc,
                 self.search_active,
             ),
             (
                 lay.toggle_sidebar,
                 Icon::PanelRight,
                 "Show or hide the review panel",
-                !has_doc,
                 self.show_sidebar,
             ),
         ];
-        for (rect, icon, name, disabled, on) in buttons {
+        for (rect, icon, name, on) in buttons {
             let face = ButtonFace::icon_only(rect, icon, name)
-                .toggled(on && !disabled)
-                .hovered(hover(rect) && !disabled)
-                .disabled(disabled);
+                .toggled(on && has_doc)
+                .hovered(hover(rect) && has_doc)
+                .disabled(!has_doc);
             Button::paint(scene, base, tr, theme, &face);
         }
-        // Unsaved page edits (reorder / delete / duplicate / import): the
-        // Save button carries the toolkit's dot badge at its corner.
-        if self.pages_dirty && has_doc && self.raster_active() {
-            let dot = &mut self.unsaved_dot;
-            let probe = Rect::new(lay.save.x1, lay.save.y0, lay.save.x1, lay.save.y0);
-            dot.layout(probe, theme, tr);
-            let side = dot.widget().get_rect().width();
-            dot.layout(
-                probe.with_origin((lay.save.x1 - side, lay.save.y0)),
-                theme,
-                tr,
-            );
-            dot.draw(scene, base, tr, theme, &PresenceCtx::empty());
-        }
 
-        self.draw_toolbar_controls(scene, base, tr, theme, &lay);
-    }
-
-    /// The toolbar's tool strip, marker swatches, zoom stepper and Fit.
-    fn draw_toolbar_controls(
-        &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lay: &ToolbarLayout,
-    ) {
-        let has_doc = self.has_document;
-        // The tool strip: a segmented control, inert until a document is open.
-        let labels = tool_labels();
-        let rects: Vec<Rect> = lay.tools.iter().map(|(_, r)| *r).collect();
-        let selected = Tool::ALL.iter().position(|t| *t == self.tool).unwrap_or(0);
-        let hovered = has_doc
-            .then(|| rects.iter().position(|r| r.contains(self.last_mouse)))
-            .flatten();
-        if !has_doc {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                ui::widget::DISABLED_ALPHA,
-                base,
-                &lay.tool_strip.inflate(2.0, 2.0),
-            );
-        }
-        ToggleGroup::paint(
-            scene,
-            base,
-            tr,
-            theme,
-            &SegmentedFace::new(&rects, &labels, selected).hovered(hovered),
-        );
-        if !has_doc {
-            scene.pop_layer();
-        }
-
-        // The marker-colour well, while a markup tool is armed: the colour
-        // the next mark takes; it opens the colour popover.
-        if let Some(target) = lay.colour {
-            let side = f64::from(theme.tokens.metrics.icon_md);
-            let well = Rect::from_center_size(target.center(), (side, side));
-            ColorSwatchFace::new(
-                well,
-                render::swatch_color(self.swatch),
-                format!("Marker colour: {}", swatch_label(self.swatch)),
-            )
-            .target_rect(target)
-            .hovered(target.contains(self.last_mouse) || self.marker_colours.is_some())
-            .paint(scene, base, tr, theme);
-        }
-
-        // Zoom stepper and Fit.
+        // The zoom stepper.
         if self.zoom_input_enabled != has_doc {
             self.zoom_input = zoom_stepper(self.zoom() * 100.0, has_doc);
             self.zoom_input_enabled = has_doc;
@@ -1808,11 +1779,11 @@ impl PdfApp {
         self.zoom_input.apply_layout_external(lay.zoom);
         self.zoom_input
             .draw(scene, base, tr, theme, &PresenceCtx::empty());
-        let fit = ButtonFace::new(lay.fit, fit_label(self.fit))
-            .role(ButtonRole::Plain)
-            .hovered(has_doc && lay.fit.contains(self.last_mouse))
-            .disabled(!has_doc);
-        Button::paint(scene, base, tr, theme, &fit);
+
+        // The commands. Their More menu opens inside the window.
+        let presence = PresenceCtx::empty();
+        presence.viewport.set(Some(self.rect));
+        self.toolbar.draw(scene, base, tr, theme, &presence);
     }
 
     // ---- find bar ---------------------------------------------------

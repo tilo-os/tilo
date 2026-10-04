@@ -43,6 +43,9 @@ pub struct ToolbarCommand {
     pub label: String,
     /// Shown instead of the label when present.
     pub icon: Option<crate::icons::Icon>,
+    /// A colour well shown instead of a label or icon (the colour the next
+    /// mark takes); the label is its accessible name and tooltip.
+    pub swatch: Option<vello::peniko::Color>,
     /// `Some` for a toggle; `Some(true)` paints the lift.
     pub active: Option<bool>,
     /// What assistive technology and the More menu call it, when that
@@ -68,6 +71,7 @@ impl ToolbarCommand {
         Self {
             label: label.to_string(),
             icon: None,
+            swatch: None,
             active: None,
             accessible_name: None,
             enabled: true,
@@ -232,6 +236,20 @@ impl Toolbar {
         command.active = Some(active);
         self.push_command(command)
     }
+    /// A colour well (a marker or pen colour): the colour shows in the row,
+    /// pressing it runs `on_click` (open a picker); `name` is its accessible
+    /// name, tooltip and overflow row.
+    #[must_use]
+    pub fn push_swatch(
+        self,
+        color: vello::peniko::Color,
+        name: &str,
+        on_click: impl FnMut() + 'static,
+    ) -> Self {
+        let mut command = ToolbarCommand::new(name, Box::new(on_click));
+        command.swatch = Some(color);
+        self.push_command(command)
+    }
     /// A command that opens `items` as a menu anchored to it (Sort, Insert,
     /// View). In the More menu it is a row with the same nested menu.
     #[must_use]
@@ -345,6 +363,20 @@ impl Toolbar {
             self.measured_scale = None;
             self.menu_indices.clear();
             self.reconcile_menu();
+        }
+    }
+
+    /// Show `color` in the colour well at `index`, named `name`.
+    pub fn set_swatch(&mut self, index: usize, color: vello::peniko::Color, name: &str) {
+        if let Some(command) = self.command_mut(index)
+            && command.swatch.is_some()
+        {
+            command.swatch = Some(color);
+            if command.label != name {
+                name.clone_into(&mut command.label);
+                self.menu_indices.clear();
+                self.reconcile_menu();
+            }
         }
     }
 
@@ -604,7 +636,11 @@ impl Toolbar {
             .iter()
             .enumerate()
             .map(|(index, item)| match item {
-                ToolbarItem::Button(ToolbarCommand { icon: Some(_), .. }) => square,
+                ToolbarItem::Button(command)
+                    if command.icon.is_some() || command.swatch.is_some() =>
+                {
+                    square
+                }
                 ToolbarItem::Button(command) => button(&command.label, text),
                 ToolbarItem::Spacer => Size::ZERO,
                 // A hosted control's size comes from its own layout.
@@ -961,6 +997,8 @@ impl Toolbar {
                             };
                             if let Some(icon) = command.icon {
                                 row = row.with_icon(icon);
+                            } else if command.swatch.is_some() {
+                                row = row.with_icon(crate::icons::Icon::Palette);
                             }
                             // A toggle's row shows its state with the check.
                             if let Some(active) = command.active {
@@ -1494,24 +1532,38 @@ impl Widget for Toolbar {
             };
             match self.items.get(index) {
                 Some(ToolbarItem::Button(command)) => {
-                    let (label, icon, active, enabled, dot, name) = (
+                    let (label, icon, swatch, active, enabled, dot, name) = (
                         command.label.clone(),
                         command.icon,
+                        command.swatch,
                         command.active.unwrap_or(false),
                         command.enabled,
                         command.dot,
                         command.accessible_name.clone(),
                     );
                     let open = self.item_menu.as_ref().is_some_and(|(i, _)| *i == index);
+                    // A colour well is a bare face (its lift on hover and
+                    // press) with the colour standing in for the label.
+                    let (shown, name) = match swatch {
+                        Some(_) => ("", name.as_deref().or(Some(label.as_str()))),
+                        None => (label.as_str(), name.as_deref()),
+                    };
                     self.draw_button(
                         &mut PaintCtx::new(scene, transform, text, theme),
                         Target::Item(index),
-                        &label,
-                        name.as_deref(),
+                        shown,
+                        name,
                         icon,
                         active || open,
                         enabled,
                     );
+                    if let Some(color) = swatch {
+                        let side = f64::from(theme.tokens.metrics.icon_md);
+                        let well = Rect::from_center_size(rect.center(), (side, side));
+                        crate::widget::ColorSwatchFace::new(well, color, &label)
+                            .target_rect(rect)
+                            .paint(scene, transform, text, theme);
+                    }
                     if dot {
                         paint_dot(scene, transform, rect, theme);
                     }
@@ -2119,6 +2171,34 @@ mod tests {
         assert!(tb.has_overflow());
         let reachable = tb.visible_count + tb.menu_indices.iter().flatten().count();
         assert_eq!(reachable, 3);
+    }
+
+    #[test]
+    fn a_colour_well_is_a_square_command_named_for_its_colour() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
+        let green = vello::peniko::Color::from_rgb8(74, 222, 128);
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_swatch(yellow, "Marker colour: Yellow", || {})
+            .push_button("Insert table", || {});
+        tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+        assert_eq!(
+            tb.item_rects[0].width(),
+            f64::from(theme.tokens.metrics.min_pointer_target)
+        );
+        tb.set_swatch(0, green, "Marker colour: Green");
+        assert_eq!(tb.command(0).and_then(|c| c.swatch), Some(green));
+        let node = Widget::accessibility(&tb).expect("toolbar semantics");
+        assert_eq!(
+            node.children[0].name.as_deref(),
+            Some("Marker colour: Green")
+        );
+
+        // Squeezed, the well waits in the More menu under its name.
+        tb.lay_out_in(Rect::new(0.0, 0.0, 60.0, 40.0), &mut text, &theme);
+        assert!(tb.has_overflow());
+        assert!(tb.menu_indices.contains(&Some(0)) || tb.is_shown(0));
     }
 
     /// Build a toolbar with `n` no-op buttons. Convenience for the

@@ -46,7 +46,7 @@ use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::tooltip::Tooltip;
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatch, ColorSwatchFace,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatch,
     ColorSwatchPicker, ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
     DEFAULT_PAN_STEP as KEY_SCROLL_STEP, EmptyState, EmptyStateContent, ListRowFace, MenuItem,
     PAN_SLOP, RowAction, RowLeading, Segment, SegmentedFace, SegmentedStyle, SmallContentAlign,
@@ -753,8 +753,14 @@ pub struct PdfApp {
     context_menu: Option<ContextMenu>,
     /// The marker-colour popover, while it is open over the toolbar.
     marker_colours: Option<ui::widget::Popover<ColorSwatchPicker>>,
-    /// The toolkit dot badge the Save button carries over unsaved page edits.
-    unsaved_dot: ui::widget::Embedded<ui::widget::Badge>,
+    /// The window's command row between the pages toggle and the zoom
+    /// cluster: Open and Save, the annotation tools, the marker colour and
+    /// Fit. What does not fit goes to its More menu.
+    toolbar: ui::widget::Toolbar,
+    /// The band the toolbar is laid out in (see `recompute_regions`).
+    toolbar_band: Rect,
+    /// The reader state last carried onto the toolbar (see `sync_toolbar`).
+    toolbar_synced: String,
     created_counter: i64,
     commit_pending: bool,
     dirty: bool,
@@ -786,10 +792,8 @@ pub struct PdfApp {
     /// paint, hit-testing and the accessibility tree read their tokens from
     /// it, so geometry and paint agree.
     layout_theme: Theme,
-    /// Widths of the toolbar's text-sized controls, measured in the draw
-    /// pass (see `measure_toolbar`).
-    tool_strip_w: f64,
-    fit_w: f64,
+    /// The zoom stepper's width, measured in the draw pass (see
+    /// `measure_toolbar`).
     zoom_w: f64,
     /// The review panel's tab widths as their labels need them, full and
     /// short, measured with the toolbar (`None` until then).
@@ -1272,7 +1276,9 @@ impl PdfApp {
             rail_drag: None,
             context_menu: None,
             marker_colours: None,
-            unsaved_dot: ui::widget::Embedded::new(ui::widget::Badge::dot()),
+            toolbar: build_toolbar(),
+            toolbar_band: Rect::ZERO,
+            toolbar_synced: String::new(),
             created_counter: 100,
             commit_pending: false,
             dirty: true,
@@ -1284,8 +1290,6 @@ impl PdfApp {
             tooltip_pending: false,
             reduce_motion: false,
             layout_theme: Theme::dark(),
-            tool_strip_w: 0.0,
-            fit_w: 0.0,
             zoom_w: 0.0,
             tab_widths: None,
             zoom_input: zoom_stepper(100.0, false),
@@ -1986,13 +1990,11 @@ impl PdfApp {
 
     fn recompute_regions(&mut self) {
         let r = self.rect;
-        // The toolbar is one row unless the tool cluster has to wrap under the
-        // edge clusters; the layout decides that from the width alone, so lay
-        // a one-row bar out and size the real bar to the rows it asks for.
-        let row_h = f64::from(self.layout_theme.tokens.metrics.header_height);
-        let one_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + row_h);
-        let toolbar_h = row_h * self.toolbar_layout_for(one_row).rows as f64;
+        // The toolbar is always one row: commands that do not fit go to its
+        // More menu.
+        let toolbar_h = f64::from(self.layout_theme.tokens.metrics.header_height);
         self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
+        self.lay_out_toolbar();
         let mid_top = r.y0 + toolbar_h;
         // No reserved bottom strip: the page-info bubble floats over the canvas
         // (see `draw_page_bubble`), so the content spans to the window bottom.
@@ -5338,6 +5340,15 @@ impl Widget for PdfApp {
         if self.awaiting_markup_record {
             return;
         }
+        if self.toolbar.shown_menu().is_some() {
+            // The toolbar's open More menu owns input until it closes.
+            self.toolbar.handle_event(event, ctx);
+            self.drain_toolbar(ctx.state);
+            if !matches!(event, WindowEvent::CursorMoved { .. }) {
+                *ctx.handled = true;
+            }
+            return;
+        }
         if let Some(popover) = self.marker_colours.as_mut() {
             // The open colour popover owns input: a swatch chooses the
             // marker colour, a click outside or Escape closes it.
@@ -5412,9 +5423,11 @@ impl Widget for PdfApp {
     }
 
     fn traps_focus(&self) -> bool {
-        self.marker_colours
-            .as_ref()
-            .is_some_and(Widget::traps_focus)
+        self.toolbar.shown_menu().is_some()
+            || self
+                .marker_colours
+                .as_ref()
+                .is_some_and(Widget::traps_focus)
             || self
                 .context_menu
                 .as_ref()
@@ -5422,9 +5435,9 @@ impl Widget for PdfApp {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.marker_colours
-            .as_ref()
-            .and_then(Widget::modal_capture)
+        self.toolbar
+            .modal_capture()
+            .or_else(|| self.marker_colours.as_ref().and_then(Widget::modal_capture))
             .or_else(|| {
                 self.context_menu
                     .as_ref()
@@ -5442,6 +5455,8 @@ impl Widget for PdfApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.toolbar
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
         if let Some(popover) = self.marker_colours.as_mut() {
             popover.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -5530,6 +5545,15 @@ impl Widget for PdfApp {
                 .with_bounds(layout.toggle_sidebar)
                 .with_state(focusable().checked(self.show_sidebar)),
         ];
+        // Commands that went to the More menu keep their nodes (zero bounds)
+        // and actions; the More button, and its menu while open, come from
+        // the toolbar itself.
+        if let Some(bar) = ui::widget::Widget::accessibility(&self.toolbar) {
+            controls.extend(bar.children.into_iter().filter(|child| {
+                child.role == Role::Menu
+                    || child.action_target.as_deref() == Some("toolbar.overflow")
+            }));
+        }
         controls.extend(layout.tools.iter().map(|(tool, bounds)| {
             AccessNode::new(Role::ToggleButton)
                 .with_name(tool.label())
@@ -5855,6 +5879,17 @@ impl Widget for PdfApp {
             if !still_open {
                 self.context_menu = None;
             }
+            return handled;
+        }
+        if target.starts_with("toolbar.") {
+            let handled = ui::widget::Widget::perform_semantic_action(
+                &mut self.toolbar,
+                target,
+                action,
+                state,
+                path,
+            );
+            self.drain_toolbar(state);
             return handled;
         }
         if target.starts_with("find-") {

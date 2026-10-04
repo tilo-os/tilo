@@ -221,9 +221,13 @@ impl PdfApp {
     /// Open the marker-colour popover under its well: the five marker
     /// colours, the armed one chosen.
     fn open_marker_colours(&mut self) {
-        let Some(well) = self.toolbar_layout().colour else {
-            return;
-        };
+        // From the well in the row, or from the More menu's end of the row
+        // when the well waits there.
+        let band = self.toolbar_band;
+        let well = self
+            .toolbar_layout()
+            .colour
+            .unwrap_or_else(|| Rect::new(band.x1 - band.height(), band.y0, band.x1, band.y1));
         let swatches = Swatch::ALL
             .iter()
             .map(|s| ColorSwatch::named(render::swatch_color(*s), swatch_label(*s)));
@@ -292,6 +296,33 @@ impl PdfApp {
         self.find_bar = bar;
         if close {
             self.close_search();
+        }
+        self.dirty = true;
+    }
+
+    /// Feed one event to the command toolbar, then run the command it
+    /// activated (by pointer, keyboard or its More menu).
+    fn route_toolbar(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let bar = &mut self.toolbar;
+        let took = Self::with_local_ctx(scale, modifiers, state, |ctx| {
+            ui::widget::Widget::handle_event(bar, event, ctx);
+            *ctx.handled
+        })
+        .unwrap_or(false);
+        self.drain_toolbar(state);
+        took
+    }
+
+    /// Run the command the toolbar activated last, if any.
+    fn drain_toolbar(&mut self, state: &mut AutoCommit) {
+        if let Some(hit) = self.toolbar.take_activated().and_then(toolbar_command) {
+            self.apply_toolbar(&hit, state);
         }
         self.dirty = true;
     }
@@ -597,6 +628,7 @@ impl PdfApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
+                self.route_toolbar(event, scale_factor, modifiers, state);
                 if self.search_active {
                     self.route_find_bar(event, scale_factor, modifiers, state);
                 }
@@ -611,6 +643,15 @@ impl PdfApp {
                 ..
             } => {
                 self.on_left_press(event, scale_factor, modifiers, state, handled);
+            }
+
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if ui::widget::Widget::wants_pointer_capture(&self.toolbar) => {
+                self.route_toolbar(event, scale_factor, modifiers, state);
+                *handled = true;
             }
 
             WindowEvent::MouseInput {
@@ -883,6 +924,13 @@ impl PdfApp {
             if let Some(percent) = self.zoom_input.take_changed() {
                 self.set_custom_zoom(percent / 100.0);
             }
+        }
+        // The commands between the row's ends are the shared toolbar's: it
+        // presses, activates on release and opens its More menu.
+        if self.toolbar_band.contains(p) {
+            self.route_toolbar(event, scale_factor, modifiers, state);
+            *handled = true;
+            return true;
         }
         if let Some(hit) = self.toolbar_hit(p) {
             if matches!(hit, ToolbarHit::ZoomValue) {
@@ -1715,6 +1763,7 @@ mod event_tests {
             let btn = centre(*rect);
             self.move_to((btn.x, btn.y));
             self.press();
+            self.release();
             assert_eq!(self.app.tool, tool, "{why}");
         }
 
@@ -1833,36 +1882,29 @@ mod event_tests {
             "left inset {left} != right inset {right}"
         );
 
-        // At 480px the tool cluster cannot fit between Open/Save and the zoom
-        // controls, so it wraps onto a second toolbar row: the bar grows to two
-        // rows, the canvas starts beneath it, no two controls overlap and every
-        // control stays inside the bar. At desktop width the bar is one row.
+        // The bar is one row at every width: at 1280px every command stands
+        // in it; at 480px the commands that do not fit go to the More menu
+        // instead of wrapping. The canvas starts under the row, no two
+        // controls overlap and every control stays inside the bar.
         let (mut app, _st) = sample_app();
-        app.tool = Tool::Highlight; // swatches visible when there is room
-        for (width, rows) in [(1280.0, 1_usize), (480.0, 2)] {
+        app.tool = Tool::Highlight;
+        let header = f64::from(app.layout_theme.tokens.metrics.header_height);
+        for (width, overflows) in [(1280.0, false), (480.0, true)] {
             app.rect = Rect::new(0.0, 0.0, width, 900.0);
             app.recompute_regions();
             let lay = app.toolbar_layout();
-            assert_eq!(lay.rows, rows, "rows at {width}px");
             let tb = app.toolbar_rect;
-            assert!(
-                (tb.height()
-                    - f64::from(app.layout_theme.tokens.metrics.header_height) * rows as f64)
-                    .abs()
-                    < 1e-9,
-                "toolbar height {} follows its rows at {width}px",
-                tb.height()
-            );
+            assert!((tb.height() - header).abs() < 1e-9, "one row at {width}px");
             assert!(
                 (app.canvas_rect.y0 - tb.y1).abs() < 1e-9,
-                "the canvas starts under the whole bar at {width}px"
+                "the canvas starts under the bar at {width}px"
+            );
+            assert_eq!(
+                app.toolbar.has_overflow(),
+                overflows,
+                "More menu at {width}px"
             );
             let controls = toolbar_controls(&lay);
-            assert_eq!(
-                lay.tools.len(),
-                Tool::ALL.len(),
-                "every tool is laid out at {width}px"
-            );
             for (name, r) in &controls {
                 assert!(
                     r.x0 >= tb.x0 && r.x1 <= tb.x1 && r.y0 >= tb.y0 && r.y1 <= tb.y1,
@@ -1877,6 +1919,13 @@ mod event_tests {
                         "{a_name} {a:?} overlaps {b_name} {b:?} at {width}px"
                     );
                 }
+            }
+            if !overflows {
+                assert_eq!(
+                    controls.len(),
+                    Tool::ALL.len() + 8,
+                    "every control stands in the row at {width}px"
+                );
             }
         }
 
@@ -1893,34 +1942,50 @@ mod event_tests {
     }
 
     #[test]
-    fn tool_strip_centres_on_the_window_and_wraps_flush_with_the_leading_edge() {
-        // On a desktop window the tool strip stands on the window's centre
-        // line, and arming a markup tool shows its colour well without
-        // moving the strip; the well opens the colour popover.
+    fn narrow_toolbar_keeps_the_tools_and_moves_file_commands_into_more() {
+        // The colour well stands beside the tools and opens the colour
+        // popover.
         let (mut app, mut st) = sample_app();
-        let resting = app.toolbar_layout();
-        assert!(
-            (resting.tool_strip.center().x - app.toolbar_rect.center().x).abs() < 0.5,
-            "strip {:?} is centred in the bar {:?}",
-            resting.tool_strip,
-            app.toolbar_rect
-        );
-        assert!(resting.colour.is_none(), "Select shows no colour well");
-        app.set_tool(Tool::Highlight);
-        let armed = app.toolbar_layout();
-        assert_eq!(armed.tool_strip, resting.tool_strip, "arming moves nothing");
-        let well = armed.colour.expect("a markup tool shows its colour well");
+        let well = app.toolbar_layout().colour.expect("the colour well");
         let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
         app.apply_toolbar(&hit, &mut st.doc);
         assert!(app.marker_colours.is_some(), "the well opens the popover");
 
-        // A narrow window wraps the strip onto a second row that starts on
-        // the bar's leading inset, the edge the panel toggle stands on.
+        // An 800px window keeps every tool and the colour in the row; Open
+        // and Save, which have shortcuts, are the first into the More menu,
+        // and every command stays reachable from it.
+        let (mut app, mut st) = sample_app();
         app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         app.recompute_regions();
-        let narrow = app.toolbar_layout();
-        assert_eq!(narrow.rows, 2);
-        assert!((narrow.tool_strip.x0 - narrow.toggle_rail.x0).abs() < 1e-9);
+        let lay = app.toolbar_layout();
+        assert!(lay.tools.iter().all(|(_, r)| r.width() > 0.0));
+        assert!(lay.colour.is_some());
+        assert!(lay.open.width() <= 0.0, "Open folds first");
+        assert!(app.toolbar.has_overflow());
+        app.toolbar.open_overflow();
+        assert!(app.toolbar.shown_menu().is_some());
+        // The open menu owns input; Escape closes it.
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = Modifiers::default();
+        ui::widget::Widget::handle_event(
+            &mut app,
+            &key_event(Key::Named(NamedKey::Escape)),
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut st.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
+        );
+        assert!(handled, "the menu took the key");
+        assert!(app.toolbar.shown_menu().is_none(), "Escape closes it");
     }
 
     /// Scrolling and zooming through the real `handle_event` dispatch, not the
