@@ -19,13 +19,11 @@
 # for every table is empty.
 
 [ratchets.app_action_host]
-"apps/api-tester/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
 "apps/calendar/src/resource.rs" = 1
 "apps/chat/src/resource.rs" = 2
 "apps/code-editor/src/resource.rs" = 2
 "apps/contacts/src/resource.rs" = 2
-"apps/diffmerge/src/resource.rs" = 2
 "apps/ebook/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
 "apps/imager/src/resource.rs" = 2
@@ -45,15 +43,11 @@
 "apps/video-player/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
-"apps/api-tester/src/lib.rs" = 2
-"apps/api-tester/src/main.rs" = 2
 "apps/calendar/src/main.rs" = 1
 "apps/chat/src/main.rs" = 1
 "apps/code-editor/src/main.rs" = 1
 "apps/contacts/src/lib.rs" = 2
 "apps/contacts/src/main.rs" = 1
-"apps/diffmerge/src/lib.rs" = 2
-"apps/diffmerge/src/main.rs" = 2
 "apps/ebook/src/main.rs" = 1
 "apps/imager/src/main.rs" = 1
 "apps/mail/src/main.rs" = 2
@@ -83,7 +77,6 @@
 "apps/browser/src/browser_widget.rs" = 1
 "apps/calendar/src/store.rs" = 1
 "apps/contacts/src/framework_history.rs" = 1
-"apps/diffmerge/src/framework_history.rs" = 1
 "apps/music/src/doc.rs" = 1
 "apps/notes/src/actions.rs" = 1
 "apps/notes/src/framework_history.rs" = 1

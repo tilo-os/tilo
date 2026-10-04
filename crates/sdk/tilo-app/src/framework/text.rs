@@ -175,7 +175,7 @@ impl<W: EditsText> TextControl<W> {
 
 // The control's layout, drawing and input are its own; the wrapper binds it
 // to the text before each sync and turns its edits into splices after.
-impl<W: EditsText> Decorator for TextControl<W> {
+impl<W: EditsText + 'static> Decorator for TextControl<W> {
     type Inner = W;
 
     fn inner(&self) -> &W {
@@ -184,6 +184,19 @@ impl<W: EditsText> Decorator for TextControl<W> {
 
     fn inner_mut(&mut self) -> &mut W {
         &mut self.control
+    }
+
+    // The host routes focused input and accessibility actions through the
+    // node map: they reach the wrapper, which submits what they edited.
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui_core::taffy::TaffyTree<()>,
+        theme: &ui_core::theme::Theme,
+        node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui_core::taffy::NodeId {
+        let node = self.control.build_layout(taffy, theme, node_map);
+        ui_core::widget::decorator::register_node(node_map, node, self);
+        node
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
