@@ -5,7 +5,7 @@
 //! typed [`ReviewAction`] to the document.
 
 use tilo_doc::snapshot::{ChangeKind, ChangeView, CommentView};
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use ui::icons::Icon;
@@ -69,16 +69,21 @@ pub(super) enum ReviewAction {
     OpenCommentThread(String),
 }
 
-/// Where the margin cards go this frame: the column beside the page and the
-/// paper the comment pips land on, in the markers' space.
+/// Where the margin cards go this frame. The cards are chrome beside the
+/// page and stand in window space at the window's own scale; only their
+/// anchors come from the page, whose content space `to_window` maps.
 pub(super) struct ReviewPlacement {
     /// The visible canvas (the cards never leave it).
     pub(super) canvas: Rect,
     /// The page sheet's trailing edge.
     pub(super) page_x1: f64,
-    /// The sheet's colour, for the comment pips.
-    pub(super) paper: Color,
+    /// The page's content space to the window.
+    pub(super) to_window: Affine,
 }
+
+/// The anchors of the review items painted this frame: `(id, y, x)` in
+/// the page's content space.
+pub(super) type Markers<'a> = &'a [(String, f64, f64)];
 
 pub(super) struct ReviewOverlay {
     comments: Vec<CommentView>,
@@ -86,6 +91,9 @@ pub(super) struct ReviewOverlay {
     visible: bool,
     hits: Vec<(Rect, ReviewAction)>,
     pointer: Point,
+    /// The slot held for the comment whose thread is open, where the host
+    /// draws the expanded thread instead of the card.
+    expanded_slot: Option<Rect>,
 }
 
 impl Default for ReviewOverlay {
@@ -96,6 +104,7 @@ impl Default for ReviewOverlay {
             visible: true,
             hits: Vec::new(),
             pointer: Point::new(f64::NAN, f64::NAN),
+            expanded_slot: None,
         }
     }
 }
@@ -116,9 +125,54 @@ impl MarginCard {
 }
 
 impl ReviewOverlay {
-    pub(super) fn replace(&mut self, comments: Vec<CommentView>, changes: Vec<ChangeView>) {
+    pub(super) fn replace(&mut self, mut comments: Vec<CommentView>, changes: Vec<ChangeView>) {
+        for comment in &mut comments {
+            sort_replies(comment);
+        }
         self.comments = comments;
         self.changes = changes;
+    }
+
+    /// Whether any card shows beside the page this frame.
+    pub(super) fn shows_cards(&self) -> bool {
+        self.visible && !(self.comments.is_empty() && self.changes.is_empty())
+    }
+
+    /// The narrowest and the preferred width of the margin column.
+    pub(super) fn column_widths(theme: &Theme) -> (f64, f64) {
+        let wanted = f64::from(theme.tokens.metrics.sidebar_min_width);
+        (wanted * 0.75, wanted)
+    }
+
+    /// The room the margin column takes beside the page: the column at its
+    /// narrowest, the gaps on either side and the scroll bar's gutter.
+    pub(super) fn column_reserve(theme: &Theme) -> f64 {
+        let (minimum, _) = Self::column_widths(theme);
+        minimum
+            + 2.0 * f64::from(theme.tokens.spacing.s4)
+            + f64::from(theme.tokens.metrics.scrollbar_gutter)
+    }
+
+    /// The margin column, `(x0, width)` in window space: in the room beside
+    /// the page when it fits there, over the sheet's trailing margin
+    /// otherwise (a phone-sized window).
+    pub(super) fn column(theme: &Theme, placement: &ReviewPlacement) -> (f64, f64) {
+        let gap = f64::from(theme.tokens.spacing.s4);
+        let scrollbar = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let (minimum, wanted) = Self::column_widths(theme);
+        let room_x0 = placement.page_x1 + gap;
+        let room_x1 = placement.canvas.x1 - scrollbar - gap;
+        if room_x1 - room_x0 >= minimum {
+            (room_x0, (room_x1 - room_x0).min(wanted))
+        } else {
+            let width = wanted.min(placement.canvas.width() - 2.0 * gap).max(1.0);
+            ((room_x1 - width).max(placement.canvas.x0 + gap), width)
+        }
+    }
+
+    /// Where the open thread stands this frame, if its comment has a card.
+    pub(super) fn expanded_slot(&self) -> Option<Rect> {
+        self.expanded_slot
     }
 
     pub(super) fn comments(&self) -> &[CommentView] {
@@ -169,55 +223,59 @@ impl ReviewOverlay {
         &self.hits
     }
 
-    /// Paint the margin column: one card per comment and tracked change,
-    /// each at its anchor line and never above the card before it, in the
-    /// margin outside the sheet when it fits there (over the sheet's trailing
-    /// margin otherwise), plus a pip at the end of every commented range.
-    pub(super) fn draw(
-        &mut self,
+    /// Paint the pip at the end of every commented range, on the paper
+    /// (`ctx` draws in the page's content space).
+    pub(super) fn draw_pips(
+        &self,
         ctx: &mut PaintCtx<'_>,
-        placement: &ReviewPlacement,
+        paper: Color,
         comment_markers: &[(String, f64, f64)],
-        change_markers: &[(String, f64, f64)],
     ) {
-        self.clear_hits();
         if !self.visible {
             return;
         }
-        let theme = ctx.theme;
-        let gap = f64::from(theme.tokens.spacing.s4);
-        let scrollbar = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let wanted = f64::from(theme.tokens.metrics.sidebar_min_width);
-        let minimum = wanted * 0.75;
-        let room_x0 = placement.page_x1 + gap;
-        let room_x1 = placement.canvas.x1 - scrollbar - gap;
-        let (x0, width) = if room_x1 - room_x0 >= minimum {
-            (room_x0, (room_x1 - room_x0).min(wanted))
-        } else {
-            let width = wanted.min(placement.canvas.width() - 2.0 * gap).max(1.0);
-            ((room_x1 - width).max(placement.canvas.x0 + gap), width)
-        };
-
         for (id, y, right) in comment_markers {
             if let Some(author) = self.comment_author(id) {
-                let mark = ReviewColors::author_mark(theme, placement.paper, author);
+                let mark = ReviewColors::author_mark(ctx.theme, paper, author);
                 draw_pip(ctx, mark, Point::new(*right, *y));
             }
         }
+    }
 
+    /// Paint the margin column (`ctx` draws in window space): one card per
+    /// comment and tracked change, each level with its anchor line and never
+    /// above the card before it. The comment whose thread is open
+    /// (`expanded`: its id and the thread's height) gets a slot of that
+    /// height instead of its card, for the host to draw the thread in.
+    pub(super) fn draw_cards(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        placement: &ReviewPlacement,
+        markers: (Markers<'_>, Markers<'_>),
+        expanded: Option<(&str, f64)>,
+    ) {
+        self.clear_hits();
+        self.expanded_slot = None;
+        if !self.visible {
+            return;
+        }
+        let (comment_markers, change_markers) = markers;
+        let theme = ctx.theme;
+        let (x0, width) = Self::column(theme, placement);
+        let to_window = |y: f64| (placement.to_window * Point::new(0.0, y)).y;
         let mut cards: Vec<MarginCard> = comment_markers
             .iter()
             .filter_map(|(id, y, _)| {
                 self.comments
                     .iter()
                     .find(|comment| &comment.id == id)
-                    .map(|comment| MarginCard::Comment(comment.clone(), *y))
+                    .map(|comment| MarginCard::Comment(comment.clone(), to_window(*y)))
             })
             .chain(change_markers.iter().filter_map(|(id, y, _)| {
                 self.changes
                     .iter()
                     .find(|change| &change.id == id)
-                    .map(|change| MarginCard::Change(change.clone(), *y))
+                    .map(|change| MarginCard::Change(change.clone(), to_window(*y)))
             }))
             .collect();
         cards.sort_by(|a, b| {
@@ -230,9 +288,13 @@ impl ReviewOverlay {
         for card in &cards {
             let top = card.anchor().max(next_y);
             let slot = Rect::new(x0, top, x0 + width, top);
-            let height = match card {
-                MarginCard::Comment(comment, _) => self.draw_comment(ctx, slot, comment),
-                MarginCard::Change(change, _) => self.draw_change(ctx, slot, change),
+            let height = match (card, expanded) {
+                (MarginCard::Comment(comment, _), Some((id, height))) if comment.id == id => {
+                    self.expanded_slot = Some(Rect::new(slot.x0, top, slot.x1, top + height));
+                    height
+                }
+                (MarginCard::Comment(comment, _), _) => self.draw_comment(ctx, slot, comment),
+                (MarginCard::Change(change, _), _) => self.draw_change(ctx, slot, change),
             };
             next_y = top + height + seam;
         }
@@ -435,6 +497,14 @@ fn draw_pip(ctx: &mut PaintCtx<'_>, mark: Color, at: Point) {
     let pip = Rect::new(at.x - width / 2.0, at.y, at.x + width / 2.0, at.y + height);
     ctx.scene
         .fill(Fill::NonZero, ctx.transform, mark, None, &pip);
+}
+
+/// Replies in the order they were written (oldest first), ties in their
+/// canonical id order, so every reader sees the conversation the same way.
+pub(super) fn sort_replies(comment: &mut CommentView) {
+    comment
+        .replies
+        .sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.id.cmp(&b.id)));
 }
 
 #[cfg(test)]

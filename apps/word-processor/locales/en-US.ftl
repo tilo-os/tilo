@@ -15,6 +15,16 @@ toolbar-row-add = Add row
 toolbar-row-del = Delete row
 toolbar-col-add = Add column
 toolbar-col-del = Delete column
+toolbar-bold = Bold
+toolbar-italic = Italic
+toolbar-underline = Underline
+toolbar-strikethrough = Strikethrough
+toolbar-superscript = Superscript
+toolbar-subscript = Subscript
+toolbar-size-down = Smaller
+toolbar-size-up = Larger
+toolbar-image = Image
+toolbar-table-delete = Delete table
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
 a11y-group-formatting = Formatting
@@ -125,7 +135,7 @@ panel-line-spacing = Line spacing
 panel-style = Paragraph style
 # Caption under the style name — makes the preset-vs-direct distinction explicit:
 # the toolbar formats the selection; this section edits the shared style.
-panel-style-hint = Changes every "{ $name }" paragraph
+panel-style-hint = Edits below change every paragraph in this style.
 panel-caret-hint = Place the caret in a paragraph
 panel-paragraph-styles = Paragraph styles
 panel-style-properties = Style properties
@@ -158,6 +168,7 @@ panel-image-crop = Crop
 panel-image-crop-inset = Crop edges
 panel-image-crop-reset = Reset
 panel-image-position = Position
+panel-image-inline = In line
 panel-image-free = Free
 panel-image-wrap-left = Left
 panel-image-wrap-right = Right
@@ -194,13 +205,15 @@ outline-untitled = Untitled heading
 ## Page layout (ruler) bottom bar
 layout-margins = Margins
 layout-spacing = Spacing
-layout-margins-readout = Left { $l }   Top { $t }   Right { $r }   Bottom { $b }
+layout-margins-readout = Left { $l } px   Top { $t } px   Right { $r } px   Bottom { $b } px
 layout-spacing-readout = { $name } paragraphs: { $px } px after
 
 ## Canvas
 a11y-document-editor = Document editor
 a11y-group-review = Review suggestions
 a11y-group-image-placement = Image position
+a11y-image-inline = Image in line with text
+a11y-image-inline-description = Keep the image in the text flow, between paragraphs
 a11y-image-free-position = Free image position
 a11y-image-free-position-description = Place the image freely on the page without wrapping text
 a11y-image-wrap-left = Image left with text wrap

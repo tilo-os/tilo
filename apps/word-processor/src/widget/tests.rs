@@ -5399,10 +5399,10 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                 &theme,
                 &PresenceCtx::empty(),
             );
-            let point = Point::new(
-                wp.toolbar.first().unwrap().1.x0 + 10.0,
-                wp.tool_band.y1 + 6.0 + 28.0 * 2.0 + 10.0,
-            );
+            let point = wp
+                .template_picker
+                .item_center(crate::Template::Report)
+                .expect("the Report row is laid out");
             let mut handled = false;
             wp.lifecycle.dirty = false;
             wp.handle_event(
@@ -7040,7 +7040,10 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
             std::fs::read_to_string(&original).unwrap(),
             "Original on disk"
         );
-        assert!(matches!(wp.toast, Some((_, ToastKind::Error))));
+        assert!(
+            wp.save_error.is_some(),
+            "a failed save shows the error banner"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -7242,8 +7245,8 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
             "a failed save never clears the dirty state"
         );
         assert!(
-            matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))),
-            "the user sees an error toast instead of an stderr-only failure"
+            wp.save_error.is_some(),
+            "the user sees an error banner instead of an stderr-only failure"
         );
     }
 
@@ -7541,7 +7544,10 @@ fn save_and_open_preserve_identity_recovery_and_bytes() {
         assert_eq!(std::fs::read(&destination).unwrap(), b"protected bytes");
         assert_eq!(wp.path.as_deref(), Some(source.as_path()));
         assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
-        assert!(matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))));
+        assert!(
+            wp.save_error.is_some(),
+            "a failed save shows the error banner"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -7791,6 +7797,7 @@ fn image_controls_are_named_and_resize_and_flip() {
             .find(|child| child.node.name.as_deref() == Some("Image position"))
             .expect("selected image placement group is exported");
         let expected = [
+            "Image in line with text",
             "Free image position",
             "Image left with text wrap",
             "Image right with text wrap",
