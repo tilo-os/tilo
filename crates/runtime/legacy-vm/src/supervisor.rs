@@ -24,7 +24,9 @@ use thiserror::Error;
 
 use crate::config::VmConfig;
 use crate::control::{ControlReply, ControlRequest, FRAMING, StatusReport};
-use crate::domain::{attached_tags, filesystem_xml, is_ours, render_domain_xml};
+use crate::domain::{
+    attached_tags, domain_uuid, filesystem_xml, is_ours, render_domain_xml, with_uuid,
+};
 use crate::grants::{Grants, HostShare};
 use crate::lifecycle::{Action, Lifecycle, Phase};
 use crate::memory::actual_mib;
@@ -278,16 +280,22 @@ impl Supervisor {
     }
 
     fn define(&self) -> Result<(), SupervisorError> {
-        if self.virsh.state()? != DomainState::Absent
-            && !is_ours(&self.virsh.dumpxml()?, &self.config)
-        {
-            return Err(SupervisorError::ForeignDomain(
-                self.config.domain_name.clone(),
-            ));
-        }
         let backend = self.backend.ok_or(SupervisorError::NoVsock)?;
-        self.virsh
-            .define(&render_domain_xml(&self.config, backend)?)?;
+        let mut xml = render_domain_xml(&self.config, backend)?;
+        if self.virsh.state()? != DomainState::Absent {
+            let existing = self.virsh.dumpxml()?;
+            if !is_ours(&existing, &self.config) {
+                return Err(SupervisorError::ForeignDomain(
+                    self.config.domain_name.clone(),
+                ));
+            }
+            // Redefining keeps the domain's identity; libvirt refuses a new
+            // definition under the same name with another UUID.
+            if let Some(uuid) = domain_uuid(&existing) {
+                xml = with_uuid(&xml, uuid);
+            }
+        }
+        self.virsh.define(&xml)?;
         Ok(())
     }
 
