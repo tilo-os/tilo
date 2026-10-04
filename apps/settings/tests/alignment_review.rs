@@ -363,7 +363,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     }
 
     // Case `large_text_scales_the_shell_breakpoint_with_the_type`.
-    // Large text needs the room a narrow window does: an 800 px window docks
+    // Large text needs the room a narrow window does: a 900 px window docks
     // the sidebar at 1× and collapses to the single content screen at 200 %,
     // where the breakpoint and the sidebar width have grown with the type.
     {
@@ -371,9 +371,9 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let one_x = config
             .app()
             .with_category(Category::Appearance)
-            .with_width_hint(800.0);
-        let one_x = lay_out(one_x, (800.0, 900.0));
-        assert!(!one_x.is_narrow(), "800 px docks the sidebar at 1×");
+            .with_width_hint(900.0);
+        let one_x = lay_out(one_x, (900.0, 900.0));
+        assert!(!one_x.is_narrow(), "900 px docks the sidebar at 1×");
         assert!(
             !crate::support::nav_rows(&*one_x).is_empty(),
             "1×: the docked sidebar lists its categories"
@@ -382,11 +382,11 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let two_x = config
             .app()
             .with_category(Category::Appearance)
-            .with_width_hint(800.0);
-        let two_x = lay_out_scaled(two_x, (800.0, 900.0), 2.0);
+            .with_width_hint(900.0);
+        let two_x = lay_out_scaled(two_x, (900.0, 900.0), 2.0);
         assert!(
             two_x.is_narrow(),
-            "800 px is below the 200 % breakpoint, so the shell shows one screen"
+            "900 px is below the 200 % breakpoint, so the shell shows one screen"
         );
     }
 }
