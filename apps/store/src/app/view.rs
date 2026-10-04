@@ -110,28 +110,6 @@ impl StoreApp {
         )
     }
 
-    /// The page title: the top of a content page.
-    fn page_title(title: &str) -> Element {
-        Box::new(
-            Text::new(title)
-                .with_role(TextRole::LargeTitle)
-                .with_heading_level(1),
-        )
-    }
-
-    /// The top of every page that is not the catalogue: the way back to it.
-    /// The window's own header carries History.
-    fn back_row(id: &str) -> Element {
-        let mut back = Button::new(id, "Back to apps", None)
-            .with_icon(Icon::ArrowLeft)
-            .role(ButtonRole::Plain)
-            .tooltip("Return to the app catalogue");
-        if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
-            back = back.on_action(binding);
-        }
-        Box::new(Row::new().no_wrap().push(Box::new(back)))
-    }
-
     /// A quiet paragraph of prose.
     fn prose(text: &str) -> Element {
         Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
@@ -554,7 +532,7 @@ impl StoreApp {
     pub(super) fn build_detail(&self, theme: &Theme) -> Option<Element> {
         let id = self.focused_detail.as_ref()?;
         let item = self.items.iter().find(|item| &item.id == id)?;
-        let mut children: Vec<Element> = vec![Self::back_row("store.detail.back")];
+        let mut children: Vec<Element> = Vec::new();
         if let Some(notice) = self.operation_notice() {
             children.push(notice);
         }
@@ -648,10 +626,7 @@ impl StoreApp {
     /// Reports the person has drafted, how decisions work, and what a
     /// signature does and does not promise.
     pub(super) fn build_safety_center(&self, theme: &Theme) -> Element {
-        let mut children: Vec<Element> = vec![
-            Self::back_row("store.safety.back"),
-            Self::page_title("Trust and moderation"),
-        ];
+        let mut children: Vec<Element> = Vec::new();
         children.extend(self.operation_notice());
         if self.reports.is_empty() {
             children.push(Box::new(
@@ -842,10 +817,7 @@ impl StoreApp {
                 ) as Element
             })
             .collect();
-        let mut children: Vec<Element> = vec![
-            Self::back_row("store.remotes.back"),
-            Self::page_title("Flatpak remotes"),
-        ];
+        let mut children: Vec<Element> = Vec::new();
         children.extend(self.operation_notice());
         children.push(Box::new(form));
         if !rows.is_empty() {
