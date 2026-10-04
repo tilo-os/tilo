@@ -19,15 +19,16 @@ def disk_floor(path):
         raise ValueError('20 GiB free disk floor reached; stopped owned stage')
 
 
-def bounded_build(command, env):
-    disk_floor(ROOT)
-    child = subprocess.Popen(command, cwd=ROOT, env=env, start_new_session=True)
+def bounded_build(command, env, *, cwd=None, seconds=1800):
+    directory = cwd or ROOT
+    disk_floor(directory)
+    child = subprocess.Popen(command, cwd=directory, env=env, start_new_session=True)
     started = time.monotonic()
     try:
         while child.poll() is None:
-            disk_floor(ROOT)
-            if time.monotonic() - started > 1800:
-                raise ValueError('build exceeded 30 minute per-app bound; reuse Cargo cache on retry')
+            disk_floor(directory)
+            if time.monotonic() - started > seconds:
+                raise ValueError(f'build exceeded {seconds} second bound; reuse compiled cache on retry')
             time.sleep(1)
         if child.returncode:
             raise ValueError(f'build failed with exit {child.returncode}')
