@@ -67,7 +67,8 @@ fn managed_history_is_truthful_and_returns_to_exact_local_media_state() {
             && label == "Controlled stereo (selected)"
     }));
 
-    driver.click_named("history-open").unwrap();
+    // The strip is the window's header row: History stands in it.
+    driver.click_named(ui::widget::HISTORY_CONTROL_ID).unwrap();
     assert_external_history_open(&driver, EXPECTED_LIMITATION);
     assert!(driver.targets().contains_key("history-open"));
     let history = driver.inspection_json().unwrap();
@@ -98,7 +99,7 @@ fn held_portal_result_survives_history_and_settles_once() {
     let heads = driver.state_mut().doc.get_heads();
     assert!(observed_error.borrow().is_none());
 
-    driver.click_named("history-open").unwrap();
+    driver.click_named(ui::widget::HISTORY_CONTROL_ID).unwrap();
     assert!(
         observed_error.borrow().is_none(),
         "opening History itself does not settle the held request"

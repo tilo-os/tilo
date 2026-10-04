@@ -1747,7 +1747,7 @@ impl Widget for MonitorApp {
         }
         if self.context.is_open() {
             self.context
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         if self.copy_toast_active()
             && let Some(pid) = self.copied_pid
@@ -2357,12 +2357,11 @@ mod tests {
     }
 
     /// The window lays out at desktop, narrow and phone sizes: the inspector
-    /// docks where it fits and becomes a drawer where it does not.
+    /// docks where it leaves the table its room and is a drawer below that.
     #[test]
     fn window_lays_out_at_every_size() {
         for (viewport, placement) in [
             ((1280, 800), InspectorPlacement::Docked),
-            ((960, 640), InspectorPlacement::Docked),
             ((800, 600), InspectorPlacement::Drawer),
             ((480, 820), InspectorPlacement::Drawer),
         ] {

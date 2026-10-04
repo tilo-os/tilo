@@ -4591,8 +4591,6 @@ impl Widget for NotesApp {
         self.transfer_toasts.place_bottom_right(toast_area, gutter);
         self.transfer_toasts
             .draw(scene, transform, text_renderer, theme, presence);
-        self.note_menu
-            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn needs_animation_frame(&self) -> bool {

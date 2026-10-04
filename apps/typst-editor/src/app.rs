@@ -237,8 +237,12 @@ pub struct TypstApp {
     // --- chrome ---
     chrome: Chrome,
     frame: Frame,
-    /// The transient bottom-trailing bubble: a compile result, a saved file.
+    /// The transient bottom-trailing bubble: a compile result, an export.
     status: ui::StatusBubble,
+    /// Whether the document saved: "Saved" once, or a failure to act on.
+    save_status: ui::SaveStatusSurface,
+    /// Where the last save went, so a failed save can be tried again.
+    save_path: Option<std::path::PathBuf>,
     /// The next compile result is feedback for an explicit Compile.
     compile_feedback: bool,
 
@@ -362,6 +366,8 @@ impl TypstApp {
                 0.0,
             ),
             status: ui::StatusBubble::new(),
+            save_status: ui::SaveStatusSurface::new(),
+            save_path: None,
             compile_feedback: false,
             rect: Rect::ZERO,
             bar_rect: Rect::ZERO,
@@ -705,9 +711,11 @@ impl TypstApp {
     /// and tests drive it against a real file.
     fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
         let src = self.read_source(doc);
+        self.save_path = Some(path.to_path_buf());
+        self.dirty = true;
         match save_file(path, src.as_bytes()) {
             Ok(()) => {
-                self.set_flash(&format!("Saved {}", file_label(path)));
+                self.save_status.set(ui::SaveState::Saved, ui::time::now());
                 // Adopt the chosen filename for the current document so a later
                 // Save suggests it again.
                 if let (Some(name), Some(cur)) = (
@@ -721,7 +729,8 @@ impl TypstApp {
                 Ok(())
             }
             Err(e) => {
-                self.set_flash(&format!("Save failed: {e}"));
+                self.save_status
+                    .set(ui::SaveState::Failed(e.to_string()), ui::time::now());
                 Err(e.to_string())
             }
         }
@@ -1598,6 +1607,7 @@ impl Widget for TypstApp {
             self.status.pointer_moved(area, self.mouse, tr, theme, now);
         }
         self.status.paint(scene, t, tr, theme, area, now);
+        self.save_status.paint(scene, t, tr, theme, area, now);
 
         // This frame reflects the latest interaction state; clear the move-dirty
         // flag so idle hover doesn't spin the render loop.
@@ -1836,6 +1846,7 @@ impl Widget for TypstApp {
         self.editor.wants_animation()
             || self.compiling()
             || self.status.needs_frame(ui::time::now())
+            || self.save_status.needs_frame(ui::time::now())
             || self
                 .chrome
                 .children()
@@ -2156,7 +2167,8 @@ impl TypstApp {
                 } else {
                     let (mut dx, mut dy) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => {
-                            (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0)
+                            let line = f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line);
+                            (-f64::from(*x) * line, -f64::from(*y) * line)
                         }
                         MouseScrollDelta::PixelDelta(pp) => (-pp.x, -pp.y),
                     };
@@ -2210,7 +2222,7 @@ impl TypstApp {
         self.pointer_seen = true;
         // The bubble pins open while the pointer rests on its corner: repaint
         // only while it shows so idle hover doesn't spin the loop.
-        if self.status.is_visible(ui::time::now()) {
+        if self.status.is_visible(ui::time::now()) || self.save_status.pointer_moved(p) {
             self.dirty = true;
         }
         if self.splitter.is_dragging() {
@@ -2256,6 +2268,17 @@ impl TypstApp {
         handled: &mut bool,
     ) {
         let p = self.mouse;
+        // A failed save's card owns its clicks: try again, or dismiss it.
+        if self.save_status.contains(p) {
+            if self.save_status.click(p) == Some(ui::SaveAction::Retry)
+                && let Some(path) = self.save_path.clone()
+            {
+                let _ = self.save_typ_to(doc, &path);
+            }
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
         // The band of controls owns its clicks; the controls themselves took
         // theirs before this point.
         if self.bar_rect.contains(p) {
