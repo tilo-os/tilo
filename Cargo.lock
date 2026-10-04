@@ -16779,8 +16779,8 @@ dependencies = [
 name = "tilo-ui-builder"
 version = "0.1.0"
 dependencies = [
+ "tilo-app",
  "tilo-files",
- "tilo-ui",
  "workspace-hack",
 ]
 
