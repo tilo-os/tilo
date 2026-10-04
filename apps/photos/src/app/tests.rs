@@ -435,8 +435,8 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
         let markers = projection.date_markers(0.0);
         assert_eq!(markers.len(), 2, "one boundary per capture day");
         assert!(
-            markers[0].2 && markers[1].2,
-            "each year change is a major boundary"
+            !markers[0].2 && markers[1].2,
+            "the newest day opens the timeline; the year change after it is a major boundary"
         );
         assert!(markers[0].1 < markers[1].1);
         assert_eq!(timeline_date_label(&markers[0].0), "Feb 03, 2026");
@@ -792,13 +792,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         app.sync(&mut doc, &ROOT);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         app.timeline_scroll_y = 900.0;
         let (photo, screen_y) = {
             let visible = app
@@ -811,13 +805,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             (first.photo.id.clone(), first.y)
         };
         assert!(app.adjust_timeline_density(true));
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         let visible = app
             .timeline_projection
             .visible_photos(app.timeline_scroll_y, app.timeline_viewport_height);
@@ -852,13 +840,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         let mut text = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
         text.set_text_scale(theme.text_scale);
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme);
 
         assert!(app.metadata_filter_cards.is_empty());
         assert!(
@@ -1071,7 +1053,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         );
     }
 
-    eprintln!("phase people_places_and_albums_keep_complete_paged_collections");
+    eprintln!("phase people_and_places_keep_complete_paged_collections");
     {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
@@ -1105,11 +1087,7 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         assert_eq!(app.library_albums.len(), 29);
         assert!(app.page_collection(CollectionPageHit::PeopleNext));
         assert!(app.page_collection(CollectionPageHit::PlacesNext));
-        assert!(app.page_collection(CollectionPageHit::AlbumsNext));
-        assert_eq!(
-            (app.people_page, app.places_page, app.albums_page),
-            (1, 1, 1)
-        );
+        assert_eq!((app.people_page, app.places_page), (1, 1));
         assert!(app.perform_library_semantic_action(
             "photos:collection-page:people-next",
             &AccessAction::Activate,
@@ -1332,7 +1310,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         ));
         assert_eq!(
             app.notice.as_deref(),
-            Some("That destination album is no longer available")
+            Some(tr("photos-album-gone").as_str())
         );
     }
 
@@ -1367,13 +1345,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         app.canvas_rect = Rect::new(0.0, 56.0, 920.0, 772.0);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
         let before = PhotosDoc::library(&doc);
         let mut tree = TaffyTree::new();
         let node = tree.new_leaf(Style::default()).unwrap();
@@ -1573,7 +1545,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         assert_eq!(empty.role, Role::Group);
         assert_eq!(empty.children[0].role, Role::Image);
         let commands = toolbar_names(&app);
-        assert!(commands.contains(&tr("photos-open")));
+        assert!(
+            !commands.contains(&tr("photos-open")),
+            "the empty state offers Open itself; the header does not repeat it"
+        );
         assert!(
             !commands.contains(&tr("photos-rotate-right")),
             "rotate is not offered without a photograph: {commands:?}"
@@ -1943,11 +1918,11 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
 
         assert!(app.search_provider.resource(&first_id).is_some());
         assert!(app.search_provider.resource(&second_id).is_none());
-        assert!(
-            app.search_refresh_error
-                .as_deref()
-                .is_some_and(|error| error.contains("kept its previous index"))
-        );
+        assert!(app.search_refresh_error.as_deref().is_some_and(|error| {
+            error.starts_with(
+                crate::strings::tr_with("photos-search-stale", "reason", "").trim_end(),
+            )
+        }));
         let diagnostic = ui::resources::resource(&app, &doc, "photos.search-status")
             .expect("rejected refresh is an exact addressable resource");
         assert_eq!(diagnostic.kind, "photos.diagnostic");
@@ -2251,6 +2226,12 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         app.show_library_analysis();
         app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
         app.library_analysis_coverage = (12, 34, 5);
+        app.library_analysis_capability = Some(tilo_vision::LocalVisionCapability {
+            profile_id: "local".into(),
+            model_id: "vision".into(),
+            model_label: "Local vision".into(),
+            revision: "0123456789abcdef".into(),
+        });
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         app.draw_library_analysis(
@@ -2276,7 +2257,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert!(
             tree.children
                 .iter()
-                .any(|node| node.name.as_deref() == Some("Photo analysis"))
+                .any(|node| node.name.as_deref() == Some(tr("photos-analysis-label").as_str()))
         );
     }
 
@@ -2418,12 +2399,14 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                 .count(),
             DIRECTORY_FAILURES_PER_PAGE
         );
-        assert!(
-            dialog
-                .description
-                .as_deref()
-                .is_some_and(|text| text.contains("18 additional"))
-        );
+        assert!(dialog.description.as_deref().is_some_and(|text| text
+            == tr_args(
+                "photos-import-issues-total",
+                &[
+                    ("kept", ArgValue::Number(9.0)),
+                    ("count", ArgValue::Number(27.0)),
+                ],
+            )));
         assert!(dialog.children.iter().all(|node| {
             !node.name.as_deref().unwrap_or_default().contains('/')
                 && !node
