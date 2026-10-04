@@ -2,6 +2,15 @@
 # Launch a greeter or installer in cage. Native ARM KVM's 2D virtio GPU
 # requires software rendering together with legacy DRM modesetting; physical
 # GPUs keep their normal renderer and atomic modesetting path.
+#
+# The cursor follows the same split. Physical machines use the hardware
+# cursor plane: wlroots' composited software cursor repaints only the
+# pointer's latest rectangle into whichever swapchain buffer comes next, so
+# on real hardware (msm on the Yoga) the screen kept a trail of old pointer
+# stamps and flickered between buffers on every motion. QEMU's virtio-gpu
+# alone needs the software cursor: its hardware cursor shows Y-flipped and
+# offset under `gtk,gl=on` while input lands at the true position, and a
+# leftover cursor plane bleeds into the session compositor.
 set -euo pipefail
 
 if (( $# < 1 )); then
@@ -9,9 +18,10 @@ if (( $# < 1 )); then
   exit 2
 fi
 
-for card in /sys/class/drm/card[0-9]*; do
+drm_sysfs="${TILO_DRM_SYSFS:-/sys/class/drm}"
+for card in "$drm_sysfs"/card[0-9]*; do
   if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
-    export WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1
+    export WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 WLR_NO_HARDWARE_CURSORS=1
     if [[ $(uname -m) == aarch64 ]]; then
       # LLVM's named Neoverse model assumes SVE even when KVM masks it.
       # The baseline JIT keeps the accelerated guest and its 2D display usable.
@@ -23,5 +33,4 @@ for card in /sys/class/drm/card[0-9]*; do
   fi
 done
 
-export WLR_NO_HARDWARE_CURSORS=1
-exec /usr/bin/cage -s -- "$@"
+exec "${TILO_CAGE:-/usr/bin/cage}" -s -- "$@"

@@ -1853,9 +1853,10 @@ pub fn desktop_record_windows(id: u64) -> Result<Option<String>, JsValue> {
 }
 
 /// Where the desktop shows each member's legacy window right now: `[{key,
-/// rect: [x0, y0, x1, y1]}]` for windows whose active tab shows one in the
-/// shown strip, in the surface's CSS pixels; empty while search covers the
-/// desktop. `None` for a single application.
+/// rect: [x0, y0, x1, y1], focused}]` for windows whose active tab shows one
+/// in the shown strip, in the surface's CSS pixels, `focused` for the
+/// desktop's focused window; empty while search covers the desktop. `None`
+/// for a single application.
 ///
 /// # Errors
 ///
@@ -1869,6 +1870,9 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                 let windows: Vec<serde_json::Value> = if d.handle.search_open() {
                     Vec::new()
                 } else {
+                    let focused = d.handle.read(|tree| {
+                        tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab)
+                    });
                     d.handle
                         .shown_tabs()
                         .into_iter()
@@ -1876,6 +1880,7 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                             Some(serde_json::json!({
                                 "key": d.shared.peer_window_of(tab)?,
                                 "rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+                                "focused": focused == Some(tab),
                             }))
                         })
                         .collect()
@@ -1883,6 +1888,31 @@ pub fn desktop_peer_windows(id: u64) -> Result<Option<String>, JsValue> {
                 serde_json::to_string(&windows).map_err(error)
             })
             .transpose()
+    })
+}
+
+/// Focus the desktop window showing the legacy window `key`: the person
+/// clicked into it, which the page handles, not the desktop.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_focus_peer_window(id: u64, key: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let Some(tab) = desktop.shared.peer_window_tab(key) else {
+            return Ok(());
+        };
+        if desktop.handle.focus_tab(tab) {
+            desktop.shared.wake();
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
     })
 }
 
@@ -1924,6 +1954,53 @@ pub fn desktop_take_node_app_requests(id: u64) -> Result<String, JsValue> {
             .shared
             .take_node_app_requests();
         serde_json::to_string(&requests).map_err(error)
+    })
+}
+
+/// Hand a painted window (`tilo-paint` stream) one reassembled frame of its
+/// stream: a whole page, patches, or an image it references. Returns whether
+/// what the window shows changed; the desktop then draws it again.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_peer_window_paint(id: u64, key: &str, frame: &[u8]) -> Result<bool, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let changed = desktop.shared.paint_page(key).push(frame);
+        if changed {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(changed)
+    })
+}
+
+/// Input the person gave painted windows since the last call, as JSON
+/// `[{key, events}]` with `legacy_window::InputEvent`s in page pixels, for
+/// the page to send to each stream's host.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount.
+#[wasm_bindgen]
+pub fn desktop_take_peer_window_input(id: u64) -> Result<String, JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let input: Vec<serde_json::Value> = desktop
+            .shared
+            .take_paint_input()
+            .into_iter()
+            .map(|(key, events)| serde_json::json!({"key": key, "events": events}))
+            .collect();
+        serde_json::to_string(&input).map_err(error)
     })
 }
 
