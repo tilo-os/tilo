@@ -2881,6 +2881,28 @@ impl WorkspaceTree {
         true
     }
 
+    /// Every root-signed revocation this tree holds as governance evidence,
+    /// across all rooms. A revocation is about a person's device, not a room,
+    /// so one learned in any room applies to ownership steps in every room.
+    /// The entries were verified and bound to their identity when the
+    /// governor admitted them; [`tilo_user_identity::RevocationList::insert`]
+    /// verifies each again.
+    pub fn known_identity_revocations(&self) -> tilo_user_identity::RevocationList {
+        let mut list = tilo_user_identity::RevocationList::new();
+        for identity in self
+            .room_peer_identities
+            .values()
+            .flat_map(|rows| rows.values())
+        {
+            for entry in &identity.revocations {
+                if entry.user_public_key == identity.device_cert.user_public_key {
+                    let _ = list.insert(entry.clone());
+                }
+            }
+        }
+        list
+    }
+
     /// Persist an exact, owner-signed ownership offer without changing roles.
     ///
     /// # Errors
@@ -2900,7 +2922,7 @@ impl WorkspaceTree {
         if !room.is_nil() && !self.governs_room(room) {
             return Err(OwnershipTransferStateError::NotGoverned);
         }
-        proposal.verify(now_unix)?;
+        proposal.verify(now_unix, &self.known_identity_revocations())?;
         if proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
@@ -2968,7 +2990,9 @@ impl WorkspaceTree {
         &mut self,
         workspace_id: WorkspaceId,
         cancellation: &collab_types::OwnershipTransferCancellationV1,
+        now_unix: u64,
     ) -> Result<(), OwnershipTransferStateError> {
+        let revocations = self.known_identity_revocations();
         let room = self
             .room_of(workspace_id)
             .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
@@ -2991,7 +3015,7 @@ impl WorkspaceTree {
         if ws.owner.as_deref() != Some(public_key_user_id(proposal.current_owner).as_str()) {
             return Err(OwnershipTransferStateError::WrongWorkspaceOrOwner);
         }
-        cancellation.verify(proposal)?;
+        cancellation.verify(proposal, now_unix, &revocations)?;
         let previous = proposal.clone();
         ws.ownership_transfer_cancellations
             .push(cancellation.clone());
@@ -3032,7 +3056,8 @@ impl WorkspaceTree {
         if !room.is_nil() && !self.governs_room(room) {
             return Err(OwnershipTransferStateError::NotGoverned);
         }
-        audit.verify()?;
+        let revocations = self.known_identity_revocations();
+        audit.verify(&revocations)?;
         if audit.committed_unix > now_unix {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
@@ -3060,7 +3085,7 @@ impl WorkspaceTree {
         if pending != &audit.proposal || audit.proposal.workspace != ws.room.to_string() {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
-        audit.proposal.verify(now_unix)?;
+        audit.proposal.verify(now_unix, &revocations)?;
         if audit.proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
@@ -8157,6 +8182,16 @@ mod workspace_tree_lifecycle_tests {
             let (alice_key, alice_public) = collab_types::generate_keypair();
             let (bob_key, bob_public) = collab_types::generate_keypair();
             let (mallory_key, _) = collab_types::generate_keypair();
+            // Each person signs from a device their root enrolled; neither
+            // device holds the root.
+            let device = |root: &ed25519_dalek::SigningKey| {
+                collab_types::ownership_transfer::fixture_device_signer(
+                    root,
+                    tilo_user_identity::DeviceCapabilities::joined(),
+                )
+            };
+            let alice_device = device(&alice_key);
+            let bob_device = device(&bob_key);
             let alice = public_key_user_id(alice_public);
             let bob = public_key_user_id(bob_public);
             tree.adopt_ownerless_workspaces(&alice);
@@ -8177,7 +8212,7 @@ mod workspace_tree_lifecycle_tests {
                 alice_public,
                 bob_public,
                 604_901,
-                &alice_key,
+                &alice_device,
             )
             .unwrap();
             assert!(matches!(
@@ -8190,7 +8225,7 @@ mod workspace_tree_lifecycle_tests {
                 alice_public,
                 bob_public,
                 200,
-                &alice_key,
+                &alice_device,
             )
             .unwrap();
             tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
@@ -8199,14 +8234,21 @@ mod workspace_tree_lifecycle_tests {
             drop(tree);
             let mut tree = crate::shell::persist::load_tree_from(&state_path).unwrap();
             tree.persist_path = Some(state_path);
-            let wrong_acceptance =
-                collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &mallory_key)
-                    .unwrap();
-            assert!(wrong_acceptance.verify(&proposal, 101).is_err());
+            let none = tilo_user_identity::RevocationList::new();
+            assert!(
+                collab_types::OwnershipTransferAcceptanceV1::new(
+                    &proposal,
+                    101,
+                    &device(&mallory_key)
+                )
+                .is_err()
+            );
             let acceptance =
-                collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &bob_key).unwrap();
+                collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &bob_device)
+                    .unwrap();
             let audit =
-                collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, 102).unwrap();
+                collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, 102, &none)
+                    .unwrap();
             let recipient_admin = tree
                 .desktop
                 .workspaces
@@ -8271,6 +8313,15 @@ mod workspace_tree_lifecycle_tests {
             let workspace_id = tree.append_empty_workspace("Security review");
             let (owner_key, owner_public) = collab_types::generate_keypair();
             let (recipient_key, recipient_public) = collab_types::generate_keypair();
+            let owner_device = collab_types::ownership_transfer::fixture_device_signer(
+                &owner_key,
+                tilo_user_identity::DeviceCapabilities::joined(),
+            );
+            let recipient_device = collab_types::ownership_transfer::fixture_device_signer(
+                &recipient_key,
+                tilo_user_identity::DeviceCapabilities::joined(),
+            );
+            let none = tilo_user_identity::RevocationList::new();
             let owner = public_key_user_id(owner_public);
             let recipient = public_key_user_id(recipient_public);
             tree.adopt_ownerless_workspaces(&owner);
@@ -8287,21 +8338,25 @@ mod workspace_tree_lifecycle_tests {
                 owner_public,
                 recipient_public,
                 200,
-                &owner_key,
+                &owner_device,
             )
             .unwrap();
             tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
                 .unwrap();
             let cancellation =
-                collab_types::OwnershipTransferCancellationV1::new(&proposal, 101, &owner_key)
+                collab_types::OwnershipTransferCancellationV1::new(&proposal, 101, &owner_device)
                     .unwrap();
             let acceptance =
-                collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &recipient_key)
+                collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &recipient_device)
                     .unwrap();
-            let audit =
-                collab_types::OwnershipTransferAuditV1::new(proposal.clone(), acceptance, 101)
-                    .unwrap();
-            tree.cancel_workspace_ownership_transfer(workspace_id, &cancellation)
+            let audit = collab_types::OwnershipTransferAuditV1::new(
+                proposal.clone(),
+                acceptance,
+                101,
+                &none,
+            )
+            .unwrap();
+            tree.cancel_workspace_ownership_transfer(workspace_id, &cancellation, 101)
                 .unwrap();
             let mut restarted = crate::shell::persist::load_tree_from(&state_path).unwrap();
             restarted.persist_path = Some(state_path);
@@ -8313,6 +8368,74 @@ mod workspace_tree_lifecycle_tests {
                 restarted.accept_workspace_ownership_transfer(workspace_id, audit, 102),
                 Err(OwnershipTransferStateError::ProposalUnavailable)
             ));
+        }
+        // Phase `a_device_the_governance_knows_revoked_cannot_offer_ownership`.
+        {
+            let mut tree = WorkspaceTree::default();
+            let workspace_id = tree.append_empty_workspace("Security review");
+            let (owner_key, owner_public) = collab_types::generate_keypair();
+            let (_, recipient_public) = collab_types::generate_keypair();
+            let owner = public_key_user_id(owner_public);
+            let recipient = public_key_user_id(recipient_public);
+            tree.adopt_ownerless_workspaces(&owner);
+            let room = tree.room_of(workspace_id).unwrap();
+            tree.grant_in_workspace(
+                workspace_id,
+                &owner,
+                CapOverride::membership(Subject::person(recipient), room.to_string(), Verb::Admin),
+            )
+            .unwrap();
+            let lost = collab_types::ownership_transfer::fixture_device_signer(
+                &owner_key,
+                tilo_user_identity::DeviceCapabilities::joined(),
+            );
+            let mut entry = tilo_user_identity::RevocationEntry {
+                user_public_key: *owner_public.as_bytes(),
+                revoked_device_public_key: lost.cert().device_public_key,
+                revoked_at_ns: 1,
+                reason: tilo_user_identity::RevocationReason::Lost,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut entry, &owner_key).unwrap();
+            let still_trusted = collab_types::ownership_transfer::fixture_device_signer(
+                &owner_key,
+                tilo_user_identity::DeviceCapabilities::joined(),
+            );
+            tree.room_peer_identities.entry(room).or_default().insert(
+                "other-room-peer".into(),
+                GovernedPeerIdentity {
+                    device_cert: still_trusted.cert().clone(),
+                    revocations: vec![entry],
+                },
+            );
+            let proposal = collab_types::OwnershipTransferProposalV1::new(
+                room.to_string(),
+                [12; 32],
+                owner_public,
+                recipient_public,
+                200,
+                &lost,
+            )
+            .unwrap();
+            assert!(matches!(
+                tree.propose_workspace_ownership_transfer(workspace_id, proposal, 100),
+                Err(OwnershipTransferStateError::InvalidSignature(
+                    collab_types::OwnershipTransferError::Chain(
+                        tilo_user_identity::ChainError::Revoked
+                    )
+                ))
+            ));
+            let proposal = collab_types::OwnershipTransferProposalV1::new(
+                room.to_string(),
+                [13; 32],
+                owner_public,
+                recipient_public,
+                200,
+                &still_trusted,
+            )
+            .unwrap();
+            tree.propose_workspace_ownership_transfer(workspace_id, proposal, 100)
+                .unwrap();
         }
     }
 
