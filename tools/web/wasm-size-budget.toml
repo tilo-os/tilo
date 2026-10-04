@@ -15,6 +15,6 @@ headroom = 0.01
 bytes = 83427328
 
 [bundles.desktop.rebaseline]
-run = 61426
-measured = 82577716
-reason = "feature growth: weather's typed effects, live place rows and framework-staged captures (#2423)"
+run = 61359
+measured = 82551833
+reason = "feature growth: snippets runs on the framework, with its body as a text child (#2417)"
