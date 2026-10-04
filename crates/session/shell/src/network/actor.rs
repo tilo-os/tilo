@@ -495,6 +495,8 @@ enum HostEvent {
 
 /// How long a dial at addresses a peer was found at may take.
 const KNOWN_ADDRESS_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long after such a dial the path carrying it is reported.
+const PATH_REPORT_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 struct TopicRuntime {
     sender: GossipSender,
@@ -914,13 +916,27 @@ impl ActorState {
                     return;
                 }
             };
-            if let Err(error) = gossip.handle_connection(connection).await {
+            if let Err(error) = gossip.handle_connection(connection.clone()).await {
                 tracing::debug!(peer = %id.fmt_short(), %error, "gossip refused the connection");
                 return;
             }
             for sender in senders {
                 let _ = sender.join_peers(vec![id]).await;
             }
+            // Once the paths have settled, say which one carries the traffic:
+            // a local-network address or a relay.
+            tokio::time::sleep(PATH_REPORT_DELAY).await;
+            let paths = connection.paths();
+            let describe = |path: iroh::endpoint::Path<'_>| {
+                let kind = if path.is_relay() { "relay" } else { "ip" };
+                format!("{kind} {:?} rtt {:?}", path.remote_addr(), path.rtt())
+            };
+            let selected = paths
+                .iter()
+                .find(iroh::endpoint::Path::is_selected)
+                .map(describe);
+            let open: Vec<String> = paths.iter().map(describe).collect();
+            tracing::info!(peer = %id.fmt_short(), ?selected, ?open, "peer connection path");
         });
     }
 
