@@ -62,6 +62,9 @@ struct AppHandler {
     text_input_touched: bool,
     primary_frames_sent: u64,
     primary_frames_completed: u64,
+    /// The last submitted frame painted something over the widgets that
+    /// their damage does not describe; the next frame must erase it.
+    top_layer_drawn: bool,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -1637,7 +1640,11 @@ impl AppHandler {
         app.layout.last_frame_size = Some(inner);
         let mut floating_content_changed =
             app.layout.layout_dirty || app.layout.structure_dirty || app.needs_sync;
-        let mut full_redraw_required = floating_content_changed;
+        // Model and input changes reach the pixels through the widgets they
+        // dirty, whose damage the frame collects below. Only what damage
+        // cannot describe repaints the whole window: a rebuilt tree, moved
+        // geometry, a resized surface, and layers drawn over the widgets.
+        let mut full_redraw_required = app.layout.structure_dirty;
 
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
@@ -1646,6 +1653,7 @@ impl AppHandler {
         let record_changed = app.record_tick();
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
+        // A different record is a different document under the same tree.
         full_redraw_required |= record_changed;
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
@@ -1655,13 +1663,16 @@ impl AppHandler {
         mark_first_frame("first-frame-update-start");
         if app.update_model() {
             floating_content_changed = true;
-            full_redraw_required = true;
         }
         mark_first_frame("first-frame-update-done");
         mark_first_frame("first-frame-sync-start");
         if app.sync_model(false) {
             floating_content_changed = true;
-            full_redraw_required = true;
+        }
+        // A control may have asked for larger text or high contrast; both
+        // rebuild the tree, so this frame repaints everything in the new look.
+        if app.apply_accessibility_request() {
+            floating_content_changed = true;
         }
         if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut())
             || app.take_close_window_request()
@@ -1710,7 +1721,7 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-start");
-        let Some((t_relayout_branch, t_compute_us, t_apply_us)) = run_layout_pass(
+        let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
             width,
@@ -1725,7 +1736,7 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-done");
-        full_redraw_required |= structure_rebuilt || t_relayout_branch;
+        full_redraw_required |= structure_rebuilt || geometry_changed;
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -1757,13 +1768,14 @@ impl AppHandler {
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
         crate::webview::frame_trace::begin_scene();
-        let (transform, window_rect, t_draw_us) =
+        let (transform, window_rect, t_draw_us, mut top_layer) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        let content_draw_tags = scene.encoding().draw_tags.len();
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -1872,6 +1884,13 @@ impl AppHandler {
             draw_debug_outlines(app, &mut scene, transform);
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
+
+        // Cursors, presence and the HUD paint over the widgets too. A layer
+        // drawn this frame, or one erased since the last, covers pixels no
+        // widget's damage reports.
+        top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
+        full_redraw_required |=
+            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
 
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
@@ -2027,7 +2046,7 @@ impl AppHandler {
                 crate::diag!(
                     "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                     t_send_us,
-                    if t_relayout_branch { "Y" } else { "n" },
+                    if geometry_changed { "Y" } else { "n" },
                     t_compute_us,
                     t_apply_us,
                     t_draw_us,
@@ -3920,6 +3939,7 @@ impl App {
             text_input_touched: false,
             primary_frames_sent: 0,
             primary_frames_completed: 0,
+            top_layer_drawn: false,
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),

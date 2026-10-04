@@ -5104,11 +5104,14 @@ name = "greeter"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "chrono",
  "console-control",
  "greetd-client",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-automerge-fork",
+ "tilo-power-mgmt",
  "tilo-startup-metrics",
  "tilo-ui",
  "tilo-vello",
