@@ -57,12 +57,16 @@
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
 //!   callers that paint directly). Input has a single entry point,
 //!   [`handle_event`](Widget::handle_event).
-//! * **The inner widget owns its layout node.** The inner widget registers
-//!   itself in the node map during `build_layout`, so hooks the host reaches
-//!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
-//!   `set_undo_status`, `take_undo_request`, `take_committed_action`) are
-//!   answered by the inner widget. A decorator that overrides one of those
-//!   registers itself for its node instead, with [`register_node`].
+//! * **The decorator stands in for its inner widget's layout node.** The
+//!   inner widget registers itself in the node map during `build_layout`;
+//!   the decorator then takes that entry, so a host that reaches a widget
+//!   through the map (an accessibility action, focused input, a cursor
+//!   shape, a tooltip, undo status) meets the decorator in the inner
+//!   widget's place, and everything it does not override still reaches the
+//!   inner widget. A node the inner widget handed to a widget of its own (a
+//!   field it lays out as itself) stays that widget's. A decorator that
+//!   builds a node of its own around the inner one registers itself for it
+//!   with [`register_node`].
 //! * **Method calls.** A decorator is both a [`Decorator`] and, through the
 //!   blanket impl, a [`Widget`]. With both traits imported, `self.get_rect()`
 //!   is ambiguous, so implement the trait by path (`impl
@@ -99,6 +103,27 @@ pub fn register_node<W: Widget + 'static, S: std::hash::BuildHasher>(
     widget: &mut W,
 ) {
     node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
+}
+
+/// Point `node` at `outer` when the inner widget whose address and type are
+/// `inner` registered itself for it: the decorator stands in for its inner
+/// widget.
+fn stand_in(
+    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+    inner: (*const (), &'static str),
+    outer: &mut (dyn Widget + 'static),
+) {
+    let Some(&registered) = node_map.get(&node) else {
+        return;
+    };
+    // SAFETY: `registered` was put in the map by the build_layout that just
+    // returned, for a widget inside `outer` that lives as long as this frame's
+    // layout; reading its type name neither retains nor mutates it.
+    let registered_type = unsafe { (*registered).concrete_type_name() };
+    if std::ptr::eq(registered.cast::<()>().cast_const(), inner.0) && registered_type == inner.1 {
+        node_map.insert(node, std::ptr::from_mut(outer));
+    }
 }
 
 /// A widget that extends another by overriding a few [`Widget`] methods and
@@ -681,7 +706,7 @@ pub trait Decorator {
 
 /// Every decorator is a widget: each method is the decorator's own, which
 /// forwards to the inner widget unless the decorator overrides it.
-impl<T: Decorator> Widget for T {
+impl<T: Decorator + 'static> Widget for T {
     #[doc(hidden)]
     fn concrete_type_name(&self) -> &'static str {
         Decorator::concrete_type_name(self)
@@ -771,7 +796,13 @@ impl<T: Decorator> Widget for T {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        Decorator::build_layout(self, taffy, theme, node_map)
+        let node = Decorator::build_layout(self, taffy, theme, node_map);
+        let inner = (
+            std::ptr::from_ref(self.inner()).cast::<()>(),
+            self.inner().concrete_type_name(),
+        );
+        stand_in(node_map, node, inner, self);
+        node
     }
 
     fn measure(

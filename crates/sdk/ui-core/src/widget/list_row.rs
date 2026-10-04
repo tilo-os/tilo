@@ -12,9 +12,6 @@
 //! its own value with ([`ListRow::choosing`]), so every row of the list
 //! follows one selection without being rebuilt.
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -203,18 +200,6 @@ impl crate::widget::Decorator for ListRow {
             self.selected = selected;
         }
         self.content.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.content.build_layout(taffy, theme, node_map);
-        // Accessibility actions on the row reach it through the node map.
-        crate::widget::decorator::register_node(node_map, node, self);
-        node
     }
 
     fn draw(
