@@ -159,6 +159,8 @@ pub struct SankeyChart {
     activated: Option<SankeySelection>,
     keyboard_inspection: bool,
     touch: ChartTouchTracker,
+    /// Trailing room kept for the last column's labels, measured at paint.
+    label_reserve: f64,
 }
 
 impl SankeyChart {
@@ -175,6 +177,7 @@ impl SankeyChart {
             activated: None,
             keyboard_inspection: false,
             touch: ChartTouchTracker::default(),
+            label_reserve: 0.0,
         }
     }
     #[must_use]
@@ -266,12 +269,32 @@ impl SankeyChart {
     }
 
     fn content_rect(&self) -> Rect {
+        let x1 = (self.rect.x1 - 18.0 - self.label_reserve).max(self.rect.x0 + 18.0);
         Rect::new(
             self.rect.x0 + 18.0,
             self.rect.y0 + if self.title.is_empty() { 18.0 } else { 52.0 },
-            self.rect.x1 - 18.0,
+            x1,
             self.rect.y1 - 18.0,
         )
+    }
+
+    /// The trailing room the last column's labels need: its widest label,
+    /// never more than a third of the chart, so the flow keeps its width.
+    fn measure_label_reserve(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let links = self.resolved_links();
+        let depths = self.depths(&links);
+        let last = depths.iter().copied().max().unwrap_or_default();
+        let style = Self::label_style(theme);
+        let widest = self
+            .nodes
+            .iter()
+            .zip(&depths)
+            .filter(|(_, depth)| **depth == last && last > 0)
+            .map(|(node, _)| f64::from(tr.measure_style(&node.label, None, &style).0))
+            .fold(0.0, f64::max);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let reserve = if widest > 0.0 { widest + pad } else { 0.0 };
+        self.label_reserve = reserve.min(self.rect.width() / 3.0).max(0.0);
     }
 
     fn resolved_links(&self) -> Vec<(usize, usize, usize, f64)> {
@@ -465,6 +488,126 @@ impl SankeyChart {
             .map(|link| Hit::Link(link.index));
     }
 
+    /// Where each node's label goes, laid out so no two collide at any size:
+    /// after its node, in the gap before the next column (the last column's
+    /// in the trailing room the chart reserves for them), elided to that
+    /// room, and dropped (the tooltip still names the node) where even a
+    /// short label does not fit or it would run into the label above it.
+    /// Returns `(node index, label, origin, show value)`.
+    fn label_layout(
+        &self,
+        nodes: &[NodeBox],
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<(usize, String, Point, bool)> {
+        let style = Self::label_style(theme);
+        let value_style = theme.text(TextRole::Caption);
+        let line = f64::from(style.line_height_px());
+        let value_line = f64::from(value_style.line_height_px());
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let content = self.content_rect();
+        let _ = content;
+        let mut columns: Vec<f64> = nodes.iter().map(|node| node.rect.x0).collect();
+        columns.sort_by(f64::total_cmp);
+        columns.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        let last = columns.len().saturating_sub(1);
+        let column_of = |x: f64| {
+            columns
+                .iter()
+                .position(|c| (c - x).abs() < 0.5)
+                .unwrap_or_default()
+        };
+        let gap = if columns.len() > 1 {
+            columns[1] - columns[0] - self.style.node_width
+        } else {
+            0.0
+        };
+        let min_room = 3.0 * f64::from(tr.measure_style("M", None, &style).0);
+        let mut order: Vec<&NodeBox> = nodes.iter().collect();
+        order.sort_by(|a, b| {
+            a.rect
+                .x0
+                .total_cmp(&b.rect.x0)
+                .then(a.rect.y0.total_cmp(&b.rect.y0))
+        });
+        let mut bottoms: HashMap<usize, f64> = HashMap::new();
+        let mut placed = Vec::new();
+        for node in order {
+            let Some(spec) = self.nodes.get(node.index) else {
+                continue;
+            };
+            let column = column_of(node.rect.x0);
+            let room = if column == last {
+                self.rect.x1 - node.rect.x1 - 2.0 * pad
+            } else {
+                gap - 2.0 * pad
+            };
+            if room < min_room {
+                continue;
+            }
+            let label = tr.elide_to_width_style(&spec.label, room as f32, &style);
+            if label.is_empty() || label == "…" {
+                continue;
+            }
+            let (width, _) = tr.measure_style(&label, None, &style);
+            let width = f64::from(width);
+            let _ = width;
+            let x = node.rect.x1 + pad;
+            let y = node.rect.y0 + 2.0;
+            let bottom = bottoms.entry(column).or_insert(f64::NEG_INFINITY);
+            if y < *bottom {
+                continue;
+            }
+            let show_value =
+                self.style.show_values && node.rect.height() >= line + value_line + 4.0;
+            *bottom = y + line + if show_value { value_line } else { 0.0 };
+            placed.push((node.index, label, Point::new(x, y), show_value));
+        }
+        placed
+    }
+
+    fn label_style(theme: &Theme) -> crate::text_render::TextStyle {
+        theme
+            .text(TextRole::Caption)
+            .with_weight(TextWeight::Medium)
+    }
+
+    fn draw_node_labels(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        nodes: &[NodeBox],
+    ) {
+        let style = Self::label_style(theme);
+        let line = f64::from(style.line_height_px());
+        for (index, label, origin, show_value) in self.label_layout(nodes, tr, theme) {
+            tr.draw_style(
+                scene,
+                &label,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((origin.x, origin.y)),
+                None,
+                &style,
+            );
+            if show_value {
+                let value = nodes
+                    .iter()
+                    .find(|node| node.index == index)
+                    .map_or(0.0, |node| node.value);
+                tr.draw_style(
+                    scene,
+                    &format_compact(value),
+                    theme.tokens.colors.text_dim,
+                    transform * Affine::translate((origin.x, origin.y + line)),
+                    None,
+                    &theme.text(TextRole::Caption),
+                );
+            }
+        }
+    }
+
     fn palette(theme: &Theme, index: usize) -> Color {
         theme.tokens.colors.presence.series(index)
     }
@@ -508,6 +651,7 @@ impl Widget for SankeyChart {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.measure_label_reserve(tr, theme);
         if self.keyboard_inspection {
             self.update_inspection_anchor();
         }
@@ -568,38 +712,8 @@ impl Widget for SankeyChart {
                     &shape,
                 );
             }
-            let label_x = if node.rect.center().x < self.rect.center().x {
-                node.rect.x1 + 8.0
-            } else {
-                node.rect.x0 - 8.0
-            };
-            let (width, _) = tr.measure_style(&spec.label, None, &theme.text(TextRole::Caption));
-            let x = if node.rect.center().x < self.rect.center().x {
-                label_x
-            } else {
-                label_x - f64::from(width)
-            };
-            tr.draw_style(
-                scene,
-                &spec.label,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x, node.rect.y0 + 2.0)),
-                None,
-                &theme
-                    .text(TextRole::Caption)
-                    .with_weight(TextWeight::Medium),
-            );
-            if self.style.show_values && node.rect.height() >= 34.0 {
-                tr.draw_style(
-                    scene,
-                    &format_compact(node.value),
-                    theme.tokens.colors.text_dim,
-                    transform * Affine::translate((x, node.rect.y0 + 19.0)),
-                    None,
-                    &theme.text(TextRole::Caption),
-                );
-            }
         }
+        self.draw_node_labels(scene, transform, tr, theme, &nodes);
         if let Some(hit) = self.hovered.filter(|_| self.style.tooltip) {
             let (title, detail) = match hit {
                 Hit::Node(index) => {
@@ -855,6 +969,71 @@ fn format_compact(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The funnel of a product: five nodes in four columns, as the chart
+    /// gallery shows it.
+    fn product_flow() -> SankeyChart {
+        SankeyChart::new(
+            ["Visits", "Signup", "Trial", "Paid", "Churn"]
+                .into_iter()
+                .map(|label| SankeyNode::new(label, label))
+                .collect(),
+            vec![
+                SankeyLink::new("v-s", "Visits", "Signup", 72.0),
+                SankeyLink::new("v-t", "Visits", "Trial", 28.0),
+                SankeyLink::new("s-t", "Signup", "Trial", 54.0),
+                SankeyLink::new("t-p", "Trial", "Paid", 61.0),
+                SankeyLink::new("t-c", "Trial", "Churn", 21.0),
+            ],
+        )
+    }
+
+    /// At every width no label overlaps another label or a node, and every
+    /// label stays inside the chart; a label is dropped (the tooltip still
+    /// names it) rather than collide.
+    #[test]
+    fn node_labels_never_collide_at_any_width() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let style = SankeyChart::label_style(&theme);
+        for width in [200.0, 260.0, 360.0, 520.0, 900.0] {
+            let mut chart = product_flow();
+            chart.rect = Rect::new(0.0, 0.0, width, 220.0);
+            chart.measure_label_reserve(&mut tr, &theme);
+            let (nodes, _) = chart.geometry();
+            let labels: Vec<Rect> = chart
+                .label_layout(&nodes, &mut tr, &theme)
+                .into_iter()
+                .map(|(_, label, origin, _)| {
+                    let (w, h) = tr.measure_style(&label, None, &style);
+                    Rect::from_origin_size(origin, (f64::from(w), f64::from(h)))
+                })
+                .collect();
+            for (i, a) in labels.iter().enumerate() {
+                assert!(
+                    a.x1 <= chart.rect.x1 + 0.5,
+                    "{width}: {a:?} leaves the chart"
+                );
+                for b in labels.iter().skip(i + 1) {
+                    assert!(a.intersect(*b).is_zero_area(), "{width}: {a:?} hits {b:?}");
+                }
+                for node in &nodes {
+                    assert!(
+                        a.intersect(node.rect).is_zero_area(),
+                        "{width}: {a:?} covers a node {:?}",
+                        node.rect
+                    );
+                }
+            }
+            if width >= 520.0 {
+                assert_eq!(
+                    labels.len(),
+                    5,
+                    "{width}: every node is named when there is room"
+                );
+            }
+        }
+    }
     #[test]
     fn invalid_and_dangling_links_are_ignored() {
         let chart = SankeyChart::new(

@@ -139,9 +139,12 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             for _ in 0..3 {
                 layout_image_editor(&mut editor, width, &mut renderer);
                 let preview = editor.image_preview_rects[0].unwrap();
-                assert!((preview.width() - f64::from(width)).abs() < 0.01);
+                // The image stands on the content edge: inside the line's
+                // text inset on both sides.
+                let inner = f64::from(width) - editor.handle_column() - 2.0 * editor.text_pad;
+                assert!((preview.width() - inner).abs() < 0.01, "{preview:?}");
                 assert!(
-                    (preview.height() - f64::from(width) * 100.0 / 160.0).abs() <= 0.5,
+                    (preview.height() - inner * 100.0 / 160.0).abs() <= 0.5,
                     "image must occupy its full available width at its native aspect \
                      (within the layout's whole-pixel rounding): {preview:?}"
                 );

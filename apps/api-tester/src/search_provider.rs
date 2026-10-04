@@ -200,6 +200,12 @@ impl CatalogBuild {
                     label: label.clone(),
                 },
             )?;
+            if let Some(row) = self.rows.last_mut() {
+                row.2 = row
+                    .2
+                    .clone()
+                    .with_subtitle(format!("Status {}", entry.status));
+            }
         }
         Ok(())
     }
@@ -341,27 +347,15 @@ fn history_resource(id: uuid::Uuid, label: &str) -> Resource {
 /// non-sensitive fallback instead of leaking its raw text into the catalogue.
 fn history_label(entry: &HistoryEntry) -> String {
     let Some((scheme, remainder)) = entry.url.split_once("://") else {
-        return format!(
-            "{} request history · {}",
-            entry.method.as_str(),
-            entry.status
-        );
+        return format!("{} request history", entry.method.as_str());
     };
     let safe = remainder.split(['?', '#']).next().unwrap_or_default();
     let Some((authority, path)) = safe.split_once('/') else {
         let authority = safe.rsplit('@').next().unwrap_or_default();
-        return format!(
-            "{} {scheme}://{authority} · {}",
-            entry.method.as_str(),
-            entry.status
-        );
+        return format!("{} {scheme}://{authority}", entry.method.as_str());
     };
     let authority = authority.rsplit('@').next().unwrap_or_default();
-    format!(
-        "{} {scheme}://{authority}/{path} · {}",
-        entry.method.as_str(),
-        entry.status
-    )
+    format!("{} {scheme}://{authority}/{path}", entry.method.as_str())
 }
 impl CatalogSearchProvider for ApiSearchProvider {
     fn provider_name(&self) -> &str {
@@ -428,7 +422,7 @@ mod tests {
         assert_eq!(resource.id.0, address.resource);
         assert!(resource.actions.iter().any(|action| action.id == "send"));
         assert!(provider.search("do-not-index").is_empty());
-        let first = provider.search_page("ordinary", None, 4, 1);
+        let first = provider.search_page(&ui::search::SearchQuery::new("ordinary"), None, 4, 1);
         let cursor = first.next.expect("broad result is paged");
         provider.refresh(&[], &[], &[]).expect("empty catalog");
         assert!(!provider.action_directory_cursor_is_current(&cursor));

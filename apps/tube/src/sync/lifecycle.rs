@@ -230,7 +230,7 @@ impl DeviceSync {
     pub fn visual_sample() -> Self {
         Self::with_inert_view(SyncView {
             status: SyncStatus::Ready,
-            summary: "Two devices are ready; one awaits your approval.".into(),
+            summary: "One device is approved and one is waiting for your approval.".into(),
             device_public_key: Some("q4w8Jf3mP7k2V9nR6xT1".into()),
             peers: vec![
                 PeerRecord {
