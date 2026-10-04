@@ -309,10 +309,26 @@ impl CounterCard {
     }
 
     fn current_resource(&self, doc: &automerge::AutoCommit) -> Resource {
-        let resource = counter_resource_with_reset(
+        let mut resource = counter_resource_with_reset(
             self.destructive,
             self.post_bump_reset && counter_in_doc(doc) > 0,
         );
+        if self.bump_after_ping {
+            resource = resource.with_action(
+                ActionSpec::operation(
+                    "peek",
+                    "Peek at the counter",
+                    OperationKind::Effect,
+                    COUNTER_TYPE,
+                    &CounterAction::Bump,
+                )
+                .unwrap()
+                .with_contract(tilo_actions::ActionContract {
+                    permission: PermissionRequirement::Read,
+                    ..tilo_actions::ActionContract::default()
+                }),
+            );
+        }
         if self.async_bump {
             resource.with_action(
                 ActionSpec::operation(
@@ -1768,6 +1784,19 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
         app.actions.acting_for.is_empty(),
         "the answered invocation runs for nobody"
     );
+
+    // An effect a viewer may take lends them no write: its edit is refused.
+    app.invoke_published_action(
+        8,
+        tilo_actions::InvocationId::new(),
+        "test.counter".into(),
+        "peek".into(),
+        None,
+        "agent:Viewer",
+        None,
+    );
+    assert_eq!(counter(&app), 1, "the viewer's effect wrote nothing");
+    assert!(app.actions.acting_for.is_empty());
 
     // An edit the app submits on its own is the local person's.
     let local = app.collaboration.local_author.0.clone();

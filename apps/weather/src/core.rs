@@ -15,7 +15,7 @@
 //!
 //! [`Core`] is held once behind an `Rc<RefCell<…>>`; the two pane widgets
 //! (see [`crate::panes`]) borrow it to draw and to route input, and the root
-//! [`crate::app::WeatherApp`] borrows it to seed the CRDT, pump the network
+//! [`crate::app::WeatherApp`] borrows it to present the document, pump the network
 //! worker, and drive the shell.
 
 use std::collections::HashMap;

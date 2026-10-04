@@ -1222,30 +1222,22 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         assert_eq!(value["target"]["action"], "prepare-calendar-invitation");
         let arguments = value["arguments"].as_object().unwrap().clone();
 
-        let mail_roots = mail::actions::provide_resources(
-            &mail::actions::MailResourceCtx {
-                mailbox_label: "Mail".into(),
-                current_folder: mail::model::Folder::Inbox,
-                accounts: vec![("account".into(), "Account".into(), true)],
-                messages: Vec::new(),
-                custom_folders: Vec::new(),
-                has_draft: false,
-                can_sync: true,
-            },
-            &automerge::AutoCommit::new(),
-        );
+        let mut mailbox = tilo_actions::Resource::new("mail.mailbox", "mail.mailbox", "Mail");
+        mailbox.actions = <mail::actions::MailEffect as ui::tilo_resource::Effect>::specs();
+        let mail_roots = vec![mailbox];
         let encoded = tilo_actions::door::encode_json(
             &mail_roots,
             &tilo_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
             &arguments,
         )
         .expect("Mail accepts Calendar's exact typed arguments");
-        let operation = mail::actions::decode_operation(&encoded.type_id, &encoded.payload)
-            .unwrap()
-            .expect("Mail decodes the handoff");
+        let effect = <mail::actions::MailEffect as ui::tilo_resource::Effect>::from_payload(
+            &encoded.payload,
+        )
+        .expect("Mail decodes the handoff");
         assert!(matches!(
-            operation,
-            mail::actions::MailOperation::PrepareCalendarInvitation {
+            effect,
+            mail::actions::MailEffect::PrepareCalendarInvitation {
                 to,
                 calendar_ics,
                 ..

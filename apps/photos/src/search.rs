@@ -512,9 +512,8 @@ impl LibraryIndex {
     ///
     /// Returns a catalogue contract error if the replacement snapshot cannot
     /// be admitted; the previous complete generation remains available.
-    pub fn sync(&self, doc: &AutoCommit) -> Result<(), SearchCatalogError> {
-        let library = PhotosDoc::library(doc);
-        self.replace_from_library(&library)
+    pub fn sync(&self, library: &crate::model::PhotoLibrary) -> Result<(), SearchCatalogError> {
+        self.replace_from_library(library)
     }
 
     /// Resolve one resource from the retained document generation without a
@@ -1134,7 +1133,7 @@ mod tests {
             let address = source(&doc).search("before")[0].action_address().unwrap();
 
             PhotosDoc::set_library(&mut doc, &PhotoLibrary::default());
-            index.sync(&doc).unwrap();
+            index.sync(&PhotosDoc::library(&doc)).unwrap();
             assert_ne!(index.generation(), generation, "the old pages are stale");
             assert!(index.resource(&address.resource).is_none());
             assert!(opened(&doc, &address).is_none());

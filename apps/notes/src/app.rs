@@ -213,6 +213,50 @@ fn read_image_asset(source: &std::path::Path) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// `bytes` as an image the notebook keeps: as given when it fits an asset,
+/// else re-encoded (JPEG, or PNG to keep transparency) and scaled down until
+/// it does. A screenshot is often larger than an asset may be, and pasting it
+/// must still work.
+fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
+    image_media_type(&bytes).ok_or("Use a PNG, JPEG, or WebP image")?;
+    if bytes.len() <= MAX {
+        return Ok(bytes);
+    }
+    let mut image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
+    drop(bytes);
+    let transparent = image.color().has_alpha();
+    for _ in 0..8 {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        if transparent {
+            image
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .map_err(|error| error.to_string())?;
+        } else {
+            image::DynamicImage::ImageRgb8(image.to_rgb8())
+                .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    &mut encoded,
+                    85,
+                ))
+                .map_err(|error| error.to_string())?;
+        }
+        let encoded = encoded.into_inner();
+        if encoded.len() <= MAX {
+            return Ok(encoded);
+        }
+        let (width, height) = (image.width(), image.height());
+        if width < 64 || height < 64 {
+            break;
+        }
+        image = image.resize(
+            width.saturating_mul(3) / 4,
+            height.saturating_mul(3) / 4,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    Err("Image is too large to keep in a note".into())
+}
+
 /// Whether `bytes` are an image a notebook keeps: a PNG, JPEG or WebP of at
 /// most 1 MiB.
 pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
@@ -740,6 +784,92 @@ impl NotesApp {
             })
             .collect();
         self.main.set_transclusion_previews(previews);
+    }
+
+    /// Keep each image pasted into the open note with the notebook and put it
+    /// after the caret, as a chosen image is.
+    fn drain_pasted_images(&mut self, doc: &mut AutoCommit) {
+        for request in self.main.take_pasted_images() {
+            let Some(page) = self.main.page_id() else {
+                continue;
+            };
+            let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
+                let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+                // Replaces the selection the paste was made over, or goes
+                // after the block the caret was in, as one action.
+                let edit = self
+                    .main
+                    .body_editor_mut()
+                    .image_paste_action(doc, &request.target, format!("![Pasted image]({source})"))
+                    .map_err(|error| error.to_string())?;
+                self.dispatch(doc, &actions::add_image_asset_action(page, bytes, edit))
+            });
+            match result {
+                Ok(()) => {
+                    self.bound_page = None;
+                    self.self_dirty = true;
+                }
+                Err(error) => self.transfer_toasts.push(
+                    format!("Image paste failed: {error}"),
+                    ui::widget::toast::ToastKind::Error,
+                ),
+            }
+        }
+    }
+
+    /// Insert the image `bytes`, described as `alt`, into the open note.
+    fn insert_image_bytes(&mut self, doc: &mut AutoCommit, alt: &str, bytes: Vec<u8>) {
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let inserted = fit_image_asset(bytes)
+            .and_then(|bytes| self.dispatch(doc, &self.image_insertion(page, alt, bytes)));
+        match inserted {
+            Ok(()) => {
+                self.bound_page = None;
+                self.self_dirty = true;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "notes: image not inserted");
+                self.transfer_toasts.push(
+                    format!("Image import failed: {error}"),
+                    ui::widget::toast::ToastKind::Error,
+                );
+            }
+        }
+    }
+
+    /// Image files dropped on the window go into the open note.
+    fn handle_dropped_file(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let WindowEvent::DroppedFile(path) = event else {
+            return false;
+        };
+        if self.main.page_id().is_none() {
+            return false;
+        }
+        let bytes = crate::files::read_bounded(path, ui::clipboard::MAX_PASTED_IMAGE_BYTES as u64)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| bytes.ok_or_else(|| "Image is too large".to_owned()));
+        match bytes {
+            Ok(bytes) => {
+                let alt = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("Image")
+                    .replace([']', '[', '(', ')'], " ");
+                self.insert_image_bytes(ctx.state, alt.trim(), bytes);
+            }
+            Err(error) => self.transfer_toasts.push(
+                format!("Image import failed: {error}"),
+                ui::widget::toast::ToastKind::Error,
+            ),
+        }
+        *ctx.handled = true;
+        true
     }
 
     fn drain_transclusion_opens(&mut self) {
@@ -1957,6 +2087,7 @@ impl Widget for NotesApp {
             self.apply_and_dispatch(state, event);
         }
         self.drain_sidebar_events(state);
+        self.drain_pasted_images(state);
         self.drain_empty_note_request(state);
         // Project the workspace only when its inputs moved: committed
         // heads, an open transaction (the drains above may have written),
@@ -2341,6 +2472,9 @@ impl Widget for NotesApp {
             return;
         }
         if self.handle_link_click(event, ctx.handled) {
+            return;
+        }
+        if self.handle_dropped_file(event, ctx) {
             return;
         }
         self.route_to_children(event, ctx);

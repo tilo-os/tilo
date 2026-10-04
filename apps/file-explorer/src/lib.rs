@@ -36,6 +36,7 @@ mod doc;
 pub mod effects;
 pub mod external_drag;
 pub mod favorites;
+pub mod file_ops;
 pub mod fileops;
 pub mod files_app;
 pub mod framework_history;

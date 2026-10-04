@@ -549,4 +549,8 @@ pub struct HostServices {
     /// Where the launchable action catalogue survives a restart. Without it
     /// closed apps' actions are retained for this broker's lifetime only.
     pub launchable_catalogue: Option<std::path::PathBuf>,
+    /// Content records reference, kept on this device and asked of each
+    /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
+    /// it apps' content stays in their own process.
+    pub record_content: Option<Arc<crate::record_content::RouteContent>>,
 }

@@ -49,7 +49,12 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 /// refuses those it cannot describe (`flatten`, `untagged`, `with`), so the
 /// schema never differs from what serde reads. Doc comments become
 /// descriptions. Every field's type must implement `JsonSchema` too.
-#[proc_macro_derive(JsonSchema, attributes(serde))]
+///
+/// `#[schema(range(min = 1, max = 100))]` on a numeric field narrows its
+/// bounds (either side may be left out): the range is published in the
+/// schema and binding refuses a value outside it, so a `u8` that means
+/// 1 to 100 does not read as `0..255`.
+#[proc_macro_derive(JsonSchema, attributes(serde, schema))]
 pub fn derive_json_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match schema::derive(&input) {

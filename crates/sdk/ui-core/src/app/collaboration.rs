@@ -520,6 +520,7 @@ impl App {
         for request in crate::widget::take_collab_requests(self.root_widget.as_mut()) {
             self.collaboration.manager.send(request);
         }
+        self.pump_record_content();
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
         any |= drained;
         any |= self.observe_collaboration_state();
@@ -644,6 +645,52 @@ impl App {
         (any, action_surface_may_have_changed)
     }
 
+    /// Send what the window's record content store queued on the record's
+    /// route: content it lacks, and content it stored for the record's
+    /// other readers. See [`crate::collaboration::record_content`].
+    fn pump_record_content(&mut self) {
+        use crate::collaboration::record_content::ContentLane;
+        if !self.collaboration.manager.is_connected() {
+            return;
+        }
+        let Some(route) = self
+            .collaboration
+            .manager
+            .primary_route()
+            .map(|witness| witness.route.clone())
+        else {
+            return;
+        };
+        let lane = ContentLane::of(&route.app_id, route.record.as_deref().unwrap_or(""));
+        {
+            let _entry = self.enter_wake_scope();
+            lane.attach(crate::WakeHandle::new());
+        }
+        let requests = lane.take_requests();
+        for hash in requests.wants {
+            if let Err(error) = self
+                .collaboration
+                .manager
+                .try_send(CollabRequest::WantContent { hash: hash.clone() })
+            {
+                tracing::debug!(%error, "collab: record content request deferred");
+                lane.retry_want(hash);
+            }
+        }
+        for (hash, bytes) in requests.offers {
+            match self
+                .collaboration
+                .manager
+                .try_send(CollabRequest::OfferContent {
+                    hash: hash.clone(),
+                    bytes: bytes.clone(),
+                }) {
+                Ok(()) | Err(crate::collaboration::CollabSendError::TooLarge { .. }) => {}
+                Err(_) => lane.retry_offer(hash, bytes),
+            }
+        }
+    }
+
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
@@ -674,6 +721,13 @@ impl App {
             },
             CollabEvent::DocumentSnapshotRequested { route } => {
                 self.respond_document_snapshot(&route);
+            }
+            CollabEvent::RecordContent { route, hash, bytes } => {
+                crate::collaboration::record_content::ContentLane::of(
+                    &route.app_id,
+                    route.record.as_deref().unwrap_or(""),
+                )
+                .arrive(hash, bytes);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                 self.presence_ctx

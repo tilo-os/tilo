@@ -34,6 +34,7 @@ mod channel_settings;
 pub mod handoff;
 mod history;
 pub mod participants;
+pub mod record_content;
 #[cfg(feature = "broker-transport")]
 mod route_keys;
 #[cfg(feature = "broker-transport")]
@@ -209,6 +210,18 @@ pub enum CollabRequest {
     /// Ask the broker to select one existing holder of this exact route as a
     /// snapshot responder. Safe to retry while no holder is available.
     RequestDocumentSnapshot,
+    /// Content this route's record references, which the app stored: the
+    /// host keeps it where the record's readers are served from.
+    OfferContent {
+        hash: String,
+        bytes: Vec<u8>,
+    },
+    /// Content this route's record references and the app lacks. Answered,
+    /// from this device or the route's other devices, with
+    /// [`CollabEvent::RecordContent`].
+    WantContent {
+        hash: String,
+    },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -767,6 +780,14 @@ pub enum CollabEvent {
     NativeMediaCommandResult {
         request_id: u64,
         result: Result<runtime_collab::native_media::Snapshot, String>,
+    },
+    /// Content the record on `route` references arrived: an answer to
+    /// [`CollabRequest::WantContent`], or content another app on the record
+    /// offered. The bytes are verified against `hash` before use.
+    RecordContent {
+        route: RouteSpec,
+        hash: String,
+        bytes: Vec<u8>,
     },
     RealtimeCommandResult {
         request_id: u64,

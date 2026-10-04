@@ -163,6 +163,13 @@ pub enum RichTextAction {
         del: usize,
         ins: String,
     },
+    /// Replace disjoint character ranges together without recreating blocks.
+    /// Offsets refer to the pre-action document; application runs back to front.
+    ReplaceMatches {
+        region: RegionKind,
+        spans: Vec<Span>,
+        ins: String,
+    },
     /// Replace one selection in document order.  Unlike a sequence of splices
     /// and deletes, this preserves the old editor's cross-paragraph merge as a
     /// single deterministic, atomic action/undo boundary.
@@ -461,6 +468,7 @@ impl RichTextAction {
     fn domain(&self) -> ActionDomain {
         match self {
             Self::SpliceText { .. }
+            | Self::ReplaceMatches { .. }
             | Self::ReplaceSelection { .. }
             | Self::SetMark { .. }
             | Self::PasteFragment { .. }
@@ -742,8 +750,36 @@ impl<'a> ActionValidator<'a> {
         }
     }
 
+    fn valid_replacements(&self, region: RegionKind, spans: &[Span], ins: &str) -> bool {
+        if spans.is_empty()
+            || spans.len() > 10_000
+            || ins
+                .chars()
+                .count()
+                .checked_mul(spans.len())
+                .is_none_or(|total| total > MAX_ACTION_TEXT_CHARS)
+        {
+            return false;
+        }
+        let mut sorted: Vec<_> = spans.iter().collect();
+        sorted.sort_by(|a, b| a.block.cmp(&b.block).then_with(|| a.start.cmp(&b.start)));
+        if sorted.windows(2).any(|pair| match pair {
+            [a, b] if a.block == b.block => a.end > b.start,
+            _ => false,
+        }) {
+            return false;
+        }
+        spans.iter().all(|span| {
+            self.block_len(region, &span.block)
+                .is_some_and(|len| span.start < span.end && span.end <= len)
+        })
+    }
+
     fn validate_text_edit(&self, action: &RichTextAction) -> bool {
         match action {
+            RichTextAction::ReplaceMatches { region, spans, ins } => {
+                self.valid_replacements(*region, spans, ins)
+            }
             RichTextAction::SpliceText {
                 region,
                 block,
@@ -2160,6 +2196,22 @@ impl Written {
 /// place.
 fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) -> Option<Written> {
     match action {
+        RichTextAction::ReplaceMatches { region, spans, ins } => {
+            let mut sorted: Vec<_> = spans.iter().collect();
+            sorted.sort_by(|a, b| a.block.cmp(&b.block).then_with(|| b.start.cmp(&a.start)));
+            for span in sorted {
+                apply_splice_text(
+                    dm,
+                    region.to_region(),
+                    &span.block,
+                    span.start,
+                    span.end.saturating_sub(span.start),
+                    ins,
+                );
+            }
+            // Typed in many places at once: no one place to mark.
+            None
+        }
         RichTextAction::SpliceText {
             region,
             block,
