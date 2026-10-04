@@ -1088,7 +1088,18 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
+    /// The record durability last delivered to the root, and whether a
+    /// change to it has yet to be presented.
+    projected_save_status: Option<crate::record::RecordSaveStatus>,
+    save_status_changed: bool,
 }
+
+/// How soon a component whose record is still being written samples its
+/// durability again. The writer settles off the event loop and nothing wakes
+/// the window when it does, so a "Saving…" would otherwise stay on screen,
+/// and in the accessibility tree, until the next unrelated event.
+const SAVING_RESAMPLE: crate::time::Duration = crate::time::Duration::from_millis(250);
+
 impl AppComponent {
     /// The component the app built to show another record in this one's
     /// place, once: the host closes this component and mounts that one.
@@ -1241,11 +1252,36 @@ impl AppComponent {
     /// The same checked callback lifetime owns both the sample and the hook.
     pub(crate) fn project_record_save_status(&mut self) {
         let captured = self.callback_binding();
-        let _ = self.with_live_component(&captured, |binding, root, _registry| {
-            if let Ok(status) = binding.records.save_status(&binding.checkout.id) {
-                root.record_save_status(status);
-            }
-        });
+        let sampled = self
+            .with_live_component(&captured, |binding, root, _registry| {
+                let status = binding.records.save_status(&binding.checkout.id).ok()?;
+                root.record_save_status(status.clone());
+                Some(status)
+            })
+            .ok()
+            .flatten();
+        if let Some(status) = sampled
+            && self.projected_save_status.as_ref() != Some(&status)
+        {
+            self.save_status_changed |= self.projected_save_status.is_some();
+            self.projected_save_status = Some(status);
+        }
+    }
+
+    /// When the window must sync again without input: while the record is
+    /// still being written, so the moment it becomes durable is shown.
+    pub(crate) fn save_status_wake_deadline(&self) -> Option<crate::time::Instant> {
+        matches!(
+            self.projected_save_status,
+            Some(crate::record::RecordSaveStatus::Saving)
+        )
+        .then(|| crate::time::now() + SAVING_RESAMPLE)
+    }
+
+    /// Whether the delivered durability changed since this was last asked,
+    /// so the window presents the new state instead of keeping the old one.
+    pub(crate) fn take_save_status_changed(&mut self) -> bool {
+        std::mem::take(&mut self.save_status_changed)
     }
 
     pub fn new(
@@ -1286,6 +1322,8 @@ impl AppComponent {
                 payloads: HashMap::new(),
             })),
             registry_owner,
+            projected_save_status: None,
+            save_status_changed: false,
         }
     }
 
