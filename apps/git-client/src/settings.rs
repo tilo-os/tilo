@@ -4,10 +4,8 @@
 //! ephemeral and per-instance), but durable preferences — which diff
 //! layout the user prefers, whether whitespace is shown, the default
 //! history author filter — belong in the CRDT so they survive restarts
-//! and replicate to collaborators. The restart half of that comes from
-//! `main`, which opens the document through `ui::persist` and installs the
-//! writer with `App::with_autosave`. This module is the typed accessor in
-//! front of the raw `root.settings` map.
+//! and replicate to collaborators. This module is the typed accessor in
+//! front of the raw `root.settings` map; the preference actions write it.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
@@ -100,8 +98,7 @@ pub(crate) fn settings_obj(doc: &mut AutoCommit) -> ObjId {
     }
 }
 
-/// Resolve the `root.settings` map without creating it, for read-only callers
-/// (the Ctrl+K resource tree gets an immutable `&AutoCommit`).
+/// Resolve the `root.settings` map without creating it, for readers.
 fn settings_obj_ref(doc: &AutoCommit) -> Option<ObjId> {
     match doc.get(&automerge::ROOT, keys::SETTINGS) {
         Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
@@ -110,18 +107,9 @@ fn settings_obj_ref(doc: &AutoCommit) -> Option<ObjId> {
 }
 
 impl Settings {
-    /// Read the current settings out of the document, falling back to the
-    /// defaults for any unset key. Creating the map if absent so the first
-    /// read also seeds it.
-    pub fn read(doc: &mut AutoCommit) -> Self {
-        let obj = settings_obj(doc);
-        Self::from_obj(doc, &obj)
-    }
-
-    /// Read the current settings from an immutable document, without creating
-    /// the settings map. Returns the defaults when the map is absent. Used by
-    /// the Ctrl+K resource tree, which only borrows the document.
-    pub fn read_only(doc: &AutoCommit) -> Self {
+    /// Read the current settings from the document, falling back to the
+    /// defaults for any unset key; the defaults when the map is absent.
+    pub fn read(doc: &AutoCommit) -> Self {
         match settings_obj_ref(doc) {
             Some(obj) => Self::from_obj(doc, &obj),
             None => Settings::default(),
@@ -144,7 +132,8 @@ impl Settings {
         }
     }
 
-    /// Persist this snapshot into the document.
+    /// Write this snapshot into a test's document.
+    #[cfg(test)]
     pub fn write(&self, doc: &mut AutoCommit) {
         let obj = settings_obj(doc);
         let _ = doc.put(&obj, keys::DIFF_LAYOUT, self.diff_layout.as_str());
@@ -182,15 +171,15 @@ mod tests {
         };
         s.write(&mut doc);
 
-        let back = Settings::read(&mut doc);
+        let back = Settings::read(&doc);
         assert_eq!(back.diff_layout, DiffLayout::SideBySide);
         assert!(back.show_whitespace);
         assert!(!back.syntax_highlight);
     }
 
     fn defaults_when_unset() {
-        let mut doc = AutoCommit::new();
-        let s = Settings::read(&mut doc);
+        let doc = AutoCommit::new();
+        let s = Settings::read(&doc);
         assert_eq!(s.diff_layout, DiffLayout::Unified);
         assert!(s.syntax_highlight);
     }
