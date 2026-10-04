@@ -427,7 +427,6 @@ impl CodeApp {
                 self.reset_language_server();
                 self.clear_search();
                 self.refresh_header();
-                self.refresh_palette_entries();
                 self.note(format!("Opened {name}"), false);
                 Ok(())
             }
@@ -457,7 +456,6 @@ impl CodeApp {
                 self.bound_node = None;
                 self.reset_language_server();
                 self.open_node(node);
-                self.refresh_palette_entries();
                 Ok(())
             }
             Err(e) => {

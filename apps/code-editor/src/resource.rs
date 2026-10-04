@@ -195,7 +195,6 @@ const SCENARIOS: &[&str] = &[
     "search",
     "conflict",
     "indexing",
-    "goto",
     "close-prompt",
     "status",
     "narrow",
