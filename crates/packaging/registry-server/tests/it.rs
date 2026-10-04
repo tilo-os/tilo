@@ -17,6 +17,8 @@ pub mod promotion_cli;
 pub mod publisher_applications;
 #[path = "publisher_client.rs"]
 pub mod publisher_client;
+#[path = "retention.rs"]
+pub mod retention;
 #[path = "snapshot_cli.rs"]
 pub mod snapshot_cli;
 #[path = "version_index.rs"]
