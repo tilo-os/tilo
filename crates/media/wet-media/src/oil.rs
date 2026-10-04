@@ -331,6 +331,10 @@ struct Pass<'a> {
     /// Whether the brush goes over the paint beneath as over dry paint,
     /// setting it wherever a bristle reaches, rather than working into it.
     over_dry: bool,
+    /// Whether the pass lays one coat: each cell covered as far as its best
+    /// touch, as a single stroke does. The strokes of a lay-in are worked
+    /// back and forth into one another instead, each touch mixing further.
+    one_coat: bool,
 }
 
 /// One brushstroke of a region's lay-in, before it is painted.
@@ -675,8 +679,8 @@ impl OilLayer {
                 // the threads catch a dry brush as much as the weave does,
                 // so a scumble breaks irregularly rather than printing the
                 // threads as a grid.
-                let grit = read(&self.grit, width, x, y, 0.5);
-                let support = ground.at(x, y) * 0.45 + grit * 0.55;
+                let priming = read(&self.grit, width, x, y, 0.5);
+                let support = ground.at(x, y) * 0.45 + priming * 0.55;
                 let mut tooth = support * (1.0 - buried) + 0.5 * buried + self.crest(x, y) * 1.5;
                 if dryness > 0.0 {
                     tooth += ground.rise(x, y, touch.heading) * 0.6 * dryness * (1.0 - buried);
@@ -696,13 +700,18 @@ impl OilLayer {
                 let thinned = pass.glaze.map_or(0.0, |glaze| glaze.amount);
                 let catch = (catch + (1.0 - catch) * thinned)
                     * (1.0 - thinned * 0.4 * (1.0 - touch.contact));
-                // The tip presses flat over most of its width and feathers
-                // only at its rim, so neighbouring bristles join.
                 // How little paint a bristle has decides where it catches,
                 // and only a little how thick it lies where it does: a
                 // scumble is broken, not a veil, and a bristle with paint to
                 // spare covers outright.
-                let deposit = (smoothstep(0.0, 0.5, reach_here)
+                // A single stroke's tip presses flat; the strokes of a lay-in
+                // are feathered into one another from the tip's middle out.
+                let tip_share = if pass.one_coat {
+                    smoothstep(0.0, 0.5, reach_here)
+                } else {
+                    reach_here.min(1.0)
+                };
+                let deposit = (tip_share
                     * clip
                     * catch
                     * (0.6 + 0.4 * (bristle.load / 0.6).min(1.0))
@@ -723,7 +732,11 @@ impl OilLayer {
                 dab.picked_weight += sticky;
                 dab.spent += deposit;
                 let pressed = deposit;
-                let deposit = laid.lay(x, y, deposit);
+                let deposit = if pass.one_coat {
+                    laid.lay(x, y, deposit)
+                } else {
+                    deposit
+                };
                 // Every bristle dragged through the paint combs its own
                 // ridge into it, whether or not it adds cover there.
                 if let Some(value) = self.thickness.get_mut(index) {
@@ -922,6 +935,7 @@ impl OilLayer {
                     glaze,
                     // The region was set under its outline before the lay-in.
                     over_dry: false,
+                    one_coat: false,
                 },
             );
         }
@@ -1505,6 +1519,7 @@ impl LayerSim for OilLayer {
                         // beneath it as over dry paint, wherever its
                         // bristles reach.
                         over_dry: !stroke.wet,
+                        one_coat: true,
                     },
                 );
             }
