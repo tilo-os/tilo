@@ -1708,13 +1708,32 @@ impl PhotosApp {
             album_editor_hits: Vec::new(),
             metadata_editor: false,
             metadata_editor_ids: Vec::new(),
-            metadata_folder_input: TextInput::local().with_id("photos-metadata-folder"),
-            metadata_people_input: TextInput::local().with_id("photos-metadata-people"),
-            metadata_tags_input: TextInput::local().with_id("photos-metadata-tags"),
-            metadata_captured_at_input: TextInput::local().with_id("photos-metadata-captured-at"),
-            metadata_place_input: TextInput::local()
-                .with_id("photos-metadata-place")
-                .with_placeholder(&tr("photos-metadata-place-placeholder")),
+            metadata_folder_input: clear_toggled_input(
+                "photos-metadata-folder",
+                MetadataEditorHit::ClearFolder,
+                &metadata_editor_pending,
+            ),
+            metadata_people_input: clear_toggled_input(
+                "photos-metadata-people",
+                MetadataEditorHit::ClearPeople,
+                &metadata_editor_pending,
+            ),
+            metadata_tags_input: clear_toggled_input(
+                "photos-metadata-tags",
+                MetadataEditorHit::ClearTags,
+                &metadata_editor_pending,
+            ),
+            metadata_captured_at_input: clear_toggled_input(
+                "photos-metadata-captured-at",
+                MetadataEditorHit::ClearCapturedAt,
+                &metadata_editor_pending,
+            ),
+            metadata_place_input: clear_toggled_input(
+                "photos-metadata-place",
+                MetadataEditorHit::ClearLocation,
+                &metadata_editor_pending,
+            )
+            .with_placeholder(&tr("photos-metadata-place-placeholder")),
             metadata_latitude_input: TextInput::local().with_id("photos-metadata-latitude"),
             metadata_longitude_input: TextInput::local().with_id("photos-metadata-longitude"),
             metadata_location_map: crate::places::MapViewport::default(),
@@ -3979,21 +3998,7 @@ impl PhotosApp {
         // retained controls explicitly. They still use the normal widget
         // event contract and publish the same action surface as every other
         // button in the app.
-        for (hit, button) in &mut self.metadata_editor_buttons {
-            let body_control = matches!(
-                hit,
-                MetadataEditorHit::ClearFolder
-                    | MetadataEditorHit::ClearPeople
-                    | MetadataEditorHit::ClearTags
-                    | MetadataEditorHit::ClearCapturedAt
-                    | MetadataEditorHit::ClearLocation
-            );
-            if body_control
-                && matches!(event, winit::event::WindowEvent::MouseInput { .. })
-                && !self.metadata_editor_body.contains(self.pointer)
-            {
-                continue;
-            }
+        for (_, button) in &mut self.metadata_editor_buttons {
             let mut sink = None;
             button.handle_event(
                 event,
@@ -4098,6 +4103,12 @@ impl PhotosApp {
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
             );
+        }
+        // A field's clear toggle answers in the same event.
+        if let Some(hit) = self.metadata_editor_pending.take() {
+            self.activate_metadata_editor_hit(hit, ctx.state);
+            *ctx.handled = true;
+            return true;
         }
         if matches!(
             event,
@@ -5211,6 +5222,27 @@ impl PhotosApp {
                         ],
                     };
                     for (name, target, input) in fields {
+                        // The field's clear toggle, as the field draws it,
+                        // routed to the same command an agent runs.
+                        let clear = match *target {
+                            "folder" => Some("clear-folder"),
+                            "people" => Some("clear-people"),
+                            "tags" => Some("clear-tags"),
+                            "captured" => Some("clear-captured-at"),
+                            "place" => Some("clear-location"),
+                            _ => None,
+                        };
+                        let toggles: Vec<AccessNode> = clear
+                            .and_then(|command| {
+                                let toggle = ui::widget::Widget::accessibility(*input)?
+                                    .children
+                                    .into_iter()
+                                    .next()?;
+                                Some(vec![
+                                    toggle.with_action_target(format!("photos:metadata:{command}")),
+                                ])
+                            })
+                            .unwrap_or_default();
                         cards.push(
                             AccessNode::new(Role::TextInput)
                                 .with_name(tr(name))
@@ -5222,7 +5254,8 @@ impl PhotosApp {
                                     ..Default::default()
                                 })
                                 .with_hashed_key(format!("photos:metadata:{target}"))
-                                .with_action_target(format!("photos:metadata:field:{target}")),
+                                .with_action_target(format!("photos:metadata:field:{target}"))
+                                .with_children(toggles),
                         );
                     }
                     for (hit, bounds) in &self.metadata_editor_hits {
@@ -9394,15 +9427,15 @@ impl PhotosApp {
             transform,
             &region,
         );
-        // One field: its label with a clear button at the trailing end, and
-        // the input under it.
+        // One field: its label, and the input under it. A field a batch edit
+        // can clear for every photo carries that as a toggle in its trailing
+        // accessory; `clear` is whether it is on.
         let field = |scene: &mut Scene,
                      text_renderer: &mut TextRenderer,
                      input: &mut TextInput,
                      label: &str,
-                     clear: Option<(MetadataEditorHit, bool)>,
-                     rect: Rect,
-                     buttons: &mut Vec<(MetadataEditorHit, Button)>| {
+                     clear: Option<bool>,
+                     rect: Rect| {
             PaintCtx::new(scene, transform, text_renderer, &local).text_role_in_band(
                 label,
                 ui::TextRole::Label,
@@ -9411,24 +9444,8 @@ impl PhotosApp {
                 Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + label_h),
                 None,
             );
-            if let Some((clear_hit, forced)) = clear
-                && let Some((_, button)) = buttons
-                    .iter_mut()
-                    .find(|(candidate, _)| *candidate == clear_hit)
-            {
-                let side = label_h;
-                button.set_role(if forced {
-                    ButtonRole::Destructive
-                } else {
-                    ButtonRole::Plain
-                });
-                button.apply_layout_external(Rect::new(
-                    rect.x1 - side,
-                    rect.y0,
-                    rect.x1,
-                    rect.y0 + side,
-                ));
-                button.draw(scene, transform, text_renderer, &local, presence);
+            if let Some(forced) = clear {
+                input.set_accessory_pressed(forced);
             }
             input.apply_layout_external(Rect::new(
                 rect.x0,
@@ -9446,22 +9463,10 @@ impl PhotosApp {
         match self.metadata_editor_section {
             MetadataEditorSection::Organize => {
                 let force = self.metadata_force_clear;
-                for (index, (label, input, hit)) in [
-                    (
-                        tr("photos-folder"),
-                        &mut self.metadata_folder_input,
-                        MetadataEditorHit::ClearFolder,
-                    ),
-                    (
-                        tr("photos-people"),
-                        &mut self.metadata_people_input,
-                        MetadataEditorHit::ClearPeople,
-                    ),
-                    (
-                        tr("photos-tags"),
-                        &mut self.metadata_tags_input,
-                        MetadataEditorHit::ClearTags,
-                    ),
+                for (index, (label, input)) in [
+                    (tr("photos-folder"), &mut self.metadata_folder_input),
+                    (tr("photos-people"), &mut self.metadata_people_input),
+                    (tr("photos-tags"), &mut self.metadata_tags_input),
                 ]
                 .into_iter()
                 .enumerate()
@@ -9472,9 +9477,8 @@ impl PhotosApp {
                         text_renderer,
                         input,
                         &label,
-                        Some((hit, forced)),
+                        Some(forced),
                         column(index as f64),
-                        &mut self.metadata_editor_buttons,
                     );
                 }
             }
@@ -9484,24 +9488,16 @@ impl PhotosApp {
                     text_renderer,
                     &mut self.metadata_captured_at_input,
                     &tr("photos-captured"),
-                    Some((
-                        MetadataEditorHit::ClearCapturedAt,
-                        self.metadata_force_clear[3],
-                    )),
+                    Some(self.metadata_force_clear[3]),
                     column(0.0),
-                    &mut self.metadata_editor_buttons,
                 );
                 field(
                     scene,
                     text_renderer,
                     &mut self.metadata_place_input,
                     &tr("photos-place"),
-                    Some((
-                        MetadataEditorHit::ClearLocation,
-                        self.metadata_force_clear[4],
-                    )),
+                    Some(self.metadata_force_clear[4]),
                     column(1.0),
-                    &mut self.metadata_editor_buttons,
                 );
                 // A pick surface for the location: the offline map, with the
                 // drafted position marked.
@@ -9531,7 +9527,6 @@ impl PhotosApp {
                         &label,
                         None,
                         Rect::new(x, y, x + half, y + row_h - sibling),
-                        &mut self.metadata_editor_buttons,
                     );
                 }
             }
@@ -9793,31 +9788,6 @@ fn build_metadata_editor_buttons(
             "photos-time-and-place",
         ),
         (
-            MetadataEditorHit::ClearFolder,
-            "clear-folder",
-            "photos-clear-folder",
-        ),
-        (
-            MetadataEditorHit::ClearPeople,
-            "clear-people",
-            "photos-clear-people",
-        ),
-        (
-            MetadataEditorHit::ClearTags,
-            "clear-tags",
-            "photos-clear-tags",
-        ),
-        (
-            MetadataEditorHit::ClearCapturedAt,
-            "clear-captured-at",
-            "photos-clear-captured",
-        ),
-        (
-            MetadataEditorHit::ClearLocation,
-            "clear-location",
-            "photos-clear-location",
-        ),
-        (
             MetadataEditorHit::PlaceOnMap,
             "place-on-map",
             "photos-place-on-map",
@@ -9831,20 +9801,9 @@ fn build_metadata_editor_buttons(
         let label = label.as_str();
         let slot = Rc::clone(pending);
         let id = format!("photos-metadata-{id}");
-        let button = if matches!(
-            hit,
-            MetadataEditorHit::ClearFolder
-                | MetadataEditorHit::ClearPeople
-                | MetadataEditorHit::ClearTags
-                | MetadataEditorHit::ClearCapturedAt
-                | MetadataEditorHit::ClearLocation
-        ) {
-            Button::icon_only(&id, Icon::X, label).control_size(ui::widget::ControlSize::Small)
-        } else {
-            Button::new(&id, label, None)
-                .tooltip(label)
-                .with_accessible_name(label)
-        };
+        let button = Button::new(&id, label, None)
+            .tooltip(label)
+            .with_accessible_name(label);
         let button = if hit == MetadataEditorHit::Save {
             button.role(ButtonRole::Primary)
         } else {
@@ -9853,6 +9812,31 @@ fn build_metadata_editor_buttons(
         (hit, button.on_effect(move || slot.set(Some(hit))))
     })
     .collect()
+}
+
+/// A metadata field whose trailing accessory toggles "clear this for every
+/// photo in the batch": a field's own control, not a separate button.
+fn clear_toggled_input(
+    id: &str,
+    clear: MetadataEditorHit,
+    pending: &Rc<Cell<Option<MetadataEditorHit>>>,
+) -> TextInput {
+    let name = tr(match clear {
+        MetadataEditorHit::ClearFolder => "photos-clear-folder",
+        MetadataEditorHit::ClearPeople => "photos-clear-people",
+        MetadataEditorHit::ClearTags => "photos-clear-tags",
+        MetadataEditorHit::ClearCapturedAt => "photos-clear-captured",
+        _ => "photos-clear-location",
+    });
+    let slot = Rc::clone(pending);
+    TextInput::local().with_id(id).with_trailing_accessory(
+        Icon::X,
+        &name,
+        ui::widget::AccessoryAction::Toggle {
+            pressed: false,
+            on_toggle: Box::new(move |_| slot.set(Some(clear))),
+        },
+    )
 }
 
 fn build_collection_page_buttons(

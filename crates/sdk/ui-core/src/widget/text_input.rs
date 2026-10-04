@@ -413,7 +413,20 @@ pub enum AccessoryAction {
     Clear,
     /// Run the callback.
     Run(Box<dyn FnMut()>),
+    /// A toggle that stays pressed (a "clear this for every photo" switch):
+    /// shown whatever the field holds, standing on the selection lift while
+    /// on and announced as a pressed toggle. A press flips it and passes the
+    /// new state; the host keeps it in step with
+    /// [`TextInput::set_accessory_pressed`].
+    Toggle {
+        pressed: bool,
+        on_toggle: Box<dyn FnMut(bool)>,
+    },
 }
+
+/// The action target of a field's trailing accessory, for agents and
+/// assistive technology.
+const ACCESSORY_TARGET: &str = "text-input-accessory";
 
 /// A trailing icon button inside a field.
 struct Accessory {
@@ -3202,6 +3215,28 @@ impl TextInput {
         self
     }
 
+    /// Whether the trailing accessory is a toggle that is on.
+    #[must_use]
+    pub fn accessory_pressed(&self) -> Option<bool> {
+        match self.accessory.as_ref().map(|accessory| &accessory.action) {
+            Some(AccessoryAction::Toggle { pressed, .. }) => Some(*pressed),
+            _ => None,
+        }
+    }
+
+    /// Turn a toggle accessory on or off (the host syncing from its model).
+    /// No-op for any other accessory.
+    pub fn set_accessory_pressed(&mut self, on: bool) {
+        if let Some(Accessory {
+            action: AccessoryAction::Toggle { pressed, .. },
+            ..
+        }) = self.accessory.as_mut()
+            && *pressed != on
+        {
+            *pressed = on;
+        }
+    }
+
     /// Edit text that belongs to a document in place, at the document's own
     /// `px` size (a note on a zoomed page): the text scale does not grow it,
     /// the document's zoom does.
@@ -3273,22 +3308,40 @@ impl TextInput {
         };
         let inset = f64::from(theme.tokens.spacing.s1);
         let face = rect.inset(-inset);
-        if accessory.hovered && !self.effectively_disabled() {
+        let enabled = !self.effectively_disabled();
+        let on = enabled
+            && matches!(
+                accessory.action,
+                AccessoryAction::Toggle { pressed: true, .. }
+            );
+        // An "on" toggle is the selection lift, as a toggled toolbar glyph
+        // is, and stays one under the pointer.
+        let lift = if on {
+            Some(theme.tokens.colors.intent.selection)
+        } else {
+            (accessory.hovered && enabled).then_some(theme.tokens.colors.intent.selection_hover)
+        };
+        if let Some(lift) = lift {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.intent.selection_hover,
+                lift,
                 None,
                 &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
             );
         }
+        let ink = if on {
+            theme.tokens.colors.text_primary
+        } else {
+            theme.text_dim
+        };
         let edge = f64::from(theme.tokens.metrics.icon_sm);
         crate::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(rect.center(), (edge, edge)),
             accessory.icon,
-            theme.text_dim,
+            ink,
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
@@ -3301,11 +3354,20 @@ impl TextInput {
         if !rect.contains(self.last_mouse_pos) {
             return false;
         }
+        self.run_accessory(state, root)
+    }
+
+    /// Run the trailing accessory, from a press or an accessibility action.
+    fn run_accessory(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
         let Some(accessory) = self.accessory.as_mut() else {
             return false;
         };
         match &mut accessory.action {
             AccessoryAction::Run(callback) => callback(),
+            AccessoryAction::Toggle { pressed, on_toggle } => {
+                *pressed = !*pressed;
+                on_toggle(*pressed);
+            }
             AccessoryAction::Clear => {
                 let previous_text = self.text.clone();
                 let obj_id = self.resolve_text_obj(state, root);
@@ -5279,10 +5341,20 @@ impl Widget for TextInput {
             node = node.with_name(crate::i18n!(&self.placeholder));
         }
         if let (Some(rect), Some(accessory)) = (self.accessory_rect(), self.accessory.as_ref()) {
+            let (role, checked) = match accessory.action {
+                AccessoryAction::Toggle { pressed, .. } => (Role::ToggleButton, Some(pressed)),
+                _ => (Role::Button, None),
+            };
             node = node.with_children(vec![
-                AccessNode::new(Role::Button)
+                AccessNode::new(role)
                     .with_name(crate::i18n!(&accessory.name))
-                    .with_bounds(rect),
+                    .with_bounds(rect)
+                    .with_state(AccessState {
+                        disabled: self.effectively_disabled(),
+                        checked,
+                        ..Default::default()
+                    })
+                    .with_action_target(ACCESSORY_TARGET),
             ]);
         }
         Some(node)
@@ -5290,6 +5362,26 @@ impl Widget for TextInput {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         (path == [0]).then(|| self.accessory_rect()).flatten()
+    }
+
+    /// The trailing accessory is a named control of its own: activating it
+    /// (an agent, a screen reader) does what a press does.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        root: &ModelPath,
+    ) -> bool {
+        if target != ACCESSORY_TARGET
+            || !matches!(action, crate::a11y::Action::Activate)
+            || self.effectively_disabled()
+            || self.accessory_rect().is_none()
+        {
+            return false;
+        }
+        let (state, root) = crate::doc::document(state, root);
+        self.run_accessory(state, root)
     }
 
     fn perform_action(
