@@ -1,26 +1,9 @@
 # The app-paint ratchet for apps-calculator: counts may only fall (HIG §9.13).
 # Format: <path relative to the repository root> <pattern> <count>
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
-apps/calculator/src/app.rs desktop_ground 1
 apps/calculator/src/app.rs glyph_icon 1
-apps/calculator/src/app.rs ramp_slot 5
-apps/calculator/src/draw.rs raw_paint 1
 apps/calculator/src/engine.rs glyph_icon 2
-apps/calculator/src/framework_history.rs legacy_alias 1
-apps/calculator/src/framework_history.rs raw_paint 1
-apps/calculator/src/graph2d.rs desktop_ground 1
-apps/calculator/src/graph2d.rs glyph_icon 1
-apps/calculator/src/graph2d.rs ramp_slot 15
 apps/calculator/src/graph2d.rs raw_paint 1
-apps/calculator/src/graph3d.rs desktop_ground 1
-apps/calculator/src/graph3d.rs glyph_icon 2
-apps/calculator/src/graph3d.rs legacy_alias 1
-apps/calculator/src/graph3d.rs ramp_slot 14
 apps/calculator/src/graph3d.rs raw_paint 2
-apps/calculator/src/keypad.rs desktop_ground 2
-apps/calculator/src/keypad.rs ramp_slot 17
-apps/calculator/src/main.rs glyph_icon 1
 apps/calculator/src/mathfield/mod.rs glyph_icon 2
-apps/calculator/src/mathfield/mod.rs raw_paint 1
-apps/calculator/src/mathfield/render.rs ramp_slot 2
-apps/calculator/src/model.rs glyph_icon 2
+apps/calculator/src/model.rs glyph_icon 1

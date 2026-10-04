@@ -20,12 +20,27 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 use winit::event::Modifiers;
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use edit::Editor;
 use layout::Layout;
+use model::{Node, Row};
+
+/// The size a formula is set at in `theme`: the `Title` role's resolved size,
+/// less whatever scale the shared renderer already applies to every
+/// renderer-relative size (the math layout sizes its glyphs that way), so the
+/// formula ends up at the theme's size and is never scaled twice.
+pub fn formula_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+    let size = theme.tokens.typography.size(ui::tokens::TextRole::Title);
+    let renderer = tr.text_scale();
+    if renderer.is_finite() && renderer > f32::EPSILON {
+        size / renderer
+    } else {
+        size
+    }
+}
 
 /// A controller wrapping one editable formula. The graph screens own one of
 /// these per function row and feed it the linear string from the model.
@@ -106,9 +121,15 @@ impl MathField {
         self
     }
 
-    /// Apply the active UI text scale before measuring or rendering this
-    /// structured field. Changing it invalidates the cached glyph geometry via
-    /// the effective-size layout signature below.
+    /// Set the size the formula is set at, resolved from the theme (which
+    /// already carries the text scale). Changing it invalidates the cached
+    /// glyph geometry via the effective-size layout signature below.
+    pub fn set_size(&mut self, size: f32) {
+        self.base_size = size;
+    }
+
+    /// Apply an extra text-scale multiplier before measuring or rendering
+    /// this structured field.
     pub fn set_text_scale(&mut self, scale: f32) {
         self.text_scale = scale.clamp(0.5, 4.0);
     }
@@ -134,24 +155,8 @@ impl MathField {
         self.editor.expr.is_empty()
     }
 
-    /// Park the caret inside the first 2D structure (fraction numerator,
-    /// power exponent, or radicand) so a static frame shows the caret living
-    /// *inside* a structure rather than at the row's end. Used to seed the
-    /// `--shots` view; harmless for live use (the first real key resets it).
-    pub fn park_caret_in_structure(&mut self) {
-        self.editor.park_in_first_structure();
-    }
-
-    /// Park a representative selection (a span of atoms in the first
-    /// structure, else the whole root row) so a static frame can show the
-    /// drag-selection highlight band. Seed-only; cleared by the first key.
-    pub fn park_demo_selection(&mut self) {
-        self.editor.park_demo_selection();
-    }
-
-    /// Park the caret at the very end of the formula (shot/demo helper), so a
-    /// static frame of a long formula shows it scrolled to its tail with the
-    /// caret in view.
+    /// Park the caret at the very end of the formula, so a field that keeps
+    /// its caret in view scrolls to the formula's tail.
     pub fn park_caret_at_end(&mut self) {
         self.editor.end(false);
     }
@@ -169,7 +174,8 @@ impl MathField {
         let size = self.base_size * self.text_scale;
         let sig = (self.editor.to_linear(), size);
         if self.layout.is_none() || self.layout_sig.as_ref() != Some(&sig) {
-            self.layout = Some(layout::layout(&self.editor.expr.root, tr, size));
+            let shown = display_row(&self.editor.expr.root);
+            self.layout = Some(layout::layout(&shown, tr, size));
             self.layout_sig = Some(sig);
         }
         // Track the caret every pass (a caret move doesn't change the content
@@ -191,7 +197,7 @@ impl MathField {
     }
 
     /// Left padding between the field edge and the content.
-    const PAD_X: f64 = 4.0;
+    const PAD_X: f64 = ui::tokens::Spacing::BASE.s1 as f64;
 
     /// Origin (top-left) where content is drawn. Horizontally the content is
     /// left-padded and shifted by the horizontal scroll; vertically it is
@@ -315,6 +321,16 @@ impl MathField {
         if focused && let Some(g) = caret {
             render::draw_caret(&mut ctx, origin, g);
         }
+        // A formula wider than its field says so: it fades out where it runs
+        // on past an edge instead of being cut off.
+        let (max_x, _) = self.scroll_bounds();
+        let reach = f64::from(theme.tokens.spacing.s8).min(self.rect.width() / 3.0);
+        if self.scroll.x > 0.5 {
+            fade_edge(&mut ctx, self.rect, reach, true);
+        }
+        if self.scroll.x < max_x - 0.5 {
+            fade_edge(&mut ctx, self.rect, reach, false);
+        }
         scene.pop_layer();
     }
 
@@ -354,7 +370,7 @@ impl MathField {
         }
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.rect);
         for (bar, col) in bars {
-            scene.fill(Fill::NonZero, t, col, None, &bar);
+            ui::paint::fill_rect(scene, t, bar, col);
         }
         scene.pop_layer();
     }
@@ -543,7 +559,7 @@ impl MathField {
 /// Smallest inner (content-viewport) height a formula card uses. A short,
 /// single-line formula (`x + 1`, `sin(x)`) sits in a card of this height so the
 /// common case looks unchanged.
-pub const CARD_MIN_H: f64 = 30.0;
+pub const CARD_MIN_H: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 
 /// Largest inner height a formula card grows to. It is generous on purpose: a
 /// single fraction (`(x²+1)/(x−3)` ≈ 67 px) and a stacked `√` over superscripts
@@ -552,7 +568,7 @@ pub const CARD_MIN_H: f64 = 30.0;
 /// fraction-over-fraction and deeper nesting) exceeds this height, at which point
 /// the card stops growing and the formula becomes vertically scrollable within
 /// it — never clipped behind the card edge.
-pub const CARD_MAX_H: f64 = 96.0;
+pub const CARD_MAX_H: f64 = 2.0 * ui::tokens::Metrics::BASE.panel_row_height as f64;
 
 /// The inner (content-viewport) height a card should use for a formula whose
 /// laid-out content is `content_h` tall: grow to fit, clamped to
@@ -561,6 +577,106 @@ pub const CARD_MAX_H: f64 = 96.0;
 /// so the caller knows the formula scrolls within the card.
 pub fn card_view_height(content_h: f64) -> f64 {
     content_h.clamp(CARD_MIN_H, CARD_MAX_H)
+}
+
+/// Fade out the `reach` px of the current layer at `rect`'s leading or
+/// trailing edge, so whatever is drawn there dissolves into the ground behind
+/// it whatever that ground is. A layer of one-pixel columns, each as opaque as
+/// the content must be erased there, composited out of what is under it.
+fn fade_edge(ctx: &mut PaintCtx<'_>, rect: Rect, reach: f64, leading: bool) {
+    let count = reach.ceil().max(1.0) as usize;
+    let columns = count as f64;
+    // Only the alpha matters to the erase; the theme's ink carries it.
+    let carrier = ctx.theme.tokens.colors.text_primary;
+    let band = if leading {
+        Rect::new(rect.x0, rect.y0, rect.x0 + columns, rect.y1)
+    } else {
+        Rect::new(rect.x1 - columns, rect.y0, rect.x1, rect.y1)
+    };
+    ctx.scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Normal, Compose::DestOut),
+        1.0,
+        ctx.transform,
+        &band,
+    );
+    for column in 0..count {
+        let x = column as f64;
+        // 1 at the edge, easing to 0 where the content is whole again.
+        let t = ((x + 0.5) / columns).clamp(0.0, 1.0);
+        let erase = 1.0 - t * t * (3.0 - 2.0 * t);
+        let x0 = if leading {
+            rect.x0 + x
+        } else {
+            rect.x1 - x - 1.0
+        };
+        ctx.fill_rect(
+            Rect::new(x0, rect.y0, x0 + 1.0, rect.y1),
+            carrier.with_alpha(erase as f32),
+        );
+    }
+    ctx.scene.pop_layer();
+}
+
+/// The formula as it is drawn: the engine's ASCII hyphen reads as the true
+/// minus sign. Only the characters change, so the tree (and with it every
+/// caret path and gap) is the editor's own.
+fn display_row(row: &Row) -> Row {
+    row.iter().map(display_node).collect()
+}
+
+fn display_node(node: &Node) -> Node {
+    match node {
+        Node::Char('-') => Node::Char('−'),
+        Node::Char(c) => Node::Char(*c),
+        Node::Frac { num, den } => Node::Frac {
+            num: display_row(num),
+            den: display_row(den),
+        },
+        Node::Sup { exp } => Node::Sup {
+            exp: display_row(exp),
+        },
+        Node::Sub { sub } => Node::Sub {
+            sub: display_row(sub),
+        },
+        Node::SubSup { sub, sup } => Node::SubSup {
+            sub: display_row(sub),
+            sup: display_row(sup),
+        },
+        Node::Sqrt { index, radicand } => Node::Sqrt {
+            index: index.as_ref().map(display_row),
+            radicand: display_row(radicand),
+        },
+        Node::Paren { body } => Node::Paren {
+            body: display_row(body),
+        },
+        Node::Delimited { open, close, body } => Node::Delimited {
+            open: *open,
+            close: *close,
+            body: display_row(body),
+        },
+        Node::Func { name, arg } => Node::Func {
+            name: name.clone(),
+            arg: display_row(arg),
+        },
+        Node::Text(text) => Node::Text(text.clone()),
+        Node::Accent { base, mark, over } => Node::Accent {
+            base: display_row(base),
+            mark: *mark,
+            over: *over,
+        },
+        Node::UnderOver { base, under, over } => Node::UnderOver {
+            base: display_row(base),
+            under: under.as_ref().map(display_row),
+            over: over.as_ref().map(display_row),
+        },
+        Node::Table { rows: cells } => Node::Table {
+            rows: cells
+                .iter()
+                .map(|row| row.iter().map(display_row).collect())
+                .collect(),
+        },
+    }
 }
 
 /// Editor `·` (middle dot) → engine `*`.
