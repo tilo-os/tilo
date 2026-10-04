@@ -107,6 +107,7 @@ struct VariantOptions {
     device_only: bool,
     risk: Option<syn::Path>,
     programmatic: bool,
+    participant: bool,
     permission: Option<String>,
 }
 
@@ -144,11 +145,13 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("programmatic") {
                 options.programmatic = true;
+            } else if meta.path.is_ident("participant") {
+                options.participant = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic` or `permission`",
+                     `risk`, `programmatic`, `participant` or `permission`",
                 ));
             }
             Ok(())
@@ -332,6 +335,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let row = options.row;
         let programmatic = options.programmatic;
+        if options.participant && !options.view {
+            return Err(syn::Error::new(
+                variant.span(),
+                "`participant` declares a view of the invoking participant: add `view`",
+            ));
+        }
+        let participant = options.participant;
         let kind = if options.view {
             quote!(View)
         } else {
@@ -352,6 +362,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 device_only: #device_only,
                 risk_of: #risk_of,
                 programmatic: #programmatic,
+                participant: #participant,
             }
         });
 

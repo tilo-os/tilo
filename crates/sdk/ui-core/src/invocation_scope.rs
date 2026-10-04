@@ -64,6 +64,37 @@ impl Drop for InvokerScope {
     }
 }
 
+thread_local! {
+    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::ParticipantId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The participant a published tree is being built for while it lives:
+/// what a surface offers bound to where someone is (their caret, their
+/// Find hits) is that participant's, not the window's. It grants nothing:
+/// an invocation still runs for its own invoker.
+pub struct ViewerScope(());
+impl ViewerScope {
+    pub fn enter(participant: tilo_actions::ParticipantId) -> Self {
+        VIEWERS.with_borrow_mut(|viewers| viewers.push(participant));
+        Self(())
+    }
+}
+impl Drop for ViewerScope {
+    fn drop(&mut self) {
+        VIEWERS.with_borrow_mut(|viewers| {
+            viewers.pop();
+        });
+    }
+}
+
+/// Whose view what is being built or resolved now is: the participant of
+/// the delivered invocation, else the participant a tree is published for.
+/// `None` for the window's own person.
+pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
+    current_participant().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
+}
+
 /// Who an effect invocation runs for, kept while it runs: what its handler
 /// and completion submit is applied for the same invoker, in the same
 /// context, and only as far as the invoker was admitted.
