@@ -377,7 +377,7 @@ async fn another_member_can_neither_attach_nor_see_the_session() {
     // Each member's guest is launched in their own area.
     let launched = fixture.launcher.launched.lock().unwrap().clone();
     assert_eq!(launched.len(), 1);
-    assert!(launched[0].1.ends_with(hex::encode([1u8; 32])));
+    assert!(launched[0].1.ends_with(hex::encode([1u8; 16])));
 }
 
 #[tokio::test]

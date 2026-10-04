@@ -100,6 +100,8 @@ pub mod environment_guest;
 pub mod environment_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod environment_routing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod environment_tools;
 pub mod framing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;

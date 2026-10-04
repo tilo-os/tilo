@@ -53,6 +53,7 @@
 //! (`TILO_USH_GRANT_ROOT`).
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
@@ -74,6 +75,7 @@ use crate::environment_host::{
     Guest, GuestControl, GuestLauncher, GuestRequest, LaunchError, MemberArea, MemberContext,
     MemberQuota,
 };
+use crate::environment_tools::ToolBuildService;
 
 /// How members are separated by uid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,12 +110,6 @@ pub struct UshLauncherConfig {
     /// OCI references the members' supervisors fetch environment images
     /// from when no local store holds them (see `tilo_oci_images`).
     pub image_sources: Vec<String>,
-    /// The relay's identity root. Members' supervisors build missing tool
-    /// images with the `env-tools` builder, which signs them with the
-    /// relay's device key from here and trusts what it signed. Under
-    /// [`MemberIsolation::SeparateUids`] the key is not readable by members'
-    /// uids, so supervisors there can only use published tool images.
-    pub identity_root: Option<PathBuf>,
 }
 
 impl UshLauncherConfig {
@@ -127,7 +123,6 @@ impl UshLauncherConfig {
             isolation: MemberIsolation::SharedUid,
             cgroup_root: None,
             start_timeout: Duration::from_secs(10),
-            identity_root: None,
             image_sources: vec![
                 "registry.tilo.so/tilo/env-runtime".into(),
                 "registry.tilo.so/tilo/env-tools".into(),
@@ -140,16 +135,21 @@ impl UshLauncherConfig {
 pub struct UshGuestLauncher {
     config: UshLauncherConfig,
     supervisors: Mutex<BTreeMap<[u8; 32], Supervisor>>,
+    tool_builds: Option<ToolBuildService>,
 }
 
 struct Supervisor {
     socket: PathBuf,
     child: Child,
     cgroup: Option<PathBuf>,
+    builds: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
+        if let Some(builds) = &self.builds {
+            builds.abort();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         if let Some(cgroup) = &self.cgroup {
@@ -170,7 +170,16 @@ impl UshGuestLauncher {
         Self {
             config,
             supervisors: Mutex::new(BTreeMap::new()),
+            tool_builds: None,
         }
+    }
+
+    /// Build members' missing tools through `service`, which signs them
+    /// with the relay's key; members' supervisors only ever ask for them.
+    #[must_use]
+    pub fn with_tool_builds(mut self, service: ToolBuildService) -> Self {
+        self.tool_builds = Some(service);
+        self
     }
 
     fn uid_for(&self, member: &MemberIdentity) -> Result<Option<u32>, LaunchError> {
@@ -207,14 +216,14 @@ impl UshGuestLauncher {
         let failed = |what: &str, error: io::Error| LaunchError::Failed(format!("{what}: {error}"));
         let uid = self.uid_for(&member.identity)?;
         let area = &member.area;
-        let home = area.root().join("home");
         for directory in [
             area.root().to_path_buf(),
             area.files(),
             area.store(),
             area.runtime(),
             area.records(),
-            home.clone(),
+            area.root().join("home"),
+            area.root().join("shelf"),
         ] {
             private_directory(&directory, uid).map_err(|error| failed("member area", error))?;
         }
@@ -227,50 +236,20 @@ impl UshGuestLauncher {
             .map(|root| member_cgroup(root, &member.identity, &member.quota))
             .transpose()
             .map_err(|error| failed("member cgroup", error))?;
-
-        let mut command = Command::new(&self.config.ush_binary);
-        command
-            .arg("serve")
-            .arg("--socket")
-            .arg(&socket)
-            .arg("--host-root")
-            .arg(&self.config.base)
-            .env_clear()
-            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-            .env("HOME", &home)
-            .env("XDG_RUNTIME_DIR", area.runtime())
-            .env("XDG_CACHE_HOME", area.root().join("cache"))
-            .env(ush::store::STORE_ENV, area.store())
-            .env(ush::store::RECORDS_ENV, area.records())
-            .env(ush::store::GRANT_ROOT_ENV, area.files())
-            .env(
-                ush::images::IMAGE_SOURCES_ENV,
-                self.config.image_sources.join(","),
-            )
-            .env(
-                ush::images::IMAGE_CACHE_ENV,
-                area.root().join("image-cache"),
-            )
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        if let Some(identity_root) = &self.config.identity_root {
-            command.env("TILO_IDENTITY_ROOT", identity_root);
-        }
-        if let Some(uid) = uid {
-            use std::os::unix::process::CommandExt;
-            command.uid(uid).gid(uid);
-            // SAFETY: `setgroups` is async-signal-safe and allocates nothing;
-            // it drops the worker's supplementary groups before exec.
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setgroups(0, std::ptr::null()) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
+        let run = crate::environment_tools::MemberRun {
+            area: area.clone(),
+            uid,
+            cgroup: cgroup.clone(),
+            env: member_env(area, &self.config.image_sources),
+        };
+        let builds = self
+            .tool_builds
+            .as_ref()
+            .map(|service| service.listen(run.clone()))
+            .transpose()
+            .map_err(|error| failed("the member's tool builds", error))?;
+        let publisher = self.tool_builds.as_ref().map(ToolBuildService::publisher);
+        let mut command = self.supervisor_command(&run, &socket, publisher);
         let child = command
             .spawn()
             .map_err(|error| failed("start the member's supervisor", error))?;
@@ -278,6 +257,7 @@ impl UshGuestLauncher {
             socket: socket.clone(),
             child,
             cgroup,
+            builds,
         };
         if let Some(cgroup) = &supervisor.cgroup {
             std::fs::write(
@@ -299,6 +279,77 @@ impl UshGuestLauncher {
         }
         Ok(supervisor)
     }
+
+    /// The member's supervisor: their environment and nothing of the
+    /// worker's, their uid when members are separated. With tool builds,
+    /// `pkg install` asks the worker, and images the relay signed
+    /// (`publisher`) are trusted and fetched from the member's shelf; the
+    /// relay's key itself is never named.
+    #[must_use]
+    pub fn supervisor_command(
+        &self,
+        member: &crate::environment_tools::MemberRun,
+        socket: &Path,
+        publisher: Option<[u8; 32]>,
+    ) -> Command {
+        let mut command = Command::new(&self.config.ush_binary);
+        command
+            .arg("serve")
+            .arg("--socket")
+            .arg(socket)
+            .arg("--host-root")
+            .arg(&self.config.base)
+            .env_clear()
+            .envs(member.env.iter().map(|(key, value)| (key, value)))
+            .env(ush::store::RECORDS_ENV, member.area.records())
+            .env(ush::store::GRANT_ROOT_ENV, member.area.files())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        if let Some(publisher) = publisher {
+            command
+                .env(env_tools::delegated::BUILDS_SOCKET_ENV, member.socket())
+                .env(ush::images::TRUSTED_PUBLISHER_ENV, hex::encode(publisher))
+                .env(ush::images::IMAGE_SHELF_ENV, member.shelf());
+        }
+        if let Some(uid) = member.uid {
+            use std::os::unix::process::CommandExt;
+            command.uid(uid).gid(uid);
+            // SAFETY: `setgroups` is async-signal-safe and allocates nothing;
+            // it drops the worker's supplementary groups before exec.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setgroups(0, std::ptr::null()) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        command
+    }
+}
+
+/// The environment a member's supervisor and builds run with: their home,
+/// caches and stores inside their area, the image sources.
+#[must_use]
+pub fn member_env(area: &MemberArea, image_sources: &[String]) -> Vec<(OsString, OsString)> {
+    let pair = |key: &str, value: OsString| (OsString::from(key), value);
+    vec![
+        pair("PATH", "/usr/local/bin:/usr/bin:/bin".into()),
+        pair("HOME", area.root().join("home").into_os_string()),
+        pair("XDG_RUNTIME_DIR", area.runtime().into_os_string()),
+        pair("XDG_CACHE_HOME", area.root().join("cache").into_os_string()),
+        pair(ush::store::STORE_ENV, area.store().into_os_string()),
+        pair(
+            ush::images::IMAGE_SOURCES_ENV,
+            image_sources.join(",").into(),
+        ),
+        pair(
+            ush::images::IMAGE_CACHE_ENV,
+            area.root().join("image-cache").into_os_string(),
+        ),
+    ]
 }
 
 impl GuestLauncher for UshGuestLauncher {

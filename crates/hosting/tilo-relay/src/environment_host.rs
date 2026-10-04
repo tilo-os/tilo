@@ -130,14 +130,16 @@ impl MemberQuota {
 }
 
 /// The environment hosting a relay's own compute worker runs: `ush`
-/// guests under `root`, as `config` describes, building missing tool
-/// images signed with the relay's key from `identity_root`. `None` config:
-/// none.
+/// guests under `root`, as `config` describes. Members' missing tools are
+/// built as the member and signed with the relay's `key` in this process;
+/// the key's file (`key_file`) must be readable by the relay's uid alone,
+/// or builds are off. `None` config: none.
 #[must_use]
 pub fn worker_environments(
     config: Option<&tilo_relay_protocol::config::EnvironmentsConfig>,
     root: &Path,
-    identity_root: &Path,
+    key: &ed25519_dalek::SigningKey,
+    key_file: &Path,
 ) -> crate::compute_worker::WorkerEnvironments {
     let Some(config) = config else {
         return crate::compute_worker::WorkerEnvironments::default();
@@ -147,14 +149,33 @@ pub fn worker_environments(
     launcher.ush_binary.clone_from(&config.ush_binary);
     launcher.cgroup_root.clone_from(&config.cgroup_root);
     launcher.image_sources.clone_from(&config.image_sources);
-    launcher.identity_root = Some(identity_root.to_path_buf());
     if let Some(first) = config.member_uid_first {
         launcher.isolation = crate::environment_guest::MemberIsolation::SeparateUids {
             first,
             count: config.member_uid_count,
         };
     }
-    let launcher = Arc::new(crate::environment_guest::UshGuestLauncher::new(launcher));
+    let mut launcher = crate::environment_guest::UshGuestLauncher::new(launcher);
+    match crate::environment_tools::key_file_private(key_file) {
+        Ok(true) => {
+            launcher = launcher.with_tool_builds(crate::environment_tools::ToolBuildService::new(
+                key.clone(),
+                Arc::new(crate::environment_tools::EnvToolsBuild {
+                    binary: config.env_tools_binary.clone(),
+                }),
+            ));
+        }
+        Ok(false) => tracing::error!(
+            key = %key_file.display(),
+            "the relay's device key is readable by others; members' tool builds are off"
+        ),
+        Err(error) => tracing::error!(
+            key = %key_file.display(),
+            %error,
+            "the relay's device key cannot be inspected; members' tool builds are off"
+        ),
+    }
+    let launcher = Arc::new(launcher);
     let host = EnvironmentHost::new(
         EnvironmentHostConfig {
             root: root.to_path_buf(),
@@ -178,11 +199,15 @@ pub struct MemberArea {
 }
 
 impl MemberArea {
-    /// The area of `user` under `host_root`.
+    /// The area of `user` under `host_root`, named by the first half of
+    /// the user's key: unique among members, and short enough that the
+    /// sockets inside stay within a Unix socket path's length.
     #[must_use]
     pub fn of(host_root: &Path, user: &[u8; 32]) -> Self {
         Self {
-            root: host_root.join("members").join(hex::encode(user)),
+            root: host_root
+                .join("members")
+                .join(hex::encode(user.get(..16).unwrap_or_default())),
         }
     }
 

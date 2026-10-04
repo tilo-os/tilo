@@ -52,6 +52,16 @@ pub const IMAGE_SOURCES_ENV: &str = "TILO_USH_IMAGE_SOURCES";
 /// Where images fetched from [`IMAGE_SOURCES_ENV`] are cached.
 pub const IMAGE_CACHE_ENV: &str = "TILO_USH_IMAGE_CACHE";
 
+/// A publisher (hex Ed25519 key) whose images are trusted besides this
+/// device's own: on a relay, the relay's key, which signs the tools its
+/// worker builds for a member.
+pub const TRUSTED_PUBLISHER_ENV: &str = "TILO_USH_TRUSTED_PUBLISHER";
+
+/// The shelf images are fetched from and shared on, when not the one in
+/// the user's synced files: on a relay, the member's own shelf, where the
+/// worker leaves the tools it signed for them.
+pub const IMAGE_SHELF_ENV: &str = "TILO_USH_IMAGE_SHELF";
+
 /// The device's package store: system stores first, then the user's, with
 /// the store's own trust deciding which images are admitted, and the shelf
 /// the user's devices share their builds on.
@@ -95,15 +105,20 @@ impl StoreImages {
         if let Some(key) = device_publisher() {
             trust = trust.with_publisher(key);
         }
+        if let Some(key) = trusted_publisher_from_env()? {
+            trust = trust.with_publisher(key);
+        }
         let mut store = store.with_trust(trust);
         if let Some(fetcher) = oci_fetcher_from_env()? {
             store = store.with_fetcher(fetcher);
         }
         let images = Self::new(store);
-        Ok(match xdg_paths::workspace_root() {
-            Some(synced) => {
-                images.with_shelf(package_store::ImageShelf::at(synced.join(SHELF_DIR)))
-            }
+        let shelf = std::env::var_os(IMAGE_SHELF_ENV)
+            .map(PathBuf::from)
+            .filter(|shelf| shelf.is_absolute())
+            .or_else(|| xdg_paths::workspace_root().map(|synced| synced.join(SHELF_DIR)));
+        Ok(match shelf {
+            Some(shelf) => images.with_shelf(package_store::ImageShelf::at(shelf)),
             None => images,
         })
     }
@@ -142,6 +157,19 @@ impl ToolBuilder for SharedBuilds {
         }
         Ok(id)
     }
+}
+
+/// The publisher [`TRUSTED_PUBLISHER_ENV`] names.
+fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
+    let Some(hex_key) = std::env::var_os(TRUSTED_PUBLISHER_ENV).filter(|key| !key.is_empty())
+    else {
+        return Ok(None);
+    };
+    hex::decode(hex_key.to_string_lossy().as_bytes())
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .map(Some)
+        .ok_or_else(|| format!("{TRUSTED_PUBLISHER_ENV} is not a 32-byte hex key"))
 }
 
 /// The OCI fetcher [`IMAGE_SOURCES_ENV`] and [`IMAGE_CACHE_ENV`] describe.
