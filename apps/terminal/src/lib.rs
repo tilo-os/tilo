@@ -383,7 +383,7 @@ impl std::fmt::Display for HostedTerminalError {
     }
 }
 impl std::error::Error for HostedTerminalError {}
-pub use resource::{Terminal, TerminalShell};
+pub use resource::{Terminal, TerminalEffect, TerminalShell};
 
 /// The terminal's application definition: the one every host mounts.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

@@ -6,12 +6,12 @@
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, ChangeKind, EncodedAction,
-    OperationKind, ParamType, RetryPolicy,
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{Delta, Doc, ModelError, Resource};
+use ui::tilo_actions::{Action, ActionError, ActionRegistry, ChangeKind};
+use ui::tilo_resource::{self, Delta, Doc, Effect, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::TerminalWidget;
@@ -181,229 +181,120 @@ impl Resource for Terminal {
         };
         Ok(())
     }
-
-    #[allow(
-        clippy::expect_used,
-        reason = "string payloads for prompted PTY effects always encode"
-    )]
-    fn local_operations() -> Vec<ActionSpec> {
-        // PTY process control: Effects with no document delta. Order matches
-        // the live session resource; the widget overlays disconnect state.
-        let mut ops = vec![
-            ActionSpec::prompted_operation(
-                "send",
-                "Send text",
-                "Text to send",
-                "text",
-                OperationKind::Effect,
-                "terminal.send",
-                |text| EncodedAction::encode_operation("terminal.send", &text).expect("payload"),
-            )
-            .with_description(
-                "Writes reviewed text without pressing Enter; confirmation is required.",
-            )
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce),
-            ActionSpec::prompted_operation(
-                "run",
-                "Run command",
-                "Command to run",
-                "command",
-                OperationKind::Effect,
-                "terminal.run",
-                |text| EncodedAction::encode_operation("terminal.run", &text).expect("payload"),
-            )
-            .with_description(
-                "Runs one reviewed command in this live process; confirmation is required.",
-            )
-            .privileged()
-            .retry_policy(RetryPolicy::AtMostOnce),
-        ];
-        ops.extend(target_operations());
-        for (id, label, type_id) in [
-            ("interrupt", "Interrupt process", "terminal.control"),
-            ("clear", "Clear screen", "terminal.control"),
-        ] {
-            if let Ok(spec) = ActionSpec::operation(id, label, OperationKind::Effect, type_id, &id)
-            {
-                ops.push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
-            }
-        }
-        for (id, label) in [
-            ("paste", "Paste"),
-            ("paste-primary", "Paste primary selection"),
-        ] {
-            ops.push(
-                ActionSpec::typed_operation(
-                    id,
-                    label,
-                    "text",
-                    OperationKind::Effect,
-                    "terminal.paste",
-                    vec![ActionParam::required(
-                        "text",
-                        ParamType::Text,
-                        "Exact text to paste after confirmation",
-                    )],
-                    |args| {
-                        EncodedAction::encode_operation(
-                            "terminal.paste",
-                            &args.text("text").unwrap_or_default(),
-                        )
-                        .expect("a borrowed string always serializes")
-                    },
-                )
-                .with_description(
-                    "Pastes the exact supplied text; clipboard contents are never re-read after confirmation.",
-                )
-                .privileged()
-                .retry_policy(RetryPolicy::AtMostOnce),
-            );
-        }
-        ops
-    }
 }
 
-/// Where the session runs and the environments it can run in: effects an
-/// agent can invoke as well as the person. The device's own shell is never
-/// an agent's to choose; the handler refuses it.
-#[allow(
-    clippy::expect_used,
-    reason = "string payloads for target effects always encode"
-)]
-fn target_operations() -> Vec<ActionSpec> {
-    let mut out = Vec::new();
-    out.push(
-        ActionSpec::typed_operation(
-            "open-in",
-            "Open in…",
-            "target",
-            OperationKind::Effect,
-            "terminal.target",
-            vec![ActionParam::required(
-                "target",
-                ParamType::Text,
-                "Where the session runs: `environment` (the default environment), \
-                     `environment:<record>`, or `legacy:<vm>`; append `@<relay endpoint id>` \
-                     to an environment to run it on that relay. The device's own shell \
-                     (`host`) can only be chosen by the person.",
-            )],
-            |args| {
-                EncodedAction::encode_operation(
-                    "terminal.target",
-                    &args.text("target").unwrap_or_default(),
-                )
-                .expect("a borrowed string always serializes")
-            },
-        )
-        .with_description(
-            "Restarts this session in another environment and records it as the session's target.",
-        )
-        .privileged()
-        .retry_policy(RetryPolicy::AtMostOnce),
-    );
-    out.extend(environment_operations());
-    out
-}
-
-/// The environments a session can run in, managed from the session: create,
-/// grant a folder, rename.
-#[allow(
-    clippy::expect_used,
-    reason = "string payloads for environment effects always encode"
-)]
-fn environment_operations() -> Vec<ActionSpec> {
-    let mut out = Vec::new();
-    out.push(
-        ActionSpec::typed_operation(
-            "create-environment",
-            "New environment",
-            "name",
-            OperationKind::Effect,
-            "terminal.environment",
-            vec![ActionParam::required(
-                "name",
-                ParamType::Text,
-                "What to call the new environment",
-            )],
-            |args| {
-                EncodedAction::encode_operation(
-                    "terminal.environment",
-                    &serde_json::json!({
-                        "op": "create",
-                        "name": args.text("name").unwrap_or_default(),
-                    })
-                    .to_string(),
-                )
-                .expect("a borrowed string always serializes")
-            },
-        )
-        .with_description("Creates an environment on the default runtime with nothing added.")
-        .privileged()
-        .retry_policy(RetryPolicy::AtMostOnce),
-    );
-    out.push(
-        ActionSpec::typed_operation(
-            "grant-folder",
-            "Grant folder to environment",
-            "path",
-            OperationKind::Effect,
-            "terminal.environment",
-            vec![
-                ActionParam::required("record", ParamType::Text, "The environment's record"),
-                ActionParam::required(
-                    "path",
-                    ParamType::Text,
-                    "An absolute folder path; it appears at the same path in the environment",
-                ),
-            ],
-            |args| {
-                EncodedAction::encode_operation(
-                    "terminal.environment",
-                    &serde_json::json!({
-                        "op": "grant-folder",
-                        "record": args.text("record").unwrap_or_default(),
-                        "path": args.text("path").unwrap_or_default(),
-                    })
-                    .to_string(),
-                )
-                .expect("a borrowed string always serializes")
-            },
-        )
-        .with_description(
-            "Binds a host folder into the environment, read-write; confirmation is required.",
-        )
-        .privileged()
-        .retry_policy(RetryPolicy::AtMostOnce),
-    );
-    out.push(
-        ActionSpec::typed_operation(
-            "rename-environment",
-            "Rename environment",
-            "name",
-            OperationKind::Effect,
-            "terminal.environment",
-            vec![
-                ActionParam::required("record", ParamType::Text, "The environment's record"),
-                ActionParam::required("name", ParamType::Text, "The new name"),
-            ],
-            |args| {
-                EncodedAction::encode_operation(
-                    "terminal.environment",
-                    &serde_json::json!({
-                        "op": "rename",
-                        "record": args.text("record").unwrap_or_default(),
-                        "name": args.text("name").unwrap_or_default(),
-                    })
-                    .to_string(),
-                )
-                .expect("a borrowed string always serializes")
-            },
-        )
-        .privileged()
-        .retry_policy(RetryPolicy::AtMostOnce),
-    );
-    out
+/// What a terminal does that changes no document: drive its process, move
+/// the session to another environment, manage environments, copy and scroll
+/// its output, open a link it printed. Every effect that reaches the
+/// process or the clipboard asks for confirmation when the palette, an agent
+/// or a script invokes it; a person's own keystrokes and gestures reach the
+/// process directly.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "terminal.effects")]
+pub enum TerminalEffect {
+    /// Send text
+    ///
+    /// Writes reviewed text without pressing Enter.
+    #[effect(destructive)]
+    Send {
+        #[param("Text to send")]
+        text: String,
+    },
+    /// Run command
+    ///
+    /// Runs one reviewed command in this live process.
+    #[effect(destructive)]
+    Run {
+        #[param("Command to run")]
+        command: String,
+    },
+    /// Interrupt process
+    #[effect(destructive)]
+    Interrupt,
+    /// Clear screen
+    #[effect(destructive)]
+    Clear,
+    /// Paste
+    ///
+    /// Pastes the exact supplied text; clipboard contents are never re-read
+    /// after confirmation.
+    #[effect(destructive)]
+    Paste {
+        #[param("Exact text to paste after confirmation")]
+        text: String,
+    },
+    /// Paste primary selection
+    ///
+    /// Pastes the exact supplied text; clipboard contents are never re-read
+    /// after confirmation.
+    #[effect(destructive)]
+    PastePrimary {
+        #[param("Exact text to paste after confirmation")]
+        text: String,
+    },
+    /// Open in…
+    ///
+    /// Restarts this session in another environment and records it as the
+    /// session's target.
+    #[effect(destructive)]
+    OpenIn {
+        #[param(
+            "Where the session runs: `environment` (the default environment), \
+             `environment:<record>`, or `legacy:<vm>`; append `@<relay endpoint id>` to an \
+             environment to run it on that relay. The device's own shell (`host`) can only \
+             be chosen by the person."
+        )]
+        target: String,
+    },
+    /// New environment
+    ///
+    /// Creates an environment on the default runtime with nothing added.
+    #[effect(destructive)]
+    CreateEnvironment {
+        #[param("What to call the new environment")]
+        name: String,
+    },
+    /// Grant folder to environment
+    ///
+    /// Binds a host folder into the environment, read-write.
+    #[effect(destructive)]
+    GrantFolder {
+        #[param("The environment's record")]
+        record: String,
+        #[param("An absolute folder path; it appears at the same path in the environment")]
+        path: String,
+    },
+    /// Rename environment
+    #[effect(destructive)]
+    RenameEnvironment {
+        #[param("The environment's record")]
+        record: String,
+        #[param("The new name")]
+        name: String,
+    },
+    /// Copy visible output
+    #[effect(destructive, permission = "read")]
+    CopyVisible,
+    /// Copy selected output
+    #[effect(destructive, permission = "read")]
+    CopySelection,
+    /// Select all output
+    #[effect(destructive, permission = "read")]
+    SelectAll,
+    /// Show oldest output
+    #[effect(permission = "read")]
+    HistoryTop,
+    /// Return to live output
+    #[effect(permission = "read")]
+    HistoryLive,
+    /// Open link
+    ///
+    /// Opens a public web link the process printed.
+    #[effect(destructive, permission = "read")]
+    OpenLink {
+        #[param("The link")]
+        url: String,
+    },
 }
 
 /// Framework app: the terminal widget is the surface over [`Terminal`].
@@ -414,6 +305,14 @@ impl ResourceApp for TerminalShell {
     const ID: &'static str = "so.tilo.terminal";
     const TITLE: &'static str = "Terminal";
     const ICON: Option<&'static str> = Some("terminal");
+
+    fn label(state: &SessionState) -> String {
+        if state.title == "Terminal" {
+            "Terminal session".to_owned()
+        } else {
+            format!("Terminal — {}", state.title)
+        }
+    }
 
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1200, 720)
@@ -494,7 +393,7 @@ fn session_fields(doc: &Doc, obj: &ObjId) -> SessionState {
     }
 }
 
-impl ResourceSurface<Terminal> for TerminalWidget {
+impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
     fn present(&mut self, state: &std::rc::Rc<SessionState>) {
         self.present_session(state);
     }
@@ -509,58 +408,83 @@ impl ResourceSurface<Terminal> for TerminalWidget {
             self.stage_scenario(name);
         }
     }
+
+    fn effect(
+        &mut self,
+        effect: TerminalEffect,
+        _cx: &mut EffectCx<Terminal, Self>,
+    ) -> EffectAnswer {
+        self.perform(effect).map(|()| Effected::done())
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.link_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.link_row(id)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::resources::PublishesResources;
 
     #[test]
-    fn publish_owns_session_door_and_hosted_keeps_only_the_transcript() {
-        let published = ui::tilo_resource::publish::<Terminal>(
-            "terminal.session",
-            "Terminal",
-            &SessionState::default(),
+    fn the_session_publishes_its_effects_and_the_links_on_screen() {
+        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
+        let mut output = Vec::new();
+        for line in 0..100 {
+            output.extend_from_slice(format!("line {line:03}\r\n").as_bytes());
+        }
+        output.extend_from_slice(
+            b"see \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\ \
+              \x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\key\x1b]8;;\x1b\\\r\n",
         );
-        let ids: Vec<&str> = published
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for expected in [
-            "send",
-            "run",
-            "interrupt",
-            "clear",
-            "paste",
-            "paste-primary",
-        ] {
+        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(&output))
+            .expect("the terminal surface is hosted");
+        app.settle();
+
+        let published = app.agent_surface().to_string();
+        for effect in TerminalEffect::declarations() {
             assert!(
-                ids.contains(&expected),
-                "palette `{expected}` must ride publish: {ids:?}"
+                published.contains(&format!("\"{}\"", effect.id)),
+                "`{}` is published: {published}",
+                effect.id
             );
         }
+        assert_eq!(
+            published
+                .matches("\"resource_kind\":\"terminal.link\"")
+                .count(),
+            1,
+            "the public link is a row, the local file link is not: {published}"
+        );
 
+        // Scrolling to the oldest output through the door moves the view.
+        app.effect(&TerminalEffect::HistoryTop)
+            .expect("history-top is offered while older output is retained");
+        let scrolled = app
+            .with_surface(|terminal: &mut TerminalWidget| terminal.scroll_offset())
+            .expect("the terminal surface is hosted");
+        assert!(scrolled > 0, "the view scrolled back");
+
+        // A reviewed command may not smuggle control characters.
+        assert!(
+            app.effect_confirmed(&TerminalEffect::Run {
+                command: "printf first\nprintf second".into(),
+            })
+            .is_err()
+        );
+
+        // An emulating terminal keeps its own screen when the record is presented.
         let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
         widget.feed(b"hello");
-        assert!(!widget.is_framework_hosted());
-        let doc = ui::automerge::AutoCommit::new();
-        let standalone = widget.resources(&doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, Terminal::KIND);
-
-        widget.mark_hosted_for_test();
-        let extras = widget.resources(&doc);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != Terminal::KIND),
-            "hosted must not republish terminal.session"
-        );
-        assert_eq!(extras.len(), 1);
-        assert_eq!(extras[0].kind, "terminal.transcript");
-        ResourceSurface::<Terminal>::present(
+        ResourceSurface::<Terminal, TerminalEffect>::present(
             &mut widget,
             &std::rc::Rc::new(SessionState::default()),
         );
@@ -669,7 +593,7 @@ mod tests {
         .unwrap();
         let state = Terminal::read(&doc).unwrap();
         let mut viewer = TerminalWidget::spawn_headless().expect("headless terminal");
-        ResourceSurface::<Terminal>::present(&mut viewer, &std::rc::Rc::new(state));
+        ResourceSurface::<Terminal, TerminalEffect>::present(&mut viewer, &std::rc::Rc::new(state));
         assert!(viewer.grid_text().contains("recorded elsewhere"));
         assert_eq!(viewer.title(), "vim");
     }
