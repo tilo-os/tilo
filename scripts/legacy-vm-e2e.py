@@ -10,10 +10,12 @@ checks, in order:
 3. A GUI app (foot) launched in the guest maps as the foreign toplevel
    `legacy.linux.foot`, and its first frames are not flat.
 4. Text typed through the compositor reaches the app in the guest.
-5. With a short idle limit the VM is saved to disk, and the next launch
-   restores it (the guest's boot id is unchanged).
+5. With a short idle limit the idle VM goes to sleep and the next launch
+   wakes it. With kernel vhost-vsock the VM is saved to disk and restored
+   (the guest's boot id is unchanged); on a host that only has the
+   user-space vsock daemon it is shut down and booted again.
 
-Run as an ordinary user with /dev/kvm and /dev/vhost-vsock accessible.
+Run as an ordinary user with /dev/kvm accessible.
 """
 
 from __future__ import annotations
@@ -275,6 +277,10 @@ def run(args: argparse.Namespace) -> None:
               f"granted directory visible in the guest at {shared} (got {seen.stdout!r})")
         boot_before = legacy.guest("cat /proc/sys/kernel/random/boot_id").stdout.strip()
         check(len(boot_before) == 36, f"guest boot id {boot_before!r}")
+        status = legacy.run("status", timeout=60).stdout
+        snapshots = "vsock:   kernel" in status
+        print(f"vsock transport: {'kernel vhost-vsock' if snapshots else 'vhost-user vsock'}",
+              flush=True)
 
         # 3. a GUI app's window arrives as a legacy foreign toplevel.
         foot = legacy.popen(
@@ -305,18 +311,23 @@ def run(args: argparse.Namespace) -> None:
         check(typed == TYPED, f"typed text arrived in the guest (got {typed!r})")
 
         # 5. idle suspend, then resume on launch.
-        def suspended() -> bool:
-            status = legacy.run("status", timeout=60).stdout
-            return "suspended" in status.lower()
-        wait_until("the idle VM to be saved to disk", suspended, IDLE_SECONDS + 240)
-        check(True, "the idle VM was saved to disk")
+        asleep = "phase:   suspended" if snapshots else "phase:   off"
+
+        def sleeping() -> bool:
+            return asleep in legacy.run("status", timeout=60).stdout
+        wait_until(f"the idle VM to reach {asleep!r}", sleeping, IDLE_SECONDS + 240)
+        check(True, f"the idle VM went to sleep ({asleep.split()[-1]})")
         started = time.monotonic()
         back = legacy.guest("echo back; cat /proc/sys/kernel/random/boot_id")
         lines = back.stdout.split()
         check(lines[:1] == ["back"], f"launch after suspend runs (got {back.stdout!r})")
-        check(lines[1:2] == [boot_before],
-              f"the VM resumed from its snapshot rather than rebooting "
-              f"({time.monotonic() - started:.0f}s)")
+        if snapshots:
+            check(lines[1:2] == [boot_before],
+                  f"the VM resumed from its snapshot rather than rebooting "
+                  f"({time.monotonic() - started:.0f}s)")
+        else:
+            check(len(lines) == 2 and lines[1] != boot_before,
+                  f"the VM booted again on launch ({time.monotonic() - started:.0f}s)")
     except Exception:
         try:
             (artifacts / "foreign-frames.json").write_text(
@@ -328,9 +339,10 @@ def run(args: argparse.Namespace) -> None:
     finally:
         terminate(foot)
         subprocess.run([*legacy.base, "stop"], env=env, capture_output=True, timeout=120)
-        supervisor_log = runtime / "tilo-legacy" / "linux" / "supervisor.log"
-        if supervisor_log.exists():
-            (artifacts / "supervisor.log").write_bytes(supervisor_log.read_bytes())
+        for log in (runtime / "tilo-legacy" / "linux" / "supervisor.log",
+                    root / "data" / "tilo" / "legacy" / "linux" / "console.log"):
+            if log.exists():
+                (artifacts / log.name).write_bytes(log.read_bytes())
         for qemu_log in (root / "cache").glob("libvirt/qemu/log/*.log"):
             (artifacts / qemu_log.name).write_bytes(qemu_log.read_bytes())
         terminate(compositor)
