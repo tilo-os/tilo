@@ -4122,6 +4122,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-winit",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]
@@ -8416,7 +8417,6 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "taffy",
- "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
  "tilo-vello",

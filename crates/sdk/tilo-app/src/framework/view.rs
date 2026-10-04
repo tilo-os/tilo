@@ -15,7 +15,7 @@ use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 use super::controls::{ActionControl, Actions};
 use super::dispatch::Dispatcher;
 use super::each::Each;
-use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects};
+use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects, Projection};
 use super::live::Live;
 use super::scenario::{Run, RunMode};
 use super::settings::{Setting, ViewStorage};
@@ -637,16 +637,20 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// the entry, so it is no longer pending). The framework runs it in the
     /// live app after every change, on every participant's device — never
     /// in History mode — and runs an entry again only when the document
-    /// changed and still lists it, so `run` should be safe to repeat.
+    /// changed and still lists it, so `run` should be safe to repeat. A
+    /// drain that compares the document against something outside it (what
+    /// a service reports back) looks again when the [`Projection`] it
+    /// answers is told the outside changed.
     pub fn drain<K, I>(
         &self,
         pending: impl Fn(&R::State) -> Vec<(K, I)> + 'static,
         run: impl FnMut(I, &mut EffectCx<R>) -> EffectAnswer + 'static,
-    ) where
+    ) -> Projection
+    where
         K: Eq + Hash + Clone + 'static,
         I: 'static,
     {
-        self.effects.drain(self.alive.clone(), pending, run);
+        self.effects.drain(self.alive.clone(), pending, run)
     }
 
     /// A button that invokes one effect, through the same door (and the
