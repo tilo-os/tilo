@@ -230,7 +230,7 @@ impl TerminalWidget {
                 self.sessions.state = OpenState::Failed(reason);
             }
         }
-        request_terminal_wake(&self.waker, &self.wake_pending);
+        request_terminal_wake(&self.waker);
     }
 
     /// The person answered the shell's prompt for the device's own shell.
