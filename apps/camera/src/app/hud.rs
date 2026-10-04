@@ -612,7 +612,7 @@ impl CameraApp {
         let m = HudMetrics::of(theme);
         let labelled = [HudItem {
             label: self.facing.label(),
-            icon: Some(Icon::Refresh),
+            icon: Some(Icon::SwitchCamera),
             name: "Switch camera",
             on: None,
             action: Action::CycleFacing,

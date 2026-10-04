@@ -13359,9 +13359,13 @@ impl WordProcessorWidget {
                         let fired = std::rc::Rc::clone(&self.tool_fired);
                         let action = *action;
                         let on_click = move || fired.set(Some(action));
-                        match active {
-                            Some(on) => bar.push_toggle(label, *on, on_click),
-                            None => bar.push_button(label, on_click),
+                        match (action.icon(), active) {
+                            (Some(icon), Some(on)) => {
+                                bar.push_icon_toggle(icon, label, *on, on_click)
+                            }
+                            (Some(icon), None) => bar.push_icon(icon, label, on_click),
+                            (None, Some(on)) => bar.push_toggle(label, *on, on_click),
+                            (None, None) => bar.push_button(label, on_click),
                         }
                     }
                     ToolEntry::Separator => bar.push_separator(),

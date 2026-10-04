@@ -203,7 +203,7 @@ impl VideoPlayerSearchProvider {
                     ),
                 )
                 .with_subtitle(subtitle)
-                .with_icon(Icon::Pin),
+                .with_icon(Icon::Bookmark),
             );
         }
         provider

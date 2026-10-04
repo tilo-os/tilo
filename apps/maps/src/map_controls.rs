@@ -116,7 +116,7 @@ impl MapControlAction {
         match self {
             Self::ZoomIn => Icon::Plus,
             Self::ZoomOut => Icon::Minus,
-            Self::Locate => Icon::MousePointer2,
+            Self::Locate => Icon::LocateFixed,
             Self::ToggleTraffic => Icon::Layers,
         }
     }
