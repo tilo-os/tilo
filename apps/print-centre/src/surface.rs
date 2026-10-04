@@ -2492,7 +2492,7 @@ impl PrintCentre {
             Some("diagnostics") => self.handle_command(UiCommand::Diagnostics),
             Some("device") => self.handle_command(UiCommand::Device("Studio_printer".into())),
             Some("discovery") => {
-                self.handle_command(UiCommand::DiscoveryFinished(Ok(demo_discovered_printers())))
+                self.handle_command(UiCommand::DiscoveryFinished(Ok(demo_discovered_printers())));
             }
             Some("print" | "print-narrow") => {
                 self.pending_document = Some(PathBuf::from("Travel itinerary.pdf"));
