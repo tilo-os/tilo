@@ -18,12 +18,9 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# Canonical resource-operation types and local invocation contracts. Raw bytes
-# and their undo history are deliberately never replicated through this crate.
-tilo-actions = { path = "../../crates/collab/actions" }
+tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,6 +30,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

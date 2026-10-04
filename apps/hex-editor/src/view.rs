@@ -15,9 +15,12 @@
 //!     change or a bottom-corner hover, then fades; no permanent strip
 //!   * overlay — search bar and goto-offset prompt (modal-ish, on top)
 //!
-//! File paths and byte contents stay in this device-local view model. The
-//! canonical resource operations remain palette/agent-driveable, but never
-//! become collaborative document changes.
+//! The bytes are the [`HexEditor`] resource's: the view shows the state it
+//! is presented, edits its own copy as a key is pressed so typing stays
+//! immediate, and submits each edit as the resource's action through the
+//! framework's dispatcher. Opening and saving a file are the
+//! [`HexEffect`]s it answers. The path a save writes back to stays on this
+//! device, in the view.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -45,15 +48,23 @@ use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, TextInputKind};
 
-use crate::actions::HexOperation;
+use std::rc::Rc;
+
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, ResourceSurface,
+    SurfaceCx,
+};
+use ui::tilo_resource::ActionDecl;
+
+use crate::actions::{HexEditorAction, HexEffect, HexPanel};
 use crate::inspector::{self, Interpretation};
-use crate::model::{Column, EditMode, HexModel, LocalEdit};
+use crate::model::{Column, EditMode, HexModel};
+use crate::resource::{HexEditor, HexState};
 use crate::search::{self, SearchKind};
 use ui::paint::with_alpha;
 
 /// How long a transient status message (Saved / open error) stays up.
 const FLASH_MS: u128 = 3500;
-const LOCAL_HISTORY_LIMIT: usize = 256;
 
 /// Theme type sizes already carry the accessibility text scale, and the
 /// size-based renderer APIs (`measure*`, `draw_text*`, `pill_size`) apply
@@ -92,6 +103,9 @@ fn paint_side_panel(scene: &mut Scene, t: Affine, theme: &Theme, panel: Rect) {
     );
 }
 
+/// What a cancelled chooser answers.
+const CANCELLED: &str = "cancelled";
+
 fn file_open_request() -> PickRequest {
     PickRequest::open("Open file", "Open")
         .thread_name("hex-portal-open")
@@ -102,6 +116,15 @@ fn file_save_request(suggested_name: &str) -> PickRequest {
     PickRequest::save("Save file", "Save", suggested_name)
         .thread_name("hex-portal-save")
         .filter(FileFilter::all_files())
+}
+
+/// A file chooser in flight, and the effect waiting for it.
+enum FileIo {
+    Open(PortalChannel),
+    /// A chooser delivering contents, where files have no path (the web).
+    OpenContents(ContentsChannel),
+    Save(PortalChannel),
+    SaveContents(SaveChannel),
 }
 
 /// Which transient prompt, if any, is capturing keystrokes.
@@ -130,9 +153,9 @@ struct OverlayLayoutCtx<'a> {
     reason = "three unrelated view flags (dirty/has_file/shots_status), not a combinatorial option set"
 )]
 pub struct HexView {
-    /// Decoded local buffer and editor state. Refreshed from local I/O only.
+    /// The view's copy of the buffer and its editor state.
     model: HexModel,
-    /// File name shown in the header (cosmetic; the buffer is local).
+    /// File name shown in the header.
     file_name: String,
     rect: Rect,
     dirty: bool,
@@ -169,32 +192,28 @@ pub struct HexView {
     /// so a left-click can hit-test the cell under the cursor.
     last_mouse: Point,
 
-    // --- file / portal state ---
-    /// False until a real buffer is loaded — drives the composed empty
+    // --- file state ---
+    /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
-    /// The on-disk path this buffer came from / was last saved to, if any.
-    /// `Ctrl+S` writes straight back here; absent, it opens a Save chooser.
+    /// The bytes as last opened or saved, which the changed-byte marks
+    /// compare against.
+    saved: Vec<u8>,
+    /// How many files the resource had opened when last presented.
+    opened: u64,
+    /// This view submitted the open the resource will present next.
+    expect_open: bool,
+    /// The file on this device the buffer was opened from or last saved
+    /// to, if any. `Ctrl+S` writes straight back here; absent, it opens a
+    /// Save chooser.
     path: Option<PathBuf>,
-    /// An in-flight XDG-portal open request, drained once per frame in `sync`.
-    open_rx: Option<PortalChannel>,
-    /// A chooser delivering contents, where files have no path (the web).
-    open_contents_rx: Option<ContentsChannel>,
-    save_contents_rx: Option<SaveChannel>,
-    /// An in-flight XDG-portal save-destination request.
-    save_rx: Option<PortalChannel>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    pending_resource_io: Option<(tilo_actions::InvocationId, crate::actions::HexOperation)>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// A chooser in flight, drained once per frame in `sync`, and the open
+    /// or save effect it answers.
+    io: Option<(FileIo, EffectReply)>,
     /// A transient status message (e.g. "Saved 4.2 kB") with its birth time.
     flash: Option<(String, bool, Instant)>,
     /// Hit rect of the empty-state "Open file…" button, recorded during draw.
     open_button: Rect,
-
-    /// Bounded, device-local undo/redo journal. Resource operations and
-    /// keyboard shortcuts use the same inverse edit representation.
-    undo: Vec<LocalEdit>,
-    redo: Vec<LocalEdit>,
 
     /// The cursor read-out / edit status, surfaced as a transient floating
     /// bubble (see `draw_status_bubble`) instead of a permanent bottom strip,
@@ -214,9 +233,10 @@ pub struct HexView {
     shots_overlay: bool,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
-    /// Local host for standalone tests; the framework dispatcher once the
-    /// surface is attached. Hosted publication keeps only live cursor extras.
-    pub(crate) actions: crate::resource::ActionSink,
+    /// Where edits and effects go, once the framework attached the view.
+    dispatch: Option<Dispatcher<HexEditor>>,
+    /// The resource's state, to show again when an edit is refused.
+    live: Option<Live<HexEditor>>,
 }
 
 impl HexView {
@@ -248,38 +268,21 @@ impl HexView {
             cell_metrics: CellMetrics::FALLBACK,
             last_mouse: Point::ZERO,
             has_file: true,
+            saved: Vec::new(),
+            opened: 0,
+            expect_open: false,
             path: None,
-            open_rx: None,
-            open_contents_rx: None,
-            save_contents_rx: None,
-            save_rx: None,
-            resource_invocation: None,
-            pending_resource_io: None,
-            resource_result: None,
+            io: None,
             flash: None,
             open_button: Rect::ZERO,
-            undo: Vec::new(),
-            redo: Vec::new(),
             status_bubble: ui::StatusBubble::new(),
             last_status_label: None,
             shots_status: false,
             shots_overlay: false,
             focused: false,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
+            live: None,
         }
-    }
-
-    /// Whether this surface is under the framework [`ResourceApp`] host.
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    /// Standalone tests stay on the local action host.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
     }
 
     /// The editor with no file loaded — the honest live default. Shows a
@@ -288,20 +291,13 @@ impl HexView {
     pub fn empty() -> Self {
         let mut v = Self::new(Vec::new(), "No file");
         v.has_file = false;
-        // Where files have no path, the file last opened by contents.
-        if !crate::web_file::native_paths()
-            && let Some(file) = crate::web_file::recall()
-        {
-            v.load_bytes(file.name, file.bytes, None);
-        }
         v
     }
 
-    /// Record the on-disk path this buffer came from, so `Ctrl+S` writes back
-    /// to it without a chooser.
+    /// The file on this device a save writes back to without a chooser.
     #[must_use]
-    pub fn with_path(mut self, path: PathBuf) -> Self {
-        self.path = Some(path);
+    pub fn with_path(mut self, path: Option<PathBuf>) -> Self {
+        self.path = path;
         self
     }
 
@@ -317,25 +313,6 @@ impl HexView {
         &mut self.model
     }
 
-    /// The presentation context Ctrl+K needs to target its byte-edit actions at
-    /// the live cursor / selection. Everything here is view state the document
-    /// doesn't own.
-    pub(crate) fn hex_resource_ctx(&self) -> crate::actions::HexResourceCtx {
-        crate::actions::HexResourceCtx {
-            label: if self.file_name.is_empty() {
-                "Buffer".to_string()
-            } else {
-                self.file_name.clone()
-            },
-            cursor: self.model.cursor(),
-            len: self.model.len(),
-            selection: self.model.selection(),
-            has_file: self.has_file,
-            can_undo: !self.undo.is_empty(),
-            can_redo: !self.redo.is_empty(),
-        }
-    }
-
     /// Whether a real buffer is loaded (false in the empty state).
     pub fn has_file(&self) -> bool {
         self.has_file
@@ -346,27 +323,21 @@ impl HexView {
         self.path.as_deref()
     }
 
-    /// Place the initial cursor at `offset`. Useful for opening a file
-    /// "at" a field of interest. Clamped to the buffer.
-    #[must_use]
-    pub fn with_cursor(mut self, offset: usize) -> Self {
-        self.model.move_to(offset, false);
-        self
-    }
-
-    /// Choose the initial inspector endianness. Big-endian suits opening
-    /// network / image formats whose multi-byte fields are big-endian.
-    #[must_use]
-    pub fn with_big_endian(mut self) -> Self {
+    /// Show the bundled sample as a capture does: the cursor on the IHDR
+    /// width field (offset `0x10`) with the inspector in big-endian — PNG's
+    /// native byte order — so the data inspector reads the image's `2 × 2`
+    /// dimensions as clean `u32` values.
+    fn stage_sample(&mut self) {
+        self.model.move_to(0x10, false);
         if self.model.endian() != crate::model::Endian::Big {
             self.model.toggle_endian();
         }
-        self
+        self.dirty = true;
     }
 
     /// `--shots`: force the floating status bubble fully visible so a single
     /// headless frame captures the floating chip.
-    pub fn arm_status_bubble_for_shots(&mut self) {
+    fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
         self.status_bubble.poke(ui::time::now());
     }
@@ -374,7 +345,7 @@ impl HexView {
     /// Deterministic `--shots` hook for the real search overlay. It is not
     /// reachable in a normal launch and exists only so visual review can cover
     /// focused text input and match highlighting without a live compositor.
-    pub fn arm_search_for_shots(&mut self) {
+    fn arm_search_for_shots(&mut self) {
         self.overlay = Overlay::Search;
         self.search_kind = SearchKind::Text;
         self.search_input.set_mono(false);
@@ -387,56 +358,80 @@ impl HexView {
 
     /// Deterministic `--shots` hook for a failed local-file operation. Uses
     /// the same transient error presentation as `open_path`/`write_to`.
-    pub fn arm_error_for_shots(&mut self) {
+    fn arm_error_for_shots(&mut self) {
         self.flash("Open failed: permission denied", true);
         self.arm_status_bubble_for_shots();
     }
 
-    /// Record bounded inverse edits for a completed local input. Neither bytes
-    /// nor paths enter the collaboration document.
-    fn record_local_history(&mut self) {
-        let edits = self.model.take_local_history();
-        if !edits.is_empty() {
-            self.undo.extend(edits);
-            let excess = self.undo.len().saturating_sub(LOCAL_HISTORY_LIMIT);
-            if excess > 0 {
-                self.undo.drain(..excess);
+    /// Submit the edits the last input made as the resource's actions, one
+    /// undo step per run of typing; an input that edited nothing ends the
+    /// run, so the next one is a step of its own. A refused edit shows the
+    /// resource's bytes again.
+    fn commit_edits(&mut self, doc: &mut AutoCommit) {
+        let edits = self.model.take_edits();
+        self.dirty = true;
+        let Some(dispatch) = &self.dispatch else {
+            return;
+        };
+        if edits.is_empty() {
+            dispatch.settle();
+            return;
+        }
+        for edit in edits {
+            if dispatch
+                .apply_now(doc, &HexEditorAction::from_edit(edit))
+                .is_err()
+            {
+                if let Some(live) = &self.live {
+                    let state = live.get();
+                    self.model.show_bytes(state.bytes.clone(), &self.saved);
+                }
+                return;
             }
-            self.redo.clear();
+        }
+    }
+
+    /// The cursor moved or the view changed without an edit: the next edit
+    /// starts an undo step of its own.
+    fn moved(&mut self) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.settle();
         }
         self.dirty = true;
     }
 
-    // --- file open / save (through the host portal) --------------------
-
-    /// Start the host file chooser to open a file. No-op if one is already in
-    /// flight. The pick arrives over `open_rx`, drained in `sync`.
-    fn begin_open(&mut self) {
-        if self.open_rx.is_some() || self.open_contents_rx.is_some() {
-            return;
-        }
-        if crate::web_file::native_paths() {
-            self.open_rx = Some(file_open_request().send());
-        } else {
-            self.open_contents_rx = Some(file_open_request().send_contents());
+    /// Invoke `effect` through the framework's door, as the palette does.
+    fn invoke(&self, effect: &HexEffect) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.effect(effect);
         }
     }
 
-    /// Save the buffer. With a known path this writes straight back; without
-    /// one (a never-saved buffer) it opens the host Save chooser.
-    fn begin_save(&mut self) {
-        if let Some(path) = self.path.clone() {
-            let _ = self.write_to(&path);
-        } else if !crate::web_file::native_paths() {
-            if self.save_contents_rx.is_none() {
-                let name = self.suggested_name();
-                crate::web_file::remember(&name, self.model.bytes());
-                self.save_contents_rx =
-                    Some(file_save_request(&name).send_save_contents(self.model.bytes().to_vec()));
-            }
-        } else if self.save_rx.is_none() {
-            self.save_rx = Some(file_save_request(&self.suggested_name()).send());
-        }
+    // --- file open / save (through the host portal) --------------------
+
+    /// Start the host file chooser to open a file, answering `reply` when
+    /// it closes.
+    fn begin_open(&mut self, reply: EffectReply) {
+        let io = if crate::file::native_paths() {
+            FileIo::Open(file_open_request().send())
+        } else {
+            FileIo::OpenContents(file_open_request().send_contents())
+        };
+        self.io = Some((io, reply));
+    }
+
+    /// Start the host Save chooser for a buffer with no file on this
+    /// device, answering `reply` when it closes.
+    fn begin_save_as(&mut self, reply: EffectReply) {
+        let name = self.suggested_name();
+        let io = if crate::file::native_paths() {
+            FileIo::Save(file_save_request(&name).send())
+        } else {
+            FileIo::SaveContents(
+                file_save_request(&name).send_save_contents(self.model.bytes().to_vec()),
+            )
+        };
+        self.io = Some((io, reply));
     }
 
     /// The filename the Save dialog seeds with — the current name, or a
@@ -449,15 +444,12 @@ impl HexView {
         }
     }
 
-    /// Write the current bytes to `path`, clearing the dirty markers on
+    /// Write the current bytes to `path`, clearing the changed-byte marks on
     /// success and flashing the outcome either way.
     fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let saved = tilo_files::file_at(path).and_then(|(dir, name)| {
-            tilo_files::blocking::save_document(&dir, &name, self.model.bytes())
-        });
-        match saved {
+        match crate::file::write(path, self.model.bytes()) {
             Ok(()) => {
-                self.model.clear_dirty();
+                self.saved_now();
                 self.path = Some(path.to_path_buf());
                 self.flash(
                     format!(
@@ -466,77 +458,69 @@ impl HexView {
                     ),
                     false,
                 );
-                self.dirty = true;
                 Ok(())
             }
             Err(e) => {
                 self.flash(format!("Save failed: {e}"), true);
-                Err(e.to_string())
+                Err(e)
             }
         }
     }
 
-    /// Load a local path into this editor. The path and bytes stay local.
+    /// The buffer now matches the file it was saved to.
+    fn saved_now(&mut self) {
+        self.saved = self.model.bytes().to_vec();
+        self.model.clear_dirty();
+        self.dirty = true;
+    }
+
+    /// Open the file at `path` into the resource. The path stays here.
     fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
-        match crate::app::read_file(&path) {
+        match crate::file::read(&path) {
             Ok(bytes) => {
                 let name = path.file_name().map_or_else(
                     || "untitled".to_string(),
                     |s| s.to_string_lossy().into_owned(),
                 );
-                let n = self.load_bytes(name, bytes, Some(path));
-                self.flash(
-                    format!(
-                        "Opened {}",
-                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
-                    ),
-                    false,
-                );
+                self.open_bytes(name, bytes);
+                self.path = Some(path);
                 Ok(())
             }
             Err(e) => {
                 self.flash(format!("Open failed: {e}"), true);
-                Err(e.to_string())
+                Err(e)
             }
         }
     }
 
-    /// Show `bytes` as the open file; its length.
-    fn load_bytes(&mut self, name: String, bytes: Vec<u8>, path: Option<PathBuf>) -> usize {
+    /// Submit `bytes`, read from the file `name`, as the resource's buffer.
+    fn open_bytes(&mut self, name: String, bytes: Vec<u8>) {
         let n = bytes.len();
-        self.model = HexModel::new(bytes);
-        self.file_name = name;
-        self.path = path;
-        self.has_file = true;
-        self.overlay = Overlay::None;
-        self.matches.clear();
-        self.search_needle = None;
-        self.matches_truncated = false;
-        self.match_idx = None;
-        self.dirty = true;
-        n
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(&HexEditorAction::Open { name, bytes });
+            self.expect_open = true;
+        }
+        self.path = None;
+        self.flash(
+            format!(
+                "Opened {}",
+                format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
+            ),
+            false,
+        );
     }
 
-    /// A file chosen by contents: shown, and remembered so it outlives a
-    /// reload.
+    /// A file chosen by contents.
     fn open_contents(&mut self, outcome: ContentsOutcome) -> Result<(), String> {
         match outcome {
             ContentsOutcome::Picked(files) => {
                 let Some(file) = files.into_iter().next() else {
                     return Err("no file was chosen".into());
                 };
-                crate::web_file::remember(&file.name, &file.bytes);
-                let n = self.load_bytes(file.name, file.bytes, None);
-                self.flash(
-                    format!(
-                        "Opened {}",
-                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
-                    ),
-                    false,
-                );
+                self.open_bytes(file.name, file.bytes);
                 Ok(())
             }
-            ContentsOutcome::Cancelled => Err("cancelled".into()),
+            ContentsOutcome::Cancelled => Err(CANCELLED.into()),
             ContentsOutcome::Failed(reason) => {
                 self.flash(&reason, true);
                 Err(reason)
@@ -544,112 +528,59 @@ impl HexView {
         }
     }
 
-    /// Drain completed portal open/save requests into this device-local view.
-    fn drain_portal(&mut self) {
-        if let Some(rx) = self.open_contents_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.open_contents_rx = None;
-                    let result = self.open_contents(outcome);
-                    self.finish_resource_io(result);
+    /// What a closed chooser means for the buffer; `None` while it is open.
+    fn take_chooser(&mut self, io: &FileIo) -> Option<Result<(), String>> {
+        let disconnected = || Some(Err("file picker disconnected".to_owned()));
+        match io {
+            FileIo::OpenContents(rx) => match rx.try_recv() {
+                Ok(outcome) => Some(self.open_contents(outcome)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => disconnected(),
+            },
+            FileIo::SaveContents(rx) => match rx.try_recv() {
+                Ok(SaveOutcome::Saved) => {
+                    self.saved_now();
+                    self.flash("Saved", false);
+                    Some(Ok(()))
                 }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.open_contents_rx = None;
-                    self.finish_resource_io(Err("file picker disconnected".into()));
+                Ok(SaveOutcome::Cancelled) => Some(Err(CANCELLED.into())),
+                Ok(SaveOutcome::Failed(reason)) => {
+                    self.flash(&reason, true);
+                    Some(Err(reason))
                 }
-            }
-        }
-        if let Some(rx) = self.save_contents_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.save_contents_rx = None;
-                    let result = match outcome {
-                        SaveOutcome::Saved => {
-                            self.model.clear_dirty();
-                            self.flash("Saved", false);
-                            self.dirty = true;
-                            Ok(())
-                        }
-                        SaveOutcome::Cancelled => Err("cancelled".into()),
-                        SaveOutcome::Failed(reason) => {
-                            self.flash(&reason, true);
-                            Err(reason)
-                        }
-                    };
-                    self.finish_resource_io(result);
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => disconnected(),
+            },
+            FileIo::Open(rx) | FileIo::Save(rx) => match rx.try_recv() {
+                Ok(PortalOutcome::Opened(path)) => Some(match io {
+                    FileIo::Open(_) => self.open_path(path),
+                    _ => self.write_to(&path),
+                }),
+                Ok(PortalOutcome::Cancelled) => Some(Err(CANCELLED.into())),
+                Ok(PortalOutcome::Failed(reason)) => {
+                    self.flash(&reason, true);
+                    Some(Err(reason))
                 }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => self.save_contents_rx = None,
-            }
-        }
-        if let Some(rx) = self.open_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.open_rx = None;
-                    let result = match outcome {
-                        PortalOutcome::Opened(path) => self.open_path(path),
-                        PortalOutcome::Cancelled => Err("cancelled".into()),
-                        PortalOutcome::Failed(reason) => {
-                            self.flash(&reason, true);
-                            Err(reason)
-                        }
-                    };
-                    self.finish_resource_io(result);
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.open_rx = None;
-                    self.finish_resource_io(Err("file picker disconnected".into()));
-                }
-            }
-        }
-        if let Some(rx) = self.save_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(outcome) => {
-                    self.save_rx = None;
-                    let result = match outcome {
-                        PortalOutcome::Opened(dest) => self.write_to(&dest),
-                        PortalOutcome::Cancelled => Err("cancelled".into()),
-                        PortalOutcome::Failed(reason) => {
-                            self.flash(&reason, true);
-                            Err(reason)
-                        }
-                    };
-                    self.finish_resource_io(result);
-                }
-                Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => {
-                    self.save_rx = None;
-                    self.finish_resource_io(Err("file picker disconnected".into()));
-                }
-            }
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => disconnected(),
+            },
         }
     }
 
-    fn finish_resource_io(&mut self, result: Result<(), String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
+    /// Answer the open or save effect whose chooser closed.
+    fn drain_chooser(&mut self) {
+        let Some((io, reply)) = self.io.take() else {
             return;
         };
-        self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) if message == "cancelled" => tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(message),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "hex.io_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+        if reply.is_cancelled() {
+            return;
+        }
+        match self.take_chooser(&io) {
+            None => self.io = Some((io, reply)),
+            Some(result) => {
+                reply.finish(result.map(|()| ui::tilo_actions::ActionOutput::default()));
+            }
+        }
     }
 
     /// Post a transient status message.
@@ -658,10 +589,10 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// True while any portal request is in flight or a status flash is live —
-    /// the app keeps pumping frames so the pick drains and the flash expires.
+    /// True while a chooser is open or a status flash is live — the app
+    /// keeps pumping frames so the pick drains and the flash expires.
     fn is_busy(&self) -> bool {
-        self.open_rx.is_some() || self.save_rx.is_some() || self.flash.is_some()
+        self.io.is_some() || self.flash.is_some()
     }
 
     /// The number of byte columns that fills the current width, leaving room
@@ -1809,7 +1740,7 @@ impl HexView {
                 }
                 (Overlay::Search, Key::Named(NamedKey::Enter)) => {
                     self.jump_to_match(!shift);
-                    self.record_local_history();
+                    self.moved();
                     return true;
                 }
                 (Overlay::Search, Key::Named(NamedKey::Tab)) => {
@@ -1829,7 +1760,7 @@ impl HexView {
                 }
                 (Overlay::Goto, Key::Named(NamedKey::Enter)) => {
                     self.commit_goto();
-                    self.record_local_history();
+                    self.moved();
                     return true;
                 }
                 _ => {}
@@ -1889,112 +1820,37 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::HEX_EDITOR_OPERATION_TYPE]
+        &[crate::actions::HEX_EDITOR_VIEW_TYPE]
     }
 
+    /// The editor's views — the search bar, the go-to prompt — opened by
+    /// the palette, an agent or a script.
     fn start_operation(
         &mut self,
         op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
+            return Ok(None);
         };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
+        let Some(panel) = crate::actions::decode_view(request.type_id, request.payload)? else {
+            return Ok(None);
+        };
+        if !self.has_file {
+            return Err("open a file first".into());
         }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_resource_io
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-        {
-            self.pending_resource_io = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("cancelled before file I/O".into()),
-            });
-        }
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.open_rx = None;
-            self.save_rx = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            });
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
+        self.open_panel(panel);
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            ui::tilo_actions::ActionOutput::default(),
+        )))
     }
 
     fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
-        if let Some((invocation, operation)) = self.pending_resource_io.take() {
-            let result = match operation {
-                crate::actions::HexOperation::Open { path: Some(path) } => {
-                    self.open_path(path.into())
-                }
-                crate::actions::HexOperation::Save { path: Some(path) } => {
-                    self.write_to(std::path::Path::new(&path))
-                }
-                _ => Err("missing direct path".into()),
-            };
-            self.resource_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "hex.io_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
-        // Drain any completed file open/save picks first, so a freshly opened
-        // buffer is in place before this frame lays out.
-        self.drain_portal();
-
-        // Paths, bytes, selection and cursor are local device state. Never
-        // seed or adopt them through Automerge: a collaborator cannot open
-        // this machine's path or receive its raw file contents.
+        // Drain a closed file chooser first, so a freshly opened buffer is
+        // submitted before this frame lays out.
+        self.drain_chooser();
 
         // Expire a status flash so an idle window settles back to no message.
         if let Some((_, _, born)) = &self.flash
@@ -2164,7 +2020,7 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, ctx.handled);
+                self.handle_key_event(ke, ctrl, shift, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -2233,30 +2089,8 @@ impl Widget for HexView {
                 if self.has_file {
                     children.push(
                         AccessNode::new(Role::StaticText).with_name(
-                            "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F search, Ctrl+G go to offset, Ctrl+Z undo, Ctrl+Y redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                            "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F search, Ctrl+G go to offset, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
                         ).with_hashed_key("hex.keyboard-help"),
-                    );
-                    children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name("Undo local edit")
-                            .with_description("Revert the most recent local byte edit")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(self.undo.is_empty()),
-                            )
-                            .with_action_target("hex.undo"),
-                    );
-                    children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name("Redo local edit")
-                            .with_description("Reapply the most recently undone local byte edit")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(self.redo.is_empty()),
-                            )
-                            .with_action_target("hex.redo"),
                     );
                 } else {
                     children.push(
@@ -2271,7 +2105,7 @@ impl Widget for HexView {
                 Some(
                     AccessNode::new(Role::Document)
                         .with_name("Hex editor")
-                        .with_description("Local file bytes are not shared with collaborators.")
+                        .with_description("The bytes of one file, edited byte by byte.")
                         .with_state(AccessState::default().focusable(true).focused(self.focused))
                         .with_children(children),
                 )
@@ -2299,17 +2133,8 @@ impl Widget for HexView {
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
-        if matches!(action, ui::a11y::Action::Activate) {
-            match target {
-                "hex.open" => self.begin_open(),
-                "hex.undo" if self.has_file && !self.undo.is_empty() => {
-                    let _ = self.undo_local();
-                }
-                "hex.redo" if self.has_file && !self.redo.is_empty() => {
-                    let _ = self.redo_local();
-                }
-                _ => return false,
-            }
+        if matches!(action, ui::a11y::Action::Activate) && target == "hex.open" {
+            self.invoke(&HexEffect::Open { path: None });
             self.dirty = true;
             return true;
         }
@@ -2325,134 +2150,113 @@ impl Widget for HexView {
     }
 }
 
-impl ui::resources::PublishesResources for HexView {
-    /// Standalone / `--shots` / unit tests publish the document door. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// `hex_editor.document` — keep only live cursor / selection byte extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return crate::actions::live_buffer_extras(&self.hex_resource_ctx());
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.actions.is_hosted() && id == "hex_editor.document" {
-            return None;
-        }
-        find_resource(&self.publish_resources(doc), id)
-    }
-}
-
-fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-impl HexView {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            HexOperation::Open { .. } => self.begin_open(),
-            HexOperation::Save { .. } if self.has_file => self.begin_save(),
-            HexOperation::Search if self.has_file => {
-                self.overlay = Overlay::Search;
-                self.search_input.set_focus(true);
+impl ResourceSurface<HexEditor, HexEffect> for HexView {
+    /// Show the buffer the resource holds now. A newly opened file loads
+    /// fresh; any other change (an undo, a collaborator, the palette) is
+    /// shown in place, keeping the cursor and the view settings.
+    fn present(&mut self, state: &Rc<HexState>) {
+        let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
+        let name = state.name.clone().unwrap_or_else(|| "No file".to_owned());
+        if fresh {
+            // A file a collaborator opened is not the one at our path.
+            if self.has_file && name != self.file_name && !self.expect_open {
+                self.path = None;
+            }
+            self.expect_open = false;
+            self.opened = state.opened;
+            self.saved.clone_from(&state.bytes);
+            self.model.load(state.bytes.clone());
+            self.overlay = Overlay::None;
+            self.matches.clear();
+            self.search_needle = None;
+            self.matches_truncated = false;
+            self.match_idx = None;
+        } else {
+            self.model.show_bytes(state.bytes.clone(), &self.saved);
+            if self.search_needle.is_some() {
                 self.recompute_matches();
-                self.dirty = true;
             }
-            HexOperation::GotoOffset if self.has_file => {
-                self.overlay = Overlay::Goto;
-                self.goto_input.set_focus(true);
-                self.dirty = true;
-            }
-            HexOperation::Edit { edit } if self.has_file => {
-                // Raw bytes: the sink returns before the framework dispatcher.
-                // The buffer stays on this device.
-                let action = crate::actions::action_from_wire(&edit);
-                self.actions.dispatch_document(
-                    doc,
-                    &action,
-                    ui::tilo_actions::ActionContext::default(),
-                );
-                self.model.apply_local_edit(&edit.into());
-                self.record_local_history();
-                self.dirty = true;
-            }
-            HexOperation::Undo if !self.undo.is_empty() => {
-                let _ = self.undo_local();
-            }
-            HexOperation::Redo if !self.redo.is_empty() => {
-                let _ = self.redo_local();
-            }
-            HexOperation::Undo => return Err("no local edit to undo".into()),
-            HexOperation::Redo => return Err("no local edit to redo".into()),
-            _ => return Err("open a file first".into()),
         }
-        Ok(true)
+        self.has_file = state.has_file();
+        self.file_name = name;
+        self.dirty = true;
     }
 
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        match &operation {
-            crate::actions::HexOperation::Open { .. }
-            | crate::actions::HexOperation::Save { .. } => {}
+    fn attach(&mut self, cx: SurfaceCx<HexEditor>) {
+        self.dispatch = Some(cx.dispatcher());
+        self.live = Some(cx.live());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("empty") => {}
+            Some("search") => {
+                self.stage_sample();
+                self.arm_search_for_shots();
+            }
+            Some("error") => {
+                self.stage_sample();
+                self.arm_error_for_shots();
+            }
             _ => {
-                return self
-                    .answer_resource_operation(kind, type_id, payload, doc, path)
-                    .map(|handled| {
-                        handled.then(|| {
-                            ui::widget::ResourceOperationStart::Completed(
-                                ui::tilo_actions::ActionOutput::default(),
-                            )
-                        })
-                    });
+                self.stage_sample();
+                self.arm_status_bubble_for_shots();
             }
         }
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+    }
+
+    fn effect(&mut self, effect: HexEffect, cx: &mut EffectCx<HexEditor, Self>) -> EffectAnswer {
+        if self.io.is_some() {
             return Err("another file operation is already running".into());
         }
-        match &operation {
-            crate::actions::HexOperation::Open { path: None } => {
-                self.begin_open();
-                self.resource_invocation = Some(invocation);
+        match effect {
+            HexEffect::Open { path: Some(path) } => {
+                self.open_path(PathBuf::from(path))?;
+                Ok(Effected::done())
             }
-            crate::actions::HexOperation::Save { path: None } => {
-                self.begin_save();
-                self.resource_invocation = Some(invocation);
+            HexEffect::Open { path: None } => {
+                self.begin_open(cx.reply());
+                Ok(Effected::Pending)
             }
-            _ => self.pending_resource_io = Some((invocation, operation)),
+            HexEffect::Save | HexEffect::SaveAs { .. } if !self.has_file => {
+                Err("open a file first".into())
+            }
+            HexEffect::SaveAs { path } => {
+                self.write_to(std::path::Path::new(&path))?;
+                Ok(Effected::done())
+            }
+            HexEffect::Save => {
+                if let Some(path) = self.path.clone() {
+                    self.write_to(&path)?;
+                    Ok(Effected::done())
+                } else {
+                    self.begin_save_as(cx.reply());
+                    Ok(Effected::Pending)
+                }
+            }
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.has_file {
+            Vec::new()
+        } else {
+            vec![
+                EffectStatus::unavailable(HexEffect::SAVE, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::SAVE_AS, "no_file", "Open a file first"),
+            ]
+        }
+    }
+
+    fn bound_declarations(&self) -> Vec<ActionDecl<HexEditor>> {
+        if !self.has_file {
+            return Vec::new();
+        }
+        crate::actions::cursor_declarations(
+            self.model.cursor(),
+            self.model.len(),
+            self.model.selection(),
+        )
     }
 }
 
@@ -2465,7 +2269,7 @@ impl HexView {
         // Empty state: the only affordance is the centred Open button.
         if !self.has_file {
             if self.open_button.contains(self.last_mouse) {
-                self.begin_open();
+                self.invoke(&HexEffect::Open { path: None });
                 *handled = true;
             }
             return;
@@ -2475,7 +2279,7 @@ impl HexView {
         if let Some((off, col)) = self.hit_test(self.last_mouse) {
             self.model.set_column(col);
             self.model.move_to(off, shift);
-            self.record_local_history();
+            self.moved();
             *handled = true;
         }
     }
@@ -2489,6 +2293,7 @@ impl HexView {
         ke: &winit::event::KeyEvent,
         ctrl: bool,
         shift: bool,
+        doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
         let key = &ke.logical_key;
@@ -2507,43 +2312,41 @@ impl HexView {
         if moved {
             let (row, _) = self.model.cursor_cell();
             self.model.scroll_into_view(row, self.visible_rows);
-            self.record_local_history();
+            self.commit_edits(doc);
             *handled = true;
         }
     }
 
     /// The only meaningful key action while no file is open. Part of
     /// [`Self::handle_key_event`].
-    fn handle_empty_state_key(&mut self, key: &Key, ctrl: bool, handled: &mut bool) {
+    fn handle_empty_state_key(&self, key: &Key, ctrl: bool, handled: &mut bool) {
         if ctrl
             && let Key::Character(c) = key
             && c.eq_ignore_ascii_case("o")
         {
-            self.begin_open();
+            self.invoke(&HexEffect::Open { path: None });
             *handled = true;
         }
     }
 
-    fn undo_local(&mut self) -> bool {
-        if let Some(edit) = self.undo.pop() {
-            self.model.apply_history_edit(&edit.undo);
-            self.redo.push(edit);
-            self.dirty = true;
-            true
-        } else {
-            false
+    /// Open the search bar or the go-to prompt.
+    fn open_panel(&mut self, panel: HexPanel) {
+        match panel {
+            HexPanel::Search => {
+                self.overlay = Overlay::Search;
+                self.search_input.set_focus(true);
+                self.search_input
+                    .set_cursor_pos(self.search_input.value().len());
+                self.recompute_matches();
+            }
+            HexPanel::GotoOffset => {
+                self.overlay = Overlay::Goto;
+                self.goto_input.set_focus(true);
+                self.goto_input
+                    .set_cursor_pos(self.goto_input.value().len());
+            }
         }
-    }
-
-    fn redo_local(&mut self) -> bool {
-        if let Some(edit) = self.redo.pop() {
-            self.model.apply_history_edit(&edit.redo);
-            self.undo.push(edit);
-            self.dirty = true;
-            true
-        } else {
-            false
-        }
+        self.dirty = true;
     }
 
     /// Ctrl+letter global chords. Returns `true` if one matched (the caller
@@ -2557,53 +2360,18 @@ impl HexView {
             return false;
         }
         match c.as_str() {
-            "z" | "Z" => {
-                self.undo_local();
-                *handled = true;
-                true
-            }
-            "y" | "Y" => {
-                self.redo_local();
-                *handled = true;
-                true
-            }
-            "o" | "O" => {
-                self.begin_open();
-                *handled = true;
-                true
-            }
-            "s" | "S" => {
-                self.begin_save();
-                *handled = true;
-                true
-            }
-            "f" | "F" => {
-                self.overlay = Overlay::Search;
-                self.search_input.set_focus(true);
-                self.search_input
-                    .set_cursor_pos(self.search_input.value().len());
-                self.recompute_matches();
-                self.dirty = true;
-                *handled = true;
-                true
-            }
-            "g" | "G" => {
-                self.overlay = Overlay::Goto;
-                self.goto_input.set_focus(true);
-                self.goto_input
-                    .set_cursor_pos(self.goto_input.value().len());
-                self.dirty = true;
-                *handled = true;
-                true
-            }
+            "o" | "O" => self.invoke(&HexEffect::Open { path: None }),
+            "s" | "S" => self.invoke(&HexEffect::Save),
+            "f" | "F" => self.open_panel(HexPanel::Search),
+            "g" | "G" => self.open_panel(HexPanel::GotoOffset),
             "a" | "A" => {
                 self.model.select_all();
-                self.record_local_history();
-                *handled = true;
-                true
+                self.moved();
             }
-            _ => false,
+            _ => return false,
         }
+        *handled = true;
+        true
     }
 
     /// Cursor movement / mode keys. Returns whether the cursor moved (or a
@@ -2913,144 +2681,6 @@ fn ascii_glyph(b: u8) -> String {
 mod tests {
     use super::*;
 
-    /// Resource operations drive the local buffer: a direct open is accepted
-    /// then succeeds, and canonical edit/undo/redo stay local while updating
-    /// the published availability.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the open and edit/undo/redo phases share one resource-operation surface"
-    )]
-    fn resource_operations_open_edit_undo_and_redo_the_local_buffer() {
-        use automerge::ReadDoc as _;
-
-        // Direct open is accepted, then succeeds.
-        let dir = std::env::temp_dir().join(format!(
-            "hex-direct-{}-{}",
-            std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("bytes.bin");
-        std::fs::write(&source, [1_u8, 2, 3]).unwrap();
-        let mut view = HexView::empty();
-        let mut doc = AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&crate::actions::HexOperation::Open {
-            path: Some(source.display().to_string()),
-        })
-        .unwrap();
-        let started = Widget::start_operation(
-            &mut view,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
-        view.sync(&mut doc, &automerge::ROOT);
-        assert!(matches!(
-            view.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-        ));
-        assert_eq!(view.model.bytes(), &[1, 2, 3]);
-        std::fs::remove_dir_all(dir).ok();
-
-        // Canonical edit, undo and redo stay local and update availability.
-        let mut view = HexView::new(vec![0x10, 0x20], "bytes.bin");
-        let mut doc = AutoCommit::new();
-        let undo = serde_json::to_vec(&crate::actions::HexOperation::Undo).unwrap();
-        assert!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &undo
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        let edit = serde_json::to_vec(&crate::actions::HexOperation::Edit {
-            edit: crate::actions::BufferEditWire::Overwrite {
-                offset: 1,
-                bytes: vec![0xAB],
-            },
-        })
-        .unwrap();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &edit
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
-        assert!(
-            ui::resources::resources(&view, &doc)[0]
-                .actions
-                .iter()
-                .find(|action| action.id == "undo")
-                .is_some_and(|action| action.contract.availability.is_available())
-        );
-
-        assert!(matches!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &undo
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(view.model.bytes(), &[0x10, 0x20]);
-
-        let redo = serde_json::to_vec(&crate::actions::HexOperation::Redo).unwrap();
-        assert!(matches!(
-            Widget::start_operation(
-                &mut view,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                    &redo
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
-        assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
-        assert!(doc.get(automerge::ROOT, "bytes").unwrap().is_none());
-    }
-
     /// The shared text fields keep the hex editor's own parsing policies.
     #[test]
     fn shared_search_and_goto_fields_keep_byte_policies() {
@@ -3200,7 +2830,7 @@ mod tests {
         assert!(
             tree.description
                 .as_deref()
-                .is_some_and(|text| text.contains("not shared"))
+                .is_some_and(|text| text.contains("bytes"))
         );
         assert!(tree.children.iter().any(|node| node.role == Role::Button));
     }

@@ -39,7 +39,6 @@
 "apps/file-explorer/src/resource.rs" = 2
 "apps/firewall/src/resource.rs" = 2
 "apps/git-client/src/resource.rs" = 2
-"apps/hex-editor/src/resource.rs" = 1
 "apps/imager/src/resource.rs" = 2
 "apps/logs/src/resource.rs" = 2
 "apps/mail/src/resource.rs" = 2
@@ -95,8 +94,6 @@
 "apps/feeds/src/main.rs" = 2
 "apps/firewall/src/main.rs" = 2
 "apps/git-client/src/main.rs" = 2
-"apps/hex-editor/src/lib.rs" = 2
-"apps/hex-editor/src/main.rs" = 2
 "apps/imager/src/main.rs" = 1
 "apps/logs/src/main.rs" = 2
 "apps/mail/src/main.rs" = 2
