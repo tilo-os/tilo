@@ -1,33 +1,37 @@
-//! Snippets' exported **actions** and the **resource tree** it publishes to Ctrl+K.
+//! Snippets' **actions** and the nested resources it publishes beneath the
+//! library.
 //!
 //! Every mutation of the shared snippet library is a [`SnippetsAction`]: a small
 //! serializable value that deterministically mutates the CRDT. Because the
 //! library already lives in the shared document (`root["snippets"]`, keyed by
 //! uuid — see [`crate::doc`]), an action replicates and replays for free, and
-//! feeds straight back into the list + detail panes. The exact same
-//! [`EncodedAction`] is what the on-screen affordances (the `+ New` button, the
-//! Star / Duplicate / Delete toolbar, the language pill, Copy) dispatch and what
-//! the Ctrl+K palette dispatches — one source of truth, one replay path.
+//! feeds straight back into the list + detail panes. The on-screen affordances
+//! (the `+ New` button, the Star / Duplicate / Delete toolbar, the language
+//! pill, Copy) submit the same values through the framework dispatcher that
+//! the palette's published actions build — one source of truth, one replay
+//! path.
 //!
-//! The resource tree mirrors the model: the library owns its snippets, and each
-//! snippet exports the operations Ctrl+K offers for it (rename, set language,
-//! move, tag, describe, star, delete).
+//! The published children mirror the model: each snippet exports the
+//! operations offered for it (rename, set language, move, tag, describe, star,
+//! delete) and its body as editable text, each tag reveals its snippets, and
+//! each folder files a new snippet under itself.
 //!
 //! Presentation — which snippet is selected, the search text, the scroll offset,
 //! the open expand-modal, copying text to the clipboard — stays out of the
 //! document and never becomes an action.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{ActionDecl, PlainText, TextEdit, declaration_spec, publish_child};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, OperationKind, Resource, RetryPolicy,
+    Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    ExecutionLocus, OperationKind, ParamType, Resource, RetryPolicy,
 };
 
 use crate::doc::SnippetsDoc;
 use crate::model::{Language, Snippet, SnippetId};
+use crate::resource::Snippets;
 
 /// Registry `type_id` for every Snippets action.
 pub const SNIPPETS_ACTION_TYPE: &str = "snippets.action";
@@ -116,8 +120,9 @@ pub enum SnippetsAction {
     DeleteSnippet { id: String },
     /// Replace a snippet's title.
     Rename { id: String, title: String },
-    /// Replace body text, preserving indentation and trailing newlines.
-    SetBody { id: String, body: String },
+    /// Edit the body text: one splice of the snippet's body, so two people
+    /// typing in the same body merge character by character.
+    EditBody { id: String, edit: TextEdit },
     /// Set the body language, carried as the stable slug (`"rust"`, `"shell"`,
     /// …) so the wire form is independent of the enum's memory layout.
     SetLanguage { id: String, language: String },
@@ -167,8 +172,12 @@ impl Action for SnippetsAction {
             SnippetsAction::Rename { id, title } => {
                 Self::edit(doc, id, |s| s.title.clone_from(title));
             }
-            SnippetsAction::SetBody { id, body } => {
-                Self::edit(doc, id, |s| s.body.clone_from(body));
+            SnippetsAction::EditBody { id, edit } => {
+                if let Some(text) =
+                    Self::parse_id(id).and_then(|id| SnippetsDoc::body_text(doc, id))
+                {
+                    edit.apply_under(doc, &text)?;
+                }
             }
             SnippetsAction::SetLanguage { id, language } => {
                 let lang = Language::from_slug(language);
@@ -203,26 +212,9 @@ pub fn register(registry: &mut ActionRegistry) {
     registry.register::<SnippetsAction>(SNIPPETS_ACTION_TYPE);
 }
 
-/// Encode any [`SnippetsAction`] into the wire form the palette and the on-screen
-/// affordances both dispatch. The single point that turns a Snippets action into
-/// a replayable envelope.
-///
-/// # Panics
-/// Never in practice: every field of [`SnippetsAction`] is a plain `String`,
-/// `bool` or `Vec<String>` (or a [`Snippet`], itself built from the same),
-/// all of which always serialize.
-#[allow(
-    clippy::expect_used,
-    reason = "SnippetsAction's fields are plain strings/bools/vecs, which always serialize — a failure here would mean serde itself is broken"
-)]
-pub fn encode(action: &SnippetsAction) -> EncodedAction {
-    EncodedAction::encode(SNIPPETS_ACTION_TYPE, action)
-        .expect("SnippetsAction is always serializable")
-}
-
 // ===========================================================================
 // Action builders — the single source of truth shared by the on-screen
-// affordances (see `crate::app`) and the Ctrl+K resource tree below.
+// affordances (see `crate::app`) and the published resources below.
 // ===========================================================================
 
 pub fn create_snippet_action(snippet: Snippet) -> SnippetsAction {
@@ -233,11 +225,23 @@ pub fn delete_snippet_action(id: SnippetId) -> SnippetsAction {
     SnippetsAction::DeleteSnippet { id: id.to_string() }
 }
 
-pub fn set_body_action(id: SnippetId, body: &str) -> SnippetsAction {
-    SnippetsAction::SetBody {
+/// Wrap one edit of snippet `id`'s body text as the library's action.
+pub fn edit_body_action(id: SnippetId, edit: TextEdit) -> SnippetsAction {
+    SnippetsAction::EditBody {
         id: id.to_string(),
-        body: body.to_owned(),
+        edit,
     }
+}
+
+/// Replace snippet `id`'s whole body with `body`, written as the smallest
+/// splice of what the document holds.
+pub fn set_body_action(id: SnippetId, body: &str) -> SnippetsAction {
+    edit_body_action(
+        id,
+        TextEdit::ReplaceText {
+            text: body.to_owned(),
+        },
+    )
 }
 
 pub fn rename_action(id: SnippetId, title: &str) -> SnippetsAction {
@@ -300,33 +304,8 @@ pub fn parse_tags(raw: &str) -> Vec<String> {
 }
 
 // ===========================================================================
-// Resource tree
+// Published children
 // ===========================================================================
-
-/// The presentation context the app hands [`provide_resources`] so the
-/// library-level "New snippet" action can drop the snippet into whatever folder
-/// the sidebar currently has selected — state that lives in the app, not the
-/// document.
-#[derive(Debug, Clone, Default)]
-pub struct SnippetsResourceCtx {
-    /// Folder a new snippet is filed under (`""` == the "All Snippets" root).
-    pub current_folder: String,
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "SnippetsAction's fields are plain strings/bools/vecs, which always serialize — a failure here would mean serde itself is broken"
-)]
-fn encode_spec(id: &str, label: &str, action: &SnippetsAction) -> ActionSpec {
-    let spec = ActionSpec::immediate(id, label, SNIPPETS_ACTION_TYPE, action)
-        .expect("encode snippets action")
-        .reversible();
-    if id.contains("delete") {
-        spec.destructive()
-    } else {
-        spec
-    }
-}
 
 /// One-line label for a snippet resource in the palette.
 fn snippet_label(s: &Snippet) -> String {
@@ -345,13 +324,22 @@ pub(crate) fn library_view_specs() -> Vec<ActionSpec> {
     )]
 }
 
-/// Document-derived children for [`tilo_resource::publish`]: tags and snippets.
+/// Document-derived children: folders, tags and snippets.
 pub(crate) fn publish_children(snippets: &[Snippet]) -> Vec<Resource> {
+    let folders = snippets
+        .iter()
+        .map(|snippet| snippet.folder.clone())
+        .filter(|folder| !folder.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
     let tags = snippets
         .iter()
         .flat_map(|snippet| snippet.tags.iter().cloned())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut children = Vec::with_capacity(tags.len().saturating_add(snippets.len()));
+    let mut children =
+        Vec::with_capacity(folders.len() + tags.len().saturating_add(snippets.len()));
+    for folder in folders {
+        children.push(provide_folder_resource(folder));
+    }
     for tag in tags {
         children.push(provide_tag_resource(tag));
     }
@@ -361,51 +349,41 @@ pub(crate) fn publish_children(snippets: &[Snippet]) -> Vec<Resource> {
     children
 }
 
-/// Stable resource id for the peer's selected sidebar folder.
+/// Stable resource id for a folder.
 pub fn folder_resource_id(folder: &str) -> String {
     format!("snippets.folder:{}", stable_key(folder))
 }
 
-/// Prompted create filed under `folder`. Uuid is minted when the title is
-/// committed so replay stays deterministic.
-fn new_snippet_in_folder_spec(folder: String) -> ActionSpec {
-    ActionSpec::prompted(
+/// A blank snippet titled `title` (or the default title when it is blank)
+/// filed under `folder`. The uuid is minted here, when the action is built on
+/// the origin, so replay reproduces the identical row.
+pub fn titled_snippet(title: &str, folder: &str) -> Snippet {
+    let mut snippet = Snippet::blank(folder);
+    snippet.id = Uuid::new_v4();
+    let title = title.trim();
+    if !title.is_empty() {
+        snippet.title = title.to_string();
+    }
+    snippet
+}
+
+/// A folder, which files a new snippet under itself.
+pub fn provide_folder_resource(folder: String) -> Resource {
+    let id = folder_resource_id(&folder);
+    let label = folder.clone();
+    let create = ActionDecl::<Snippets>::new(
         "new-snippet",
-        "New snippet",
-        "Title",
-        "snippet title…",
-        ExecutionLocus::ClientLocal,
-        move |title: &str| {
-            let mut s = Snippet::blank(&folder);
-            s.id = Uuid::new_v4();
-            let t = title.trim();
-            if !t.is_empty() {
-                s.title = t.to_string();
-            }
-            encode(&create_snippet_action(s))
+        format!("New snippet in {folder}"),
+        vec![ActionParam::required("title", ParamType::Text, "Title")],
+        move |args, _| {
+            Ok(create_snippet_action(titled_snippet(
+                args.text("title").unwrap_or_default(),
+                &folder,
+            )))
         },
     )
-}
-
-/// Peer-local sidebar folder: create bound to the selected folder. Published
-/// beside the framework root when hosted — never a second `snippets.library`.
-/// [`crate::resource::Snippets::declarations`] already files under All Snippets,
-/// so an empty folder yields no extra.
-pub fn live_folder_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
-    if ctx.current_folder.is_empty() {
-        return Vec::new();
-    }
-    vec![folder_context_resource(ctx)]
-}
-
-fn folder_context_resource(ctx: &SnippetsResourceCtx) -> Resource {
-    let folder = ctx.current_folder.clone();
-    Resource::new(
-        folder_resource_id(&folder),
-        "snippets.folder",
-        folder.clone(),
-    )
-    .with_action(new_snippet_in_folder_spec(folder))
+    .describe("Create a new snippet in this folder.");
+    Resource::new(id, "snippets.folder", label).with_action(declaration_spec(&create))
 }
 
 pub fn provide_tag_resource(tag: String) -> Resource {
@@ -416,127 +394,122 @@ pub fn provide_tag_resource(tag: String) -> Resource {
     ))
 }
 
-/// Materialise one snippet only after a canonical search result names it.
-pub fn provide_snippet_resource(s: &Snippet) -> Resource {
-    let id = s.id;
-    let mut r = Resource::new(
-        snippet_resource_id(id),
-        "snippets.snippet",
-        snippet_label(s),
-    );
-    r = r.with_action(view_operation(
-        "open",
-        "Open snippet",
-        &SnippetsOperation::OpenSnippet { id },
-    ));
+/// The id a snippet's body text is published under, as a child of it.
+pub fn body_resource_id(id: SnippetId) -> String {
+    ui::tilo_resource::child_resource_id::<Snippets>(&format!("body:{id}"))
+}
 
-    r = r.with_action(ActionSpec::prompted(
-        "edit-body",
-        ui::i18n!("snippets-edit-body"),
-        ui::i18n!("snippets-body-placeholder"),
-        ui::i18n!("snippets-body-placeholder"),
-        ExecutionLocus::ClientLocal,
-        move |text: &str| encode(&set_body_action(id, text)),
-    ));
-    r = r.with_action(ActionSpec::prompted(
-        "rename",
-        "Rename",
-        "Title",
-        "new title…",
-        ExecutionLocus::ClientLocal,
-        move |t: &str| encode(&rename_action(id, t.trim())),
-    ));
-    r = r.with_action(ActionSpec::prompted(
-        "set-language",
-        "Set language",
-        "Language",
-        "rust, shell, python, sql…",
-        ExecutionLocus::ClientLocal,
-        move |t: &str| {
-            encode(&set_language_action(
-                id,
-                Language::from_slug(&t.trim().to_lowercase()),
-            ))
-        },
-    ));
-    r = r.with_action(ActionSpec::prompted(
-        "move-to-folder",
-        "Move to folder",
-        "Folder",
-        "folder name (blank = All)",
-        ExecutionLocus::ClientLocal,
-        move |t: &str| encode(&set_folder_action(id, t.trim())),
-    ));
-    r = r.with_action(ActionSpec::prompted(
-        "set-tags",
-        "Set tags",
-        "Tags",
-        "comma, separated, tags",
-        ExecutionLocus::ClientLocal,
-        move |t: &str| encode(&set_tags_action(id, &parse_tags(t))),
-    ));
-    r = r.with_action(ActionSpec::prompted(
-        "edit-description",
-        "Edit description",
-        "Description",
-        "describe this snippet…",
-        ExecutionLocus::ClientLocal,
-        move |t: &str| encode(&set_description_action(id, t)),
-    ));
-    r = r.with_action(encode_spec(
-        "toggle-favorite",
-        if s.favorite { "Unstar" } else { "Star" },
-        &set_favorite_action(id, !s.favorite),
-    ));
-    r.with_action(encode_spec(
-        "delete",
-        "Delete snippet",
-        &delete_snippet_action(id),
+/// One edit of snippet `id` that takes a single text argument `param`.
+fn text_decl(
+    action: &'static str,
+    label: &str,
+    param: &'static str,
+    prompt: &'static str,
+    build: impl Fn(&str) -> SnippetsAction + Send + Sync + 'static,
+) -> ActionSpec {
+    declaration_spec(&ActionDecl::<Snippets>::new(
+        action,
+        label,
+        vec![ActionParam::required(param, ParamType::Text, prompt)],
+        move |args, _| Ok(build(args.text(param).unwrap_or_default())),
     ))
 }
 
-/// The published library for audits and non-interactive callers. Sidebar folder
-/// creates stay live extras beside that root.
-pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let state =
-        <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-    let mut lib = ui::tilo_resource::publish::<crate::resource::Snippets>(
-        crate::resource::LIBRARY_RESOURCE_ID,
-        "Snippets",
-        &state,
-    );
-    lib.children.extend(live_folder_resources(ctx));
-    vec![lib]
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::SnippetsApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.published_library(doc)]
-    }
+/// One snippet, with every edit it takes bound to it.
+pub fn provide_snippet_resource(s: &Snippet) -> Resource {
+    let id = s.id;
+    let favorite = !s.favorite;
+    let languages: Vec<&'static str> = Language::ALL.iter().map(|l| l.slug()).collect();
+    let resource = Resource::new(
+        snippet_resource_id(id),
+        "snippets.snippet",
+        snippet_label(s),
+    )
+    .with_action(view_operation(
+        "open",
+        "Open snippet",
+        &SnippetsOperation::OpenSnippet { id },
+    ))
+    .with_action(text_decl(
+        "edit-body",
+        &ui::i18n!("snippets-edit-body"),
+        "body",
+        "The whole new body",
+        move |body| set_body_action(id, body),
+    ))
+    .with_action(text_decl(
+        "rename",
+        "Rename",
+        "title",
+        "New title",
+        move |t| rename_action(id, t.trim()),
+    ))
+    .with_action(declaration_spec(&ActionDecl::<Snippets>::new(
+        "set-language",
+        "Set language",
+        vec![
+            ActionParam::required("language", ParamType::Text, "Language").with_choices(languages),
+        ],
+        move |args, _| {
+            Ok(set_language_action(
+                id,
+                Language::from_slug(&args.text("language").unwrap_or_default().to_lowercase()),
+            ))
+        },
+    )))
+    .with_action(text_decl(
+        "move-to-folder",
+        "Move to folder",
+        "folder",
+        "Folder name (blank = All Snippets)",
+        move |t| set_folder_action(id, t.trim()),
+    ))
+    .with_action(text_decl(
+        "set-tags",
+        "Set tags",
+        "tags",
+        "Comma-separated tags",
+        move |t| set_tags_action(id, &parse_tags(t)),
+    ))
+    .with_action(text_decl(
+        "edit-description",
+        "Edit description",
+        "description",
+        "Description",
+        move |t| set_description_action(id, t),
+    ))
+    .with_action(declaration_spec(&ActionDecl::<Snippets>::new(
+        "toggle-favorite",
+        if s.favorite { "Unstar" } else { "Star" },
+        Vec::new(),
+        move |_, _| Ok(set_favorite_action(id, favorite)),
+    )))
+    .with_action(declaration_spec(
+        &ActionDecl::<Snippets>::new("delete", "Delete snippet", Vec::new(), move |_, _| {
+            Ok(delete_snippet_action(id))
+        })
+        .destructive(),
+    ));
+    resource.with_children(vec![publish_child::<PlainText, Snippets>(
+        &body_resource_id(id),
+        &format!("{} body", snippet_label(s)),
+        Some(&s.body),
+        move |edit| edit_body_action(id, edit),
+    )])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::SnippetsApp;
-    use tilo_actions::LocalTransport;
-    use ui::widget::Widget;
+    use automerge::AutoCommit;
 
-    fn registry() -> ActionRegistry {
-        let mut r = ActionRegistry::new();
-        register(&mut r);
-        r
-    }
-
-    /// A demo app with its library mirrored into a shared doc — the state the
-    /// live app is always in by the time an event arrives (sync runs first).
-    fn seeded() -> (SnippetsApp, AutoCommit) {
-        let mut app = SnippetsApp::new_demo();
+    fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        (app, doc)
+        for snippet in crate::seed::starter_library() {
+            create_snippet_action(snippet).apply(&mut doc).unwrap();
+        }
+        doc.commit();
+        doc
     }
 
     fn first_snippet(doc: &AutoCommit) -> Snippet {
@@ -546,208 +519,191 @@ mod tests {
             .expect("a seeded snippet")
     }
 
-    /// The snippet id a snippet resource's address names.
-    fn snippet_id(res: &Resource) -> SnippetId {
-        res.id
-            .as_str()
-            .trim_start_matches("snippets.snippet:")
-            .parse()
-            .expect("a snippet resource names its id")
+    /// Build the action `spec` publishes for `args`, as the door does.
+    fn build(spec: &ActionSpec, args: serde_json::Value) -> SnippetsAction {
+        let serde_json::Value::Object(args) = args else {
+            panic!("arguments are an object");
+        };
+        let encoded = spec.build_json(&args).expect("arguments bind");
+        assert_eq!(encoded.type_id, SNIPPETS_ACTION_TYPE, "{}", spec.id);
+        serde_json::from_slice(&encoded.payload).expect("a snippets action")
     }
 
-    // The published library: every tag and snippet from the document, so the
-    // sweep reaches each snippet's actions.
-    ui::action_contract_tests! {
-        seed: seeded().1,
-        registry: registry(),
-        resources: |doc| SnippetsApp::new_demo().publish_resources(doc),
-        palette: ["New snippet", "Delete snippet", "Reveal tagged snippets"],
-        replay: [
-            rename => |doc| encode(&rename_action(first_snippet(doc).id, "Converged Title")),
-            set_tags => |doc| encode(&set_tags_action(
-                first_snippet(doc).id,
-                &parse_tags("ops, release"),
-            )),
-        ],
-        undo: [
-            star => |doc| {
-                let target = first_snippet(doc);
-                assert!(!target.favorite, "seed picks an unstarred snippet as the target");
-                encode(&set_favorite_action(target.id, true))
-            },
-            edit_body => |doc| encode(&set_body_action(first_snippet(doc).id, "echo converged")),
-        ],
-        encodes: [
-            delete => ("snippets.snippet", "delete", |_, res| {
-                encode(&delete_snippet_action(snippet_id(res)))
-            }),
-            toggle_favorite => ("snippets.snippet", "toggle-favorite", |doc, res| {
-                let id = snippet_id(res);
-                let starred = SnippetsDoc::get(doc, id).expect("seeded snippet").favorite;
-                encode(&set_favorite_action(id, !starred))
-            }),
-            rename => ("snippets.snippet", "rename", arg: "Renamed", |_, res| {
-                encode(&rename_action(snippet_id(res), "Renamed"))
-            }),
-            set_tags => ("snippets.snippet", "set-tags", arg: "k8s, deploy", |_, res| {
-                encode(&set_tags_action(snippet_id(res), &parse_tags("k8s, deploy")))
-            }),
-            edit_body => ("snippets.snippet", "edit-body", arg: "ls -la", |_, res| {
-                encode(&set_body_action(snippet_id(res), "ls -la"))
-            }),
-        ],
+    fn action<'a>(resource: &'a Resource, id: &str) -> &'a ActionSpec {
+        resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap_or_else(|| panic!("{} offers {id}", resource.id.as_str()))
     }
 
-    /// Ctrl+K publishes the library tree; delete removes exactly one row; malformed ids are no-ops.
+    /// Every snippet, tag and folder is published with its edits bound to it,
+    /// and an edit touches exactly the addressed row.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn snippet_tree_and_actions_touch_exactly_the_addressed_row() {
-        // Case `ctrl_k_publishes_the_library_and_snippet_tree`.
-        // Ctrl+K publishes a bounded contextual root; a stable id lazily resolves
-        // one snippet with every action the model implies.
-        {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            assert_eq!(resources.len(), 1, "one library root");
-            let lib = &resources[0];
-            assert_eq!(lib.kind, "snippets.library");
-            let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
-            assert!(
-                lib.children
-                    .iter()
-                    .any(|child| child.kind == "snippets.snippet"),
-                "published snippets ride the library door"
-            );
-            let snippet = first_snippet(&doc);
-            let resource_id = snippet_resource_id(snippet.id);
-            let snip =
-                ui::resources::resource(&app, &doc, &resource_id).expect("lazy snippet resource");
-            assert_eq!(snip.kind, "snippets.snippet");
-            let ids: Vec<&str> = snip.actions.iter().map(|a| a.id.as_str()).collect();
-            for want in [
-                "rename",
-                "set-language",
-                "move-to-folder",
-                "set-tags",
-                "edit-description",
-                "toggle-favorite",
-                "delete",
-            ] {
-                assert!(
-                    ids.contains(&want),
-                    "snippet resource missing {want}: {ids:?}"
-                );
-            }
-
-            let tag_name = snippet
-                .tags
-                .first()
-                .expect("seeded snippet has a tag")
-                .clone();
-            let tag = ui::resources::resource(&app, &doc, &tag_resource_id(&tag_name))
-                .expect("seeded snippets lazily publish tag resources");
-            let reveal = tag
-                .actions
-                .iter()
-                .find(|action| action.id == "reveal")
-                .expect("tag exports its reveal action");
-            assert_eq!(reveal.kind, OperationKind::View);
-            let decoded_tag_name = match decode_operation(
-                SNIPPETS_OPERATION_TYPE,
-                &ui::testing::action_contract::spec_encoding(reveal, None).payload,
-            ) {
-                Ok(Some(SnippetsOperation::RevealTag { tag })) => tag,
-                other => panic!("unexpected tag operation: {other:?}"),
-            };
-            assert_eq!(decoded_tag_name, tag_name);
-            assert_eq!(
-                reveal_tag_address(&tag_name),
-                ActionAddress::new(&tag.id.0, &reveal.id)
-            );
-
-            let open = snip
-                .actions
-                .iter()
-                .find(|action| action.id == "open")
-                .expect("snippet exports open");
-            assert_eq!(open.kind, OperationKind::View);
-            assert!(
-                snip.actions
-                    .iter()
-                    .filter(|action| action.id != "open")
-                    .all(|action| action.kind == OperationKind::Document),
-                "snippet edits and deletes remain document actions"
-            );
+    fn children_bind_each_edit_to_their_snippet_tag_or_folder() {
+        let mut doc = seeded();
+        let snippets = SnippetsDoc::list(&doc);
+        let children = publish_children(&snippets);
+        let target = first_snippet(&doc);
+        let snippet = children
+            .iter()
+            .find(|child| child.id.as_str() == snippet_resource_id(target.id))
+            .expect("each snippet is a child");
+        assert_eq!(action(snippet, "open").kind, OperationKind::View);
+        for id in [
+            "edit-body",
+            "rename",
+            "set-language",
+            "move-to-folder",
+            "set-tags",
+            "edit-description",
+            "toggle-favorite",
+            "delete",
+        ] {
+            assert_eq!(action(snippet, id).kind, OperationKind::Document, "{id}");
         }
+        assert_eq!(
+            build(
+                action(snippet, "rename"),
+                serde_json::json!({"title": " Renamed "})
+            ),
+            rename_action(target.id, "Renamed")
+        );
+        assert_eq!(
+            build(
+                action(snippet, "set-tags"),
+                serde_json::json!({"tags": "k8s , deploy,,k8s"})
+            ),
+            set_tags_action(target.id, &["k8s".into(), "deploy".into()])
+        );
+        assert_eq!(
+            build(action(snippet, "toggle-favorite"), serde_json::json!({})),
+            set_favorite_action(target.id, !target.favorite)
+        );
+        let body = snippet
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == body_resource_id(target.id))
+            .expect("the body is a text child of its snippet");
+        assert!(body.actions.iter().any(|spec| spec.id == "replace-text"));
 
-        // Case `delete_action_removes_the_snippet`.
-        // Deleting a snippet through its action removes exactly that row from the
-        // authoritative document.
-        {
-            let (_app, mut doc) = seeded();
-            let before = SnippetsDoc::list(&doc).len();
-            let target = first_snippet(&doc);
+        let others: Vec<Snippet> = snippets
+            .iter()
+            .filter(|s| s.id != target.id)
+            .cloned()
+            .collect();
+        build(action(snippet, "delete"), serde_json::json!({}))
+            .apply(&mut doc)
+            .unwrap();
+        assert!(SnippetsDoc::get(&doc, target.id).is_none());
+        let mut left = SnippetsDoc::list(&doc);
+        left.sort_by_key(|s| s.id);
+        let mut expected = others;
+        expected.sort_by_key(|s| s.id);
+        assert_eq!(left, expected, "every other snippet is untouched");
 
-            let action = delete_snippet_action(target.id);
-            let encoded = encode(&action);
-            let decoded = registry().decode(&encoded).unwrap();
-            let mut tx = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        let tag_name = target.tags.first().expect("seeded snippets are tagged");
+        let tag = children
+            .iter()
+            .find(|child| child.id.as_str() == tag_resource_id(tag_name))
+            .expect("each tag is a child");
+        let reveal = action(tag, "reveal");
+        assert_eq!(reveal.kind, OperationKind::View);
+        assert_eq!(
+            reveal_tag_address(tag_name),
+            ActionAddress::new(tag.id.as_str(), &reveal.id)
+        );
 
-            let left = SnippetsDoc::list(&doc);
-            assert_eq!(left.len(), before - 1, "exactly one snippet removed");
-            assert!(
-                left.iter().all(|s| s.id != target.id),
-                "the target row is gone"
-            );
-        }
+        let folder_name = snippets
+            .iter()
+            .map(|s| s.folder.clone())
+            .find(|f| !f.is_empty())
+            .expect("seeded snippets are filed");
+        let folder = children
+            .iter()
+            .find(|child| child.id.as_str() == folder_resource_id(&folder_name))
+            .expect("each folder is a child");
+        let SnippetsAction::CreateSnippet { snippet } = build(
+            action(folder, "new-snippet"),
+            serde_json::json!({"title": "Here"}),
+        ) else {
+            panic!("a folder creates snippets");
+        };
+        assert_eq!(
+            (snippet.title.as_str(), snippet.folder.as_str()),
+            ("Here", folder_name.as_str())
+        );
+    }
 
-        // Case `malformed_id_is_a_no_op`.
-        // A malformed id is a no-op, not an error — a bad replay can't wedge a peer.
-        {
-            let mut doc = AutoCommit::new();
-            let bogus = SnippetsAction::DeleteSnippet {
+    /// Body edits splice the stored text, so concurrent typing in one body
+    /// merges; malformed ids are no-ops.
+    #[test]
+    fn body_edits_merge_and_malformed_ids_are_no_ops() {
+        use tilo_automerge::ApplyIncoming;
+        let mut ours = AutoCommit::new();
+        let mut snippet = Snippet::blank("");
+        snippet.body = "select 1".into();
+        create_snippet_action(snippet.clone())
+            .apply(&mut ours)
+            .unwrap();
+        ours.commit();
+        let mut theirs = ours.fork();
+        edit_body_action(
+            snippet.id,
+            TextEdit::Splice {
+                at: 8,
+                delete: 0,
+                insert: ";".into(),
+            },
+        )
+        .apply(&mut theirs)
+        .unwrap();
+        theirs.commit();
+        set_body_action(snippet.id, "SELECT 1")
+            .apply(&mut ours)
+            .unwrap();
+        ours.commit();
+        ours.merge_incoming(&mut theirs).unwrap();
+        assert_eq!(
+            SnippetsDoc::get(&ours, snippet.id).unwrap().body,
+            "SELECT 1;"
+        );
+
+        let mut doc = AutoCommit::new();
+        for bogus in [
+            SnippetsAction::DeleteSnippet {
                 id: "not-a-uuid".into(),
-            };
-            assert!(bogus.apply(&mut doc).is_ok());
-            let rename = SnippetsAction::Rename {
+            },
+            SnippetsAction::Rename {
                 id: "also-bad".into(),
                 title: "x".into(),
-            };
-            assert!(rename.apply(&mut doc).is_ok());
-            assert!(
-                SnippetsDoc::list(&doc).is_empty(),
-                "nothing was created by malformed actions"
-            );
+            },
+            SnippetsAction::EditBody {
+                id: "bad".into(),
+                edit: TextEdit::ReplaceText { text: "x".into() },
+            },
+        ] {
+            assert!(bogus.apply(&mut doc).is_ok());
         }
+        assert!(SnippetsDoc::list(&doc).is_empty());
     }
 
     /// Tag parsing and language slugs.
     #[test]
     fn tag_and_language_inputs_normalise_and_round_trip() {
-        // Case `parse_tags_trims_dedups_and_drops_empties`.
-        {
-            assert_eq!(parse_tags("  k8s , deploy ,, k8s "), vec!["k8s", "deploy"]);
-            assert!(parse_tags("  ,  , ").is_empty());
-        }
+        assert_eq!(parse_tags("  k8s , deploy ,, k8s "), vec!["k8s", "deploy"]);
+        assert!(parse_tags("  ,  , ").is_empty());
 
-        // Case `set_language_round_trips_through_the_slug`.
-        {
-            let mut doc = AutoCommit::new();
-            let mut s = Snippet::blank("Ops");
-            s.language = Language::PlainText;
-            SnippetsDoc::upsert(&mut doc, &s);
-            set_language_action(s.id, Language::Rust)
-                .apply(&mut doc)
-                .unwrap();
-            assert_eq!(
-                SnippetsDoc::get(&doc, s.id).unwrap().language,
-                Language::Rust
-            );
-        }
+        let mut doc = AutoCommit::new();
+        let mut s = Snippet::blank("Ops");
+        s.language = Language::PlainText;
+        SnippetsDoc::upsert(&mut doc, &s);
+        set_language_action(s.id, Language::Rust)
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(
+            SnippetsDoc::get(&doc, s.id).unwrap().language,
+            Language::Rust
+        );
     }
 }

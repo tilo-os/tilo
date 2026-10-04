@@ -12,14 +12,15 @@
 //! └──────────┴──────────────────┴─────────────────────────────┘
 //! ```
 //!
-//! The library is mirrored into the shared Automerge document by
-//! [`crate::doc`] so two instances converge. Selection / search / the
-//! open expand-modal are view state and stay local to each peer.
+//! The library is the [`crate::resource::Snippets`] resource the framework
+//! presents; every change is a [`SnippetsAction`] submitted through its
+//! dispatcher. Selection / search / the open expand-modal are view state and
+//! stay local to each peer.
 
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
@@ -39,13 +40,15 @@ use ui::widget::{
     Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout, TextInput, Widget,
 };
 
-use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
+use crate::actions::{self, SnippetsAction};
 use crate::doc::SnippetsDoc;
 use crate::draw;
 use crate::expand::ExpandModal;
 use crate::highlight;
 use crate::model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
-use crate::seed;
+use crate::resource::Snippets;
+use ui::framework::Dispatcher;
+use ui::tilo_resource::{PlainText, text::splice_between};
 
 const SIDEBAR_W: f64 = 232.0;
 const LIST_W: f64 = 340.0;
@@ -170,27 +173,28 @@ struct Toast {
 
 pub struct SnippetsApp {
     library: Library,
-    /// Complete incremental Ctrl+K catalogue. Provider handles clone this
-    /// shared index in O(1), so opening the palette never snapshots the library.
-    search_provider: crate::search_provider::SnippetSearchProvider,
     selection: Selection,
     /// Local, per-peer search editor. It intentionally is not CRDT-bound:
     /// filtering is presentation state, while snippet mutations still flow
     /// through [`SnippetsDoc`].
     search_input: TextInput,
     search_rect: Rect,
-    /// Editing cache only; every change is dispatched into `SnippetsDoc`.
+    /// Editing cache only; every change is a splice of the open snippet's
+    /// body, submitted through `body_edits`.
     body_editor: CodeEditor,
     body_identity: Option<(SnippetId, Language)>,
+    /// The open snippet's body text, edited as a child of the library.
+    body_edits: Option<Dispatcher<PlainText>>,
     /// Currently open snippet in the detail pane.
     open: Option<SnippetId>,
+    /// A snippet this view just created or duplicated, opened as soon as the
+    /// library it was added to is presented.
+    pending_open: Option<SnippetId>,
     /// Ordered ids currently shown in the list pane (result of `query`).
     visible: Vec<SnippetId>,
     /// The expand-with-variables modal, when open.
     expand: Option<ExpandModal>,
     toast: Option<Toast>,
-    /// Whether we've mirrored the local library into the shared doc.
-    seeded: bool,
 
     // Layout / hit-testing caches, recomputed each frame in `draw` so
     // `handle_event` can map clicks to actions without a second layout
@@ -220,9 +224,9 @@ pub struct SnippetsApp {
     /// open. A staged `--shots` scenario sets this so its snap isn't undone.
     settled_layout: bool,
 
-    /// Framework dispatcher when hosted; the local action host otherwise.
-    /// Each on-screen affordance submits a [`SnippetsAction`] through this.
-    actions: crate::resource::ActionSink,
+    /// The resource's dispatcher, once the framework attaches the view.
+    /// Each on-screen affordance submits a [`SnippetsAction`] through it.
+    dispatch: Option<Dispatcher<Snippets>>,
 }
 
 /// A clickable region recorded during draw and resolved on mouse-down.
@@ -336,48 +340,11 @@ impl Action {
 }
 
 impl SnippetsApp {
-    /// Build the live app on an **empty** library. A fresh install has no
-    /// snippets — the user saves their own, or a peer's shared library is
-    /// adopted on the first `sync`. The starter set is demo/`--shots` only
-    /// (see [`Self::new_demo`]): a real install must never fabricate
-    /// snippets it would then persist to the user's store.
+    /// The view before the framework presents the library: empty, until the
+    /// resource's state arrives.
     pub fn new() -> Self {
-        Self::with_library(Library::new())
-    }
-
-    /// Like [`Self::new`] but pre-seeded with the starter library and an
-    /// opened specimen — used by `--shots` and any "try it" walkthrough so a
-    /// capture shows the manager doing real work. Never the live first-run
-    /// path.
-    pub fn new_demo() -> Self {
-        let mut library = Library::new();
-        for s in seed::starter_library() {
-            library.insert(s);
-        }
-        let mut app = Self::with_library(library);
-        // Open a substantial, templated snippet so the detail pane shows
-        // off the highlighter, line gutter and variable affordance. Prefer
-        // the visible snippet with the most body lines that also carries
-        // placeholders.
-        app.open = app
-            .visible
-            .iter()
-            .copied()
-            .max_by_key(|id| {
-                let s = app.library.get(*id);
-                let lines = s.map_or(0, |s| s.body.lines().count());
-                let templated = usize::from(s.is_some_and(super::model::Snippet::has_placeholders));
-                (templated, lines)
-            })
-            .or_else(|| app.visible.first().copied());
-        app
-    }
-
-    fn with_library(library: Library) -> Self {
-        let search_provider = crate::search_provider::SnippetSearchProvider::new(&library);
         let mut app = Self {
-            library,
-            search_provider,
+            library: Library::new(),
             selection: Selection::default(),
             search_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Search)
@@ -391,11 +358,12 @@ impl SnippetsApp {
                 .with_placeholder("snippets-body-placeholder")
                 .with_font_size(BODY_FONT),
             body_identity: None,
+            body_edits: None,
             open: None,
+            pending_open: None,
             visible: Vec::new(),
             expand: None,
             toast: None,
-            seeded: false,
             rect: Rect::ZERO,
             last_mouse: Point::ZERO,
             hit: Vec::new(),
@@ -405,24 +373,20 @@ impl SnippetsApp {
             push: FlapState::closed_by_default(),
             push_pane: PushPane::Master,
             settled_layout: false,
-            actions: crate::resource::ActionSink::default(),
+            dispatch: None,
         };
         app.recompute_visible();
         app
-    }
-
-    /// Seeded constructor for the screenshot harness.
-    pub fn for_shot() -> Self {
-        Self::new_demo()
     }
 
     fn recompute_visible(&mut self) {
         self.visible = self
             .library
             .query(&self.selection, self.search_input.value());
-        // Keep the open snippet valid; otherwise open the first result.
+        // Keep the open snippet valid; otherwise open the first result. A
+        // snippet this view just created stays open while it is on its way.
         if let Some(open) = self.open {
-            if !self.visible.contains(&open) {
+            if !self.visible.contains(&open) && self.pending_open != Some(open) {
                 self.open = self.visible.first().copied();
             }
         } else {
@@ -446,86 +410,51 @@ impl SnippetsApp {
         }
     }
 
-    /// Dispatch one [`SnippetsAction`] — the single mutation path shared with the
-    /// Ctrl+K palette. The action runs through the Tilo executor (a pinned actor +
-    /// committed change, so it replays byte-identically on peers), the shared
-    /// document being authoritative; the in-memory library is then re-projected
-    /// from it so the panes reflect the change this frame. The heads captured
-    /// just before the first action of the event are stashed so the host records
-    /// **one** undo boundary bracketing it.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &SnippetsAction) {
-        self.actions.dispatch_with_context(
-            doc,
-            actions::SNIPPETS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.snippets", "Snippets", action),
-        );
-        self.refresh_from_doc(doc);
+    /// Submit one [`SnippetsAction`] — the single mutation path shared with
+    /// the palette — through the resource's dispatcher. The host checks the
+    /// participant's permission, applies it as one undo step, and presents
+    /// the changed library.
+    fn submit(&self, action: &SnippetsAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
+        }
     }
 
-    /// Re-project the authoritative document into the in-memory library. Called
-    /// after every dispatched action so the list/detail reflect it immediately,
-    /// before the next frame's `sync`.
-    /// Show the library the framework resource already holds.
-    /// An empty projection does not wipe snippets that have not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Snippet]) {
-        if state.is_empty() {
-            return;
-        }
-        let next = Library {
+    /// Show the library the resource holds: a local edit, a collaborator's,
+    /// an undo.
+    pub(crate) fn show_library(&mut self, state: &[Snippet]) {
+        self.library = Library {
             snippets: state.to_vec(),
         };
-        if self.library.snippets != next.snippets {
-            self.search_provider.update(&self.library, &next);
-            self.library = next;
-            self.recompute_visible();
-            self.sync_body_editor();
+        if let Some(id) = self.pending_open
+            && self.library.get(id).is_some()
+        {
+            self.pending_open = None;
+            self.open = Some(id);
         }
-        self.seeded = true;
+        self.recompute_visible();
+        self.sync_body_editor();
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Snippets>,
-    ) {
-        self.actions.attach(dispatcher);
-        self.seeded = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
-    /// Test-only: select a sidebar folder so hosted extras bind folder-scoped create.
-    #[cfg(test)]
-    pub(crate) fn select_folder_for_test(&mut self, folder: &str) {
-        self.selection = crate::model::Selection::Folder(folder.to_string());
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn snippet_count(&self) -> usize {
-        self.library.snippets.len()
-    }
-
-    fn refresh_from_doc(&mut self, doc: &AutoCommit) {
-        let next = Library {
-            snippets: SnippetsDoc::list(doc),
-        };
-        self.search_provider.update(&self.library, &next);
-        self.library = next;
+    /// Edit through the resource's dispatcher from now on.
+    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
+        self.dispatch = Some(dispatcher);
+        self.body_identity = None;
         self.sync_body_editor();
     }
 
     fn sync_body_editor(&mut self) {
         let snippet = self.open.and_then(|id| self.library.get(id));
         let identity = snippet.map(|s| (s.id, s.language));
+        if self.body_identity.map(|(id, _)| id) != identity.map(|(id, _)| id) {
+            self.body_edits = identity.and_then(|(id, _)| {
+                self.dispatch.as_ref().map(|dispatch| {
+                    dispatch.child::<PlainText>(&actions::body_resource_id(id), move |edit| {
+                        actions::edit_body_action(id, edit)
+                    })
+                })
+            });
+        }
         if self.body_identity != identity {
             self.body_editor
                 .set_highlighter(identity.map(|(_, language)| {
@@ -546,15 +475,28 @@ impl SnippetsApp {
         self.body_editor.take_dirty();
     }
 
+    /// Submit what the user typed in the body as one splice of the stored
+    /// text, applied now so the next keystroke splices the text it made.
+    /// Typing a word is one undo step. A refused edit (a viewer's) writes
+    /// nothing, and the editor shows the stored text again.
     fn flush_body_edit(&mut self, doc: &mut AutoCommit) {
-        if let Some(text) = self.body_editor.take_dirty()
-            && let Some(id) = self.open
-            && self
-                .library
-                .get(id)
-                .is_some_and(|snippet| snippet.body != text)
-        {
-            self.perform_action(doc, &actions::set_body_action(id, &text));
+        let Some(text) = self.body_editor.take_dirty() else {
+            return;
+        };
+        let Some(id) = self.open else {
+            return;
+        };
+        let stored = SnippetsDoc::get(doc, id).map(|snippet| snippet.body);
+        let applied = match (&self.body_edits, &stored) {
+            (Some(edits), Some(stored)) => {
+                splice_between(stored, &text).is_none_or(|edit| edits.apply_now(doc, &edit).is_ok())
+            }
+            _ => false,
+        };
+        if !applied {
+            self.body_editor
+                .set_text(stored.as_deref().unwrap_or_default());
+            self.body_editor.take_dirty();
         }
     }
 
@@ -629,18 +571,7 @@ impl SnippetsApp {
         handled
     }
 
-    /// The presentation context Ctrl+K needs to build the library-level "New
-    /// snippet" action (which folder to file it under).
-    pub(crate) fn snippets_resource_ctx(&self) -> SnippetsResourceCtx {
-        SnippetsResourceCtx {
-            current_folder: match &self.selection {
-                Selection::Folder(f) => f.clone(),
-                _ => String::new(),
-            },
-        }
-    }
-
-    fn new_snippet(&mut self, doc: &mut AutoCommit) {
+    fn new_snippet(&mut self) {
         let folder = match &self.selection {
             Selection::Folder(f) => f.clone(),
             _ => String::new(),
@@ -648,14 +579,18 @@ impl SnippetsApp {
         // The uuid is minted here, at authoring time, and carried in the action
         // payload so replay reproduces the identical row.
         let s = Snippet::blank(&folder);
-        let id = s.id;
-        self.perform_action(doc, &actions::create_snippet_action(s));
-        self.recompute_visible();
-        self.open = Some(id);
+        self.open_when_presented(s.id);
+        self.submit(&actions::create_snippet_action(s));
         self.toast("New snippet created");
     }
 
-    fn copy(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    /// Open `id`, which this view just submitted, once it is presented.
+    fn open_when_presented(&mut self, id: SnippetId) {
+        self.pending_open = Some(id);
+        self.open = Some(id);
+    }
+
+    fn copy(&mut self, id: SnippetId) {
         // If the body has placeholders, route through the expand flow so
         // we never paste raw `${...}` onto the clipboard.
         let needs_expand = self
@@ -670,15 +605,15 @@ impl SnippetsApp {
         // a document mutation, so it goes through an action.
         if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
             ui::clipboard_copy(&body);
-            self.record_use(id, doc);
+            self.record_use(id);
             self.toast("Copied to clipboard");
         }
     }
 
     /// Record one use of a snippet (drives "Most Used" + the usage hint) through
     /// the action path, so the bump replicates and is undoable like any mutation.
-    fn record_use(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.perform_action(doc, &actions::record_use_action(id));
+    fn record_use(&self, id: SnippetId) {
+        self.submit(&actions::record_use_action(id));
     }
 
     fn start_expand(&mut self, id: SnippetId) {
@@ -687,39 +622,31 @@ impl SnippetsApp {
         }
     }
 
-    fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn toggle_favorite(&self, id: SnippetId) {
         let cur = self.library.get(id).is_some_and(|s| s.favorite);
-        self.perform_action(doc, &actions::set_favorite_action(id, !cur));
-        self.recompute_visible();
+        self.submit(&actions::set_favorite_action(id, !cur));
     }
 
-    fn duplicate(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn duplicate(&mut self, id: SnippetId) {
         if let Some(src) = self.library.get(id).cloned() {
             let mut copy = src.clone();
             copy.id = uuid::Uuid::new_v4();
             copy.title = format!("{} (copy)", src.title);
             copy.favorite = false;
             copy.uses = 0;
-            let new_id = copy.id;
-            self.perform_action(doc, &actions::create_snippet_action(copy));
-            self.recompute_visible();
-            self.open = Some(new_id);
+            self.open_when_presented(copy.id);
+            self.submit(&actions::create_snippet_action(copy));
             self.toast("Duplicated");
         }
     }
 
-    fn delete(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.perform_action(doc, &actions::delete_snippet_action(id));
-        if self.open == Some(id) {
-            self.open = None;
-        }
-        self.recompute_visible();
+    fn delete(&mut self, id: SnippetId) {
+        self.submit(&actions::delete_snippet_action(id));
         self.toast("Deleted");
     }
 
-    fn set_language(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
-        self.perform_action(doc, &actions::set_language_action(id, lang));
-        self.recompute_visible();
+    fn set_language(&self, id: SnippetId, lang: Language) {
+        self.submit(&actions::set_language_action(id, lang));
     }
 
     fn toast(&mut self, message: &str) {
@@ -729,56 +656,16 @@ impl SnippetsApp {
         });
     }
 
-    /// Reconcile the in-memory library with the shared document.
-    ///
-    /// The document is the source of truth: every mutation flows through a
-    /// dispatched [`SnippetsAction`] (see [`crate::actions`]). On first sync we
-    /// either seed our starter set into an empty document or adopt a peer's; from
-    /// then on we re-project the document so a peer's change — and our own
-    /// just-dispatched action — both surface. Guarded so an unchanged frame
-    /// doesn't churn the visible list.
-    fn sync_library(&mut self, doc: &mut AutoCommit) {
-        let remote = SnippetsDoc::list(doc);
-        if !self.seeded {
-            if remote.is_empty() && !self.actions.is_hosted() {
-                // A screenshot fixture may arrive with a local starter set.
-                // The hosted app never writes that around the resource action.
-                for s in self.library.snippets.clone() {
-                    self.perform_action(doc, &SnippetsAction::CreateSnippet { snippet: s });
-                }
-                // Seeding is not a user undo bracket; discard so a later toolbar
-                // star records exactly one boundary (and Ctrl+Z does not wipe
-                // the library).
-                let _ = self.actions.take_committed();
-            } else {
-                // A peer is already sharing — adopt their library.
-                let next = Library { snippets: remote };
-                self.search_provider.update(&self.library, &next);
-                self.library = next;
-                self.recompute_visible();
-            }
-            self.seeded = true;
-            return;
-        }
-        // Steady state: the document is authoritative — re-project it.
-        if self.library.snippets != remote {
-            let next = Library { snippets: remote };
-            self.search_provider.update(&self.library, &next);
-            self.library = next;
-            self.recompute_visible();
-        }
-    }
-
-    fn apply(&mut self, action: Action, doc: &mut AutoCommit) {
+    fn activate(&mut self, action: Action) {
         match action {
             Action::Select(sel) => self.select(sel),
             Action::OpenSnippet(id) => self.open_snippet(id),
-            Action::NewSnippet => self.new_snippet(doc),
-            Action::Copy(id) => self.copy(id, doc),
+            Action::NewSnippet => self.new_snippet(),
+            Action::Copy(id) => self.copy(id),
             Action::Expand(id) => self.start_expand(id),
-            Action::ToggleFavorite(id) => self.toggle_favorite(id, doc),
-            Action::Duplicate(id) => self.duplicate(id, doc),
-            Action::Delete(id) => self.delete(id, doc),
+            Action::ToggleFavorite(id) => self.toggle_favorite(id),
+            Action::Duplicate(id) => self.duplicate(id),
+            Action::Delete(id) => self.delete(id),
             Action::FocusSearch => {
                 self.body_editor.set_focused(false);
                 self.search_input.set_focus(true);
@@ -787,7 +674,7 @@ impl SnippetsApp {
                 self.search_input.set_text("");
                 self.recompute_visible();
             }
-            Action::SetLanguage(id, lang) => self.set_language(id, lang, doc),
+            Action::SetLanguage(id, lang) => self.set_language(id, lang),
             Action::ToggleSidebar => self.sidebar.toggle(self.sidebar_layout()),
             Action::DismissSidebar => self.sidebar.close(),
             Action::PushBack => {
@@ -869,13 +756,18 @@ impl SnippetsApp {
 
     // ---- shot scenarios -------------------------------------------------
 
-    /// Snap the responsive state to a deterministic configuration for the
-    /// single-frame `--shots` renderer (the live app eases via `update`).
+    /// Stage the view for a screenshot scenario, once its library has been
+    /// presented and laid out (the live app eases via `update`):
     ///
-    /// * `"narrow"` — open the overlay sidebar over the content + scrim.
-    /// * `"detail"` — single-pane push showing the detail with a Back chip.
-    /// * anything else — the default frame.
-    pub fn seed_shot_scenario(&mut self, scenario: &str) {
+    /// * every scenario opens a substantial, templated snippet so the detail
+    ///   pane shows off the highlighter, line gutter and variable affordance;
+    /// * `"narrow"` opens the overlay sidebar over the content + scrim;
+    /// * `"detail"` shows the single-pane push on the detail with a Back chip.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
+        if let Some(richest) = self.richest_visible() {
+            self.open = Some(richest);
+            self.sync_body_editor();
+        }
         match scenario {
             "narrow" => {
                 self.sidebar.snap(true);
@@ -893,66 +785,38 @@ impl SnippetsApp {
         }
     }
 
+    /// The visible snippet with the most body lines, preferring one that
+    /// carries placeholders.
+    fn richest_visible(&self) -> Option<SnippetId> {
+        self.visible.iter().copied().max_by_key(|id| {
+            let s = self.library.get(*id);
+            let lines = s.map_or(0, |s| s.body.lines().count());
+            let templated = usize::from(s.is_some_and(Snippet::has_placeholders));
+            (templated, lines)
+        })
+    }
+
     // ---- test accessors -------------------------------------------------
 
-    #[doc(hidden)]
-    pub fn open_id_for_test(&self) -> Option<SnippetId> {
+    #[cfg(test)]
+    pub(crate) fn open_id_for_test(&self) -> Option<SnippetId> {
         self.open
     }
 
-    #[doc(hidden)]
-    pub fn visible_count_for_test(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn visible_count_for_test(&self) -> usize {
         self.visible.len()
     }
 
-    #[doc(hidden)]
-    pub fn set_search_for_test(&mut self, q: &str) {
+    #[cfg(test)]
+    pub(crate) fn set_search_for_test(&mut self, q: &str) {
         self.search_input.set_text(q);
         self.recompute_visible();
     }
 
-    #[doc(hidden)]
-    pub fn library_len_for_test(&self) -> usize {
-        self.library.snippets.len()
-    }
-
-    #[doc(hidden)]
-    pub fn expand_open_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn expand_open_for_test(&self) -> bool {
         self.expand.is_some()
-    }
-
-    #[doc(hidden)]
-    pub fn copy_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.copy(id, doc);
-    }
-
-    #[doc(hidden)]
-    pub fn new_snippet_for_test(&mut self, doc: &mut AutoCommit) {
-        self.new_snippet(doc);
-    }
-
-    #[doc(hidden)]
-    pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
-        self.library.get(id).map_or(0, |s| s.uses)
-    }
-
-    #[doc(hidden)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched_for_test(&self) -> Option<tilo_actions::EncodedAction> {
-        self.actions.last_dispatched().cloned()
-    }
-
-    /// Drive the toolbar Delete affordance exactly as a click resolves it (via
-    /// the shared `apply` dispatch), against the authoritative document.
-    #[doc(hidden)]
-    pub fn delete_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.apply(Action::Delete(id), doc);
-    }
-
-    /// Drive the toolbar Star affordance the same way.
-    #[doc(hidden)]
-    pub fn toggle_favorite_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.apply(Action::ToggleFavorite(id), doc);
     }
 
     // ---- responsive test accessors -------------------------------------
@@ -964,8 +828,8 @@ impl SnippetsApp {
     /// # Errors
     /// Propagates [`taffy::TaffyError`] if `compute_layout` fails — never in
     /// practice, since `node` was just created in the same tree.
-    #[doc(hidden)]
-    pub fn layout_at_width_for_test(&mut self, width: f64) -> taffy::TaffyResult<()> {
+    #[cfg(test)]
+    pub(crate) fn layout_at_width_for_test(&mut self, width: f64) -> taffy::TaffyResult<()> {
         use ui::widget::Widget;
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -990,35 +854,33 @@ impl SnippetsApp {
         Ok(())
     }
 
-    #[doc(hidden)]
-    pub fn sidebar_is_overlay_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn sidebar_is_overlay_for_test(&self) -> bool {
         self.sidebar_layout() == SplitLayout::Overlay
     }
 
-    #[doc(hidden)]
-    pub fn sidebar_open_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn sidebar_open_for_test(&self) -> bool {
         self.sidebar_open()
     }
 
-    #[doc(hidden)]
-    pub fn is_push_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_push_for_test(&self) -> bool {
         self.is_push_layout()
     }
 
-    #[doc(hidden)]
-    pub fn push_showing_detail_for_test(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn push_showing_detail_for_test(&self) -> bool {
         self.push_pane == PushPane::Detail
     }
 
-    #[doc(hidden)]
-    pub fn toggle_sidebar_for_test(&mut self) {
-        // Toggling the sidebar is pure presentation; a scratch document
-        // satisfies the shared dispatch signature without any mutation.
-        self.apply(Action::ToggleSidebar, &mut AutoCommit::new());
+    #[cfg(test)]
+    pub(crate) fn toggle_sidebar_for_test(&mut self) {
+        self.activate(Action::ToggleSidebar);
     }
 
-    #[doc(hidden)]
-    pub fn open_first_for_test(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn open_first_for_test(&mut self) {
         if let Some(id) = self.visible.first().copied() {
             self.open_snippet(id);
         }
@@ -1071,11 +933,7 @@ impl SnippetsApp {
 
 impl ui::widget::Widget for SnippetsApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
         dyn ui::undo::UndoPoints
     );
 
@@ -1104,14 +962,8 @@ impl ui::widget::Widget for SnippetsApp {
             }))
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        self.sync_library(state);
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.sync_body_editor();
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        !self.seeded
     }
 
     // `Widget::build_layout`/`apply_layout` return `NodeId`/`()`, not a
@@ -1326,6 +1178,14 @@ impl ui::widget::Widget for SnippetsApp {
         "SnippetsApp"
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("snippets.application")
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1426,7 +1286,7 @@ impl ui::widget::Widget for SnippetsApp {
                 self.expand = Some(modal);
                 return false;
             };
-            self.finish_expand(modal, outcome, state);
+            self.finish_expand(modal, outcome);
             return true;
         }
         if target == "snippets.body" && self.open.is_some() && self.expand.is_none() {
@@ -1451,7 +1311,7 @@ impl ui::widget::Widget for SnippetsApp {
         if matches!(action, ui::a11y::Action::Focus) && !matches!(hit_action, Action::FocusSearch) {
             return true;
         }
-        self.apply(hit_action, state);
+        self.activate(hit_action);
         true
     }
 
@@ -1503,18 +1363,6 @@ impl ui::widget::Widget for SnippetsApp {
 }
 
 impl ui::undo::UndoPoints for SnippetsApp {
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-            || self.body_editor.needs_commit()
-            || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
-    }
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-        self.body_editor.on_commit();
-        if let Some(modal) = &mut self.expand {
-            modal.on_commit();
-        }
-    }
     fn get_state(&self) -> Option<String> {
         serde_json::to_string(&(self.open, self.body_editor.get_state())).ok()
     }
@@ -1525,88 +1373,6 @@ impl ui::undo::UndoPoints for SnippetsApp {
         {
             self.body_editor.set_state(&caret);
         }
-    }
-}
-
-impl ui::search::capability::SearchSource for SnippetsApp {
-    /// Fold the library into the unified Ctrl+K palette. The provider is an
-    /// O(1) handle to the retained incremental
-    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider),
-    /// making every snippet findable there by title, language, folder, tag,
-    /// description or body, alongside the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
-impl SnippetsApp {
-    fn find_published(
-        resource: &tilo_actions::Resource,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        for child in &resource.children {
-            if let Some(found) = Self::find_published(child, id) {
-                return Some(found);
-            }
-        }
-        None
-    }
-
-    pub(crate) fn published_library(&self, doc: &AutoCommit) -> tilo_actions::Resource {
-        let state = <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Snippets>(
-            crate::resource::LIBRARY_RESOURCE_ID,
-            "Snippets",
-            &state,
-        );
-        root.children.extend(crate::actions::live_folder_resources(
-            &self.snippets_resource_ctx(),
-        ));
-        root
-    }
-}
-
-impl ui::resources::PublishesResources for SnippetsApp {
-    /// Standalone / `--shots` / unit tests publish the library root. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns that
-    /// door — keep only the sidebar-folder create extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::actions::live_folder_resources(&self.snippets_resource_ctx());
-        }
-        vec![self.published_library(doc)]
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == "snippets.library" {
-            return None;
-        }
-        if let Some(found) = Self::find_published(&self.published_library(doc), id) {
-            return Some(found);
-        }
-        if self.is_hosted()
-            && let Some(found) =
-                crate::actions::live_folder_resources(&self.snippets_resource_ctx())
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-        {
-            return Some(found);
-        }
-        if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
-            let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
-            return self
-                .library
-                .get(snippet_id)
-                .map(crate::actions::provide_snippet_resource);
-        }
-        self.library
-            .tags()
-            .into_iter()
-            .find(|(tag, _)| crate::actions::tag_resource_id(tag) == id)
-            .map(|(tag, _)| crate::actions::provide_tag_resource(tag))
     }
 }
 
@@ -1627,21 +1393,6 @@ impl ui::widget::controls::ActionControls for SnippetsApp {
                     })
             })
             .collect()
-    }
-}
-
-impl ui::history_mode::capability::DocumentHistory for SnippetsApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
-impl ui::undo::CommittedActions for SnippetsApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
@@ -1921,16 +1672,11 @@ impl SnippetsApp {
             return false;
         };
         let outcome = modal.handle_event(event, ctx, self.last_mouse);
-        self.finish_expand(modal, outcome, ctx.state);
+        self.finish_expand(modal, outcome);
         true
     }
 
-    fn finish_expand(
-        &mut self,
-        modal: ExpandModal,
-        outcome: ExpandOutcome,
-        state: &mut AutoCommit,
-    ) {
+    fn finish_expand(&mut self, modal: ExpandModal, outcome: ExpandOutcome) {
         match outcome {
             ExpandOutcome::Stay => {
                 self.expand = Some(modal);
@@ -1938,7 +1684,7 @@ impl SnippetsApp {
             ExpandOutcome::Cancel => {}
             ExpandOutcome::Copy(text, id) => {
                 ui::clipboard_copy(&text);
-                self.record_use(id, state);
+                self.record_use(id);
                 self.toast("Expanded and copied");
             }
         }
@@ -1979,7 +1725,7 @@ impl SnippetsApp {
                 self.search_input.set_focus(false);
             }
             let search_click = matches!(action, Action::FocusSearch);
-            self.apply(action, ctx.state);
+            self.activate(action);
             if search_click {
                 let _ = self.route_search_event(event, ctx);
             }
@@ -2010,13 +1756,13 @@ impl SnippetsApp {
                     return;
                 }
                 "n" => {
-                    self.new_snippet(ctx.state);
+                    self.new_snippet();
                     *ctx.handled = true;
                     return;
                 }
                 "c" if !self.search_input.is_focused() => {
                     if let Some(id) = self.open {
-                        self.copy(id, ctx.state);
+                        self.copy(id);
                     }
                     *ctx.handled = true;
                     return;
@@ -2052,10 +1798,10 @@ impl SnippetsApp {
         // open it dismisses the flap; otherwise it clears the search.
         if let Key::Named(NamedKey::Escape) = logical_key {
             if self.is_push_layout() && self.push.reveal() > 0.5 {
-                self.apply(Action::PushBack, ctx.state);
+                self.activate(Action::PushBack);
                 *ctx.handled = true;
             } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
-                self.apply(Action::DismissSidebar, ctx.state);
+                self.activate(Action::DismissSidebar);
                 *ctx.handled = true;
             } else if !self.search_input.value().is_empty() {
                 self.search_input.set_text("");
@@ -2925,79 +2671,6 @@ impl SnippetsApp {
         self.record(rect, action);
         rect.x1 + 8.0
     }
-
-    pub(crate) fn draw_code(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        s: &Snippet,
-        line_h: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let pad = 16.0;
-        let gutter_w = 36.0;
-        let x0 = card.x0 + pad;
-        // The code card owns its whole surface: body fill, gutter band, then
-        // the derived edge on top so the gutter cannot paint over it (the
-        // history preview calls this with a bare rect and gets the same card).
-        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
-        // Gutter background.
-        let gutter = Rect::new(card.x0, card.y0, card.x0 + gutter_w + pad, card.y1);
-        draw::fill_round(scene, t, gutter, theme.radii_md(), c.neutral[1]);
-        // Re-cover the right side so only the left edge keeps the radius.
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(card.x0 + 10.0, card.y0, card.x0 + gutter_w + pad, card.y1),
-            c.neutral[1],
-        );
-        draw::stroke_edge(
-            scene,
-            t,
-            card,
-            theme.radii_md(),
-            ui::surface::edge_on(c.neutral[0]),
-        );
-
-        let mut y = card.y0 + pad;
-        let code_x = x0 + gutter_w;
-        for (i, spans) in highlight::highlight_lines(&s.body, s.language).enumerate() {
-            if y > card.y1 - line_h {
-                break;
-            }
-            // Line number.
-            let num = (i + 1).to_string();
-            let nw = draw::mono_width(tr, &num, 11.0);
-            PaintCtx::new(scene, t, tr, theme).text(
-                &num,
-                &draw::mono_style(11.0, TextWeight::Regular),
-                c.text_dim,
-                Point::new(x0 + gutter_w - 10.0 - nw, y),
-                None,
-            );
-            // Highlighted spans.
-            let mut sx = code_x;
-            for span in spans {
-                let color = theme.tokens.syntax.color(span.kind);
-                let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                };
-                PaintCtx::new(scene, t, tr, theme).text(
-                    &span.text,
-                    &draw::mono_style(BODY_FONT, weight),
-                    color,
-                    Point::new(sx, y),
-                    None,
-                );
-                sx += draw::mono_width(tr, &span.text, BODY_FONT);
-            }
-            y += line_h;
-        }
-    }
 }
 
 /// Cycle to the next language in the canonical order (wraps).
@@ -3096,408 +2769,231 @@ impl Radii for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::SNIPPETS_ACTION_TYPE;
+    use crate::resource::SnippetsShell;
+    use std::rc::Rc;
+    use ui::framework::ResourceSurface;
+    use ui::prelude::TestApp;
+    use ui::tilo_resource::Invoke;
     use ui::widget::Widget;
 
-    /// Live apps start and stay empty; the demo and an empty doc's sync seed.
-    #[test]
-    fn live_and_demo_apps_seed_only_when_asked() {
-        // Case `live_app_starts_empty`.
-        {
-            // A fresh install has no snippets; the starter set is demo/`--shots`
-            // only.
-            let app = SnippetsApp::new();
-            assert_eq!(app.library_len_for_test(), 0, "live library starts empty");
-            assert!(
-                app.open_id_for_test().is_none(),
-                "nothing is opened on an empty library"
-            );
-            assert_eq!(app.visible_count_for_test(), 0);
-        }
-
-        // Case `demo_seeds_and_opens_a_snippet`.
-        {
-            let app = SnippetsApp::new_demo();
-            assert!(app.library_len_for_test() >= 10);
-            assert!(app.open_id_for_test().is_some());
-            assert!(app.visible_count_for_test() >= 10);
-        }
-
-        // Case `empty_live_app_does_not_seed_the_shared_doc`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            assert!(
-                SnippetsDoc::list(&doc).is_empty(),
-                "an empty live library must write no snippets into the shared store"
-            );
-        }
-
-        // Case `sync_seeds_into_empty_doc`.
-        {
-            let mut app = SnippetsApp::new_demo();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            assert_eq!(SnippetsDoc::list(&doc).len(), app.library_len_for_test());
-            let recorded = app
-                .last_dispatched_for_test()
-                .expect("starter snippets are created by an action");
-            assert!(String::from_utf8_lossy(&recorded.payload).contains("CreateSnippet"));
-        }
+    /// The bare view showing the starter library, as the framework presents it.
+    fn demo() -> SnippetsApp {
+        let mut app = SnippetsApp::new();
+        app.present(&Rc::new(crate::seed::starter_library()));
+        app
     }
 
-    /// Search narrows results and the shared editor never writes view state to the CRDT.
-    #[test]
-    fn search_narrows_results_without_writing_view_state() {
-        // Case `search_narrows_results`.
-        {
-            let mut app = SnippetsApp::new_demo();
-            let before = app.visible_count_for_test();
-            app.set_search_for_test("language:rust");
-            let after = app.visible_count_for_test();
-            assert!(after < before);
-            assert!(after >= 1);
-        }
-
-        // Case `shared_search_editor_updates_results_without_writing_view_state_to_crdt`.
-        {
-            let mut app = SnippetsApp::new_demo();
-            let visible_before = app.visible_count_for_test();
-            let mut doc = AutoCommit::new();
-            let heads_before = doc.get_heads();
-            let mut taffy = TaffyTree::new();
-            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-            let mut focus_target = None;
-
-            app.search_input.set_focus(true);
-            let mut handled = false;
-            assert!(app.route_search_event(
-                &WindowEvent::Ime(winit::event::Ime::Commit("language:rust".into())),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            ));
-
-            assert!(app.visible_count_for_test() < visible_before);
-            assert_eq!(app.search_input.value(), "language:rust");
-            assert_eq!(doc.get_heads(), heads_before, "search stays per-peer state");
-        }
-    }
-
-    /// Copying, creating and editing snippets, and language cycling.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn copy_and_creation_flows_update_the_library() {
-        // Case `copying_a_plain_snippet_bumps_uses`.
-        {
-            let mut app = SnippetsApp::new_demo();
-            // Seed the shared document (as the live app's per-frame sync does before
-            // any event) so the usage-bump action has an authoritative row to edit.
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            // Find a snippet without placeholders.
-            let id = app
-                .library
-                .snippets
-                .iter()
-                .find(|s| !s.has_placeholders())
-                .map(|s| s.id)
-                .expect("a placeholder-free snippet exists");
-            let before = app.snippet_uses_for_test(id);
-            app.copy_for_test(id, &mut doc);
-            assert_eq!(app.snippet_uses_for_test(id), before + 1);
-            assert!(!app.expand_open_for_test());
-        }
-
-        // Case `copying_a_templated_snippet_opens_expand`.
-        {
-            let mut app = SnippetsApp::new_demo();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            let id = app
-                .library
-                .snippets
-                .iter()
-                .find(|s| s.has_placeholders())
-                .map(|s| s.id)
-                .expect("a templated snippet exists");
-            app.copy_for_test(id, &mut doc);
-            assert!(
-                app.expand_open_for_test(),
-                "templated copy routes through expand"
-            );
-        }
-
-        // Case `focusing_new_snippet_does_not_activate_it`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            app.record(Rect::new(0.0, 0.0, 100.0, 40.0), Action::NewSnippet);
-            let target = Action::NewSnippet.semantic_id();
-            let before = doc.get_heads();
-            Widget::perform_semantic_action(
-                &mut app,
-                &target,
-                &ui::a11y::Action::Focus,
-                &mut doc,
-                &automerge::ROOT,
-            );
-            assert_eq!(
-                doc.get_heads(),
-                before,
-                "focusing a button must not author a snippet"
-            );
-            assert!(Widget::perform_semantic_action(
-                &mut app,
-                &target,
-                &ui::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(SnippetsDoc::list(&doc).len(), 1);
-        }
-
-        // Case `new_snippet_grows_library_and_opens_it`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            let before = app.library_len_for_test();
-            app.new_snippet_for_test(&mut doc);
-            assert_eq!(app.library_len_for_test(), before + 1);
-            assert!(app.open_id_for_test().is_some());
-        }
-
-        // Case `new_snippet_body_can_be_edited_through_the_public_action_and_reloaded`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            app.new_snippet_for_test(&mut doc);
-            app.sync(&mut doc, &root);
-            let id = app.open_id_for_test().unwrap();
-            let body = "fn main() {\n    println!(\"Grün ${name}\");\n}\n";
-            assert!(Widget::perform_semantic_action(
-                &mut app,
-                "snippets.body",
-                &ui::a11y::Action::SetValue(body.into()),
-                &mut doc,
-                &root,
-            ));
-            assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, body);
-
-            let resource = ui::resources::resource(&app, &doc, &actions::snippet_resource_id(id))
-                .expect("the edited snippet is an addressable resource");
-            let edit = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "edit-body")
-                .expect("body editing is available to automation and the palette");
-            let encoded = match &edit.input {
-                tilo_actions::ActionInput::Prompted { build, .. } => build(body),
-                tilo_actions::ActionInput::Immediate(_)
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("body editing accepts text")
-                }
-            };
-            assert_eq!(app.last_dispatched_for_test().unwrap(), encoded);
-            let mut loaded = AutoCommit::load(&doc.save()).unwrap();
-            let mut reopened = SnippetsApp::new();
-            reopened.sync(&mut loaded, &root);
-            assert_eq!(SnippetsDoc::get(&loaded, id).unwrap().body, body);
-            assert_eq!(reopened.library_len_for_test(), 1);
-        }
-
-        // Case `next_language_wraps`.
-        {
-            let last = *Language::ALL.last().unwrap();
-            assert_eq!(next_language(last), Language::ALL[0]);
-        }
-    }
-
-    /// The variable dialog is addressable, IME edits undo, and the body editor adopts peer changes.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn body_and_variable_editors_are_semantic_undoable_and_peer_aware() {
-        // Case `variable_dialog_fields_and_cancel_are_semantically_addressable`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            app.new_snippet_for_test(&mut doc);
-            let id = app.open_id_for_test().unwrap();
-            app.perform_semantic_action(
-                "snippets.body",
-                &ui::a11y::Action::SetValue("Hello ${name}".into()),
-                &mut doc,
-                &automerge::ROOT,
-            );
-            app.start_expand(id);
-            assert!(app.perform_semantic_action(
-                "snippets.expand.field.name",
-                &ui::a11y::Action::SetValue("Grün".into()),
-                &mut doc,
-                &automerge::ROOT
-            ));
-            assert_eq!(
-                app.expand.as_ref().unwrap().preview_for_test(),
-                "Hello Grün"
-            );
-            assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, "Hello ${name}");
-            assert!(!app.perform_semantic_action(
-                "snippets.body",
-                &ui::a11y::Action::SetValue("hidden edit".into()),
-                &mut doc,
-                &automerge::ROOT
-            ));
-            assert!(app.perform_semantic_action(
-                "snippets.expand.cancel",
-                &ui::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT
-            ));
-            assert!(app.expand.is_none());
-        }
-
-        // Case `body_ime_edit_uses_the_document_action_and_can_be_undone`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            app.new_snippet_for_test(&mut state.doc);
-            let id = app.open_id_for_test().unwrap();
-            ui::undo::take_committed_action(&mut app);
-            app.sync(&mut state.doc, &state.root);
-            app.layout_at_width_for_test(1280.0).unwrap();
-            assert!(app.perform_semantic_action(
-                "snippets.body",
-                &ui::a11y::Action::Focus,
-                &mut state.doc,
-                &state.root
-            ));
-            let mut taffy = TaffyTree::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut handled = false;
-            app.handle_event(
-                &WindowEvent::Ime(winit::event::Ime::Commit("Grün\n  ${name}\n".into())),
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state.doc,
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled);
-            assert_eq!(
-                SnippetsDoc::get(&state.doc, id).unwrap().body,
-                "Grün\n  ${name}\n"
-            );
-            let key = Key::Character("z".into());
-            let undo_event = WindowEvent::KeyboardInput {
-                device_id: winit::event::DeviceId::dummy(),
-                event: KeyEvent::synthetic(
-                    winit::event::RawKeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(
-                            winit::keyboard::KeyCode::KeyZ,
-                        ),
-                        state: ElementState::Pressed,
-                    },
-                    key.clone(),
-                    None,
-                    winit::keyboard::KeyLocation::Standard,
-                    false,
-                    None,
-                    key,
-                ),
-                is_synthetic: true,
-            };
-            handled = false;
-            app.handle_event(
-                &undo_event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::from(
-                        winit::keyboard::ModifiersState::CONTROL,
-                    ),
-                    state: &mut state.doc,
-                    path: &state.root,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(
-                !handled,
-                "Ctrl+Z must reach the host's document undo dispatcher"
-            );
-            let author = ui::collaboration::local_user_id();
-            let root: *mut dyn Widget = &mut app;
-            assert!(ui::undo::record_dispatched_action(
-                &mut state,
-                root,
-                &HashMap::new(),
-                &author
-            ));
-            state.undo_as(Some(&author), None, None).unwrap();
-            app.sync(&mut state.doc, &state.root);
-            assert_eq!(SnippetsDoc::get(&state.doc, id).unwrap().body, "");
-            assert_eq!(app.body_editor.value(), "");
-        }
-
-        // Case `body_editor_adopts_peer_changes_and_selection_without_authoring_edits`.
-        {
-            let mut app = SnippetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            app.new_snippet_for_test(&mut doc);
-            let first = app.open_id_for_test().unwrap();
-            app.perform_semantic_action(
-                "snippets.body",
-                &ui::a11y::Action::SetValue("first\n".into()),
-                &mut doc,
-                &automerge::ROOT,
-            );
-            app.new_snippet_for_test(&mut doc);
-            let second = app.open_id_for_test().unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.body_editor.value(), "");
-            tilo_actions::Action::apply(&actions::set_body_action(second, "remote 🌍\n"), &mut doc)
+    /// The app on a fresh record holding `snippets`, created through the door.
+    fn launched(snippets: Vec<Snippet>) -> TestApp<SnippetsShell> {
+        let mut app = TestApp::<SnippetsShell>::new().unwrap();
+        for snippet in snippets {
+            app.invoke(Invoke::apply(&actions::create_snippet_action(snippet)).unwrap())
                 .unwrap();
-            let heads = doc.get_heads();
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.body_editor.value(), "remote 🌍\n");
-            app.open_snippet(first);
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.body_editor.value(), "first\n");
-            assert_eq!(doc.get_heads(), heads);
-            assert!(app.body_editor.take_dirty().is_none());
         }
+        app
+    }
+
+    fn snippet(title: &str, body: &str) -> Snippet {
+        let mut s = Snippet::blank("Ops");
+        s.title = title.into();
+        s.body = body.into();
+        s
+    }
+
+    /// Click the control labelled `label` where the window shows it.
+    fn click(app: &mut TestApp<SnippetsShell>, label: &str) {
+        let harness = app.harness();
+        let nodes = harness.a11y_nodes();
+        let bounds = nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .and_then(|(_, node)| node.bounds())
+            .unwrap_or_else(|| {
+                let labels: Vec<&str> = nodes.iter().filter_map(|(_, n)| n.label()).collect();
+                panic!("no control labelled {label:?} among {labels:?}")
+            });
+        harness.click_at(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
+        app.settle();
+    }
+
+    /// The value of the snippet body's editor, as assistive technology reads it.
+    fn body_shown(app: &mut TestApp<SnippetsShell>) -> String {
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::MultilineTextInput)
+            .and_then(|(_, node)| node.value().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The view shows what it is presented: empty until the library arrives,
+    /// and searching narrows it without writing anything.
+    #[test]
+    fn presented_library_fills_the_list_and_search_stays_local() {
+        let empty = SnippetsApp::new();
+        assert_eq!(empty.visible_count_for_test(), 0);
+        assert!(empty.open_id_for_test().is_none());
+
+        let mut app = demo();
+        let before = app.visible_count_for_test();
+        assert!(before >= 10);
+        assert!(app.open_id_for_test().is_some());
+        app.set_search_for_test("language:rust");
+        let after = app.visible_count_for_test();
+        assert!((1..before).contains(&after));
+
+        let mut app = demo();
+        let mut doc = AutoCommit::new();
+        let heads_before = doc.get_heads();
+        let mut taffy = TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut focus_target = None;
+        app.search_input.set_focus(true);
+        let mut handled = false;
+        assert!(app.route_search_event(
+            &WindowEvent::Ime(winit::event::Ime::Commit("language:rust".into())),
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
+        ));
+        assert!(app.visible_count_for_test() < before);
+        assert_eq!(app.search_input.value(), "language:rust");
+        assert_eq!(doc.get_heads(), heads_before, "search stays per-peer state");
+
+        let last = *Language::ALL.last().unwrap();
+        assert_eq!(next_language(last), Language::ALL[0]);
+    }
+
+    /// The toolbar's Star, Copy, New and Delete submit the library's
+    /// actions: each is one undo step, and the view follows the stored
+    /// library.
+    #[test]
+    fn affordances_submit_library_actions_as_one_undo_step_each() {
+        let mut app = launched(vec![snippet("Plain", "echo hi"), snippet("Templated", "")]);
+        let id = |app: &TestApp<SnippetsShell>, title: &str| {
+            app.state().into_iter().find(|s| s.title == title).unwrap()
+        };
+        click(&mut app, "Open Plain");
+        click(&mut app, "Star snippet");
+        assert!(id(&app, "Plain").favorite);
+        assert!(app.undo(), "the star is one undo step");
+        assert!(!id(&app, "Plain").favorite);
+
+        click(&mut app, "Copy snippet");
+        assert_eq!(id(&app, "Plain").uses, 1, "copying records a use");
+
+        click(&mut app, "New snippet");
+        assert_eq!(app.state().len(), 3);
+        // The new snippet is the one open, so the toolbar deletes it.
+        click(&mut app, "Delete snippet");
+        let titles: Vec<String> = app.state().into_iter().map(|s| s.title).collect();
+        assert_eq!(titles, ["Plain", "Templated"]);
+        assert!(app.undo(), "the delete is one undo step");
+        assert_eq!(app.state().len(), 3);
+    }
+
+    /// Typing in the body splices the stored text through the body's child
+    /// resource; the editor follows a collaborator's edit and an undo.
+    #[test]
+    fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
+        let mut app = launched(vec![snippet("Only", "")]);
+        let id = app.state()[0].id;
+        // Into the code card, below the detail pane's toolbar.
+        app.harness().click_at(830.0, 400.0);
+        app.harness().type_text("Grün");
+        app.settle();
+        assert_eq!(app.state()[0].body, "Grün");
+        assert!(app.undo(), "the typed word is one undo step");
+        assert_eq!(app.state()[0].body, "");
+        assert_eq!(body_shown(&mut app), "");
+
+        app.merge_peer_edit(|doc| {
+            tilo_actions::Action::apply(&actions::set_body_action(id, "remote 🌍\n"), doc).unwrap();
+        });
+        app.settle();
+        assert_eq!(app.state()[0].body, "remote 🌍\n");
+        assert_eq!(body_shown(&mut app), "remote 🌍\n");
+    }
+
+    /// The variable dialog is addressable and peer-local, and holds the body
+    /// while it is open.
+    #[test]
+    fn variable_dialog_is_semantic_and_local() {
+        let mut app = SnippetsApp::new();
+        let templated = snippet("Greet", "Hello ${name}");
+        app.present(&Rc::new(vec![templated.clone()]));
+        let mut doc = AutoCommit::new();
+        let heads = doc.get_heads();
+        app.copy(templated.id);
+        assert!(
+            app.expand_open_for_test(),
+            "a templated copy fills its variables first"
+        );
+        assert!(app.perform_semantic_action(
+            "snippets.expand.field.name",
+            &ui::a11y::Action::SetValue("Grün".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(
+            app.expand.as_ref().unwrap().preview_for_test(),
+            "Hello Grün"
+        );
+        assert!(!app.perform_semantic_action(
+            "snippets.body",
+            &ui::a11y::Action::SetValue("hidden edit".into()),
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(app.perform_semantic_action(
+            "snippets.expand.cancel",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(!app.expand_open_for_test());
+        assert_eq!(doc.get_heads(), heads, "the dialog writes nothing");
+    }
+
+    /// Focusing the New button does not author a snippet; activating it does.
+    #[test]
+    fn focusing_new_snippet_does_not_activate_it() {
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        app.record(Rect::new(0.0, 0.0, 100.0, 40.0), Action::NewSnippet);
+        let target = Action::NewSnippet.semantic_id();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Focus,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            app.pending_open.is_none(),
+            "focusing a button authors nothing"
+        );
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            app.pending_open.is_some(),
+            "activating it creates a snippet"
+        );
     }
 
     // ---- responsive layout ---------------------------------------------
@@ -3559,7 +3055,7 @@ mod tests {
         // start of the placeholder.
         {
             for width in [700.0, 480.0] {
-                let mut app = SnippetsApp::new_demo();
+                let mut app = demo();
                 app.layout_at_width_for_test(width).unwrap();
                 draw_once(&mut app);
                 let toggle = hit_rect(&app, &Action::ToggleSidebar).expect("hamburger recorded");
@@ -3579,7 +3075,7 @@ mod tests {
                 );
             }
             // Docked open: no toggle, and the field keeps its ordinary inset.
-            let mut app = SnippetsApp::new_demo();
+            let mut app = demo();
             app.layout_at_width_for_test(1280.0).unwrap();
             draw_once(&mut app);
             assert!(hit_rect(&app, &Action::ToggleSidebar).is_none());
@@ -3633,7 +3129,7 @@ mod tests {
 
         // Case `opening_a_snippet_pushes_the_detail_when_very_narrow`.
         {
-            let mut app = SnippetsApp::new_demo();
+            let mut app = demo();
             app.layout_at_width_for_test(480.0).unwrap();
             assert!(!app.push_showing_detail_for_test());
             app.open_first_for_test();
@@ -3645,7 +3141,7 @@ mod tests {
 
         // Case `opening_a_snippet_does_not_push_when_wide`.
         {
-            let mut app = SnippetsApp::new_demo();
+            let mut app = demo();
             app.layout_at_width_for_test(1280.0).unwrap();
             app.open_first_for_test();
             assert!(
@@ -3664,190 +3160,6 @@ mod tests {
             assert!(
                 app.sidebar_open_for_test() && !app.sidebar_is_overlay_for_test(),
                 "crossing back over the breakpoint restores the docked-open default"
-            );
-        }
-    }
-
-    // ---- action model: affordances dispatch through the shared path ----
-
-    /// Seed a demo app + its shared document, as the live frame order does.
-    fn seeded_app() -> (SnippetsApp, AutoCommit) {
-        let mut app = SnippetsApp::new_demo();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        (app, doc)
-    }
-
-    /// Toolbar delete/star dispatch the palette's actions, record one undo boundary, and the doc stays authoritative.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn toolbar_affordances_dispatch_palette_actions_with_one_undo() {
-        // Case `toolbar_delete_dispatches_the_same_action_as_the_palette`.
-        // The toolbar Delete button dispatches the byte-identical `EncodedAction`
-        // the Ctrl+K palette's "Delete snippet" `ActionSpec` exports — proof the two
-        // share one source of truth — and it actually removes the row.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let id = SnippetsDoc::list(&doc)[0].id;
-
-            // What the palette would dispatch for this snippet's "delete".
-            let resource_id = format!("snippets.snippet:{id}");
-            let snip = ui::resources::resource(&app, &doc, &resource_id)
-                .expect("a resource for the target snippet");
-            let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
-            let spec_encoded = match &spec.input {
-                tilo_actions::ActionInput::Immediate(e) => e.clone(),
-                tilo_actions::ActionInput::Prompted { .. }
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("delete is immediate")
-                }
-            };
-
-            app.delete_for_test(id, &mut doc);
-
-            let dispatched = app
-                .last_dispatched_for_test()
-                .expect("the button dispatched an action");
-            assert_eq!(dispatched.type_id, SNIPPETS_ACTION_TYPE);
-            assert_eq!(dispatched.type_id, spec_encoded.type_id);
-            assert_eq!(
-                dispatched.payload, spec_encoded.payload,
-                "the button and the palette build the identical EncodedAction",
-            );
-            assert!(
-                SnippetsDoc::get(&doc, id).is_none(),
-                "the snippet was deleted via the dispatched action",
-            );
-            assert!(
-                !app.library.snippets.iter().any(|s| s.id == id),
-                "the library re-projected the deletion",
-            );
-        }
-
-        // Case `toolbar_star_dispatches_the_same_action_as_the_palette`.
-        // The toolbar Star button dispatches the same `EncodedAction` the palette's
-        // "toggle-favorite" spec exports (both carry the flipped target value).
-        {
-            let (mut app, mut doc) = seeded_app();
-            // Pick an unstarred snippet so both sides compute `favorite: true`.
-            let id = SnippetsDoc::list(&doc)
-                .into_iter()
-                .find(|s| !s.favorite)
-                .map(|s| s.id)
-                .expect("an unstarred seeded snippet");
-
-            let resource_id = format!("snippets.snippet:{id}");
-            let snip = ui::resources::resource(&app, &doc, &resource_id).unwrap();
-            let spec = snip
-                .actions
-                .iter()
-                .find(|a| a.id == "toggle-favorite")
-                .unwrap();
-            let spec_encoded = match &spec.input {
-                tilo_actions::ActionInput::Immediate(e) => e.clone(),
-                tilo_actions::ActionInput::Prompted { .. }
-                | tilo_actions::ActionInput::Deferred { .. } => {
-                    panic!("toggle-favorite is immediate")
-                }
-            };
-
-            app.toggle_favorite_for_test(id, &mut doc);
-
-            let dispatched = app
-                .last_dispatched_for_test()
-                .expect("the star dispatched an action");
-            assert_eq!(
-                dispatched.payload, spec_encoded.payload,
-                "the star and the palette build the identical EncodedAction",
-            );
-            assert!(
-                SnippetsDoc::get(&doc, id).unwrap().favorite,
-                "the snippet is now starred"
-            );
-        }
-
-        // Case `affordance_records_one_undo_boundary_through_the_host`.
-        // The full undo covenant through the real host path: a toolbar affordance
-        // dispatches its action, the host drains `take_committed_action` to record
-        // exactly one undo boundary, and Ctrl+Z reverts precisely that action.
-        {
-            let mut app = SnippetsApp::new_demo();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            let id = SnippetsDoc::list(&state.doc)
-                .into_iter()
-                .find(|s| !s.favorite)
-                .map(|s| s.id)
-                .expect("an unstarred snippet");
-
-            // Fire the toolbar Star through the shared dispatch path.
-            app.toggle_favorite_for_test(id, &mut state.doc);
-            assert!(SnippetsDoc::get(&state.doc, id).unwrap().favorite);
-
-            // The host's own recorder drains the captured heads and records ONE undo
-            // boundary. Going through it rather than pushing an entry by hand is the
-            // point: attribution happens in there, and undo is author-scoped. The
-            // node map is empty because the app widget is the root here.
-            let local_author = ui::collaboration::local_user_id();
-            let root: *mut dyn Widget = &mut app;
-            assert!(
-                ui::undo::record_dispatched_action(
-                    &mut state,
-                    root,
-                    &std::collections::HashMap::new(),
-                    &local_author,
-                ),
-                "the host recorded an undo boundary for the dispatched star"
-            );
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_none(),
-                "rising-edge: the captured heads are cleared on read",
-            );
-            let entry = state
-                .peek_last_undo()
-                .expect("exactly one undo boundary recorded");
-            assert_eq!(
-                entry.author.as_ref(),
-                Some(&local_author),
-                "attributed to the local user, so their Ctrl+Z can reach it"
-            );
-
-            // Ctrl+Z reverts the star. Re-project so the library reflects the undo.
-            state
-                .undo_as(Some(&local_author), None, None)
-                .expect("an undo entry to pop");
-            app.sync(&mut state.doc, &state.root);
-            assert!(
-                !SnippetsDoc::get(&state.doc, id).unwrap().favorite,
-                "undo reverted the star and nothing else",
-            );
-        }
-
-        // Case `steady_state_reprojects_the_document`.
-        // Actions make the document authoritative: a mutation applied straight to
-        // the document (as a peer's replayed action would arrive) is re-projected
-        // into the library on the next `sync`, and a local delete is not resurrected.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let before = app.library_len_for_test();
-            let id = SnippetsDoc::list(&doc)[0].id;
-
-            // A peer deletes a snippet — it arrives in our replica as a raw document
-            // mutation (the shape a replayed `DeleteSnippet` action leaves behind).
-            SnippetsDoc::remove(&mut doc, id);
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(
-                app.library_len_for_test(),
-                before - 1,
-                "the deletion re-projected"
-            );
-            assert!(
-                !app.library.snippets.iter().any(|s| s.id == id),
-                "and is not resurrected"
             );
         }
     }

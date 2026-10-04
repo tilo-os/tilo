@@ -699,11 +699,6 @@ inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/slides/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "snippets"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/snippets/src/framework_history_tests.rs"]
-
-[[cargo]]
 package = "themes"
 inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
 readers = ["apps/themes/src/framework_history_tests.rs"]
