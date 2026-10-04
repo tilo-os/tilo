@@ -73,6 +73,10 @@ impl Resource for Document {
         <RichText as Resource>::annotates(action)
     }
 
+    fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
+        <RichText as Resource>::permission(action)
+    }
+
     fn register(registry: &mut tilo_actions::ActionRegistry) {
         <RichText as Resource>::register(registry);
     }

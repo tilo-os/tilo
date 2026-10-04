@@ -9,7 +9,7 @@ use ui::framework::{
     Fixture, LaunchInput, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::record::RecordId;
-use ui::tilo_actions::{ActionAddress, ActionSpec};
+use ui::tilo_actions::{ActionAddress, ActionSpec, PermissionRequirement};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -73,6 +73,14 @@ impl Resource for PdfViewer {
 
     fn declarations() -> Vec<ActionDecl<Self>> {
         crate::actions::declarations()
+    }
+
+    /// Replying and commenting need only the right to comment.
+    fn permission(action: &PdfViewerAction) -> PermissionRequirement {
+        match action.required_verb() {
+            ui::permissions::Verb::Comment => PermissionRequirement::Comment,
+            _ => PermissionRequirement::Write,
+        }
     }
 
     fn children(state: &PdfMarkup) -> Vec<tilo_actions::Resource> {

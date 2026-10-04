@@ -163,6 +163,20 @@ impl Resource for SheetsWorkbook {
         crate::actions::register(registry);
     }
 
+    /// Commenting on a cell — a thread, a reply, an edit of one's comment,
+    /// resolving it — needs only the right to comment.
+    fn permission(action: &SheetsAction) -> ui::tilo_resource::PermissionRequirement {
+        match action {
+            SheetsAction::PutComment { .. }
+            | SheetsAction::ReplyComment { .. }
+            | SheetsAction::EditComment { .. }
+            | SheetsAction::SetCommentResolved { .. } => {
+                ui::tilo_resource::PermissionRequirement::Comment
+            }
+            _ => ui::tilo_resource::PermissionRequirement::Write,
+        }
+    }
+
     fn read(doc: &Doc) -> Result<SheetsState, ModelError> {
         Ok(SheetsState {
             sheets: sheet_objects(doc)

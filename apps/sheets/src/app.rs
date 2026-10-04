@@ -1160,6 +1160,7 @@ impl SheetsApp {
                         ))
                     },
                 )
+                .requiring(ui::tilo_actions::PermissionRequirement::Comment)
             },
             fixed(
                 "sum-selection",

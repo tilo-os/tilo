@@ -239,6 +239,9 @@ impl<R: Resource> ResourceRoot<R> {
         permissions: Option<LivePermissions>,
         write: PermissionScope,
     ) -> Self {
+        if let Some(permissions) = &permissions {
+            self.dispatch.follow(permissions.clone());
+        }
         self.permissions = permissions;
         self.write = Some(write);
         self

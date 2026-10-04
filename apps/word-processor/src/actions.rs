@@ -633,7 +633,8 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
                 ))
             },
         )
-        .requires(ContextRequirement::Selection),
+        .requires(ContextRequirement::Selection)
+        .requiring(tilo_actions::PermissionRequirement::Comment),
         "add-comment.v1",
         domain,
     ));
@@ -884,7 +885,8 @@ fn comment_resource(comment: &tilo_doc::snapshot::CommentView) -> Resource {
                     text,
                 ))
             },
-        ),
+        )
+        .requiring(tilo_actions::PermissionRequirement::Comment),
         "reply-to-comment.v1",
         domain,
     ));
