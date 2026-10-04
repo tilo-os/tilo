@@ -113,6 +113,7 @@ fn json_encodings_are_pinned() {
             user_public_key: "33".repeat(32),
             device_cert: None,
             relay_workspace_ids: vec![7, u64::MAX],
+            environments: tilo_relay_protocol::RelayEnvironments::default(),
         },
         concat!(
             r#"{"schema_version":3,"#,
@@ -120,7 +121,8 @@ fn json_encodings_are_pinned() {
             r#""relay_service_node_id":"2222222222222222222222222222222222222222222222222222222222222222","#,
             r#""relay_endpoint":null,"label":"Attic server","#,
             r#""user_public_key":"3333333333333333333333333333333333333333333333333333333333333333","#,
-            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615]}"#,
+            r#""device_cert":null,"relay_workspace_ids":[7,18446744073709551615],"#,
+            r#""environments":{"sessions":false,"legacy_apps":false}}"#,
         ),
     );
     // Metrics snapshot, written pretty-printed.
