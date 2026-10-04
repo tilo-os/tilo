@@ -901,6 +901,10 @@ pub(crate) fn launch_installed_app(
     }
 }
 
+/// The device's control panel: one window per machine, so opening it again,
+/// from Quick Settings, the palette or anywhere else, focuses that window.
+const SETTINGS_PACKAGE_ID: &str = "so.tilo.settings";
+
 /// Surface a launch that failed before spawn: retire its opening card, post
 /// the failure notification, and describe it for callers that cannot see
 /// the screen.
@@ -955,10 +959,17 @@ fn launch_resolved_installed_app(
         let st = chrome.borrow();
         let tree = st.tree();
         let salt = tree.local_salt();
-        tree.desktop.active_workspace().and_then(|ws| {
-            crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
-                .map(|(strip, group, tab)| (ws.id, strip, group, tab))
-        })
+        tree.desktop
+            .active_workspace()
+            .and_then(|ws| {
+                crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
+                    .map(|(strip, group, tab)| (ws.id, strip, group, tab))
+            })
+            .or_else(|| {
+                (package_id == SETTINGS_PACKAGE_ID)
+                    .then(|| crate::shell::peer_windows::opened_here(&tree, package_id))
+                    .flatten()
+            })
     };
     if let Some((ws_id, strip, group, tab)) = already {
         chrome.borrow_mut().focus_tab(ws_id, strip, group, tab);

@@ -3,8 +3,10 @@
 //!
 //! Both stores describe packages the same way — being preinstalled is a
 //! matter of *where the payload lives*, not what the package may do, so a
-//! system row is granted exactly what a user row is. A user install
-//! shadows a system package with the same app id.
+//! system row is granted exactly what a user row is. The system store is
+//! the layer of apps the image installed; updating one installs the newer
+//! version into the user's store, which shadows it (see
+//! [`runs_over_image`]).
 
 use std::path::{Path, PathBuf};
 
@@ -80,25 +82,67 @@ impl Catalog {
     }
 
     /// Every package either store knows about: the system store first, then
-    /// the user's, with a user row replacing a system row of the same app id
-    /// in place (so the system store's ordering stays stable).
+    /// the user's. Where both hold an app, the one that runs takes the
+    /// system row's place (so the system store's ordering stays stable); see
+    /// [`runs_over_image`] for which.
     ///
     /// # Errors
     ///
     /// Returns [`CatalogError`] if either registry exists but cannot be read
     /// or parsed, or a system row points outside the system store.
     pub fn list(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
-        let mut out = match &self.system {
-            Some(system) => system_packages(system)?,
-            None => Vec::new(),
-        };
+        let mut out = self.image_packages()?;
         for entry in Registry::load(&self.user.registry())?.into_entries() {
             match out.iter_mut().find(|row| row.id == entry.id) {
-                Some(slot) => *slot = entry,
+                Some(slot) => {
+                    if runs_over_image(&entry, slot) {
+                        *slot = entry;
+                    }
+                }
                 None => out.push(entry),
             }
         }
         Ok(out)
+    }
+
+    /// Both copies of `app_id`: the user's store's and the system image's.
+    ///
+    /// # Errors
+    ///
+    /// See [`Catalog::list`].
+    pub fn layers(&self, app_id: &str) -> Result<Layers, CatalogError> {
+        let user = Registry::load(&self.user.registry())?.find(app_id).cloned();
+        let image = self
+            .image_packages()?
+            .into_iter()
+            .find(|row| row.id == app_id);
+        Ok(Layers { user, image })
+    }
+
+    /// The user's copies the system image now ships a newer version of and
+    /// that were not held back on purpose: nothing runs them any more.
+    ///
+    /// # Errors
+    ///
+    /// See [`Catalog::list`].
+    pub fn superseded(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
+        let image = self.image_packages()?;
+        Ok(Registry::load(&self.user.registry())?
+            .into_entries()
+            .into_iter()
+            .filter(|entry| {
+                image
+                    .iter()
+                    .any(|row| row.id == entry.id && !runs_over_image(entry, row))
+            })
+            .collect())
+    }
+
+    fn image_packages(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
+        match &self.system {
+            Some(system) => system_packages(system),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// The package that runs for `app_id`.
@@ -122,6 +166,42 @@ impl Catalog {
             .into_iter()
             .find(|row| row.package_id() == Some(id)))
     }
+}
+
+/// One app's copy in each store.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Layers {
+    /// The copy the user installed or updated to.
+    pub user: Option<InstalledPackage>,
+    /// The copy the system image ships.
+    pub image: Option<InstalledPackage>,
+}
+
+impl Layers {
+    /// The copy that runs.
+    pub fn running(&self) -> Option<&InstalledPackage> {
+        match (&self.user, &self.image) {
+            (Some(user), Some(image)) if !runs_over_image(user, image) => Some(image),
+            (Some(user), _) => Some(user),
+            (None, image) => image.as_ref(),
+        }
+    }
+}
+
+/// Whether the user's copy of an app runs instead of the system image's.
+///
+/// The image's apps are the first installed version of each, updated the
+/// way any package is: an update installs the newer version into the user's
+/// store, where it shadows the image's. The newer of the two runs, so an
+/// image update never takes an app back to an older version than the user
+/// updated to, and an update the image already carries does not leave the
+/// user stuck on an older copy. A copy the user rolled back to is
+/// [`held`](InstalledPackage::held) and runs whatever the image ships, until
+/// the next update.
+pub fn runs_over_image(user: &InstalledPackage, image: &InstalledPackage) -> bool {
+    user.held
+        || tilo_app_package::version::compare(&user.version, &image.version)
+            != std::cmp::Ordering::Less
 }
 
 fn is_within(root: &Path, path: &Path) -> bool {
@@ -347,6 +427,85 @@ mod tests {
                 Err(CatalogError::Escapes { .. })
             ));
         }
+    }
+
+    /// A store whose rows carry versions, and `held` where asked.
+    fn versioned_store(rows: &[(&str, &str, bool)]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut toml_src = String::new();
+        for (id, version, held) in rows {
+            let payload = tmp.path().join("payloads").join(id);
+            std::fs::create_dir_all(&payload).unwrap();
+            let manifest = payload.join("manifest.toml");
+            std::fs::write(&manifest, "").unwrap();
+            let _ = write!(
+                toml_src,
+                "[[entry]]\nid = '{id}'\nversion = '{version}'\nheld = {held}\n\
+                 payload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest.display().to_string()
+            );
+        }
+        std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn the_newer_copy_of_an_image_app_runs_unless_the_user_held_one() {
+        let system = versioned_store(&[
+            ("so.tilo.settings", "0.1.10", false),
+            ("so.tilo.notes", "0.1.10", false),
+            ("so.tilo.files", "0.1.10", false),
+            ("so.tilo.clocks", "0.1.10", false),
+        ]);
+        let user = versioned_store(&[
+            // Updated past the image.
+            ("so.tilo.settings", "0.1.12", false),
+            // The image has since shipped a newer one.
+            ("so.tilo.notes", "0.1.9", false),
+            // Rolled back below the image on purpose.
+            ("so.tilo.files", "0.1.8", true),
+        ]);
+        let catalog = catalog(system.path(), user.path());
+        let running = |id: &str| {
+            let row = catalog.find(id).unwrap().unwrap();
+            (row.version, row.system)
+        };
+        assert_eq!(running("so.tilo.settings"), ("0.1.12".into(), false));
+        assert_eq!(
+            running("so.tilo.notes"),
+            ("0.1.10".into(), true),
+            "an image update is not hidden behind an older user copy",
+        );
+        assert_eq!(running("so.tilo.files"), ("0.1.8".into(), false));
+        assert_eq!(running("so.tilo.clocks"), ("0.1.10".into(), true));
+        let ids: Vec<String> = catalog.list().unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "so.tilo.settings",
+                "so.tilo.notes",
+                "so.tilo.files",
+                "so.tilo.clocks"
+            ],
+            "one row per app, in the image's order",
+        );
+
+        let superseded: Vec<String> = catalog
+            .superseded()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(superseded, ["so.tilo.notes"]);
+
+        let layers = catalog.layers("so.tilo.notes").unwrap();
+        assert_eq!(layers.user.as_ref().unwrap().version, "0.1.9");
+        assert_eq!(layers.image.as_ref().unwrap().version, "0.1.10");
+        assert_eq!(layers.running(), layers.image.as_ref());
+        let layers = catalog.layers("so.tilo.settings").unwrap();
+        assert_eq!(layers.running(), layers.user.as_ref());
+        assert_eq!(catalog.layers("so.tilo.none").unwrap(), Layers::default());
     }
 
     #[test]

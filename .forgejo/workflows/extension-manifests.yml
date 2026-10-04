@@ -183,7 +183,7 @@ jobs:
               --recipe "/extensions/$id/recipe.toml" --image "$IMAGE" --out "/out/$id.json"
             python3 tools/extensions/resolve.py check "$OUT/$id.json"
           done
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: extension-manifests-${{ matrix.key }}
           path: extension-manifests/${{ matrix.key }}
@@ -198,7 +198,7 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         continue-on-error: true
         with:
           path: extension-manifests

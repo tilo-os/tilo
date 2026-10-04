@@ -2015,7 +2015,9 @@ impl AppHandler {
                 );
             }
             if send_result.is_err() {
-                tracing::error!("ui-render thread receiver closed; exiting");
+                tracing::error!(
+                    "ui-render thread stopped; exiting (a lost drawing surface is logged above)"
+                );
                 event_loop.exit();
                 return;
             }

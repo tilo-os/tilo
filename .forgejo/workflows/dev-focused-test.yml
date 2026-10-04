@@ -48,7 +48,6 @@ env:
   TEST_NAME: ${{ github.event.inputs.test_name }}
   TEST_NAMES: ${{ github.event.inputs.test_names }}
   TARGET_KIND: ${{ github.event.inputs.target_kind }}
-  CARGO_HOME: /cargo-home
   CARGO_BUILD_JOBS: '4'
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_DEV_DEBUG: '0'
@@ -140,8 +139,5 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
+          path: ${{ steps.downloads.outputs.paths }}
           key: ${{ steps.downloads.outputs.cache-key }}

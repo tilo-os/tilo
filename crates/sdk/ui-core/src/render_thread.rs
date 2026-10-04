@@ -441,7 +441,7 @@ pub fn spawn_render_thread(
                     {
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
-                        tracing::info!(%err, "drawing surface is gone; stopping the render thread");
+                        tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
                         log_render_outcome(
                             frame_ix,
                             cpu_frame_id,
@@ -558,6 +558,12 @@ pub fn spawn_render_thread(
                     timing::handoff::Stage::AfterCompletionNotify,
                 );
                 if outcome == FrameOutcome::SurfaceGone {
+                    // The window's surface was destroyed under the app (the
+                    // compositor closed it, or the device was lost): say so,
+                    // since the app exits on it.
+                    tracing::warn!(
+                        "drawing surface is gone after a frame; stopping the render thread"
+                    );
                     break;
                 }
             }

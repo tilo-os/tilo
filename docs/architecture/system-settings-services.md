@@ -3,6 +3,23 @@
 Settings is a client of system authorities; it is not a second implementation
 of them.
 
+## Reaching the authorities from the sandbox
+
+Settings runs in the ordinary app sandbox, which has neither the host's client
+binaries nor the system bus. The launcher's `system_authority` grant gives it
+both, and only it: the image names the receiving package ids, and no manifest
+can claim the grant. Settings gets `/usr/bin`, `/usr/sbin`, `/usr/libexec` and
+`/etc` read-only. It reaches the system bus through its own `xdg-dbus-proxy`,
+filtered to the named authorities (NetworkManager, BlueZ, logind, systemd,
+timedated, localed, hostnamed, AccountsService, UPower, power-profiles,
+fwupd, firewalld). It also gets the PipeWire socket and the compositor's
+runtime state files (connected displays and input devices), with every
+subdirectory of that state masked. The print spooler's socket stays out, as
+it does for every sandbox: printing goes through the Print portal. Each authority
+still decides what the person may change. When a read fails, the pane shows
+the reason as an error. It never shows a placeholder as if it were the
+device's state.
+
 ## Ownership and roaming
 
 Every leaf in the shared `settings.json` contract has an explicit entry in

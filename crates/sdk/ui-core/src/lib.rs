@@ -381,7 +381,6 @@ pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
-pub use widget::{RichBlockStyle, RichTextEditor};
 pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
@@ -437,7 +436,10 @@ pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
-pub use text_edit::{Edit, EditCore, Motion};
+pub use text_edit::{
+    CharFilter, CharSplice, Edit, EditCore, Motion, TYPING_RUN_IDLE, TypingRun,
+    delete_last_grapheme,
+};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
     NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
